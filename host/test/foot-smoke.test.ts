@@ -25,7 +25,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,12 +85,22 @@ describe("foot — upstream terminal on wlcompositor + the ported font stack", (
     async () => {
       const compositorBytes = loadBytes(compositorBin!);
       const footBytes = loadBytes(footBin!);
-      const dashBytes = loadBytes(dashBin!);
 
       const root = mkdtempSync(join(tmpdir(), "kandelo-foot-"));
       const fontDir = join(root, "fonts");
       mkdirSync(fontDir);
       copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));
+      // foot's slave execvp's the shell, and exec bytes come only from the
+      // retained kernel target — never from a host resolver callback. On
+      // host-fs passthrough a bare PATH=/bin makes the guest read the
+      // developer machine's own /bin/dash, which is not a Wasm module and
+      // fails with ENOEXEC. Stage the real wasm32 dash under a private bin
+      // and point PATH at it.
+      const binDir = join(root, "bin");
+      mkdirSync(binDir);
+      const dashPath = join(binDir, "dash");
+      copyFileSync(dashBin!, dashPath);
+      chmodSync(dashPath, 0o755);
       const confPath = join(root, "fonts.conf");
       writeFileSync(
         confPath,
@@ -111,9 +121,6 @@ describe("foot — upstream terminal on wlcompositor + the ported font stack", (
       const host = new NodeKernelHost({
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
-        // foot's slave fork execvp's the shell; musl walks PATH.
-        onResolveExec: (path) =>
-          path === "dash" || path.endsWith("/dash") ? dashBytes : null,
       });
       const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
       const tap = (code: number) => {
@@ -137,7 +144,7 @@ describe("foot — upstream terminal on wlcompositor + the ported font stack", (
           ["foot", "--term=vt100", "--override=main.workers=0", "dash"],
           {
             env: [
-              "PATH=/usr/bin:/bin",
+              `PATH=${binDir}`,
               "HOME=/root",
               "XDG_RUNTIME_DIR=/tmp",
               // The Node smokes run on host-FS passthrough, where the
