@@ -10,7 +10,7 @@ use crate::build_deps::{
     SourceOnlyCacheRoots, canonical_package_target_arch,
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
     resolve_local_build_package_node_with_cache_policy,
-    resolved_dependency_graph_from_manifests,
+    resolved_dependency_graph_from_manifests, source_only_skip_receipt_if_clean,
     source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
 };
 use crate::local_build_executor::{
@@ -393,6 +393,61 @@ fn package_projection_is_eligible(
     })
 }
 
+/// Identify compiled package nodes whose content-addressed cache entry, receipt
+/// sidecar, and projected outputs are all present, so the scheduler can report
+/// them `Cached` without launching a child process. A node's cache key folds its
+/// transitive dependency keys, so any change to its inputs makes it (and its
+/// dependents) miss and fall back to a child build. Only compiled package nodes
+/// are considered here; product and source nodes always run their child.
+#[cfg(unix)]
+fn compute_skip_receipts(
+    registry: &Registry,
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    cache_roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+) -> BTreeMap<PlanNodeV1, PackageNodeReceiptV1> {
+    let mut memo = BTreeMap::new();
+    let mut skip = BTreeMap::new();
+    for node in selected.keys() {
+        let PlanNodeV1::Package { name, target_arch } = node else {
+            continue;
+        };
+        let arch = match target_arch.as_str() {
+            "wasm32" => TargetArch::Wasm32,
+            "wasm64" => TargetArch::Wasm64,
+            _ => continue,
+        };
+        let Ok(manifest) = registry.load(name) else {
+            continue;
+        };
+        if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
+            continue;
+        }
+        if let Some(receipt) = source_only_skip_receipt_if_clean(
+            &manifest,
+            registry,
+            arch,
+            wasm_posix_shared::ABI_VERSION,
+            cache_roots,
+            output_root,
+            &mut memo,
+        ) {
+            skip.insert(node.clone(), receipt);
+        }
+    }
+    skip
+}
+
+#[cfg(not(unix))]
+fn compute_skip_receipts(
+    _registry: &Registry,
+    _selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    _cache_roots: &SourceOnlyCacheRoots,
+    _output_root: &Path,
+) -> BTreeMap<PlanNodeV1, PackageNodeReceiptV1> {
+    BTreeMap::new()
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
@@ -453,6 +508,15 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let launcher_receipts = Arc::clone(&retained_receipts);
     let rebuild = args.rebuild;
     let verify_cache = args.verify_cache;
+    // Report unchanged compiled package nodes Cached without launching a child.
+    // `--rebuild` forces every node; `--verify-cache` re-verifies every entry, so
+    // both disable the skip.
+    let skip_receipts = if args.rebuild || args.verify_cache {
+        BTreeMap::new()
+    } else {
+        compute_skip_receipts(&registry, &selected, &cache_roots, &output_root)
+    };
+    let skip_receipts = Arc::new(skip_receipts);
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -464,7 +528,39 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             let output_root = output_root.clone();
             let authority_sha256 = graph.authority_sha256.clone();
             let retained_receipts = Arc::clone(&launcher_receipts);
+            let skip_receipts = Arc::clone(&skip_receipts);
             move |node, completions| {
+                if let Some(receipt) = skip_receipts.get(&node) {
+                    // Unchanged compiled node: record its persisted receipt and
+                    // report Cached without a child process. The projection
+                    // finalizer validates the receipt exactly as it would a
+                    // child-produced one.
+                    let completion = match retained_receipts.lock() {
+                        Ok(mut retained) => {
+                            if retained.insert(node.clone(), receipt.clone()).is_some() {
+                                eprintln!(
+                                    "[{}] scheduler failure: duplicate skipped package receipt",
+                                    node_label(&node),
+                                );
+                                NodeCompletionV1::failed(node.clone(), None)
+                            } else {
+                                NodeCompletionV1::succeeded(
+                                    node.clone(),
+                                    SuccessDispositionV1::Cached,
+                                )
+                            }
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "[{}] scheduler failure: retained package-receipt store was poisoned",
+                                node_label(&node),
+                            );
+                            NodeCompletionV1::failed(node.clone(), None)
+                        }
+                    };
+                    let _ = completions.send(completion);
+                    return Ok(());
+                }
                 let result_json = launcher_result_paths[&node].clone();
                 let receipt_required = launcher_receipt_requirements
                     .get(&node)
