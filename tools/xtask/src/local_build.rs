@@ -400,39 +400,85 @@ fn package_projection_is_eligible(
 /// dependents) miss and fall back to a child build. Only compiled package nodes
 /// are considered here; product and source nodes always run their child.
 #[cfg(unix)]
+fn parse_node_target_arch(target_arch: &str) -> Option<TargetArch> {
+    match target_arch {
+        "wasm32" => Some(TargetArch::Wasm32),
+        "wasm64" => Some(TargetArch::Wasm64),
+        _ => None,
+    }
+}
+
+/// The value stored per skippable node: `Some(receipt)` for a compiled package
+/// (which the projection finalizer needs a receipt for), `None` for a product
+/// (which only validates its mapped package and carries no receipt).
+#[cfg(unix)]
 fn compute_skip_receipts(
     registry: &Registry,
+    graph: &PlannedGraphV1,
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
-) -> BTreeMap<PlanNodeV1, PackageNodeReceiptV1> {
+) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     let mut memo = BTreeMap::new();
     let mut skip = BTreeMap::new();
     for node in selected.keys() {
-        let PlanNodeV1::Package { name, target_arch } = node else {
-            continue;
-        };
-        let arch = match target_arch.as_str() {
-            "wasm32" => TargetArch::Wasm32,
-            "wasm64" => TargetArch::Wasm64,
-            _ => continue,
-        };
-        let Ok(manifest) = registry.load(name) else {
-            continue;
-        };
-        if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
-            continue;
-        }
-        if let Some(receipt) = source_only_skip_receipt_if_clean(
-            &manifest,
-            registry,
-            arch,
-            wasm_posix_shared::ABI_VERSION,
-            cache_roots,
-            output_root,
-            &mut memo,
-        ) {
-            skip.insert(node.clone(), receipt);
+        match node {
+            PlanNodeV1::Package { name, target_arch } => {
+                let Some(arch) = parse_node_target_arch(target_arch) else {
+                    continue;
+                };
+                let Ok(manifest) = registry.load(name) else {
+                    continue;
+                };
+                if manifest.kind == ManifestKind::Source
+                    || !manifest.target_arches.contains(&arch)
+                {
+                    continue;
+                }
+                if let Some(receipt) = source_only_skip_receipt_if_clean(
+                    &manifest,
+                    registry,
+                    arch,
+                    wasm_posix_shared::ABI_VERSION,
+                    cache_roots,
+                    output_root,
+                    &mut memo,
+                ) {
+                    skip.insert(node.clone(), Some(receipt));
+                }
+            }
+            PlanNodeV1::Product { id } => {
+                // A product's child only resolves and validates its mapped
+                // package (it builds no image), so an unchanged mapped package
+                // makes the product a no-op. Products carry no receipt.
+                let Some(retained) = graph.product_execution.get(id) else {
+                    continue;
+                };
+                let Some(arch) = parse_node_target_arch(&retained.binding.target_arch) else {
+                    continue;
+                };
+                let Ok(manifest) = registry.load(&retained.binding.mapped_package) else {
+                    continue;
+                };
+                if manifest.kind != ManifestKind::Program
+                    || !manifest.target_arches.contains(&arch)
+                {
+                    continue;
+                }
+                if source_only_skip_receipt_if_clean(
+                    &manifest,
+                    registry,
+                    arch,
+                    wasm_posix_shared::ABI_VERSION,
+                    cache_roots,
+                    output_root,
+                    &mut memo,
+                )
+                .is_some()
+                {
+                    skip.insert(node.clone(), None);
+                }
+            }
         }
     }
     skip
@@ -441,10 +487,11 @@ fn compute_skip_receipts(
 #[cfg(not(unix))]
 fn compute_skip_receipts(
     _registry: &Registry,
+    _graph: &PlannedGraphV1,
     _selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     _cache_roots: &SourceOnlyCacheRoots,
     _output_root: &Path,
-) -> BTreeMap<PlanNodeV1, PackageNodeReceiptV1> {
+) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     BTreeMap::new()
 }
 
@@ -514,7 +561,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let skip_receipts = if args.rebuild || args.verify_cache {
         BTreeMap::new()
     } else {
-        compute_skip_receipts(&registry, &selected, &cache_roots, &output_root)
+        compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
     };
     let skip_receipts = Arc::new(skip_receipts);
     let results = execute_graph_with_events(
@@ -530,32 +577,37 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             let retained_receipts = Arc::clone(&launcher_receipts);
             let skip_receipts = Arc::clone(&skip_receipts);
             move |node, completions| {
-                if let Some(receipt) = skip_receipts.get(&node) {
-                    // Unchanged compiled node: record its persisted receipt and
-                    // report Cached without a child process. The projection
-                    // finalizer validates the receipt exactly as it would a
-                    // child-produced one.
-                    let completion = match retained_receipts.lock() {
-                        Ok(mut retained) => {
-                            if retained.insert(node.clone(), receipt.clone()).is_some() {
+                if let Some(entry) = skip_receipts.get(&node) {
+                    // Unchanged node: report Cached without a child process. A
+                    // compiled package records its persisted receipt (the
+                    // projection finalizer validates it exactly as it would a
+                    // child-produced one); a product carries no receipt.
+                    let completion = match entry {
+                        Some(receipt) => match retained_receipts.lock() {
+                            Ok(mut retained) => {
+                                if retained.insert(node.clone(), receipt.clone()).is_some() {
+                                    eprintln!(
+                                        "[{}] scheduler failure: duplicate skipped package receipt",
+                                        node_label(&node),
+                                    );
+                                    NodeCompletionV1::failed(node.clone(), None)
+                                } else {
+                                    NodeCompletionV1::succeeded(
+                                        node.clone(),
+                                        SuccessDispositionV1::Cached,
+                                    )
+                                }
+                            }
+                            Err(_) => {
                                 eprintln!(
-                                    "[{}] scheduler failure: duplicate skipped package receipt",
+                                    "[{}] scheduler failure: retained package-receipt store was poisoned",
                                     node_label(&node),
                                 );
                                 NodeCompletionV1::failed(node.clone(), None)
-                            } else {
-                                NodeCompletionV1::succeeded(
-                                    node.clone(),
-                                    SuccessDispositionV1::Cached,
-                                )
                             }
-                        }
-                        Err(_) => {
-                            eprintln!(
-                                "[{}] scheduler failure: retained package-receipt store was poisoned",
-                                node_label(&node),
-                            );
-                            NodeCompletionV1::failed(node.clone(), None)
+                        },
+                        None => {
+                            NodeCompletionV1::succeeded(node.clone(), SuccessDispositionV1::Cached)
                         }
                     };
                     let _ = completions.send(completion);
@@ -1063,21 +1115,30 @@ fn finalize_source_only_program_projection(
             )?;
         }
 
-        let refreshed = refreshed_source_only_program_projection(
-            repo,
-            set,
-            registry,
-            product_filters,
-            selected,
-            graph_authority_sha256,
-            receipts,
-        )?;
-        if refreshed != candidate {
-            return Err(
-                "source-only program authority changed at the publication boundary".to_string(),
-            );
+        if verify_cache {
+            // Recompute the projection under the lock and confirm nothing moved
+            // between the candidate and the publication boundary.
+            let refreshed = refreshed_source_only_program_projection(
+                repo,
+                set,
+                registry,
+                product_filters,
+                selected,
+                graph_authority_sha256,
+                receipts,
+            )?;
+            if refreshed != candidate {
+                return Err(
+                    "source-only program authority changed at the publication boundary".to_string(),
+                );
+            }
+            authority.replace_projection_authority(&refreshed)
+        } else {
+            // Trusted path: the candidate was derived from the same receipts and
+            // graph authority this publication commits, so skip the second
+            // whole-graph re-derivation (`--verify-cache` restores it).
+            authority.replace_projection_authority(&candidate)
         }
-        authority.replace_projection_authority(&refreshed)
     })
 }
 
