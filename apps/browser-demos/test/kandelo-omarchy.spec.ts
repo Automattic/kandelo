@@ -14,7 +14,7 @@ async function gotoOrSkip(page: Page, path: string) {
 }
 
 async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kdock-item", { hasText: label });
+  const btn = page.locator("button.kmachine-switch-btn", { hasText: label });
   await btn.waitFor({ state: "visible", timeout: 30_000 });
   await btn.click();
 }
@@ -50,22 +50,6 @@ async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
   await openSurface(page, "Internals");
 }
 
-// How many times the launcher has come up so far. The syslog is cumulative,
-// so a later session is only visible as one more marker than before — and a
-// key typed before the launcher holds the keyboard goes to the focused
-// window, exactly as it would on the real desktop.
-async function launcherSessions(page: Page): Promise<number> {
-  return (await syslogStream(page)).split(/KLAUNCHER_READY n=\d+/).length - 1;
-}
-
-// How many windows of one app the compositor has focused so far. The syslog is
-// cumulative, so a second terminal shows up as one more marker. Counting the
-// app's own name is what distinguishes a window the demo opened from Waybar's
-// second, empty-app_id toplevel, which takes a tile slot of its own.
-async function focusedWindows(page: Page, appId: string): Promise<number> {
-  return (await syslogStream(page)).split(`KBD_FOCUS app_id=${appId}`).length - 1;
-}
-
 // Press bare keys with the Demo surface focused, then return to Internals.
 async function pressKeys(page: Page, keys: string[]) {
   await openSurface(page, "Demo");
@@ -75,7 +59,7 @@ async function pressKeys(page: Page, keys: string[]) {
 }
 
 const SETUP_FAILURE =
-  /omarchy failed|wlcompositor failed|waybar failed|wlclock failed|wlterm failed|dbus-daemon failed|mako failed/;
+  /omarchy failed|wlcompositor failed|kbar failed|wlclock failed|wlterm failed/;
 
 /**
  * The O1 gate of docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md:
@@ -92,7 +76,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await openSurface(page, "Internals");
   await expect
     .poll(() => syslogText(page), { timeout: 180_000 })
-    .toMatch(/omarchy desktop ready/);
+    .toMatch(/running wlterm/);
   expect(await syslogText(page), "omarchy setup reported failure")
     .not.toMatch(SETUP_FAILURE);
 
@@ -106,63 +90,35 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(await syslogStream(page), "the configured theme was not loaded")
     .toMatch(/THEME tokyo-night/);
   expect(await syslogStream(page), "the theme's image wallpaper was not rendered")
-    .toMatch(/WALLPAPER image w=2580 h=1080/);
+    .toMatch(/WALLPAPER image w=960 h=540/);
 
-  // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
-  // anchored across the top, and its hyprland modules attached to the
-  // compositor's Hyprland IPC event socket (HYPR_LISTENER).
+  // Gate 2: the bar is a real layer-shell surface — anchored across the top at
+  // the size it asked for, and reading the compositor's live theme.
   await expect
     .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=\d+/);
+    .toMatch(/LAYER ns=bar layer=2 x=0 y=0 w=\d+ h=30/);
   await expect
     .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/HYPR_LISTENER slot=\d+/);
-
-  // The desktop boots bare. Assert that before touching the keyboard: the bar
-  // has already mapped, which takes longer than a client would, so a client
-  // window here is one nobody asked for. Without this the assertions below
-  // would pass just as well against a desktop that opens its own.
-  expect(await focusedWindows(page, "wlclock"), "the desktop opened a clock on its own").toBe(0);
-  expect(await focusedWindows(page, "wlterm"), "the desktop opened a terminal on its own").toBe(0);
-
-  // Open the three clients the way a user does, through the binds the
-  // compositor loaded from its own config: CTRL+K for the clock, CTRL+Return
-  // for each terminal. Each one is awaited before the next, so a missed key
-  // shows up here rather than as a wrong count three gates later.
-  await pressCtrl(page, "KeyK");
+    .toMatch(/KBAR_READY w=\d+ h=30/);
   await expect
-    .poll(() => focusedWindows(page, "wlclock"), { timeout: 60_000 })
-    .toBe(1);
-  await pressCtrl(page, "Enter");
-  await expect
-    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
-    .toBe(1);
-  await pressCtrl(page, "Enter");
-  await expect
-    .poll(() => focusedWindows(page, "wlterm"), { timeout: 60_000 })
-    .toBe(2);
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/KBAR_THEME name=tokyo-night/);
 
-  // Gate 3: the windows tile UNDER the bar. Read the log from the bar's LAYER
-  // line onward — only the tiles emitted once the bar reserved its strip are
-  // the desktop's answer.
-  const stream = await syslogStream(page);
-  const barLayer = stream.match(/LAYER ns=waybar layer=2 x=0 y=0 w=\d+ h=(\d+)/);
-  const barHeight = Number(barLayer![1]);
-  expect(barHeight, "waybar reserved no strip").toBeGreaterThan(0);
-  const afterBar = stream.split(/LAYER ns=waybar /).pop() ?? "";
+  // Gate 3: the windows tile UNDER the bar. Only the tiles emitted after the
+  // bar mapped are the desktop's answer — a client that maps first is laid out
+  // over the whole output and re-configured once the bar reserves its strip,
+  // so read the log from KBAR_READY onward.
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/TILE n=2 i=1 /);
+  const afterBar = (await syslogStream(page)).split(/KBAR_READY /).pop() ?? "";
   const tiles = [...afterBar.matchAll(
     /TILE n=\d+ i=\d+ x=(-?\d+) y=(-?\d+) w=(\d+) h=(\d+)/g)];
   expect(tiles.length, "no tiles emitted after the bar mapped")
     .toBeGreaterThan(0);
   for (const t of tiles)
     expect(Number(t[2]), `a window tiled over the bar: ${t[0]}`)
-      .toBeGreaterThanOrEqual(barHeight);
-  // The three windows opened above are the only tiles. A surface with no
-  // xdg_toplevel role — a client's cursor surface — taking one shifts every
-  // count below by one, and the launcher gates then pass on the previous
-  // client's tile instead of the one they name.
-  expect(afterBar, "a surface with no window role took a tile")
-    .not.toMatch(/TILE n=4 /);
+      .toBeGreaterThanOrEqual(30);
 
   // Gate 4: the desktop composited to the canvas. The Modeset pane uses
   // transferControlToOffscreen, so PNG byteLength stands in for pixel readback
@@ -177,18 +133,6 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     )
     .toBeGreaterThan(12_000);
 
-  // Gate 4b: the desktop keeps compositing on the GPU. Waybar's cursor theme
-  // arrives as a buffer packed at a non-zero offset in its pool, which has no
-  // GL texture; treating that as a GL failure used to tear the compositor's
-  // EGL session down seconds after boot and leave the canvas on its last GL
-  // frame — a desktop that looks alive but never repaints again. The pane's
-  // badge reads the presenter out of the KMS stats: "webgl2-gl" is the
-  // compositor's own context, "webgl2" the pump's CPU-composite fallback.
-  await expect(page.locator("text=/flips ·/").first())
-    .toContainText(/webgl2-gl/i, { timeout: 30_000 });
-  expect(await syslogStream(page), "GPU compositing was torn down")
-    .not.toMatch(/GPU compositing failed/);
-
   // Gate 5: CTRL+Space opens the launcher. It is an overlay layer surface that
   // takes the keyboard away from the focused terminal, so the "t" that follows
   // filters its list instead of being typed into the shell.
@@ -198,9 +142,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/LAYER ns=launcher layer=3 /);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_READY n=8/);
+    .toMatch(/KLAUNCHER_READY n=7/);
 
-  // "te" narrows the eight entries (Bash, Clock, Foot, Nano, NetHack, Paint,
+  // "te" narrows the seven entries (Bash, Clock, Nano, NetHack, Paint,
   // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
@@ -234,11 +178,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // its entry runs unmodified vim inside a wlterm, fetched lazily from
   // vim.zip on first exec — the fifth tile only appears if the whole chain
   // (launcher → kwlctl exec → wlterm → lazy fetch → vim) held.
-  const beforeVim = await launcherSessions(page);
   await pressCtrl(page, "Space");
-  await expect
-    .poll(() => launcherSessions(page), { timeout: 60_000 })
-    .toBeGreaterThan(beforeVim);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
@@ -249,53 +189,24 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
 
-  // Gate 5c: an unmodified upstream client through the same path. "fo"
-  // narrows to Foot; its entry runs stock foot 1.17.2 — wl_display_connect
-  // via XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the staged
-  // fonts.conf, fcft rasterizing the staged Inconsolata — and the sixth tile
-  // only appears once foot maps its first frame through all of it.
-  const beforeFoot = await launcherSessions(page);
-  await pressCtrl(page, "Space");
-  await expect
-    .poll(() => launcherSessions(page), { timeout: 60_000 })
-    .toBeGreaterThan(beforeFoot);
-  await pressKeys(page, ["KeyF", "KeyO", "Enter"]);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/TILE n=6 i=5 /);
-  expect(await syslogText(page), "foot binary does not match the kernel ABI")
-    .not.toMatch(/ABI version mismatch/);
-
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the
-  // bar's: the switch runs the `notify =` hook, which reads the new
-  // theme.conf, writes the bar's stylesheet from it, and sends Waybar
-  // SIGUSR2. The bar answers that from a detached thread blocked on a signal
-  // pipe, so "Reloading..." is also the proof that a signal reaches a
-  // multi-threaded process.
+  // bar's own colours, which it reloads off the broadcast.
   await pressCtrl(page, "Space", true);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/THEME_HOOK theme=(catppuccin|everforest|gruvbox|nord|rose-pine) bar=#[0-9a-f]{6} bar_pid=\d+/);
+    .toMatch(/KBAR_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/);
+  // The switch also spawns the configured notifier: a knotify toast maps on
+  // the overlay layer, lives its moment, and exits.
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/Reloading\.\.\./);
-  // The switch also spawns the configured notifier: notify-send routes a
-  // real org.freedesktop.Notifications.Notify over the dbus-daemon session
-  // bus, mako answers with the assigned id and maps the toast as a
-  // layer-shell surface.
+    .toMatch(/KNOTIFY_READY title=Theme/);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/NOTIFY_ID id=\d+/);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/LAYER ns=notifications /);
+    .toMatch(/KNOTIFY_EXIT/);
 
   // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher binary
   // at its root level. Down+Enter descends into the theme list, and Enter on
@@ -313,17 +224,13 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/KLAUNCHER_THEME name=[a-z-]+/);
 
-  // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
-  // bar's hyprland/workspaces module reads the switch off the Hyprland IPC
-  // event socket — which is what moves its active pill. Waybar logs every
-  // event it receives (it runs at -l debug), so the bar's own line is the
-  // proof the feed arrived; the compositor's WORKSPACE marker only proves it
-  // was sent.
+  // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace and the bar
+  // moves its active pill — the kwlctl event feed reaching a shell client.
   await pressCtrl(page, "2");
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/WORKSPACE active=2/);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/hyprland IPC received workspacev2>>2,2/);
+    .toMatch(/KBAR_WORKSPACE n=2/);
 });

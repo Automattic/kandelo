@@ -97,6 +97,7 @@ struct kwl_layer_opts {
     int w, h;               /* 0 on an axis the surface stretches along */
     int exclusive_zone;     /* px of the anchored edge windows must not cover */
     int keyboard;           /* 1 = take the keyboard for as long as it lives */
+    int margin_top, margin_right, margin_bottom, margin_left;
 };
 
 /* Map a shell component — a bar, a launcher, a wallpaper — instead of a

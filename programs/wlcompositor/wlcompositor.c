@@ -148,6 +148,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define MOD_SHIFT 2
 #define MOD_CTRL  4   /* the browser reserves SUPER (Cmd/Win), so CTRL is the
                          usable modifier for the in-browser demo */
+#define MOD_ALT   8
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
@@ -325,10 +326,12 @@ static struct {
     char name[32];
     uint32_t border_active;
     uint32_t wallpaper_top, wallpaper_bottom;
+    char wallpaper_path[256];    /* KWLP raw image; "" = gradient */
     int gaps_in, gaps_out;
     char installed[MAX_THEMES][32];
     int n_installed;
     int current;                 /* index into installed, -1 when unthemed */
+    char notify[256];            /* `notify =` config: spawned on a switch */
 } th = {
     .name = "default",
     .border_active = FOCUS_COLOR,
@@ -2453,6 +2456,8 @@ static uint32_t active_mod_mask(void) {
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
     if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_ALT,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_ALT;
     return m;
 }
 
@@ -2569,6 +2574,7 @@ static int theme_load(const char *name) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
 
+    th.wallpaper_path[0] = '\0';   /* a gradient theme sheds the old image */
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *s = trim(line);
@@ -2584,6 +2590,14 @@ static int theme_load(const char *name) {
             th.wallpaper_top = parse_color(val, th.wallpaper_top);
         else if (!strcmp(key, "wallpaper_bottom"))
             th.wallpaper_bottom = parse_color(val, th.wallpaper_bottom);
+        else if (!strcmp(key, "wallpaper")) {
+            if (val[0] == '/')
+                snprintf(th.wallpaper_path, sizeof(th.wallpaper_path), "%s",
+                         val);
+            else
+                snprintf(th.wallpaper_path, sizeof(th.wallpaper_path),
+                         "%s/%s/%s", root ? root : THEME_DIR, name, val);
+        }
         else if (!strcmp(key, "gaps_in"))  th.gaps_in = atoi(val);
         else if (!strcmp(key, "gaps_out")) th.gaps_out = atoi(val);
     }
@@ -2633,6 +2647,13 @@ static void theme_apply(void) {
     printf("THEME %s\n", th.name);
     fflush(stdout);
     kwlctl_emit("theme>>%s", th.name);
+    /* The `notify =` hook is how Omarchy surfaces a switch (its scripts call
+     * notify-send); ours spawns the configured notifier with the new name. */
+    if (th.notify[0]) {
+        char cmd[sizeof(th.notify) + 48];
+        snprintf(cmd, sizeof(cmd), "%s Theme %s", th.notify, th.name);
+        kwlctl_exec(cmd);
+    }
 }
 
 /* `theme <name>`, or `next`/`prev` to cycle the installed set. */
@@ -2658,6 +2679,8 @@ static int parse_mods(char *s, uint32_t *out) {
         else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
         else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
             m |= MOD_CTRL;
+        else if (!strcasecmp(tok, "ALT") || !strcasecmp(tok, "MOD1"))
+            m |= MOD_ALT;
         else return -1;
     }
     *out = m;
@@ -2711,6 +2734,8 @@ static void load_config(void) {
             if (!eq) continue;
             if (strncmp(s, "bind", 4) == 0) parse_bind_line(trim(eq + 1));
             else if (strncmp(s, "theme", 5) == 0) theme_load(trim(eq + 1));
+            else if (strncmp(s, "notify", 6) == 0)
+                snprintf(th.notify, sizeof(th.notify), "%s", trim(eq + 1));
         }
         fclose(f);
         src = path;
@@ -2974,6 +2999,8 @@ static int setup_keymap(void) {
         "    <AB05> = 56;  <AB06> = 57;  <AB07> = 58;  <AB08> = 59;\n"
         "    <AB09> = 60;  <AB10> = 61;  <RTSH> = 62;  <SPCE> = 65;\n"
         "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
+        "    <LALT> = 64;\n"    /* evdev KEY_LEFTALT (56) + 8 */
+        "    <UP> = 111;  <LEFT> = 113;  <RGHT> = 114;  <DOWN> = 116;\n"
         "  };\n"
         "  xkb_types \"kandelo\" {\n"
         "    virtual_modifiers NumLock;\n"
@@ -3001,6 +3028,9 @@ static int setup_keymap(void) {
         "    interpret Super_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Mod4);\n"
         "    };\n"
+        "    interpret Alt_L+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod1);\n"
+        "    };\n"
         "  };\n"
         "  xkb_symbols \"kandelo\" {\n"
         "    key <ESC>  { [ Escape ] };\n"
@@ -3012,6 +3042,11 @@ static int setup_keymap(void) {
         "    key <LFSH> { [ Shift_L ] };\n"
         "    key <RTSH> { [ Shift_R ] };\n"
         "    key <LWIN> { [ Super_L ] };\n"
+        "    key <LALT> { [ Alt_L ] };\n"
+        "    key <UP>   { [ Up ] };\n"
+        "    key <DOWN> { [ Down ] };\n"
+        "    key <LEFT> { [ Left ] };\n"
+        "    key <RGHT> { [ Right ] };\n"
         "    key <AE01> { type=\"TWO_LEVEL\", [ 1, exclam ] };\n"
         "    key <AE02> { type=\"TWO_LEVEL\", [ 2, at ] };\n"
         "    key <AE03> { type=\"TWO_LEVEL\", [ 3, numbersign ] };\n"
@@ -3062,6 +3097,7 @@ static int setup_keymap(void) {
         "    modifier_map Shift { <LFSH>, <RTSH> };\n"
         "    modifier_map Control { <LCTL> };\n"
         "    modifier_map Mod4 { <LWIN> };\n"
+        "    modifier_map Mod1 { <LALT> };\n"
         "  };\n"
         "};\n";
 
@@ -3127,10 +3163,67 @@ static int setup_drm(void) {
     return 0;
 }
 
-/* Paint the desktop background into g.wallpaper: a vertical gradient between
- * the theme's two wallpaper colors, a faint grid, and the wordmark. Re-run on
- * every theme switch, so it must not allocate. */
+/* A theme's image wallpaper: KWLP raw pixels ("KWLP", u32le width, u32le
+ * height, then width*height u32le XRGB pixels), bilinear-scaled to the
+ * output. Raw pixels because nothing in the compositor decodes PNG/JPEG:
+ * whoever stages the theme (the demo page, a test) renders the image and
+ * writes the pixels. */
+static int render_wallpaper_image(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t hdr[12];
+    uint32_t sw = 0, sh = 0;
+    if (fread(hdr, 1, 12, f) != 12 || memcmp(hdr, "KWLP", 4) != 0) goto fail;
+    sw = hdr[4] | hdr[5] << 8 | hdr[6] << 16 | (uint32_t)hdr[7] << 24;
+    sh = hdr[8] | hdr[9] << 8 | hdr[10] << 16 | (uint32_t)hdr[11] << 24;
+    if (sw < 1 || sh < 1 || sw > 8192 || sh > 8192) goto fail;
+    uint32_t *src = malloc((size_t)sw * sh * 4);
+    if (!src) goto fail;
+    if (fread(src, 4, (size_t)sw * sh, f) != (size_t)sw * sh) {
+        free(src);
+        goto fail;
+    }
+    fclose(f);
+
+    for (uint32_t y = 0; y < g.height; y++) {
+        uint32_t fy = g.height > 1 ? (y * 256u * (sh - 1)) / (g.height - 1) : 0;
+        uint32_t y0 = fy >> 8, wy = fy & 0xff;
+        uint32_t y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        uint32_t *row = g.wallpaper + (size_t)y * g.width;
+        for (uint32_t x = 0; x < g.width; x++) {
+            uint32_t fx = g.width > 1 ? (x * 256u * (sw - 1)) / (g.width - 1) : 0;
+            uint32_t x0 = fx >> 8, wx = fx & 0xff;
+            uint32_t x1 = x0 + 1 < sw ? x0 + 1 : x0;
+            uint32_t p00 = src[(size_t)y0 * sw + x0], p01 = src[(size_t)y0 * sw + x1];
+            uint32_t p10 = src[(size_t)y1 * sw + x0], p11 = src[(size_t)y1 * sw + x1];
+            uint32_t px = 0xff000000u;
+            for (int shift = 0; shift <= 16; shift += 8) {
+                uint32_t t0 = ((p00 >> shift & 0xff) * (256 - wx) +
+                               (p01 >> shift & 0xff) * wx) >> 8;
+                uint32_t t1 = ((p10 >> shift & 0xff) * (256 - wx) +
+                               (p11 >> shift & 0xff) * wx) >> 8;
+                px |= ((t0 * (256 - wy) + t1 * wy) >> 8) << shift;
+            }
+            row[x] = px;
+        }
+    }
+    free(src);
+    printf("WALLPAPER image w=%u h=%u\n", sw, sh);
+    fflush(stdout);
+    return 0;
+
+fail:
+    fclose(f);
+    return -1;
+}
+
+/* Paint the desktop background into g.wallpaper: the theme's image when it
+ * has one, else a vertical gradient between the theme's two wallpaper colors,
+ * a faint grid, and the wordmark. Re-run on every theme switch. */
 static void render_wallpaper(void) {
+    if (th.wallpaper_path[0] &&
+        render_wallpaper_image(th.wallpaper_path) == 0)
+        return;
     const uint32_t top = th.wallpaper_top, bot = th.wallpaper_bottom;
     for (uint32_t y = 0; y < g.height; y++) {
         uint32_t t = g.height > 1 ? (y * 256u) / (g.height - 1) : 0;
@@ -3170,6 +3263,8 @@ static void render_wallpaper(void) {
                  WPK_RGB(0x2e, 0x37, 0x4c));
         wpk_font_destroy(small);
     }
+    printf("WALLPAPER gradient\n");
+    fflush(stdout);
 }
 
 /* Allocate the background once the mode is known, then paint it. */

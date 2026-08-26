@@ -89,22 +89,10 @@ import { PRESET_LIBRARY } from "../presets";
 import {
   OMARCHY_APPS,
   OMARCHY_APPS_DIR,
-  OMARCHY_BUS_SOCKET,
   OMARCHY_CONF_PATH,
-  OMARCHY_DBUS_SESSION_CONF,
-  OMARCHY_FONTS_CONF,
-  OMARCHY_MAKO_CONFIG,
-  OMARCHY_MAKO_CONFIG_PATH,
   OMARCHY_THEME_DIR,
-  OMARCHY_THEME_HOOK,
   OMARCHY_THEMES,
-  OMARCHY_WAYBAR_CONFIG,
-  OMARCHY_WAYBAR_CONFIG_PATH,
-  OMARCHY_WAYBAR_STYLE,
-  OMARCHY_WAYBAR_STYLE_PATH,
-  OMARCHY_WAYBAR_STYLE_SEED_PATH,
   OMARCHY_WLCOMPOSITOR_CONF,
-  renderImageWallpaperKwlp,
   renderWallpaperKwlp,
 } from "./omarchy-desktop";
 import {
@@ -149,7 +137,6 @@ import {
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
-import inconsolataFontUrl from "../../../../../examples/libs/wpkdraw/third_party/Inconsolata-Regular.ttf";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
 
@@ -209,70 +196,46 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/modeset.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcompositor.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcompositor.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/wlcompositor.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlterm.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/wlcompositor.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlterm.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/wlterm.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlclock.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/wlterm.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlclock.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/wlclock.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlpaint.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/wlclock.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/wlpaint.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/kbar.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/wlpaint.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/kbar.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/waybar.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/klauncher.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/waybar.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/klauncher.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/klauncher.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/knotify.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/klauncher.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/dbus/dbus-daemon.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/dbus/dbus-daemon.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/mako/mako.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/mako/mako.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wldesktop/notify-send.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/wldesktop/notify-send.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/foot.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/foot.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/knotify.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -513,10 +476,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   modeset: {
     image: "shell",
     features: ["kms"],
-    // The demo exists to show the fluid sim on card0, so it starts the
-    // client itself. The shared shell image cannot declare this through
-    // demo.json — sdl2, wayland, hyprland and omarchy ride the same image.
-    autoCommand: "/usr/local/bin/modeset",
   },
   sdl2: {
     image: "shell",
@@ -616,7 +575,7 @@ interface LiveProfile {
    */
   hyprlandDemo: boolean;
   /**
-   * Like hyprlandDemo, plus the desktop shell Omarchy is made of: Waybar on a
+   * Like hyprlandDemo, plus the desktop shell Omarchy is made of: `kbar` on a
    * wlr-layer-shell surface reserving the top strip, `klauncher` on
    * SUPER/CTRL+Space, and the theme directory the compositor and both clients
    * read. This is the O1 milestone of
@@ -669,7 +628,6 @@ request_slowlog_trace_depth = 0
 const SHELL_ENV: string[] = [
   `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",
-  "XDG_RUNTIME_DIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
@@ -1456,23 +1414,7 @@ async function bootProfile(
       await stageSdl2Runtime(buildFs);
       assertCurrent();
     }
-    if (profile.id === "modeset") {
-      tick("staging modeset...");
-      await stageModesetRuntime(buildFs);
-      assertCurrent();
-    }
     ensureDemoHomes(buildFs);
-    if (profile.waylandDemo || profile.hyprlandDemo || profile.omarchyDemo) {
-      tick(
-        profile.omarchyDemo
-          ? "staging omarchy binaries..."
-          : profile.hyprlandDemo
-            ? "staging hyprland binaries..."
-            : "staging wayland binaries...",
-      );
-      await stageWaylandDesktopRuntime(buildFs, profile);
-      assertCurrent();
-    }
   }
   assertImageTerminalProgram(buildFs, terminalSession.initial);
   if (terminalSession.afterExit !== undefined) {
@@ -1748,19 +1690,67 @@ async function bootProfile(
         }
       })();
     } else if (profile.waylandDemo) {
-      // The Wayland desktop's binaries are image bytes (staged by
-      // stageWaylandDesktopRuntime at compose time — the kernel worker owns
-      // the VFS after boot). This block wires the input source so
-      // keystrokes reach the compositor's libinput (event0), sizes the
-      // display, spawns the compositor as the KMS master (it opens
-      // /dev/dri/card0 and drives PAGE_FLIP — the Modeset pane picks it
-      // up), the two desktop clients (wlclock, wlpaint) as floating
-      // windows, and finally the wlterm client. dash is staged by
+      // The Wayland desktop needs: all four binaries staged into the VFS,
+      // the input source attached so keystrokes reach the compositor's
+      // libinput (event0) and route through to the focused window, the
+      // compositor spawned as the KMS master (it opens /dev/dri/card0 and
+      // drives PAGE_FLIP — the Modeset pane picks it up), the two desktop
+      // clients (wlclock, wlpaint) spawned as floating windows, and
+      // finally the wlterm client run from bash. dash is already staged by
       // stageShellUtilities, so wlterm's forkpty'd execvp("dash") resolves
       // via PATH. The demo runs until the terminal's shell exits.
       const kernelForWayland = kernel;
       void (async () => {
         try {
+          const compositorUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
+            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
+          ], "wlcompositor.wasm");
+          const wltermUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlterm.wasm",
+            "../../../../../binaries/programs/wasm32/wlterm.wasm",
+          ], "wlterm.wasm");
+          const wlclockUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlclock.wasm",
+            "../../../../../binaries/programs/wasm32/wlclock.wasm",
+          ], "wlclock.wasm");
+          const wlpaintUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlpaint.wasm",
+            "../../../../../binaries/programs/wasm32/wlpaint.wasm",
+          ], "wlpaint.wasm");
+          tick("staging wayland binaries...");
+          const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
+            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wltermUrl).then(failOn("wlterm.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlclockUrl).then(failOn("wlclock.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlpaintUrl).then(failOn("wlpaint.wasm")).then((r) => r.arrayBuffer()),
+          ]);
+          ensureDirRecursive(kernelForWayland.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlcompositor",
+            new Uint8Array(compBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlterm",
+            new Uint8Array(termBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlclock",
+            new Uint8Array(clockBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlpaint",
+            new Uint8Array(paintBytes),
+            0o755,
+          );
+
           // Keyboard on event0 → compositor libinput → wl_keyboard →
           // wlterm → dash. The POINTER is owned by the Modeset pane
           // (sendPointerAbs → event1), so disable this source's pointer
@@ -1787,10 +1777,25 @@ async function bootProfile(
           // embedder) the mode stays the 1920×1080 default and the
           // presenter letterboxes.
           tick("sizing display mode...");
-          const outputScale = outputScaleFor(window.devicePixelRatio || 1);
-          if (!host.getKmsDisplaySize(1)) {
-            const pane = await settledPaneDeviceSize();
-            if (pane) kernelForWayland.kmsSetDisplaySize(1, pane.width, pane.height);
+          const sizeDeadline = performance.now() + 1500;
+          let displaySize = host.getKmsDisplaySize(1);
+          while (!displaySize && performance.now() < sizeDeadline) {
+            const paneCanvas = document.querySelector<HTMLCanvasElement>(
+              ".kmachine-primary-slot:not(.is-hidden) canvas",
+            );
+            const rect = paneCanvas?.getBoundingClientRect();
+            if (rect && rect.width >= 1 && rect.height >= 1) {
+              const dpr = window.devicePixelRatio || 1;
+              displaySize = { width: rect.width * dpr, height: rect.height * dpr };
+              kernelForWayland.kmsSetDisplaySize(
+                1,
+                displaySize.width,
+                displaySize.height,
+              );
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            displaySize = host.getKmsDisplaySize(1);
           }
 
           // Spawn the compositor in the background. All clients retry
@@ -1798,37 +1803,37 @@ async function bootProfile(
           // compositor not yet having bound the socket — no explicit
           // barrier needed.
           tick("running wlcompositor...");
-          const spawnBg = (name: string, extraEnv: string[] = []) =>
-            void kernelForWayland.spawnFromVfs(`/usr/local/bin/${name}`, [name], {
-              env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
+          const spawnBg = (bytes: ArrayBuffer, name: string) =>
+            void kernelForWayland.spawn(bytes, [name], {
+              env: SHELL_ENV,
               cwd: DEMO_HOME,
               uid: DEMO_UID,
               gid: DEMO_GID,
-            }).then(({ exit }) => exit).then(
+            }).then(
               () => tick(`${name} exited`),
               (err: unknown) =>
                 tick(`${name} failed: ${err instanceof Error ? err.message : String(err)}`),
             );
-          spawnBg("wlcompositor", [`WLC_SCALE=${outputScale}`]);
+          spawnBg(compBytes, "wlcompositor");
           tick("running wlclock + wlpaint...");
-          spawnBg("wlclock");
-          spawnBg("wlpaint");
+          spawnBg(clockBytes, "wlclock");
+          spawnBg(paintBytes, "wlpaint");
 
           tick("running wlterm...");
           // Keep-alive foreground client. Launch it through the non-forking
-          // spawn path (like the clock + paint clients) instead of
+          // `spawn` path (like the clock + paint clients) instead of
           // runShellCommand, which makes the pts/0 shell fork()+exec the client.
           // That shell-fork intermittently fails to start the client under CI's
           // Linux headless-chromium worker scheduling, so it never connects
-          // (CLIENT_CONNECTED count=3 never fires). The exit promise resolves on
-          // process EXIT, so awaiting it keeps the demo alive exactly as the
-          // foreground shell command did.
-          await kernelForWayland.spawnFromVfs("/usr/local/bin/wlterm", ["wlterm"], {
+          // (CLIENT_CONNECTED count=3 never fires). `spawn` resolves on process
+          // EXIT (it is used as an exitPromise in kernel-host.ts), so awaiting
+          // it keeps the demo alive exactly as the foreground shell command did.
+          await kernelForWayland.spawn(termBytes, ["wlterm"], {
             env: SHELL_ENV,
             cwd: DEMO_HOME,
             uid: DEMO_UID,
             gid: DEMO_GID,
-          }).then(({ exit }) => exit).then(
+          }).then(
             () => tick("wlterm exited"),
             (err: unknown) =>
               tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
@@ -1844,18 +1849,126 @@ async function bootProfile(
       // libkwl/vt100 clients honor by rebuilding at the tile size (KWL_RESIZE).
       // That client-side resize is the crux — floating clients never resize.
       //
-      // The omarchy demo is the same desktop with its shell on top: Waybar on
-      // a layer-shell surface, klauncher on SUPER+Space, and the theme set.
-      // Only the extra staging and the extra binaries differ, so it shares this
+      // The omarchy demo is the same desktop with its shell on top: kbar on a
+      // layer-shell surface, klauncher on SUPER+Space, and the theme set. Only
+      // the extra staging and the two extra binaries differ, so it shares this
       // path rather than duplicating the KMS sizing and spawn ordering.
       const omarchy = profile.omarchyDemo;
       const kernelForHyprland = kernel;
+      let omarchyBarBytes: ArrayBuffer | null = null;
       void (async () => {
         try {
-          // The desktop's binaries, configs, themes, and fonts are image
-          // bytes (staged by stageWaylandDesktopRuntime at compose time —
-          // the kernel worker owns the VFS after boot). This block wires
-          // input, sizes the display, and spawns the desktop.
+          const compositorUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
+            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
+          ], "wlcompositor.wasm");
+          const wltermUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlterm.wasm",
+            "../../../../../binaries/programs/wasm32/wlterm.wasm",
+          ], "wlterm.wasm");
+          const wlclockUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlclock.wasm",
+            "../../../../../binaries/programs/wasm32/wlclock.wasm",
+          ], "wlclock.wasm");
+          // wlpaint is staged so the CTRL+P launch bind can exec it on demand;
+          // unlike the wayland demo it is not auto-spawned into the initial
+          // layout (the user opens it via the keybind, the "new pane" flow).
+          const wlpaintUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlpaint.wasm",
+            "../../../../../binaries/programs/wasm32/wlpaint.wasm",
+          ], "wlpaint.wasm");
+          const kbarUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/kbar.wasm",
+              "../../../../../binaries/programs/wasm32/kbar.wasm",
+            ], "kbar.wasm")
+            : null;
+          const klauncherUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/klauncher.wasm",
+              "../../../../../binaries/programs/wasm32/klauncher.wasm",
+            ], "klauncher.wasm")
+            : null;
+          const knotifyUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/knotify.wasm",
+              "../../../../../binaries/programs/wasm32/knotify.wasm",
+            ], "knotify.wasm")
+            : null;
+          tick(omarchy ? "staging omarchy binaries..." : "staging hyprland binaries...");
+          const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
+            fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wltermUrl).then(failOn("wlterm.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlclockUrl).then(failOn("wlclock.wasm")).then((r) => r.arrayBuffer()),
+            fetch(wlpaintUrl).then(failOn("wlpaint.wasm")).then((r) => r.arrayBuffer()),
+          ]);
+          ensureDirRecursive(kernelForHyprland.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlcompositor",
+            new Uint8Array(compBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlterm",
+            new Uint8Array(termBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlclock",
+            new Uint8Array(clockBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForHyprland.fs,
+            "/usr/local/bin/wlpaint",
+            new Uint8Array(paintBytes),
+            0o755,
+          );
+
+          // The Omarchy desktop adds its shell: the bar and the launcher, plus
+          // the files they and the compositor read — one config, one app
+          // registry, one theme directory.
+          if (omarchy) {
+            const [barBytes, launcherBytes, notifyBytes] = await Promise.all([
+              fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
+              fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
+                .then((r) => r.arrayBuffer()),
+              fetch(knotifyUrl!).then(failOn("knotify.wasm"))
+                .then((r) => r.arrayBuffer()),
+            ]);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/kbar",
+              new Uint8Array(barBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/klauncher",
+              new Uint8Array(launcherBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/knotify",
+              new Uint8Array(notifyBytes), 0o755);
+            omarchyBarBytes = barBytes;
+
+            ensureDirRecursive(kernelForHyprland.fs, OMARCHY_APPS_DIR);
+            for (const [name, body] of Object.entries(OMARCHY_APPS))
+              writeVfsFile(kernelForHyprland.fs, `${OMARCHY_APPS_DIR}/${name}`,
+                body, 0o644);
+            for (const [name, theme] of Object.entries(OMARCHY_THEMES)) {
+              ensureDirRecursive(kernelForHyprland.fs, `${OMARCHY_THEME_DIR}/${name}`);
+              writeVfsFile(kernelForHyprland.fs,
+                `${OMARCHY_THEME_DIR}/${name}/theme.conf`, theme.conf, 0o644);
+              writeVfsBinary(kernelForHyprland.fs,
+                `${OMARCHY_THEME_DIR}/${name}/background.kwlp`,
+                renderWallpaperKwlp(theme), 0o644);
+            }
+          }
+
+          ensureDirRecursive(kernelForHyprland.fs, "/etc/kandelo");
+          writeVfsFile(
+            kernelForHyprland.fs,
+            OMARCHY_CONF_PATH,
+            omarchy ? OMARCHY_WLCOMPOSITOR_CONF : HYPRLAND_WLCOMPOSITOR_CONF,
+            0o644,
+          );
+
           // Pointer is owned by the Modeset pane (event1); feed keyboard only.
           tick("attaching input source...");
           const WL_FB_W = 1920;
@@ -1868,139 +1981,80 @@ async function bootProfile(
           // Size the desktop from the Modeset pane's canvas exactly like
           // the wayland demo (see that block for the rationale).
           tick("sizing display mode...");
-          const outputScale = outputScaleFor(window.devicePixelRatio || 1);
-          if (!host.getKmsDisplaySize(1)) {
-            const pane = await settledPaneDeviceSize();
-            if (pane) kernelForHyprland.kmsSetDisplaySize(1, pane.width, pane.height);
+          const sizeDeadline = performance.now() + 1500;
+          let displaySize = host.getKmsDisplaySize(1);
+          while (!displaySize && performance.now() < sizeDeadline) {
+            const paneCanvas = document.querySelector<HTMLCanvasElement>(
+              ".kmachine-primary-slot:not(.is-hidden) canvas",
+            );
+            const rect = paneCanvas?.getBoundingClientRect();
+            if (rect && rect.width >= 1 && rect.height >= 1) {
+              const dpr = window.devicePixelRatio || 1;
+              displaySize = { width: rect.width * dpr, height: rect.height * dpr };
+              kernelForHyprland.kmsSetDisplaySize(
+                1,
+                displaySize.width,
+                displaySize.height,
+              );
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            displaySize = host.getKmsDisplaySize(1);
           }
 
           // Clients retry their connect to /tmp/wayland-0, so the compositor
           // and clients can be spawned without an ordering barrier.
           tick("running wlcompositor...");
-          const spawnBg = (
-            path: string,
-            name: string,
-            extraEnv: string[] = [],
-            args: string[] = [],
-          ) =>
-            kernelForHyprland.spawnFromVfs(path, [name, ...args], {
+          const spawnBg = (bytes: ArrayBuffer, name: string, extraEnv: string[] = []) =>
+            void kernelForHyprland.spawn(bytes, [name], {
               env: extraEnv.length ? [...SHELL_ENV, ...extraEnv] : SHELL_ENV,
               cwd: DEMO_HOME,
               uid: DEMO_UID,
               gid: DEMO_GID,
-            }).then(({ exit }) => exit).then(
+            }).then(
               () => tick(`${name} exited`),
               (err: unknown) =>
                 tick(`${name} failed: ${err instanceof Error ? err.message : String(err)}`),
             );
-          // A gated client connects to its sockets exactly once (no retry),
-          // so it starts behind a guest-side wait for them. The wait runs in
-          // the guest because the kernel worker owns the VFS — the main
-          // thread has no handle to poll a socket path. The gate gives up
-          // after 30 seconds and execs anyway, so a desktop that failed to
-          // bind surfaces as the client's own connect error in the syslog.
-          const spawnGated = (
-            name: string,
-            sockets: string[],
-            extraEnv: string[] = [],
-            args: string[] = [],
-            seed = "",
-          ) => {
-            const gate = sockets.map((path) => `[ -S ${path} ]`).join(" && ");
-            const command = [`/usr/local/bin/${name}`, ...args].join(" ");
-            return spawnBg("/bin/bash", name, extraEnv, [
-              "-c",
-              `until ${gate} || (( n++ >= 300 )); do sleep 0.1; done; ${seed}exec ${command}`,
-            ]);
-          };
-          // Every omarchy desktop process gets the session bus address: the
-          // compositor passes it on to everything it execs (notify-send on a
-          // theme switch, launched terminals), and the terminals' shells can
-          // run notify-send themselves.
-          const busEnv = omarchy
-            ? [`DBUS_SESSION_BUS_ADDRESS=unix:path=${OMARCHY_BUS_SOCKET}`]
-            : [];
-          const compositorExit = spawnBg("/usr/local/bin/wlcompositor", "wlcompositor", [
+          spawnBg(compBytes, "wlcompositor", [
             "WLC_LAYOUT=dwindle",
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
-            `WLC_SCALE=${outputScale}`,
-            ...busEnv,
           ]);
 
-          if (omarchy) {
-            // The notification stack: the session bus, then mako on it. mako
-            // connects to the compositor and the bus exactly once (stock
-            // wl_display_connect + sd-bus, no retry), so it waits for both
-            // sockets in the guest.
-            tick("running dbus-daemon + mako...");
-            void spawnBg("/usr/local/bin/dbus-daemon", "dbus-daemon", [], [
-              "--config-file=/etc/dbus-1/session.conf",
-              "--nofork",
-            ]);
-            void spawnGated("mako", ["/tmp/wayland-0", OMARCHY_BUS_SOCKET], busEnv, [
-              "--config", OMARCHY_MAKO_CONFIG_PATH,
-            ]);
-
-            // Waybar connects to the display and the Hyprland IPC pair
-            // exactly once (GTK does not retry). It is also a
-            // Gtk::Application, so g_application_register needs the session
-            // bus: without it GIO tries to autolaunch one and exits on the
-            // missing machine-id. Gate on all three sockets.
-            tick("running waybar...");
-            // `-l debug` is what makes the bar legible in the Internals
-            // syslog: Waybar logs every Hyprland IPC event it receives at
-            // debug level, so a workspace switch or a window focus shows
-            // up as the bar's own line next to the compositor's marker.
-            void spawnGated("waybar", [
-              "/tmp/wayland-0",
-              "/tmp/hypr/wlcompositor/.socket.sock",
-              OMARCHY_BUS_SOCKET,
-            ], [
-              "HYPRLAND_INSTANCE_SIGNATURE=wlcompositor",
-              ...busEnv,
-            ], [
-              "-l", "debug",
-              "-c", OMARCHY_WAYBAR_CONFIG_PATH,
-              "-s", OMARCHY_WAYBAR_STYLE_PATH,
-            ], `printf '%s' "$(<${OMARCHY_WAYBAR_STYLE_SEED_PATH})" > ${OMARCHY_WAYBAR_STYLE_PATH}; `);
+          // The bar first: its exclusive zone must be reserved before the
+          // windows tile, or they would lay out over the full output and be
+          // re-configured a frame later.
+          if (omarchyBarBytes) {
+            tick("running kbar...");
+            spawnBg(omarchyBarBytes, "kbar");
           }
 
-          if (omarchy) {
-            // The Omarchy desktop comes up bare — wallpaper and bar, no
-            // windows. Its clients are the ones the user opens, through the
-            // binds (CTRL+Return, CTRL+K) or the launcher. The compositor is
-            // the process whose lifetime is the desktop's, so awaiting it is
-            // what keeps the demo alive.
-            tick("omarchy desktop ready");
-            await compositorExit;
-          } else {
-            // The clock + first terminal run in the background; the foreground
-            // terminal's shell keeps the demo alive (as waylandDemo does).
-            tick("running wlclock + wlterm...");
-            void spawnBg("/usr/local/bin/wlclock", "wlclock");
-            void spawnBg("/usr/local/bin/wlterm", "wlterm", busEnv);
+          // The clock + first terminal run in the background; the foreground
+          // terminal's shell keeps the demo alive (as waylandDemo does).
+          tick("running wlclock + wlterm...");
+          spawnBg(clockBytes, "wlclock");
+          spawnBg(termBytes, "wlterm");
 
-            tick("running wlterm...");
-            // Keep-alive 3rd tiling client. Launch it through the non-forking
-            // spawn path (like the clock + first terminal) instead of
-            // runShellCommand, which makes the pts/0 shell fork()+exec the client.
-            // That shell-fork races the first terminal's forkpty under CI's Linux
-            // headless-chromium worker scheduling and intermittently fails to
-            // start the client, so it never connects (CLIENT_CONNECTED count=3
-            // never fires). The exit promise resolves on process EXIT, so
-            // awaiting it keeps the demo alive exactly as the foreground shell
-            // command did.
-            await kernelForHyprland.spawnFromVfs("/usr/local/bin/wlterm", ["wlterm"], {
-              env: busEnv.length ? [...SHELL_ENV, ...busEnv] : SHELL_ENV,
-              cwd: DEMO_HOME,
-              uid: DEMO_UID,
-              gid: DEMO_GID,
-            }).then(({ exit }) => exit).then(
-              () => tick("wlterm exited"),
-              (err: unknown) =>
-                tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
-            );
-          }
+          tick("running wlterm...");
+          // Keep-alive 3rd tiling client. Launch it through the non-forking
+          // `spawn` path (like the clock + first terminal) instead of
+          // runShellCommand, which makes the pts/0 shell fork()+exec the client.
+          // That shell-fork races the first terminal's forkpty under CI's Linux
+          // headless-chromium worker scheduling and intermittently fails to
+          // start the client, so it never connects (CLIENT_CONNECTED count=3
+          // never fires). `spawn` resolves on process EXIT (it is used as an
+          // exitPromise in kernel-host.ts), so awaiting it keeps the demo alive
+          // exactly as the foreground shell command did.
+          await kernelForHyprland.spawn(termBytes, ["wlterm"], {
+            env: SHELL_ENV,
+            cwd: DEMO_HOME,
+            uid: DEMO_UID,
+            gid: DEMO_GID,
+          }).then(
+            () => tick("wlterm exited"),
+            (err: unknown) =>
+              tick(`wlterm failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`${omarchy ? "omarchy" : "hyprland"} failed: ${msg}`);
@@ -2082,24 +2136,6 @@ function stageShellUtilities(
 }
 
 /**
- * Bake the modeset fluid sim at `/usr/local/bin/modeset`. The published
- * shell image delivers it as a lazy Homebrew formula; a locally built
- * image has no bottle catalog, so the demo stages the resolved package
- * binary the same way the other KMS demos stage theirs.
- */
-async function stageModesetRuntime(fs: MemoryFileSystem): Promise<void> {
-  const url = await optionalBinaryUrl([
-    "../../../../../local-binaries/programs/wasm32/modeset.wasm",
-    "../../../../../binaries/programs/wasm32/modeset.wasm",
-  ], "modeset.wasm");
-  const bytes = await fetch(url)
-    .then(failOn("modeset.wasm"))
-    .then((r) => r.arrayBuffer());
-  ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(bytes), 0o755);
-}
-
-/**
  * Bake the SDL2 GLSL playground and its shader presets into the image.
  *
  * The playground's source-resolution chain is
@@ -2135,140 +2171,6 @@ async function stageSdl2Runtime(fs: MemoryFileSystem): Promise<void> {
   writeVfsFile(fs, "/usr/share/shaders/sound/fm_bell.frag", sdl2SoundFmBellFragSrc);
   writeVfsFile(fs, "/usr/share/shaders/sound/noise_sweep.frag", sdl2SoundNoiseSweepFragSrc);
   writeVfsFile(fs, "/usr/share/shaders/sound/chord.frag", sdl2SoundChordFragSrc);
-}
-
-/** The integer `wl_output` scale the desktop runs at. The mode is sized in
- *  device pixels, so without this the compositor would read a dpr-2 pane as a
- *  dpr-1 one twice the size and lay out windows at half their intended size.
- *  wl_output.scale has no fractional form, so a fractional dpr rounds. */
-function outputScaleFor(dpr: number): number {
-  return Math.max(1, Math.min(3, Math.round(dpr)));
-}
-
-/** The pane's device-pixel size, once its layout has settled.
- *
- *  Measures the pane SLOT, not the canvas inside it. `useFittedCanvasStyle`
- *  sizes the canvas to the slot at the CANVAS's own aspect, and that aspect
- *  comes from the backing store the mode sizes — so measuring the canvas feeds
- *  the mode back into itself and pins it to whatever the first sample caught.
- *  The slot is laid out by flex alone, so it is a fixed point.
- *
- *  Requires two equal consecutive readings, so a mid-layout frame is not what
- *  the connector mode is built from. Returns null when the pane never settles
- *  (hidden slot, headless embedder), which leaves the connector on its
- *  1920x1080 default. */
-async function settledPaneDeviceSize(
-  timeoutMs = 4_000,
-): Promise<{ width: number; height: number } | null> {
-  const deadline = performance.now() + timeoutMs;
-  let previous = "";
-  while (performance.now() < deadline) {
-    const slot = document.querySelector<HTMLElement>(
-      ".kmachine-primary-slot:not(.is-hidden)",
-    );
-    const rect = slot?.getBoundingClientRect();
-    if (rect && rect.width >= 1 && rect.height >= 1) {
-      const key = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
-      if (key === previous) {
-        const dpr = window.devicePixelRatio || 1;
-        return {
-          width: Math.round(rect.width * dpr),
-          height: Math.round(rect.height * dpr),
-        };
-      }
-      previous = key;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return null;
-}
-
-/**
- * Bake the Wayland desktop stack into the image: the compositor and its
- * clients for every desktop demo, the compositor config for the tiling
- * demos, and the Omarchy shell (bar, launcher, notification stack, themes,
- * fonts, app registry) on top. The kernel worker owns the VFS after boot,
- * so everything a desktop process reads from disk must be image bytes.
- */
-async function stageWaylandDesktopRuntime(
-  fs: MemoryFileSystem,
-  profile: LiveProfile,
-): Promise<void> {
-  const fetchBinary = async (relPath: string, label: string) => {
-    const url = await optionalBinaryUrl([
-      `../../../../../local-binaries/programs/wasm32/${relPath}`,
-      `../../../../../binaries/programs/wasm32/${relPath}`,
-    ], label);
-    return fetch(url).then(failOn(label)).then((r) => r.arrayBuffer());
-  };
-  const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
-    fetchBinary("wldesktop/wlcompositor.wasm", "wlcompositor.wasm"),
-    fetchBinary("wldesktop/wlterm.wasm", "wlterm.wasm"),
-    fetchBinary("wldesktop/wlclock.wasm", "wlclock.wasm"),
-    fetchBinary("wldesktop/wlpaint.wasm", "wlpaint.wasm"),
-  ]);
-  ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/wlcompositor", new Uint8Array(compBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlterm", new Uint8Array(termBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlclock", new Uint8Array(clockBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/wlpaint", new Uint8Array(paintBytes), 0o755);
-  if (profile.waylandDemo) return;
-
-  ensureDirRecursive(fs, "/etc/kandelo");
-  writeVfsFile(
-    fs,
-    OMARCHY_CONF_PATH,
-    profile.omarchyDemo ? OMARCHY_WLCOMPOSITOR_CONF : HYPRLAND_WLCOMPOSITOR_CONF,
-    0o644,
-  );
-  if (!profile.omarchyDemo) return;
-
-  const [barBytes, launcherBytes, daemonBytes, makoBytes,
-    notifySendBytes, footBytes, fontBytes] = await Promise.all([
-    fetchBinary("waybar.wasm", "waybar.wasm"),
-    fetchBinary("wldesktop/klauncher.wasm", "klauncher.wasm"),
-    fetchBinary("dbus/dbus-daemon.wasm", "dbus-daemon.wasm"),
-    fetchBinary("mako/mako.wasm", "mako.wasm"),
-    fetchBinary("wldesktop/notify-send.wasm", "notify-send.wasm"),
-    fetchBinary("foot.wasm", "foot.wasm"),
-    fetch(inconsolataFontUrl).then(failOn("Inconsolata-Regular.ttf"))
-      .then((r) => r.arrayBuffer()),
-  ]);
-  writeVfsBinary(fs, "/usr/local/bin/waybar", new Uint8Array(barBytes), 0o755);
-  // /home/maker is a scratch mount, so the desktop's configs cannot be image
-  // bytes under $HOME — they live under /usr/share/kandelo and the clients
-  // are pointed at them (waybar -c/-s, mako --config). The stylesheet the
-  // theme hook rewrites is seeded onto /tmp by the bar's start gate.
-  ensureDirRecursive(fs, dirname(OMARCHY_WAYBAR_CONFIG_PATH));
-  writeVfsFile(fs, OMARCHY_WAYBAR_CONFIG_PATH, OMARCHY_WAYBAR_CONFIG, 0o644);
-  writeVfsFile(fs, OMARCHY_WAYBAR_STYLE_SEED_PATH, OMARCHY_WAYBAR_STYLE, 0o644);
-  writeVfsBinary(fs, "/usr/local/bin/klauncher", new Uint8Array(launcherBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/dbus-daemon", new Uint8Array(daemonBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/mako", new Uint8Array(makoBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/notify-send", new Uint8Array(notifySendBytes), 0o755);
-  writeVfsFile(fs, "/usr/local/bin/omarchy-theme-changed", OMARCHY_THEME_HOOK, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/foot", new Uint8Array(footBytes), 0o755);
-  ensureDirRecursive(fs, "/etc/dbus-1");
-  writeVfsFile(fs, "/etc/dbus-1/session.conf", OMARCHY_DBUS_SESSION_CONF, 0o644);
-  ensureDirRecursive(fs, dirname(OMARCHY_MAKO_CONFIG_PATH));
-  writeVfsFile(fs, OMARCHY_MAKO_CONFIG_PATH, OMARCHY_MAKO_CONFIG, 0o644);
-  ensureDirRecursive(fs, "/usr/share/fonts");
-  writeVfsBinary(fs, "/usr/share/fonts/Inconsolata-Regular.ttf",
-    new Uint8Array(fontBytes), 0o644);
-  ensureDirRecursive(fs, "/etc/fonts");
-  writeVfsFile(fs, "/etc/fonts/fonts.conf", OMARCHY_FONTS_CONF, 0o644);
-  ensureDirRecursive(fs, OMARCHY_APPS_DIR);
-  for (const [name, body] of Object.entries(OMARCHY_APPS))
-    writeVfsFile(fs, `${OMARCHY_APPS_DIR}/${name}`, body, 0o644);
-  for (const [name, theme] of Object.entries(OMARCHY_THEMES)) {
-    ensureDirRecursive(fs, `${OMARCHY_THEME_DIR}/${name}`);
-    writeVfsFile(fs, `${OMARCHY_THEME_DIR}/${name}/theme.conf`, theme.conf, 0o644);
-    const image = theme.wallpaper.image
-      ? await renderImageWallpaperKwlp(theme.wallpaper.image)
-      : null;
-    writeVfsBinary(fs, `${OMARCHY_THEME_DIR}/${name}/background.kwlp`,
-      image ?? renderWallpaperKwlp(theme), 0o644);
-  }
 }
 
 function ensureDemoHomes(fs: MemoryFileSystem): void {

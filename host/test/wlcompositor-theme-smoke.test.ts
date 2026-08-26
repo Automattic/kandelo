@@ -14,7 +14,10 @@
  * Skips if the binaries aren't built (bare checkout).
  */
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -25,6 +28,19 @@ const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kbarBin = tryResolveBinary("programs/kbar.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kbarBin && !!kwlctlBin;
+const wltermBin = tryResolveBinary("programs/wlterm.wasm");
+const dashBin = tryResolveBinary("programs/dash.wasm");
+const hasWlterm =
+  hasBinaries && !!wltermBin && !!dashBin && existsSync(dashBin!);
+const launcherBin = tryResolveBinary("programs/klauncher.wasm");
+
+// evdev keycodes (linux/input-event-codes.h).
+const EV_KEY = 0x01;
+const EV_SYN = 0x00;
+const SYN_REPORT = 0x00;
+const KEY_ESC = 1;
+const KEY_ENTER = 28;
+const KEY_DOWN = 108;
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -244,6 +260,242 @@ describe("wlcompositor — theme system", () => {
           name: "aaa-wide",
           themes: ["aaa-wide", "bbb-tight"],
         });
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "renders a theme's image wallpaper and falls back to the gradient",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      // Three themes: an image wallpaper, a plain gradient, and a wallpaper
+      // key pointing at a file that does not exist.
+      const root = mkdtempSync(join(tmpdir(), "kandelo-wallpaper-"));
+      const kwlp = Buffer.alloc(12 + 16 * 16 * 4);
+      kwlp.write("KWLP", 0, "ascii");
+      kwlp.writeUInt32LE(16, 4);
+      kwlp.writeUInt32LE(16, 8);
+      for (let i = 0; i < 16 * 16; i++)
+        kwlp.writeUInt32LE(0xff3366cc, 12 + i * 4);
+      for (const [name, lines] of Object.entries({
+        "aaa-image": ["wallpaper = background.kwlp"],
+        "bbb-gradient": ["wallpaper_top = 0x101010", "wallpaper_bottom = 0x202020"],
+        "ccc-broken": ["wallpaper = missing.kwlp"],
+      })) {
+        mkdirSync(join(root, name), { recursive: true });
+        writeFileSync(join(root, name, "theme.conf"), lines.join("\n") + "\n");
+      }
+      writeFileSync(join(root, "aaa-image", "background.kwlp"), kwlp);
+      const confPath = join(root, "wlcompositor.conf");
+      writeFileSync(confPath, "theme = aaa-image\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${root}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        await waitFor(out, "WALLPAPER image w=16 h=16", 10_000, dump);
+
+        out.value = "";
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "bbb-gradient"], {});
+        await waitFor(out, "WALLPAPER gradient", 10_000, dump);
+
+        // A wallpaper file that fails to load degrades to the gradient
+        // instead of keeping the previous theme's image.
+        out.value = "";
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "ccc-broken"], {});
+        await waitFor(out, "WALLPAPER gradient", 10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasWlterm)(
+    "a gap change smaller than a terminal cell still recommits the window",
+    async () => {
+      // kwl_apply_resize destroys the buffer the compositor holds before the
+      // client redraws, so a resize the terminal considers a no-op (cols and
+      // rows unchanged) must still commit — or the window stays invisible
+      // until the shell prints again. Three 1px gap steps guarantee at least
+      // one step that keeps the cell grid: each shrinks the tile by 2px, so
+      // across three steps the width crosses at most one cell boundary and
+      // the height at most one.
+      const compositorBytes = loadBytes(compositorBin!);
+      const wltermBytes = loadBytes(wltermBin!);
+      const dashBytes = loadBytes(dashBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      const gapsOut = [8, 9, 10, 11];
+      const root = mkdtempSync(join(tmpdir(), "kandelo-smallgap-"));
+      for (const out_ of gapsOut) {
+        mkdirSync(join(root, `g${out_}`), { recursive: true });
+        writeFileSync(join(root, `g${out_}`, "theme.conf"),
+          `gaps_in = 8\ngaps_out = ${out_}\n`);
+      }
+      const confPath = join(root, "wlcompositor.conf");
+      writeFileSync(confPath, `theme = g${gapsOut[0]}\n`);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+        onResolveExec: (path) =>
+          path === "dash" || path.endsWith("/dash") ? dashBytes : null,
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [
+            "WLC_LAYOUT=dwindle",
+            `WLC_CONFIG=${confPath}`,
+            `WLC_THEME_DIR=${root}`,
+          ],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        host.spawn(
+          wltermBytes,
+          ["wlterm", "dash", "-c", "printf 'READY\\n'; read x"],
+          { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
+        );
+        await waitFor(out, "WLTERM_READY", 20_000, dump);
+        await waitFor(out, /WLTERM_RESIZE cols=\d+ rows=\d+/, 20_000, dump);
+
+        for (const out_ of gapsOut.slice(1)) {
+          out.value = "";
+          await host.spawn(kwlctlBytes,
+            ["kwlctl", "dispatch", "theme", `g${out_}`], {});
+          await waitFor(out, /WLTERM_RESIZE cols=\d+ rows=\d+/, 10_000, dump);
+        }
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "a theme switch spawns the configured notifier",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+      const { themeDir, confPath } = stageThemes();
+      appendFileSync(confPath, "notify = /usr/local/bin/knotify\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // The switch spawns `<notify> Theme <name>`. This VFS stages no
+        // knotify binary, so what is asserted is that the hook fired with
+        // the right program — the launch itself is the browser gate's job.
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "bbb-tight"], {});
+        await waitFor(out, "THEME bbb-tight", 10_000, dump);
+        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/local\/bin\/knotify"/,
+          10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries || !launcherBin)(
+    "the Omarchy menu descends into the theme list and dispatches a switch",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const launcherBytes = loadBytes(launcherBin!);
+      const { themeDir, confPath } = stageThemes();
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+      const tap = (code: number) => {
+        host.injectInputEvent(0, EV_KEY, code, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+      };
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // --menu opens at the root (Apps, Theme) with the keyboard held
+        // exclusively, so the taps below go to the menu, not a window.
+        host.spawn(launcherBytes, ["klauncher", "--menu"], {
+          env: [`KANDELO_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "KLAUNCHER_LEVEL root", 20_000, dump);
+        await waitFor(out, "KLAUNCHER_READY n=2", 20_000, dump);
+
+        // Down + Enter selects "Theme"; the submenu lists the installed set
+        // read from `kwlctl theme`.
+        tap(KEY_DOWN);
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_LEVEL themes", 10_000, dump);
+
+        // ESC in a submenu goes back to the root, not out of the menu.
+        out.value = "";
+        tap(KEY_ESC);
+        await waitFor(out, "KLAUNCHER_LEVEL root", 10_000, dump);
+        tap(KEY_DOWN);
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_LEVEL themes", 10_000, dump);
+
+        // Enter on the first entry dispatches the switch and dismisses.
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_THEME name=aaa-wide", 10_000, dump);
+        await waitFor(out, "THEME aaa-wide", 10_000, dump);
+        await waitFor(out, "KLAUNCHER_EXIT", 10_000, dump);
       } finally {
         await host.destroy().catch(() => {});
       }

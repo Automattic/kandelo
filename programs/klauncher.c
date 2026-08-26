@@ -16,10 +16,17 @@
  * That directory is the desktop-entry registry: dropping a file in adds an
  * app, which is how a package installs itself into the launcher.
  *
+ * `klauncher --menu` opens the Omarchy menu instead: a root level (Apps,
+ * Theme) that descends into the app list or the installed-theme list (read
+ * from `kwlctl theme`, switched with `dispatch theme`). ESC in a submenu goes
+ * back to the root; ESC at the root dismisses.
+ *
  * Markers on stdout for the smoke gates:
  *   KLAUNCHER_READY n=..     — mapped, with n entries loaded
+ *   KLAUNCHER_LEVEL <l>      — menu level entered (root|apps|themes)
  *   KLAUNCHER_FILTER q=.. n=.. — query changed, n entries match
  *   KLAUNCHER_EXEC cmd=..    — dispatched a launch
+ *   KLAUNCHER_THEME name=..  — dispatched a theme switch
  *   KLAUNCHER_EXIT           — dismissed
  */
 #include <dirent.h>
@@ -68,6 +75,8 @@ struct app {
     char exec[256];
 };
 
+enum level { L_ROOT, L_APPS, L_THEMES };
+
 static struct {
     struct app apps[MAX_APPS];
     int n_apps;
@@ -75,6 +84,8 @@ static struct {
     int n_match;
     int selected;          /* index into match[] */
     char query[64];
+    int menu;              /* --menu: root level with submenus */
+    enum level level;
 } st;
 
 static int parse_color(const char *s, wpk_color fallback) {
@@ -210,6 +221,60 @@ static void load_apps(void) {
     }
 }
 
+static void add_entry(const char *name, const char *exec) {
+    if (st.n_apps >= MAX_APPS) return;
+    struct app *a = &st.apps[st.n_apps++];
+    snprintf(a->name, sizeof(a->name), "%s", name);
+    snprintf(a->exec, sizeof(a->exec), "%s", exec);
+}
+
+static void load_root(void) {
+    add_entry("Apps", "browse applications");
+    add_entry("Theme", "switch theme");
+}
+
+/* The installed set, already sorted by the compositor's theme_scan; the live
+ * one is tagged in the right-hand column. */
+static void load_themes(void) {
+    char buf[1024];
+    if (kwlctl_send_cmd("theme", buf, sizeof(buf)) != 0) return;
+    char live[48] = "";
+    char *p = strstr(buf, "\"name\":\"");
+    if (p) {
+        snprintf(live, sizeof(live), "%s", p + 8);
+        char *q = strchr(live, '"');
+        if (q) *q = '\0';
+    }
+    p = strstr(buf, "\"themes\":[");
+    if (!p) return;
+    p += 10;
+    while (*p && *p != ']') {
+        if (*p != '"') { p++; continue; }
+        char *q = strchr(p + 1, '"');
+        if (!q) break;
+        *q = '\0';
+        add_entry(p + 1, strcmp(p + 1, live) == 0 ? "current" : "theme");
+        p = q + 1;
+    }
+}
+
+static void refilter(void);
+
+static const char *LEVEL_NAMES[] = { "root", "apps", "themes" };
+
+static void enter_level(enum level lvl) {
+    st.level = lvl;
+    st.n_apps = 0;
+    st.query[0] = '\0';
+    st.selected = 0;
+    if (lvl == L_ROOT) load_root();
+    else if (lvl == L_APPS) load_apps();
+    else load_themes();
+    printf("KLAUNCHER_LEVEL %s\n", LEVEL_NAMES[lvl]);
+    fflush(stdout);
+    refilter();
+}
+
 static int ascii_lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
 /* Substring match, case-insensitive, over the name — the launcher's whole
@@ -261,9 +326,9 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
         wpk_text(s, font, 16, PROMPT_H + 28, "no matches", palette.muted);
 }
 
-int main(void) {
-    load_apps();
-    refilter();
+int main(int argc, char **argv) {
+    st.menu = argc > 1 && strcmp(argv[1], "--menu") == 0;
+    enter_level(st.menu ? L_ROOT : L_APPS);
     sync_theme();
 
     struct kwl_layer_opts opts = {
@@ -294,7 +359,12 @@ int main(void) {
         if (ev.type == KWL_KEY && ev.state == 1) {
             switch (ev.keysym) {
             case KEY_ESCAPE:
-                running = 0;
+                if (st.menu && st.level != L_ROOT) {
+                    enter_level(L_ROOT);
+                    dirty = 1;
+                } else {
+                    running = 0;
+                }
                 break;
             case KEY_UP:
                 if (st.selected > 0) st.selected--;
@@ -312,15 +382,32 @@ int main(void) {
                 break;
             }
             case KEY_RETURN:
-                if (st.n_match > 0) {
+                if (st.n_match == 0) {
+                    running = 0;
+                    break;
+                }
+                if (st.level == L_ROOT) {
+                    const struct app *a = &st.apps[st.match[st.selected]];
+                    enter_level(strcmp(a->name, "Theme") == 0 ? L_THEMES
+                                                              : L_APPS);
+                    dirty = 1;
+                } else if (st.level == L_THEMES) {
+                    const struct app *a = &st.apps[st.match[st.selected]];
+                    char cmd[sizeof(a->name) + 32];
+                    snprintf(cmd, sizeof(cmd), "dispatch theme %s", a->name);
+                    kwlctl_send_cmd(cmd, NULL, 0);
+                    printf("KLAUNCHER_THEME name=%s\n", a->name);
+                    fflush(stdout);
+                    running = 0;
+                } else {
                     const struct app *a = &st.apps[st.match[st.selected]];
                     char cmd[sizeof(a->exec) + 32];
                     snprintf(cmd, sizeof(cmd), "dispatch exec %s", a->exec);
                     kwlctl_send_cmd(cmd, NULL, 0);
                     printf("KLAUNCHER_EXEC cmd=%s\n", a->exec);
                     fflush(stdout);
+                    running = 0;
                 }
-                running = 0;
                 break;
             }
         } else if (ev.type == KWL_TEXT && ev.utf8[0] >= ' ') {
