@@ -718,6 +718,7 @@ function preparedSpawnExports(options: {
       return cwd.byteLength;
     }),
     kernel_remove_process: vi.fn(() => 0),
+    kernel_process_secure_exec: vi.fn(() => 0),
   };
 }
 

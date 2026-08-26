@@ -330,6 +330,8 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_WPK_CREATE_GPU_BO, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
@@ -416,6 +418,21 @@ mod tests {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
         assert_eq!(query.size_for_pointer_width(8), None);
+    }
+
+    /// An ioctl handled in syscalls.rs but absent from this table is
+    /// rejected as EINVAL before the handler runs. That silently demoted
+    /// wlcompositor to its CPU path: the wallpaper texture bind was the
+    /// first unregistered WPK request a real program issued.
+    #[test]
+    fn wpk_gpu_bo_requests_are_registered() {
+        let create = request_contract(crate::dri::DRM_IOCTL_WPK_CREATE_GPU_BO).unwrap();
+        assert_eq!(create.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(create.size_for_pointer_width(4), Some(16));
+
+        let bind = request_contract(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE).unwrap();
+        assert_eq!(bind.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(bind.size_for_pointer_width(4), Some(16));
     }
 
     /// Builds the same encoding the musl `_IOC` macros produce.

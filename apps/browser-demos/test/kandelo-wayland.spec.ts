@@ -14,7 +14,7 @@ async function gotoOrSkip(page: Page, path: string) {
 }
 
 async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kmachine-switch-btn", { hasText: label });
+  const btn = page.locator("button.kdock-item", { hasText: label });
   await btn.waitFor({ state: "visible", timeout: 30_000 });
   await btn.click();
 }
@@ -42,36 +42,59 @@ const SETUP_FAILURE =
 
 // The compositor's desktop geometry (wlcompositor.c placement_rules;
 // libkwl adds a 28 px CSD titlebar):
-//   wlterm:  slot (90,120),           content 960×540 (left-anchored)
-//   wlclock: slot (W-680,110),        content 340×360 (right-anchored)
-//   wlpaint: slot (W-840,560),        content 640×420 (right-anchored)
-// The mode WIDTH follows the pane's aspect ratio (host_kms_mode_info:
-// round(1080 × aspect), clamped [1440, 3840]) so the desktop fills the
-// pane; height is fixed at 1080. The actual dims are parsed from the
-// Modeset chip once the first frame lands (`readDesktopDims`) — these
-// are the pre-parse fallbacks matching the historical fixed mode.
+//   wlterm:  slot (90,120)     (left-anchored)
+//   wlclock: slot (W-680,110)  (right-anchored)
+//   wlpaint: slot (W-840,560)  (right-anchored)
+// The mode IS the pane's device-pixel box (kms-registry buildVirtualConnectorMode,
+// even-aligned, clamped [640,3840]×[480,2160]); the logical grid clients lay
+// out in is that mode divided by WLC_SCALE. This demo runs at dpr 1, so the
+// grid is roughly the pane's CSS box — around 1280×612, not the 1920×1080 the
+// slots above were written for. Two consequences every coordinate here has to
+// respect: libkwl's kwl_fit_to_output caps each window at half the grid's
+// width and three fifths of its height, and place_surface then clamps a slot
+// that would fall off the bottom back into the work area. So the windows are
+// smaller AND closer together than the slots suggest, and they overlap.
+// Nothing below may use an absolute coordinate that assumed 1080 lines.
+// The live dims are parsed from the Modeset chip once the first frame lands
+// (`readDesktopDims`); these are only pre-parse fallbacks.
 let DESKTOP_W = 1920;
 let DESKTOP_H = 1080;
-const clockTitlebar = () => ({ x: DESKTOP_W - 680 + 60, y: 110 + 14 });
-const DRAG_TO = { x: 760, y: 620 };
-// A rect fully inside wlterm's window and clear of wlclock (right-anchored,
-// x ≥ W-680 ≥ 760), wlpaint, and the animated clock — the only thing that
-// changes pixels here is the terminal grid re-rendering. x1 backs off the
-// clock's left edge on narrow modes.
+// Grip the clock's titlebar 240 px in: wlterm is fitted to half the
+// grid's width and maps last, so on a ~1280-wide grid it covers the clock's
+// left third and takes the press. 240 clears wlterm and still stops short of
+// the close box at the window's right edge. The grab holds this offset for
+// the whole drag, so it is also how the drop point predicts the window's
+// final origin.
+const CLOCK_GRIP_DX = 240;
+const CLOCK_GRIP_DY = 14;
+const clockTitlebar = () => ({
+  x: DESKTOP_W - 680 + CLOCK_GRIP_DX,
+  y: 110 + CLOCK_GRIP_DY,
+});
+// Drop point for the drag, as a fraction of the live grid so it stays on the
+// desktop at any mode. A fixed y here falls below a 612-line desktop.
+const dragTo = () => ({
+  x: Math.round(DESKTOP_W * 0.55),
+  y: Math.round(DESKTOP_H * 0.8),
+});
+// A rect fully inside wlterm's window and clear of wlclock, wlpaint, and the
+// animated clock — the only thing that changes pixels here is the terminal
+// grid re-rendering. Both far edges are held inside the fitted window: half
+// the grid's width less a margin, and well above three fifths of its height.
 const wltermRegion = () => ({
   x0: 100,
   y0: 130,
-  x1: Math.min(1040, DESKTOP_W - 680 - 20),
-  y1: 680,
+  x1: Math.min(1040, Math.round(DESKTOP_W / 2) - 60),
+  y1: Math.min(680, Math.round(DESKTOP_H * 0.7)),
 });
 
 const canvasLocator = (page: Page) =>
   page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
 
-/** Full text of the Modeset pane's status chip ("" while mounting). */
+/** Full text of the Modeset dock status chip ("" while mounting). */
 async function chipText(page: Page): Promise<string> {
   const texts = await page
-    .locator(".kpane")
+    .locator(".kdemo-surface-controls")
     .filter({ hasText: "flips" })
     .allInnerTexts()
     .catch(() => [] as string[]);
@@ -240,17 +263,18 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   const canvas = canvasLocator(page);
   await expect(canvas).toBeVisible({ timeout: 30_000 });
 
-  // Latch the live desktop mode (pane-aspect width × 1080) before any
-  // geometry-dependent gate — window anchors and the letterbox math all
+  // Latch the live desktop mode — the pane's device-pixel box — before any
+  // geometry-dependent gate; window anchors and the letterbox math all
   // derive from it.
   await readDesktopDims(page);
 
   // Gate 1b: the full desktop composited. The Modeset pane uses
   // transferControlToOffscreen, so PNG byteLength stands in for pixel
-  // readback. Reference sizes from real runs: all-black frame ≈ 3.2 KB,
-  // wallpaper + three windows ≈ 21.5 KB (2d blit) / similar under the
-  // WebGL2 scanout presenter (trilinear filtering smooths glyph edges
-  // but the composited content dominates the PNG size).
+  // readback. Reference sizes from real runs on a ~1280×612 mode: all-black
+  // frame ≈ 3.2 KB, wallpaper + three windows ≈ 21 KB under the WebGL2
+  // scanout presenter. The threshold sits between the two, low enough that a
+  // wider pane (a bigger mode compresses to more bytes, not fewer) cannot
+  // reach it from the blank side.
   await expect
     .poll(
       async () => (await canvas.screenshot()).byteLength,
@@ -291,8 +315,9 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // on the Internals surface, so run the whole gesture on Demo first and
   // assert the compositor's grab markers afterwards.
   const titlebar = clockTitlebar();
+  const drop = dragTo();
   const from = await desktopPoint(page, titlebar.x, titlebar.y);
-  const to = await desktopPoint(page, DRAG_TO.x, DRAG_TO.y);
+  const to = await desktopPoint(page, drop.x, drop.y);
   await page.mouse.move(from.x, from.y);
   await page.waitForTimeout(60);
   await page.mouse.down();
@@ -339,20 +364,32 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   const moved = (await syslogStream(page)).match(
     /MOVE_END "wlclock" x=(-?\d+) y=(-?\d+)/,
   )!;
-  // Placement slot was (W-680,110); the drop point puts the titlebar grip
-  // near (760,620), i.e. the window origin near (700,606) regardless of
-  // the mode width.
-  expect(Number(moved[1])).toBeLessThan(1000);
-  expect(Number(moved[2])).toBeGreaterThan(300);
+  // The grab holds the window at a fixed offset from the cursor, so the
+  // window's origin lands at the drop point less the grip — at any mode.
+  // Assert that, not a fixed coordinate, which only holds at one mode.
+  // The slack absorbs the desktop→page→pointer rounding on either side.
+  const DROP_SLACK = 8;
+  expect(Math.abs(Number(moved[1]) - (drop.x - CLOCK_GRIP_DX)),
+         "the window did not follow the cursor in x")
+    .toBeLessThanOrEqual(DROP_SLACK);
+  expect(Math.abs(Number(moved[2]) - (drop.y - CLOCK_GRIP_DY)),
+         "the window did not follow the cursor in y")
+    .toBeLessThanOrEqual(DROP_SLACK);
 
   // Gate 4: drag-paint a stroke in wlpaint, then prove the desktop is
-  // still alive. wlpaint is right-anchored at (W-840, 560); its canvas
-  // spans desktop (W-840, 624)-(W-200, 1008) (slot + 28px CSD bar +
-  // 36px toolbar).
+  // still alive. wlpaint is right-anchored at (W-840, 560), but on a grid
+  // shorter than 1080 lines place_surface pulls that slot up to sit the
+  // fitted window in the work area — so the canvas is found relative to the
+  // window's bottom edge (16 px from the desktop's), not to slot 560.
+  // Stroke the RIGHT of that canvas: the windows overlap on a
+  // narrow grid, and wlterm (fitted to half the width, from x=90) and the
+  // just-dragged wlclock both sit above wlpaint in the z-order. Only past
+  // their right edges does a press reach wlpaint at all.
   await openSurface(page, "Demo");
   const paintX = DESKTOP_W - 840;
-  const pFrom = await desktopPoint(page, paintX + 70, 700);
-  const pTo = await desktopPoint(page, paintX + 420, 900);
+  const paintBottom = DESKTOP_H - 16;
+  const pFrom = await desktopPoint(page, paintX + 400, paintBottom - 240);
+  const pTo = await desktopPoint(page, paintX + 480, paintBottom - 40);
   await page.mouse.move(pFrom.x, pFrom.y);
   await page.waitForTimeout(60);
   await page.mouse.down();

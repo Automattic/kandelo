@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
 const kwldemoBin = tryResolveBinary("programs/kwldemo.wasm");
 const hasBinaries = !!compositorBin && !!kwldemoBin;
 

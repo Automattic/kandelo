@@ -65,6 +65,27 @@ int main(void) {
     printf("AA_DISC core=0x%08x fringe=%d\n", buf[20 * W + 105], disc_fringe);
 
     wpk_font_destroy(f);
+
+    /* Scale 2: the same logical drawing covers four times the pixels, and a
+     * logical coordinate lands at twice the device one. The rect's logical
+     * (10,10)-(30,30) must fill device (20,20)-(60,60) exactly — its device
+     * corner is lit and the pixel just outside it is not — and the glyph
+     * masks must be rasterized bigger rather than blown up, which is what
+     * the wider text makes visible. */
+    wpk_set_scale(2);
+    struct wpk_surface s2 = wpk_surface_wrap(buf, W / 2, H / 2, STRIDE);
+    wpk_clear(&s2, WPK_RGB(0, 0, 0));
+    wpk_rect(&s2, 10, 10, 20, 20, WPK_RGB(255, 0, 0));
+    printf("SCALED_RECT in=0x%08x edge=0x%08x out=0x%08x\n",
+           buf[40 * W + 40], buf[59 * W + 59], buf[60 * W + 60]);
+
+    struct wpk_font *f2 = wpk_font_load_default(16);
+    if (!f2) { perror("wpk_font_load_default"); free(buf); return 1; }
+    printf("SCALED_TEXT_WIDTH s=OK w=%d\n", wpk_text_width(f2, "OK"));
+    printf("SCALED_ASCENT px=%d\n", wpk_font_ascent_px(f2));
+    wpk_font_destroy(f2);
+    wpk_set_scale(1);
+
     free(buf);
     printf("WPKDRAW_SMOKE_OK\n");
     return 0;

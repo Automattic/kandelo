@@ -325,6 +325,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
+| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -335,7 +336,12 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 
 ### Wayland desktop demo
 
-`/?demo=wayland` boots a four-program Wayland desktop:
+`/?demo=wayland` boots a four-program Wayland desktop. The binaries come
+from the `wldesktop` package, which publishes `wlcompositor`, `wlterm`,
+`wlclock`, `wlpaint`, `klauncher` and `notify-send` under
+`programs/<arch>/wldesktop/`. The sources stay in `programs/` so
+`scripts/build-programs.sh` keeps building the fixtures the host smokes
+resolve — the same split `sdl2-demo` and `modeset` use.
 
 - **wlcompositor** — a floating-window Wayland server (`wl_shm`,
   `xdg_shell`, `wl_seat`, `wl_output`) built on the wasm32 libwayland
@@ -380,7 +386,38 @@ swizzle happens in the fragment shader and the scaling on the GPU
 (trilinear over a per-frame mip chain, so a downscaled desktop doesn't
 shimmer). A runtime GPU-compositing failure tears the compositor's EGL
 session down, which hands the canvas back to the pump presenter
-(`markKmsCanvasGlReleased`) so the desktop keeps painting. A
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. A browser
+GPU-process crash is detected on the same chain: when the canvas
+context is lost, `host_gl_present` fails the guest's `eglSwapBuffers`
+with `EIO`, the compositor degrades to CPU compositing, and EGL
+teardown returns the canvas to the pump. The kernel worker installs
+`webglcontextlost`/`webglcontextrestored` listeners when the canvas is
+attached (`hookKmsContextLoss`) — not lazily at presenter build — so
+the loss event is cancelled and the browser restores the context even
+when the compositor's GL session owned the canvas at loss time; the
+rebuilt pump presenter then finds a live context. Both crash rounds
+(compositor-owned, then pump-owned) are gated by
+`apps/browser-demos/test/kandelo-kms-context-loss.spec.ts`. The rebuilt
+presenter inherits the dead session's WebGL2 context — `getContext`
+returns the existing one — so it restores the state its draw depends on
+rather than assuming fresh-context defaults. Pixel-store state matters
+most: a leftover `UNPACK_ROW_LENGTH` or a still-bound
+`PIXEL_UNPACK_BUFFER` makes every scanout upload `GL_INVALID_OPERATION`,
+which raises no JS exception, so the pump would report presents onto a
+black canvas. Six unpack parameters and the `PIXEL_UNPACK_BUFFER`
+binding are reset on every rebuild, and
+`host/test/dri-kms-stats-sab.test.ts` pins each reset individually
+against a fake GL. That fake cannot see a rejected upload. The
+real-context gate that could — `kandelo-kms-presenter.spec.ts` — is
+deleted, because its fixture worker reached the kernel worker through a
+writable instance property and a `tickVblank` cast, and the sealed
+instance and the `#tickVblank` private field refuse both.
+`kandelo-kms-context-loss.spec.ts` does run on a real context, but it
+needs the built desktop binaries and the browser-demo CI job runs a bare
+checkout with no binary fetch, so it cannot take the vacated CI slot.
+Until that fixture is rebuilt on
+`createCentralizedKernelWorkerTestDouble`, no automated gate proves a
+rebuilt presenter's uploads are accepted. A
 main-thread ResizeObserver reports the pane's device-pixel size so the
 presenter renders at display resolution instead of letting the page
 compositor rescale an fb-sized bitmap; any letterbox is drawn in GL
@@ -388,14 +425,85 @@ with the same contain math the pane's pointer mapping uses.
 
 The desktop itself also fills the pane: the boot flow feeds the pane's
 size to the kernel before spawning the compositor, and
-`host_kms_mode_info` advertises a preferred mode matching the pane's
-aspect ratio (`round(1080 × aspect) × 1080`, width clamped
-[1440, 3840]; 1920×1080 fallback when no size is known). wlcompositor
-sizes its scanout from that mode and its placement rules are
-edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
-edge), so wider panes spread the demo across the full width with no
-black bars. The mode is fixed at boot — resizing the browser window
-afterwards letterboxes rather than re-modes.
+`host_kms_mode_info` advertises that size as the preferred mode, even-
+aligned and clamped to [640, 3840] × [480, 2160] (1920×1080 fallback
+when no size is known). The size is measured on the pane's slot rather
+than its canvas — `useFittedCanvasStyle` sizes the canvas from the
+canvas's own aspect, which the mode itself sets, so measuring the
+canvas would feed the mode back into itself. wlcompositor sizes its
+scanout from that mode and its placement rules are edge-anchored
+(wlterm left, wlclock/wlpaint offsets from the right edge), so wider
+panes spread the demo across the full width with no black bars. The
+mode is fixed at boot — resizing the browser window afterwards
+letterboxes rather than re-modes.
+
+Because the mode is device pixels, a HiDPI pane gets a mode larger than
+its CSS box, and nothing in the mode says which of the two it is. The
+page passes the integer `wl_output` scale separately, as `WLC_SCALE`
+(`round(devicePixelRatio)`, clamped 1–3) in the compositor's
+environment. wlcompositor then keeps two grids: the mode sizes every
+scanout, GBM bo, EGL surface and GL viewport, while the mode divided by
+the scale is the logical grid clients lay out in. `wl_output.mode`
+stays device pixels; `wl_output.scale`, `xdg_output`'s logical size and
+`wp_fractional_scale`'s preference (scale × 120) all follow the scale.
+A client that honours `wl_surface.set_buffer_scale` attaches a buffer
+that covers its window 1:1 and blits without resampling; one that
+ignores it is upscaled — soft, but correctly sized.
+
+The desktop's own clients honour it, and none of them had to change to.
+libwpkdraw carries the scale instead: `wpk_set_scale()` is a
+process-wide setting that `wpk_surface_wrap()` and
+`wpk_font_load_default()` capture at call time, every primitive
+multiplies its logical coordinates by it, and glyphs are rasterized at
+`px * scale` rather than magnified. Metrics — `wpk_text_width()`,
+`wpk_font_ascent_px()` — stay logical, so an app's layout is untouched.
+libkwl reads `wl_output.scale`, calls `wpk_set_scale()` before any
+buffer or font exists, allocates its wl_shm buffers at
+`logical × scale`, and sends `wl_surface.set_buffer_scale`. wlterm,
+wlclock, wlpaint, klauncher and notify-send are sharp on a HiDPI pane
+without a single changed coordinate. wlcompositor never calls
+`wpk_set_scale()` — it composites in device pixels already — so its own
+drawing multiplies by `g.scale` by hand instead. Its gradient wallpaper
+(the fallback when a theme names no image) does that for the grid pitch,
+the two font sizes and every text offset.
+
+A third-party client learns the scale from `wl_surface.enter`, which
+names the output the surface is on, and it makes that decision once —
+before it draws. So the compositor sends the enter when a surface takes
+a role (`xdg_surface.get_toplevel`, or a layer surface's first commit),
+not when the surface maps. Map is a frame too late: the buffer being
+mapped was already drawn at the wrong scale, and for a mako toast one
+frame is the whole life of the surface. A client that binds `wl_output`
+only after its surface has a role still gets the enter at map.
+
+A layer-shell surface also renegotiates its size after that first
+configure — mako recomputes its toast one pixel shorter once it knows
+the scale — so every commit of a layer surface re-applies its
+double-buffered shell state (size, anchor, margins, exclusive zone,
+layer) and answers with a fresh configure when the resolved box moved.
+Applying it only on the first commit left mako waiting forever for a
+configure that never came, and the toast never appeared.
+
+libkwl also caps an initial window at half the output's width and
+three-fifths of its height, scaling both axes by the tighter ratio. A
+toolkit client picks its initial size as a constant, and a constant
+that suited a 2255×1080 desktop covers nearly all of a 1280×613 one;
+the compositor clamps a floating window's position but not its size.
+On a desktop roomy enough for the constant this changes nothing.
+`host/test/wlcompositor-output-scale-smoke.test.ts` gates the protocol
+side and `apps/browser-demos/test/kandelo-hidpi.spec.ts` gates the
+whole chain at `deviceScaleFactor: 2`.
+
+The theme wallpapers cannot follow the mode. Each is baked into the VFS
+image at compose time and the kernel owns the VFS from boot, while the
+mode is only settled later — and the pane's own box is still moving
+while it settles, so a compose-time measurement does not predict it. So
+the page stages every pixel the source JPEG has (capped at 3840 per
+axis) and wlcompositor centre-crops the KWLP to the output's aspect
+before scaling it. That keeps a HiDPI desktop's background sharp and
+undistorted at any pane aspect, at the cost of a larger image: six
+themes staged eagerly at source resolution are ~49 MB of VFS instead of
+the ~12 MB the fixed 960×540 staging cost.
 
 Pump presents are change-driven (kernel commit count, with a ~15 Hz
 strided-checksum content probe as a backstop) rather than
@@ -488,6 +596,88 @@ See
 The tiling paths are gated node-side by
 `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
 and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
+
+### Omarchy desktop demo
+
+`/?demo=omarchy` is the tiling desktop above plus the shell that makes it a
+desktop: a status bar, a launcher, and themes. Omarchy is not a program but a
+set of files layered over Hyprland, so this demo is the same `wlcompositor`
+binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
+`/usr/share/kandelo/apps`, and six themes under `/usr/share/kandelo/themes`
+— all staged into the VFS at boot from
+`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
+
+The desktop comes up bare: wallpaper and bar, no windows. Every client is one
+the user opens, through the binds below or the launcher. The demo stays alive
+on the compositor's own process rather than on a foreground terminal.
+
+- **The bar.** Unmodified upstream **Waybar 0.14.0** — the real GTK3 bar, on
+  the ported gtkmm/gtk-layer-shell stack, reading a translated version of
+  Omarchy's own `config.jsonc` and `style.css` from
+  `~/.config/waybar`. `gtk_layer_shell` anchors it across the top with an
+  exclusive zone, so the windows tile *under* it rather than behind it. Its
+  `hyprland/workspaces` and `hyprland/window` modules speak Hyprland IPC to
+  the compositor's socket pair at `/tmp/hypr/wlcompositor/` — `j/`-prefixed
+  JSON queries plus the `event>>data` stream — exactly as they would to
+  hyprctl. Modules that need hardware or daemons this kernel does not serve
+  (battery, cpu, memory, network, pulseaudio, tray) are not part of the
+  build, and the clock is Waybar's `simpleclock` (no timezone database).
+  GDK backs the bar's `wl_shm` pools with `gbm` prime-fd dumb bos (the
+  gtk3 package's `wayland-shm-gbm-pool.patch`, foot's contract), which is
+  what carries its pixels across to the compositor. The bar runs at
+  `-l debug`, so every Hyprland IPC event it consumes shows up in the
+  Internals syslog next to the compositor's own marker.
+- **Notifications.** The demo boots a `dbus-daemon` session bus and
+  unmodified upstream mako on it. A theme switch reaches `notify-send`
+  through the config's `notify =` hook (the theme script above execs it) — a real
+  `org.freedesktop.Notifications.Notify` call over the bus, which mako
+  renders as a layer-shell toast in the top-right corner that dismisses
+  itself after five seconds. The bus address
+  (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
+  environment, so `notify-send` also works from any terminal.
+- **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
+  that takes the keyboard exclusively — so what you type filters its list
+  instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
+  move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
+  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
+  registry offers real software from the shell image alongside the demo
+  clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
+  binaries lazy-fetch from the image's archives on first launch), plus a Bash
+  terminal. The Foot entry is different in kind: stock upstream foot 1.17.2
+  as its own Wayland client on the ported font stack —
+  freetype/fontconfig/fcft rasterizing the staged Inconsolata through
+  `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
+  [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
+- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
+  at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
+  the installed themes and `Enter` switches live. `Esc` in a submenu goes
+  back to the root; `Esc` at the root dismisses.
+- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+  Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
+  once: the compositor's window borders, gaps and wallpaper, the
+  launcher's own colours, which it reloads when the compositor broadcasts the
+  switch, and the bar's. Waybar reads its stylesheet once per load, as
+  upstream does, so the switch takes the path a real Omarchy session takes:
+  the compositor's `notify =` hook (`/usr/local/bin/omarchy-theme-changed`)
+  writes `~/.config/waybar/style.css` from the new `theme.conf` and sends
+  Waybar `SIGUSR2`, which reloads it. The hook then execs `notify-send`, so
+  the toast is the same one. Each theme ships its real Omarchy background, which the page
+  decodes and renders to raw pixels at staging time
+  (`renderImageWallpaperKwlp`, with an aurora fallback via
+  `renderWallpaperKwlp` if the decode fails); the compositor scales it to the
+  output and falls back to a gradient for themes without one.
+- **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
+  terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
+  focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every
+  bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
+  browser, which reserves `SUPER` (see the caveat above).
+
+See
+[architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
+Gated node-side by
+`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`,
+`host/test/{waybar,mako}-smoke.test.ts` and in the browser by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.

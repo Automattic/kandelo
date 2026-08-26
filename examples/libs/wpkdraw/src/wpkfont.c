@@ -27,8 +27,9 @@ struct cached_glyph {
 
 struct wpk_font {
     stbtt_fontinfo info;
-    int px_size;
-    float scale;
+    int px_size;          /* the LOGICAL size the caller asked for */
+    int ui_scale;         /* wpk_scale() at load time; glyphs are this bigger */
+    float scale;          /* font units -> DEVICE pixels */
     int ascent, descent;  /* font-unit vmetrics */
     struct cached_glyph cache[WPK_GLYPH_CACHE_CAP];
     int cache_next;                  /* FIFO eviction cursor */
@@ -45,7 +46,12 @@ struct wpk_font *wpk_font_load_default(int px_size) {
         return NULL;
     }
     f->px_size = px_size;
-    f->scale = stbtt_ScaleForPixelHeight(&f->info, (float)px_size);
+    /* Rasterize at the device size. Asking stb for bigger glyphs is the only
+     * thing that makes text sharper on a scaled output — a mask rendered at
+     * the logical size and blown up is exactly the blur being removed. */
+    f->ui_scale = wpk_scale();
+    f->scale = stbtt_ScaleForPixelHeight(&f->info,
+                                         (float)(px_size * f->ui_scale));
     stbtt_GetFontVMetrics(&f->info, &f->ascent, &f->descent, NULL);
     return f;
 }
@@ -99,12 +105,16 @@ int wpk_text_width(struct wpk_font *f, const char *utf8) {
         stbtt_GetCodepointHMetrics(&f->info, cp, &adv, NULL);
         x += adv * f->scale;
     }
-    return (int)(x + 0.5f);
+    return (int)(x / (float)f->ui_scale + 0.5f);
 }
 
 void wpk_text(struct wpk_surface *s, struct wpk_font *f,
               int x, int y, const char *utf8, wpk_color color) {
     if (!s || !f || !utf8) return;
+    /* The origin is logical; the glyph masks are device pixels. Advance in
+     * device pixels so a run of text does not accumulate rounding error at
+     * every character. */
+    int px = x * s->scale, py = y * s->scale;
     while (*utf8) {
         int cp = decode_utf8(&utf8);
         if (cp == 0) break;
@@ -115,20 +125,20 @@ void wpk_text(struct wpk_surface *s, struct wpk_font *f,
                     unsigned char a = g->bitmap[gy * g->w + gx];
                     if (!a) continue;
                     wpk_color c = (color & 0x00ffffffu) | ((uint32_t)a << 24);
-                    wpk_pixel(s, x + g->xoff + gx, y + g->yoff + gy, c);
+                    wpk_pixel_device(s, px + g->xoff + gx, py + g->yoff + gy, c);
                 }
             }
         }
-        x += (int)(g->advance * f->scale + 0.5f);
+        px += (int)(g->advance * f->scale + 0.5f);
     }
 }
 
 int wpk_font_height_px(struct wpk_font *f) {
     if (!f) return 0;
-    return (int)((f->ascent - f->descent) * f->scale + 0.5f);
+    return (int)((f->ascent - f->descent) * f->scale / (float)f->ui_scale + 0.5f);
 }
 
 int wpk_font_ascent_px(struct wpk_font *f) {
     if (!f) return 0;
-    return (int)(f->ascent * f->scale + 0.5f);
+    return (int)(f->ascent * f->scale / (float)f->ui_scale + 0.5f);
 }

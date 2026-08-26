@@ -342,9 +342,30 @@ export AR="${WASM_POSIX_TARGET_AR:-wasm32posix-ar}"
 export RANLIB="${WASM_POSIX_TARGET_RANLIB:-wasm32posix-ranlib}"
 export NM="${WASM_POSIX_TARGET_NM:-wasm32posix-nm}"
 export STRIP="${WASM_POSIX_TARGET_STRIP:-wasm32posix-strip}"
+# Rust's std passes -liconv on every darwin host link, and Mozilla's configure
+# selects lld as the host linker. The nix apple-sdk carries no libiconv.tbd
+# because nixpkgs ships libiconv as its own derivation, so lld resolves -liconv
+# only from an explicit -L. Apple's own SDK needs no such flag.
+darwin_host_libiconv_ldflag() {
+    local flag dir
+    for flag in ${NIX_LDFLAGS:-}; do
+        case "$flag" in
+            -L*) dir="${flag#-L}" ;;
+            *) continue ;;
+        esac
+        [ -e "$dir/libiconv.dylib" ] || continue
+        printf -- '-L%s' "$dir"
+        return 0
+    done
+}
+
 if [ "$HOST_OS" = "Darwin" ]; then
     export HOST_CC="${HOST_CC:-/usr/bin/cc}"
     export HOST_CXX="${HOST_CXX:-/usr/bin/c++}"
+    HOST_LIBICONV_LDFLAG="$(darwin_host_libiconv_ldflag)"
+    if [ -n "$HOST_LIBICONV_LDFLAG" ]; then
+        export HOST_LDFLAGS="${HOST_LDFLAGS:-} $HOST_LIBICONV_LDFLAG"
+    fi
 else
     export HOST_CC="${HOST_CC:-cc}"
     export HOST_CXX="${HOST_CXX:-c++}"

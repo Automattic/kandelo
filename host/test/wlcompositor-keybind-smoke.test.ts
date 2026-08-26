@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kwlctlBin;
@@ -39,8 +39,10 @@ const KEY_5 = 6;
 const KEY_W = 17;
 const KEY_J = 36;
 const KEY_K = 37;
+const KEY_2 = 3;
 const KEY_LEFTMETA = 125; // SUPER
 const KEY_LEFTCTRL = 29; // CTRL
+const KEY_LEFTALT = 56; // ALT
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -263,6 +265,69 @@ describe("wlcompositor — config-file keybind engine", () => {
 
         tapCtrl(KEY_W);
         await waitFor(out, "workspace>>4", 10_000, dump);
+
+        void compExit;
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  // The Omarchy-menu modifier: bind matching is exact-mods, so with both a
+  // CTRL and a CTRL ALT bind on the same key, holding ALT selects the ALT one.
+  it.skipIf(!hasBinaries)(
+    "a CTRL ALT bind fires and shadows the CTRL bind on the same key",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      const dir = mkdtempSync(join(tmpdir(), "wlc-conf-"));
+      const confPath = join(dir, "wlcompositor.conf");
+      writeFileSync(confPath,
+        "bind = CTRL, 2, workspace, 3\nbind = CTRL ALT, 2, workspace, 6\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle", `WLC_CONFIG=${confPath}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        expect(out.value, `config not parsed.\n${dump()}`)
+          .toContain(`BINDS_LOADED n=2 source=${confPath}`);
+
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, "CLIENT_CONNECTED count=1", 20_000, dump);
+
+        host.spawn(kwlctlBytes, ["kwlctl", "--listen"], {});
+        await waitFor(out, "listening", 10_000, dump);
+
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTALT, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_2, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_2, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTALT, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+
+        await waitFor(out, "workspace>>6", 10_000, dump);
+        expect(out.value).not.toContain("workspace>>3");
 
         void compExit;
       } finally {
