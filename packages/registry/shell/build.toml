@@ -41,6 +41,3 @@ revision    = 29
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"
-
-[binary]
-index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

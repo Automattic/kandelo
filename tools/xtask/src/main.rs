@@ -13,42 +13,16 @@
 //!   partition-package-matrix
 //!                         Select an exact root closure and partition it into
 //!                         dependency-safe parallel build levels.
-//!   staging-reuse         Build and validate the exact package ledger used to
-//!                         reuse a complete PR-staging release safely.
 //!   package-dependency-artifacts
 //!                         Print workflow artifact names for selected direct
 //!                         package dependencies of one package matrix entry.
-//!   materialize-package-output
-//!                         Fetch one declared program output from an exact
-//!                         index snapshot and emit its immutable provenance
-//!                         receipt without source-build fallback.
-//!   archive-stage         Produce one package's `.tar.zst` archive into --out.
-//!                         Args: --package <dir> --arch <wasm32|wasm64>
-//!                               --out <dir> --build-timestamp <ISO> --build-host <s>.
-//!                         Used by matrix-build entries.
 //!   archive-extract-member
 //!                         Stream one exact regular package-archive member to
 //!                         a new output file without exposing partial bytes.
-//!   build-index           Emit `index.toml` (the post-publish provenance
-//!                         manifest) from a directory of staged
-//!                         `.tar.zst` archives. Args: --abi <N>
-//!                         --generator <s> --archives-dir <dir>
-//!                         --out <path> [--generated-at <RFC3339>].
-//!                         Used by the `generate-index` job after
-//!                         per-file uploads land.
+//!   local-build           Resolve and source-build a package closure locally.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
-//!                         publish flow when an archive is uploaded;
-//!                         mirrors the lifecycle of
-//!                         `[binary].archive_url` + `archive_sha256`.
-//!   set-package-binary    Update `[binary.<arch>].archive_url` +
-//!                         `archive_sha256` (multi-arch) or `[binary]`
-//!                         (single-arch) in one
-//!                         `packages/registry/<name>/package.toml`. Used by
-//!                         Phase C's `amend-package-toml` job in
-//!                         `.github/workflows/prepare-merge.yml` (and the
-//!                         force-rebuild equivalent) to point the in-tree
-//!                         manifest at a freshly-published archive.
+//!                         publish flow to record source provenance.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -59,29 +33,19 @@ use std::rc::Rc;
 
 mod vfs_products;
 mod archive_extract_member;
-mod archive_stage;
-mod archive_stage_cli;
 mod build_deps;
-mod build_index;
 mod bundle_program;
 mod dump_abi;
 mod host_tool_probe;
-mod index_candidate;
-mod index_toml;
-mod index_update;
 mod local_abi_identity;
 mod local_build;
 mod local_build_executor;
 mod package_archive_limits;
-mod package_archive_name;
 mod package_matrix;
-mod package_output_receipt;
 mod pkg_manifest;
-mod publication_policy;
 mod remote_fetch;
 mod source_archive_cache;
 mod source_extract;
-mod staging_reuse;
 mod update_pkg_manifest;
 mod util;
 
@@ -92,7 +56,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build"
             );
             return ExitCode::from(2);
         }
@@ -109,15 +73,8 @@ fn main() -> ExitCode {
         "sort-package-matrix" => package_matrix::run_sort(rest),
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
-        "materialize-package-output" => package_output_receipt::run(rest),
-        "staging-reuse" => staging_reuse::run(rest),
-        "archive-stage" => archive_stage_cli::run(rest),
         "archive-extract-member" => archive_extract_member::run(rest),
-        "build-index" => build_index::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
-        "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
-        "index-update" => index_update::run_index_update(&rest),
-        "index-candidate" => index_candidate::run(rest),
         "local-build" => local_build::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");

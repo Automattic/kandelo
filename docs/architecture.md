@@ -2664,64 +2664,22 @@ import; no onlylist is needed. Legacy Asyncify artifacts are not supported.
 Every artifact under `packages/registry/<name>/` is a **package**. Each ships two TOML files:
 
 - **`package.toml`** — the **recipe**: name, version, upstream source pin, license, dependencies, `[build].script_path`. Identity-and-constraints. Project-agnostic; same content across any project that depends on this package.
-- **`build.toml`** — the **project view**: `script_path` (this project's actual build), `repo_url` + `commit` (where the recipe lives in this project), publish-time `revision`, and `[binary]` declaring where binaries are published. Differs per project.
+- **`build.toml`** — the **project view**: `script_path` (this project's actual build), `repo_url` + `commit` (where the recipe lives in this project), `revision` (a cache-key input), declared build `inputs`, and any `[[git_inputs]]`. Differs per project.
 
-Binary resolution does not look at either of those files for archive URLs. Instead, a per-release `index.toml` ledger hosted at `build.toml`'s `index_url` is the single source of truth — see `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` for the full design and `docs/package-management.md` for the reference manual.
+Package resolution is **local-first**: every package is source-built through the SDK/libc/resolver and cached locally by content hash. There is no remote prebuilt-binary channel. See `docs/package-management.md` for the reference manual.
 
 **Resolver flow** (`xtask build-deps resolve`, called from build scripts):
 
-1. Read `packages/registry/<name>/package.toml` for the recipe.
-2. Read `packages/registry/<name>/build.toml` for the binary source and publish-time `revision`.
-3. `build.toml`'s `[binary]` declares one of:
-   - `index_url = "https://.../binaries-abi-v{abi}/index.toml"` — indexed lookup. `{abi}` is substituted with the current `ABI_VERSION` from `crates/shared/src/lib.rs`.
-   - `url = "..." sha256 = "..."` — direct archive URL, no index.
-4. Indexed flow fetches `index.toml` (cached at `~/.cache/kandelo/indexes/`) and looks up `(name, version, arch)`:
-   - `status = "success"` → fetch `archive_url`, verify `archive_sha256`, install.
-   - `status = "failed"` / `"pending"` / `"building"` with `fallback_archive_url` set → fetch the last-green archive instead.
-   - Anything else → fall through to source build.
-5. Every installed archive's internal `manifest.toml`'s `[compatibility]` block is verified against the request (target_arch, abi_versions, cache_key_sha). Any mismatch falls through to source build.
+1. Read `packages/registry/<name>/package.toml` for the recipe and `packages/registry/<name>/build.toml` for the project view (`revision`, build inputs).
+2. Return a hand-patched override under `local-libs/<name>/build/` (libraries) or `local-binaries/programs/<arch>/...` (programs) if present.
+3. Otherwise return the canonical content-addressed cache entry `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/` if it exists.
+4. On a cache miss, **build from source**: fetch the upstream source archive from `[source].url`, verify it against `[source].sha256`, run `build-<name>.sh` via the SDK, validate the declared outputs, and atomically install the result into the canonical cache.
 
-**Per-package updates are serialized by release.** CI's per-matrix-build job
-runs `scripts/index-update.sh` after producing each archive: it acquires the
-target tag's workflow-level state-lock (`.github/scripts/state-lock.sh`),
-downloads the current `index.toml`, mutates this package's entry via `xtask
-index-update`, uploads the content-addressed archive, and publishes the updated
-ledger. PR staging and Prepare-merge candidate tags are isolated from
-consumers. Canonical `binaries-abi-v<N>` writers publish through
-`scripts/release-index-state.sh`, whose marker, immutable generation, and
-transaction journal make the logical ledger commit crash-recoverable; they do
-not replace the canonical ledger with an unjournaled `--clobber`. Different
-tags use different state-lock subjects, so independent rebuilds do not block
-each other.
+The cache key is computed over the recipe identity, `revision`, source pin, target arch, `ABI_VERSION`, declared outputs, declared build inputs, `[[git_inputs]]`, the global toolchain/sysroot fingerprint, and the transitive dependency cache keys. Any change to those inputs invalidates the entry and triggers a source rebuild of that package and its dependents.
 
-Prepare-merge snapshots canonical state through the same script's nonmutating
-validation path. It reads a legacy stable index as-is, but managed releases must
-have an agreeing marker, immutable generation, and live asset. Transaction
-cleanup leftovers do not hide that committed view; incomplete or mismatched
-state is left unchanged for scheduled post-merge recovery.
+The `[binary]` block that once declared a remote publish/fetch location was removed with the remote binary channel; `validate_source` rejects it in `package.toml` or `build.toml`.
 
-**Last-green fallback.** When a per-package rebuild for `(name, version, arch)` fails, its prior successful `archive_url` is preserved in the entry's `fallback_archive_url` field — consumers keep fetching the last working archive while CI iterates on the rebuild. A subsequent success clears the fallback.
-
-**CI flow.** `.github/workflows/staging-build.yml` builds changed packages into
-run-specific staging drafts and publishes each successful attempt once. On
-`ready-to-ship`, `prepare-merge.yml` snapshots the
-canonical ledger into a run-specific merge-candidate release, builds or
-promotes packages there, tests that exact synthetic merge, and seals the tested
-candidate without changing canonical state. The candidate remains a draft
-until activation can attach a terminal receipt and publish immutable evidence.
-After a reviewer merges the exact
-prepared tree, `activate-merge-candidate.yml` verifies the merge identity,
-copies and verifies candidate archives, and commits one complete canonical
-ledger through the journaled publisher. A newly created canonical release is
-sealed and published once; the pre-existing ABI 42 ledger remains the explicit
-grandfathered mutable exception. Its scheduled/manual path also
-recovers interrupted canonical transactions even when there is no candidate to
-activate. `force-rebuild.yml` remains the manual canonical rebuild escape
-hatch.
-
-The legacy `[binary]` block in `package.toml` was removed during the binary-resolution-via-index-ledger migration (see commit log around 2026-05-13). Archived `manifest.toml` bytes inside historical `.tar.zst` files still carry the legacy shape; `xtask`'s `parse_archived` keeps accepting it. `validate_source` rejects it on the source path so stale source files surface immediately.
-
-For schema, resolver behavior, and the build-script contract see [docs/package-management.md](package-management.md). For the release operations (tag convention, `index.toml` shape, fetch-binaries.sh semantics) see [docs/binary-releases.md](binary-releases.md).
+For schema, cache-key hashing, resolver ordering, and the build-script contract see [docs/package-management.md](package-management.md).
 
 ## Test Suites
 

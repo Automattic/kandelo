@@ -118,9 +118,6 @@ inputs = ["host/src"]
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
-
-[binary]
-index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
 "#,
     );
     write(
@@ -313,7 +310,6 @@ fn relocated_xtask_requires_and_obeys_one_explicit_source_checkout() {
 #[test]
 fn same_checkout_implicit_and_explicit_generation_are_byte_identical() {
     let root = fs::canonicalize(compiled_repo_root()).unwrap();
-    let registry = root.join("packages/registry");
     let output_root = tempfile::tempdir().unwrap();
     let implicit_path = output_root.path().join("implicit.json");
     let explicit_path = output_root.path().join("explicit.json");
@@ -335,9 +331,8 @@ fn same_checkout_implicit_and_explicit_generation_are_byte_identical() {
     let implicit_bytes = fs::read(implicit_path).unwrap();
     let explicit_bytes = fs::read(explicit_path).unwrap();
     assert_eq!(implicit_bytes, explicit_bytes);
-    assert_eq!(
-        explicit_bytes,
-        fs::read(registry.join("program-packages.json")).unwrap(),
-        "the explicit current-source generation must match committed policy"
-    );
+    // NOTE: no comparison against a committed packages/registry/program-packages.json.
+    // That index is a generated artifact (gitignored) as of the derive-the-index
+    // change; the meaningful invariant here is that implicit and explicit
+    // source-root generation are byte-identical, which the assertion above proves.
 }

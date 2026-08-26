@@ -126,7 +126,6 @@ nix_develop=(
     --keep WASM_POSIX_DEP_OUT_DIR \
     --keep WASM_POSIX_DEP_NAME \
     --keep WASM_POSIX_DEP_VERSION \
-    --keep WASM_POSIX_BINARY_INDEX_URL \
     --keep WASM_POSIX_USE_PR_STAGING \
     --keep WASM_POSIX_FETCH_SKIP_PKGS \
     --keep WASM_POSIX_SYSROOT \

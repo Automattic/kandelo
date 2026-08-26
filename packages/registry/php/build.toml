@@ -15,6 +15,3 @@ commit      = "UNPUBLISHED"
 # for the fork-instrumented opcache side module (16), then make every dylink
 # output carry complete ABI 43 side-boundary instrumentation (17).
 revision    = 17
-
-[binary]
-index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

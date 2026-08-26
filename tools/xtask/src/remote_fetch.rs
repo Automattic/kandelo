@@ -1,44 +1,11 @@
-//! Remote-fetch resolver path.
+//! HTTP/`file://` archive transport used by the source-build path.
 //!
-//! When a `package.toml` carries a `[binary]` block, the resolver tries to
-//! fetch and install the prebuilt archive *before* falling back to a
-//! source build. The path slots between "cache miss" and "run build
-//! script" in [`build_deps::ensure_built_inner`].
-//!
-//! # Verification chain
-//!
-//! Each step short-circuits to `Err`. The caller logs and falls
-//! through to the source build on any failure, so a remote fetch can
-//! never cause the resolver to refuse to produce an artifact — only
-//! ever to take a slower path.
-//!
-//!   1. **Fetch.** GET the archive over `http(s)://`, or read it from
-//!      disk for `file://` (used by tests). Errors → fall through.
-//!   2. **Sha256.** Hash the bytes; reject on mismatch with
-//!      `[binary].archive_sha256`.
-//!   3. **Decompress + extract** into `<canonical>.tmp-<pid>/`.
-//!   4. **Parse `manifest.toml`** as an archived manifest (must
-//!      contain `[compatibility]`).
-//!   5. **`compatibility.target_arch`** must match the resolver's arch.
-//!   6. **`compatibility.abi_versions`** must contain the consumer's
-//!      kernel ABI version.
-//!   7. **`compatibility.git_inputs`** must exactly match the current
-//!      package's declared immutable Git inputs.
-//!   8. **`compatibility.cache_key_sha`** must match the locally-
-//!      computed cache-key sha (i.e. archive's source recipe + build
-//!      tree hash to the same value the consumer would have produced
-//!      from source). This is the strict equivalence check —
-//!      mismatching name/version is implicitly impossible if the cache
-//!      key matches.
-//!   9. **Reshape.** Move `artifacts/*` to the temp dir's root and
-//!      remove the now-empty `artifacts/` plus `manifest.toml`. The
-//!      archive bundle layout (manifest.toml at top, artifacts/ as a
-//!      subdir) is *not* the canonical cache layout (lib/, include/,
-//!      etc. at top); we flatten before installing.
-//!   10. **Atomic rename** into the canonical cache path. If a peer
-//!      raced us, discard our tmp.
-//!
-//! Any error after step 3 cleans up the temp dir before returning.
+//! Packages are always built from source. This module owns the bounded,
+//! retrying download engine that streams an upstream *source* archive to
+//! a file and verifies its sha256 ([`stream_source_archive_to_file`],
+//! [`fetch_url`], [`verify_sha`], [`validate_archive_url`]). The
+//! prebuilt-binary channel (fetching `.tar.zst` package archives from a
+//! release index) has been removed; only the source transport remains.
 //!
 //! # Security note on `file://`
 //!
@@ -47,18 +14,17 @@
 //! local files. That's the user's choice — they put the URL in their
 //! own `package.toml`. We do not sanitise.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
+#[cfg(any(test, windows))]
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use crate::package_archive_limits::MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES;
-use crate::pkg_manifest::{
-    Binary, DepsManifest, GitBuildInput, TargetArch, current_git_inputs, validate_cache_provenance,
-    write_cache_provenance,
-};
 use crate::util::hex;
 
 /// Maximum response size we accept for published package archives and small
@@ -95,8 +61,8 @@ const HTTP_ARCHIVE_FETCH_MAX_BACKOFF: Duration = Duration::from_secs(30);
 #[cfg(test)]
 pub(crate) static OFFLINE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Reasons a remote fetch can fail. Caller logs and falls through to
-/// source build — none of these is fatal to the resolver.
+/// Reasons a source-archive fetch can fail. Caller logs and falls
+/// through — none of these is fatal to the resolver.
 #[derive(Debug)]
 #[allow(dead_code)] // Some validation variants are only constructed on fallback paths.
 pub enum FetchError {
@@ -104,30 +70,8 @@ pub enum FetchError {
     Http(String),
     /// A read timeout, stall detector, or overall download deadline fired.
     Timeout(String),
-    /// `sha256(bytes)` ≠ `[binary].archive_sha256`.
+    /// `sha256(bytes)` ≠ the expected upstream source `sha256`.
     ShaMismatch { expected: String, actual: String },
-    /// `zstd` decompression failed.
-    DecompressFailed(String),
-    /// `tar` extraction failed.
-    ExtractFailed(String),
-    /// `manifest.toml` not present in extracted archive.
-    ManifestMissing(String),
-    /// `manifest.toml` failed to parse (or compatibility validation).
-    ManifestParseError(String),
-    /// `compatibility.target_arch` ≠ resolver arch.
-    ArchMismatch {
-        expected: TargetArch,
-        found: TargetArch,
-    },
-    /// Consumer's ABI not in `compatibility.abi_versions`.
-    AbiMismatch { current: u32, supported: Vec<u32> },
-    /// Archive `cache_key_sha` ≠ locally-computed cache_key sha.
-    CacheKeyMismatch { local: String, archived: String },
-    /// Archive external-Git provenance differs from current build.toml.
-    GitInputsMismatch {
-        expected: Vec<GitBuildInput>,
-        archived: Vec<GitBuildInput>,
-    },
     /// Filesystem operation (mkdir / rename / read_dir / …) failed.
     IoError(String),
 }
@@ -141,286 +85,12 @@ impl std::fmt::Display for FetchError {
             FetchError::ShaMismatch { expected, actual } => {
                 write!(f, "archive sha mismatch: expected {expected}, got {actual}")
             }
-            FetchError::DecompressFailed(s) => write!(f, "zstd decompress failed: {s}"),
-            FetchError::ExtractFailed(s) => write!(f, "tar extract failed: {s}"),
-            FetchError::ManifestMissing(s) => write!(f, "manifest.toml missing: {s}"),
-            FetchError::ManifestParseError(s) => write!(f, "manifest.toml parse error: {s}"),
-            FetchError::ArchMismatch { expected, found } => write!(
-                f,
-                "arch mismatch: resolver wants {}, archive has {}",
-                expected.as_str(),
-                found.as_str()
-            ),
-            FetchError::AbiMismatch { current, supported } => write!(
-                f,
-                "abi mismatch: kernel ABI {current}, archive supports {supported:?}"
-            ),
-            FetchError::CacheKeyMismatch { local, archived } => write!(
-                f,
-                "cache_key_sha mismatch: local {local}, archive {archived}"
-            ),
-            FetchError::GitInputsMismatch { expected, archived } => write!(
-                f,
-                "immutable git inputs mismatch: current build.toml {expected:?}, archive {archived:?}"
-            ),
             FetchError::IoError(s) => write!(f, "io: {s}"),
         }
     }
 }
 
 impl std::error::Error for FetchError {}
-
-/// Top-level entry point. Verifies + installs the prebuilt archive
-/// described by `binary` into `canonical`. Returns `Ok(())` on a
-/// successful install (or on a benign race where another process won
-/// the rename); any other condition becomes a `FetchError` and the
-/// caller falls through to the source build.
-///
-/// `target` (the source manifest) is currently only used to plumb
-/// shape; the strict equivalence check is via `local_cache_key_sha_hex`.
-pub fn fetch_and_install(
-    binary: &Binary,
-    canonical: &Path,
-    target: &DepsManifest,
-    arch: TargetArch,
-    abi_version: u32,
-    local_cache_key_sha_hex: &str,
-) -> Result<(), FetchError> {
-    fetch_and_install_direct(
-        &binary.archive_url,
-        &binary.archive_sha256,
-        canonical,
-        target,
-        arch,
-        abi_version,
-        local_cache_key_sha_hex,
-    )
-}
-
-/// Like [`fetch_and_install`], but takes the archive URL + sha
-/// directly instead of reading them from a [`Binary`] struct. Used
-/// by the index-lookup resolution path (post
-/// binary-resolution-via-index-ledger), where the URL + sha come
-/// from an `index.toml` entry rather than `package.toml`.
-#[allow(clippy::too_many_arguments)]
-pub fn fetch_and_install_direct(
-    archive_url: &str,
-    archive_sha256: &str,
-    canonical: &Path,
-    target: &DepsManifest,
-    arch: TargetArch,
-    abi_version: u32,
-    local_cache_key_sha_hex: &str,
-) -> Result<(), FetchError> {
-    fetch_and_install_direct_with_metadata(
-        archive_url,
-        archive_sha256,
-        canonical,
-        target,
-        arch,
-        abi_version,
-        local_cache_key_sha_hex,
-    )
-    .map(|_| ())
-}
-
-/// Verified archive metadata returned to consumers that must bind a produced
-/// file to its immutable package archive, rather than merely populate the
-/// resolver cache.
-pub(crate) struct FetchInstallMetadata {
-    pub archive_bytes: u64,
-}
-
-/// The strict fetch/install path with the verified archive size retained for
-/// provenance receipts. Keeping this beside the normal resolver path ensures
-/// receipt-producing consumers cannot drift into a second archive parser or a
-/// weaker validation chain.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn fetch_and_install_direct_with_metadata(
-    archive_url: &str,
-    archive_sha256: &str,
-    canonical: &Path,
-    target: &DepsManifest,
-    arch: TargetArch,
-    abi_version: u32,
-    local_cache_key_sha_hex: &str,
-) -> Result<FetchInstallMetadata, FetchError> {
-    // 1. Prepare cache parent and stream the archive into a sibling temp file.
-    let parent = canonical.parent().ok_or_else(|| {
-        FetchError::IoError(format!("canonical has no parent: {}", canonical.display()))
-    })?;
-    fs::create_dir_all(parent).map_err(|e| {
-        FetchError::IoError(format!("create cache parent {}: {e}", parent.display()))
-    })?;
-    let archive_file =
-        fetch_archive_to_temp_file(archive_url, archive_sha256, parent, &target.spec())?;
-    let archive_bytes = archive_file
-        .path()
-        .metadata()
-        .map_err(|e| {
-            FetchError::IoError(format!(
-                "stat verified archive {}: {e}",
-                archive_file.path().display()
-            ))
-        })?
-        .len();
-
-    // 2. Decompress + extract into `<canonical>.tmp-<pid>/`.
-    let tmp_name = format!(
-        "{}.tmp-{}",
-        canonical
-            .file_name()
-            .expect("canonical path has a filename")
-            .to_string_lossy(),
-        std::process::id()
-    );
-    let tmp = parent.join(tmp_name);
-    if tmp.exists() {
-        let _ = fs::remove_dir_all(&tmp);
-    }
-    fs::create_dir_all(&tmp)
-        .map_err(|e| FetchError::IoError(format!("create temp {}: {e}", tmp.display())))?;
-
-    // From here on we own `tmp`; cleanup on every error path.
-    if let Err(e) = extract_tar_zst_file(archive_file.path(), &tmp) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
-
-    // 4. Parse manifest.toml.
-    let manifest_path = tmp.join("manifest.toml");
-    if !manifest_path.is_file() {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::ManifestMissing(format!(
-            "expected {}, not found",
-            manifest_path.display()
-        )));
-    }
-    let manifest_text = match fs::read_to_string(&manifest_path) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = fs::remove_dir_all(&tmp);
-            return Err(FetchError::IoError(format!(
-                "read {}: {e}",
-                manifest_path.display()
-            )));
-        }
-    };
-    let archived = match DepsManifest::parse_archived(&manifest_text, tmp.clone()) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = fs::remove_dir_all(&tmp);
-            return Err(FetchError::ManifestParseError(e));
-        }
-    };
-    let compat = archived
-        .compatibility
-        .as_ref()
-        .expect("parse_archived guarantees compatibility");
-
-    // 5. target_arch.
-    if compat.target_arch != arch {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::ArchMismatch {
-            expected: arch,
-            found: compat.target_arch,
-        });
-    }
-
-    // 6. abi_versions.
-    if !compat.abi_versions.contains(&abi_version) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::AbiMismatch {
-            current: abi_version,
-            supported: compat.abi_versions.clone(),
-        });
-    }
-
-    // 7. Immutable external Git inputs must match as exact ordered tuples.
-    // Cache-key participation is necessary but insufficient evidence here:
-    // compare the human-auditable archived provenance directly so an archive
-    // cannot claim a different source identity under a copied cache key.
-    let expected_git_inputs = match current_git_inputs(target) {
-        Ok(inputs) => inputs,
-        Err(e) => {
-            let _ = fs::remove_dir_all(&tmp);
-            return Err(FetchError::ManifestParseError(format!(
-                "load current build.toml git inputs: {e}"
-            )));
-        }
-    };
-    if compat.git_inputs != expected_git_inputs {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::GitInputsMismatch {
-            expected: expected_git_inputs,
-            archived: compat.git_inputs.clone(),
-        });
-    }
-
-    // 8. cache_key_sha equivalence.
-    if compat.cache_key_sha != local_cache_key_sha_hex {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::CacheKeyMismatch {
-            local: local_cache_key_sha_hex.to_string(),
-            archived: compat.cache_key_sha.clone(),
-        });
-    }
-
-    // 9. Reshape: hoist artifacts/* up to tmp root, drop manifest.toml + artifacts/.
-    if let Err(e) = flatten_archive_layout(&tmp) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
-    if let Err(e) = write_cache_provenance(
-        target,
-        canonical,
-        arch,
-        abi_version,
-        local_cache_key_sha_hex,
-    ) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(FetchError::IoError(e));
-    }
-
-    // 10. Atomic rename. If a peer raced us, discard ours.
-    if canonical.exists() {
-        let _ = fs::remove_dir_all(&tmp);
-        validate_cache_provenance(
-            target,
-            canonical,
-            arch,
-            abi_version,
-            local_cache_key_sha_hex,
-        )
-        .map_err(FetchError::IoError)?;
-        return Ok(FetchInstallMetadata { archive_bytes });
-    }
-    if let Err(e) = fs::rename(&tmp, canonical) {
-        // The rename may have failed because a peer process beat us
-        // between the `exists()` check above and our `rename(2)` —
-        // in which case the install has *already succeeded* (via the
-        // peer) and we should report success. Re-check post-failure
-        // before surfacing an error.
-        let _ = fs::remove_dir_all(&tmp);
-        if canonical.exists() {
-            validate_cache_provenance(
-                target,
-                canonical,
-                arch,
-                abi_version,
-                local_cache_key_sha_hex,
-            )
-            .map_err(FetchError::IoError)?;
-            return Ok(FetchInstallMetadata { archive_bytes });
-        }
-        return Err(FetchError::IoError(format!(
-            "atomic rename {} -> {}: {e}",
-            tmp.display(),
-            canonical.display()
-        )));
-    }
-    Ok(FetchInstallMetadata { archive_bytes })
-}
 
 /// Fetch the archive bytes. Supports `file://` (for tests + local
 /// caches) and `http(s)://` (real downloads). Errors are wrapped in
@@ -462,23 +132,27 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
     )))
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct TempArchiveFile {
     path: PathBuf,
 }
 
+#[cfg(test)]
 impl TempArchiveFile {
     fn path(&self) -> &Path {
         &self.path
     }
 }
 
+#[cfg(test)]
 impl Drop for TempArchiveFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
+#[cfg(test)]
 fn fetch_archive_to_temp_file(
     url: &str,
     archive_sha256: &str,
@@ -506,10 +180,11 @@ fn fetch_archive_to_temp_file(
     }
 }
 
-/// Stream one bounded source archive into a caller-owned, already-open file.
+/// Stream one bounded archive into a caller-owned, already-open file.
 ///
 /// This transport deliberately has no cache-path or publication knowledge.
 /// The caller owns durability, digest verification, and atomic publication.
+#[cfg(test)]
 pub(crate) fn stream_archive_to_file(
     url: &str,
     file: &mut File,
@@ -560,6 +235,7 @@ pub(crate) fn validate_archive_url(url: &str) -> Result<(), FetchError> {
     }
 }
 
+#[cfg(test)]
 fn create_temp_archive_file(
     dir: &Path,
     label: &str,
@@ -592,6 +268,7 @@ fn create_temp_archive_file(
     )))
 }
 
+#[cfg(test)]
 fn sanitize_temp_label(label: &str) -> String {
     let mut out = String::new();
     for ch in label.chars() {
@@ -1332,6 +1009,7 @@ impl<'a> DownloadProgress<'a> {
     }
 }
 
+#[cfg(test)]
 fn verify_sha_file(path: &Path, expected_hex: &str) -> Result<(), FetchError> {
     let mut file = File::open(path)
         .map_err(|e| FetchError::IoError(format!("open {}: {e}", path.display())))?;
@@ -1514,111 +1192,6 @@ pub(crate) fn verify_sha(bytes: &[u8], expected_hex: &str) -> Result<(), FetchEr
     Ok(())
 }
 
-/// Decompress `bytes` (`.tar.zst`) into `dest`.
-///
-/// Decompressed output is capped at
-/// `MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES` to
-/// defend against zip-bomb-style archives that decompress to many
-/// times the on-wire size. On overflow the stream truncates mid-tar
-/// and the unpack call returns `FetchError::ExtractFailed`.
-#[cfg(test)]
-fn extract_tar_zst(bytes: &[u8], dest: &Path) -> Result<(), FetchError> {
-    extract_tar_zst_reader(bytes, dest)
-}
-
-fn extract_tar_zst_file(path: &Path, dest: &Path) -> Result<(), FetchError> {
-    let file = File::open(path)
-        .map_err(|e| FetchError::IoError(format!("open {}: {e}", path.display())))?;
-    extract_tar_zst_reader(file, dest)
-}
-
-fn extract_tar_zst_reader<R: Read>(reader: R, dest: &Path) -> Result<(), FetchError> {
-    let decoder = zstd::stream::read::Decoder::new(reader)
-        .map_err(|e| FetchError::DecompressFailed(format!("{e}")))?;
-    let bounded = std::io::Read::take(decoder, MAX_PACKAGE_ARCHIVE_DECOMPRESSED_BYTES);
-    let mut tar = tar::Archive::new(bounded);
-    tar.unpack(dest)
-        .map_err(|e| FetchError::ExtractFailed(format!("{e}")))?;
-    Ok(())
-}
-
-/// After extraction, the temp dir contains `manifest.toml` plus an
-/// `artifacts/` subdirectory holding the actual cache layout
-/// (`lib/`, `include/`, `lib/pkgconfig/`). The canonical cache layout
-/// has those at the *root*. Move them up and drop the wrapper.
-fn flatten_archive_layout(tmp: &Path) -> Result<(), FetchError> {
-    let artifacts = tmp.join("artifacts");
-    if artifacts.is_dir() {
-        let rd = fs::read_dir(&artifacts)
-            .map_err(|e| FetchError::IoError(format!("read_dir {}: {e}", artifacts.display())))?;
-        for entry in rd {
-            let entry = entry.map_err(|e| {
-                FetchError::IoError(format!("read_dir {}: {e}", artifacts.display()))
-            })?;
-            let src = entry.path();
-            let dst = tmp.join(entry.file_name());
-            fs::rename(&src, &dst).map_err(|e| {
-                FetchError::IoError(format!(
-                    "rename {} -> {}: {e}",
-                    src.display(),
-                    dst.display()
-                ))
-            })?;
-        }
-        fs::remove_dir_all(&artifacts)
-            .map_err(|e| FetchError::IoError(format!("remove {}: {e}", artifacts.display())))?;
-    }
-    let manifest = tmp.join("manifest.toml");
-    if manifest.is_file() {
-        let _ = fs::remove_file(&manifest);
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------
-// Test helpers shared with `build_deps`'s integration tests
-// ---------------------------------------------------------------------
-
-/// Build a `.tar.zst` archive containing `manifest.toml` plus
-/// `artifacts/<files...>` — the layout produced by the binary-cache
-/// publishing pipeline. Used by both this module's unit tests and the
-/// remote-fetch integration tests in `build_deps`.
-#[cfg(test)]
-pub(crate) fn build_test_archive(manifest_text: &str, artifact_files: &[(&str, &[u8])]) -> Vec<u8> {
-    use std::io::Write;
-
-    let mut tar_bytes: Vec<u8> = Vec::new();
-    {
-        let mut builder = tar::Builder::new(&mut tar_bytes);
-
-        let mut header = tar::Header::new_gnu();
-        header.set_size(manifest_text.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        builder
-            .append_data(&mut header, "manifest.toml", manifest_text.as_bytes())
-            .unwrap();
-
-        for (rel, bytes) in artifact_files {
-            let path = format!("artifacts/{rel}");
-            let mut header = tar::Header::new_gnu();
-            header.set_size(bytes.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder.append_data(&mut header, &path, *bytes).unwrap();
-        }
-        builder.finish().unwrap();
-    }
-
-    let mut zst_bytes: Vec<u8> = Vec::new();
-    {
-        let mut encoder = zstd::stream::write::Encoder::new(&mut zst_bytes, 0).unwrap();
-        encoder.write_all(&tar_bytes).unwrap();
-        encoder.finish().unwrap();
-    }
-    zst_bytes
-}
-
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
@@ -1703,102 +1276,6 @@ l/XQs2Jqii5ft7iIbA3k5ceMu9NknwzTFhLdbMfUZDeyBN3/mmBSyx0K
             }
             other => panic!("unexpected err: {other:?}"),
         }
-    }
-
-    #[test]
-    fn remote_fetch_rejects_git_provenance_different_from_current_build() {
-        let dir = tempdir("git-input-mismatch");
-        let package_dir = dir.join("registry/demo");
-        fs::create_dir_all(&package_dir).unwrap();
-        fs::write(
-            package_dir.join("package.toml"),
-            r#"
-kind = "library"
-name = "demo"
-version = "1.0.0"
-depends_on = []
-[source]
-url = "https://example.test/demo.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-[license]
-spdx = "MIT"
-[outputs]
-libs = ["lib/libdemo.a"]
-"#,
-        )
-        .unwrap();
-        fs::write(
-            package_dir.join("build.toml"),
-            r#"
-script_path = "packages/registry/demo/build-demo.sh"
-repo_url = "https://example.test/kandelo.git"
-commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-revision = 1
-[[git_inputs]]
-name = "tap"
-repository = "https://example.test/current-tap.git"
-commit = "1111111111111111111111111111111111111111"
-[binary]
-index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
-"#,
-        )
-        .unwrap();
-        let target = DepsManifest::load_with_overlay(&package_dir).unwrap();
-        let cache_key = "a".repeat(64);
-        let archived_manifest = format!(
-            r#"
-kind = "library"
-name = "demo"
-version = "1.0.0"
-revision = 1
-depends_on = []
-[source]
-url = "https://example.test/demo.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-[license]
-spdx = "MIT"
-[outputs]
-libs = ["lib/libdemo.a"]
-[compatibility]
-target_arch = "wasm32"
-abi_versions = [4]
-cache_key_sha = "{cache_key}"
-[[compatibility.git_inputs]]
-name = "tap"
-repository = "https://example.test/different-tap.git"
-commit = "2222222222222222222222222222222222222222"
-"#
-        );
-        let archive =
-            build_test_archive(&archived_manifest, &[("lib/libdemo.a", b"archive bytes")]);
-        let archive_path = dir.join("demo.tar.zst");
-        fs::write(&archive_path, &archive).unwrap();
-        let archive_sha = sha256_hex(&archive);
-        let canonical = dir.join("cache/libs/demo");
-        let err = fetch_and_install_direct(
-            &format!("file://{}", archive_path.display()),
-            &archive_sha,
-            &canonical,
-            &target,
-            TargetArch::Wasm32,
-            4,
-            &cache_key,
-        )
-        .unwrap_err();
-        match err {
-            FetchError::GitInputsMismatch { expected, archived } => {
-                assert_eq!(
-                    expected[0].repository,
-                    "https://example.test/current-tap.git"
-                );
-                assert_eq!(
-                    archived[0].repository,
-                    "https://example.test/different-tap.git"
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-        assert!(!canonical.exists());
     }
 
     #[test]
@@ -2509,32 +1986,5 @@ commit = "2222222222222222222222222222222222222222"
             }
             other => panic!("expected FetchError::Http, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn extract_tar_zst_round_trips() {
-        let manifest = "kind = \"library\"\nname = \"x\"\n";
-        let archive = build_test_archive(manifest, &[("lib/libX.a", b"\x00\x01\x02")]);
-
-        let dest = tempdir("extract-rt");
-        extract_tar_zst(&archive, &dest).unwrap();
-        let m = fs::read_to_string(dest.join("manifest.toml")).unwrap();
-        assert_eq!(m, manifest);
-        let lib = fs::read(dest.join("artifacts/lib/libX.a")).unwrap();
-        assert_eq!(lib, b"\x00\x01\x02");
-    }
-
-    #[test]
-    fn flatten_archive_layout_hoists_artifacts() {
-        let dir = tempdir("flatten");
-        fs::write(dir.join("manifest.toml"), "x").unwrap();
-        fs::create_dir_all(dir.join("artifacts/lib")).unwrap();
-        fs::write(dir.join("artifacts/lib/libZ.a"), b"data").unwrap();
-
-        flatten_archive_layout(&dir).unwrap();
-
-        assert!(!dir.join("manifest.toml").exists());
-        assert!(!dir.join("artifacts").exists());
-        assert!(dir.join("lib/libZ.a").is_file());
     }
 }

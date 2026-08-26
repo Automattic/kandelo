@@ -6,7 +6,6 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
-#   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
@@ -15,11 +14,6 @@
 #   ./run.sh test [suite...]      Run test suites
 #
 # Top-level flags (recognized anywhere in the argument list):
-#   --allow-stale                 Accepted for back-compat; the resolver
-#                                  source-builds automatically on any
-#                                  verification failure. No-op today.
-#   --fetch-only                  Refuse source-build fallback when fetching
-#                                  package binaries.
 #   --already-materialized        Retired browser selection mode; rejected by
 #                                  browser commands.
 #   --source-rootfs-shell         Retired browser selection mode; rejected by
@@ -62,20 +56,12 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 # Scrub top-level flags from $@ and turn them into env vars so downstream
 # fetch/build commands inherit them. Browser commands reject retired binary
 # selection modes and always use the local SourceOnly graph.
-ALLOW_STALE_ARGS=()
-FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
 SOURCE_ROOTFS_SHELL=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
     case "$a" in
-        --allow-stale)
-            ALLOW_STALE_ARGS=(--allow-stale)
-            ;;
-        --fetch-only)
-            FETCH_ONLY_ARGS=(--fetch-only)
-            ;;
         --already-materialized)
             ALREADY_MATERIALIZED=1
             ;;
@@ -91,23 +77,11 @@ for a in "$@"; do
     esac
 done
 set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
-if [ "${WASM_POSIX_ALLOW_STALE:-0}" = "1" ]; then
-    ALLOW_STALE_ARGS=(--allow-stale)
-fi
-if [ "${WASM_POSIX_FETCH_ONLY:-0}" = "1" ]; then
-    FETCH_ONLY_ARGS=(--fetch-only)
-fi
 if [ "${WASM_POSIX_ALREADY_MATERIALIZED:-0}" = "1" ]; then
     ALREADY_MATERIALIZED=1
 fi
 CI_BROWSER_SOURCE_AUTHORITY="${WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY:-}"
 unset WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY
-if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
-    err "--allow-stale and --fetch-only cannot be combined."
-    exit 2
-fi
-export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
-export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
 export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
@@ -118,7 +92,6 @@ export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
 case "${1:-}" in
     browser|prepare-browser)
         if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
-            [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] ||
             [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
             [ "$USE_PR_STAGING" -eq 1 ] ||
             [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then
@@ -134,9 +107,8 @@ if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
         exit 2
     }
     if [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
-        [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] ||
         [ "$USE_PR_STAGING" -eq 1 ]; then
-        err "--source-rootfs-shell cannot combine with already-materialized, fetch-only, or PR-staging modes."
+        err "--source-rootfs-shell cannot combine with already-materialized or PR-staging modes."
         exit 2
     fi
 fi
@@ -149,7 +121,6 @@ validate_ci_browser_source_authority() {
     fi
     if [ "$#" -ne 1 ] || [ "${1:-}" != prepare-browser ] ||
         [ "$ALREADY_MATERIALIZED" -ne 1 ] ||
-        [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] ||
         [ "$SOURCE_ROOTFS_SHELL" -ne 0 ] ||
         [ "$USE_PR_STAGING" -ne 0 ]; then
         err "Internal browser source authority requires isolated CI preparation."
@@ -157,91 +128,6 @@ validate_ci_browser_source_authority() {
     fi
 }
 validate_ci_browser_source_authority "$@" || exit $?
-
-pr_staging_manual_override_hint() {
-    local repo_hint=${1:-"<owner>/<repo>"}
-    err "Manual override:"
-    err "  Set WASM_POSIX_BINARY_INDEX_URL to index.toml from an exact"
-    err "  pr-<PR>-staging-run-<RUN>-attempt-<ATTEMPT> release in ${repo_hint}."
-}
-
-configure_pr_staging_binary_index() {
-    [ "$USE_PR_STAGING" = "1" ] || return 0
-
-    if [ -n "${WASM_POSIX_BINARY_INDEX_URL:-}" ]; then
-        warn "WASM_POSIX_BINARY_INDEX_URL is already set; leaving it unchanged."
-        return 0
-    fi
-
-    if ! command -v gh >/dev/null 2>&1; then
-        err "PR staging binary index requested, but gh is not on PATH."
-        pr_staging_manual_override_hint
-        exit 2
-    fi
-
-    local pr_number head_sha
-    if ! pr_number=$(gh pr view --json number --jq '.number' 2>/dev/null) \
-        || [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
-        err "PR staging binary index requested, but this branch is not associated with a GitHub PR."
-        pr_staging_manual_override_hint
-        exit 2
-    fi
-    head_sha=$(gh pr view --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
-    if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
-        err "PR staging binary index requested, but gh returned no exact PR head."
-        pr_staging_manual_override_hint
-        exit 2
-    fi
-
-    local repo pr_url
-    pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null || true)
-    repo=$(sed -E 's#^https://github.com/([^/]+/[^/]+)/pull/[0-9]+.*$#\1#' <<<"$pr_url")
-    if [ -z "$repo" ] || [ "$repo" = "$pr_url" ]; then
-        repo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
-    fi
-    if [ -z "$repo" ] || [ "$repo" = "null" ]; then
-        err "PR staging binary index requested, but gh could not determine the GitHub repository."
-        pr_staging_manual_override_hint "<owner>/<repo>"
-        exit 2
-    fi
-
-    local tag releases
-    releases=$(gh api --paginate --slurp \
-        "/repos/${repo}/releases?per_page=100" 2>/dev/null || true)
-    tag=$(jq -r \
-        --arg prefix "pr-${pr_number}-staging-run-" \
-        --arg head "$head_sha" '
-          [.[][] |
-            select(.tag_name | startswith($prefix)) |
-            select(.target_commitish == $head) |
-            select(.draft == false and .immutable == true and
-              .prerelease == true) |
-            select(any(.assets[]?; .name == "index.toml") and
-              any(.assets[]?; .name ==
-                "kandelo-package-release-seal-v1.json"))] |
-          sort_by(.created_at) | last | .tag_name // ""
-        ' <<<"${releases:-[]}" 2>/dev/null || true)
-    # Pre-immutability PRs may still expose the old fixed mutable tag.
-    if [ -z "$tag" ]; then
-        tag="pr-${pr_number}-staging"
-    fi
-    local assets
-    if ! assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' 2>/dev/null); then
-        err "PR staging release $repo@$tag is not available."
-        pr_staging_manual_override_hint "$repo"
-        exit 2
-    fi
-    if ! grep -Fxq "index.toml" <<<"$assets"; then
-        err "PR staging release $repo@$tag does not contain index.toml."
-        pr_staging_manual_override_hint "$repo"
-        exit 2
-    fi
-
-    export WASM_POSIX_BINARY_INDEX_URL="https://github.com/$repo/releases/download/$tag/index.toml"
-    warn "Using PR #$pr_number staging binary index: $WASM_POSIX_BINARY_INDEX_URL"
-}
-
-configure_pr_staging_binary_index
 
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
@@ -1179,9 +1065,8 @@ validate_source_rootfs_shell_pages_mode() {
     }
 
     [ "$ALREADY_MATERIALIZED" -eq 0 ] &&
-        [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] &&
         [ "$USE_PR_STAGING" -eq 0 ] || {
-        err "--source-rootfs-shell cannot combine with already-materialized, fetch-only, or PR-staging modes."
+        err "--source-rootfs-shell cannot combine with already-materialized or PR-staging modes."
         return 2
     }
 
@@ -1206,37 +1091,6 @@ validate_source_rootfs_shell_pages_mode() {
         return 2
     }
 
-    local index_url="${WASM_POSIX_BINARY_INDEX_URL:-}"
-    case "$index_url" in
-        file:///*) ;;
-        *)
-            err "--source-rootfs-shell requires the workflow-created local empty index."
-            return 2
-            ;;
-    esac
-    local index_path="${index_url#file://}"
-    [ "$index_path" = "$runner_temp/$(basename "$index_path")" ] &&
-        [ -f "$index_path" ] &&
-        [ ! -L "$index_path" ] || {
-        err "--source-rootfs-shell index must be a regular direct child of RUNNER_TEMP."
-        return 2
-    }
-    local abi
-    abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-        "$REPO_ROOT/crates/shared/src/lib.rs")"
-    [[ "$abi" =~ ^[0-9]+$ ]] || {
-        err "--source-rootfs-shell could not read the current ABI version."
-        return 2
-    }
-    if ! cmp -s <(
-            printf 'abi_version = %s\n' "$abi"
-            printf 'generated_at = "1970-01-01T00:00:00Z"\n'
-            printf 'generator = "exact-main Pages source closure"\n'
-        ) "$index_path"; then
-        err "--source-rootfs-shell index is not the exact empty current-ABI Pages index."
-        return 2
-    fi
-
     local cache_root="${WASM_POSIX_BINARY_CACHE_ROOT:-}"
     case "$cache_root" in
         /*) ;;
@@ -1246,7 +1100,6 @@ validate_source_rootfs_shell_pages_mode() {
             ;;
     esac
     [ "$cache_root" = "$runner_temp/$(basename "$cache_root")" ] &&
-        [ "$cache_root" != "$index_path" ] &&
         [ ! -e "$cache_root" ] &&
         [ ! -L "$cache_root" ] || {
         err "--source-rootfs-shell cache must be a nonexistent direct child of RUNNER_TEMP."
@@ -1621,11 +1474,6 @@ build_shell_vfs() {
         build-deps --arch wasm32
         --binaries-dir "$REPO_ROOT/local-binaries"
     )
-    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
-        # Preserve the caller's explicit no-source-build contract. This
-        # remains an error on any archive miss or verification failure.
-        resolve_args+=("${FETCH_ONLY_ARGS[@]}")
-    fi
     resolve_args+=(resolve shell)
     xtask="$(pkg_xtask_bin)" || {
         err "Could not build the package resolver needed for the Shell VFS image"
@@ -2309,21 +2157,9 @@ build_target() {
     esac
 }
 
-# Packages backing gallery entries that are supplied by kandelo-software
-# rather than local app inputs. `./run.sh browser` must not fetch them: a stale
-# or missing archive would otherwise fall through to slow local source builds
-# for entries the local app does not bundle.
-BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-vfs texlive redis)
-
-# Browser preparation intentionally does not fetch the `node` alias package or
-# the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
-# browser UI's Node-compatible runtime; `build_node` installs that same
-# runtime at `programs/node.wasm` for the Kandelo Node preset.
-BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
-
 # All targets needed for the Kandelo browser UI and retained browser labs.
 # Each entry's `has_X` short-circuits when its release binary is in
-# `binaries/`, so this loop is a no-op on a fully-fetched checkout.
+# `binaries/`, so this loop is a no-op on a fully-built checkout.
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
@@ -2333,32 +2169,6 @@ build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
         build_target "$t"
     done
-}
-
-fetch_browser_binaries() {
-    local disabled_pkgs
-    local fetch_args=()
-    disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
-    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # WHY: the selected bridge has already installed its inspected bytes
-        # under the canonical browser path. A full-registry fetch must not
-        # directly resolve the bottle-backed shell and replace that selection.
-        disabled_pkgs="$disabled_pkgs shell"
-    fi
-    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
-        fetch_args+=("${FETCH_ONLY_ARGS[@]}")
-    fi
-    if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ]; then
-        fetch_args+=("${ALLOW_STALE_ARGS[@]}")
-    fi
-    if [ ${#fetch_args[@]} -eq 0 ]; then
-        # Browser prep has a source-build fallback for every enabled demo
-        # target below. A single stale release archive should not abort before
-        # build_browser gets a chance to satisfy the missing artifact locally.
-        fetch_args=(--allow-stale)
-    fi
-    WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $disabled_pkgs" \
-        "$REPO_ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}"
 }
 
 build_all() {
@@ -2961,18 +2771,6 @@ cmd_run() {
     esac
 }
 
-cmd_fetch() {
-    step "Fetching binaries pinned by per-package package.toml"
-    local fetch_args=()
-    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
-        fetch_args+=("${FETCH_ONLY_ARGS[@]}")
-    fi
-    if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ]; then
-        fetch_args+=("${ALLOW_STALE_ARGS[@]}")
-    fi
-    "$REPO_ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}" "$@"
-}
-
 cmd_prepare_browser() {
     cmd_local_build
     export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
@@ -3181,15 +2979,7 @@ cmd_list() {
     echo "  ./run.sh clean all                   Remove all build artifacts"
     echo "  ./run.sh rebuild <target...>         Clean + rebuild specific targets"
     echo ""
-    echo "${BOLD}Binaries:${RESET}"
-    echo "  ./run.sh fetch                       Fetch binaries pinned by per-package package.toml"
-    echo ""
     echo "${BOLD}Top-level flags:${RESET}"
-    echo "  --allow-stale                        Accepted for back-compat. The resolver"
-    echo "                                        source-builds automatically on any"
-    echo "                                        verification failure. No-op today."
-    echo "  --fetch-only                         Refuse source-build fallback when"
-    echo "                                        fetching package binaries."
     echo "  --pr-staging                         Use the current PR's staging binary"
     echo "                                        index for fetch/package commands."
     echo "                                        Browser commands reject this mode."
@@ -3231,7 +3021,6 @@ case "${1:-list}" in
     build)    cmd_build "${@:2}" ;;
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
-    fetch)    cmd_fetch "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;

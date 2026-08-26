@@ -56,14 +56,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use crate::host_tool_probe::{self, ProbeFailure};
-use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
-    BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
+    BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
     HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, SourceProvider, TargetArch,
     cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
     remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
 };
-use crate::remote_fetch;
 use crate::repo_root;
 use crate::source_archive_cache;
 use crate::source_extract;
@@ -279,28 +277,6 @@ pub(crate) fn plan_canonical_source_only_cache_roots(
         compiled,
         inherited_compiled: inherited_compiled.map(Path::to_path_buf),
     })
-}
-
-pub(crate) fn validate_planned_source_only_compiled_root(
-    planned: &PlannedSourceOnlyCacheRoots,
-    authored: &Path,
-) -> Result<(), String> {
-    let normalized = canonicalize_with_missing_tail(authored)?;
-    if normalized.as_os_str() != authored.as_os_str() {
-        return Err(format!(
-            "source-only --cache-root must use its exact canonical spelling {}; got {}",
-            normalized.display(),
-            authored.display(),
-        ));
-    }
-    if normalized != planned.compiled {
-        return Err(format!(
-            "source-only --cache-root must be {}; got {}",
-            planned.compiled.display(),
-            normalized.display(),
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn materialize_planned_source_only_cache_roots(
@@ -2116,15 +2092,11 @@ impl Registry {
                 paths.join(", ")
             )
         })?;
-        // Phase C: registry loads honor any `package.pr.toml` overlay
-        // sitting alongside `package.toml` so the resolver picks up
-        // PR-staging archive URLs without an edit to the committed
-        // base manifest. The overlay is `[binary]`-only — `compute_sha`
-        // doesn't hash `[binary]` fields, so cache keys are unchanged
-        // when an overlay is present (the swap is purely about WHICH
-        // archive gets fetched, not which canonical cache slot it lands
-        // in). Direct path loads (`load_target` for `<dir>/package.toml`)
-        // also go through this path because their dir derivation matches.
+        // Registry loads go through `load_with_overlay`, which applies
+        // the sibling `build.toml`'s publish-time revision onto the parsed
+        // manifest. Direct path loads (`load_target` for
+        // `<dir>/package.toml`) also go through this path because their
+        // dir derivation matches.
         let dir = path
             .parent()
             .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
@@ -5098,256 +5070,6 @@ fn package_context_cache_keys_with_global_toolchain_inputs(
     Ok(cache_keys)
 }
 
-/// Recompute contextual package identities for an inert source checkout.
-///
-/// WHY: preservation may need to inspect an unmerged producer tree, but that
-/// tree must never supply executable tooling. The current checkout's xtask
-/// reads and hashes the source manifests and declared inputs directly. Cargo's
-/// dependency graph is the sole derived input; current Cargo resolves it from
-/// the source declarations in bounded, offline metadata-only mode.
-pub(crate) fn source_cache_identities(
-    source_root: &Path,
-    registry: &Registry,
-    abi_version: u32,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
-    validate_inert_source_cargo_context(source_root)?;
-    let authority_root = repo_root();
-    let global_toolchain_inputs =
-        global_package_build_input_digests_for(source_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)?;
-    let mut fork_instrument_inputs =
-        global_package_build_input_digests_for(source_root, FORK_INSTRUMENT_TOOL_INPUTS)?;
-    fork_instrument_inputs.push(BuildInputDigest {
-        label: "cargo-metadata:fork-instrument-build-deps".to_string(),
-        // WHY: this must describe the producer's dependency graph, not the
-        // current checkout's. Current authority invokes Cargo only as a
-        // token-free, offline declarative reader; no source binary, build
-        // script, test, or repository tool is executed.
-        digest: fork_instrument_cargo_dependency_digest_for_inert_source(
-            &authority_root,
-            source_root,
-        )?,
-    });
-
-    let mut memo = BTreeMap::new();
-    let mut result = BTreeMap::new();
-    for (name, manifest) in registry.walk_all()? {
-        let mut cache_keys = BTreeMap::new();
-        for arch in PROGRAM_PACKAGE_CONTEXT_ARCHES {
-            let digest = compute_sha_with_identity_context(
-                &manifest,
-                registry,
-                arch,
-                abi_version,
-                ResolvePolicy::Default,
-                &mut memo,
-                &mut Vec::new(),
-                Some(&global_toolchain_inputs),
-                source_root,
-                Some(&fork_instrument_inputs),
-            )?;
-            cache_keys.insert(arch.as_str().to_owned(), hex(&digest));
-        }
-        result.insert(name, cache_keys);
-    }
-    Ok(result)
-}
-
-/// Emit the canonical build-input closure for materializable packages selected
-/// from an inert source checkout.
-///
-/// WHY: cache keys are the compact compatibility decision, but an admission
-/// receipt also needs reviewable evidence of which recipes, declared inputs,
-/// toolchain files, fork post-processor, and dependency identities produced
-/// that decision. Current-authority code reads these inert source bytes
-/// directly; it never executes producer tooling.
-pub(crate) fn source_build_input_components(
-    source_root: &Path,
-    registry: &Registry,
-    selected_packages: &BTreeSet<String>,
-    arch: TargetArch,
-    abi_version: u32,
-    cache_identities: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<serde_json::Value, String> {
-    validate_inert_source_cargo_context(source_root)?;
-    if selected_packages.is_empty() {
-        return Err("selected package build-input closure is empty".into());
-    }
-
-    let global_toolchain_inputs =
-        global_package_build_input_digests_for(source_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)?;
-    let mut fork_instrument_inputs =
-        global_package_build_input_digests_for(source_root, FORK_INSTRUMENT_TOOL_INPUTS)?;
-    fork_instrument_inputs.push(BuildInputDigest {
-        label: "cargo-metadata:fork-instrument-build-deps".to_string(),
-        digest: fork_instrument_cargo_dependency_digest_for_inert_source(
-            &repo_root(),
-            source_root,
-        )?,
-    });
-
-    let component_values = |inputs: &[BuildInputDigest]| {
-        inputs
-            .iter()
-            .map(|input| {
-                serde_json::json!({
-                    "label": input.label.as_str(),
-                    "sha256": hex(&input.digest),
-                })
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut packages = Vec::with_capacity(selected_packages.len());
-    let mut fork_users = Vec::new();
-    for name in selected_packages {
-        let manifest = registry.load(name)?;
-        if manifest.name != *name {
-            return Err(format!(
-                "selected package {name:?} loaded manifest for {:?}",
-                manifest.name
-            ));
-        }
-        if manifest.kind == ManifestKind::Source {
-            return Err(format!(
-                "selected materializable package {name:?} unexpectedly has source kind"
-            ));
-        }
-        let manifest_path = manifest.dir.join("package.toml");
-        require_regular_nonsymlink_file(&manifest_path, "selected package manifest")?;
-        let build_path = manifest.dir.join("build.toml");
-        require_regular_nonsymlink_file(&build_path, "selected package build metadata")?;
-        let build = BuildToml::load(&manifest.dir)?;
-        let revision = build.revision.unwrap_or(manifest.revision);
-        let build_inputs = build_input_digests_from_repo(
-            &manifest,
-            registry,
-            source_root,
-            ResolvePolicy::Default,
-        )?;
-        let cache_key_sha = cache_identities
-            .get(name)
-            .and_then(|identities| identities.get(arch.as_str()))
-            .ok_or_else(|| {
-                format!(
-                    "selected package {name:?} lacks a fresh {} cache identity",
-                    arch.as_str()
-                )
-            })?;
-
-        let mut dependencies = manifest.depends_on.clone();
-        dependencies.sort_by(|left, right| left.name.cmp(&right.name));
-        let dependencies = dependencies
-            .into_iter()
-            .map(|dependency| {
-                let dependency_cache_key = cache_identities
-                    .get(&dependency.name)
-                    .and_then(|identities| identities.get(arch.as_str()))
-                    .ok_or_else(|| {
-                        format!(
-                            "selected dependency {:?} lacks a fresh {} cache identity",
-                            dependency.name,
-                            arch.as_str()
-                        )
-                    })?;
-                Ok(serde_json::json!({
-                    "package": dependency.name,
-                    "version": dependency.version,
-                    "cache_key_sha": dependency_cache_key,
-                }))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-
-        let uses_fork_instrument = package_uses_fork_instrument_tool(&manifest);
-        if uses_fork_instrument {
-            fork_users.push(name.clone());
-        }
-        let kind = match manifest.kind {
-            ManifestKind::Library => "library",
-            ManifestKind::Program => "program",
-            ManifestKind::Source => unreachable!(),
-        };
-        packages.push(serde_json::json!({
-            "package": name,
-            "kind": kind,
-            "version": manifest.version,
-            "revision": revision,
-            "manifest_sha256": package_manifest_sha256(&manifest_path)?,
-            "cache_key_sha": cache_key_sha,
-            "build": {
-                "script_path": build.script_path,
-                "inputs": build.inputs,
-                "git_inputs": build.git_inputs,
-            },
-            "input_components": component_values(&build_inputs),
-            "direct_dependencies": dependencies,
-            "uses_fork_instrument": uses_fork_instrument,
-        }));
-    }
-
-    let has_fork_users = !fork_users.is_empty();
-    Ok(serde_json::json!({
-        "format": "kandelo-selected-package-build-input-closure-v1",
-        "abi_version": abi_version,
-        "arch": arch.as_str(),
-        "global_toolchain_components": component_values(&global_toolchain_inputs),
-        "fork_instrument": {
-            "users": fork_users,
-            "components": if has_fork_users {
-                component_values(&fork_instrument_inputs)
-            } else {
-                Vec::<serde_json::Value>::new()
-            },
-        },
-        "packages": packages,
-    }))
-}
-
-fn validate_inert_source_cargo_context(source_root: &Path) -> Result<(), String> {
-    let source_workspace_path = source_root.join("Cargo.toml");
-    require_regular_nonsymlink_file(&source_workspace_path, "source Cargo workspace manifest")?;
-    require_regular_nonsymlink_file(&source_root.join("Cargo.lock"), "source Cargo lockfile")?;
-    let source_workspace_text = std::fs::read_to_string(&source_workspace_path).map_err(|e| {
-        format!(
-            "read inert source Cargo context {}: {e}",
-            source_workspace_path.display()
-        )
-    })?;
-    let workspace: toml::Value = toml::from_str(&source_workspace_text).map_err(|e| {
-        format!(
-            "parse inert source Cargo context {}: {e}",
-            source_workspace_path.display()
-        )
-    })?;
-    let members = workspace
-        .get("workspace")
-        .and_then(|workspace| workspace.get("members"))
-        .and_then(toml::Value::as_array)
-        .ok_or_else(|| {
-            "source Cargo workspace must declare an explicit members array".to_string()
-        })?;
-    for member in members {
-        let member = member
-            .as_str()
-            .ok_or_else(|| "source Cargo workspace member must be a string".to_string())?;
-        if member.is_empty()
-            || member.contains('*')
-            || Path::new(member).is_absolute()
-            || Path::new(member)
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(format!(
-                "unsupported source Cargo workspace member {member:?}"
-            ));
-        }
-        require_regular_nonsymlink_file(
-            &source_root.join(member).join("Cargo.toml"),
-            "source Cargo workspace member manifest",
-        )?;
-    }
-    Ok(())
-}
-
 fn require_regular_nonsymlink_file(path: &Path, context: &str) -> Result<(), String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
@@ -7285,71 +7007,6 @@ fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], Stri
     fork_instrument_cargo_dependency_digest_from_output(root, output, None)
 }
 
-fn fork_instrument_cargo_dependency_digest_for_inert_source(
-    authority_root: &Path,
-    source_root: &Path,
-) -> Result<[u8; 32], String> {
-    let host_target = host_target_triple()?;
-    let mut command =
-        inert_source_cargo_metadata_command(authority_root, source_root, &host_target);
-    let output = command
-        .output()
-        .map_err(|e| format!("run offline Cargo metadata for inert source cache key: {e}"))?;
-    fork_instrument_cargo_dependency_digest_from_output(source_root, output, Some(source_root))
-}
-
-fn inert_source_cargo_metadata_command(
-    authority_root: &Path,
-    source_root: &Path,
-    host_target: &str,
-) -> Command {
-    let mut command = Command::new("cargo");
-    command
-        .args([
-            "metadata",
-            "--format-version=1",
-            "--locked",
-            "--offline",
-            "--filter-platform",
-            host_target,
-            "--manifest-path",
-        ])
-        .arg(source_root.join("Cargo.toml"))
-        // WHY: Cargo discovers repository-local configuration from its process
-        // cwd. Keeping cwd on current authority prevents the inert source from
-        // supplying aliases, credential providers, rustc wrappers, or network
-        // configuration while --manifest-path still selects its declarations.
-        .current_dir(authority_root)
-        .env("CARGO_NET_OFFLINE", "true");
-    for name in [
-        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-        "ACTIONS_ID_TOKEN_REQUEST_URL",
-        "ACTIONS_RUNTIME_TOKEN",
-        "ALL_PROXY",
-        "CARGO_BUILD_RUSTC",
-        "CARGO_BUILD_RUSTC_WRAPPER",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_HTTP_PROXY",
-        "CARGO_REGISTRIES_CRATES_IO_TOKEN",
-        "CARGO_REGISTRY_TOKEN",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
-        "RUSTDOC",
-        "RUSTDOCFLAGS",
-        "RUSTFLAGS",
-        "all_proxy",
-        "http_proxy",
-        "https_proxy",
-    ] {
-        command.env_remove(name);
-    }
-    command
-}
-
 fn fork_instrument_cargo_dependency_digest_from_output(
     root: &Path,
     output: std::process::Output,
@@ -7451,25 +7108,6 @@ fn require_path_beneath_without_symlinks(
         }
     }
     require_regular_nonsymlink_file(path, context)
-}
-
-fn host_target_triple() -> Result<String, String> {
-    let output = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| format!("run rustc -vV: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "rustc -vV failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| "rustc -vV did not report host target".to_string())
 }
 
 fn fork_instrument_cargo_dependency_digest_from_metadata(
@@ -8856,19 +8494,14 @@ pub struct ResolveOpts<'a> {
     /// and the build script is not run.
     pub local_libs: Option<&'a Path>,
     /// Manifest names that must be source-built unconditionally, even
-    /// on a cache hit and even when a `[binary]` archive_url would
-    /// otherwise satisfy the request. Used by the manual `force-rebuild`
-    /// workflow to refresh archives whose cache key is suspected stale.
+    /// on a cache hit. Used by the manual `force-rebuild` workflow to
+    /// refresh a cache entry whose cache key is suspected stale.
     /// `None` means "no force rebuild" (the default for every consumer
     /// other than the manual workflow). `local_libs` still wins over
     /// force_source_build (a hand-patched override is always honored).
     /// A force rebuild assumes no concurrent resolver invocation for
     /// the same package -- see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
-    /// Refuse any source build or source fetch fallback. Used by CI
-    /// binary-materialization gates, where package bytes must come from
-    /// staging overlays, the durable index, or an existing valid cache entry.
-    pub fetch_only: bool,
     /// Repo root used to resolve `[build].script_path` (which is
     /// repo-relative as of Phase A-bis Task 2). `None` means "use
     /// `crate::repo_root()`", which is the production default.
@@ -9141,7 +8774,6 @@ where
         cache_root: &roots.compiled,
         local_libs: None,
         force_source_build: forced.as_ref(),
-        fetch_only: false,
         repo_root: Some(repo_root),
         binaries_dir: None,
     };
@@ -9332,11 +8964,6 @@ pub fn ensure_built(
             target.spec(),
         ));
     }
-    if opts.policy == ResolvePolicy::SourceOnlyV1 {
-        if opts.fetch_only {
-            return Err("source-only resolution cannot be combined with fetch-only".to_string());
-        }
-    }
     let mut memo: BTreeMap<String, [u8; 32]> = BTreeMap::new();
     let mut building: Vec<String> = Vec::new();
     let resolved = ensure_built_inner(
@@ -9371,14 +8998,6 @@ pub(crate) struct ResolvedDependencyNode {
 pub(crate) struct ResolvedDependencyGraph {
     pub(crate) nodes: BTreeMap<ResolvedDependencyNode, ManifestKind>,
     pub(crate) direct_edges: BTreeSet<(ResolvedDependencyNode, ResolvedDependencyNode)>,
-}
-
-pub(crate) fn resolved_dependency_graph(
-    target: &DepsManifest,
-    registry: &Registry,
-    arch: TargetArch,
-) -> Result<ResolvedDependencyGraph, String> {
-    resolved_dependency_graph_with_loader(target, arch, &mut |name| registry.load(name))
 }
 
 /// Resolve through an already parsed fixed-registry snapshot. This keeps graph
@@ -9467,29 +9086,6 @@ where
     let mut chain = Vec::new();
     visit(target, arch, loader, &mut graph, &mut visited, &mut chain)?;
     Ok(graph)
-}
-
-/// Return every library/program manifest in `target`'s complete dependency
-/// closure, including `target` itself.
-///
-/// `archive-stage --force-source-closure` uses this set to make an exact-source
-/// product build bypass both valid resolver cache entries and valid binary
-/// index entries at every buildable node. Source-kind nodes are intentionally
-/// excluded: their identity is their immutable URL + SHA-256, so normal
-/// resolver validation may safely reuse the already-verified extraction.
-pub fn buildable_transitive_closure(
-    target: &DepsManifest,
-    registry: &Registry,
-    arch: TargetArch,
-) -> Result<BTreeSet<String>, String> {
-    Ok(resolved_dependency_graph(target, registry, arch)?
-        .nodes
-        .into_iter()
-        .filter_map(|(node, kind)| {
-            matches!(kind, ManifestKind::Library | ManifestKind::Program)
-                .then_some(node.package_name)
-        })
-        .collect())
 }
 
 fn dependency_target_arch(
@@ -9715,15 +9311,12 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   a force-rebuild-all loop every call has the same flag, so the
 ///   memo collapses N calls per (name, arch) into 1 build — the
 ///   actual optimization we wanted.
-/// * `fetch_only` — fetch-only failures must not poison later normal
-///   resolves, which are allowed to build from source.
 type BuildMemoKey = (
     PathBuf,
     String,
     TargetArch,
     ResolvePolicy,
     [u8; 32],
-    bool,
     bool,
     BuildPermission,
 );
@@ -9768,7 +9361,7 @@ fn try_fetch_without_deps(
     let binary_materialization_fast_path = opts.binaries_dir.is_some()
         && matches!(target.kind, ManifestKind::Program)
         && !target.program_outputs.is_empty();
-    if (!opts.fetch_only && !binary_materialization_fast_path)
+    if !binary_materialization_fast_path
         || !matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
     {
         return Ok(None);
@@ -9779,22 +9372,13 @@ fn try_fetch_without_deps(
         .map(|s| s.contains(&target.name))
         .unwrap_or(false);
     if force_rebuild {
-        if opts.fetch_only {
-            return Err(format!(
-                "{}: fetch-only resolve cannot honor force source-build for arch {}",
-                target.spec(),
-                arch.as_str(),
-            ));
-        }
         return Ok(None);
     }
 
-    if !opts.fetch_only {
-        if let Some(lr) = opts.local_libs {
-            let override_dir = lr.join(&target.name).join("build");
-            if override_dir.is_dir() {
-                return Ok(Some(override_dir));
-            }
+    if let Some(lr) = opts.local_libs {
+        let override_dir = lr.join(&target.name).join("build");
+        if override_dir.is_dir() {
+            return Ok(Some(override_dir));
         }
     }
 
@@ -9830,69 +9414,8 @@ fn try_fetch_without_deps(
         }
     }
 
-    if let Some(binary) = target.binary.get(&arch) {
-        match remote_fetch::fetch_and_install(
-            binary,
-            &canonical,
-            target,
-            arch,
-            abi_version,
-            &cache_key_sha_hex,
-        ) {
-            Ok(()) => match validate_cache_entry(
-                target,
-                &canonical,
-                arch,
-                abi_version,
-                &cache_key_sha_hex,
-            ) {
-                Ok(()) => return Ok(Some(canonical)),
-                Err(e) => {
-                    eprintln!(
-                        "warning: direct binary fetch for {} from {} produced \
-                         a stale artifact ({}); {}",
-                        target.spec(),
-                        binary.archive_url,
-                        e,
-                        fetch_fallback_phrase(opts.fetch_only),
-                    );
-                    let _ = remove_cache_entry(&canonical, &cache_key_sha_hex);
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "warning: direct binary fetch for {} from {} failed ({}); \
-                     {}",
-                    target.spec(),
-                    binary.archive_url,
-                    e,
-                    fetch_fallback_phrase(opts.fetch_only),
-                );
-            }
-        }
-    }
-
-    if let Some(()) = try_index_install(
-        target,
-        arch,
-        abi_version,
-        &canonical,
-        &cache_key_sha_hex,
-        opts.fetch_only,
-    ) {
-        return Ok(Some(canonical));
-    }
-
-    if opts.fetch_only {
-        return Err(format!(
-            "{}: fetch-only resolve could not install a valid archive for arch {}; \
-             run package staging/prepare to publish this package instead of \
-             source-building during binary materialization",
-            target.spec(),
-            arch.as_str(),
-        ));
-    }
-
+    // Local-first: no remote binary channel. A cache miss here simply falls
+    // through to a source build in the caller.
     Ok(None)
 }
 
@@ -9948,7 +9471,6 @@ fn ensure_built_inner(
         opts.policy,
         cache_identity,
         was_force_rebuild,
-        opts.fetch_only,
         build_permission.clone(),
     );
     if !matches!(build_permission, BuildPermission::TargetOnly { .. }) {
@@ -10272,31 +9794,17 @@ fn ensure_built_uncached(
     // Cache-miss dispatch. Three flavors of recipe:
     //
     //   (Source, None)     — default fetch+extract from `[source]`.
-    //                        Source-kind manifests never carry
-    //                        `[binary]` (Task C.1 enforces), so this
-    //                        branch short-circuits before the binary
-    //                        block.
-    //   (Source, Some(_))  — override path (Task C.5): the manifest
-    //                        ships its own build script (e.g. patch
-    //                        overlay, git clone, multi-tarball
-    //                        assembly). Run it through
-    //                        `build_into_cache` with the standard
-    //                        env-var contract; validation is
-    //                        non-emptiness of OUT_DIR rather than a
-    //                        declared outputs list.
-    //   (Library | Program,_) — try `package.pr.toml` / source
-    //                        `[binary]` direct archives first, then
-    //                        the `build.toml` index path, then fall
-    //                        back to the build script.
+    //   (Source, Some(_))  — override path: the manifest ships its own
+    //                        build script (e.g. patch overlay, git clone,
+    //                        multi-tarball assembly). Run it through
+    //                        `build_into_cache` with the standard env-var
+    //                        contract; validation is non-emptiness of
+    //                        OUT_DIR rather than a declared outputs list.
+    //   (Library | Program,_) — source-build through the SDK/resolver.
+    //                        Resolution is local-first; there is no
+    //                        prebuilt-archive channel.
     match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
-            if opts.fetch_only {
-                return Err(format!(
-                    "{}: fetch-only resolve cannot fetch source package fallback for arch {}",
-                    target.spec(),
-                    arch.as_str(),
-                ));
-            }
             let parent = canonical
                 .parent()
                 .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
@@ -10342,13 +9850,6 @@ fn ensure_built_uncached(
             Ok(ResolvedNode::compiled(canonical, transitive))
         }
         (ManifestKind::Source, true) => {
-            if opts.fetch_only {
-                return Err(format!(
-                    "{}: fetch-only resolve cannot run source package build script for arch {}",
-                    target.spec(),
-                    arch.as_str(),
-                ));
-            }
             // Override path: run the script. No remote-binary fetch for
             // sources (`[binary]` is rejected at parse time for source
             // kind), so we go straight to `build_into_cache`.
@@ -10379,90 +9880,10 @@ fn ensure_built_uncached(
             ))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
-            // Resolution priority 3a: direct archive fetch from the
-            // source manifest's `[binary]` map. In normal source
-            // package.toml files this map is empty post index-ledger
-            // migration, but CI writes sibling `package.pr.toml`
-            // overlays with direct file:// archives for same-run
-            // matrix outputs. Those must win over the durable
-            // `build.toml` index below.
-            //
-            // Resolution priority 3b: index-based remote fetch. The
-            // resolver loads the sibling `build.toml`, resolves its
-            // `[binary]` block to an index URL (or a direct archive
-            // URL), then looks up this package's entry. Status
-            // `success` fetches the current archive; status
-            // `failed`/`pending`/`building` falls back to the
-            // last-green `fallback_*` archive when one is preserved.
-            //
-            // Any failure along the way logs and falls through to the
-            // source build — a remote-fetch error should never cause
-            // the resolver to refuse to produce an artifact.
-            //
-            // `force_rebuild` short-circuits remote fetch entirely.
-            if !force_rebuild && opts.policy == ResolvePolicy::Default {
-                if let Some(binary) = target.binary.get(&arch) {
-                    match remote_fetch::fetch_and_install(
-                        binary,
-                        &canonical,
-                        target,
-                        arch,
-                        abi_version,
-                        &cache_key_sha_hex,
-                    ) {
-                        Ok(()) => match validate_cache_entry(
-                            target,
-                            &canonical,
-                            arch,
-                            abi_version,
-                            &cache_key_sha_hex,
-                        ) {
-                            Ok(()) => return Ok(ResolvedNode::compiled(canonical, transitive)),
-                            Err(e) => {
-                                eprintln!(
-                                    "warning: direct binary fetch for {} from {} produced \
-                                     a stale artifact ({}); {}",
-                                    target.spec(),
-                                    binary.archive_url,
-                                    e,
-                                    fetch_fallback_phrase(opts.fetch_only),
-                                );
-                                let _ = remove_cache_entry(&canonical, &cache_key_sha_hex);
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!(
-                                "warning: direct binary fetch for {} from {} failed ({}); \
-                                 {}",
-                                target.spec(),
-                                binary.archive_url,
-                                e,
-                                fetch_fallback_phrase(opts.fetch_only),
-                            );
-                        }
-                    }
-                }
-                if let Some(()) = try_index_install(
-                    target,
-                    arch,
-                    abi_version,
-                    &canonical,
-                    &cache_key_sha_hex,
-                    opts.fetch_only,
-                ) {
-                    return Ok(ResolvedNode::compiled(canonical, transitive));
-                }
-            }
-
-            if opts.fetch_only {
-                return Err(format!(
-                    "{}: fetch-only resolve could not install a valid archive for arch {}; \
-                     package staging or the durable release must provide one",
-                    target.spec(),
-                    arch.as_str(),
-                ));
-            }
-
+            // Resolution is local-first: packages are always built from source
+            // through the SDK/resolver. The remote binary channel (prebuilt
+            // archives fetched from a release index) has been removed; a build
+            // is the only way to produce an artifact.
             let pkgconfig_path = compose_pkgconfig_path(&transitive);
             let repo_root = opts
                 .repo_root
@@ -10490,196 +9911,6 @@ fn ensure_built_uncached(
             ))
         }
     }
-}
-
-/// Attempt to install a prebuilt archive from this package's
-/// `build.toml`-declared binary source. Returns `Some(())` on success
-/// (caller returns the canonical path); returns `None` for any
-/// "fall through to source build" condition (no build.toml, no
-/// archive in the index, network failure, sha mismatch, etc.).
-///
-/// Logging is on stderr (matching the prior remote-fetch
-/// implementation's UX): users see warnings about why the index
-/// path was skipped. Normal resolves then build from source; fetch-only
-/// resolves turn the miss into an error at the caller.
-fn fetch_fallback_phrase(fetch_only: bool) -> &'static str {
-    if fetch_only {
-        "source builds disabled by fetch-only mode"
-    } else {
-        "falling back to source build"
-    }
-}
-
-fn try_index_install(
-    target: &DepsManifest,
-    arch: TargetArch,
-    abi_version: u32,
-    canonical: &Path,
-    cache_key_sha_hex: &str,
-    fetch_only: bool,
-) -> Option<()> {
-    // 1. Load build.toml. Source manifests without one (e.g. an
-    //    upstream package that hasn't been ported to the new schema
-    //    yet) fall through silently — Phase 9's migration should
-    //    leave every first-party package with a build.toml; the
-    //    silent fall-through is for clean integration with
-    //    third-party manifests that might not.
-    let build = BuildToml::load(&target.dir).ok()?;
-
-    // 2. Resolve the binary source to a concrete URL pair. Direct
-    //    form: use the URL + sha verbatim. Indexed form: fetch
-    //    index.toml + look up this package. CI can override indexed
-    //    URLs with WASM_POSIX_BINARY_INDEX_URL so staging/prepare
-    //    jobs consume the release they are publishing instead of the
-    //    committed durable-release default.
-    let (archive_url, archive_sha256) = match &build.binary {
-        BinarySource::Direct { url, sha256 } => (url.clone(), sha256.clone()),
-        BinarySource::Indexed { .. } => {
-            let index_url = std::env::var("WASM_POSIX_BINARY_INDEX_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| build.binary.resolve_index_url(abi_version))?;
-            let cache_dir = default_cache_root().join("indexes");
-            let index = match index_toml::fetch_index(&index_url, &cache_dir) {
-                Ok(idx) => idx,
-                Err(e) => {
-                    eprintln!(
-                        "warning: index fetch for {} from {} failed ({}); \
-                         {}",
-                        target.spec(),
-                        index_url,
-                        e,
-                        fetch_fallback_phrase(fetch_only),
-                    );
-                    return None;
-                }
-            };
-            if index.abi_version != abi_version {
-                eprintln!(
-                    "warning: index for {} from {} declares ABI {}, but resolver ABI is {}; \
-                     {}",
-                    target.spec(),
-                    index_url,
-                    index.abi_version,
-                    abi_version,
-                    fetch_fallback_phrase(fetch_only),
-                );
-                return None;
-            }
-            let entry = match index.lookup(&target.name, &target.version, arch) {
-                Some(e) => e,
-                None => {
-                    eprintln!(
-                        "warning: no index entry for {} in {}; \
-                         {}",
-                        target.spec(),
-                        index_url,
-                        fetch_fallback_phrase(fetch_only),
-                    );
-                    return None;
-                }
-            };
-            // Pick the authoritative archive fields for the entry's
-            // current status. Success → current archive_*; other
-            // statuses → fallback_* if preserved; otherwise nothing
-            // usable and we fall through.
-            let (rel_url, sha) = match entry.status {
-                EntryStatus::Success
-                    if entry.archive_url.is_some() && entry.archive_sha256.is_some() =>
-                {
-                    (
-                        entry.archive_url.as_ref().unwrap().clone(),
-                        entry.archive_sha256.as_ref().unwrap().clone(),
-                    )
-                }
-                EntryStatus::Failed | EntryStatus::Pending | EntryStatus::Building
-                    if entry.fallback_archive_url.is_some()
-                        && entry.fallback_archive_sha256.is_some() =>
-                {
-                    eprintln!(
-                        "note: {} index entry is status={:?}; \
-                         using last-green fallback archive",
-                        target.spec(),
-                        entry.status,
-                    );
-                    (
-                        entry.fallback_archive_url.as_ref().unwrap().clone(),
-                        entry.fallback_archive_sha256.as_ref().unwrap().clone(),
-                    )
-                }
-                _ => {
-                    eprintln!(
-                        "warning: {} index entry status={:?} has no usable archive; \
-                         {}",
-                        target.spec(),
-                        entry.status,
-                        fetch_fallback_phrase(fetch_only),
-                    );
-                    return None;
-                }
-            };
-            (resolve_relative_url(&index_url, &rel_url), sha)
-        }
-    };
-
-    // 3. Fetch + verify + install. Any failure (sha mismatch, arch
-    //    mismatch, abi mismatch, cache_key mismatch, transport
-    //    error) falls through.
-    match remote_fetch::fetch_and_install_direct(
-        &archive_url,
-        &archive_sha256,
-        canonical,
-        target,
-        arch,
-        abi_version,
-        cache_key_sha_hex,
-    ) {
-        Ok(()) => {
-            match validate_cache_entry(target, canonical, arch, abi_version, cache_key_sha_hex) {
-                Ok(()) => Some(()),
-                Err(e) => {
-                    eprintln!(
-                        "warning: index-based fetch for {} from {} produced \
-                     a stale artifact ({}); {}",
-                        target.spec(),
-                        archive_url,
-                        e,
-                        fetch_fallback_phrase(fetch_only),
-                    );
-                    let _ = remove_cache_entry(canonical, cache_key_sha_hex);
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!(
-                "warning: index-based fetch for {} from {} failed ({}); \
-                 {}",
-                target.spec(),
-                archive_url,
-                e,
-                fetch_fallback_phrase(fetch_only),
-            );
-            None
-        }
-    }
-}
-
-/// Resolve `rel` against `base` for archive-URL lookup. If `rel`
-/// already carries a scheme (`file://` / `http://` / `https://`) it
-/// passes through unchanged; otherwise it's appended to `base`'s
-/// parent directory (i.e. `https://host/dir/index.toml` + `foo.tar.zst`
-/// → `https://host/dir/foo.tar.zst`).
-pub(crate) fn resolve_relative_url(base: &str, rel: &str) -> String {
-    if rel.starts_with("file://") || rel.starts_with("http://") || rel.starts_with("https://") {
-        return rel.to_string();
-    }
-    // Strip the last path segment of `base` and join with `rel`.
-    let last_slash = base.rfind('/').map(|i| i + 1).unwrap_or(0);
-    let mut out = String::with_capacity(last_slash + rel.len());
-    out.push_str(&base[..last_slash]);
-    out.push_str(rel);
-    out
 }
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
@@ -16220,22 +15451,6 @@ fn extract_binaries_dir_flag(args: Vec<String>) -> Result<(Option<PathBuf>, Vec<
     Ok((binaries_dir, rest))
 }
 
-/// Extract `--fetch-only` from `args`, leaving non-flag arguments in place.
-/// Only meaningful for `resolve`: it turns archive/source mismatches into
-/// errors instead of running package build scripts.
-fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
-    let mut fetch_only = false;
-    let mut rest: Vec<String> = Vec::with_capacity(args.len());
-    for a in args {
-        if a == "--fetch-only" {
-            fetch_only = true;
-        } else {
-            rest.push(a);
-        }
-    }
-    (fetch_only, rest)
-}
-
 fn extract_source_only_flag(args: Vec<String>) -> Result<(bool, Vec<String>), String> {
     let mut source_only = false;
     let mut rest = Vec::with_capacity(args.len());
@@ -16256,7 +15471,6 @@ fn validate_resolution_policy_usage(
     subcommand: &str,
     explicit_source_only: bool,
     effective_policy: ResolvePolicy,
-    fetch_only: bool,
     force_source_build: bool,
 ) -> Result<(), String> {
     if explicit_source_only && subcommand != "resolve" {
@@ -16265,11 +15479,6 @@ fn validate_resolution_policy_usage(
         ));
     }
     if subcommand == "resolve" && effective_policy == ResolvePolicy::SourceOnlyV1 {
-        if fetch_only {
-            return Err(
-                "build-deps resolve: source-only and --fetch-only are mutually exclusive".into(),
-            );
-        }
         let _ = force_source_build;
     }
     Ok(())
@@ -16489,12 +15698,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // Pull this out before subcommand dispatch so the flag remains
     // location-independent, matching `--arch`'s shape.
     let (binaries_dir, rest) = extract_binaries_dir_flag(rest)?;
-    let (fetch_only, rest) = extract_fetch_only_flag(rest);
     let (force_source_build, rest) = extract_force_source_build_flag(rest)?;
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--source-only] [--fetch-only] [--force-source-build] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--source-only] [--force-source-build] \
          [--source-repo-root <absolute-canonical-path>] \
          <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|program-index-context-ensure|program-index-selected|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
@@ -16528,11 +15736,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "build-deps {sub}: --binaries-dir is only valid for `resolve` or `install-local-artifact`"
         ));
     }
-    if fetch_only && sub != "resolve" {
-        return Err(format!(
-            "build-deps {sub}: --fetch-only is only valid for `resolve`"
-        ));
-    }
     if force_source_build && sub != "resolve" {
         return Err(format!(
             "build-deps {sub}: --force-source-build is only valid for `resolve`"
@@ -16547,15 +15750,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         &sub,
         explicit_source_only,
         resolve_policy,
-        fetch_only,
         force_source_build,
     )?;
-    if fetch_only && force_source_build {
-        return Err(
-            "build-deps resolve: --fetch-only and --force-source-build are mutually exclusive"
-                .to_string(),
-        );
-    }
 
     match sub.as_str() {
         "cache-root" => {
@@ -16650,7 +15846,6 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         &repo,
                         arch,
                         binaries_dir.as_deref(),
-                        fetch_only,
                         force_source_build,
                         resolve_policy,
                     )
@@ -16952,7 +16147,6 @@ fn cmd_resolve(
     repo: &Path,
     arch: TargetArch,
     binaries_dir: Option<&Path>,
-    fetch_only: bool,
     force_source_build: bool,
     policy: ResolvePolicy,
 ) -> Result<(), String> {
@@ -16979,7 +16173,6 @@ fn cmd_resolve(
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
         force_source_build: force_source_build.then_some(&forced),
-        fetch_only,
         repo_root: Some(repo),
         // Plumb binaries_dir into ensure_built so place_binaries_symlinks
         // runs for every transitive program dep, not just the target.
@@ -20977,7 +20170,7 @@ libs = ["lib/lib{name}.a"]
             fs::write(
                 build_path,
                 format!(
-                    "script_path = \"{name}/build-{name}.sh\"\ninputs = [{input:?}]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{{abi}}/index.toml\"\n"
+                    "script_path = \"{name}/build-{name}.sh\"\ninputs = [{input:?}]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n"
                 ),
             )
             .unwrap();
@@ -20994,9 +20187,6 @@ inputs = []
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = {revision}
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.toml"
 "#
             ),
         )
@@ -21015,9 +20205,6 @@ inputs = ["packages/registry/{name}/{input}"]
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = {revision}
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.toml"
 "#
             ),
         )
@@ -21046,53 +20233,18 @@ index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.
         );
     }
 
-    #[test]
-    fn buildable_transitive_closure_graph_emits_resolved_dependency_first_edges() {
-        let root = tempdir("resolved-dependency-graph-arches");
-        write(&root, "base", "1.0.0", &[]);
-        write(&root, "app", "1.0.0", &["base@1.0.0"]);
-        let app_path = root.join("app/package.toml");
-        let app_source = fs::read_to_string(&app_path).unwrap().replace(
-            "version = \"1.0.0\"",
-            "version = \"1.0.0\"\narches = [\"wasm32\", \"wasm64\"]",
-        );
-        fs::write(app_path, app_source).unwrap();
-        let registry = Registry { roots: vec![root] };
-        let app = registry.load("app").unwrap();
-
-        let graph = resolved_dependency_graph(&app, &registry, TargetArch::Wasm64).unwrap();
-        let base_node = ResolvedDependencyNode {
-            package_name: "base".to_string(),
-            target_arch: TargetArch::Wasm32,
-        };
-        let app_node = ResolvedDependencyNode {
-            package_name: "app".to_string(),
-            target_arch: TargetArch::Wasm64,
-        };
-        assert_eq!(
-            graph.nodes,
-            BTreeMap::from([
-                (base_node.clone(), ManifestKind::Library),
-                (app_node.clone(), ManifestKind::Library),
-            ]),
-        );
-        assert_eq!(
-            graph.direct_edges,
-            BTreeSet::from([(base_node, app_node)]),
-            "direct edges must point from a resolved dependency to its dependent",
-        );
-        assert_eq!(
-            buildable_transitive_closure(&app, &registry, TargetArch::Wasm64).unwrap(),
-            BTreeSet::from(["app".to_string(), "base".to_string()]),
-        );
-    }
-
     // NOTE: there is deliberately no test asserting a *committed*
     // program-packages.json is current. The index is a generated artifact
     // (gitignored): its cache keys hash the build/toolchain trees, so a
     // committed copy would drift against whatever checkout last generated it.
     // Generation is instead exercised by `ensure_program_package_indexes_*`
     // and the source-root determinism tests in program_index_source_root.rs.
+    //
+    // The `buildable_transitive_closure` / `resolved_dependency_graph` bare
+    // helpers (and their edge test) were removed with the remote binary
+    // channel — their only non-test caller was the deleted index-resolve path;
+    // live source builds use the surviving `_with_loader` / `_from_manifests`
+    // variants.
 
     #[test]
     fn program_package_projection_excludes_root_boot_artifacts() {
@@ -22672,9 +21824,6 @@ script_path = "packages/registry/libRev/build-libRev.sh"
 repo_url    = "https://example.test/repo.git"
 commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision    = 2
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -22707,9 +21856,6 @@ inputs = ["libInput/recipe.txt", "libInput/recipe-dir"]
 repo_url    = "https://example.test/repo.git"
 commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision    = 1
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -22766,9 +21912,6 @@ inputs = ["recipe.txt"]
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 7
-
-[binary]
-index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -22813,9 +21956,6 @@ commit = "1111111111111111111111111111111111111111"
 name = "second"
 repository = "https://example.test/second.git"
 commit = "2222222222222222222222222222222222222222"
-
-[binary]
-index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -22907,9 +22047,6 @@ repository = "https://example.test/source.git"
 commit = "1111111111111111111111111111111111111111"
 tree = "2222222222222222222222222222222222222222"
 allow_uninitialized_gitlinks = true
-
-[binary]
-index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -23159,80 +22296,6 @@ version = "0.1.0"
             ),
         )
         .unwrap();
-    }
-
-    #[test]
-    fn inert_source_metadata_command_is_offline_token_free_and_authority_rooted() {
-        let authority = Path::new("/trusted/current-authority");
-        let source = Path::new("/inert/unmerged-source");
-        let command = inert_source_cargo_metadata_command(authority, source, "test-host-target");
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            [
-                "metadata",
-                "--format-version=1",
-                "--locked",
-                "--offline",
-                "--filter-platform",
-                "test-host-target",
-                "--manifest-path",
-                "/inert/unmerged-source/Cargo.toml",
-            ]
-        );
-        assert_eq!(command.get_current_dir(), Some(authority));
-        let environment = command
-            .get_envs()
-            .map(|(name, value)| {
-                (
-                    name.to_string_lossy().into_owned(),
-                    value.map(|value| value.to_string_lossy().into_owned()),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            environment.get("CARGO_NET_OFFLINE"),
-            Some(&Some("true".into()))
-        );
-        for removed in [
-            "CARGO_REGISTRY_TOKEN",
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "HTTPS_PROXY",
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-        ] {
-            assert_eq!(
-                environment.get(removed),
-                Some(&None),
-                "{removed} must be removed from the inert metadata reader"
-            );
-        }
-    }
-
-    #[test]
-    fn inert_source_fork_dependency_edge_changes_derived_digest() {
-        let without_dependency = tempdir("inert-cargo-no-fork-dependency");
-        let with_dependency = tempdir("inert-cargo-with-fork-dependency");
-        write_inert_cargo_fixture(&without_dependency, false);
-        write_inert_cargo_fixture(&with_dependency, true);
-
-        let authority = crate::repo_root();
-        let before = fork_instrument_cargo_dependency_digest_for_inert_source(
-            &authority,
-            &without_dependency,
-        )
-        .unwrap();
-        let after =
-            fork_instrument_cargo_dependency_digest_for_inert_source(&authority, &with_dependency)
-                .unwrap();
-        assert_ne!(
-            before, after,
-            "the producer's own Cargo dependency edge must determine its fork-tool cache identity"
-        );
     }
 
     #[test]
@@ -23490,9 +22553,6 @@ inputs = ["libMissingInput/nope.txt"]
 repo_url    = "https://example.test/repo.git"
 commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision    = 1
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -23575,9 +22635,6 @@ inputs = ["packages/registry/shared-helper/cross-package.txt"]
 repo_url = "https://example.test/external.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -24248,7 +23305,6 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         }
@@ -24269,7 +23325,6 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
-            fetch_only: false,
             repo_root: Some(repo_root),
             binaries_dir: None,
         }
@@ -24289,7 +23344,6 @@ spdx = "TestLicense"
             cache_root: compiled,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         }
@@ -24663,8 +23717,6 @@ inputs = ["libMemoGit/build-libMemoGit.sh"]
 repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
-[binary]
-index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
 "#;
         fs::write(&build_path, build_base).unwrap();
         let registry = Registry {
@@ -26117,279 +25169,6 @@ libs = ["lib/libConsumer.a"]
     // (with the artifacts otherwise installed) means the remote fetch
     // succeeded.
 
-    fn sha256_hex(bytes: &[u8]) -> String {
-        let mut h = Sha256::new();
-        h.update(bytes);
-        let out: [u8; 32] = h.finalize().into();
-        hex(&out)
-    }
-
-    /// Build the archived `manifest.toml` text for a library named
-    /// `name`. `arch` and `abi_versions` and `cache_key_sha` populate
-    /// the `[compatibility]` block. Output declaration is `lib/out.a`
-    /// to match `write_lib_with_build_toml`.
-    fn archived_manifest_text(
-        name: &str,
-        arch: &str,
-        abi_versions: &[u32],
-        cache_key_sha: &str,
-    ) -> String {
-        let abi_csv = abi_versions
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            r#"
-kind = "library"
-name = "{name}"
-version = "1.0.0"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/{name}-1.0.0.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "TestLicense"
-
-[outputs]
-libs = ["lib/out.a"]
-
-[compatibility]
-target_arch = "{arch}"
-abi_versions = [{abi_csv}]
-cache_key_sha = "{cache_key_sha}"
-"#,
-            ""
-        )
-    }
-
-    fn archived_program_manifest_text(
-        name: &str,
-        output_name: &str,
-        output_wasm: &str,
-        arch: &str,
-        abi_versions: &[u32],
-        cache_key_sha: &str,
-    ) -> String {
-        let abi_csv = abi_versions
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            r#"
-kind = "program"
-name = "{name}"
-version = "1.0.0"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/{name}-1.0.0.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "TestLicense"
-
-[[outputs]]
-name = "{output_name}"
-wasm = "{output_wasm}"
-
-[compatibility]
-target_arch = "{arch}"
-abi_versions = [{abi_csv}]
-cache_key_sha = "{cache_key_sha}"
-"#,
-            ""
-        )
-    }
-
-    fn archived_program_runtime_manifest_text(
-        name: &str,
-        arch: &str,
-        abi_versions: &[u32],
-        cache_key_sha: &str,
-    ) -> String {
-        let abi_csv = abi_versions
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            r#"
-kind = "program"
-name = "{name}"
-version = "1.0.0"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/{name}.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "MIT"
-
-[[outputs]]
-name = "{name}"
-wasm = "{name}.wasm"
-
-[[runtime_files]]
-artifact = "icu.dat"
-guest_path = "/usr/lib/php/icu.dat"
-
-[compatibility]
-target_arch = "{arch}"
-abi_versions = [{abi_csv}]
-cache_key_sha = "{cache_key_sha}"
-"#,
-            ""
-        )
-    }
-
-    /// Write a source `package.toml` + sibling `build.toml` for
-    /// index-lookup-based resolution tests. The `build.toml`'s
-    /// `[binary]` block points at `index_url` (typically a `file://`
-    /// URL to a staged `index.toml`). The build script drops a
-    /// `via-build` sentinel so fall-through tests can detect that the
-    /// source build ran instead of the index fetch.
-    fn write_lib_with_build_toml(root: &Path, name: &str, index_url: &str) {
-        let lib_dir = root.join(name);
-        std::fs::create_dir_all(&lib_dir).unwrap();
-
-        let deps_toml = format!(
-            r#"
-kind = "library"
-name = "{name}"
-version = "1.0.0"
-depends_on = []
-
-[source]
-url = "https://example.test/{name}-1.0.0.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "TestLicense"
-
-[outputs]
-libs = ["lib/out.a"]
-"#,
-            ""
-        );
-        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
-
-        let build_toml = format!(
-            r#"
-script_path = "packages/registry/{name}/build-{name}.sh"
-repo_url    = "https://example.test/repo.git"
-commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-
-[binary]
-index_url = "{index_url}"
-"#
-        );
-        std::fs::write(lib_dir.join("build.toml"), build_toml).unwrap();
-
-        let script = "#!/bin/bash\nset -euo pipefail\n\
-mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
-echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
-touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
-        let script_path = lib_dir.join(format!("build-{name}.sh"));
-        std::fs::write(&script_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(&script_path, p).unwrap();
-        }
-    }
-
-    fn write_program_build_toml(root: &Path, name: &str, index_url: &str) {
-        let dir = root.join(name);
-        let build_toml = format!(
-            r#"
-script_path = "packages/registry/{name}/build-{name}.sh"
-repo_url    = "https://example.test/repo.git"
-commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-
-[binary]
-index_url = "{index_url}"
-"#
-        );
-        std::fs::write(dir.join("build.toml"), build_toml).unwrap();
-    }
-
-    fn write_runtime_program_with_index(root: &Path, name: &str, index_url: &str) {
-        write_program(
-            root,
-            name,
-            "1.0.0",
-            &[],
-            &format!(
-                r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/{name}.wasm"
-printf RUNTIME-BYTES > "$WASM_POSIX_DEP_OUT_DIR/icu.dat"
-touch "$WASM_POSIX_DEP_OUT_DIR/via-build""#,
-            ),
-            &[(name, &format!("{name}.wasm"))],
-        );
-        append_program_runtime_file(root, name, "icu.dat", "/usr/lib/php/icu.dat");
-        let build_toml = format!(
-            r#"script_path = "{name}/build-{name}.sh"
-repo_url = "https://example.test/repo.git"
-commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-
-[binary]
-index_url = "{index_url}"
-"#,
-        );
-        fs::write(root.join(name).join("build.toml"), build_toml).unwrap();
-    }
-
-    /// Stage an `index.toml` at `path` declaring `name@1.0.0` with a
-    /// single Success entry for `arch` pointing at `archive_url` with
-    /// the given `archive_sha256` and `cache_key_sha`. Mirrors what
-    /// `xtask index-update` will produce in CI; tests use this to
-    /// short-circuit a real publish pipeline.
-    fn stage_index_toml(
-        path: &Path,
-        name: &str,
-        arch: TargetArch,
-        archive_url: &str,
-        archive_sha256: &str,
-        cache_key_sha: &str,
-    ) {
-        let arch_str = arch.as_str();
-        let content = format!(
-            r#"abi_version = {abi}
-generated_at = "2026-05-13T00:00:00Z"
-generator = "test"
-
-[[packages]]
-name = "{name}"
-version = "1.0.0"
-revision = 1
-
-[packages.binary.{arch_str}]
-status = "success"
-archive_url = "{archive_url}"
-archive_sha256 = "{archive_sha256}"
-cache_key_sha = "{cache_key_sha}"
-built_at = "2026-05-13T00:00:00Z"
-built_by = "test"
-"#,
-            abi = TEST_ABI,
-        );
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(path, content).unwrap();
-    }
-
     // Resolver tests for the index-lookup binary fetch path. Each
     // test stages a real archive + index.toml on disk (file:// URLs
     // throughout — no network required), writes a source
@@ -26401,831 +25180,6 @@ built_by = "test"
     // sentinel appears in the cache (proving the resolver gave up on
     // the index path and ran the build script); the happy-path test
     // asserts the archive's bytes landed AND `via-build` is absent.
-
-    #[test]
-    fn direct_pr_overlay_fetch_installs_archive_before_build_toml_index() {
-        let root = tempdir("direct-overlay-reg");
-        let cache = tempdir("direct-overlay-cache");
-        let archive_dir = tempdir("direct-overlay-archive");
-
-        write_lib(
-            &root,
-            "libOverlay",
-            "1.0.0",
-            &[],
-            r#"
-mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
-echo BUILD > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
-touch "$WASM_POSIX_DEP_OUT_DIR/via-build"
-"#,
-            r#"[outputs]
-libs = ["lib/out.a"]
-"#,
-        );
-
-        let reg_without_overlay = Registry {
-            roots: vec![root.clone()],
-        };
-        let m_without_overlay = reg_without_overlay.load("libOverlay").unwrap();
-        let cache_key_hex = hex(&compute_sha(
-            &m_without_overlay,
-            &reg_without_overlay,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap());
-
-        let manifest_text =
-            archived_manifest_text("libOverlay", "wasm32", &[TEST_ABI], &cache_key_hex);
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"FROM-OVERLAY")],
-        );
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libOverlay-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        std::fs::write(
-            root.join("libOverlay/package.pr.toml"),
-            format!(
-                r#"
-[binary.wasm32]
-archive_url = "{archive_url}"
-archive_sha256 = "{archive_sha_hex}"
-"#
-            ),
-        )
-        .unwrap();
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libOverlay").unwrap();
-        let path =
-            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
-
-        assert_eq!(
-            std::fs::read(path.join("lib/out.a")).unwrap(),
-            b"FROM-OVERLAY"
-        );
-        assert!(
-            !path.join("via-build").exists(),
-            "direct package.pr.toml overlay should bypass the source build"
-        );
-    }
-
-    #[test]
-    fn stale_direct_pr_overlay_falls_through_to_source_build() {
-        let root = tempdir("stale-direct-overlay-reg");
-        let cache = tempdir("stale-direct-overlay-cache");
-        let archive_dir = tempdir("stale-direct-overlay-archive");
-
-        write_lib(
-            &root,
-            "libStaleOverlay",
-            "1.0.0",
-            &[],
-            r#"
-mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
-echo BUILD > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
-touch "$WASM_POSIX_DEP_OUT_DIR/via-build"
-"#,
-            r#"[outputs]
-libs = ["lib/out.a"]
-"#,
-        );
-
-        // The archive itself is intact, but its manifest belongs to a
-        // different cache identity. This is the important same-run failure
-        // mode: finding package.pr.toml is not proof that source fallback is
-        // unnecessary.
-        let stale_manifest =
-            archived_manifest_text("libStaleOverlay", "wasm32", &[TEST_ABI], &"0".repeat(64));
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &stale_manifest,
-            &[("lib/out.a", b"STALE-OVERLAY")],
-        );
-        let archive_path = archive_dir.join("libStaleOverlay-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        std::fs::write(
-            root.join("libStaleOverlay/package.pr.toml"),
-            format!(
-                r#"
-[binary.wasm32]
-archive_url = "file://{}"
-archive_sha256 = "{}"
-"#,
-                archive_path.display(),
-                sha256_hex(&archive_bytes),
-            ),
-        )
-        .unwrap();
-
-        let reg = Registry { roots: vec![root] };
-        let manifest = reg.load("libStaleOverlay").unwrap();
-        let path = ensure_built(
-            &manifest,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
-
-        assert!(
-            path.join("via-build").exists(),
-            "a stale direct overlay must execute the normal source recipe"
-        );
-        assert_eq!(std::fs::read(path.join("lib/out.a")).unwrap(), b"BUILD\n");
-    }
-
-    #[test]
-    fn index_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
-        let root = tempdir("idx-happy-reg");
-        let cache = tempdir("idx-happy-cache");
-        let archive_dir = tempdir("idx-happy-archive");
-        let index_dir = tempdir("idx-happy-index");
-
-        // Compute the cache_key_sha the resolver will produce for the
-        // (fixed-shape) source manifest. cache_key_sha hashes
-        // name/version/revision/source/arch/abi/dep-shas. This
-        // fixture's build.toml declares no extra cache inputs, so it
-        // does not affect compute_sha beyond the revision already
-        // loaded onto the manifest.
-        let throwaway_root = tempdir("idx-happy-pre");
-        write_lib(
-            &throwaway_root,
-            "libIdx",
-            "1.0.0",
-            &[],
-            "true",
-            "[outputs]\nlibs = [\"lib/out.a\"]\n",
-        );
-        let pre_reg = Registry {
-            roots: vec![throwaway_root.clone()],
-        };
-        let pre_m = pre_reg.load("libIdx").unwrap();
-        let pre_sha = compute_sha(
-            &pre_m,
-            &pre_reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let cache_key_hex = hex(&pre_sha);
-        let _ = std::fs::remove_dir_all(&throwaway_root);
-
-        // Build a real archive whose internal manifest matches arch
-        // + abi + cache_key.
-        let manifest_text = archived_manifest_text("libIdx", "wasm32", &[TEST_ABI], &cache_key_hex);
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"\x00\x01\x02FAKE")],
-        );
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libIdx-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libIdx",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha_hex,
-            &cache_key_hex,
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdx", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libIdx").unwrap();
-        let path =
-            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
-
-        // Artifact installed at the canonical cache path with the
-        // archive's bytes.
-        assert!(path.starts_with(cache.join("libs")));
-        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
-        assert_eq!(lib_bytes, b"\x00\x01\x02FAKE");
-        // Build script did NOT run.
-        assert!(
-            !path.join("via-build").exists(),
-            "index fetch should bypass the source build"
-        );
-        // Manifest + artifacts dir stripped during reshape.
-        assert!(!path.join("manifest.toml").exists());
-        assert!(!path.join("artifacts").exists());
-    }
-
-    #[test]
-    fn index_fetch_falls_through_on_index_toml_abi_mismatch() {
-        let root = tempdir("idx-index-abi-fail-reg");
-        let cache = tempdir("idx-index-abi-fail-cache");
-        let archive_dir = tempdir("idx-index-abi-fail-archive");
-        let index_dir = tempdir("idx-index-abi-fail-index");
-
-        let index_path = index_dir.join("index.toml");
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdxTopAbi", &index_url);
-
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let m = reg.load("libIdxTopAbi").unwrap();
-        let cache_key_hex = hex(&compute_sha(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap());
-
-        let manifest_text =
-            archived_manifest_text("libIdxTopAbi", "wasm32", &[TEST_ABI], &cache_key_hex);
-        let archive_bytes =
-            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libIdxTopAbi-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let arch_str = TEST_ARCH.as_str();
-        std::fs::write(
-            &index_path,
-            format!(
-                r#"abi_version = {}
-generated_at = "2026-05-13T00:00:00Z"
-generator = "test"
-
-[[packages]]
-name = "libIdxTopAbi"
-version = "1.0.0"
-revision = 1
-
-[packages.binary.{arch_str}]
-status = "success"
-archive_url = "{archive_url}"
-archive_sha256 = "{archive_sha_hex}"
-cache_key_sha = "{cache_key_hex}"
-"#,
-                TEST_ABI + 1
-            ),
-        )
-        .unwrap();
-
-        let path =
-            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
-
-        assert!(
-            path.join("via-build").exists(),
-            "top-level index ABI mismatch must fall through to source build"
-        );
-        let lib = std::fs::read(path.join("lib/out.a")).unwrap();
-        assert_ne!(lib, b"REMOTE", "remote bytes must not have been installed");
-    }
-
-    #[test]
-    fn binaries_dir_program_fetch_does_not_require_built_deps() {
-        let root = tempdir("prog-bdir-remote-first-reg");
-        let cache = tempdir("prog-bdir-remote-first-cache");
-        let bin_dir = tempdir("prog-bdir-remote-first-bin");
-        let archive_dir = tempdir("prog-bdir-remote-first-archive");
-        let index_dir = tempdir("prog-bdir-remote-first-index");
-
-        write_program(
-            &root,
-            "baddep",
-            "1.0.0",
-            &[],
-            "echo baddep source build should not run >&2; exit 42",
-            &[("baddep", "baddep.wasm")],
-        );
-        write_program(
-            &root,
-            "progIdx",
-            "1.0.0",
-            &["baddep@1.0.0"],
-            "echo progIdx source build should not run >&2; exit 43",
-            &[("progIdx", "progIdx.wasm")],
-        );
-
-        let index_path = index_dir.join("index.toml");
-        let index_url = format!("file://{}", index_path.display());
-        write_program_build_toml(&root, "progIdx", &index_url);
-
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let m = reg.load("progIdx").unwrap();
-        let cache_key_hex = hex(&compute_sha(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap());
-
-        let manifest_text = archived_program_manifest_text(
-            "progIdx",
-            "progIdx",
-            "progIdx.wasm",
-            "wasm32",
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
-        // Valid wasm so the fetched artifact passes cache validation and the
-        // remote-first path is actually exercised (a header-only fixture is
-        // rejected as "missing required exports", forcing the source-build
-        // fallback this test is meant to prove does NOT happen).
-        let prog_wasm = minimal_executable_wasm();
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("progIdx.wasm", prog_wasm.as_slice())],
-        );
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("progIdx-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-        stage_index_toml(
-            &index_path,
-            "progIdx",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha_hex,
-            &cache_key_hex,
-        );
-
-        let opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &cache,
-            local_libs: None,
-            force_source_build: None,
-            fetch_only: false,
-            repo_root: Some(&root),
-            binaries_dir: Some(&bin_dir),
-        };
-        let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
-
-        assert_eq!(std::fs::read(path.join("progIdx.wasm")).unwrap(), prog_wasm);
-        let baddep_cached = std::fs::read_dir(cache.join("programs"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| entry.file_name().to_string_lossy().starts_with("baddep-"));
-        assert!(
-            !baddep_cached,
-            "binary materialization should not have source-built baddep first"
-        );
-    }
-
-    #[test]
-    fn fetched_program_runtime_file_matches_source_mirror_layout() {
-        let root = tempdir("runtime-fetch-parity-reg");
-        let remote_cache = tempdir("runtime-fetch-parity-remote-cache");
-        let source_cache = tempdir("runtime-fetch-parity-source-cache");
-        let remote_bin = tempdir("runtime-fetch-parity-remote-bin");
-        let source_bin = tempdir("runtime-fetch-parity-source-bin");
-        let archive_dir = tempdir("runtime-fetch-parity-archive");
-        let index_dir = tempdir("runtime-fetch-parity-index");
-        let index_path = index_dir.join("index.toml");
-        let index_url = format!("file://{}", index_path.display());
-        let name = "runtimeFetched";
-        write_runtime_program_with_index(&root, name, &index_url);
-
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let manifest = reg.load(name).unwrap();
-        let cache_key_hex = hex(&compute_sha(
-            &manifest,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap());
-        let archived_manifest = archived_program_runtime_manifest_text(
-            name,
-            TEST_ARCH.as_str(),
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
-        let wasm_name = format!("{name}.wasm");
-        let wasm_bytes = b"\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b";
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &archived_manifest,
-            &[
-                (wasm_name.as_str(), wasm_bytes.as_slice()),
-                ("icu.dat", b"RUNTIME-BYTES"),
-            ],
-        );
-        let archive_path = archive_dir.join(format!("{name}-1.0.0.tar.zst"));
-        fs::write(&archive_path, &archive_bytes).unwrap();
-        stage_index_toml(
-            &index_path,
-            name,
-            TEST_ARCH,
-            &format!("file://{}", archive_path.display()),
-            &sha256_hex(&archive_bytes),
-            &cache_key_hex,
-        );
-
-        let remote_opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &remote_cache,
-            local_libs: None,
-            force_source_build: None,
-            fetch_only: false,
-            repo_root: Some(&root),
-            binaries_dir: Some(&remote_bin),
-        };
-        let remote_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &remote_opts).unwrap();
-        assert!(!remote_path.join("via-build").exists());
-        place_binaries_symlinks(
-            &manifest,
-            &remote_path,
-            &remote_bin,
-            TEST_ARCH,
-            LOCAL_GENERATION_CACHE_KEY,
-        )
-        .unwrap();
-
-        let force = BTreeSet::from([name.to_string()]);
-        let source_opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &source_cache,
-            local_libs: None,
-            force_source_build: Some(&force),
-            fetch_only: false,
-            repo_root: Some(&root),
-            binaries_dir: Some(&source_bin),
-        };
-        let source_path = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &source_opts).unwrap();
-        assert!(source_path.join("via-build").exists());
-        place_binaries_symlinks(
-            &manifest,
-            &source_path,
-            &source_bin,
-            TEST_ARCH,
-            LOCAL_GENERATION_CACHE_KEY,
-        )
-        .unwrap();
-
-        let mirror_rel = Path::new("programs/wasm32").join(name).join("icu.dat");
-        assert_eq!(
-            fs::read(remote_bin.join(&mirror_rel)).unwrap(),
-            b"RUNTIME-BYTES"
-        );
-        assert_eq!(
-            fs::read(source_bin.join(&mirror_rel)).unwrap(),
-            b"RUNTIME-BYTES"
-        );
-    }
-
-    #[test]
-    fn incomplete_fetched_runtime_file_falls_back_or_fails_fetch_only() {
-        let root = tempdir("runtime-fetch-incomplete-reg");
-        let fallback_cache = tempdir("runtime-fetch-incomplete-fallback-cache");
-        let fetch_only_cache = tempdir("runtime-fetch-incomplete-only-cache");
-        let archive_dir = tempdir("runtime-fetch-incomplete-archive");
-        let index_dir = tempdir("runtime-fetch-incomplete-index");
-        let index_path = index_dir.join("index.toml");
-        let index_url = format!("file://{}", index_path.display());
-        let name = "runtimeIncomplete";
-        write_runtime_program_with_index(&root, name, &index_url);
-
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let manifest = reg.load(name).unwrap();
-        let cache_key_hex = hex(&compute_sha(
-            &manifest,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap());
-        let archived_manifest = archived_program_runtime_manifest_text(
-            name,
-            TEST_ARCH.as_str(),
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
-        let wasm_name = format!("{name}.wasm");
-        let wasm_bytes = b"\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b";
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &archived_manifest,
-            &[(wasm_name.as_str(), wasm_bytes.as_slice())],
-        );
-        let archive_path = archive_dir.join(format!("{name}-1.0.0.tar.zst"));
-        fs::write(&archive_path, &archive_bytes).unwrap();
-        stage_index_toml(
-            &index_path,
-            name,
-            TEST_ARCH,
-            &format!("file://{}", archive_path.display()),
-            &sha256_hex(&archive_bytes),
-            &cache_key_hex,
-        );
-
-        let fallback = ensure_built(
-            &manifest,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&fallback_cache, None),
-        )
-        .unwrap();
-        assert!(fallback.join("via-build").exists());
-        assert_eq!(
-            fs::read(fallback.join("icu.dat")).unwrap(),
-            b"RUNTIME-BYTES"
-        );
-
-        let fetch_only_opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &fetch_only_cache,
-            local_libs: None,
-            force_source_build: None,
-            fetch_only: true,
-            repo_root: Some(&root),
-            binaries_dir: None,
-        };
-        let err = ensure_built(&manifest, &reg, TEST_ARCH, TEST_ABI, &fetch_only_opts).unwrap_err();
-        assert!(err.contains("fetch-only"), "got: {err}");
-        assert!(
-            !canonical_path(
-                &fetch_only_cache,
-                &manifest,
-                TEST_ARCH,
-                &compute_sha(
-                    &manifest,
-                    &reg,
-                    TEST_ARCH,
-                    TEST_ABI,
-                    &mut BTreeMap::new(),
-                    &mut Vec::new(),
-                )
-                .unwrap(),
-            )
-            .join("via-build")
-            .exists()
-        );
-    }
-
-    #[test]
-    fn index_fetch_falls_through_on_archive_sha_mismatch() {
-        let root = tempdir("idx-shafail-reg");
-        let cache = tempdir("idx-shafail-cache");
-        let archive_dir = tempdir("idx-shafail-archive");
-        let index_dir = tempdir("idx-shafail-index");
-
-        // Build a real archive but advertise the WRONG sha in the index.
-        let manifest_text = archived_manifest_text(
-            "libIdxSha",
-            "wasm32",
-            &[TEST_ABI],
-            // cache_key_sha is irrelevant: we never get past the sha
-            // check. Fill with a valid-shaped dummy so parse_archived
-            // wouldn't complain (defence in depth).
-            &"a".repeat(64),
-        );
-        let archive_bytes =
-            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
-        let archive_path = archive_dir.join("libIdxSha-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let bogus_sha = "0".repeat(64);
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libIdxSha",
-            TargetArch::Wasm32,
-            &archive_url,
-            &bogus_sha,
-            &"a".repeat(64),
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdxSha", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libIdxSha").unwrap();
-        let path =
-            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
-
-        // Source build ran.
-        assert!(
-            path.join("via-build").exists(),
-            "sha mismatch must fall through to source build"
-        );
-        let lib = std::fs::read(path.join("lib/out.a")).unwrap();
-        assert_ne!(lib, b"REMOTE", "remote bytes must not have been installed");
-    }
-
-    #[test]
-    fn index_fetch_falls_through_on_target_arch_mismatch() {
-        let root = tempdir("idx-archfail-reg");
-        let cache = tempdir("idx-archfail-cache");
-        let archive_dir = tempdir("idx-archfail-archive");
-        let index_dir = tempdir("idx-archfail-index");
-
-        // Archive's internal compatibility block declares wasm64 —
-        // resolver requests wasm32 (TEST_ARCH). The index entry
-        // points the wasm32 slot at this archive (an
-        // archive-staging bug a real CI would never produce, but
-        // the resolver must defend against it).
-        let manifest_text =
-            archived_manifest_text("libIdxArch", "wasm64", &[TEST_ABI], &"a".repeat(64));
-        let archive_bytes =
-            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
-        let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libIdxArch-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libIdxArch",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha,
-            &"a".repeat(64),
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdxArch", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libIdxArch").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH, // wasm32
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
-
-        assert!(
-            path.join("via-build").exists(),
-            "arch mismatch must fall through to source build"
-        );
-    }
-
-    #[test]
-    fn index_fetch_falls_through_on_abi_mismatch() {
-        let root = tempdir("idx-abifail-reg");
-        let cache = tempdir("idx-abifail-cache");
-        let archive_dir = tempdir("idx-abifail-archive");
-        let index_dir = tempdir("idx-abifail-index");
-
-        // Archive supports only ABI 999 — resolver passes TEST_ABI.
-        let manifest_text = archived_manifest_text("libIdxAbi", "wasm32", &[999], &"a".repeat(64));
-        let archive_bytes =
-            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
-        let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libIdxAbi-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libIdxAbi",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha,
-            &"a".repeat(64),
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdxAbi", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libIdxAbi").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI, // not in [999]
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
-
-        assert!(
-            path.join("via-build").exists(),
-            "abi mismatch must fall through to source build"
-        );
-    }
-
-    #[test]
-    fn index_fetch_falls_through_on_cache_key_mismatch() {
-        let root = tempdir("idx-ckfail-reg");
-        let cache = tempdir("idx-ckfail-cache");
-        let archive_dir = tempdir("idx-ckfail-archive");
-        let index_dir = tempdir("idx-ckfail-index");
-
-        // Archive's internal compat.cache_key_sha is well-formed but
-        // doesn't match what compute_sha would produce for this lib.
-        let wrong_ck = "f".repeat(64);
-        let manifest_text = archived_manifest_text("libIdxCk", "wasm32", &[TEST_ABI], &wrong_ck);
-        let archive_bytes =
-            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
-        let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libIdxCk-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libIdxCk",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha,
-            &wrong_ck,
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libIdxCk", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libIdxCk").unwrap();
-        let path =
-            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
-
-        assert!(
-            path.join("via-build").exists(),
-            "cache_key_sha mismatch must fall through to source build"
-        );
-    }
-
-    #[test]
-    fn fetch_only_rejects_missing_index_entry_without_source_build() {
-        let root = tempdir("fetch-only-missing-reg");
-        let cache = tempdir("fetch-only-missing-cache");
-        let index_dir = tempdir("fetch-only-missing-index");
-
-        let index_path = index_dir.join("index.toml");
-        std::fs::write(
-            &index_path,
-            format!(
-                r#"abi_version = {TEST_ABI}
-generated_at = "2026-06-09T00:00:00Z"
-generator = "test"
-"#
-            ),
-        )
-        .unwrap();
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libFetchOnly", &index_url);
-
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let m = reg.load("libFetchOnly").unwrap();
-        let sha = compute_sha(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
-        let opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &cache,
-            local_libs: None,
-            force_source_build: None,
-            fetch_only: true,
-            repo_root: Some(&root),
-            binaries_dir: None,
-        };
-
-        let err = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap_err();
-        assert!(err.contains("fetch-only resolve"), "got: {err}");
-        assert!(
-            !canonical.join("via-build").exists(),
-            "fetch-only must not run the source build script"
-        );
-    }
 
     // --- kind = "program" resolver tests (Task B.2) ---
 
@@ -30368,56 +28322,6 @@ fork_instrumentation = "disabled"
     }
 
     #[test]
-    fn walk_all_matches_normal_resolution_revision_and_overlay_loading() {
-        let root = tempdir("walk-all-loader-parity");
-        write(&root, "libRev", "1.0.0", &[]);
-        write_build_revision(&root, "libRev", 7);
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-
-        let normally_loaded = reg.load("libRev").unwrap();
-        let (_, walked) = reg
-            .walk_all()
-            .unwrap()
-            .into_iter()
-            .find(|(name, _)| name == "libRev")
-            .unwrap();
-        assert_eq!(walked.revision, 7);
-        assert_eq!(
-            package_context_cache_keys(&walked, &reg).unwrap(),
-            package_context_cache_keys(&normally_loaded, &reg).unwrap(),
-            "registry enumeration and dependency resolution must compute one cache identity",
-        );
-
-        fs::write(
-            root.join("libRev/package.pr.toml"),
-            r#"
-[binary.wasm32]
-archive_url = "https://example.test/pr/libRev.tar.zst"
-archive_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
-"#,
-        )
-        .unwrap();
-        let (_, walked_with_overlay) = reg
-            .walk_all()
-            .unwrap()
-            .into_iter()
-            .find(|(name, _)| name == "libRev")
-            .unwrap();
-        assert_eq!(walked_with_overlay.revision, 7);
-        assert!(
-            walked_with_overlay.binary.contains_key(&TargetArch::Wasm32),
-            "walk_all must honor the same binary-only PR overlay as Registry::load",
-        );
-        assert_eq!(
-            package_context_cache_keys(&walked_with_overlay, &reg).unwrap(),
-            package_context_cache_keys(&normally_loaded, &reg).unwrap(),
-            "binary fetch overlays must not change the canonical package identity",
-        );
-    }
-
-    #[test]
     fn programs_by_name_filters_to_program_kind() {
         let root = tempdir("progs-by-name");
         write_lib(
@@ -30647,7 +28551,6 @@ spdx = "BSD-3-Clause"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -31192,7 +29095,6 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -31203,98 +29105,6 @@ libs = ["lib/libF1.a"]
             runs.lines().count(),
             2,
             "force-rebuild must re-run the build script (counter: {runs:?})"
-        );
-    }
-
-    #[test]
-    fn force_rebuild_bypasses_index_fetch() {
-        // Stage a real archive + index entry that WOULD resolve cleanly
-        // (matching sha/arch/abi/cache_key) and confirm `force_rebuild`
-        // skips the index path entirely — the source build's
-        // `via-build` sentinel appears and the canonical cache holds
-        // the script-built artifact, not the archive's.
-        let root = tempdir("force-idx-reg");
-        let cache = tempdir("force-idx-cache");
-        let archive_dir = tempdir("force-idx-archive");
-        let index_dir = tempdir("force-idx-index");
-
-        let throwaway_root = tempdir("force-idx-pre");
-        write_lib(
-            &throwaway_root,
-            "libF2",
-            "1.0.0",
-            &[],
-            "true",
-            "[outputs]\nlibs = [\"lib/out.a\"]\n",
-        );
-        let pre_reg = Registry {
-            roots: vec![throwaway_root.clone()],
-        };
-        let pre_m = pre_reg.load("libF2").unwrap();
-        let pre_sha = compute_sha(
-            &pre_m,
-            &pre_reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let cache_key_hex = hex(&pre_sha);
-        let _ = std::fs::remove_dir_all(&throwaway_root);
-
-        // Build an archive whose contents differ from the source build
-        // so we can tell which path produced the artifact.
-        let manifest_text = archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"REMOTE-ARCHIVE")],
-        );
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libF2-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let archive_url = format!("file://{}", archive_path.display());
-
-        let index_path = index_dir.join("index.toml");
-        stage_index_toml(
-            &index_path,
-            "libF2",
-            TargetArch::Wasm32,
-            &archive_url,
-            &archive_sha_hex,
-            &cache_key_hex,
-        );
-        let index_url = format!("file://{}", index_path.display());
-        write_lib_with_build_toml(&root, "libF2", &index_url);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libF2").unwrap();
-
-        // Force-build into a fresh cache. Remote fetch must be skipped:
-        // the source build's `via-build` sentinel must exist, and
-        // `lib/out.a` must hold BUILD content (not REMOTE-ARCHIVE).
-        let mut force = BTreeSet::new();
-        force.insert("libF2".to_string());
-        let opts = ResolveOpts {
-            policy: ResolvePolicy::Default,
-            source_cache_root: None,
-            cache_root: &cache,
-            local_libs: None,
-            force_source_build: Some(&force),
-            fetch_only: false,
-            repo_root: None,
-            binaries_dir: None,
-        };
-        let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
-        assert!(
-            path.join("via-build").exists(),
-            "force-rebuild must source-build (sentinel missing at {})",
-            path.display()
-        );
-        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
-        assert_eq!(
-            lib_bytes, b"BUILD\n",
-            "force-rebuild must use the source-built artifact, not the remote archive"
         );
     }
 
@@ -31371,7 +29181,6 @@ libs = ["lib/libF3b.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -31560,14 +29369,6 @@ libs = ["lib/libF3b.a"]
     }
 
     #[test]
-    fn extract_fetch_only_flag_removes_flag() {
-        let (got, rest) =
-            extract_fetch_only_flag(vec!["resolve".into(), "--fetch-only".into(), "bash".into()]);
-        assert!(got);
-        assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
-    }
-
-    #[test]
     fn source_only_policy_parser_fails_closed() {
         use std::ffi::{OsStr, OsString};
         assert_eq!(parse_resolution_policy(None).unwrap(), ResolvePolicy::Default);
@@ -31616,36 +29417,14 @@ libs = ["lib/libF3b.a"]
             true,
             ResolvePolicy::SourceOnlyV1,
             false,
-            false,
         )
         .unwrap_err();
         assert!(error.contains("only valid for `resolve`"), "got: {error}");
-
-        let explicit_fetch = validate_resolution_policy_usage(
-            "resolve",
-            true,
-            ResolvePolicy::SourceOnlyV1,
-            true,
-            false,
-        )
-        .unwrap_err();
-        assert!(explicit_fetch.contains("fetch-only"), "got: {explicit_fetch}");
-
-        let ambient_fetch = validate_resolution_policy_usage(
-            "resolve",
-            false,
-            ResolvePolicy::SourceOnlyV1,
-            true,
-            false,
-        )
-        .unwrap_err();
-        assert!(ambient_fetch.contains("fetch-only"), "got: {ambient_fetch}");
 
         validate_resolution_policy_usage(
             "resolve",
             false,
             ResolvePolicy::SourceOnlyV1,
-            false,
             true,
         )
         .unwrap();
@@ -31810,7 +29589,7 @@ libs = ["lib/libF3b.a"]
         std::fs::write(root.join("libProvider/declared.txt"), "same\n").unwrap();
         std::fs::write(
             root.join("libProvider/build.toml"),
-            "script_path = \"build.sh\"\ninputs = [\"libProvider/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"libProvider/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let implicit = registry.load("libProvider").unwrap();
@@ -32298,7 +30077,7 @@ libs = ["lib/libF3b.a"]
         let build_path = root.join("libRepository/build.toml");
         std::fs::write(
             &build_path,
-            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let empty_inputs = identity().unwrap_err();
@@ -32306,7 +30085,7 @@ libs = ["lib/libF3b.a"]
 
         std::fs::write(
             &build_path,
-            "script_path = \"build.sh\"\ninputs = [\"./libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"./libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let noncanonical = identity().unwrap_err();
@@ -32318,7 +30097,7 @@ libs = ["lib/libF3b.a"]
         std::fs::write(root.join("libRepository/declared.txt"), "declared bytes\n").unwrap();
         std::fs::write(
             &build_path,
-            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\", \"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\", \"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let duplicate = identity().unwrap_err();
@@ -32327,7 +30106,7 @@ libs = ["lib/libF3b.a"]
 
         std::fs::write(
             &build_path,
-            "script_path = \"build.sh\"\ninputs = [\"libRepository/missing.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/missing.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let missing_input = identity().unwrap_err();
@@ -32337,7 +30116,7 @@ libs = ["lib/libF3b.a"]
         std::fs::write(&declared, "declared bytes\n").unwrap();
         std::fs::write(
             &build_path,
-            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"libRepository/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         identity().unwrap();
@@ -32419,7 +30198,7 @@ libs = ["lib/libc++.a"]
         );
         std::fs::write(
             package.join("build.toml"),
-            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = []\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let empty_declared_inputs =
@@ -32431,7 +30210,7 @@ libs = ["lib/libc++.a"]
         );
         std::fs::write(
             package.join("build.toml"),
-            "script_path = \"build.sh\"\ninputs = [\"package/build.sh\", \"package/flake.nix\", \"package/flake.lock\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"build.sh\"\ninputs = [\"package/build.sh\", \"package/flake.nix\", \"package/flake.lock\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let declared_identity = || {
@@ -32955,9 +30734,6 @@ inputs = ["libCommit/declared.txt"]
 repo_url = "https://example.test/repo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
-
-[binary]
-index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -33235,7 +31011,6 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: None,
             binaries_dir: Some(&binaries),
         };
@@ -33272,206 +31047,6 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         .unwrap();
         assert_eq!(std::fs::read_to_string(dep_counter).unwrap(), "ran\nran\n");
         assert_eq!(std::fs::read_to_string(target_counter).unwrap(), "ran\n");
-    }
-
-    #[test]
-    fn source_only_ignores_local_override_direct_archive_and_ordinary_mirrors() {
-        let root = tempdir("source-only-tier-registry");
-        let cache_base = tempdir("source-only-tier-cache");
-        let cache = cache_base.join("source-only-v1/compiled");
-        std::fs::create_dir_all(&cache).unwrap();
-        let local = tempdir("source-only-tier-local");
-        let binaries = tempdir("source-only-tier-binaries");
-        let local_binaries = tempdir("source-only-tier-local-binaries");
-        write_lib(
-            &root,
-            "libTier",
-            "1.0.0",
-            &[],
-            "mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"; printf SOURCE > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
-            "[outputs]\nlibs = [\"lib/out.a\"]\n",
-        );
-        write_source_only_repository_inputs(&root, "libTier");
-        let initial_registry = Registry {
-            roots: vec![root.clone()],
-        };
-        let initial_manifest = initial_registry.load("libTier").unwrap();
-        let cache_key = hex(
-            &compute_sha_for_policy(
-                &initial_manifest,
-                &initial_registry,
-                TEST_ARCH,
-                current_abi_version(),
-                ResolvePolicy::SourceOnlyV1,
-                &mut BTreeMap::new(),
-                &mut Vec::new(),
-            )
-            .unwrap(),
-        );
-        let archive_manifest = archived_manifest_text(
-            "libTier",
-            TEST_ARCH.as_str(),
-            &[current_abi_version()],
-            &cache_key,
-        );
-        let archive = crate::remote_fetch::build_test_archive(
-            &archive_manifest,
-            &[("lib/out.a", b"DIRECT")],
-        );
-        let archive_path = root.join("direct.tar.zst");
-        std::fs::write(&archive_path, &archive).unwrap();
-        std::fs::write(
-            root.join("libTier/package.pr.toml"),
-            format!(
-                "[binary.wasm32]\narchive_url = \"file://{}\"\narchive_sha256 = \"{}\"\n",
-                archive_path.display(),
-                sha256_hex(&archive),
-            ),
-        )
-        .unwrap();
-        let override_dir = local.join("libTier/build/lib");
-        std::fs::create_dir_all(&override_dir).unwrap();
-        std::fs::write(override_dir.join("out.a"), "LOCAL").unwrap();
-        std::fs::create_dir_all(binaries.join("programs/wasm32")).unwrap();
-        std::fs::write(binaries.join("programs/wasm32/libTier.wasm"), "BINARY").unwrap();
-        std::fs::create_dir_all(local_binaries.join("programs/wasm32")).unwrap();
-        std::fs::write(
-            local_binaries.join("programs/wasm32/libTier.wasm"),
-            "LOCAL-BINARY",
-        )
-        .unwrap();
-
-        let registry = Registry { roots: vec![root] };
-        let manifest = registry.load("libTier").unwrap();
-        let opts = ResolveOpts {
-            policy: ResolvePolicy::SourceOnlyV1,
-            source_cache_root: Some(&cache_base),
-            cache_root: &cache,
-            local_libs: Some(&local),
-            force_source_build: None,
-            fetch_only: false,
-            repo_root: None,
-            binaries_dir: Some(&binaries),
-        };
-        let resolved = ensure_built(
-            &manifest,
-            &registry,
-            TEST_ARCH,
-            current_abi_version(),
-            &opts,
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"SOURCE");
-        assert_eq!(
-            std::fs::read(binaries.join("programs/wasm32/libTier.wasm")).unwrap(),
-            b"BINARY"
-        );
-        assert_eq!(
-            std::fs::read(local_binaries.join("programs/wasm32/libTier.wasm")).unwrap(),
-            b"LOCAL-BINARY"
-        );
-    }
-
-    #[test]
-    fn source_only_ignores_valid_binary_index_and_requires_recipe() {
-        let repo = tempdir("source-only-index-repo");
-        let registry_root = repo.join("packages/registry");
-        std::fs::create_dir_all(&registry_root).unwrap();
-        let cache_base = tempdir("source-only-index-cache");
-        let cache = cache_base.join("source-only-v1/compiled");
-        std::fs::create_dir_all(&cache).unwrap();
-        let index_path = repo.join("index.toml");
-        write_lib_with_build_toml(
-            &registry_root,
-            "libIndexOnly",
-            &format!("file://{}", index_path.display()),
-        );
-        write_source_only_repository_inputs(&registry_root, "libIndexOnly");
-        let registry = Registry {
-            roots: vec![registry_root.clone()],
-        };
-        let manifest = registry.load("libIndexOnly").unwrap();
-        let cache_key = hex(
-            &compute_sha_for_policy(
-                &manifest,
-                &registry,
-                TEST_ARCH,
-                current_abi_version(),
-                ResolvePolicy::SourceOnlyV1,
-                &mut BTreeMap::new(),
-                &mut Vec::new(),
-            )
-            .unwrap(),
-        );
-        let archive_manifest = archived_manifest_text(
-            "libIndexOnly",
-            TEST_ARCH.as_str(),
-            &[current_abi_version()],
-            &cache_key,
-        );
-        let archive = crate::remote_fetch::build_test_archive(
-            &archive_manifest,
-            &[("lib/out.a", b"INDEX")],
-        );
-        let archive_path = repo.join("index.tar.zst");
-        std::fs::write(&archive_path, &archive).unwrap();
-        std::fs::write(
-            &index_path,
-            format!(
-                r#"abi_version = {abi}
-generated_at = "2026-08-19T00:00:00Z"
-generator = "source-only-test"
-
-[[packages]]
-name = "libIndexOnly"
-version = "1.0.0"
-revision = 1
-
-[packages.binary.wasm32]
-status = "success"
-archive_url = "file://{archive_path}"
-archive_sha256 = "{archive_sha}"
-cache_key_sha = "{cache_key}"
-"#,
-                abi = current_abi_version(),
-                archive_path = archive_path.display(),
-                archive_sha = sha256_hex(&archive),
-            ),
-        )
-        .unwrap();
-        let opts = ResolveOpts {
-            policy: ResolvePolicy::SourceOnlyV1,
-            source_cache_root: Some(&cache_base),
-            cache_root: &cache,
-            local_libs: None,
-            force_source_build: None,
-            fetch_only: false,
-            repo_root: Some(&repo),
-            binaries_dir: None,
-        };
-        let resolved = ensure_built(
-            &manifest,
-            &registry,
-            TEST_ARCH,
-            current_abi_version(),
-            &opts,
-        )
-        .unwrap();
-        assert!(resolved.join("via-build").is_file());
-        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"BUILD\n");
-
-        std::fs::remove_dir_all(&resolved).unwrap();
-        build_memo().lock().unwrap().clear();
-        std::fs::remove_file(registry_root.join("libIndexOnly/build-libIndexOnly.sh")).unwrap();
-        let error = ensure_built(
-            &manifest,
-            &registry,
-            TEST_ARCH,
-            current_abi_version(),
-            &opts,
-        )
-        .unwrap_err();
-        assert!(error.contains("build script") && error.contains("not found"), "got: {error}");
     }
 
     #[test]
@@ -33738,17 +31313,11 @@ printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         let build = fs::read_to_string(&build_path).unwrap();
         fs::write(
             &build_path,
-            build.replace(
-                "[binary]",
-                &format!(
-                    r#"[[git_inputs]]
-name = "declared_tool"
-repository = "https://example.test/declared-tool.git"
-commit = "{}"
-
-[binary]"#,
-                    declared_git_commit,
-                ),
+            format!(
+                "{build}\n[[git_inputs]]\nname = \"declared_tool\"\n\
+                 repository = \"https://example.test/declared-tool.git\"\n\
+                 commit = \"{}\"\n",
+                declared_git_commit,
             ),
         )
         .unwrap();
@@ -33953,7 +31522,6 @@ printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -35522,7 +33090,6 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&forced),
-            fetch_only: false,
             repo_root: Some(&root),
             binaries_dir: None,
         };
@@ -35631,7 +33198,6 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: Some(&root),
             binaries_dir: None,
         };
@@ -35901,7 +33467,6 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             cache_root,
             local_libs: None,
             force_source_build: None,
-            fetch_only: false,
             repo_root: Some(repo),
             binaries_dir,
         };
@@ -37276,9 +34841,6 @@ revision = 1
 name = "tool"
 repository = "https://example.test/tool.git"
 commit = "1111111111111111111111111111111111111111"
-
-[binary]
-index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
 "#,
         )
         .unwrap();
@@ -37644,7 +35206,7 @@ index_url = "https://example.test/releases/binaries-abi-v{abi}/index.toml"
         fs::write(repo.join("input-race/declared.txt"), b"before").unwrap();
         fs::write(
             repo.join("input-race/build.toml"),
-            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"input-race/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.test/binaries-abi-v{abi}/index.toml\"\n",
+            "script_path = \"input-race/build-input-race.sh\"\ninputs = [\"input-race/declared.txt\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
         )
         .unwrap();
         let registry = Registry { roots: vec![repo.clone()] };
