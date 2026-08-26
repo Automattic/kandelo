@@ -4462,6 +4462,9 @@ sw.onmessage = (e: MessageEvent) => {
     case "fb_release_generation_ack":
       acknowledgeMainFramebufferRelease(msg.requestId);
       break;
+    case "kms_set_display_size":
+      kernelWorker.setKmsDisplaySize(msg.crtcId, msg.width, msg.height);
+      break;
     case "input_event_inject":
       kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);
       break;

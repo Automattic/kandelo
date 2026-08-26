@@ -324,7 +324,7 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. */
@@ -332,6 +332,17 @@ export interface KmsAttachStatsMessage {
   type: "kms_attach_stats";
   crtcId: number;
   stats: SharedArrayBuffer;
+}
+
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Mirrors the Browser-side message. Feeds the virtual connector's
+ *  PREFERRED mode and (with an OffscreenCanvas polyfill) the
+ *  `webgl2-scanout` presenter's drawing-buffer size. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
 }
 
 /**
@@ -393,6 +404,7 @@ export type MainToKernelMessage =
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
+  | KmsSetDisplaySizeMessage
   | InputEventInjectMessage
   | SetInputCanvasDimsMessage;
 
