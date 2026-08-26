@@ -323,6 +323,20 @@ build_cpp_program() {
     rm -f "$raw_wasm"
 }
 
+# The sysroot is also the SDK seed that package builds copy into their private
+# sysroot, and that seed accepts only directories and regular files
+# (kandelo_package_require_regular_input_tree in scripts/package-build-roots.sh).
+# A resolver output therefore lands here as a copy, never as a symlink.
+stage_sysroot_file() {
+    rm -f "$2"
+    cp "$1" "$2"
+}
+
+stage_sysroot_tree() {
+    rm -rf "$2"
+    cp -RL "$1" "$2"
+}
+
 ensure_libcxx_in_sysroot() {
     local arch="$1"
     local sysroot="$2"
@@ -383,7 +397,7 @@ if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
     cp -R "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
 fi
 
-# Resolve libwayland (+ its deps libffi + wayland-protocols) and symlink
+# Resolve libwayland (+ its deps libffi + wayland-protocols) and copy
 # its client/server archives, the libffi shim archive, and the public
 # headers into the sysroot when there are any wl_*.c programs to build.
 # libwayland's protocol glue is generated at resolve time from the
@@ -398,16 +412,16 @@ if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
     LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
     LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
 
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
-    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
+    stage_sysroot_file "$LIBFFI_PREFIX/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
 
     for h in "$LIBWL_PREFIX/include"/wayland-*.h; do
-        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/$(basename "$h")"
     done
 fi
 
-# Resolve libffi and symlink its archive + header into the sysroot when
+# Resolve libffi and copy its archive + header into the sysroot when
 # there are any libffi_*.c programs to build (the PR20 full-port matrix
 # includes <ffi.h> directly; the libwayland block above only stages the
 # archive). Same cached-resolve contract.
@@ -417,11 +431,11 @@ if ls "$REPO_ROOT"/programs/libffi_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libffi >/dev/null)
     LIBFFI_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libffi)"
 
-    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a"     "$SYSROOT/lib/libffi.a"
-    ln -sfn "$LIBFFI_PREFIX/include/ffi.h"    "$SYSROOT/include/ffi.h"
+    stage_sysroot_file "$LIBFFI_PREFIX/lib/libffi.a"  "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$LIBFFI_PREFIX/include/ffi.h" "$SYSROOT/include/ffi.h"
 fi
 
-# Resolve glib (+ its deps libffi + zlib) and symlink its archives +
+# Resolve glib (+ its deps libffi + zlib) and copy its archives +
 # header tree into the sysroot when there are any glib_*.c programs to
 # build (the PR21 smoke links gio/gobject/gmodule/glib). Same
 # cached-resolve contract. The include tree keeps its glib-2.0/ prefix;
@@ -436,15 +450,15 @@ if ls "$REPO_ROOT"/programs/glib_*.c >/dev/null 2>&1; then
     PCRE2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path pcre2)"
 
     for a in libglib-2.0.a libgmodule-2.0.a libgobject-2.0.a libgio-2.0.a; do
-        ln -sfn "$GLIB_PREFIX/lib/$a" "$SYSROOT/lib/$a"
+        stage_sysroot_file "$GLIB_PREFIX/lib/$a" "$SYSROOT/lib/$a"
     done
-    ln -sfn "$LIBFFI_PREFIX/lib/libffi.a" "$SYSROOT/lib/libffi.a"
-    ln -sfn "$ZLIB_PREFIX/lib/libz.a"     "$SYSROOT/lib/libz.a"
-    ln -sfn "$PCRE2_PREFIX/lib/libpcre2-8.a" "$SYSROOT/lib/libpcre2-8.a"
-    ln -sfn "$GLIB_PREFIX/include/glib-2.0" "$SYSROOT/include/glib-2.0"
+    stage_sysroot_file "$LIBFFI_PREFIX/lib/libffi.a"    "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$ZLIB_PREFIX/lib/libz.a"        "$SYSROOT/lib/libz.a"
+    stage_sysroot_file "$PCRE2_PREFIX/lib/libpcre2-8.a" "$SYSROOT/lib/libpcre2-8.a"
+    stage_sysroot_tree "$GLIB_PREFIX/include/glib-2.0"  "$SYSROOT/include/glib-2.0"
 fi
 
-# Resolve libxkbcommon and symlink its archive + public headers into the
+# Resolve libxkbcommon and copy its archive + public headers into the
 # sysroot when there are any xkb_*.c programs to build. Same cached-resolve
 # contract as the libwayland block above. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR4).
@@ -454,14 +468,14 @@ if ls "$REPO_ROOT"/programs/xkb_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libxkbcommon >/dev/null)
     LIBXKB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxkbcommon)"
 
-    ln -sfn "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
+    stage_sysroot_file "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$LIBXKB_PREFIX/include/xkbcommon"/*.h; do
-        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
     done
 fi
 
-# Resolve pixman + utf8proc and symlink their archives + headers into the
+# Resolve pixman + utf8proc and copy their archives + headers into the
 # sysroot when their smoke programs are present. Same cached-resolve
 # contract as the libxkbcommon block above. First rungs of the PR19 font
 # stack (freetype/fontconfig/fcft build on them). See
@@ -472,11 +486,11 @@ if ls "$REPO_ROOT"/programs/pixman_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve pixman >/dev/null)
     PIXMAN_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path pixman)"
 
-    ln -sfn "$PIXMAN_PREFIX/lib/libpixman-1.a" "$SYSROOT/lib/libpixman-1.a"
-    # Flat header symlinks: pixman.h angle-includes pixman-version.h, so
+    stage_sysroot_file "$PIXMAN_PREFIX/lib/libpixman-1.a" "$SYSROOT/lib/libpixman-1.a"
+    # Flat header copies: pixman.h angle-includes pixman-version.h, so
     # both must sit on the default include path (build_program adds no -I).
     for h in "$PIXMAN_PREFIX/include/pixman-1"/*.h; do
-        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/$(basename "$h")"
     done
 fi
 
@@ -486,14 +500,14 @@ if ls "$REPO_ROOT"/programs/utf8proc_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve utf8proc >/dev/null)
     UTF8PROC_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path utf8proc)"
 
-    ln -sfn "$UTF8PROC_PREFIX/lib/libutf8proc.a" "$SYSROOT/lib/libutf8proc.a"
-    ln -sfn "$UTF8PROC_PREFIX/include/utf8proc.h" "$SYSROOT/include/utf8proc.h"
+    stage_sysroot_file "$UTF8PROC_PREFIX/lib/libutf8proc.a"  "$SYSROOT/lib/libutf8proc.a"
+    stage_sysroot_file "$UTF8PROC_PREFIX/include/utf8proc.h" "$SYSROOT/include/utf8proc.h"
 fi
 
 # Resolve the rest of the font stack (fcft → fontconfig + freetype, plus
 # their libxml2/zlib link deps) when the fontstack smoke is present. fcft
 # and fontconfig headers keep their subdirs; freetype is include-path-only
-# via fcft, so only its archive is symlinked.
+# via fcft, so only its archive is copied.
 if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     echo "==> Resolving fcft + fontconfig + freetype for font-stack programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -506,12 +520,12 @@ if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
     ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
 
-    ln -sfn "$FCFT_PREFIX/include/fcft" "$SYSROOT/include/fcft"
-    ln -sfn "$FCFT_PREFIX/lib/libfcft.a" "$SYSROOT/lib/libfcft.a"
-    ln -sfn "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
-    ln -sfn "$FREETYPE_PREFIX/lib/libfreetype.a" "$SYSROOT/lib/libfreetype.a"
-    ln -sfn "$LIBXML2_PREFIX/lib/libxml2.a" "$SYSROOT/lib/libxml2.a"
-    ln -sfn "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
+    stage_sysroot_tree "$FCFT_PREFIX/include/fcft"              "$SYSROOT/include/fcft"
+    stage_sysroot_file "$FCFT_PREFIX/lib/libfcft.a"             "$SYSROOT/lib/libfcft.a"
+    stage_sysroot_file "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
+    stage_sysroot_file "$FREETYPE_PREFIX/lib/libfreetype.a"     "$SYSROOT/lib/libfreetype.a"
+    stage_sysroot_file "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
+    stage_sysroot_file "$ZLIB_PREFIX/lib/libz.a"                "$SYSROOT/lib/libz.a"
 fi
 
 # Resolve the PR23 render stack (pango → cairo + harfbuzz + fribidi on
@@ -535,24 +549,24 @@ if ls "$REPO_ROOT"/programs/pango_*.c >/dev/null 2>&1; then
     ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path zlib)"
 
     for a in libpango-1.0.a libpangoft2-1.0.a libpangocairo-1.0.a; do
-        ln -sfn "$PANGO_PREFIX/lib/$a" "$SYSROOT/lib/$a"
+        stage_sysroot_file "$PANGO_PREFIX/lib/$a" "$SYSROOT/lib/$a"
     done
-    ln -sfn "$CAIRO_PREFIX/lib/libcairo.a"           "$SYSROOT/lib/libcairo.a"
-    ln -sfn "$HARFBUZZ_PREFIX/lib/libharfbuzz.a"     "$SYSROOT/lib/libharfbuzz.a"
-    ln -sfn "$FRIBIDI_PREFIX/lib/libfribidi.a"       "$SYSROOT/lib/libfribidi.a"
-    ln -sfn "$LIBPNG_PREFIX/lib/libpng.a"            "$SYSROOT/lib/libpng.a"
-    ln -sfn "$PIXMAN_PREFIX/lib/libpixman-1.a"       "$SYSROOT/lib/libpixman-1.a"
-    ln -sfn "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
-    ln -sfn "$FREETYPE_PREFIX/lib/libfreetype.a"     "$SYSROOT/lib/libfreetype.a"
-    ln -sfn "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
-    ln -sfn "$ZLIB_PREFIX/lib/libz.a"                "$SYSROOT/lib/libz.a"
-    ln -sfn "$PANGO_PREFIX/include/pango-1.0"        "$SYSROOT/include/pango-1.0"
-    ln -sfn "$CAIRO_PREFIX/include/cairo"            "$SYSROOT/include/cairo"
+    stage_sysroot_file "$CAIRO_PREFIX/lib/libcairo.a"           "$SYSROOT/lib/libcairo.a"
+    stage_sysroot_file "$HARFBUZZ_PREFIX/lib/libharfbuzz.a"     "$SYSROOT/lib/libharfbuzz.a"
+    stage_sysroot_file "$FRIBIDI_PREFIX/lib/libfribidi.a"       "$SYSROOT/lib/libfribidi.a"
+    stage_sysroot_file "$LIBPNG_PREFIX/lib/libpng.a"            "$SYSROOT/lib/libpng.a"
+    stage_sysroot_file "$PIXMAN_PREFIX/lib/libpixman-1.a"       "$SYSROOT/lib/libpixman-1.a"
+    stage_sysroot_file "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
+    stage_sysroot_file "$FREETYPE_PREFIX/lib/libfreetype.a"     "$SYSROOT/lib/libfreetype.a"
+    stage_sysroot_file "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
+    stage_sysroot_file "$ZLIB_PREFIX/lib/libz.a"                "$SYSROOT/lib/libz.a"
+    stage_sysroot_tree "$PANGO_PREFIX/include/pango-1.0"        "$SYSROOT/include/pango-1.0"
+    stage_sysroot_tree "$CAIRO_PREFIX/include/cairo"            "$SYSROOT/include/cairo"
 fi
 
 # Resolve GTK3 (the PR24 stack: gdk-pixbuf + atk + libepoxy over the
 # PR23 render stack and the wayland client libs) when a gtk3 smoke is
-# present. Same cached-resolve contract. The render-stack symlinks come
+# present. Same cached-resolve contract. The render-stack copies come
 # from the pango block above; this block adds the GTK-only layers. See
 # docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4 (PR24).
 if ls "$REPO_ROOT"/programs/gtk3_*.c >/dev/null 2>&1; then
@@ -566,21 +580,21 @@ if ls "$REPO_ROOT"/programs/gtk3_*.c >/dev/null 2>&1; then
     CAIRO_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path cairo)"
     LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
 
-    ln -sfn "$GTK3_PREFIX/lib/libgtk-3.a"                "$SYSROOT/lib/libgtk-3.a"
-    ln -sfn "$GTK3_PREFIX/lib/libgdk-3.a"                "$SYSROOT/lib/libgdk-3.a"
-    ln -sfn "$ATK_PREFIX/lib/libatk-1.0.a"               "$SYSROOT/lib/libatk-1.0.a"
-    ln -sfn "$GDK_PIXBUF_PREFIX/lib/libgdk_pixbuf-2.0.a" "$SYSROOT/lib/libgdk_pixbuf-2.0.a"
-    ln -sfn "$LIBEPOXY_PREFIX/lib/libepoxy.a"            "$SYSROOT/lib/libepoxy.a"
-    ln -sfn "$CAIRO_PREFIX/lib/libcairo-gobject.a"       "$SYSROOT/lib/libcairo-gobject.a"
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-cursor.a"      "$SYSROOT/lib/libwayland-cursor.a"
-    ln -sfn "$LIBWL_PREFIX/lib/libwayland-egl.a"         "$SYSROOT/lib/libwayland-egl.a"
-    ln -sfn "$GTK3_PREFIX/include/gtk-3.0"               "$SYSROOT/include/gtk-3.0"
-    ln -sfn "$ATK_PREFIX/include/atk-1.0"                "$SYSROOT/include/atk-1.0"
-    ln -sfn "$GDK_PIXBUF_PREFIX/include/gdk-pixbuf-2.0"  "$SYSROOT/include/gdk-pixbuf-2.0"
-    ln -sfn "$LIBEPOXY_PREFIX/include/epoxy"             "$SYSROOT/include/epoxy"
+    stage_sysroot_file "$GTK3_PREFIX/lib/libgtk-3.a"                "$SYSROOT/lib/libgtk-3.a"
+    stage_sysroot_file "$GTK3_PREFIX/lib/libgdk-3.a"                "$SYSROOT/lib/libgdk-3.a"
+    stage_sysroot_file "$ATK_PREFIX/lib/libatk-1.0.a"               "$SYSROOT/lib/libatk-1.0.a"
+    stage_sysroot_file "$GDK_PIXBUF_PREFIX/lib/libgdk_pixbuf-2.0.a" "$SYSROOT/lib/libgdk_pixbuf-2.0.a"
+    stage_sysroot_file "$LIBEPOXY_PREFIX/lib/libepoxy.a"            "$SYSROOT/lib/libepoxy.a"
+    stage_sysroot_file "$CAIRO_PREFIX/lib/libcairo-gobject.a"       "$SYSROOT/lib/libcairo-gobject.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-cursor.a"      "$SYSROOT/lib/libwayland-cursor.a"
+    stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-egl.a"         "$SYSROOT/lib/libwayland-egl.a"
+    stage_sysroot_tree "$GTK3_PREFIX/include/gtk-3.0"               "$SYSROOT/include/gtk-3.0"
+    stage_sysroot_tree "$ATK_PREFIX/include/atk-1.0"                "$SYSROOT/include/atk-1.0"
+    stage_sysroot_tree "$GDK_PIXBUF_PREFIX/include/gdk-pixbuf-2.0"  "$SYSROOT/include/gdk-pixbuf-2.0"
+    stage_sysroot_tree "$LIBEPOXY_PREFIX/include/epoxy"             "$SYSROOT/include/epoxy"
 fi
 
-# Resolve libevdev and symlink its archive + public header into the sysroot
+# Resolve libevdev and copy its archive + public header into the sysroot
 # when there are any libevdev_*.c programs to build. Same cached-resolve
 # contract as the libwayland/libxkbcommon blocks above. libevdev is the
 # foundation of the real libinput port (PR5). See
@@ -591,12 +605,12 @@ if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libevdev >/dev/null)
     LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
 
-    ln -sfn "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
     mkdir -p "$SYSROOT/include/libevdev"
-    ln -sfn "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
 fi
 
-# Resolve mtdev and symlink its archive + headers into the sysroot when
+# Resolve mtdev and copy its archive + headers into the sysroot when
 # there are any mtdev_*.c programs to build. mtdev is the link-only
 # multitouch dependency of the real libinput port (PR5). Same
 # cached-resolve contract as the blocks above. See
@@ -607,12 +621,12 @@ if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve mtdev >/dev/null)
     MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
 
-    ln -sfn "$MTDEV_PREFIX/lib/libmtdev.a" "$SYSROOT/lib/libmtdev.a"
-    ln -sfn "$MTDEV_PREFIX/include/mtdev.h" "$SYSROOT/include/mtdev.h"
-    ln -sfn "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
+    stage_sysroot_file "$MTDEV_PREFIX/lib/libmtdev.a"           "$SYSROOT/lib/libmtdev.a"
+    stage_sysroot_file "$MTDEV_PREFIX/include/mtdev.h"          "$SYSROOT/include/mtdev.h"
+    stage_sysroot_file "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
 fi
 
-# Resolve libudev and symlink its archive + header into the sysroot when
+# Resolve libudev and copy its archive + header into the sysroot when
 # there are any libudev_*.c programs to build. libudev is the input_id
 # classification shim the real libinput port (PR5) needs to accept
 # devices. Same cached-resolve contract as the blocks above. See
@@ -623,15 +637,15 @@ if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
     LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
 
-    ln -sfn "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
-    ln -sfn "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
+    stage_sysroot_file "$LIBUDEV_PREFIX/lib/libudev.a"     "$SYSROOT/lib/libudev.a"
+    stage_sysroot_file "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
 fi
 
 # Resolve libinput (real 1.25.0) for the libinput smoke. This is the real
 # path-backend library the Wayland compositor will use (PR5c). The smoke is
 # built in a dedicated pass after the program loop (build_program can't add
 # the real header's -I), and links the real archive from its cache prefix by
-# full path — deliberately NOT via a $SYSROOT/lib/libinput.a symlink — so the
+# full path — deliberately NOT via a $SYSROOT/lib/libinput.a copy — so the
 # sysroot carries no libinput identity. Its deps
 # (libevdev + libudev shim + mtdev stub) resolve transitively; we capture
 # each prefix for the smoke's link line. See
@@ -945,18 +959,18 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     WLC_MTDEV="$(wlc_path mtdev)"
 
     # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
-    # blocks above symlink the same paths; the archives too).
+    # blocks above copy the same paths; the archives too).
     for h in "$WLC_LIBWL/include"/wayland-*.h; do
-        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/$(basename "$h")"
     done
-    ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
-    ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
-    ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
-    ln -sfn "$WLC_LIBWL/lib/libwayland-cursor.a"  "$SYSROOT/lib/libwayland-cursor.a"
-    ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
+    stage_sysroot_file "$WLC_LIBFFI/lib/libffi.a"           "$SYSROOT/lib/libffi.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-server.a" "$SYSROOT/lib/libwayland-server.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-client.a" "$SYSROOT/lib/libwayland-client.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-cursor.a" "$SYSROOT/lib/libwayland-cursor.a"
+    stage_sysroot_file "$WLC_LIBXKB/lib/libxkbcommon.a"     "$SYSROOT/lib/libxkbcommon.a"
     mkdir -p "$SYSROOT/include/xkbcommon"
     for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
-        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+        stage_sysroot_file "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
     done
 
     # Generate xdg-shell {server,client} headers + shared private-code from
@@ -1021,9 +1035,9 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Wayland+GLES backend uses as its EGLNativeWindowType (see
     # libc/glue/libwayland-egl.c). Built + shipped by the libwayland
     # package — its build.toml `inputs` lists the glue sources, so glue
-    # edits re-key the cache and rebuild it. The wayland-*.h symlink loop
+    # edits re-key the cache and rebuild it. The wayland-*.h copy loop
     # above already covers the wayland-egl headers.
-    ln -sfn "$WLC_LIBWL/lib/libwayland-egl.a" "$SYSROOT/lib/libwayland-egl.a"
+    stage_sysroot_file "$WLC_LIBWL/lib/libwayland-egl.a" "$SYSROOT/lib/libwayland-egl.a"
 
     # Server. Link order: dependents (compositor + xdg glue) before
     # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
@@ -1032,7 +1046,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # the host has no WebGL2).
     # The wldesktop package publishes the server itself; only the test
     # clients below still build here. The generated glue and the sysroot
-    # symlinks above stay — libkwl and those clients need them.
+    # copies above stay — libkwl and those clients need them.
     if package_owns_program_output wasm32 wlcompositor.wasm; then
         echo "  Skipping wlcompositor: a package publishes wlcompositor.wasm"
     else
@@ -1125,7 +1139,7 @@ fi
 # libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.
 # Built inline (NOT via the resolver — packages/registry/ only). Runs AFTER
 # the wlcompositor block above so the wayland-client / xkbcommon / gbm /
-# drm / ffi archives are already symlinked into the sysroot and the
+# drm / ffi archives are already copied into the sysroot and the
 # generated xdg-shell-client-protocol.h exists under local-binaries/
 # wlcompositor-gen (libkwl includes it). build.sh installs lib/libkwl.a +
 # include/kwl.h; the kwldemo consumer then links libkwl + libwpkdraw + the
