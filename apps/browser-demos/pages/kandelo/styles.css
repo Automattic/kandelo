@@ -393,6 +393,7 @@
   color: var(--kdock-muted);
   cursor: pointer;
   padding: 0;
+  text-decoration: none;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -666,6 +667,11 @@
 .kdock-toggle-pill .kdock-header-btn svg {
   width: 18px;
   height: 18px;
+}
+
+.kdock-github-link svg {
+  fill: currentColor;
+  stroke: none;
 }
 
 .kdock-collapse-btn svg {
