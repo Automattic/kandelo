@@ -1,10 +1,7 @@
 schema = 1
 policy = "source-only-v1"
 dependency_only = ["pcre2-source", "wordpress-sqlite-integration-source"]
-
-[[registry_non_roots]]
-name = "sqlite-cli"
-reason = "registry non-root with no effective build script"
+registry_non_roots = []
 
 [[dormant_products]]
 name = "browser-erlang"
@@ -273,6 +270,10 @@ class = "user-software"
 [[packages]]
 name = "sqlite"
 class = "platform"
+
+[[packages]]
+name = "sqlite-cli"
+class = "user-software"
 
 [[packages]]
 name = "sudo"
