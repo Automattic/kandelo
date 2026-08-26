@@ -28,7 +28,7 @@
 #     WASM_POSIX_DEP_SOURCE_URL                  # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256               # expected sha256
 #     WASM_POSIX_DEP_LIBFFI_DIR                  # libffi shim prefix (ffi.h)
-#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR   # vendored protocol XML (xml/)
+#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR   # vendored protocol XML (xml/)
 
 set -euo pipefail
 
@@ -50,7 +50,7 @@ for tool in wasm32posix-cc wasm32posix-ar wayland-scanner; do
 done
 
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
-PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
+PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
 WAYLAND_XML="$PROTO_SRC/xml/wayland.xml"
 
 if [ ! -f "$LIBFFI_PREFIX/include/ffi.h" ]; then
@@ -82,7 +82,17 @@ fi
 # Fresh build + install each run — stale objects would shadow config/glue
 # changes and the cache key varies per build.
 BUILD_DIR="$SCRIPT_DIR/wayland-build"
-rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: libwayland resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 WLSRC="$SRC_DIR/src"
@@ -184,6 +194,31 @@ for tu in wayland-cursor.c os-compatibility.c xcursor.c; do
 done
 wasm32posix-ar rcs "$INSTALL_DIR/lib/libwayland-cursor.a" "${CURSOR_OBJS[@]}"
 
+# --- libwayland-egl.a ----------------------------------------------------
+# The wl_egl_window shim wayland-egl.pc advertises (libc/glue/
+# libwayland-egl.c, dmabuf client glue bundled). scripts/build-programs.sh
+# builds the same shim into the sysroot for program links; this copy makes
+# package builds that link executables (gtk3) self-sufficient on runners
+# where build-programs.sh has not run.
+echo "==> Compiling + archiving libwayland-egl.a..."
+GLUE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)/libc/glue"
+EGL_GEN="$BUILD_DIR/egl-gen"
+mkdir -p "$EGL_GEN"
+DMABUF_XML="$PROTO_SRC/xml/linux-dmabuf-v1.xml"
+wayland-scanner private-code  "$DMABUF_XML" "$EGL_GEN/linux-dmabuf-v1-protocol.c"
+wayland-scanner client-header "$DMABUF_XML" "$EGL_GEN/linux-dmabuf-v1-client-protocol.h"
+EGL_CFLAGS=(
+    -O2 -fvisibility=hidden -std=gnu11
+    "-I$WLSRC"
+    "-I$EGL_GEN"
+    "-I$GLUE_DIR"
+    "-I$GLUE_DIR/wayland-egl-include"
+)
+wasm32posix-cc -c "${EGL_CFLAGS[@]}" "$GLUE_DIR/libwayland-egl.c" -o "$BUILD_DIR/libwayland-egl.o"
+wasm32posix-cc -c "${EGL_CFLAGS[@]}" "$EGL_GEN/linux-dmabuf-v1-protocol.c" -o "$BUILD_DIR/linux-dmabuf-v1-protocol.o"
+wasm32posix-ar rcs "$INSTALL_DIR/lib/libwayland-egl.a" \
+    "$BUILD_DIR/libwayland-egl.o" "$BUILD_DIR/linux-dmabuf-v1-protocol.o"
+
 # --- Install public headers --------------------------------------------
 echo "==> Installing headers..."
 for h in \
@@ -272,3 +307,4 @@ echo "==> libwayland $WL_VERSION installed at $INSTALL_DIR"
 echo "    lib/libwayland-client.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-client.a") bytes)"
 echo "    lib/libwayland-server.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-server.a") bytes)"
 echo "    lib/libwayland-cursor.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-cursor.a") bytes)"
+echo "    lib/libwayland-egl.a ($(wc -c < "$INSTALL_DIR/lib/libwayland-egl.a") bytes)"
