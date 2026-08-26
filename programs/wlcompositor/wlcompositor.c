@@ -487,7 +487,14 @@ static void zorder_remove(struct surface *s) {
     for (; i + 1 < g.n_surfaces; i++) g.zorder[i] = g.zorder[i + 1];
     g.n_surfaces--;
 }
+/* `g.zorder` is the window stack; a layer surface belongs to `g.layers`, where
+ * layer_place() owns its geometry and its layer fixes its depth. surface_at()
+ * returns layer surfaces so a click reaches the bar, and click-to-focus raises
+ * whatever it returns — so clicking Waybar would otherwise push the bar into
+ * the window stack, where retile() hands it a tile: the whole usable area
+ * whenever the workspace holds no windows. */
 static void zorder_raise(struct surface *s) {
+    if (s->layer_surface) return;
     if (g.n_surfaces && g.zorder[g.n_surfaces - 1] == s) return;
     zorder_remove(s);
     zorder_add(s);

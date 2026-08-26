@@ -40,9 +40,19 @@ const GAP_INNER = 8;
 // evdev keycodes (linux/input-event-codes.h).
 const EV_KEY = 0x01;
 const EV_SYN = 0x00;
+const EV_ABS = 0x03;
 const SYN_REPORT = 0x00;
+const ABS_X = 0x00;
+const ABS_Y = 0x01;
 const KEY_T = 20;
 const KEY_ENTER = 28;
+const BTN_LEFT = 0x110;
+
+// The input canvas matches the compositor's output, so an injected absolute
+// coordinate maps 1:1 to the cursor position. This point sits inside the bar's
+// top strip, which is what surface_at() resolves a click there to.
+const BAR_POINT_X = 960;
+const BAR_POINT_Y = 15;
 
 interface Rect { x: number; y: number; w: number; h: number }
 
@@ -252,6 +262,66 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
         // compositor keeps serving.
         host.spawn(kwlctlBytes, ["kwlctl", "clients"], {});
         await waitFor(out, /\[\{"address"/, 10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "clicking the bar leaves it out of the window stack",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+      const kbarBytes = loadBytes(kbarBin!);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle"],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        host.spawn(kbarBytes, ["kbar"], {});
+        await waitFor(out, /LAYER ns=bar /, 20_000, dump);
+
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, /TILE n=1 i=0 /, 20_000, dump);
+
+        // Click-to-focus raises whatever surface_at() returns, and that
+        // includes the bar — the path a user takes when they press one of the
+        // bar's workspace buttons.
+        host.injectInputEvent(1, EV_ABS, ABS_X, BAR_POINT_X);
+        host.injectInputEvent(1, EV_ABS, ABS_Y, BAR_POINT_Y);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_KEY, BTN_LEFT, 0);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+
+        // The next window re-tiles, which is when a bar that had slipped into
+        // the window stack would claim a tile of its own.
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, /TILE n=2 i=1 /, 20_000, dump);
+
+        expect(out.value, `the bar took a tile.\n${dump()}`)
+          .not.toMatch(/TILE n=3 /);
+
+        // The two windows still partition the output minus the bar's
+        // exclusive zone: the bar kept the strip layer_place() gave it.
+        expect(parseTiles(out.value, 2), `tiling moved.\n${dump()}`)
+          .toEqual(computeTiling(
+            { x: 0, y: BAR_H, w: CANVAS_W, h: CANVAS_H - BAR_H }, 2));
       } finally {
         await host.destroy().catch(() => {});
       }
