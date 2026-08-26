@@ -143,6 +143,14 @@ CFLAGS=(
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
     -mllvm -wasm-use-legacy-eh=false
+    # Upstream libdrm installs public headers under `include/libdrm/`
+    # (matches the `--cflags` pkg-config flag). Programs `#include
+    # <xf86drm.h>` from there. `include/drm/` is the UAPI dir that
+    # xf86drm.h itself transitively pulls in via `#include <drm.h>`;
+    # both dirs must be on the search path or the upstream header
+    # fan-out doesn't resolve. Harmless when the dirs are absent.
+    -I"$SYSROOT/include/libdrm"
+    -I"$SYSROOT/include/drm"
 )
 
 LINK_PRE_LIBS=(
@@ -324,6 +332,25 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
     ensure_libcxx_in_sysroot wasm32 "$SYSROOT"
 fi
 
+# Resolve SDL2 and stage it in the sysroot when there are SDL2 programs to
+# build. Re-resolved on every run rather than guarded on libSDL2.a: SDL2
+# depends on libdrm, whose cache directory moves when its build.toml
+# revision bumps, and a guarded fast path would leave the staged headers
+# and archive pointing at the pre-bump cache. The resolver is cached, so
+# repeating it is cheap.
+if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
+        || ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    echo "==> Resolving sdl2 for SDL2 programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- \
+        build-deps resolve sdl2 >/dev/null)
+    SDL2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask \
+        --target "$HOST_TRIPLE" --quiet -- build-deps path sdl2)"
+    cp "$SDL2_PREFIX/lib/libSDL2.a" "$SYSROOT/lib/libSDL2.a"
+    rm -rf "$SYSROOT/include/SDL2"
+    cp -R "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -338,13 +365,20 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # copies only as runtime test fixtures.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
-        modeset.c|dri-modeset.c|dumb_roundtrip.c)
+        modeset.c|dri-modeset.c|dumb_roundtrip.c|gbm_surface_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_*.c)
+            # SDL2's KMSDRM backend calls into gbm and libdrm, so both
+            # follow libSDL2.a in the link order.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
         posix-timer-thread.c)
             # Keep the fixture's pthread capacity small so its timer-helper
@@ -362,6 +396,69 @@ for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue
     build_cpp_program "$src" "$OUT_DIR_32"
 done
+
+# SDL2 playground app — every .c under programs/sdl2/ links into the
+# single sdl2.wasm binary. Multi-source clang invocation: clang accepts
+# the sources together with the libc/glue prelude and the full SDL2 +
+# dependency archive set, then we run fork-instrument on the result.
+# libEGL / libGLESv2 are named explicitly: the SDL_opengles2 header
+# bundle transitively pulls <GLES2/gl2.h>, but the per-file grep in
+# build_program only catches direct top-level EGL/GLES includes.
+if ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    # Regenerate the Inconsolata TTF→C byte-array header if missing or
+    # older than the .ttf. The .h is git-ignored; the .ttf is the
+    # source of truth (see programs/sdl2/third_party/NOTICE.md).
+    sdl2_ttf="$REPO_ROOT/programs/sdl2/third_party/Inconsolata-Regular.ttf"
+    sdl2_ttf_h="$REPO_ROOT/programs/sdl2/third_party/inconsolata_ttf.h"
+    if [ -f "$sdl2_ttf" ]; then
+        if [ ! -f "$sdl2_ttf_h" ] || [ "$sdl2_ttf" -nt "$sdl2_ttf_h" ]; then
+            echo "  Regenerating inconsolata_ttf.h from $(basename "$sdl2_ttf")..."
+            python3 - "$sdl2_ttf" "$sdl2_ttf_h" <<'PY'
+import sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_bytes()
+dst = pathlib.Path(sys.argv[2])
+# 16 bytes per line keeps each token whole and the file ~6× the .ttf
+# size — well under what clang chokes on.
+PER_LINE = 16
+lines = [
+    ",".join(f"0x{b:02x}" for b in src[i:i + PER_LINE])
+    for i in range(0, len(src), PER_LINE)
+]
+dst.write_text(
+    "/* Auto-generated from Inconsolata-Regular.ttf by "
+    "scripts/build-programs.sh. */\n"
+    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "#pragma once\n"
+    f"static const unsigned char inconsolata_ttf[] = {{\n"
+    + ",\n".join(lines) + "\n};\n"
+    f"static const unsigned int inconsolata_ttf_len = {len(src)};\n"
+)
+PY
+        fi
+    fi
+    sdl2_sources=("$REPO_ROOT"/programs/sdl2/*.c)
+    sdl2_wasm="$OUT_DIR_32/sdl2.wasm"
+    if package_owns_direct_program_path wasm32 sdl2.wasm; then
+        # Same contract as build_program's ownership check: the sdl2-demo
+        # recipe publishes this path through build-deps.
+        if [ -e "$sdl2_wasm" ] && [ ! -L "$sdl2_wasm" ]; then
+            echo "Error: package-owned resolver mirror is already occupied: $sdl2_wasm" >&2
+            exit 1
+        fi
+        echo "  Skipping sdl2: package resolver owns wasm32/sdl2.wasm"
+    else
+        echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
+        "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libSDL2.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$sdl2_wasm"
+        "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
+        mv "$sdl2_wasm.instr" "$sdl2_wasm"
+    fi
+fi
 
 echo "Building example programs..."
 for src in "$REPO_ROOT/examples/"*.c; do
