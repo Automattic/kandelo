@@ -2175,4 +2175,187 @@ mod tests {
             Some(Err(Errno::EINVAL))
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 5 (Phase 2 opaque transport): guest C-encoder byte-layout golden.
+    //
+    // `__marshal_channel_record` (libc/glue/channel_syscall.c) writes the exact
+    // bytes assembled below. That C encoder cannot run inside this native Rust
+    // test (it reads the `__channel_base` wasm global and the caller's linear
+    // memory), so we hand-encode the record byte-for-byte per the encoder's
+    // documented layout and prove the runtime-core decoder +
+    // `prepare_channel_record` consume it identically. This is the GOLDEN form
+    // of Task 5's round-trip; the "the C encoder actually emits these bytes"
+    // end-to-end assertion lands in Task 6, once the guest issues via the
+    // record path.
+    // -----------------------------------------------------------------------
+
+    use crate::channel_record_decode::{decode, Nested};
+
+    fn golden_header(syscall: u16, span_count: u16, scalars: [i64; 6]) -> alloc::vec::Vec<u8> {
+        let mut h = alloc::vec::Vec::new();
+        h.extend_from_slice(&RECORD_MAGIC.to_le_bytes());
+        h.extend_from_slice(&RECORD_ABI.to_le_bytes());
+        h.extend_from_slice(&syscall.to_le_bytes());
+        h.extend_from_slice(&span_count.to_le_bytes());
+        h.extend_from_slice(&0u16.to_le_bytes()); // flags
+        h.extend_from_slice(&0u32.to_le_bytes()); // _reserved
+        for s in scalars {
+            h.extend_from_slice(&s.to_le_bytes());
+        }
+        assert_eq!(h.len(), RECORD_HEADER_BYTES);
+        h
+    }
+
+    fn golden_descriptor(kind: u8, arg_index: u8, offset: u32, len: u32) -> alloc::vec::Vec<u8> {
+        let mut d = alloc::vec::Vec::new();
+        d.push(kind);
+        d.push(arg_index);
+        d.extend_from_slice(&0u16.to_le_bytes()); // _pad
+        d.extend_from_slice(&offset.to_le_bytes());
+        d.extend_from_slice(&len.to_le_bytes());
+        assert_eq!(d.len(), SPAN_DESCRIPTOR_BYTES);
+        d
+    }
+
+    /// Pad a record to `REC_CAP` for `prepare_channel_record` (which reads the
+    /// whole live region and decodes with the full capacity).
+    fn golden_region(record: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut data = record.to_vec();
+        data.resize(REC_CAP, 0);
+        data
+    }
+
+    #[test]
+    fn golden_write_flat_in_ptr() {
+        // write(fd=7, buf="hello", count=5): the C encoder emits one IN_PTR span
+        // for arg 1 (buf), sized by arg 2 (count). Payload packs right after the
+        // 64-byte header + single 12-byte descriptor at offset 76.
+        let mut record = golden_header(wasm_posix_shared::Syscall::Write as u16, 1, [7, 0, 5, 0, 0, 0]);
+        let desc_end = (RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES) as u32;
+        record.extend_from_slice(&golden_descriptor(SPAN_KIND_IN_PTR, 1, desc_end, 5));
+        record.extend_from_slice(b"hello");
+        assert_eq!(record.len(), 76 + 5);
+
+        // Decoder view.
+        let decoded = decode(&record, record.len()).expect("golden write decodes");
+        assert_eq!(decoded.syscall, wasm_posix_shared::Syscall::Write as u16);
+        assert_eq!(decoded.scalars, [7, 0, 5, 0, 0, 0]);
+        assert_eq!(decoded.spans.len(), 1);
+        assert_eq!(decoded.spans[0].kind, SPAN_KIND_IN_PTR);
+        assert_eq!(decoded.spans[0].arg_index, 1);
+        assert_eq!(decoded.spans[0].bytes, b"hello");
+
+        // Kernel reconstruction view.
+        let mut data = golden_region(&record);
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Write as u32);
+        assert_eq!(prep.args[0], 7);
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.args[2], 5);
+        assert!(prep.copy_back.is_empty());
+        assert_eq!(&data[0..5], b"hello");
+    }
+
+    #[test]
+    fn golden_open_path_str() {
+        // open("/tmp"): one PATH_STR span for arg 0, len = strlen + NUL = 5.
+        let path = b"/tmp\0";
+        let mut record = golden_header(wasm_posix_shared::Syscall::Open as u16, 1, [0, 0, 0, 0, 0, 0]);
+        let desc_end = (RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES) as u32;
+        record.extend_from_slice(&golden_descriptor(
+            wasm_posix_shared::channel_record::SPAN_KIND_PATH_STR,
+            0,
+            desc_end,
+            path.len() as u32,
+        ));
+        record.extend_from_slice(path);
+
+        let decoded = decode(&record, record.len()).expect("golden open decodes");
+        assert_eq!(decoded.syscall, wasm_posix_shared::Syscall::Open as u16);
+        assert_eq!(decoded.spans.len(), 1);
+        assert_eq!(
+            decoded.spans[0].kind,
+            wasm_posix_shared::channel_record::SPAN_KIND_PATH_STR
+        );
+        assert_eq!(decoded.spans[0].arg_index, 0);
+        assert_eq!(decoded.spans[0].bytes, path);
+
+        let mut data = golden_region(&record);
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        assert_eq!(prep.args[0] as usize, start);
+        assert_eq!(&data[0..5], path);
+        assert!(prep.copy_back.is_empty());
+    }
+
+    #[test]
+    fn golden_writev_iovec_array() {
+        // writev(fd=3, iov, iovcnt=2) with buffers ["ab", "cde"]. The C encoder
+        // emits one IOVEC_ARRAY span at arg 1 whose region is
+        //   [u32 count][2 * {u32 buf_off, u32 buf_len}][buffers...]
+        // with absolute (record-relative) buffer offsets, len = whole region.
+        let region_off = (RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES) as u32; // 76
+        let struct_len = 4u32 + 2 * 8; // count + 2 entries = 20
+        let buffers_base = region_off + struct_len; // 96
+        let buf0 = b"ab";
+        let buf1 = b"cde";
+        let off0 = buffers_base;
+        let off1 = buffers_base + buf0.len() as u32;
+        let region_len = struct_len + (buf0.len() + buf1.len()) as u32; // 25
+
+        let mut iovec_region = alloc::vec::Vec::new();
+        iovec_region.extend_from_slice(&2u32.to_le_bytes()); // count
+        iovec_region.extend_from_slice(&off0.to_le_bytes());
+        iovec_region.extend_from_slice(&(buf0.len() as u32).to_le_bytes());
+        iovec_region.extend_from_slice(&off1.to_le_bytes());
+        iovec_region.extend_from_slice(&(buf1.len() as u32).to_le_bytes());
+        iovec_region.extend_from_slice(buf0);
+        iovec_region.extend_from_slice(buf1);
+        assert_eq!(iovec_region.len() as u32, region_len);
+
+        let mut record = golden_header(wasm_posix_shared::Syscall::Writev as u16, 1, [3, 0, 2, 0, 0, 0]);
+        record.extend_from_slice(&golden_descriptor(
+            SPAN_KIND_IOVEC_ARRAY,
+            1,
+            region_off,
+            region_len,
+        ));
+        record.extend_from_slice(&iovec_region);
+
+        let decoded = decode(&record, record.len()).expect("golden writev decodes");
+        assert_eq!(decoded.syscall, wasm_posix_shared::Syscall::Writev as u16);
+        assert_eq!(decoded.spans.len(), 1);
+        match &decoded.spans[0].nested {
+            Some(Nested::Iovec(bufs)) => {
+                assert_eq!(bufs.len(), 2);
+                assert_eq!(bufs[0], b"ab");
+                assert_eq!(bufs[1], b"cde");
+            }
+            other => panic!("expected iovec nested, got {other:?}"),
+        }
+
+        let mut data = golden_region(&record);
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Writev as u32);
+        // iov pointer rewritten to the scratch table base; count word set.
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.args[2], 2);
+        // writev only reads the buffers -> no copy-back.
+        assert!(prep.copy_back.is_empty());
+    }
 }

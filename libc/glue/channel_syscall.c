@@ -33,8 +33,11 @@
 #include <time.h>
 #include <sys/file.h>
 #include <sys/soundcard.h>
+#include <sys/uio.h>
+#include <sys/socket.h>
 #include <bits/kandelo_channel_scalars.h>
 #include <bits/kandelo_process_layouts.h>
+#include <bits/kandelo_syscall_marshal.h>
 #include <bits/kandelo_thread_syscalls.h>
 #include "abi_constants.h"
 
@@ -747,6 +750,339 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
                  (long)(uintptr_t)&old_mask, 0, 8, 0, 0);
 
     return flags;
+}
+
+/* ================================================================== */
+/* Phase 2 opaque transport: guest self-marshalled channel record.     */
+/*                                                                     */
+/* ADDITIVE / DORMANT. __marshal_channel_record encodes a syscall's    */
+/* pointer arguments into a `channel_record` (record ABI v1) laid at    */
+/* the channel DATA region, byte-for-byte matching the layout the       */
+/* runtime-core decoder                                                */
+/* (crates/runtime-core/src/channel_record_decode.rs) and the kernel   */
+/* reconstruction (channel_scratch.rs::prepare_channel_record) consume. */
+/* It is intentionally NOT wired into __do_syscall_impl; the atomic     */
+/* flip to the record path is Task 6. Per-syscall pointer knowledge     */
+/* comes entirely from the generated bits/kandelo_syscall_marshal.h     */
+/* table, whose single source of truth is                              */
+/* wasm_posix_shared::host_abi::SYSCALL_ARG_DESCRIPTORS.               */
+/*                                                                     */
+/* Returns the encoded record byte length on success, or a negative    */
+/* value when the syscall cannot be faithfully marshalled inline (the   */
+/* caller must fall back to the raw-arg path). Coverage today is the    */
+/* flat descriptor-table syscalls plus the nested iovec/msghdr shapes;  */
+/* the bespoke special-layout families (ioctl/select/epoll/prctl/       */
+/* fcntl-lock/SysV IPC) are not yet encoded and marshal as scalar-only  */
+/* records -- Task 6 must extend coverage before making this live.      */
+/* ================================================================== */
+
+#define KANDELO_MARSHAL_FALLBACK (-1)
+
+static inline void kandelo_store_u16(uint8_t *p, uint16_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
+static inline void kandelo_store_u32(uint8_t *p, uint32_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
+static inline void kandelo_store_i64(uint8_t *p, int64_t v) {
+    __builtin_memcpy(p, &v, sizeof v);
+}
+
+static const struct kandelo_marshal_syscall *
+kandelo_marshal_lookup(uint32_t syscall_number) {
+    /* The generated table is sorted by syscall number; the table is small,
+     * so a linear scan keeps the dormant encoder simple. */
+    for (uint32_t i = 0; i < KANDELO_MARSHAL_SYSCALL_COUNT; i++) {
+        if (kandelo_marshal_table[i].syscall_number == syscall_number)
+            return &kandelo_marshal_table[i];
+    }
+    return (const struct kandelo_marshal_syscall *)0;
+}
+
+/* Compute the flat span byte length for one pointer arg, reading from guest
+ * memory when the rule dereferences a length or scans a C string. Returns
+ * KANDELO_MARSHAL_FALLBACK (< 0) when the length cannot be determined. */
+static long kandelo_marshal_arg_len(const struct kandelo_marshal_arg *arg,
+                                    const long long *args, uintptr_t ptr) {
+    switch (arg->size_kind) {
+    case KANDELO_MARSHAL_SIZE_CSTRING: {
+        /* PATH_STR: scan for the terminator, len includes the NUL, bounded by
+         * `a` (max_bytes). No terminator within the ceiling is a fallback. */
+        const uint8_t *s = (const uint8_t *)ptr;
+        uint32_t max = arg->a;
+        for (uint32_t i = 0; i < max; i++) {
+            if (s[i] == 0)
+                return (long)i + 1;
+        }
+        return KANDELO_MARSHAL_FALLBACK;
+    }
+    case KANDELO_MARSHAL_SIZE_ARG: {
+        long long n = args[arg->a];
+        if (n < 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        /* len = n * multiplier + add */
+        unsigned long long len = (unsigned long long)n * arg->b + arg->c;
+        if (len > 0xFFFFFFFFull)
+            return KANDELO_MARSHAL_FALLBACK;
+        return (long)len;
+    }
+    case KANDELO_MARSHAL_SIZE_DEREF: {
+        uintptr_t lp = (uintptr_t)(unsigned long long)args[arg->a];
+        if (lp == 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        uint32_t v;
+        __builtin_memcpy(&v, (const void *)lp, sizeof v);
+        return (long)v;
+    }
+    case KANDELO_MARSHAL_SIZE_FIXED:
+        return (long)arg->a;
+    case KANDELO_MARSHAL_SIZE_LAYOUT:
+        return (sizeof(void *) == 8) ? (long)arg->b : (long)arg->a;
+    default:
+        return KANDELO_MARSHAL_FALLBACK;
+    }
+}
+
+int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
+                             long long a4, long long a5, long long a6,
+                             void *data_base, size_t data_capacity) {
+    const long long args[6] = {a1, a2, a3, a4, a5, a6};
+    uint8_t *data = (uint8_t *)data_base;
+
+    if (data_capacity < KANDELO_RECORD_HEADER_BYTES)
+        return KANDELO_MARSHAL_FALLBACK;
+    size_t budget = data_capacity;
+    if (budget > KANDELO_RECORD_INLINE_BUDGET)
+        budget = KANDELO_RECORD_INLINE_BUDGET;
+
+    const struct kandelo_marshal_syscall *entry =
+        kandelo_marshal_lookup((uint32_t)n);
+
+    /* Header writer shared by every path. `span_count` is patched in after
+     * the spans are known. */
+    #define KANDELO_WRITE_HEADER(span_count) do {                              \
+        kandelo_store_u32(data + KANDELO_RECORD_H_MAGIC, KANDELO_RECORD_MAGIC); \
+        kandelo_store_u16(data + KANDELO_RECORD_H_RECORD_ABI,                   \
+                          KANDELO_RECORD_ABI);                                  \
+        kandelo_store_u16(data + KANDELO_RECORD_H_SYSCALL, (uint16_t)n);        \
+        kandelo_store_u16(data + KANDELO_RECORD_H_SPAN_COUNT,                   \
+                          (uint16_t)(span_count));                             \
+        kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);                    \
+        kandelo_store_u32(data + 12u, 0); /* _reserved */                      \
+        for (uint32_t si = 0; si < 6; si++) {                                  \
+            kandelo_store_i64(                                                 \
+                data + KANDELO_RECORD_H_SCALARS + si * 8u, (int64_t)args[si]); \
+        }                                                                      \
+    } while (0)
+
+    /* Scalar-only record: no pointer args to marshal (or an unknown/special
+     * syscall this dormant encoder does not yet cover). */
+    if (entry == (const struct kandelo_marshal_syscall *)0) {
+        KANDELO_WRITE_HEADER(0);
+        return (int)KANDELO_RECORD_HEADER_BYTES;
+    }
+
+    /* ----- Nested iovec syscalls (writev/readv/preadv/pwritev/...) ----- */
+    if (entry->nested == KANDELO_MARSHAL_NESTED_IOVEC) {
+        const struct kandelo_marshal_arg *ma = &entry->args[0];
+        uintptr_t iov_ptr = (uintptr_t)(unsigned long long)args[ma->arg_index];
+        long long cnt = args[ma->a]; /* iovcnt */
+        if (iov_ptr == 0 || cnt <= 0) {
+            KANDELO_WRITE_HEADER(0);
+            return (int)KANDELO_RECORD_HEADER_BYTES;
+        }
+        if ((unsigned long long)cnt > KANDELO_RECORD_MAX_IOVEC)
+            return KANDELO_MARSHAL_FALLBACK;
+        const struct iovec *iov = (const struct iovec *)iov_ptr;
+
+        uint32_t desc_end =
+            KANDELO_RECORD_HEADER_BYTES + KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        uint32_t region_off = desc_end;
+        uint32_t struct_len = 4u + (uint32_t)cnt * KANDELO_RECORD_IOVEC_ENTRY_BYTES;
+        uint32_t buffers_base = region_off + struct_len;
+        if (buffers_base > budget)
+            return KANDELO_MARSHAL_FALLBACK;
+
+        /* count word */
+        kandelo_store_u32(data + region_off + KANDELO_RECORD_IOVEC_COUNT_OFFSET,
+                          (uint32_t)cnt);
+        uint32_t cursor = buffers_base;
+        for (long long i = 0; i < cnt; i++) {
+            uint32_t blen = (uint32_t)iov[i].iov_len;
+            uint32_t entry_pos = region_off + KANDELO_RECORD_IOVEC_ENTRIES_OFFSET +
+                                 (uint32_t)i * KANDELO_RECORD_IOVEC_ENTRY_BYTES;
+            kandelo_store_u32(data + entry_pos, cursor);      /* buf_off */
+            kandelo_store_u32(data + entry_pos + 4u, blen);   /* buf_len */
+            if (blen > 0) {
+                if ((size_t)cursor + blen > budget)
+                    return KANDELO_MARSHAL_FALLBACK;
+                __builtin_memcpy(data + cursor, iov[i].iov_base, blen);
+                cursor += blen;
+            }
+        }
+        uint32_t region_len = cursor - region_off;
+        /* descriptor */
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES;
+        d[KANDELO_RECORD_D_KIND] = KANDELO_MARSHAL_SPAN_IOVEC_ARRAY;
+        d[KANDELO_RECORD_D_ARG_INDEX] = ma->arg_index;
+        kandelo_store_u16(d + 2u, 0); /* _pad */
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, region_off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, region_len);
+        KANDELO_WRITE_HEADER(1);
+        return (int)cursor;
+    }
+
+    /* ----- Nested msghdr syscalls (sendmsg/recvmsg) ----- */
+    if (entry->nested == KANDELO_MARSHAL_NESTED_MSGHDR) {
+        const struct kandelo_marshal_arg *ma = &entry->args[0];
+        uintptr_t msg_ptr = (uintptr_t)(unsigned long long)args[ma->arg_index];
+        if (msg_ptr == 0) {
+            KANDELO_WRITE_HEADER(0);
+            return (int)KANDELO_RECORD_HEADER_BYTES;
+        }
+        const struct msghdr *m = (const struct msghdr *)msg_ptr;
+        uint32_t name_len = (uint32_t)m->msg_namelen;
+        uint32_t control_len = (uint32_t)m->msg_controllen;
+        uint32_t flags = (uint32_t)m->msg_flags;
+
+        /* The canonical wire the kernel reconstructs holds at most one iovec
+         * (KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT == 1), so flatten the
+         * scatter/gather list into a single contiguous buffer. */
+        const struct iovec *iov = (const struct iovec *)(uintptr_t)m->msg_iov;
+        long iovlen = (long)m->msg_iovlen;
+        uint32_t total = 0;
+        for (long i = 0; i < iovlen; i++)
+            total += (uint32_t)iov[i].iov_len;
+        uint32_t iov_count = (iovlen > 0) ? 1u : 0u;
+
+        uint32_t desc_end =
+            KANDELO_RECORD_HEADER_BYTES + KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        uint32_t region_off = desc_end;
+        uint32_t struct_len =
+            KANDELO_RECORD_MSGHDR_IOVEC_BLOCK_OFFSET /* name_off + name_len */
+            + 4u + iov_count * KANDELO_RECORD_IOVEC_ENTRY_BYTES /* iovec block */
+            + 12u; /* control_off + control_len + flags */
+        uint32_t ref_base = region_off + struct_len;
+        if (ref_base > budget)
+            return KANDELO_MARSHAL_FALLBACK;
+
+        /* Referenced payloads laid in the order the decoder walks them: name,
+         * flattened iovec buffer, control. */
+        uint32_t cursor = ref_base;
+        uint32_t name_off = 0;
+        if (name_len > 0) {
+            if ((size_t)cursor + name_len > budget)
+                return KANDELO_MARSHAL_FALLBACK;
+            name_off = cursor;
+            __builtin_memcpy(data + cursor, (const void *)(uintptr_t)m->msg_name,
+                             name_len);
+            cursor += name_len;
+        }
+
+        uint32_t iov_buf_off = cursor;
+        if (iov_count == 1) {
+            if ((size_t)cursor + total > budget)
+                return KANDELO_MARSHAL_FALLBACK;
+            uint32_t w = cursor;
+            for (long i = 0; i < iovlen; i++) {
+                uint32_t seg = (uint32_t)iov[i].iov_len;
+                if (seg > 0) {
+                    __builtin_memcpy(data + w, iov[i].iov_base, seg);
+                    w += seg;
+                }
+            }
+            cursor += total;
+        }
+
+        uint32_t control_off = 0;
+        if (control_len > 0) {
+            if ((size_t)cursor + control_len > budget)
+                return KANDELO_MARSHAL_FALLBACK;
+            control_off = cursor;
+            __builtin_memcpy(data + cursor,
+                             (const void *)(uintptr_t)m->msg_control, control_len);
+            cursor += control_len;
+        }
+
+        /* Structural prefix. */
+        kandelo_store_u32(data + region_off + KANDELO_RECORD_MSGHDR_NAME_OFF_OFFSET,
+                          name_off);
+        kandelo_store_u32(data + region_off + KANDELO_RECORD_MSGHDR_NAME_LEN_OFFSET,
+                          name_len);
+        uint32_t block_off = region_off + KANDELO_RECORD_MSGHDR_IOVEC_BLOCK_OFFSET;
+        kandelo_store_u32(data + block_off + KANDELO_RECORD_IOVEC_COUNT_OFFSET,
+                          iov_count);
+        if (iov_count == 1) {
+            uint32_t ep = block_off + KANDELO_RECORD_IOVEC_ENTRIES_OFFSET;
+            kandelo_store_u32(data + ep, iov_buf_off);
+            kandelo_store_u32(data + ep + 4u, total);
+        }
+        uint32_t tail = block_off + 4u + iov_count * KANDELO_RECORD_IOVEC_ENTRY_BYTES;
+        kandelo_store_u32(data + tail, control_off);
+        kandelo_store_u32(data + tail + 4u, control_len);
+        kandelo_store_u32(data + tail + 8u, flags);
+
+        /* descriptor: len is the structural prefix only (not the payloads). */
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES;
+        d[KANDELO_RECORD_D_KIND] = KANDELO_MARSHAL_SPAN_MSGHDR;
+        d[KANDELO_RECORD_D_ARG_INDEX] = ma->arg_index;
+        kandelo_store_u16(d + 2u, 0);
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, region_off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, struct_len);
+        KANDELO_WRITE_HEADER(1);
+        return (int)cursor;
+    }
+
+    /* ----- Flat descriptor-table syscalls ----- */
+    struct {
+        uint8_t kind;
+        uint8_t arg_index;
+        uintptr_t src;
+        uint32_t len;
+    } plan[KANDELO_RECORD_MAX_SPANS];
+    uint32_t nplan = 0;
+
+    for (uint8_t i = 0; i < entry->arg_count; i++) {
+        const struct kandelo_marshal_arg *arg = &entry->args[i];
+        uintptr_t ptr = (uintptr_t)(unsigned long long)args[arg->arg_index];
+        if (ptr == 0)
+            continue; /* null pointer -> omit the span (nullable/degenerate) */
+        long len = kandelo_marshal_arg_len(arg, args, ptr);
+        if (len < 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        if (nplan >= KANDELO_RECORD_MAX_SPANS)
+            return KANDELO_MARSHAL_FALLBACK;
+        plan[nplan].kind = arg->span_kind;
+        plan[nplan].arg_index = arg->arg_index;
+        plan[nplan].src = ptr;
+        plan[nplan].len = (uint32_t)len;
+        nplan++;
+    }
+
+    uint32_t desc_end = KANDELO_RECORD_HEADER_BYTES +
+                        nplan * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+    if (desc_end > budget)
+        return KANDELO_MARSHAL_FALLBACK;
+    uint32_t cursor = desc_end;
+    for (uint32_t i = 0; i < nplan; i++) {
+        uint32_t off = cursor;
+        if (plan[i].len > 0) {
+            if ((size_t)cursor + plan[i].len > budget)
+                return KANDELO_MARSHAL_FALLBACK;
+            __builtin_memcpy(data + cursor, (const void *)plan[i].src, plan[i].len);
+            cursor += plan[i].len;
+        }
+        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES +
+                     i * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        d[KANDELO_RECORD_D_KIND] = plan[i].kind;
+        d[KANDELO_RECORD_D_ARG_INDEX] = plan[i].arg_index;
+        kandelo_store_u16(d + 2u, 0); /* _pad */
+        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, off);
+        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, plan[i].len);
+    }
+    KANDELO_WRITE_HEADER(nplan);
+    #undef KANDELO_WRITE_HEADER
+    return (int)cursor;
 }
 
 /* ------------------------------------------------------------------ */
