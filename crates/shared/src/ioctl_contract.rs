@@ -198,6 +198,31 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
             max: EVIOC_MAX_CALLER_LENGTH,
         },
     },
+    // EVIOCGPHYS / EVIOCGUNIQ / EVIOCGPROP: caller-length string and
+    // property reads libevdev issues during construction.
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGPHYS_NR,
+        nr_last: crate::input::EVIOCGPROP_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
+    // EVIOCGKEY..EVIOCGSW: current-state bitmaps libevdev reads during
+    // construction. The unclaimed 0x1a (EVIOCGSND) inside the range
+    // reaches the kernel dispatcher, which answers ENOTTY.
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGKEY_NR,
+        nr_last: crate::input::EVIOCGSW_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
     IoctlRequestFamily {
         dir: 2,
         magic: b'E' as u32,
