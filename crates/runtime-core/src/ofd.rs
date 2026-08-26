@@ -202,6 +202,10 @@ pub struct PrimeBoState {
     pub cookie: crate::dri::PrimeCookie,
 }
 
+/// `host_handle` sentinel for prime-bo fds, outside the `VirtualDevice`
+/// range (-1..=-9) so the fd is never routed to a render or card ioctl path.
+pub const PRIME_FD_HOST_HANDLE: i64 = -200;
+
 /// Per-fd state for `/dev/dri/renderD128` opens.
 ///
 /// Multiple fds pointing at the same OFD (`dup`, fork-inherit) share
