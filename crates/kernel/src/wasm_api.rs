@@ -13866,6 +13866,41 @@ pub extern "C" fn kernel_vblank() -> u32 {
     crate::dri::vblank_tick()
 }
 
+/// Fan one translated DOM input event out to every open OFD bound to
+/// `/dev/input/event{0,1}`. Stamped with CLOCK_MONOTONIC so libinput /
+/// SDL2 see a single monotonic timeline across vblank + input streams.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_input_event(
+    device: u32,
+    ev_type: u32,
+    code: u32,
+    value: i32,
+) {
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) = match host.host_clock_gettime(
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    ) {
+        Ok((sec, nsec)) => (sec, (nsec / 1000) as i32),
+        Err(_) => (0i64, 0i32),
+    };
+    crate::input::dispatch::push_event(
+        device as u8,
+        ev_type as u16,
+        code as u16,
+        value,
+        tv_sec,
+        tv_usec,
+    );
+}
+
+/// Cache the canvas pixel dimensions advertised by
+/// `EVIOCGABS(ABS_X/ABS_Y)` on `/dev/input/event1`. Without this the
+/// first SDL2 / libinput probe sees the 1280×720 fallback.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
+    crate::input::set_canvas_dims(width, height);
+}
+
 /// Number of successful page-flip commits on the given crtc.
 ///
 /// Useful for the host-side stats UI ("how many frames has the
