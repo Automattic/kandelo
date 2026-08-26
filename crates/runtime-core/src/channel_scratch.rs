@@ -744,6 +744,158 @@ pub unsafe fn checked_cstr_len(
     Err(Errno::EFAULT)
 }
 
+/// Copy-back instruction for one record output span (Phase 2 opaque transport).
+///
+/// After dispatch, the result bytes sitting in the contiguous scratch layout at
+/// `scratch_src` are copied into the channel data region at `channel_dest` (the
+/// span's original record offset), where a record-path caller reads its outputs
+/// -- mirroring the host copy-out (`finish`) step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelRecordCopyBack {
+    pub channel_dest: usize,
+    pub scratch_src: usize,
+    pub len: usize,
+}
+
+/// Inputs for the legacy channel dispatch, reconstructed kernel-side from an
+/// opaque self-marshalled record.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PreparedChannelRecord {
+    pub syscall_nr: u32,
+    pub args: [i64; 6],
+    pub copy_back: alloc::vec::Vec<ChannelRecordCopyBack>,
+}
+
+/// Detect and prepare an opaque channel record at the head of a live channel
+/// scratch allocation (additive, dormant Phase 2 transport).
+///
+/// Today the host copies each pointer argument's bytes into the kernel scratch
+/// region and rewrites the six channel arg words to absolute scratch addresses
+/// before dispatch. When the guest self-marshals its arguments into a
+/// self-describing record instead (later tasks flip the guest/host), this
+/// reproduces that exact kernel-side state from the record so the UNCHANGED
+/// legacy dispatch consumes the same validated scratch layout.
+///
+/// Returns:
+/// - `None` when the region does not begin with
+///   [`wasm_posix_shared::channel_record::RECORD_MAGIC`] (fall through to the
+///   legacy host-copied-pointer path).
+/// - `Some(Ok(prep))` when a well-formed record decoded and its flat spans were
+///   laid into the region (`args` rewritten to scratch addresses).
+/// - `Some(Err(errno))` when a magic-bearing record is malformed or uses a span
+///   shape not yet reconstructable on this dormant path -- a truthful failure,
+///   never a silent success.
+///
+/// The whole data region is copied out ONCE before any validation (the decoder
+/// is TOCTOU-safe over that copy), so a concurrent guest mutation cannot change
+/// the bytes between validation and use.
+///
+/// # Safety
+///
+/// `region` must describe the complete live kernel-owned allocation, and no
+/// concurrent host operation may replace its bytes during this call or the
+/// immediately following synchronous dispatch.
+pub unsafe fn prepare_channel_record(
+    region: ChannelScratchRegion,
+) -> Option<Result<PreparedChannelRecord, Errno>> {
+    use crate::channel_record_decode::decode;
+    use wasm_posix_shared::channel_record::{
+        span_kind_is_nested, RECORD_MAGIC, SPAN_KIND_IN_OUT_PTR, SPAN_KIND_OUT_PTR,
+    };
+
+    let region_start = region.start();
+    let data_capacity = match region.end() {
+        Ok(end) => end - region_start,
+        Err(_) => return Some(Err(Errno::EINVAL)),
+    };
+
+    // Read-once: copy the entire data region out before touching it, so the
+    // decoder and the layout below observe an immutable snapshot.
+    let data: alloc::vec::Vec<u8> =
+        unsafe { core::slice::from_raw_parts(region_start as *const u8, data_capacity) }.to_vec();
+
+    // Peek the magic from the owned copy; a mismatch is the legacy path.
+    if data.len() < 4 || u32::from_le_bytes([data[0], data[1], data[2], data[3]]) != RECORD_MAGIC {
+        return None;
+    }
+
+    let decoded = match decode(&data, data_capacity) {
+        Ok(decoded) => decoded,
+        // A malformed record is a truthful failure, never a silent success.
+        Err(_) => return Some(Err(Errno::EINVAL)),
+    };
+
+    // Start from the six scalar words; pointer arg slots are overwritten below
+    // with the absolute scratch addresses their spans are laid at, exactly as
+    // the host rewrites `CH_ARGS + argIndex*ARG_SIZE`.
+    let mut args = decoded.scalars;
+    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+    let mut cursor = region_start;
+
+    for span in &decoded.spans {
+        let arg_index = span.arg_index as usize;
+        if arg_index >= args.len() {
+            return Some(Err(Errno::EINVAL));
+        }
+
+        // Nested iovec/msghdr spans need host-specific wire reconstruction
+        // (`KernelIovecWire`/`KernelMsghdrWire`), which is not wired on this
+        // dormant path yet. Fail truthfully rather than mis-dispatch.
+        if span_kind_is_nested(span.kind) {
+            return Some(Err(Errno::EINVAL));
+        }
+
+        let length = span.bytes.len();
+        if length == 0 {
+            // The host canonicalizes every empty borrow to the allocation base;
+            // mirror that so descriptor validation accepts the empty argument.
+            args[arg_index] = region_start as i64;
+            continue;
+        }
+
+        let dest = cursor;
+        // Bounds-check the destination range against the live allocation using
+        // the same contract the legacy validator uses.
+        if region.checked_range(dest, length).is_err() {
+            return Some(Err(Errno::EINVAL));
+        }
+        // Copy the payload from the owned record snapshot into the scratch
+        // layout the legacy dispatch expects (contiguous, in span order).
+        unsafe {
+            core::ptr::copy_nonoverlapping(span.bytes.as_ptr(), dest as *mut u8, length);
+        }
+        args[arg_index] = dest as i64;
+
+        if span.kind == SPAN_KIND_OUT_PTR || span.kind == SPAN_KIND_IN_OUT_PTR {
+            // The span's original offset within the data region is where a
+            // record-path caller reads its output back.
+            let original_offset = span.bytes.as_ptr() as usize - data.as_ptr() as usize;
+            copy_back.push(ChannelRecordCopyBack {
+                channel_dest: region_start + original_offset,
+                scratch_src: dest,
+                len: length,
+            });
+        }
+
+        // Advance with the same 8-byte alignment the host copy-in and the
+        // descriptor validator use between successive pointer payloads.
+        let next = match dest.checked_add(length).and_then(|v| v.checked_add(7)) {
+            Some(v) => v & !7usize,
+            None => return Some(Err(Errno::EINVAL)),
+        };
+        match region.end() {
+            Ok(end) if next <= end => cursor = next,
+            _ => return Some(Err(Errno::EINVAL)),
+        }
+    }
+
+    Some(Ok(PreparedChannelRecord {
+        syscall_nr: decoded.syscall as u32,
+        args,
+        copy_back,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1168,6 +1320,190 @@ mod tests {
         assert_eq!(
             unsafe { descriptor_size(&descriptor, &args, oversized_region) },
             Err(Errno::E2BIG),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4 (Phase 2 opaque transport): kernel-side record preparation.
+    //
+    // `prepare_channel_record` reconstructs the exact scratch layout + rewritten
+    // arg words the host copy-in produces today, from a self-marshalled record.
+    // It is exercised only by tests until later tasks flip the guest/host.
+    // -----------------------------------------------------------------------
+    use wasm_posix_shared::channel_record::{
+        RECORD_ABI, RECORD_HEADER_BYTES, RECORD_MAGIC, SPAN_DESCRIPTOR_BYTES,
+        SPAN_KIND_IN_PTR, SPAN_KIND_IOVEC_ARRAY, SPAN_KIND_OUT_PTR,
+    };
+
+    struct RecSpan {
+        kind: u8,
+        arg_index: u8,
+        payload: alloc::vec::Vec<u8>,
+    }
+
+    /// Build a record (header + descriptors + payloads) into a `capacity`-byte
+    /// data region. Mirrors the `channel_record` byte layout.
+    fn build_record(
+        syscall: u16,
+        record_abi: u16,
+        scalars: [i64; 6],
+        spans: &[RecSpan],
+        capacity: usize,
+    ) -> alloc::vec::Vec<u8> {
+        let n = spans.len();
+        let desc_end = RECORD_HEADER_BYTES + n * SPAN_DESCRIPTOR_BYTES;
+
+        let mut descriptors: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut payload: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        for span in spans {
+            let off = (desc_end + payload.len()) as u32;
+            descriptors.push(span.kind);
+            descriptors.push(span.arg_index);
+            descriptors.extend_from_slice(&0u16.to_le_bytes());
+            descriptors.extend_from_slice(&off.to_le_bytes());
+            descriptors.extend_from_slice(&(span.payload.len() as u32).to_le_bytes());
+            payload.extend_from_slice(&span.payload);
+        }
+
+        let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        out.extend_from_slice(&RECORD_MAGIC.to_le_bytes());
+        out.extend_from_slice(&record_abi.to_le_bytes());
+        out.extend_from_slice(&syscall.to_le_bytes());
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // flags
+        out.extend_from_slice(&0u32.to_le_bytes()); // _reserved
+        for s in &scalars {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        assert_eq!(out.len(), RECORD_HEADER_BYTES);
+        out.extend_from_slice(&descriptors);
+        out.extend_from_slice(&payload);
+        assert!(out.len() <= capacity);
+        out.resize(capacity, 0);
+        out
+    }
+
+    const REC_CAP: usize = 4096;
+
+    #[test]
+    fn record_in_ptr_lays_payload_into_scratch_and_rewrites_args() {
+        // write(fd=7, buf, count=5): arg1 is the buffer, arg2 the count.
+        let mut data = build_record(
+            wasm_posix_shared::Syscall::Write as u16,
+            RECORD_ABI,
+            [7, 0, 5, 0, 0, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_IN_PTR,
+                arg_index: 1,
+                payload: b"hello".to_vec(),
+            }],
+            REC_CAP,
+        );
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Write as u32);
+        assert_eq!(prep.args[0], 7);
+        // The buffer arg was rewritten to the scratch base (first span).
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.args[2], 5);
+        assert!(prep.copy_back.is_empty());
+        // The payload was copied into the scratch layout at the rewritten addr.
+        assert_eq!(&data[0..5], b"hello");
+    }
+
+    #[test]
+    fn record_out_ptr_plans_copyback_to_original_span_offset() {
+        let mut data = build_record(
+            wasm_posix_shared::Syscall::Read as u16,
+            RECORD_ABI,
+            [3, 0, 8, 0, 0, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_OUT_PTR,
+                arg_index: 1,
+                payload: alloc::vec![0u8; 8],
+            }],
+            REC_CAP,
+        );
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+
+        let prep = match unsafe { prepare_channel_record(region) } {
+            Some(Ok(prep)) => prep,
+            other => panic!("expected prepared record, got {other:?}"),
+        };
+        assert_eq!(prep.args[1] as usize, start);
+        assert_eq!(prep.copy_back.len(), 1);
+        let cb = prep.copy_back[0];
+        // Output is read back from the record's original span offset (after the
+        // 64-byte header + one 12-byte descriptor).
+        assert_eq!(
+            cb.channel_dest,
+            start + RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES
+        );
+        assert_eq!(cb.scratch_src, start);
+        assert_eq!(cb.len, 8);
+    }
+
+    #[test]
+    fn record_non_magic_region_falls_through_to_legacy_path() {
+        let mut data = vec![0u8; REC_CAP];
+        let region =
+            ChannelScratchRegion::new(data.as_mut_ptr() as usize, REC_CAP).unwrap();
+        assert!(unsafe { prepare_channel_record(region) }.is_none());
+    }
+
+    #[test]
+    fn record_malformed_span_is_a_truthful_einval() {
+        let mut data = build_record(
+            wasm_posix_shared::Syscall::Write as u16,
+            RECORD_ABI,
+            [1, 0, 4, 0, 0, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_IN_PTR,
+                arg_index: 1,
+                payload: b"abcd".to_vec(),
+            }],
+            REC_CAP,
+        );
+        // Corrupt the single descriptor's len to run past the capacity.
+        let dpos = RECORD_HEADER_BYTES;
+        let huge = ((REC_CAP as u32) + 16).to_le_bytes();
+        data[dpos + 8..dpos + 12].copy_from_slice(&huge);
+        let region =
+            ChannelScratchRegion::new(data.as_mut_ptr() as usize, REC_CAP).unwrap();
+        assert_eq!(
+            unsafe { prepare_channel_record(region) },
+            Some(Err(Errno::EINVAL))
+        );
+    }
+
+    #[test]
+    fn record_nested_span_kind_is_a_truthful_einval() {
+        // A minimal iovec-array region (count=0) is structurally decodable but
+        // its host-wire reconstruction is not wired on the dormant path yet.
+        let mut iovec_region = alloc::vec::Vec::new();
+        iovec_region.extend_from_slice(&0u32.to_le_bytes());
+        let mut data = build_record(
+            wasm_posix_shared::Syscall::Writev as u16,
+            RECORD_ABI,
+            [1, 0, 0, 0, 0, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_IOVEC_ARRAY,
+                arg_index: 1,
+                payload: iovec_region,
+            }],
+            REC_CAP,
+        );
+        let region =
+            ChannelScratchRegion::new(data.as_mut_ptr() as usize, REC_CAP).unwrap();
+        assert_eq!(
+            unsafe { prepare_channel_record(region) },
+            Some(Err(Errno::EINVAL))
         );
     }
 }

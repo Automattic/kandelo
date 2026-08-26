@@ -3088,37 +3088,62 @@ fn handle_owned_channel_allocation(
 
     // Read syscall number and args from kernel memory
     let base = offset;
-    let (syscall_nr, args) = {
-        // Keep this immutable view scoped to header decoding. Dispatch can
-        // mutate the same channel allocation through rewritten pointer args.
-        let mem = unsafe {
-            let ptr = base as *const u8;
-            core::slice::from_raw_parts(ptr, DATA_OFFSET)
-        };
-        let syscall_nr = u32::from_le_bytes([
-            mem[SYSCALL_OFFSET],
-            mem[SYSCALL_OFFSET + 1],
-            mem[SYSCALL_OFFSET + 2],
-            mem[SYSCALL_OFFSET + 3],
-        ]);
 
-        // Read i64 args (each arg is 8 bytes in the widened channel layout)
-        let mut args = [0i64; ARGS_COUNT];
-        for (i, arg) in args.iter_mut().enumerate() {
-            let off = ARGS_OFFSET + i * ARG_SIZE;
-            *arg = i64::from_le_bytes([
-                mem[off],
-                mem[off + 1],
-                mem[off + 2],
-                mem[off + 3],
-                mem[off + 4],
-                mem[off + 5],
-                mem[off + 6],
-                mem[off + 7],
-            ]);
-        }
-        (syscall_nr, args)
-    };
+    // Opaque-record transport branch (Phase 2, additive/dormant): if the data
+    // region begins with a record, decode it kernel-side and reconstruct the
+    // exact scratch layout + rewritten arg words the legacy host copy-in
+    // produces. A magic mismatch falls through to the unchanged legacy path.
+    let (syscall_nr, args, record_copy_back): (
+        u32,
+        [i64; ARGS_COUNT],
+        Option<Vec<crate::channel_scratch::ChannelRecordCopyBack>>,
+    ) = match unsafe { crate::channel_scratch::prepare_channel_record(scratch_region) } {
+            Some(Ok(prep)) => (prep.syscall_nr, prep.args, Some(prep.copy_back)),
+            Some(Err(errno)) => {
+                unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+                let out = unsafe {
+                    let ptr = base as *mut u8;
+                    core::slice::from_raw_parts_mut(ptr, DATA_OFFSET)
+                };
+                out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&(-1i64).to_le_bytes());
+                out[ERRNO_OFFSET..ERRNO_OFFSET + 4]
+                    .copy_from_slice(&(errno as u32).to_le_bytes());
+                return -(errno as i32);
+            }
+            None => {
+                // Keep this immutable view scoped to header decoding. Dispatch
+                // can mutate the same channel allocation through rewritten
+                // pointer args.
+                let mem = unsafe {
+                    let ptr = base as *const u8;
+                    core::slice::from_raw_parts(ptr, DATA_OFFSET)
+                };
+                let syscall_nr = u32::from_le_bytes([
+                    mem[SYSCALL_OFFSET],
+                    mem[SYSCALL_OFFSET + 1],
+                    mem[SYSCALL_OFFSET + 2],
+                    mem[SYSCALL_OFFSET + 3],
+                ]);
+
+                // Read i64 args (each arg is 8 bytes in the widened channel
+                // layout)
+                let mut args = [0i64; ARGS_COUNT];
+                for (i, arg) in args.iter_mut().enumerate() {
+                    let off = ARGS_OFFSET + i * ARG_SIZE;
+                    *arg = i64::from_le_bytes([
+                        mem[off],
+                        mem[off + 1],
+                        mem[off + 2],
+                        mem[off + 3],
+                        mem[off + 4],
+                        mem[off + 5],
+                        mem[off + 6],
+                        mem[off + 7],
+                    ]);
+                }
+                (syscall_nr, args, None)
+            }
+        };
 
     // Pointer args in the channel reference kernel memory (JS copies data
     // into the data buffer at offset + DATA_OFFSET). Convert relative
@@ -3180,6 +3205,26 @@ fn handle_owned_channel_allocation(
 
     out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&outcome.channel_result.to_le_bytes());
     out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&outcome.channel_errno.to_le_bytes());
+
+    // Record-path outputs: mirror the host copy-out by moving each Out/InOut
+    // result from the contiguous scratch layout back to the span's original
+    // record offset. Read every result first, then write, so overlapping
+    // scratch/record ranges cannot clobber a not-yet-copied source.
+    if let Some(spans) = record_copy_back {
+        let staged: Vec<(usize, Vec<u8>)> = spans
+            .iter()
+            .map(|cb| {
+                let bytes =
+                    unsafe { core::slice::from_raw_parts(cb.scratch_src as *const u8, cb.len) }
+                        .to_vec();
+                (cb.channel_dest, bytes)
+            })
+            .collect();
+        for (dest, bytes) in staged {
+            unsafe { core::slice::from_raw_parts_mut(dest as *mut u8, bytes.len()) }
+                .copy_from_slice(&bytes);
+        }
+    }
 
     outcome.export_result
 }
