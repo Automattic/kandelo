@@ -1,0 +1,9 @@
+script_path = "packages/registry/fontconfig/build-fontconfig.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "e2226dc6a"
+revision    = 1
+
+inputs = [
+  "packages/registry/fontconfig/build-fontconfig.sh",
+  "scripts/package-build-roots.sh",
+]
