@@ -358,6 +358,51 @@ pub fn bump_inherited_resource_refcounts(
     Ok(())
 }
 
+/// Incref every DRI bo referenced by the child's inherited card0 / renderD128
+/// / prime-fd OFDs — GEM-handle maps, KMS framebuffers, and prime-bo bindings.
+///
+/// **Spawn-only**, deliberately NOT folded into
+/// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
+/// refcount bumps live solely in that shared helper), DRI bos are increfed on
+/// the *fork* path inside deserialize (`fork::read_dri_fd_state` /
+/// `read_kms_fd_state` / the PrimeBo arm). `spawn_child`, however, builds the
+/// child by value-cloning the parent's `ofd_table` and never deserializes, so
+/// its inherited DRI OFDs carry no registry ref. Calling this from
+/// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
+/// (deserialize + bump). Keeping it spawn-local balances the child's
+/// eventual close-path decref (`dri_release_ofd_state`) exactly once.
+///
+/// Without this, a `posix_spawn`'d client that inherits the compositor's
+/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle + KMS
+/// framebuffer) decrefs those bos on exec with no matching incref, tombstoning
+/// the compositor's still-live scanout bo in the global `BoRegistry` and
+/// freezing the desktop under a `gbm_bo_map` EINVAL flood.
+fn bump_inherited_dri_bos(child: &Process) {
+    for (_idx, ofd) in child.ofd_table.iter() {
+        let Some(dri_state) = ofd.dri_state.as_deref() else {
+            continue;
+        };
+        crate::dri::with_registry(|reg| match dri_state {
+            crate::ofd::DriOfdState::PrimeBo(p) => {
+                reg.incref(p.bo_id);
+            }
+            crate::ofd::DriOfdState::RenderNode(dri) => {
+                for bo_id in dri.handles.values() {
+                    reg.incref(*bo_id);
+                }
+            }
+            crate::ofd::DriOfdState::Card { dri, kms } => {
+                for bo_id in dri.handles.values() {
+                    reg.incref(*bo_id);
+                }
+                for fb in kms.fbs.values() {
+                    reg.incref(fb.bo_id);
+                }
+            }
+        });
+    }
+}
+
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
 /// write_fd) pairs so that when the child resumes through fork rewind,
 /// `sys_pipe` returns the same fd numbers the parent saw.
@@ -1264,6 +1309,11 @@ impl ProcessTable {
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
         bump_inherited_resource_refcounts(parent_pid, &child)?;
+        // DRI bos are the one inherited resource fork increfs during
+        // deserialize rather than in the shared helper, so spawn (which
+        // value-clones the fd tables and never deserializes) must incref them
+        // here — see `bump_inherited_dri_bos`.
+        bump_inherited_dri_bos(&child);
 
         // The child is a real kernel process and signal target, but the
         // parent has not received a successful posix_spawn result yet. Wait
