@@ -393,6 +393,30 @@ fn package_projection_is_eligible(
     })
 }
 
+/// Whether the on-disk source-only program projection authority already records
+/// the given graph authority. When every node is unchanged and this holds, a
+/// no-op can leave the published projection in place instead of re-deriving and
+/// re-publishing an identical one.
+fn source_only_program_projection_is_current(
+    output_root: &Path,
+    expected_graph_authority_sha256: &str,
+) -> bool {
+    let path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let Ok(bytes) = fs::read(&path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    value
+        .get("graphAuthoritySha256")
+        .and_then(|recorded| recorded.as_str())
+        .map(|recorded| recorded == expected_graph_authority_sha256)
+        .unwrap_or(false)
+}
+
 /// Identify compiled package nodes whose content-addressed cache entry, receipt
 /// sidecar, and projected outputs are all present, so the scheduler can report
 /// them `Cached` without launching a child process. A node's cache key folds its
@@ -687,7 +711,24 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         .lock()
         .map_err(|_| "retained package-receipt store was poisoned".to_string())?
         .clone();
-    let projection_finalization_error = if package_projection_is_eligible(&selected, &results) {
+    // Fully-clean no-op fast path: when the build succeeded, every compiled and
+    // product node was reported cached by the up-front skip (nothing was built
+    // or rebuilt), and the published projection already records this exact graph
+    // authority, the finalizer would reproduce precisely what is already on
+    // disk. Leave it in place instead of re-deriving and re-publishing it.
+    // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
+    let projection_up_to_date = package_projection_is_eligible(&selected, &results)
+        && expected_receipt_nodes
+            .iter()
+            .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
+        && selected
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+            .all(|node| skip_receipts.contains_key(node))
+        && source_only_program_projection_is_current(&output_root, &graph.authority_sha256);
+    let projection_finalization_error = if projection_up_to_date {
+        None
+    } else if package_projection_is_eligible(&selected, &results) {
         finalize_source_only_program_projection(
             &repo,
             &set,
@@ -3555,6 +3596,35 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn source_only_program_projection_is_current_matches_recorded_graph_authority() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let output = temp.path();
+        let authority = "a".repeat(64);
+
+        assert!(
+            !source_only_program_projection_is_current(output, &authority),
+            "an absent projection authority is never current"
+        );
+
+        let path = output
+            .join(".kandelo")
+            .join("source-only-program-projection-v1.json");
+        write(
+            &path,
+            &format!(r#"{{"graphAuthoritySha256":"{authority}","nodes":[]}}"#),
+        );
+
+        assert!(
+            source_only_program_projection_is_current(output, &authority),
+            "a projection recording the same graph authority is current"
+        );
+        assert!(
+            !source_only_program_projection_is_current(output, &"b".repeat(64)),
+            "a projection recording a different graph authority is stale"
+        );
     }
 
     fn package(root: &Path, name: &str, arches: &[&str], dependencies: &[(&str, &str)]) {
