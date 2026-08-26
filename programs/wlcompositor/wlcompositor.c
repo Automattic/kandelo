@@ -3749,11 +3749,18 @@ static void handle_pointer_button(struct libinput_event_pointer *p) {
         /* Click-to-focus: raise the window under the cursor and give it
          * keyboard focus before delivering the press. Further presses
          * while a button is already down join the implicit grab — focus
-         * stays pinned to the pressed surface. */
+         * stays pinned to the pressed surface.
+         *
+         * An exclusive layer-shell grab is the one thing a click cannot take
+         * the keyboard from: wlr-layer-shell-v1 gives the top-most exclusive
+         * surface on the top and overlay layers focus unconditionally, so
+         * that a lock screen or password prompt cannot be clicked past. The
+         * map path applies the same guard. Raising is stacking rather than
+         * focus, so it still runs. */
         struct surface *s = surface_at(g.cursor_x, g.cursor_y);
         if (s) {
             zorder_raise(s);
-            kbd_set_focus(s);
+            if (!layer_kb_grab()) kbd_set_focus(s);
         }
         ptr_refresh_focus();
     }

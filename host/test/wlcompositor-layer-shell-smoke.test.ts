@@ -54,6 +54,11 @@ const BTN_LEFT = 0x110;
 const BAR_POINT_X = 960;
 const BAR_POINT_Y = 15;
 
+// Bottom-left of the canvas: on the tiled window and well clear of the
+// 520x320 launcher klauncher centres on the output.
+const WINDOW_POINT_X = 40;
+const WINDOW_POINT_Y = 1040;
+
 interface Rect { x: number; y: number; w: number; h: number }
 
 function parseTiles(text: string, count: number): Rect[] {
@@ -262,6 +267,76 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
         // compositor keeps serving.
         host.spawn(kwlctlBytes, ["kwlctl", "clients"], {});
         await waitFor(out, /\[\{"address"/, 10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "a click cannot take the keyboard from an exclusive layer-shell grab",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const clientBytes = loadBytes(clientBin!);
+      const klauncherBytes = loadBytes(klauncherBin!);
+
+      const appsDir = mkdtempSync(join(tmpdir(), "kandelo-apps-"));
+      mkdirSync(appsDir, { recursive: true });
+      writeFileSync(join(appsDir, "terminal.conf"),
+        "name = Terminal\nexec = /usr/local/bin/wlterm\n");
+      writeFileSync(join(appsDir, "clock.conf"),
+        "name = Clock\nexec = /usr/local/bin/wlclock\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+      const tap = (code: number) => {
+        host.injectInputEvent(0, EV_KEY, code, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+      };
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: ["WLC_LAYOUT=dwindle"],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // A window holds the keyboard until the launcher takes it away.
+        host.spawn(clientBytes, ["wlclient-test"], {});
+        await waitFor(out, /KBD_FOCUS app_id=/, 20_000, dump);
+
+        host.spawn(klauncherBytes, ["klauncher"], {
+          env: [`KLAUNCHER_APPS_DIR=${appsDir}`],
+        });
+        await waitFor(out, /KLAUNCHER_READY n=2/, 20_000, dump);
+        await waitFor(out, /LAYER ns=launcher /, 20_000, dump);
+
+        // Click the window behind the launcher. Click-to-focus would hand the
+        // keyboard back to it, but the launcher's grab is exclusive, and
+        // wlr-layer-shell-v1 makes that focus unconditional so a lock screen
+        // cannot be clicked past.
+        host.injectInputEvent(1, EV_ABS, ABS_X, WINDOW_POINT_X);
+        host.injectInputEvent(1, EV_ABS, ABS_Y, WINDOW_POINT_Y);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_KEY, BTN_LEFT, 1);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(1, EV_KEY, BTN_LEFT, 0);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+
+        // The keystroke still filters the launcher's list rather than
+        // reaching the window under the cursor.
+        tap(KEY_T);
+        await waitFor(out, /KLAUNCHER_FILTER q=t n=1/, 10_000, dump);
       } finally {
         await host.destroy().catch(() => {});
       }
