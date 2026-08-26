@@ -418,7 +418,7 @@ static struct {
     GLuint prog;
     GLint loc_rect;             /* vec4 NDC x0,y0(top),x1,y1(bottom) */
     GLint loc_uv;               /* vec4 texture uv0.xy,uv1.xy */
-    GLint loc_use_tex;          /* 1 = sample u_tex, 0 = flat u_color */
+    GLint loc_use_tex;          /* 0 = flat u_color, 1 = opaque tex, 2 = blend */
     GLint loc_color;
     unsigned wallpaper_tex;
 } glc;
@@ -2285,10 +2285,31 @@ static uint32_t bo_get_fb(struct gbm_bo *bo) {
     return fb_id;
 }
 
+/* Does this buffer's format carry a meaningful alpha channel? The wl_shm and
+ * linux-dmabuf paths store their own format enums in the same field, so both
+ * ARGB constants are checked. They cannot collide: WL_SHM_FORMAT_ARGB8888 is
+ * 0 and the DRM constants are fourcc codes. */
+static inline int buffer_has_alpha(const struct shm_buffer *b) {
+    return b->format == WL_SHM_FORMAT_ARGB8888 ||
+           b->format == DRM_FORMAT_ARGB8888;
+}
+
+/* Source-over composite of one premultiplied ARGB pixel onto an opaque
+ * destination. wl_shm ARGB8888 is premultiplied by the Wayland spec, so the
+ * source contributes unscaled and the destination is attenuated by 1 - alpha. */
+static inline uint32_t blend_premultiplied(uint32_t src, uint32_t dst) {
+    uint32_t inv = 255u - (src >> 24);
+    uint32_t rb = ((((dst & 0x00ff00ffu) * inv) >> 8) & 0x00ff00ffu);
+    uint32_t g = ((((dst & 0x0000ff00u) * inv) >> 8) & 0x0000ff00u);
+    return src + rb + g;
+}
+
 /* Copy one committed wl_shm buffer into the scanout bo at the surface's
  * position, clipped to the output. The surface box is logical and the
  * scanout is device pixels, so the destination is the box times the output
- * scale. XRGB/ARGB8888 both blit as 32-bit words (opaque compositing).
+ * scale. An XRGB8888 buffer overwrites; an ARGB8888 one composites
+ * source-over so a client's transparent regions show what is behind them
+ * instead of punching the surface's background through as black.
  * A client whose buffer already covers that destination — it honoured
  * set_buffer_scale — takes the memcpy path; anything else (a scale-1
  * client on a scaled output, or a wp_viewport surface) nearest-samples its
@@ -2307,6 +2328,7 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     int32_t ox = s->x * scale, oy = s->y * scale;
     int32_t dw = lw * scale, dh = lh * scale;
     if (dw <= 0 || dh <= 0) return;
+    int alpha = buffer_has_alpha(b);
 
     if (s->vp_src_w > 0 || dw != b->width || dh != b->height) {
         float sx0 = 0.0f, sy0 = 0.0f;
@@ -2329,8 +2351,9 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
                 int32_t sx = (int32_t)(sx0 + ((float)col + 0.5f) * sw / (float)dw);
                 if (sx < 0) sx = 0;
                 if (sx >= b->width) sx = b->width - 1;
-                dst[(size_t)dy * dst_stride_px + dx] =
-                    src[(size_t)sy * src_stride_px + sx];
+                uint32_t px = src[(size_t)sy * src_stride_px + sx];
+                uint32_t *slot = &dst[(size_t)dy * dst_stride_px + dx];
+                *slot = alpha ? blend_premultiplied(px, *slot) : px;
             }
         }
         return;
@@ -2343,9 +2366,14 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     for (int32_t row = 0; row < b->height; row++) {
         int32_t dy = oy + row;
         if (dy < 0 || dy >= (int32_t)g.ph) continue;
-        memcpy(dst + (size_t)dy * dst_stride_px + (ox + x0),
-               src + (size_t)row * src_stride_px + x0,
-               (size_t)(x1 - x0) * 4);
+        uint32_t *drow = dst + (size_t)dy * dst_stride_px + (ox + x0);
+        const uint32_t *srow = src + (size_t)row * src_stride_px + x0;
+        if (!alpha) {
+            memcpy(drow, srow, (size_t)(x1 - x0) * 4);
+            continue;
+        }
+        for (int32_t col = 0; col < x1 - x0; col++)
+            drow[col] = blend_premultiplied(srow[col], drow[col]);
     }
 }
 
@@ -2789,8 +2817,9 @@ static const char GLC_FS[] =
     "in vec2 v_uv;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
-    "  o_color = u_use_tex == 1 ? vec4(texture(u_tex, v_uv).bgr, 1.0)\n"
-    "                           : u_color;\n"
+    "  if (u_use_tex == 0) { o_color = u_color; return; }\n"
+    "  vec4 t = texture(u_tex, v_uv);\n"
+    "  o_color = vec4(t.bgr, u_use_tex == 2 ? t.a : 1.0);\n"
     "}\n";
 
 /* Compile one shader; returns 0 on failure. On a headless host the sync
@@ -2827,21 +2856,24 @@ static void glc_rect_ndc(int32_t x, int32_t y, int32_t w, int32_t h,
 /* Logical unit → device pixel. */
 static inline int32_t glc_px(int32_t v) { return v * (int32_t)g.scale; }
 
-static void glc_draw_tex_rect(unsigned tex, int32_t x, int32_t y,
+/* `alpha` selects the fragment shader's texture branch: an ARGB8888 buffer
+ * keeps its sampled alpha and composites source-over, an XRGB8888 one forces
+ * alpha to 1 because its fourth channel carries no coverage. */
+static void glc_draw_tex_rect(unsigned tex, int alpha, int32_t x, int32_t y,
                               int32_t w, int32_t h, const float uv[4]) {
     float r[4];
     glc_rect_ndc(x, y, w, h, r);
     glUniform4f(glc.loc_rect, r[0], r[1], r[2], r[3]);
     glUniform4f(glc.loc_uv, uv[0], uv[1], uv[2], uv[3]);
-    glUniform1i(glc.loc_use_tex, 1);
+    glUniform1i(glc.loc_use_tex, alpha ? 2 : 1);
     glBindTexture(GL_TEXTURE_2D, tex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
-static void glc_draw_tex(unsigned tex, int32_t x, int32_t y,
+static void glc_draw_tex(unsigned tex, int alpha, int32_t x, int32_t y,
                          int32_t w, int32_t h) {
     static const float full_uv[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
-    glc_draw_tex_rect(tex, x, y, w, h, full_uv);
+    glc_draw_tex_rect(tex, alpha, x, y, w, h, full_uv);
 }
 
 /* Destination box + source-uv rect for a surface's committed buffer under
@@ -2992,6 +3024,10 @@ static void setup_gl(void) {
     glc.loc_color = glGetUniformLocation(glc.prog, "u_color");
     glUniform1i(glGetUniformLocation(glc.prog, "u_tex"), 0);
     glViewport(0, 0, (GLsizei)g.pw, (GLsizei)g.ph);
+    /* Source-over with a premultiplied source, matching wl_shm ARGB8888.
+     * Opaque draws emit alpha 1 and so still overwrite. */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
     if (setup_gl_wallpaper() != 0) {
         fprintf(stderr, "wlcompositor: GL wallpaper staging failed\n");
@@ -3015,6 +3051,8 @@ static void setup_gl(void) {
 static int repaint_gl(void) {
     unsigned texs[MAX_SURFACES] = {0};
     unsigned layer_texs[MAX_LAYERS] = {0};
+    int surface_alpha[MAX_SURFACES] = {0};
+    int layer_alpha[MAX_LAYERS] = {0};
     struct surface *top = NULL;
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
@@ -3022,6 +3060,7 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         texs[i] = shm_buffer_gl_texture(b);
+        surface_alpha[i] = buffer_has_alpha(b);
     }
     for (int i = 0; i < g.n_layers; i++) {
         struct surface *s = g.layers[i];
@@ -3029,14 +3068,15 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         layer_texs[i] = shm_buffer_gl_texture(b);
+        layer_alpha[i] = buffer_has_alpha(b);
     }
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
+    glc_draw_tex(glc.wallpaper_tex, 0, 0, 0, (int32_t)g.pw, (int32_t)g.ph);
     for (int i = 0; i < g.n_layers; i++)
         if (layer_texs[i] && layer_in_band(g.layers[i], 0))
-            glc_draw_tex(layer_texs[i], glc_px(g.layers[i]->x),
+            glc_draw_tex(layer_texs[i], layer_alpha[i], glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
     for (int i = 0; i < g.n_surfaces; i++) {
@@ -3050,7 +3090,7 @@ static int repaint_gl(void) {
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
             glc_draw_solid(th.border_active, glc_px(s->x - 2), glc_px(s->y - 2),
                            glc_px(dw + 4), glc_px(dh + 4));
-        glc_draw_tex_rect(texs[i], glc_px(s->x), glc_px(s->y),
+        glc_draw_tex_rect(texs[i], surface_alpha[i], glc_px(s->x), glc_px(s->y),
                           glc_px(dw), glc_px(dh), uv);
         for (int j = 0; j < g.n_all_surfaces; j++) {
             struct surface *sub = g.all_surfaces[j];
@@ -3065,14 +3105,14 @@ static int repaint_gl(void) {
             int32_t sdw, sdh;
             float suv[4];
             surface_draw_box(sub, sb, &sdw, &sdh, suv);
-            glc_draw_tex_rect(t, glc_px(sub->x), glc_px(sub->y),
-                              glc_px(sdw), glc_px(sdh), suv);
+            glc_draw_tex_rect(t, buffer_has_alpha(sb), glc_px(sub->x),
+                              glc_px(sub->y), glc_px(sdw), glc_px(sdh), suv);
         }
         top = s;
     }
     for (int i = 0; i < g.n_layers; i++)
         if (layer_texs[i] && layer_in_band(g.layers[i], 1))
-            glc_draw_tex(layer_texs[i], glc_px(g.layers[i]->x),
+            glc_draw_tex(layer_texs[i], layer_alpha[i], glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
     /* A failed present (context loss) must degrade like a failed texture
