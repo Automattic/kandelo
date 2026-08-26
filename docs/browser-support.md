@@ -336,7 +336,12 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 
 ### Wayland desktop demo
 
-`/?demo=wayland` boots a four-program Wayland desktop:
+`/?demo=wayland` boots a four-program Wayland desktop. The binaries come
+from the `wldesktop` package, which publishes `wlcompositor`, `wlterm`,
+`wlclock`, `wlpaint`, `klauncher` and `notify-send` under
+`programs/<arch>/wldesktop/`. The sources stay in `programs/` so
+`scripts/build-programs.sh` keeps building the fixtures the host smokes
+resolve — the same split `sdl2-demo` and `modeset` use.
 
 - **wlcompositor** — a floating-window Wayland server (`wl_shm`,
   `xdg_shell`, `wl_seat`, `wl_output`) built on the wasm32 libwayland
@@ -381,14 +386,38 @@ swizzle happens in the fragment shader and the scaling on the GPU
 (trilinear over a per-frame mip chain, so a downscaled desktop doesn't
 shimmer). A runtime GPU-compositing failure tears the compositor's EGL
 session down, which hands the canvas back to the pump presenter
-(`markKmsCanvasGlReleased`) so the desktop keeps painting. The rebuilt
+(`markKmsCanvasGlReleased`) so the desktop keeps painting. A browser
+GPU-process crash is detected on the same chain: when the canvas
+context is lost, `host_gl_present` fails the guest's `eglSwapBuffers`
+with `EIO`, the compositor degrades to CPU compositing, and EGL
+teardown returns the canvas to the pump. The kernel worker installs
+`webglcontextlost`/`webglcontextrestored` listeners when the canvas is
+attached (`hookKmsContextLoss`) — not lazily at presenter build — so
+the loss event is cancelled and the browser restores the context even
+when the compositor's GL session owned the canvas at loss time; the
+rebuilt pump presenter then finds a live context. Both crash rounds
+(compositor-owned, then pump-owned) are gated by
+`apps/browser-demos/test/kandelo-kms-context-loss.spec.ts`. The rebuilt
 presenter inherits the dead session's WebGL2 context — `getContext`
 returns the existing one — so it restores the state its draw depends on
 rather than assuming fresh-context defaults. Pixel-store state matters
 most: a leftover `UNPACK_ROW_LENGTH` or a still-bound
 `PIXEL_UNPACK_BUFFER` makes every scanout upload `GL_INVALID_OPERATION`,
 which raises no JS exception, so the pump would report presents onto a
-black canvas. A
+black canvas. Six unpack parameters and the `PIXEL_UNPACK_BUFFER`
+binding are reset on every rebuild, and
+`host/test/dri-kms-stats-sab.test.ts` pins each reset individually
+against a fake GL. That fake cannot see a rejected upload. The
+real-context gate that could — `kandelo-kms-presenter.spec.ts` — is
+deleted, because its fixture worker reached the kernel worker through a
+writable instance property and a `tickVblank` cast, and the sealed
+instance and the `#tickVblank` private field refuse both.
+`kandelo-kms-context-loss.spec.ts` does run on a real context, but it
+needs the built desktop binaries and the browser-demo CI job runs a bare
+checkout with no binary fetch, so it cannot take the vacated CI slot.
+Until that fixture is rebuilt on
+`createCentralizedKernelWorkerTestDouble`, no automated gate proves a
+rebuilt presenter's uploads are accepted. A
 main-thread ResizeObserver reports the pane's device-pixel size so the
 presenter renders at display resolution instead of letting the page
 compositor rescale an fb-sized bitmap; any letterbox is drawn in GL

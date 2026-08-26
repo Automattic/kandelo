@@ -14,7 +14,7 @@ async function gotoOrSkip(page: Page, path: string) {
 }
 
 async function openSurface(page: Page, label: string) {
-  const btn = page.locator("button.kmachine-switch-btn", { hasText: label });
+  const btn = page.locator("button.kdock-item", { hasText: label });
   await btn.waitFor({ state: "visible", timeout: 30_000 });
   await btn.click();
 }
@@ -157,6 +157,12 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   for (const t of tiles)
     expect(Number(t[2]), `a window tiled over the bar: ${t[0]}`)
       .toBeGreaterThanOrEqual(barHeight);
+  // The three windows opened above are the only tiles. A surface with no
+  // xdg_toplevel role — a client's cursor surface — taking one shifts every
+  // count below by one, and the launcher gates then pass on the previous
+  // client's tile instead of the one they name.
+  expect(afterBar, "a surface with no window role took a tile")
+    .not.toMatch(/TILE n=4 /);
 
   // Gate 4: the desktop composited to the canvas. The Modeset pane uses
   // transferControlToOffscreen, so PNG byteLength stands in for pixel readback

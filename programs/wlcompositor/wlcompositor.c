@@ -868,6 +868,12 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         return;
     }
 
+    /* Only the xdg_toplevel role makes a surface a window. A client's cursor
+     * surface (wl_pointer.set_cursor, which we accept and ignore) carries a
+     * buffer under no role: Waybar's would otherwise map, take the keyboard,
+     * and claim a tile. */
+    if (!s->xdg_toplevel) { schedule_repaint(); return; }
+
     if (!s->mapped) {
         s->mapped = 1;
         send_surface_enter(s);

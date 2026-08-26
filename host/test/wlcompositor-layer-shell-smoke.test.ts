@@ -21,10 +21,10 @@ import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kbarBin = tryResolveBinary("programs/kbar.wasm");
-const klauncherBin = tryResolveBinary("programs/klauncher.wasm");
+const klauncherBin = tryResolveBinary("programs/wldesktop/klauncher.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kbarBin && !!klauncherBin
   && !!kwlctlBin;

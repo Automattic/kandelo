@@ -18,28 +18,27 @@ export type HostFb = {
  *  videomode."
  *
  *  When the embedder has reported the display's device-pixel size
- *  (`setKmsDisplaySize`, threaded through as `display` here), the mode IS
- *  that size, even-aligned and clamped to [640, 3840] × [480, 2160]. One
- *  mode pixel per device pixel is what keeps a GL compositor's output
- *  from being resampled on its way to the canvas. It is also what makes
- *  a `wl_output` scale meaningful: a compositor divides the mode by its
- *  scale to get the logical grid its clients lay out in, and a mode
- *  derived from anything but device pixels makes that division lie.
- *  Deriving it from the display's ASPECT alone, at a fixed 1080-line
- *  height, renders a HiDPI pane at half its real resolution.
- *  Without a reported size (Node hosts, headless
- *  stats-only CRTCs, the modeset and sdl2 demos, which never call
- *  `setKmsDisplaySize`) the mode is the historical 1920x1080@60. */
+ *  (`setKmsDisplaySize`, threaded through as `display` here), the mode
+ *  follows the display's ASPECT at a fixed 1080 logical height:
+ *  `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] and
+ *  even-aligned. A mode-picking client (wlcompositor, SDL2 KMSDRM) then
+ *  fills the pane edge-to-edge with no letterbox. The height stays 1080
+ *  so fixed-size client windows keep fitting vertically regardless of
+ *  how wide the pane is; very tall panes clamp at 1440 wide and
+ *  letterbox again rather than squeezing windows off-screen. Without a
+ *  reported size (Node hosts, headless stats-only CRTCs) the mode is
+ *  the historical 1920x1080@60. */
 export function buildVirtualConnectorMode(
   _connectorId: number,
   display?: { width: number; height: number },
 ): Uint8Array {
   let w = 1920;
-  let h = 1080;
   if (display && display.width >= 1 && display.height >= 1) {
-    w = Math.min(3840, Math.max(640, Math.round(display.width) & ~1));
-    h = Math.min(2160, Math.max(480, Math.round(display.height) & ~1));
+    const aspect = display.width / display.height;
+    w = Math.round(1080 * aspect) & ~1;
+    w = Math.min(3840, Math.max(1440, w));
   }
+  const h = 1080;
   // Synthetic CVT-ish blanking: consumers here only read
   // hdisplay/vdisplay/vrefresh (and libdrm derives refresh from
   // clock/totals), so the porches just need to be self-consistent.

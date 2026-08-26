@@ -107,6 +107,18 @@ package_owns_direct_program_path() {
         grep -Fxq -- "$arch/$mirror" <<<"$PACKAGE_OWNED_PROGRAM_MIRRORS"
 }
 
+# A multi-output package publishes `<package>/<output>.wasm`, so the direct
+# mirror above never matches it. The resolver rejects the flat path for such
+# an output, which makes a local fixture at that path unreachable.
+package_owns_program_output() {
+    local arch="$1"
+    local output="$2"
+    [ -n "$PACKAGE_OWNED_PROGRAM_MIRRORS" ] &&
+        awk -F/ -v arch="$arch" -v out="$output" \
+            '$1 == arch && $NF == out { found = 1 } END { exit !found }' \
+            <<<"$PACKAGE_OWNED_PROGRAM_MIRRORS"
+}
+
 find_llvm_bin() {
     if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
         echo "$LLVM_BIN"
@@ -219,6 +231,10 @@ build_program() {
             return 1
         fi
         echo "  Skipping $name: package resolver owns $arch/${name}.wasm"
+        return 0
+    fi
+    if [ -n "$arch" ] && package_owns_program_output "$arch" "${name}.wasm"; then
+        echo "  Skipping $name: a package publishes ${name}.wasm"
         return 0
     fi
 
@@ -1014,33 +1030,40 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # libwpkdraw renders the compositor's wallpaper (gradient + wordmark);
     # libEGL/libGLESv2 drive the GPU compositing path (CPU fallback when
     # the host has no WebGL2).
-    comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
-    echo "  Compiling wlcompositor (server)..."
-    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
-        "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
-        "$WLC_GEN/xdg-shell-protocol.c" \
-        "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
-        "$WLC_GEN/xdg-decoration-v1-protocol.c" \
-        "$WLC_GEN/wlr-layer-shell-v1-protocol.c" \
-        "$WLC_GEN/presentation-time-protocol.c" \
-        "$WLC_GEN/xdg-output-v1-protocol.c" \
-        "$WLC_GEN/viewporter-protocol.c" \
-        "$WLC_GEN/fractional-scale-v1-protocol.c" \
-        "${LINK_PRE_LIBS[@]}" \
-        "$SYSROOT/lib/libwayland-server.a" \
-        "$SYSROOT/lib/libwpkdraw.a" \
-        "$SYSROOT/lib/libxkbcommon.a" \
-        "$WLC_LIBINPUT/lib/libinput.a" \
-        "$WLC_LIBEVDEV/lib/libevdev.a" \
-        "$WLC_LIBUDEV/lib/libudev.a" \
-        "$WLC_MTDEV/lib/libmtdev.a" \
-        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
-        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
-        "$SYSROOT/lib/libffi.a" \
-        "${LINK_POST_LIBS[@]}" \
-        -o "$comp_wasm"
-    "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
-    mv "$comp_wasm.instr" "$comp_wasm"
+    # The wldesktop package publishes the server itself; only the test
+    # clients below still build here. The generated glue and the sysroot
+    # symlinks above stay — libkwl and those clients need them.
+    if package_owns_program_output wasm32 wlcompositor.wasm; then
+        echo "  Skipping wlcompositor: a package publishes wlcompositor.wasm"
+    else
+        comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
+        echo "  Compiling wlcompositor (server)..."
+        "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
+            "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
+            "$WLC_GEN/xdg-shell-protocol.c" \
+            "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
+            "$WLC_GEN/xdg-decoration-v1-protocol.c" \
+            "$WLC_GEN/wlr-layer-shell-v1-protocol.c" \
+            "$WLC_GEN/presentation-time-protocol.c" \
+            "$WLC_GEN/xdg-output-v1-protocol.c" \
+            "$WLC_GEN/viewporter-protocol.c" \
+            "$WLC_GEN/fractional-scale-v1-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libwayland-server.a" \
+            "$SYSROOT/lib/libwpkdraw.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$WLC_LIBINPUT/lib/libinput.a" \
+            "$WLC_LIBEVDEV/lib/libevdev.a" \
+            "$WLC_LIBUDEV/lib/libudev.a" \
+            "$WLC_MTDEV/lib/libmtdev.a" \
+            "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$comp_wasm"
+        "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
+        mv "$comp_wasm.instr" "$comp_wasm"
+    fi
 
     # Client.
     client_wasm="$OUT_DIR_32/wlclient-test.wasm"
@@ -1127,6 +1150,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
     # last so wl_closure_invoke's ffi_call resolves.
     for kwl_app in kwldemo wlclock wlpaint kbar klauncher knotify; do
         [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
+        package_owns_program_output wasm32 "$kwl_app.wasm" && continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
         echo "  Compiling $kwl_app (libkwl client)..."
         "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
@@ -1155,7 +1179,8 @@ fi
 # MANDATORY because forkpty() forks (CLAUDE.md fork policy — must not
 # silently degrade). Files live under programs/wlterm/ so the flat loop skips
 # them. See docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §5.
-if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
+if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1 &&
+   ! package_owns_program_output wasm32 wlterm.wasm; then
     if [ ! -f "$SYSROOT/lib/libkwl.a" ]; then
         echo "Error: libkwl.a missing — the libkwl pass must run before wlterm." >&2
         exit 1

@@ -27,6 +27,15 @@ import rosePineWallpaperUrl from "../assets/rose-pine-funky-shapes.jpg";
 export const OMARCHY_CONF_PATH = "/etc/kandelo/wlcompositor.conf";
 export const OMARCHY_THEME_DIR = "/usr/share/kandelo/themes";
 export const OMARCHY_APPS_DIR = "/usr/share/kandelo/apps";
+// /home/maker is a scratch mount (host/src/vfs/default-mounts.ts), so image
+// bytes under it are shadowed at boot. The desktop's read-only configs are
+// image bytes under /usr/share/kandelo, and the one file the theme hook
+// rewrites — Waybar's stylesheet — lives on the /tmp scratch mount, seeded
+// from its image copy by the bash gate that starts the bar.
+export const OMARCHY_WAYBAR_CONFIG_PATH = "/usr/share/kandelo/waybar/config.jsonc";
+export const OMARCHY_WAYBAR_STYLE_SEED_PATH = "/usr/share/kandelo/waybar/style.css";
+export const OMARCHY_WAYBAR_STYLE_PATH = "/tmp/waybar-style.css";
+export const OMARCHY_MAKO_CONFIG_PATH = "/usr/share/kandelo/mako/config";
 
 /**
  * The compositor config. SUPER is what real Hyprland (and Omarchy) binds, but
@@ -252,7 +261,7 @@ export const OMARCHY_WAYBAR_STYLE = waybarStyle({
 export const OMARCHY_THEME_HOOK = `#!/usr/bin/bash
 theme=$2
 conf=\${WLC_THEME_DIR:-${OMARCHY_THEME_DIR}}/$theme/theme.conf
-css=$HOME/.config/waybar/style.css
+css=${OMARCHY_WAYBAR_STYLE_PATH}
 
 if [ -r "$conf" ]; then
   while read -r key sep val; do

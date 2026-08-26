@@ -300,6 +300,26 @@ static void refilter(void) {
 
 /* ---- rendering ---------------------------------------------------------- */
 
+/* Longest prefix of `text` that renders within `max_w`, with a trailing "..."
+ * when it had to cut. Cuts on a UTF-8 boundary so a multi-byte glyph is never
+ * split. Writes into `out` and returns it. */
+static const char *fit_text(struct wpk_font *font, const char *text,
+                            int max_w, char *out, size_t out_size) {
+    snprintf(out, out_size, "%s", text);
+    if (wpk_text_width(font, out) <= max_w) return out;
+
+    size_t cut = strlen(out);
+    while (cut > 0) {
+        do { cut--; } while (cut > 0 && (text[cut] & 0xc0) == 0x80);
+        if (cut + 4 > out_size) continue;
+        memcpy(out, text, cut);
+        memcpy(out + cut, "...", 4);
+        if (wpk_text_width(font, out) <= max_w) return out;
+    }
+    out[0] = '\0';
+    return out;
+}
+
 static void render(struct wpk_surface *s, struct wpk_font *font) {
     wpk_clear(s, palette.background);
     wpk_rect(s, 0, 0, s->w, PROMPT_H, palette.bar);
@@ -318,8 +338,11 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
         int text_y = y + (ROW_H + wpk_font_ascent_px(font)) / 2 - 2;
         wpk_text(s, font, 16, text_y, a->name,
                  selected ? palette.bar : palette.foreground);
-        int ew = wpk_text_width(font, a->exec);
-        wpk_text(s, font, s->w - ew - 16, text_y, a->exec,
+        char exec[sizeof(a->exec) + 4];
+        int name_end = 16 + wpk_text_width(font, a->name);
+        fit_text(font, a->exec, s->w - 16 - name_end - 12, exec, sizeof exec);
+        int ew = wpk_text_width(font, exec);
+        wpk_text(s, font, s->w - ew - 16, text_y, exec,
                  selected ? palette.bar : palette.muted);
     }
     if (st.n_match == 0)

@@ -23,16 +23,16 @@ import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kbarBin = tryResolveBinary("programs/kbar.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kbarBin && !!kwlctlBin;
-const wltermBin = tryResolveBinary("programs/wlterm.wasm");
+const wltermBin = tryResolveBinary("programs/wldesktop/wlterm.wasm");
 const dashBin = tryResolveBinary("programs/dash.wasm");
 const hasWlterm =
   hasBinaries && !!wltermBin && !!dashBin && existsSync(dashBin!);
-const launcherBin = tryResolveBinary("programs/klauncher.wasm");
+const launcherBin = tryResolveBinary("programs/wldesktop/klauncher.wasm");
 
 // evdev keycodes (linux/input-event-codes.h).
 const EV_KEY = 0x01;
