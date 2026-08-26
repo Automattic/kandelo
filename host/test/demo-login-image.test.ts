@@ -254,7 +254,7 @@ describe("canonical demo login image policy", () => {
       join(repoRoot, "images/rootfs/etc/sudoers"),
       "utf8",
     );
-    expect(passwd).toContain("maker:x:1000:1000:maker:/home/maker:/bin/sh");
+    expect(passwd).toContain("maker:x:1000:1000:maker:/home/maker:/bin/bash");
     expect(group).toContain("wheel:x:10:maker");
     expect(shadow).toContain(`maker:${DEMO_LOGIN_PASSWORD_HASH}:`);
     expect(sudoers).toBe("%wheel ALL=(ALL:ALL) ALL\n");
