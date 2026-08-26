@@ -1,7 +1,7 @@
 script_path = "packages/registry/libxkbcommon/build-libxkbcommon.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "38670846e"
-revision    = 1
+revision    = 2
 
 # The hand-curated config.h is part of the cache key: editing it (e.g.
 # flipping a HAVE_* to track a sysroot change) must invalidate cached
