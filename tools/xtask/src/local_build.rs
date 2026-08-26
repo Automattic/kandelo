@@ -9,7 +9,8 @@ use crate::build_deps::{
     ProgramPackageIndex, Registry, ResolvedDependencyGraph, ResolvedDependencyNode,
     SourceOnlyCacheRoots, canonical_package_target_arch,
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
-    resolve_local_build_package_node, resolved_dependency_graph_from_manifests,
+    resolve_local_build_package_node_with_cache_policy,
+    resolved_dependency_graph_from_manifests,
     source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
 };
 use crate::local_build_executor::{
@@ -253,6 +254,7 @@ struct LocalBuildRunArgsV1 {
     products: Vec<String>,
     jobs: usize,
     rebuild: bool,
+    verify_cache: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -266,6 +268,7 @@ struct LocalBuildRunNodeArgsV1 {
     node: PlanNodeV1,
     result_json: PathBuf,
     rebuild: bool,
+    verify_cache: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -479,6 +482,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let launcher_receipt_requirements = receipt_requirements.clone();
     let launcher_receipts = Arc::clone(&retained_receipts);
     let rebuild = args.rebuild;
+    let verify_cache = args.verify_cache;
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -514,6 +518,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                         &node,
                         &result_json,
                         rebuild,
+                        verify_cache,
                         receipt_required,
                     );
                     let completion = match validated {
@@ -576,6 +581,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             &output_root,
             &expected_receipt_nodes,
             &retained_receipts,
+            args.verify_cache,
         )
         .err()
     } else {
@@ -720,7 +726,7 @@ fn execute_admitted_node(
             let expected_authority = args.graph_authority_sha256.clone();
             let mut before_projection =
                 || require_current_graph_authority(&repo, &set, &expected_authority);
-            let output = resolve_local_build_package_node(
+            let output = resolve_local_build_package_node_with_cache_policy(
                 &manifest,
                 &registry,
                 arch,
@@ -729,6 +735,7 @@ fn execute_admitted_node(
                 &repo,
                 &output_root,
                 args.rebuild,
+                args.verify_cache,
                 &mut before_projection,
             )?;
             require_current_graph_authority(&repo, &set, &args.graph_authority_sha256)?;
@@ -805,7 +812,7 @@ fn execute_admitted_node(
             let expected_authority = args.graph_authority_sha256.clone();
             let mut before_projection =
                 || require_current_graph_authority(&repo, &set, &expected_authority);
-            let output = resolve_local_build_package_node(
+            let output = resolve_local_build_package_node_with_cache_policy(
                 &manifest,
                 &registry,
                 arch,
@@ -814,6 +821,7 @@ fn execute_admitted_node(
                 &repo,
                 &output_root,
                 false,
+                args.verify_cache,
                 &mut before_projection,
             )?;
             require_current_graph_authority(&repo, &set, &args.graph_authority_sha256)?;
@@ -937,6 +945,7 @@ fn finalize_source_only_program_projection(
     output_root: &Path,
     expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
     receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
+    verify_cache: bool,
 ) -> Result<(), String> {
     if receipts.keys().cloned().collect::<BTreeSet<_>>() != *expected_receipt_nodes {
         return Err(
@@ -983,6 +992,7 @@ fn finalize_source_only_program_projection(
                 cache_roots,
                 arch,
                 wasm_posix_shared::ABI_VERSION,
+                verify_cache,
                 receipt,
             )?;
         }
@@ -1155,6 +1165,7 @@ fn run_child_process(
     node: &PlanNodeV1,
     result_json: &Path,
     rebuild: bool,
+    verify_cache: bool,
     receipt_required: bool,
 ) -> Result<ValidatedChildResultV1, String> {
     let executable = std::env::current_exe()
@@ -1195,6 +1206,9 @@ fn run_child_process(
     }
     if rebuild {
         command.arg("--rebuild");
+    }
+    if verify_cache {
+        command.arg("--verify-cache");
     }
     let output = command
         .output()
@@ -3131,7 +3145,7 @@ fn parse_local_build_args_with_jobs(
                 rest,
                 &["--set", "--source-cache-root", "--output-root", "--jobs"],
                 &["--product"],
-                &["--rebuild"],
+                &["--rebuild", "--verify-cache"],
             )?;
             let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
             let source_cache_root = absolute_authored_path(
@@ -3165,6 +3179,7 @@ fn parse_local_build_args_with_jobs(
                 products,
                 jobs,
                 rebuild: flags.switches.remove("--rebuild"),
+                verify_cache: flags.switches.remove("--verify-cache"),
             }))
         }
         "run-node" => {
@@ -3184,7 +3199,7 @@ fn parse_local_build_args_with_jobs(
                     "--result-json",
                 ],
                 &[],
-                &["--rebuild"],
+                &["--rebuild", "--verify-cache"],
             )?;
             let repo_root = absolute_authored_path(
                 take_required_flag(&mut flags, "--repo-root")?,
@@ -3263,6 +3278,7 @@ fn parse_local_build_args_with_jobs(
                 node,
                 result_json,
                 rebuild: flags.switches.remove("--rebuild"),
+                verify_cache: flags.switches.remove("--verify-cache"),
             }))
         }
         _ => Err(format!("unknown local-build subcommand {command:?}")),
@@ -4202,6 +4218,7 @@ materialization = "lazy"
                 products: vec!["browser-main-shell".to_string()],
                 jobs: 2,
                 rebuild: true,
+                verify_cache: false,
             })
         );
 
@@ -4297,6 +4314,7 @@ materialization = "lazy"
             node: node.clone(),
             result_json: result_json.clone(),
             rebuild: false,
+            verify_cache: false,
         })
         .unwrap_err();
 
