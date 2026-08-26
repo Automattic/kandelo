@@ -256,3 +256,65 @@ EGLBoolean eglWaitClient(void) {
 }
 
 EGLBoolean eglReleaseThread(void) { return EGL_TRUE; }
+
+/* ----- additional thin stubs required by SDL2 ------------------- */
+
+/* SDL_egl.c's LOAD_FUNC under SDL_VIDEO_STATIC_ANGLE assigns these
+ * symbols directly into `_this->egl_data->NAME`.  All of them must
+ * therefore exist at link time even when their behaviour is a no-op
+ * (SDL2 documents NULL returns + EGL_FALSE returns as "the
+ * extension/feature isn't available", which is exactly the truth
+ * for our single-window single-buffer surface). */
+
+EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
+    (void) interval;
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_FALSE;
+    }
+    /* No vsync knob — the host bridge runs at the canvas's natural
+     * cadence (rAF in the browser, hrtime tick on Node).  Accept
+     * any interval and return EGL_TRUE so SDL2 doesn't surface an
+     * error to the app. */
+    return EGL_TRUE;
+}
+
+EGLBoolean eglWaitGL(void) {
+    _wpk_gl_flush();
+    return EGL_TRUE;
+}
+
+EGLBoolean eglWaitNative(EGLint engine) {
+    (void) engine;
+    return EGL_TRUE;
+}
+
+EGLenum eglQueryAPI(void) {
+    return EGL_OPENGL_ES_API;
+}
+
+EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
+                                   const EGLint *attrib_list) {
+    (void) config; (void) attrib_list;
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_NO_SURFACE;
+    }
+    /* SDL2 only requests pbuffers under SDL_VIDEO_OFFSCREEN, which
+     * we don't enable — return EGL_NO_SURFACE so any accidental
+     * caller fails fast. */
+    g_last_error = EGL_BAD_CONFIG;
+    return EGL_NO_SURFACE;
+}
+
+/* eglGetProcAddress: SDL2's LOAD_FUNC_EGLEXT routes extension lookups
+ * through this entry point.  We don't expose any of the EGL-side
+ * extensions (eglCreateSyncKHR, eglQueryDevicesEXT, …), so returning
+ * NULL is the documented "extension not present" answer.  Returning
+ * NULL is also fine for the GLES2 entry-point fallback path —
+ * libGLESv2.a exports gl* directly, so the program's calls resolve at
+ * link time; SDL2 itself never calls a gl* through this pointer. */
+void (*eglGetProcAddress(const char *procname))(void) {
+    (void) procname;
+    return NULL;
+}
