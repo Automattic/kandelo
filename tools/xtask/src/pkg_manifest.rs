@@ -121,58 +121,6 @@ impl ForkInstrumentationPolicy {
     }
 }
 
-/// Build-time provenance + ABI compatibility data injected into an
-/// archived `manifest.toml` at archive creation. Source `package.toml`
-/// files MUST NOT contain this block; archived manifests MUST.
-///
-/// Used by the resolver's remote-fetch path (Task A.9) to reject
-/// archives whose `target_arch` or `abi_versions` no longer match
-/// the consumer's environment.
-//
-// `build_timestamp` and `build_host` are informational provenance
-// fields surfaced into archived manifests but never directly consumed
-// by the resolver — they're meant for human inspection of a cached
-// artifact. Field-level allow(dead_code) here so the rest of the
-// struct's fields (which ARE read by remote_fetch.rs) trigger normal
-// dead-code analysis.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Compatibility {
-    pub target_arch: TargetArch,
-    pub abi_versions: Vec<u32>,
-    pub cache_key_sha: String,
-    /// Immutable external Git inputs used to produce this archive. These are
-    /// copied from the source package's `build.toml` so an archive records the
-    /// exact repositories and commits behind bytes that are not stored in the
-    /// Kandelo source tree.
-    #[serde(default)]
-    pub git_inputs: Vec<GitBuildInput>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub build_timestamp: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub build_host: Option<String>,
-}
-
-/// Optional remote-fetch pointer for a prebuilt archive of this
-/// library. When present, the resolver consults it as the 4th
-/// priority — after `local-libs/` override and the local cache,
-/// before falling back to a source build (Task A.9).
-///
-/// Allowed in BOTH source `package.toml` (the canonical place — the URL
-/// describes where the archive lives) and archived `manifest.toml`
-/// (carried through unchanged; redundant but harmless).
-///
-/// `archive_url` is stored verbatim — not URL-validated at parse
-/// time. `archive_sha256` is enforced as 64-char lowercase hex so
-/// any download can be content-addressed without re-checking format
-/// at fetch time.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Binary {
-    pub archive_url: String,
-    pub archive_sha256: String,
-}
-
 /// One entry in a `kind = "program"` manifest's `[[outputs]]` array.
 ///
 /// Each program declares one or more wasm artifacts. `name` is the
@@ -444,35 +392,6 @@ pub struct DepsManifest {
     /// Empty for library/source manifests.
     pub runtime_files: Vec<RuntimeFile>,
 
-    /// Build-time provenance + ABI compatibility. Always `None` for
-    /// manifests parsed via [`DepsManifest::parse`] (source `package.toml`)
-    /// and always `Some` for those parsed via
-    /// [`DepsManifest::parse_archived`] (archived `manifest.toml`).
-    /// Consumed by `remote_fetch` to verify a downloaded archive's
-    /// `target_arch`, `abi_versions`, and `cache_key_sha`.
-    pub compatibility: Option<Compatibility>,
-
-    /// Per-arch remote-fetch pointers (see [`Binary`]). Keyed by the
-    /// arch the archive was built for. Empty when no `[binary]` block
-    /// is present. Consumed by `build_deps`'s `ensure_built`, which
-    /// looks up the requested arch and falls through to a source
-    /// build if no entry exists for it.
-    ///
-    /// TOML accepts two equivalent shapes:
-    ///   * Bare `[binary]` (single-arch — interpreted as wasm32):
-    ///       [binary]
-    ///       archive_url = "..."
-    ///       archive_sha256 = "..."
-    ///   * Per-arch tables (multi-arch):
-    ///       [binary.wasm32]
-    ///       archive_url = "..."
-    ///       archive_sha256 = "..."
-    ///       [binary.wasm64]
-    ///       archive_url = "..."
-    ///       archive_sha256 = "..."
-    /// A manifest cannot mix both; the parser rejects mixed shapes.
-    pub binary: BTreeMap<TargetArch, Binary>,
-
     /// Inline host-tool requirements (`[[host_tools]]` in TOML).
     /// Empty when none are declared. Allowed on every manifest kind
     /// (library / program / source). Consumed by `ensure_built`
@@ -493,12 +412,10 @@ pub struct DepsManifest {
     /// any per-dep build state live underneath it.
     pub dir: PathBuf,
 
-    /// Optional ABI floor declared via top-level `kernel_abi = N`.
-    /// Phase A-bis records this; Phase B's CI matrix will enforce that
-    /// a binary published against `binaries-abi-vN` is only consumed
-    /// when the kernel's ABI version is `>= kernel_abi`. None = no
-    /// declared floor (the existing implicit behavior).
-    /// `dead_code` allow until Phase B wires the enforcement.
+    /// Optional ABI floor declared via top-level `kernel_abi = N`. A
+    /// package that source-builds against a given kernel ABI records the
+    /// floor here; `None` = no declared floor (the existing implicit
+    /// behavior). `dead_code` allow until the floor is enforced.
     #[allow(dead_code)]
     pub kernel_abi: Option<u32>,
 }
@@ -551,13 +468,10 @@ pub struct License {
 #[serde(deny_unknown_fields)]
 pub struct Build {
     /// DEPRECATED. Package-dir-relative filename of the build script.
-    /// Kept for backward compatibility with archived `manifest.toml`
-    /// inside `.tar.zst` files published before Phase A-bis (durable
-    /// release `binaries-abi-v7-2026-05-05` was published with this
-    /// field name). Source `package.toml` files must use
-    /// `script_path` instead; `validate_source` rejects this field on
-    /// the source parse path. Never read at runtime — the resolver
-    /// uses `script_path` only.
+    /// Source `package.toml` files must use `script_path` instead;
+    /// `validate_source` rejects this legacy field on the source parse
+    /// path. Never read at runtime — the resolver uses `script_path`
+    /// only.
     #[allow(dead_code)]
     pub script: Option<String>,
     /// Repo-relative path to the build script (e.g.
@@ -638,14 +552,12 @@ pub struct BuildToml {
     /// field; downstream callers default to `1`. (Equivalent to the
     /// pre-existing default revision in `package.toml`.)
     pub revision: Option<u32>,
-    /// Project/distribution readiness for publishing a new archive.
-    ///
-    /// This is deliberately not package identity and must not participate in
-    /// cache-key computation. A project can prepare and test a recipe while
-    /// its final release authority is still pending, then make those exact
-    /// bytes publishable without pretending the recipe changed.
+    /// Project/distribution readiness recorded in `build.toml`. Retained
+    /// build.toml schema; it has no consumer now that packages are always
+    /// source-built (no publish pipeline reads it), but it stays a
+    /// recognized key so existing `build.toml` files parse.
+    #[allow(dead_code)]
     pub publication_state: PublicationState,
-    pub binary: BinarySource,
 }
 
 /// Project-owned package publication state from `build.toml`.
@@ -662,27 +574,10 @@ pub enum PublicationState {
 }
 
 impl PublicationState {
+    #[allow(dead_code)]
     pub fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
     }
-}
-
-/// `[binary]` declaration inside a `build.toml`. Exactly one of two
-/// forms; the parser rejects mixed forms and a missing `sha256` when
-/// `url` is given.
-///
-/// The design doc's Form 1 ("named source" with `source = "<name>"`)
-/// was dropped during implementation review — see the test mod for
-/// rationale.
-#[derive(Clone, Debug)]
-pub enum BinarySource {
-    /// `[binary] index_url = "<URL>"` — fetch index.toml at index_url,
-    /// then look up this package's archive. `{abi}` in the URL is
-    /// substituted with the current ABI_VERSION at fetch time.
-    Indexed { index_url: String },
-    /// `[binary] url = "<URL>"` + `sha256 = "<sha>"` — direct archive
-    /// URL, bypassing index lookup. Useful for one-off legacy archives.
-    Direct { url: String, sha256: String },
 }
 
 #[derive(serde::Deserialize)]
@@ -699,15 +594,6 @@ struct BuildTomlRaw {
     revision: Option<u32>,
     #[serde(default)]
     publication_state: PublicationState,
-    binary: BinaryRaw,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BinaryRaw {
-    index_url: Option<String>,
-    url: Option<String>,
-    sha256: Option<String>,
 }
 
 /// A content-addressed external Git checkout used by a package build.
@@ -1034,51 +920,13 @@ pub(crate) fn remove_cache_provenance(canonical: &Path, cache_key_sha: &str) -> 
     }
 }
 
-impl BinarySource {
-    /// Resolve this binary source to a concrete index URL with
-    /// `{abi}` substituted for the caller's ABI version. Returns
-    /// `Ok(Some(url))` for the indexed form (the typical case;
-    /// resolver fetches `url`, looks up this package, then downloads
-    /// the archive named by the entry) and `Ok(None)` for direct
-    /// sources (no index — caller fetches `url` directly using the
-    /// inline `sha256` for verification).
-    pub fn resolve_index_url(&self, abi: u32) -> Option<String> {
-        match self {
-            BinarySource::Indexed { index_url } => {
-                Some(index_url.replace("{abi}", &abi.to_string()))
-            }
-            BinarySource::Direct { .. } => None,
-        }
-    }
-}
-
 impl BuildToml {
-    /// Parse a `build.toml` from a TOML string. The returned value is
-    /// validated: `[binary]` declares exactly one of `index_url` or
-    /// `url` (and `url` requires `sha256`).
+    /// Parse a `build.toml` from a TOML string.
     pub fn parse(s: &str) -> Result<Self, String> {
         let raw: BuildTomlRaw = toml::from_str(s).map_err(|e| format!("build.toml parse: {e}"))?;
         if raw.revision == Some(0) {
             return Err("build.toml revision must be at least 1".into());
         }
-        let binary = match (raw.binary.index_url, raw.binary.url) {
-            (Some(index_url), None) => BinarySource::Indexed { index_url },
-            (None, Some(url)) => {
-                let sha256 = raw
-                    .binary
-                    .sha256
-                    .ok_or_else(|| "build.toml [binary] url requires sha256".to_string())?;
-                BinarySource::Direct { url, sha256 }
-            }
-            (Some(_), Some(_)) => {
-                return Err(
-                    "build.toml [binary] must specify exactly one of: index_url, url".to_string(),
-                );
-            }
-            (None, None) => {
-                return Err("build.toml [binary] must specify one of: index_url, url".to_string());
-            }
-        };
         for input in &raw.inputs {
             validate_build_input_path(input)?;
         }
@@ -1092,7 +940,6 @@ impl BuildToml {
             commit: raw.commit,
             revision: raw.revision,
             publication_state: raw.publication_state,
-            binary,
         })
     }
 
@@ -1456,17 +1303,6 @@ struct Raw {
     #[serde(default)]
     runtime_files: Vec<RuntimeFile>,
     #[serde(default)]
-    compatibility: Option<Compatibility>,
-    // `binary` accepts two shapes:
-    //   * bare `[binary]` (archive_url + archive_sha256 directly),
-    //     interpreted as wasm32-keyed for back-compat;
-    //   * per-arch `[binary.wasm32]` / `[binary.wasm64]` tables.
-    // We deserialize as a generic `toml::Value` and disambiguate in
-    // `validate_common`, so a mixed shape gets a precise error
-    // instead of a confusing serde mismatch.
-    #[serde(default)]
-    binary: Option<toml::Value>,
-    #[serde(default)]
     host_tools: Vec<RawHostTool>,
     /// Optional `arches = ["wasm32", "wasm64"]`. Empty/absent =
     /// `["wasm32"]` (the default — see DepsManifest::target_arches).
@@ -1659,17 +1495,8 @@ impl DepsManifest {
         Self::parse(&text, dir).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Read a `package.toml` and merge an optional `package.pr.toml`
-    /// overlay sitting in the same directory. The overlay is the
-    /// Phase C consumer-side mechanism for swapping in PR-staging
-    /// archive URLs without touching the committed `package.toml`:
-    /// CI generates the overlay file (gitignored) for each package
-    /// being rebuilt by a PR, then deletes it on merge. Overlays may
-    /// only contain `[binary]` / `[binary.<arch>]` entries; any
-    /// other top-level field is rejected.
-    ///
-    /// Falls through to the base manifest unchanged when no overlay
-    /// file is present in `dir`.
+    /// Read a `package.toml`, overlaying the sibling `build.toml`'s
+    /// publish-time `revision` onto the parsed manifest when present.
     pub fn load_with_overlay(dir: &Path) -> Result<Self, String> {
         let base_path = dir.join("package.toml");
         let base_text = std::fs::read_to_string(&base_path)
@@ -1696,56 +1523,23 @@ impl DepsManifest {
             }
         }
 
-        let overlay_path = dir.join("package.pr.toml");
-        if overlay_path.exists() {
-            let overlay_text = std::fs::read_to_string(&overlay_path)
-                .map_err(|e| format!("read {}: {e}", overlay_path.display()))?;
-            apply_pr_overlay(&mut manifest, &overlay_text)
-                .map_err(|e| format!("{}: {e}", overlay_path.display()))?;
-        }
         Ok(manifest)
     }
 
-    /// Parse a source `package.toml`. Rejects manifests that contain a
-    /// `[compatibility]` block — that block is reserved for archived
-    /// `manifest.toml` files (see [`parse_archived`]).
+    /// Parse a source `package.toml`.
     pub fn parse(text: &str, dir: PathBuf) -> Result<Self, String> {
         let raw: Raw = toml::from_str(text).map_err(|e| format!("parse package.toml: {e}"))?;
         Self::validate_source(raw, dir)
     }
 
-    /// Parse an archived `manifest.toml` (the one written into the
-    /// cached artifact). Requires a `[compatibility]` block; rejects
-    /// manifests without one. Used by Task A.9 remote-fetch path.
-    pub fn parse_archived(text: &str, dir: PathBuf) -> Result<Self, String> {
-        let raw: Raw = toml::from_str(text).map_err(|e| format!("parse manifest.toml: {e}"))?;
-        Self::validate_archived(raw, dir)
-    }
-
     fn validate_source(raw: Raw, dir: PathBuf) -> Result<Self, String> {
-        if raw.compatibility.is_some() {
-            return Err(
-                "source package.toml must not contain a [compatibility] block \
-                 (it is injected into archived manifest.toml at build time)"
-                    .into(),
-            );
-        }
-        // Binary-resolution-via-index-ledger (design §3.1): source
-        // `package.toml` no longer carries `revision`, `[binary]`,
+        // Source `package.toml` no longer carries `revision`,
         // `[build].repo_url`, or `[build].commit`. Reject them on the
-        // source path so stale manifests surface immediately during
-        // migration. `validate_archived` keeps accepting them so
-        // already-published `manifest.toml` bytes still parse.
+        // source path so stale manifests surface immediately; the
+        // project-level publish state lives in `build.toml`.
         if raw.revision.is_some() {
             return Err("source package.toml must not declare revision — \
-                 the per-package revision counter lives in index.toml. \
-                 See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
-                .into());
-        }
-        if raw.binary.is_some() {
-            return Err("source package.toml must not declare [binary] — \
-                 binary URLs live in index.toml (resolved via build.toml). \
-                 See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
+                 the per-package revision counter lives in build.toml."
                 .into());
         }
         if raw.build.repo_url.is_some() {
@@ -1805,141 +1599,6 @@ impl DepsManifest {
             );
         }
         Self::validate_common(raw, dir)
-    }
-
-    fn validate_archived(raw: Raw, dir: PathBuf) -> Result<Self, String> {
-        if raw.compatibility.is_none() {
-            return Err(
-                "archived manifest.toml must contain a [compatibility] block \
-                 (target_arch + abi_versions + cache_key_sha)"
-                    .into(),
-            );
-        }
-        if let Some(c) = raw.compatibility.as_ref() {
-            Self::validate_compatibility(c)?;
-        }
-        // Archived manifests carry the publish-time revision; the source
-        // path strips it (moved to index.toml). validate_common defaults
-        // None → 1; that default is only correct when we know the
-        // archive is pre-binary-resolution-via-index-ledger and never
-        // declared a revision in the first place, which is impossible
-        // because every published archive has always carried one.
-        if raw.revision.is_none() {
-            return Err("archived manifest.toml must declare revision = N".into());
-        }
-        Self::validate_common(raw, dir)
-    }
-
-    fn validate_compatibility(c: &Compatibility) -> Result<(), String> {
-        if c.abi_versions.is_empty() {
-            return Err("compatibility.abi_versions must list at least one ABI version".into());
-        }
-        if c.cache_key_sha.len() != 64
-            || !c
-                .cache_key_sha
-                .chars()
-                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-        {
-            return Err(format!(
-                "compatibility.cache_key_sha must be 64-char lowercase hex, got {:?}",
-                c.cache_key_sha
-            ));
-        }
-        validate_git_build_inputs(&c.git_inputs, "compatibility.git_inputs")?;
-        Ok(())
-    }
-
-    fn validate_binary(b: &Binary) -> Result<(), String> {
-        if b.archive_sha256.len() != 64
-            || !b
-                .archive_sha256
-                .chars()
-                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-        {
-            return Err(format!(
-                "binary.archive_sha256 must be 64-char lowercase hex, got {:?}",
-                b.archive_sha256
-            ));
-        }
-        Ok(())
-    }
-
-    /// Decode `[binary]` into a per-arch map. Accepts:
-    ///   * Bare `archive_url` + `archive_sha256` keys → wasm32-only.
-    ///   * Per-arch sub-tables (`wasm32`, `wasm64`).
-    /// Mixed shapes (a bare `archive_url` next to a `[binary.wasm64]`
-    /// table) are rejected — they're almost certainly a typo, and the
-    /// resulting precedence would be confusing either way.
-    fn parse_binary_block(value: toml::Value) -> Result<BTreeMap<TargetArch, Binary>, String> {
-        let table = value
-            .as_table()
-            .ok_or_else(|| "[binary] must be a table".to_string())?
-            .clone();
-
-        // Detect shape: presence of `archive_url` at the top is the
-        // bare form. Presence of an arch-named subtable is the
-        // per-arch form. Either, but not both, is allowed.
-        let has_bare = table.contains_key("archive_url") || table.contains_key("archive_sha256");
-        let arch_keys: Vec<&str> = table
-            .keys()
-            .filter(|k| matches!(k.as_str(), "wasm32" | "wasm64"))
-            .map(String::as_str)
-            .collect();
-        let has_per_arch = !arch_keys.is_empty();
-
-        if has_bare && has_per_arch {
-            return Err("[binary] mixes the bare form (archive_url at the top) \
-                 with per-arch sub-tables ([binary.wasm32] / [binary.wasm64]). \
-                 Pick one shape."
-                .into());
-        }
-
-        // Reject any unknown keys to surface typos early.
-        let allowed_per_arch: BTreeSet<&str> = ["wasm32", "wasm64"].into_iter().collect();
-        let allowed_bare: BTreeSet<&str> = ["archive_url", "archive_sha256"].into_iter().collect();
-        for key in table.keys() {
-            let allowed = if has_per_arch {
-                allowed_per_arch.contains(key.as_str())
-            } else {
-                allowed_bare.contains(key.as_str())
-            };
-            if !allowed {
-                return Err(format!(
-                    "[binary] has unexpected key {:?} (allowed: {})",
-                    key,
-                    if has_per_arch {
-                        "wasm32, wasm64"
-                    } else {
-                        "archive_url, archive_sha256"
-                    }
-                ));
-            }
-        }
-
-        let mut out: BTreeMap<TargetArch, Binary> = BTreeMap::new();
-        if has_per_arch {
-            for arch_key in arch_keys {
-                let arch = match arch_key {
-                    "wasm32" => TargetArch::Wasm32,
-                    "wasm64" => TargetArch::Wasm64,
-                    _ => unreachable!("filtered above"),
-                };
-                let sub = table[arch_key].clone();
-                let b: Binary = sub
-                    .try_into()
-                    .map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
-                Self::validate_binary(&b).map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
-                out.insert(arch, b);
-            }
-        } else {
-            // Bare form. Reconstruct a Binary out of the table.
-            let b: Binary = toml::Value::Table(table)
-                .try_into()
-                .map_err(|e| format!("[binary]: {e}"))?;
-            Self::validate_binary(&b)?;
-            out.insert(TargetArch::Wasm32, b);
-        }
-        Ok(out)
     }
 
     fn validate_common(raw: Raw, dir: PathBuf) -> Result<Self, String> {
@@ -2032,18 +1691,6 @@ impl DepsManifest {
         if raw.license.spdx.is_empty() {
             return Err("license.spdx must not be empty".into());
         }
-
-        let binary = match raw.binary.as_ref() {
-            None => BTreeMap::new(),
-            Some(value) => {
-                if matches!(raw.kind, ManifestKind::Source) {
-                    return Err("kind = \"source\" must not declare [binary] \
-                         (sources are not published as remote-fetchable archives)"
-                        .into());
-                }
-                Self::parse_binary_block(value.clone())?
-            }
-        };
 
         let depends_on: Vec<DepRef> = raw
             .depends_on
@@ -2359,8 +2006,6 @@ impl DepsManifest {
             outputs,
             program_outputs,
             runtime_files,
-            compatibility: raw.compatibility,
-            binary,
             host_tools,
             target_arches,
             dir,
@@ -2400,53 +2045,6 @@ impl DepsManifest {
     }
 }
 
-/// Parse `package.pr.toml` as a `[binary]`-only overlay and merge it
-/// into `manifest`. Overlays are intentionally narrow: they exist
-/// solely so a PR build can swap in pre-release archive URLs without
-/// rewriting the committed `package.toml`. Anything other than
-/// `[binary]` / `[binary.<arch>]` is rejected to keep the surface
-/// area small (and to keep `git diff` of the overlay file readable
-/// at a glance).
-///
-/// Merge semantics: per-arch entries in the overlay REPLACE the
-/// matching arch in the base. Arches present in the base but absent
-/// from the overlay are preserved — so an overlay declaring just
-/// `[binary.wasm32]` does not silently drop the base's
-/// `[binary.wasm64]`.
-fn apply_pr_overlay(manifest: &mut DepsManifest, overlay_text: &str) -> Result<(), String> {
-    let value: toml::Value =
-        toml::from_str(overlay_text).map_err(|e| format!("parse package.pr.toml: {e}"))?;
-    let table = value
-        .as_table()
-        .ok_or_else(|| "package.pr.toml must be a TOML table".to_string())?;
-
-    for key in table.keys() {
-        if key != "binary" {
-            return Err(format!(
-                "package.pr.toml may only override [binary] / [binary.<arch>] — \
-                 unexpected top-level field {key:?}. \
-                 See docs/plans/2026-05-05-decoupled-package-builds-design.md §3.3."
-            ));
-        }
-    }
-
-    let binary_value = table.get("binary").cloned().ok_or_else(|| {
-        "package.pr.toml has no [binary] section (overlay must \
-             override at least one arch)"
-            .to_string()
-    })?;
-
-    // Reuse the base parser. parse_binary_block accepts both the
-    // bare `[binary]` shape (single-arch wasm32-only) and the
-    // per-arch `[binary.wasm32]` / `[binary.wasm64]` shape.
-    let new_binary = DepsManifest::parse_binary_block(binary_value)?;
-
-    for (arch, bin) in new_binary {
-        manifest.binary.insert(arch, bin);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2484,8 +2082,6 @@ repo_url = "https://example.test/kandelo.git"
 commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 revision = 1
 {blocks}
-[binary]
-index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
 "#,
             ),
         )
@@ -2750,39 +2346,6 @@ libs = ["lib/libz.a"]
 headers = ["include/zlib.h"]
 "#;
 
-    // Archived manifest.toml fixture for tests that need the legacy
-    // shape (revision = N, [binary], [compatibility]) — i.e. tests for
-    // `validate_archived` and `parse_archived` paths. Source-side
-    // validation rejects these fields; the archived path still accepts
-    // them so already-published `.tar.zst` archives keep parsing.
-    //
-    // source.sha256 and compatibility.cache_key_sha are distinct strings
-    // so test fixtures can selectively mutate one without affecting the
-    // other.
-    const EXAMPLE_ARCHIVED: &str = r#"
-kind = "library"
-name = "zlib"
-version = "1.3.1"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/zlib-1.3.1.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[license]
-spdx = "Zlib"
-
-[outputs]
-libs = ["lib/libz.a"]
-headers = ["include/zlib.h"]
-
-[compatibility]
-target_arch = "wasm32"
-abi_versions = [8]
-cache_key_sha = "1111111111111111111111111111111111111111111111111111111111111111"
-"#;
-
     #[test]
     fn parses_minimal_manifest() {
         let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
@@ -2942,84 +2505,33 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
         assert!(!implicit_archive.source.provider_was_explicit);
         assert_eq!(explicit_archive.source.provider, SourceProvider::Archive);
         assert!(explicit_archive.source.provider_was_explicit);
-
-        let archived =
-            DepsManifest::parse_archived(EXAMPLE_ARCHIVED, PathBuf::from("/archived")).unwrap();
-        assert_eq!(archived.source.provider, SourceProvider::Repository);
-        assert!(!archived.source.provider_was_explicit);
-
-        let archived_nonzero = EXAMPLE_ARCHIVED.replacen(&"0".repeat(64), &"1".repeat(64), 1);
-        let archived_archive =
-            DepsManifest::parse_archived(&archived_nonzero, PathBuf::from("/archived-archive"))
-                .unwrap();
-        assert_eq!(archived_archive.source.provider, SourceProvider::Archive);
-        assert!(!archived_archive.source.provider_was_explicit);
-
-        let archived_explicit =
-            EXAMPLE_ARCHIVED.replace("sha256 =", "provider = \"repository\"\nsha256 =");
-        let archived_explicit =
-            DepsManifest::parse_archived(&archived_explicit, PathBuf::from("/archived-explicit"))
-                .unwrap();
-        assert_eq!(
-            archived_explicit.source.provider,
-            SourceProvider::Repository
-        );
-        assert!(archived_explicit.source.provider_was_explicit);
-
-        for invalid in [
-            EXAMPLE_ARCHIVED.replace("sha256 =", "provider = \"unknown\"\nsha256 ="),
-            EXAMPLE_ARCHIVED.replace("sha256 =", "unknown = true\nsha256 ="),
-        ] {
-            assert!(
-                DepsManifest::parse_archived(&invalid, PathBuf::from("/archived-invalid")).is_err()
-            );
-        }
     }
 
     #[test]
-    fn source_and_archived_manifests_reject_unsafe_version_path_components() {
+    fn source_manifests_reject_unsafe_version_path_components() {
         for version in [".", "..", "../escape", "nested/version", r"nested\version"] {
-            for (label, fixture, archived) in [
-                ("source", EXAMPLE, false),
-                ("archived", EXAMPLE_ARCHIVED, true),
-            ] {
-                let text =
-                    fixture.replace("version = \"1.3.1\"", &format!("version = {version:?}"));
-                let result = if archived {
-                    DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-                } else {
-                    DepsManifest::parse(&text, PathBuf::from("/x"))
-                };
-                let err = result.expect_err("unsafe version must fail before path interpolation");
-                assert!(
-                    err.contains("version") && err.contains("safe single path component"),
-                    "{label} version {version:?}: got {err}"
-                );
-            }
+            let text = EXAMPLE.replace("version = \"1.3.1\"", &format!("version = {version:?}"));
+            let err = DepsManifest::parse(&text, PathBuf::from("/x"))
+                .expect_err("unsafe version must fail before path interpolation");
+            assert!(
+                err.contains("version") && err.contains("safe single path component"),
+                "version {version:?}: got {err}"
+            );
         }
     }
 
     #[test]
-    fn source_and_archived_manifests_reject_unknown_top_level_fields() {
-        for (label, fixture, archived) in [
-            ("source", EXAMPLE, false),
-            ("archived", EXAMPLE_ARCHIVED, true),
-        ] {
-            let text = fixture.replace(
-                "depends_on = []",
-                "depends_on = []\nfuture_recipe_field = true",
-            );
-            let result = if archived {
-                DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-            } else {
-                DepsManifest::parse(&text, PathBuf::from("/x"))
-            };
-            let err = result.expect_err("unknown top-level field must fail loudly");
-            assert!(
-                err.contains("future_recipe_field") && err.contains("unknown field"),
-                "{label}: got {err}"
-            );
-        }
+    fn source_manifests_reject_unknown_top_level_fields() {
+        let text = EXAMPLE.replace(
+            "depends_on = []",
+            "depends_on = []\nfuture_recipe_field = true",
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x"))
+            .expect_err("unknown top-level field must fail loudly");
+        assert!(
+            err.contains("future_recipe_field") && err.contains("unknown field"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -3134,36 +2646,6 @@ wasm = "../escape.wasm"
     }
 
     #[test]
-    fn parse_archived_accepts_repo_url_and_commit() {
-        // Post binary-resolution-via-index-ledger: `[build].repo_url`
-        // and `[build].commit` are only legal in archived manifests
-        // (preserved from already-published .tar.zst archives that
-        // recorded them inline). Source manifests reject these fields
-        // — see source_package_toml_rejects_legacy_build_{repo_url,commit}.
-        let text = format!(
-            "{}\n\
-             [build]\n\
-             script_path = \"packages/registry/zlib/build-zlib.sh\"\n\
-             repo_url    = \"https://github.com/Automattic/kandelo\"\n\
-             commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n",
-            EXAMPLE_ARCHIVED
-        );
-        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap();
-        assert_eq!(
-            m.build.script_path.as_deref(),
-            Some("packages/registry/zlib/build-zlib.sh")
-        );
-        assert_eq!(
-            m.build.repo_url.as_deref(),
-            Some("https://github.com/Automattic/kandelo")
-        );
-        assert_eq!(
-            m.build.commit.as_deref(),
-            Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
-        );
-    }
-
-    #[test]
     fn build_rejects_legacy_script_field() {
         // The Phase A-bis schema renames `[build].script` →
         // `[build].script_path`. The legacy field is accepted at the
@@ -3178,42 +2660,6 @@ wasm = "../escape.wasm"
             "expected error to mention legacy `script` and recommend \
              `script_path`, got: {err}"
         );
-    }
-
-    #[test]
-    fn parse_archived_accepts_legacy_script_field() {
-        // Archived manifest.toml files inside .tar.zst archives
-        // published before Phase A-bis use the legacy
-        // `[build].script` field. These archives are immutable
-        // historical bytes — the `remote_fetch` unpack path must
-        // continue to parse them. validate_archived deliberately does
-        // NOT reject `[build].script` (only validate_source does).
-        let text = format!("{}\n[build]\nscript = \"build-foo.sh\"\n", EXAMPLE_ARCHIVED);
-        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-            .expect("archived parse must accept legacy [build].script");
-        // Field is preserved on the struct (parser-level back-compat)
-        // but the resolver never reads it — runtime path uses
-        // script_path only.
-        assert_eq!(m.build.script.as_deref(), Some("build-foo.sh"));
-        assert_eq!(m.build.script_path, None);
-    }
-
-    #[test]
-    fn parse_archived_accepts_script_path_field() {
-        // Forward-compat: archives published with the new schema
-        // (Phase A-bis onward) carry `[build].script_path` instead
-        // of the legacy `script`. validate_archived accepts both.
-        let text = format!(
-            "{}\n[build]\nscript_path = \"packages/registry/foo/build-foo.sh\"\n",
-            EXAMPLE_ARCHIVED
-        );
-        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-            .expect("archived parse must accept [build].script_path");
-        assert_eq!(
-            m.build.script_path.as_deref(),
-            Some("packages/registry/foo/build-foo.sh")
-        );
-        assert_eq!(m.build.script, None);
     }
 
     #[test]
@@ -3268,43 +2714,6 @@ libs = ["lib/libtest.a"]
     }
 
     #[test]
-    fn archived_parse_accepts_missing_kernel_abi() {
-        // Legacy `.tar.zst` archives published before Phase A-bis don't
-        // carry `kernel_abi` in their archived manifest.toml.
-        // validate_archived must keep tolerating absence so the
-        // `remote_fetch` unpack path can still parse those immutable
-        // historical bytes. Required-ness lives in validate_source
-        // only.
-        let toml = r#"
-kind = "library"
-name = "test"
-version = "1.0.0"
-revision = 1
-
-[source]
-url = "https://example.com/test-1.0.0.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[license]
-spdx = "TestLicense"
-
-[outputs]
-libs = ["lib/libtest.a"]
-
-[binary.wasm32]
-archive_url = "https://example.com/test.tar.zst"
-archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[compatibility]
-target_arch = "wasm32"
-abi_versions = [7]
-cache_key_sha = "0000000000000000000000000000000000000000000000000000000000000000"
-"#;
-        let dir = std::path::PathBuf::from("/tmp/test");
-        DepsManifest::parse_archived(toml, dir).expect("archive must parse without kernel_abi");
-    }
-
-    #[test]
     fn source_parse_accepts_kernel_abi_absent_when_no_build_block() {
         // Source-only packages (pcre2-source) and metadata-only
         // packages (kernel, userspace, examples, node, sqlite-cli)
@@ -3336,16 +2745,6 @@ spdx = "TestLicense"
         );
         let err = DepsManifest::parse(&bad, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("source.sha256"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_archived_rejects_zero_revision() {
-        // Source manifests reject `revision = N` entirely (see
-        // source_package_toml_rejects_legacy_revision_field). Archived
-        // manifests require it, and revision = 0 is still nonsense.
-        let bad = EXAMPLE_ARCHIVED.replace("revision = 1", "revision = 0");
-        let err = DepsManifest::parse_archived(&bad, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("revision"), "got: {err}");
     }
 
     #[test]
@@ -3443,175 +2842,6 @@ spdx = "MIT"
     fn parses_manifest_with_kind_library() {
         let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
         assert!(matches!(m.kind, ManifestKind::Library));
-    }
-
-    #[test]
-    fn rejects_compatibility_in_source_mode() {
-        let text = format!(
-            "{}\n[compatibility]\ntarget_arch = \"wasm32\"\nabi_versions = [4]\ncache_key_sha = \"{:0>64}\"\n",
-            EXAMPLE, ""
-        );
-        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("[compatibility]"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_archived_requires_compatibility_block() {
-        // No [compatibility] block — archived manifests must have one.
-        let err = DepsManifest::parse_archived(EXAMPLE, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("[compatibility]"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_archived_accepts_full_compatibility_block() {
-        let m = DepsManifest::parse_archived(EXAMPLE_ARCHIVED, PathBuf::from("/x")).unwrap();
-        let c = m.compatibility.as_ref().unwrap();
-        assert_eq!(c.target_arch, TargetArch::Wasm32);
-        assert_eq!(c.abi_versions, vec![8]);
-        assert_eq!(c.cache_key_sha, "1".repeat(64));
-        assert!(c.build_timestamp.is_none());
-        assert!(c.build_host.is_none());
-    }
-
-    #[test]
-    fn parse_archived_rejects_empty_abi_versions() {
-        let text = EXAMPLE_ARCHIVED.replace("abi_versions = [8]", "abi_versions = []");
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("abi_versions"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_archived_rejects_uppercase_cache_key_sha() {
-        let text = EXAMPLE_ARCHIVED.replace(&"1".repeat(64), &"A".repeat(64));
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("cache_key_sha"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_archived_rejects_short_cache_key_sha() {
-        let text = EXAMPLE_ARCHIVED.replace(
-            &format!("cache_key_sha = \"{}\"", "1".repeat(64)),
-            "cache_key_sha = \"abc\"",
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("cache_key_sha"), "got: {err}");
-    }
-
-    // Tests for the legacy `[binary]` block parsing — only legal on
-    // the archived path now (source rejects [binary] entirely; see
-    // source_package_toml_rejects_legacy_binary_block).
-
-    #[test]
-    fn archived_parses_bare_binary_block_as_wasm32() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\narchive_sha256 = \"{:0>64}\"\n",
-            EXAMPLE_ARCHIVED, ""
-        );
-        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap();
-        let b = m.binary.get(&TargetArch::Wasm32).expect("wasm32 entry");
-        assert_eq!(b.archive_url, "https://x/foo.tar.zst");
-        assert_eq!(b.archive_sha256, "0".repeat(64));
-        assert!(m.binary.get(&TargetArch::Wasm64).is_none());
-    }
-
-    #[test]
-    fn archived_parses_per_arch_binary_block() {
-        let text = format!(
-            "{}\n[binary.wasm32]\narchive_url = \"https://x/32.tar.zst\"\n\
-                          archive_sha256 = \"{:0>64}\"\n\
-             [binary.wasm64]\narchive_url = \"https://x/64.tar.zst\"\n\
-                          archive_sha256 = \"{:2>64}\"\n",
-            EXAMPLE_ARCHIVED, "", ""
-        );
-        let m = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap();
-        let b32 = m.binary.get(&TargetArch::Wasm32).expect("wasm32 entry");
-        let b64 = m.binary.get(&TargetArch::Wasm64).expect("wasm64 entry");
-        assert_eq!(b32.archive_url, "https://x/32.tar.zst");
-        assert_eq!(b64.archive_url, "https://x/64.tar.zst");
-        assert!(b32.archive_sha256.starts_with("0"));
-        assert!(b64.archive_sha256.starts_with("2"));
-    }
-
-    #[test]
-    fn archived_rejects_mixed_binary_shape() {
-        // Bare archive_url next to [binary.wasm64] is a typo trap —
-        // require pick-one-shape.
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\n\
-                         archive_sha256 = \"{:0>64}\"\n\
-             [binary.wasm64]\narchive_url = \"https://x/64.tar.zst\"\n\
-                          archive_sha256 = \"{:0>64}\"\n",
-            EXAMPLE_ARCHIVED, "", ""
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-            .expect_err("mixed shape must fail");
-        assert!(
-            err.contains("mixes the bare form") || err.contains("[binary]"),
-            "error must call out the mixed shape, got: {err}"
-        );
-    }
-
-    #[test]
-    fn archived_rejects_unknown_binary_key() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x/foo.tar.zst\"\n\
-                         archive_sha256 = \"{:0>64}\"\n\
-                         bogus = true\n",
-            EXAMPLE_ARCHIVED, ""
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
-            .expect_err("unknown key must fail");
-        assert!(err.contains("bogus"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_accepts_no_binary_block() {
-        // Source EXAMPLE has no [binary] block (post-migration shape).
-        // Parse succeeds; binary map is empty.
-        let m = DepsManifest::parse(EXAMPLE, PathBuf::from("/x")).unwrap();
-        assert!(m.binary.is_empty());
-    }
-
-    #[test]
-    fn archived_rejects_invalid_binary_archive_sha() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"BAD\"\n",
-            EXAMPLE_ARCHIVED
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("archive_sha256"), "got: {err}");
-    }
-
-    #[test]
-    fn archived_rejects_uppercase_binary_archive_sha() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"{}\"\n",
-            EXAMPLE_ARCHIVED,
-            "A".repeat(64),
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("archive_sha256"), "got: {err}");
-    }
-
-    #[test]
-    fn archived_rejects_short_binary_archive_sha() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"abcdef01\"\n",
-            EXAMPLE_ARCHIVED
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("archive_sha256"), "got: {err}");
-    }
-
-    #[test]
-    fn archived_rejects_long_binary_archive_sha() {
-        let text = format!(
-            "{}\n[binary]\narchive_url = \"https://x\"\narchive_sha256 = \"{}\"\n",
-            EXAMPLE_ARCHIVED,
-            "a".repeat(65),
-        );
-        let err = DepsManifest::parse_archived(&text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("archive_sha256"), "got: {err}");
     }
 
     #[test]
@@ -3933,34 +3163,6 @@ wasm = ""
     }
 
     #[test]
-    fn source_kind_rejects_binary_block() {
-        // Source-kind packages already had a kind-specific [binary]
-        // rejection (kind = "source" + [binary] = error). With the
-        // binary-resolution-via-index-ledger change, source-path
-        // validation rejects [binary] for ANY kind. This test now
-        // exercises the general rejection (which fires before the
-        // kind-specific one).
-        let text = r#"
-kind = "source"
-name = "pcre2-source"
-version = "10.42"
-
-[source]
-url = "https://example.test/pcre2.tar.bz2"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[license]
-spdx = "BSD-3-Clause"
-
-[binary]
-archive_url = "https://example.test/pcre2.tar.zst"
-archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
-"#;
-        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
-        assert!(err.contains("binary"), "got: {err}");
-    }
-
-    #[test]
     fn source_kind_minimal_manifest_parses() {
         let text = r#"
 kind = "source"
@@ -3979,7 +3181,6 @@ spdx = "BSD-3-Clause"
         assert_eq!(m.name, "pcre2-source");
         assert!(m.outputs.libs.is_empty());
         assert!(m.program_outputs.is_empty());
-        assert!(m.binary.is_empty());
     }
 
     const LIB_WITH_HOST_TOOLS: &str = r#"
@@ -4427,199 +3628,10 @@ wasm = "b/tool.wasm"
         dir
     }
 
-    /// Base manifest used by the overlay tests. The
-    /// binary-resolution-via-index-ledger design moves binary URLs out
-    /// of `package.toml` into `index.toml`, so this base no longer
-    /// carries a `[binary]` block. The overlay tests verify that the
-    /// pr-overlay mechanism still injects/replaces `[binary]` entries
-    /// in the in-memory `DepsManifest` — useful while the overlay path
-    /// is still wired even though it'll be retired once consumers
-    /// migrate to index-driven resolution.
-    const OVERLAY_BASE: &str = r#"
-kind = "library"
-name = "zlib"
-version = "1.3.1"
-depends_on = []
-
-[source]
-url = "https://example.test/zlib-1.3.1.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[license]
-spdx = "Zlib"
-
-[outputs]
-libs = ["lib/libz.a"]
-headers = ["include/zlib.h"]
-"#;
-
-    #[test]
-    fn overlay_merges_binary_block_over_base() {
-        // The overlay declares the same arch (wasm32) with a
-        // different sha + URL — after merge, the manifest must carry
-        // the overlay's values, not the base's.
-        let new_url = "https://example.test/zlib-pr-staging-wasm32.tar.zst";
-        let new_sha = "2".repeat(64);
-        let overlay = format!(
-            "[binary.wasm32]\n\
-             archive_url = \"{new_url}\"\n\
-             archive_sha256 = \"{new_sha}\"\n"
-        );
-        let dir = overlay_fixture_dir("merge-replace", OVERLAY_BASE, Some(&overlay));
-
-        let m = DepsManifest::load_with_overlay(&dir).unwrap();
-        let bin = m
-            .binary
-            .get(&TargetArch::Wasm32)
-            .expect("wasm32 binary entry must be present after merge");
-        assert_eq!(bin.archive_url, new_url);
-        assert_eq!(bin.archive_sha256, new_sha);
-    }
-
-    #[test]
-    fn overlay_absent_uses_base() {
-        // No `package.pr.toml` next to `package.toml` — the loader
-        // returns the base manifest unchanged. Post
-        // binary-resolution-via-index-ledger, source package.toml no
-        // longer carries `[binary]`, so the base manifest has an empty
-        // binary map; without an overlay nothing fills it in.
-        let dir = overlay_fixture_dir("absent", OVERLAY_BASE, None);
-
-        let m = DepsManifest::load_with_overlay(&dir).unwrap();
-        assert!(
-            m.binary.is_empty(),
-            "base manifest has no [binary] in the new schema and no overlay applied"
-        );
-        assert_eq!(m.name, "zlib");
-    }
-
-    #[test]
-    fn overlay_with_non_binary_field_is_rejected() {
-        // The overlay file is intentionally narrow: only `[binary]` /
-        // `[binary.<arch>]` may appear. Any other top-level field is
-        // a mistake and must surface immediately.
-        let overlay = r#"
-name = "evil-rename"
-
-[binary.wasm32]
-archive_url = "https://example.test/anything.tar.zst"
-archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
-"#;
-        let dir = overlay_fixture_dir("non-binary-field", OVERLAY_BASE, Some(overlay));
-
-        let err = DepsManifest::load_with_overlay(&dir).unwrap_err();
-        assert!(
-            err.contains("package.pr.toml"),
-            "error must mention the overlay file by name, got: {err}"
-        );
-        assert!(
-            err.contains("[binary]"),
-            "error must mention that only [binary] is allowed, got: {err}"
-        );
-    }
-
-    #[test]
-    fn overlay_merges_multiple_arches_from_overlay() {
-        // Regression guard for `apply_pr_overlay`'s per-arch merge: an
-        // overlay declaring both arches lands both entries (BTreeMap
-        // semantics — verify a future refactor like clear-then-extend
-        // doesn't silently break it).
-        //
-        // Pre binary-resolution-via-index-ledger, the regression this
-        // test guarded was "base wasm64 survives an overlay-only-wasm32
-        // merge". Post-change, the base can't carry [binary] at all
-        // (source package.toml rejects it), so the equivalent guard is
-        // "overlay-declared wasm32 + wasm64 both end up in the merged
-        // manifest" — the merge code's per-arch path still runs.
-        let overlay = r#"
-[binary.wasm32]
-archive_url = "https://example.test/zlib-pr-staging-wasm32.tar.zst"
-archive_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
-
-[binary.wasm64]
-archive_url = "https://example.test/zlib-pr-staging-wasm64.tar.zst"
-archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
-"#;
-        let dir = overlay_fixture_dir("merge-multiple-arches", OVERLAY_BASE, Some(overlay));
-
-        let m = DepsManifest::load_with_overlay(&dir).unwrap();
-        let bin32 = m
-            .binary
-            .get(&TargetArch::Wasm32)
-            .expect("wasm32 binary entry must be present from overlay");
-        assert_eq!(bin32.archive_sha256, "2".repeat(64));
-        let bin64 = m
-            .binary
-            .get(&TargetArch::Wasm64)
-            .expect("wasm64 binary entry must be present from overlay");
-        assert_eq!(bin64.archive_sha256, "3".repeat(64));
-    }
-
     // ------------------------------------------------------------------
-    // build.toml — project's view of how a package was built and where
-    // its binary is published. See
-    // docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.2.
-    //
-    // Two `[binary]` forms (the design's "named source" / Form 1 was
-    // dropped during implementation review — the named indirection
-    // through .wasm-posix-pkg.toml didn't pull its weight given that
-    // `{abi}` substitution already isolates the only field that
-    // varies across publish targets):
-    //   * Indexed { index_url } — fetch index.toml at index_url, then
-    //     look up this package's archive. `{abi}` is substituted with
-    //     the current ABI_VERSION at fetch time so build.toml URLs are
-    //     stable across ABI bumps.
-    //   * Direct { url, sha256 } — point at one specific archive; no
-    //     index involved.
+    // build.toml — the project's view of how a package is source-built
+    // (script path, declared inputs, git inputs, provenance).
     // ------------------------------------------------------------------
-
-    #[test]
-    fn parses_build_toml_with_indexed_binary() {
-        let toml = r#"
-script_path = "packages/registry/foo/build-foo.sh"
-inputs = [
-  "packages/registry/foo/build-foo.sh",
-  "scripts/build-helpers.sh",
-]
-repo_url = "https://github.com/example/foo.git"
-commit = "abc123"
-
-[[git_inputs]]
-name = "example_tap_core"
-repository = "https://github.com/Kandelo-dev/example-tap-core.git"
-commit = "b40a764d47f4f4408790de2c211ccb8efb8e4c46"
-
-[binary]
-index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
-"#;
-        let bt = BuildToml::parse(toml).expect("should parse");
-        assert_eq!(bt.script_path, "packages/registry/foo/build-foo.sh");
-        assert_eq!(
-            bt.inputs,
-            vec![
-                "packages/registry/foo/build-foo.sh".to_string(),
-                "scripts/build-helpers.sh".to_string(),
-            ]
-        );
-        assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
-        assert_eq!(bt.commit, "abc123");
-        assert_eq!(bt.publication_state, PublicationState::Ready);
-        assert_eq!(
-            bt.git_inputs,
-            vec![GitBuildInput {
-                name: "example_tap_core".to_string(),
-                repository: "https://github.com/Kandelo-dev/example-tap-core.git".to_string(),
-                commit: "b40a764d47f4f4408790de2c211ccb8efb8e4c46".to_string(),
-                tree: None,
-                allow_uninitialized_gitlinks: false,
-            }]
-        );
-        assert!(matches!(
-            bt.binary,
-            BinarySource::Indexed { ref index_url }
-                if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
-        ));
-    }
 
     #[test]
     fn fbdoom_declares_its_exact_chocolate_doom_build_input() {
@@ -4652,9 +3664,6 @@ repository = "https://example.test/source.git"
 commit = "1111111111111111111111111111111111111111"
 tree = "2222222222222222222222222222222222222222"
 allow_uninitialized_gitlinks = true
-
-[binary]
-index_url = "https://example.test/index.toml"
 "#,
         )
         .expect("tree-bound uninitialized Git links should be explicit metadata");
@@ -4679,9 +3688,6 @@ repo_url = "https://github.com/example/foo.git"
 commit = "UNPUBLISHED"
 revision = 1
 publication_state = "pending"
-
-[binary]
-index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
 "#;
         let build = BuildToml::parse(pending).expect("pending state should parse");
         assert_eq!(build.publication_state, PublicationState::Pending);
@@ -4741,8 +3747,6 @@ repo_url = "y"
 commit = "z"
 [[git_inputs]]
 {git_input}
-[binary]
-index_url = "https://example.test/index.toml"
 "#
             );
             let err = BuildToml::parse(&text).unwrap_err();
@@ -4761,69 +3765,9 @@ commit = "1111111111111111111111111111111111111111"
 name = "tap"
 repository = "https://example.test/two.git"
 commit = "2222222222222222222222222222222222222222"
-[binary]
-index_url = "https://example.test/index.toml"
 "#;
         let err = BuildToml::parse(duplicate).unwrap_err();
         assert!(err.contains("duplicate name"), "got: {err}");
-    }
-
-    #[test]
-    fn parses_build_toml_with_direct_url() {
-        let toml = r#"
-script_path = "x"
-repo_url = "y"
-commit = "z"
-[binary]
-url = "https://example.com/foo.tar.zst"
-sha256 = "abc"
-"#;
-        let bt = BuildToml::parse(toml).unwrap();
-        assert!(matches!(
-            bt.binary,
-            BinarySource::Direct { ref url, ref sha256 }
-                if url == "https://example.com/foo.tar.zst" && sha256 == "abc"
-        ));
-    }
-
-    #[test]
-    fn rejects_build_toml_with_both_indexed_and_direct() {
-        let toml = r#"
-script_path = "x"
-repo_url = "y"
-commit = "z"
-[binary]
-index_url = "https://example.com/index.toml"
-url = "https://example.com/x.tar.zst"
-sha256 = "abc"
-"#;
-        let err = BuildToml::parse(toml).unwrap_err();
-        assert!(err.contains("exactly one of"), "got: {err}");
-    }
-
-    #[test]
-    fn rejects_build_toml_with_empty_binary() {
-        let toml = r#"
-script_path = "x"
-repo_url = "y"
-commit = "z"
-[binary]
-"#;
-        let err = BuildToml::parse(toml).unwrap_err();
-        assert!(err.contains("one of"), "got: {err}");
-    }
-
-    #[test]
-    fn rejects_build_toml_direct_url_without_sha() {
-        let toml = r#"
-script_path = "x"
-repo_url = "y"
-commit = "z"
-[binary]
-url = "https://example.com/x.tar.zst"
-"#;
-        let err = BuildToml::parse(toml).unwrap_err();
-        assert!(err.contains("requires sha256"), "got: {err}");
     }
 
     #[test]
@@ -4835,8 +3779,6 @@ script_path = "x"
 repo_url = "y"
 commit = "z"
 typo_field = "oops"
-[binary]
-index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(
@@ -4852,8 +3794,6 @@ script_path = "x"
 inputs = ["/abs/path"]
 repo_url = "y"
 commit = "z"
-[binary]
-index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(err.contains("repo-relative"), "got: {err}");
@@ -4866,8 +3806,6 @@ script_path = "x"
 inputs = ["../outside"]
 repo_url = "y"
 commit = "z"
-[binary]
-index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(err.contains(".."), "got: {err}");
@@ -4892,8 +3830,6 @@ index_url = "https://example.com/index.toml"
 script_path = {script_path:?}
 repo_url = "y"
 commit = "z"
-[binary]
-index_url = "https://example.com/index.toml"
 "#
             );
             let err = BuildToml::parse(&toml).unwrap_err();
@@ -4910,80 +3846,18 @@ index_url = "https://example.com/index.toml"
 script_path = {script_path:?}
 repo_url = "y"
 commit = "z"
-[binary]
-index_url = "https://example.com/index.toml"
 "#
         );
         assert!(BuildToml::parse(&toml).is_ok());
     }
 
-    #[test]
-    fn resolve_index_url_substitutes_abi_in_indexed_form() {
-        let bs = BinarySource::Indexed {
-            index_url: "https://example.test/abi-v{abi}/index.toml".into(),
-        };
-        assert_eq!(
-            bs.resolve_index_url(8).as_deref(),
-            Some("https://example.test/abi-v8/index.toml")
-        );
-        // Different ABI: same template produces a different URL.
-        assert_eq!(
-            bs.resolve_index_url(9).as_deref(),
-            Some("https://example.test/abi-v9/index.toml")
-        );
-    }
-
-    #[test]
-    fn resolve_index_url_returns_none_for_direct_source() {
-        let bs = BinarySource::Direct {
-            url: "https://example.test/foo.tar.zst".into(),
-            sha256: "abc".into(),
-        };
-        assert!(bs.resolve_index_url(8).is_none());
-    }
-
-    #[test]
-    fn resolve_index_url_passes_through_template_without_abi_token() {
-        // Not every index_url has to template ABI — `Indexed` URLs
-        // without a `{abi}` placeholder pass through unchanged.
-        let bs = BinarySource::Indexed {
-            index_url: "https://example.test/static/index.toml".into(),
-        };
-        assert_eq!(
-            bs.resolve_index_url(8).as_deref(),
-            Some("https://example.test/static/index.toml")
-        );
-    }
-
-    #[test]
-    fn rejects_build_toml_with_unknown_binary_field() {
-        // deny_unknown_fields on BinaryRaw catches legacy "source"
-        // syntax from the original design's Form 1, plus any typo
-        // inside the [binary] block.
-        let toml = r#"
-script_path = "x"
-repo_url = "y"
-commit = "z"
-[binary]
-source = "first-party"
-"#;
-        let err = BuildToml::parse(toml).unwrap_err();
-        assert!(
-            err.contains("source") || err.contains("unknown"),
-            "got: {err}"
-        );
-    }
-
     // ------------------------------------------------------------------
-    // package.toml — source manifests rejecting legacy fields that move
-    // to other files in the binary-resolution-via-index-ledger design:
-    //   * revision → moved to index.toml's per-package entry
-    //   * [binary] → moved to build.toml + index.toml
-    //   * [build].repo_url, [build].commit → moved to build.toml
-    //
-    // validate_archived (parser path for manifest.toml inside .tar.zst
-    // archives) continues to accept the legacy shape so already-published
-    // archives still parse.
+    // package.toml — source manifests reject legacy fields that now live
+    // in build.toml (project-level publish state), not in the recipe:
+    //   * revision → build.toml
+    //   * [build].repo_url, [build].commit → build.toml
+    // The prebuilt-binary channel (`[binary]`, index.toml) has been
+    // removed entirely, so a `[binary]` block is an unknown key.
     // ------------------------------------------------------------------
 
     #[test]
@@ -5135,7 +4009,5 @@ libs = ["lib/libfoo.a"]
         // revision defaults to 1 — source manifests no longer carry it;
         // index.toml is the source of truth post-migration.
         assert_eq!(m.revision, 1);
-        // binary map is empty: source manifests don't declare archives.
-        assert!(m.binary.is_empty());
     }
 }

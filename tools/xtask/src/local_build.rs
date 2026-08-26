@@ -3451,7 +3451,7 @@ mod tests {
         write(
             &root.join("packages/registry").join(name).join("build.toml"),
             &format!(
-                "script_path = \"packages/registry/{name}/build-{name}.sh\"\ninputs = [\"packages/registry/{name}/build-{name}.sh\"]\nrepo_url = \"https://example.invalid/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n\n[binary]\nindex_url = \"https://example.invalid/binaries-abi-v{{abi}}/index.toml\"\n"
+                "script_path = \"packages/registry/{name}/build-{name}.sh\"\ninputs = [\"packages/registry/{name}/build-{name}.sh\"]\nrepo_url = \"https://example.invalid/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n"
             ),
         );
     }

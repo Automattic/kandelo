@@ -374,7 +374,7 @@ function resolveBinary(binaryRel, binariesDir) {
     `binary not found for rootfs package output: ${binaryRel}\n` +
       `  checked: ${local}\n` +
       `  checked: ${fetched}\n` +
-      `  Run scripts/fetch-binaries.sh or build the package locally.`,
+      `  Build the package locally.`,
   );
 }
 

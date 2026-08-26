@@ -1,9 +1,9 @@
 # ABI versioning
 
-User programs and prebuilt binaries are compiled against the kernel's binary
-interface. When the kernel changes that interface in a way that breaks old
-binaries, running an old binary against a new kernel would silently corrupt
-state. To prevent this, the project maintains:
+User programs are compiled against the kernel's binary interface. When the
+kernel changes that interface in a way that breaks old binaries, running an
+old binary against a new kernel would silently corrupt state. To prevent
+this, the project maintains:
 
 1. A single integer [`ABI_VERSION`](../crates/shared/src/lib.rs) that every
    compiled binary carries and the kernel exports.
@@ -357,8 +357,8 @@ reserve-before-write and commit-after-write semantics, replay uses a validated
 linked-node order, and instrumented modules require the seven-export control
 set including `wpk_fork_abort_begin` and `wpk_fork_abort_end`. The old
 channel-adjacent area is only an active-root handoff anchor. ABI 41 and older
-programs must be rebuilt with the ABI 42 instrumenter and package/VFS artifacts
-must be republished for the new ABI epoch.
+programs must be rebuilt with the ABI 42 instrumenter, and package/VFS
+artifacts must be rebuilt from source for the new ABI epoch.
 
 Version 1 keeps inherited chunks at the parent's virtual addresses in the
 child. Relocating and rebasing a serialized continuation is not part of this
@@ -1034,31 +1034,20 @@ classifies the diff and accepts only the additive cases listed above.
   `process_memory_layout`. Host-only constants outside that path are not
   protected by the ABI check.
 
-## Rollout of prebuilt binaries
+## ABI bumps and package rebuilds
 
-Binaries published to hosting (GitHub Releases) carry the ABI version
-they were built against in their filename directory (`abi-v1/`) and in
-a wasm custom section (`wasm-posix-abi`). The host refuses to launch a
+Every built binary carries the ABI version it was compiled against in a
+wasm custom section (`wasm-posix-abi`). The host refuses to launch a
 binary whose custom-section version does not match the kernel's
 `__abi_version` export.
 
-When the ABI is bumped, all binaries must be rebuilt and a new
-`binaries-abi-v{N}` release is cut. Old releases remain valid for old
-kernel revisions; the new release's `index.toml` ledger lists all
-v(N) archives. Each `packages/registry/<pkg>/build.toml`'s `[binary]
-index_url` templates `{abi}` against the current `ABI_VERSION`, so
-the next fetch automatically hits the v(N+1) release after the
-constant bumps — no per-package URL pinning in-tree to amend. The
-matrix flow's per-entry `scripts/index-update.sh` invocations
-populate the new tag's `index.toml` atomically as each archive
-publishes.
-
-For an ABI transition, Prepare Merge builds and tests the complete stale
-package closure. After the prepared tree merges, post-merge activation proves
-that the tested producer tree equals the resulting `main` tree and publishes
-the new immutable `binaries-abi-v<N>` release once. The archives keep the
-producer that actually built them; a durable generation records final-main
-validation separately through complete-tree evidence.
+`ABI_VERSION` is one of the inputs to every package's cache key. When the
+ABI is bumped, every package's cache key changes, so the next resolve
+misses the local cache and rebuilds the package from source under the new
+key. There is no remote binary release to cut or index to publish: the
+local content-addressed cache and the source-build path handle the
+transition automatically. Artifacts built under the old ABI remain in the
+cache under their old keys and stay valid for old kernel revisions.
 
 ### Additive changes within an ABI epoch
 
@@ -1068,7 +1057,7 @@ strict equality (`actual !== expected`). This is intentional: we keep a
 single breaking-compatibility epoch rather than accepting arbitrary
 older binaries against newer kernels.
 
-The package cache key and release index remain keyed by `ABI_VERSION`,
+The package cache key remains keyed by `ABI_VERSION`,
 so additive kernel API growth does not force every package to rebuild.
 Packages built after an additive change may depend on the new syscall or
 export; those packages should be resolved with the matching current

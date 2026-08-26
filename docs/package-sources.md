@@ -1,9 +1,14 @@
 # Kandelo Package Sources
 
-A package source is a GitHub repository that publishes Kandelo packages
-outside the main Kandelo repository. It owns package recipes, VFS image
-recipes, and release state for its packages. Kandelo owns the toolchain,
-resolver, archive format, and built-in browser gallery.
+A package source is a GitHub repository that hosts Kandelo package
+**recipes** outside the main Kandelo repository. It owns package recipes,
+VFS image recipes, and patches for its packages. Kandelo owns the toolchain,
+resolver, and built-in browser gallery.
+
+Package resolution is local-first: a package source ships recipes, not
+prebuilt binaries. Consumers overlay the source into a Kandelo checkout and
+source-build its packages through the same SDK/libc/resolver used for
+first-party packages, caching the results locally by content hash.
 
 The first package source is
 [`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software).
@@ -24,19 +29,17 @@ UI or tests require. Those belong in `packages/registry/`.
 ```text
 README.md
 packages.txt
-gallery.json                         # optional published gallery metadata
 packages/
   program-packages.json              # Rust-generated runtime projection
   <name>/
     package.toml                     # portable package recipe
-    build.toml                       # this source's publish/index state
+    build.toml                       # this source's project view
     build-<name>.sh                  # Kandelo-relative build script
     patches/
 ```
 
-`packages.txt` lists publishable packages in dependency order, one per
-line. Blank lines and `#` comments are ignored by
-`scripts/publish-package-source.sh`.
+`packages.txt` lists the source's packages in dependency order, one per
+line. Blank lines and `#` comments are ignored.
 
 If the source is used directly through `WASM_POSIX_DEPS_REGISTRY`, generate
 `packages/program-packages.json` with Kandelo's authoritative parser and the
@@ -66,9 +69,9 @@ Commit the result beside the package directories. Runtime consumers require it
 to preserve exact first-hit output closures, per-architecture cache keys, and
 fork policy without maintaining a second TOML parser. The projection also binds
 each program to the identities of its complete transitive dependency closure
-in that registry order. The reusable publication workflow checks this
-projection before building, so a changed recipe or dependency cannot be
-published with stale runtime identity.
+in that registry order. The local build checks this projection before
+building, so a changed recipe or dependency cannot be built with stale
+runtime identity.
 Kandelo source checkouts run the same contextual Rust check before every public
 program resolution. An existing configured root without an index is an error;
 nonexistent optional roots are skipped. Installed host packages instead consume
@@ -99,10 +102,10 @@ That compatibility path is for migration only.
 
 ## `package.toml`
 
-`package.toml` is the portable recipe. Keep it free of publish state:
+`package.toml` is the portable recipe. Keep it free of project-view
+state (those fields live in `build.toml`):
 
 - no `revision`
-- no `[binary]`
 - no `[build].repo_url`
 - no `[build].commit`
 
@@ -134,65 +137,26 @@ wasm = "nethack.wasm"
 
 ## `build.toml`
 
-`build.toml` is this package source's publish view. The `repo_url`,
-`revision`, and `[binary] index_url` are repository-specific.
+`build.toml` is this package source's project view. The `repo_url`,
+`commit`, and `revision` are repository-specific.
 
 ```toml
 script_path = "packages/registry/nethack/build-nethack.sh"
 repo_url    = "https://github.com/<owner>/<package-source>.git"
 commit      = "UNPUBLISHED"
 revision    = 1
-
-[binary]
-index_url = "https://github.com/<owner>/<package-source>/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
-Keep `{abi}` in the URL. The resolver substitutes Kandelo's
-`ABI_VERSION` at resolve time, so the same file survives ABI bumps.
+`revision` is a cache-key input: bump it when the build output legitimately
+changes so consumers rebuild that package from source under the new key.
 
-## Reusable Publish Workflow
+## Consuming a package source
 
-Kandelo ships a reusable workflow so package-source repositories do not
-need to copy release logic. Add this to the package-source repository:
+A package source is consumed by overlaying its recipes into a Kandelo
+checkout and source-building them locally. There is no per-package binary
+release to publish or fetch.
 
-```yaml
-name: Publish Kandelo packages
-
-on:
-  workflow_dispatch:
-    inputs:
-      packages:
-        description: Comma-separated package names, or all.
-        default: all
-      kandelo-ref:
-        description: Kandelo ref to build against.
-        default: main
-
-permissions:
-  contents: write
-
-jobs:
-  publish:
-    uses: Automattic/kandelo/.github/workflows/reusable-package-source-publish.yml@main
-    with:
-      kandelo-ref: ${{ inputs.kandelo-ref }}
-      packages: ${{ inputs.packages }}
-```
-
-Pin `@main` to a tag or commit for stricter reproducibility.
-
-The workflow checks out the package source and Kandelo, builds Kandelo's
-sysroots, overlays `packages/*` into Kandelo, then runs
-`scripts/publish-package-source.sh`. Archives and `index.toml` are
-published to the package-source repository's
-`binaries-abi-v<N>` release.
-
-## Script API
-
-The reusable workflow is a thin wrapper over scripts that also work
-locally and are the preferred interface for automation agents.
-
-Overlay a package source into a Kandelo checkout:
+Overlay the package source into a Kandelo checkout:
 
 ```bash
 bash scripts/sync-package-source.sh \
@@ -200,72 +164,27 @@ bash scripts/sync-package-source.sh \
   --kandelo-root /path/to/kandelo
 ```
 
-Build and publish packages from inside Kandelo's dev shell:
+Then prepend the source's `packages/` directory to
+`WASM_POSIX_DEPS_REGISTRY` so the resolver selects its recipes first, and
+build from source through the normal path:
 
 ```bash
 cd /path/to/kandelo
-bash scripts/dev-shell.sh bash scripts/publish-package-source.sh \
-  --package-source-root /path/to/package-source \
-  --kandelo-root /path/to/kandelo \
-  --repo <owner>/<package-source> \
-  --packages all
+KANDELO_ROOT="$(pwd -P)"
+WASM_POSIX_DEPS_REGISTRY="/path/to/package-source/packages:$KANDELO_ROOT/packages/registry" \
+  bash scripts/dev-shell.sh cargo xtask build-deps resolve <name>
 ```
 
-The publish script:
+The resolver source-builds each package through the SDK/libc, verifies the
+upstream source archive against `[source].sha256`, and caches the built
+outputs locally by content hash — exactly as it does for first-party
+recipes.
 
-- reads `ABI_VERSION` from Kandelo
-- defaults the release tag to `binaries-abi-v<N>`
-- stages one package archive with `xtask archive-stage`
-- records success or failure in release `index.toml`
-- uploads `gallery.json` when the package source provides it
-
-## Published Gallery Metadata
-
-A package source can publish `gallery.json` beside `index.toml`.
-The current Kandelo demo app does not request or display this third-party
-metadata. Package sources may continue publishing it for validation and
-for consumers outside the demo app.
-
-```json
-{
-  "source_id": "kandelo-software",
-  "entries": [
-    {
-      "id": "python-vfs",
-      "title": "Python VFS",
-      "description": "CPython with the standard library in a VFS image.",
-      "packages": [
-        { "name": "cpython", "version": "3.13.3" },
-        { "name": "python-vfs", "version": "0.1.0" }
-      ]
-    }
-  ]
-}
-```
-
-Rules:
-
-- `source_id` identifies the package source in gallery entry IDs.
-- `entries[].id` and package names use lowercase IDs:
-  `^[a-z0-9][a-z0-9._-]*$`
-- `entries[].packages` lists every package required to launch the
-  demo.
-- A consumer should show an entry only when every listed package has a
-  `wasm32` `status = "success"` record, an `archive_url`, and
-  `browser_compatible = true` in the matching `index.toml`.
-- `browser_compatible = true` is a runtime claim. Set it only after a
-  browser smoke has launched the archive-backed image through Kandelo's
-  direct VFS image path.
-- A missing manifest, index, or archive is unavailable. Consumers must not
-  fabricate availability for that source.
-
-Validate a gallery manifest against an index:
-
-```bash
-node scripts/validate-software-gallery.mjs \
-  --gallery /path/to/package-source/gallery.json \
-  --index /tmp/index.toml
-```
+To make a package source's VFS image launchable in a browser, build the
+`.vfs`/`.vfs.zst` image and host it at a URL; users launch it through the
+Kandelo UI's `vfs` query parameter (see "Kandelo Demo Metadata" below).
+Demo presentation metadata belongs inside the image at
+`/etc/kandelo/demo.json`, not in a separately published manifest.
 
 ## Kandelo Demo Metadata
 
@@ -367,12 +286,7 @@ When creating or maintaining a package source:
    registry unless the package should become core.
 3. Use `packages/registry/<name>/...` in new `script_path` values.
 4. Add packages to `packages.txt` in dependency order.
-5. Keep `build.toml`'s `index_url` pointed at the package-source
-   repository and keep `{abi}` in the URL.
-6. Add `gallery.json` only for demos that can launch from published
-   artifacts and have `browser_compatible = true` package records.
-7. Run `scripts/validate-software-gallery.mjs` after publishing an
-   index.
-8. On ABI bumps, update `kernel_abi`, run the reusable workflow against
-   the Kandelo ref containing the bump, and verify the new
-   `binaries-abi-v<N>` release.
+5. Generate and commit `packages/program-packages.json` so source-build
+   consumers get correct per-architecture runtime identity.
+6. On ABI bumps, update `kernel_abi` and re-source-build against the
+   Kandelo ref containing the bump.

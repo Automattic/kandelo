@@ -104,6 +104,10 @@ where
         .map(|(archive, _published_by_caller)| archive)
 }
 
+/// Test-only view of [`fetch_verified_archive_transaction`] that exposes the
+/// published-by-caller flag and the raw path, used to exercise the
+/// concurrent-publish race on the upstream source-archive cache.
+#[cfg(test)]
 fn fetch_verified_archive_with_before_publish<F>(
     cache_root: &Path,
     url: &str,

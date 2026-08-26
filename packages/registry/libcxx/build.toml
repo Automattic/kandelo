@@ -19,6 +19,3 @@ commit      = "UNPUBLISHED"
 # build variants) to a stable producer path so archives do not retain the
 # caller's absolute checkout directory.
 revision    = 7
-
-[binary]
-index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -79,7 +79,7 @@ changes, package artifacts, or performance claims.
 | Debugging, POSIX, process, VFS, devices | `docs/agent-guidance/debugging-and-posix.md` | `docs/architecture.md`, `docs/posix-status.md` |
 | ABI versioning and snapshot policy | `docs/agent-guidance/abi.md` | `docs/abi-versioning.md`, `docs/fork-instrumentation.md` |
 | Host runtime and Node/browser parity | `docs/agent-guidance/host-runtime.md` | `docs/architecture.md`, `docs/browser-support.md` |
-| Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/binary-releases.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
+| Package schema, builds, resolver, cache | `docs/agent-guidance/packages-and-builds.md` | `docs/package-management.md`, `docs/porting-guide.md`, `docs/sdk-guide.md` |
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |

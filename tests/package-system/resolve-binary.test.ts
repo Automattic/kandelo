@@ -806,25 +806,6 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
     expect(result.stdout.trim()).toBe(localPath);
   });
 
-  it("falls back from a stale compressed VFS image to an ABI-matching candidate", async () => {
-    const relPath = "programs/wasm32/__resolve_binary_test__/image.vfs.zst";
-    writeCandidate(
-      "local-binaries",
-      relPath,
-      await vfsImage({ version: 1, kernelAbi: ABI_VERSION - 1 }, true),
-    );
-    const fetchedPath = writeCandidate(
-      "binaries",
-      relPath,
-      await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true),
-    );
-
-    const result = resolveBinary(relPath);
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(fetchedPath);
-  });
-
   it("accepts an uncompressed VFS image without a kernel ABI declaration", async () => {
     const relPath = "programs/wasm32/__resolve_binary_test__/data.vfs";
     const localPath = writeCandidate(
@@ -867,24 +848,5 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("exists but was rejected by artifact policy");
-  });
-
-  it("falls back from an uninspectable local .wasm to a valid fetched candidate", () => {
-    const relPath = "programs/wasm32/__resolve_binary_test__/fallback.wasm";
-    writeCandidate(
-      "local-binaries",
-      relPath,
-      new TextEncoder().encode("not a wasm module"),
-    );
-    const fetchedPath = writeCandidate(
-      "binaries",
-      relPath,
-      executableWasmWithAbi(ABI_VERSION),
-    );
-
-    const result = resolveBinary(relPath);
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(fetchedPath);
   });
 });

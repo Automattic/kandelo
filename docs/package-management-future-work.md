@@ -5,8 +5,8 @@ system as it stands today. The system is described in
 `docs/package-management.md`; this file is the home for what's still
 on the table.
 
-Some items are blocked on real demand (e.g., semver ranges, multi-arch
-fat archives); some are purely additive polish (`--gc`, `--format=json`).
+Some items are blocked on real demand (e.g., semver ranges, WASI artifact
+caching); some are purely additive polish (`--gc`, `--format=json`).
 None is on a committed schedule — pick up when the use case arrives.
 
 ## Execution
@@ -26,100 +26,6 @@ workflow has enough real demand to justify that coordination.
 
 ## Schema / artifact
 
-### Ship kernel.wasm + userspace.wasm in the release
-
-Today's release excludes the kernel + userspace because their
-manifests at `packages/registry/{kernel,userspace}/` lack build scripts —
-`archive-stage` skips manifests without a build script as composite
-metadata. The browser UI imports `binaries/kernel.wasm` and
-`binaries/userspace.wasm` (≈23 sites) at Vite build time; without
-those files Vite errors out unless the user has run `bash build.sh`
-locally to populate `local-binaries/`.
-
-Fix options:
-1. **Add build wrappers** at `packages/registry/{kernel,userspace}/build-*.sh`
-   that delegate to `cargo build --release -p kandelo` and
-   `cargo build --release -p wasm-posix-userspace`
-   pipeline already in `build.sh`. Manifest output names already match
-   the cargo artifact paths. Once added, they ship as regular
-   archives. Caveat: kernel.wasm changes with every kernel commit, so
-   the cache_key_sha churns; users who want a stable kernel should
-   pin to a specific commit / release tag. The local-binaries/
-   override path remains the developer's escape hatch.
-2. **Update browser imports** to use `local-binaries/...` paths and add
-   a doc step ("run `bash build.sh` first"). Diverges from the
-   priority-1/priority-2 resolver convention; doesn't help users
-   without a Rust toolchain.
-
-Option 1 is the cleaner long-term fix. Triggers when a fresh-clone
-without-toolchain workflow becomes a real use case.
-
-### Lazy-archive VFS support for `.tar.zst`
-
-The system ships archives as `.tar.zst` uniformly.  That works for the
-resolver path (xtask decompresses to disk on install), but it
-**doesn't work for browser lazy archives**.
-
-Today `host/src/vfs/zip.ts` registers `vim.zip` as a lazy archive in
-`shell.vfs` with mount prefix `/usr/`: the ZIP's central directory is
-read up front, then individual entries are decompressed on demand
-when the user touches `/usr/bin/vim` or `/usr/share/vim/vim91/...`.
-The pattern only works for `.zip` because per-entry deflate gives
-random access; `.tar.zst` is a monolithic compressed stream with no
-per-entry seek.
-
-**Today's implementation:** `vim-browser-bundle` declares `vim.zip` as a
-package output, alongside the ordinary `vim` package that ships `vim.wasm` and
-its runtime inputs. The shell image depends on the bundle and consumes its
-exact resolver output; it does not repack a second ZIP during image assembly.
-The package system still wraps the declared ZIP output in its normal
-`.tar.zst` transport archive, so two formats coexist, but the resolver exposes
-the immutable inner ZIP directly to both the VFS composer and browser assets.
-
-**Future work — two options:**
-
-1. **`.tar.zst` lazy-archive reader.** Decompress the whole tar.zst
-   once on first access, hold the uncompressed image in memory or
-   cache it on disk under `binaries/objects/<sha>.tar` (fetch-binaries
-   already does this for `.zip`). Then index the tar's entry headers
-   for "lazy" reads.  Net cost: full decompression latency on first
-   touch (vs. ZIP's per-entry latency), but consistent format across
-   the whole release.
-
-2. **Mixed formats in the release.** Extend `xtask::archive_stage`
-   to take an `archive_format` per manifest (default `.tar.zst`,
-   programs that need lazy-mount specify `.zip`).  `remote_fetch::
-   fetch_and_install` decompressors handle both. Vim ships as `.zip`
-   directly; demos skip the repack step.  Schema doesn't need a new
-   field — the filename extension is the format hint.
-
-Trigger: when a real consumer wants to fetch a published archive +
-lazy-mount its runtime tree without an intermediate repack step.
-Most likely vim or texlive (huge runtime/font trees).
-
-### Multi-arch `[binary]` blocks
-
-The `[binary]` block is single-URL.  A consumer's `package.toml` can
-declare one `archive_url` + `archive_sha256`; the resolver uses it for
-whatever arch it's currently resolving.  In practice we backfilled the
-wasm32 archive URL because user programs are wasm32-only at the moment.
-A `--arch wasm64` resolve falls through to source build.
-
-When wasm64 user programs become real, extend the schema to either:
-- per-arch keyed table:
-  ```toml
-  [binary.wasm32]
-  archive_url = "..."
-  archive_sha256 = "..."
-  [binary.wasm64]
-  archive_url = "..."
-  archive_sha256 = "..."
-  ```
-- or a templated URL with a per-arch sha map.
-
-Either is backwards-compatible with today's flat `[binary]` if we treat
-the flat form as `[binary.wasm32]`.
-
 ### WASI artifact caching
 
 `target_arch` is a closed enum: `wasm32 | wasm64`.  WASI binaries
@@ -128,15 +34,9 @@ between composite enum values (`wasi-preview1-wasm32`) or splitting the
 axis into `target_arch` / `target_abi` when we have a real first WASI
 artifact to cache.
 
-### Sibling source archive
-
-For GPL-modified software we should ship an `.src.tar.zst` next to each
-`.tar.zst` so users can rebuild from the exact source we built from.
-Cargo's `cargo package` ships the same shape; this would mirror it.
-
 ### Semver range resolution for libraries / programs
 
-The system keeps exact version pinning for `depends_on` and `[binary]`.  A
+The system keeps exact version pinning for `depends_on`.  A
 resolver that picks one version per logical lib across the dep graph
 becomes load-bearing once two consumers want different patch versions
 of the same library.  Until then, exact-pinning is a feature, not a bug
@@ -149,15 +49,6 @@ Compound forms (`>=3.20,<4.0` to exclude known-bad major versions)
 become useful when a real case lands.
 
 ## Consumer convenience
-
-### `WASM_POSIX_PREFER_LOCAL` opt-out
-
-After the [binary] backfill (most consumers carry one today), `xtask build-deps resolve` for libs uses the
-release archive by default.  A developer hand-editing a library's build
-script can set `WASM_POSIX_PREFER_LOCAL=1` to skip the remote-fetch path
-and force a source build.  Currently you achieve the same by populating
-`local-libs/<name>/build/` with a hand-built tree (which the resolver's
-priority-1 path picks up).  An env-var hatch is just shorter.
 
 ### `--format=json` for `build-deps env`
 
@@ -173,7 +64,7 @@ conservative defaults: only entries older than N days, unreferenced by
 any registry root.  Users would `0 4 * * 0 cargo xtask build-deps gc`
 to trim weekly.
 
-## Producer / release
+## Build tooling
 
 ### Auto-install of host tools
 
@@ -189,40 +80,13 @@ macOS may have `gmake` instead of GNU `make`; Debian-derivatives may
 ship `cmake` as `cmake3`.  Probe could try multiple commands.  Defer
 until a real conflict.
 
-### CI-driven dep builds
-
-**Status (2026-04-29):** Partial — the per-PR staging release flow +
-on-merge durable publish ship via three GHA workflows (see
-[`docs/binary-releases.md`](binary-releases.md#pr-package-builds)
-and design doc
-[`docs/plans/2026-04-29-pr-package-builds-design.md`](plans/2026-04-29-pr-package-builds-design.md)).
-Fork-PR support (§9.1 of the design doc) is the remaining open piece;
-fork PRs continue to fall back to the resolver's source-build path
-locally.
-
-For hand-rebuilds outside the PR flow (e.g., recovery from a CI
-outage), `xtask archive-stage --package <dir> --arch <arch>`
-produces a single archive locally; uploading it via
-`scripts/index-update.sh` (which handles the state-lock, archive
-upload, and atomic `index.toml` mutation in one call) reproduces
-what the matrix flow does in CI. The `force-rebuild.yml` workflow
-automates that path for one or more packages.
-
 ### Hard-coded version strings in build scripts (lint)
 
 A `build-<name>.sh` that hard-codes an upstream version string can drift
 from its `package.toml`'s `version` field — `xtask build-deps check` would
 ideally catch this.  Today the only signal is a sha mismatch on the
-fetched tarball.  Lower priority since the sha catches the case
+fetched source tarball.  Lower priority since the sha catches the case
 eventually; useful if cache invalidation becomes a debugging chore.
-
-### Multi-arch fat archives
-
-Per-arch archives separately (`zlib-1.3.1-rev1-wasm32-...` and
-`zlib-1.3.1-rev1-wasm64-...`).  A "fat" archive containing both arches
-would cut download size when consumers want both.  Not a priority while
-download size for a single arch is small (zlib is ~200KB) but worth
-revisiting if we ever publish a megabyte-scale lib.
 
 ## Security & trust
 
@@ -230,33 +94,24 @@ revisiting if we ever publish a megabyte-scale lib.
 
 **Deferred from `docs/plans/2026-05-05-decoupled-package-builds-design.md` (§7, §10).**
 
-Today's trust model is rooted in `archive_sha256` in the local
-`package.toml` plus HTTPS for transport. That covers integrity for
-already-pinned packages and tampering by random network adversaries.
-Two threats it does not cover:
+Today's trust model for a package's upstream source is rooted in
+`[source].sha256` in the `package.toml` recipe plus HTTPS for transport.
+That covers integrity for already-pinned sources and tampering by random
+network adversaries. The threat it does not cover:
 
-1. **Manifest tampering by a compromised source host.** A consumer who
-   has added a third-party source URL trusts whatever bytes that URL
-   returns on subsequent `index.toml` fetches. If the source host is
-   compromised, an attacker could publish a malicious manifest pointing
-   at malicious archives with valid (attacker-chosen) shas. HTTPS
-   prevents in-flight tampering but not host compromise.
-2. **Auto-update malice.** If/when the resolver grows an "is there a
-   newer version?" check against a configured source, that check
-   trusts the manifest content. A compromised source could push a
-   malicious update without operator intervention.
+- **Recipe tampering by a compromised package source.** A consumer who
+  adds a third-party package source (an extra registry root on
+  `WASM_POSIX_DEPS_REGISTRY`) trusts the recipes it ships. If that source
+  is compromised, an attacker could change a recipe to pin a different
+  upstream URL with a matching (attacker-chosen) sha. Signing the recipes
+  and their provenance would let consumers verify authorship.
 
-Cryptographic signing of manifests (and optionally archives) addresses
-both. Implementation requires picking a scheme (minisign / sigstore /
-GPG / similar), a CI key-management story, key distribution for
-third-party sources, and consumer-side verification UX. Real
-engineering scope — defer until at least one of the following lands:
-
-- Auto-update / update-check feature.
-- Heterogeneous mirror network where archives are hosted on
-  infrastructure not controlled by the publisher.
-- A trust-authority concept (e.g. "this manifest must chain to the
-  Kandelo root key").
+Cryptographic signing of recipes addresses this. Implementation requires
+picking a scheme (minisign / sigstore / GPG / similar), a key-management
+story, key distribution for third-party sources, and consumer-side
+verification UX. Real engineering scope — defer until a heterogeneous
+third-party source ecosystem or a trust-authority concept (e.g. "this
+recipe must chain to the Kandelo root key") lands.
 
 The schema reserves no placeholder field; sign-related fields are
 designed properly when the feature lands rather than retrofitted into
@@ -264,22 +119,11 @@ a stub.
 
 ### Auto-update / update-check
 
-The source-manifest design (`index.toml`, `2026-05-05-decoupled-package-builds-design.md`)
-makes "is there a newer version of package X in source Y?" a fetch + diff
-operation. Not implemented. Triggers when consumers want a
-non-manual upgrade path. Couples with package signing — auto-fetching
-new shas without a signature check is the threat model that motivates
-signing.
-
-### Garbage collection of stale archives
-
-Per-file uploads under `binaries-abi-v<N>` accumulate every sha ever
-published. Storage is cheap on GitHub releases; old shas remain
-reachable indefinitely (good for reproducibility). No GC is planned.
-If storage pressure ever justifies it, the candidates are time-based
-(prune unreferenced archives older than N days) or
-reference-counted-against-`main`'s `package.toml` files (smallest
-storage, harshest on stale branches).
+A future "is there a newer version of package X in source Y?" check would
+be a fetch + diff over a package source's recipes. Not implemented.
+Triggers when consumers want a non-manual upgrade path. Couples with
+package signing — auto-adopting a new recipe (and its source pin) without
+a signature check is the threat model that motivates signing.
 
 ## Resolver internals
 
@@ -295,26 +139,10 @@ Cleanup: fold arch into the memo key inside `compute_sha` itself.
 Saves one allocation per arch, prevents future callers from hitting the
 trap.
 
-### Schema-level conditional requirement of `compatibility`
-
-`abi/manifest.schema.json` currently allows `kind: "library"` or the archive-shape
-`kind: "program"` entries WITHOUT a `compatibility` block.  The
-producer (`xtask::archive_stage`) injects the block 100% of the time
-so this is unreachable, but the schema doesn't enforce it. A
-`dependentRequired` or `if/then` clause would tighten the contract.
-
-### Pre-flight resolver covers only `cache_key_sha`
-
-The resolver verifies the embedded `manifest.toml`'s `cache_key_sha`
-matches local computation as part of `remote_fetch::fetch_and_install`.
-The deeper 4-axis chain inside `fetch_and_install` covers
-`target_arch` and `abi_versions`, but a pre-flight could also
-short-circuit on those for clearer errors.
-
 ## Workflow
 
 No packages are bypassed today. (TexLive's source build was thought
-to be blocked on a `pmpost` → `gmp.h` chain, but that turned out to
-be a stale diagnosis: the bundled `libs/gmp/native/` builds fine
+to be blocked on a `pmpost` → `gmp.h` chain, but that turned out
+to be a stale diagnosis: the bundled `libs/gmp/native/` builds fine
 under `nix develop --ignore-environment` on at least Mac aarch64.
 Dropped from the bypass list along with the diagnosis.)

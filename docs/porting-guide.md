@@ -658,16 +658,15 @@ ncurses, openssl, ...), ported programs (vim, php, redis, ...),
 composite VFS images (mariadb-vfs, wordpress, shell), and source-only
 extracts that other builds reach into (pcre2-source). The resolver
 treats all of them uniformly — declaring a package is what gives you
-the cached-build + URL-addressable archive flow described in
-[docs/package-management.md](package-management.md) and
-[docs/binary-releases.md](binary-releases.md).
+the local-first source-build-and-cache flow described in
+[docs/package-management.md](package-management.md).
 
 ### 1. Scaffold the directory
 
 ```
 packages/registry/<name>/
     package.toml        # required — recipe (project-agnostic)
-    build.toml          # required (unless source-only) — project view + binary source
+    build.toml          # required (unless source-only) — project view
     build-<name>.sh     # required — writes only resolver-owned work/output roots
 ```
 
@@ -707,12 +706,10 @@ name = "myprog"
 wasm = "myprog.wasm"
 ```
 
-`package.toml` MUST NOT carry `revision`, `[binary]`, `[build].repo_url`,
-or `[build].commit` — those moved to `build.toml` during the
-binary-resolution-via-index-ledger migration (see the
-[design doc](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)).
-`validate_source` rejects them with a clear error pointing at the
-new home.
+`package.toml` MUST NOT carry `revision`, `[build].repo_url`, or
+`[build].commit` — those are project-view fields that live in
+`build.toml`. `validate_source` rejects them in `package.toml` with a
+clear error pointing at the new home.
 
 For source-only packages (`kind = "source"`), omit `[[outputs]]` and
 skip `build.toml`; the resolver extracts the tarball into the cache
@@ -722,8 +719,8 @@ consumers to reach into.
 ### 2b. Write `build.toml`
 
 The **project view** — sits next to `package.toml`. Declares this
-project's script path + repo + commit + revision + where the binary
-is published. Source-only packages don't need one.
+project's script path + repo + commit + revision + declared build
+inputs. Source-only packages don't need one.
 
 ```toml
 script_path = "packages/registry/myprog/build-myprog.sh"
@@ -736,34 +733,21 @@ revision    = 1
 name       = "upstream_catalog"
 repository = "https://github.com/example/catalog.git"
 commit     = "<exact 40-character lowercase commit>"
-
-[binary]
-index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
-- `{abi}` in `index_url` is substituted with the current
-  `ABI_VERSION` at resolve time — one `build.toml` survives ABI bumps.
-- `revision` bumps invalidate every cached archive for this
-  package; bump only when output bytes legitimately change (build
-  flag tweaks, fork-instrument output). Don't bump for doc-only changes.
-- `commit` is informational provenance; the matrix-build CI step
-  reads `git rev-parse HEAD` at publish time and writes the result
-  back into the archive's internal manifest's `[compatibility]`
-  block.
+- `revision` bumps invalidate the cached build for this package; bump
+  only when output bytes legitimately change (build flag tweaks,
+  fork-instrument output). Don't bump for doc-only changes.
+- `commit` and `repo_url` are informational recipe provenance.
 - Use `[[git_inputs]]` when output bytes depend on another Git repository.
   Do not clone it in the build script. Read the resolver-provided sealed
   checkout from `WASM_POSIX_BUILD_GIT_<NAME>_DIR` and verify/use the paired
-  `..._COMMIT`; its identity is already part of the cache key and archived
-  compatibility provenance.
+  `..._COMMIT`; its identity is already part of the package cache key.
 - Gitlinks are rejected by default. If a pinned upstream tree requires its
   gitlinks to exist as uninitialized directories, declare the exact `tree` and
   set `allow_uninitialized_gitlinks = true` on that input. The resolver still
   requires each gitlink to be an empty real directory and every ordinary
   tracked file to be present.
-- For a one-off legacy archive that doesn't live in an index,
-  replace the `[binary]` block with the direct form:
-  `url = "https://..."` + `sha256 = "..."`. The resolver fetches that
-  archive directly without consulting any `index.toml`.
 
 ### 3. Write `build-<name>.sh`
 
@@ -893,33 +877,16 @@ group handoff are documented in
 
 ### 5. Open a PR
 
-CI runs `staging-build.yml` on the PR, which:
+CI source-builds the affected packages from the recipe and runs the test
+suites against them, exactly as a local build does. Package resolution is
+local-first: there is no binary staging release, index, or durable ABI
+release to publish or fetch. A new or changed recipe invalidates the
+package's cache key, so CI (and every developer) rebuilds it from source
+under the new key.
 
-1. Detects the new package in `preflight` (its `compute-cache-key-sha`
-   yields an archive name not yet on the durable release).
-2. Runs `archive-stage` for it in `matrix-build`, then invokes
-   `scripts/index-update.sh` per matrix entry to upload the
-   content-addressed `.tar.zst` and mutate the isolated PR staging
-   draft's `index.toml` entry under a workflow-level state-lock.
-3. `test-gate` runs the full 5-suite test gate against the union of
-   matrix-built + durable-release archives, seals the run-specific release,
-   and publishes it once.
-4. On `ready-to-ship`, `prepare-merge.yml` snapshots the durable
-   ledger into a run-specific merge-candidate release. It builds or
-   promotes changed archives there, tests the exact synthetic merge,
-   and seals that candidate without changing `binaries-abi-v<N>`.
-5. After a reviewer merges the exact prepared tree,
-   `activate-merge-candidate.yml` verifies the merge, copies and
-   verifies the candidate archives, and commits one complete canonical
-   ledger through the crash-recoverable release-index publisher. New
-   canonical releases are sealed and published once; the existing ABI 42
-   ledger remains the grandfathered mutable exception. No bot PR rewrites
-   package metadata.
-
-After the staging workflow has published `index.toml`, use
-`./run.sh --pr-staging fetch` to inspect the PR's staging release locally
-without waiting for the durable ABI release. `./run.sh browser` instead tests
-the package through the local SourceOnly graph and its dependent VFS products.
+Locally, run `./run.sh browser` (or `./run.sh local-build`) to build the
+package through the local SourceOnly graph and its dependent VFS products,
+then verify the result.
 
 ### 6. Register in `run.sh` (optional)
 
@@ -941,14 +908,14 @@ hardcoding it.
   bash.
 - **Bumping `revision` for doc-only changes.** A revision bump
   invalidates the cache for that package and triggers a full
-  re-source-build across the matrix. Bump only when output bytes
-  legitimately change (compiler flag tweaks, fork-instrument output,
-  etc.).
+  re-source-build of that package and its dependents. Bump only when
+  output bytes legitimately change (compiler flag tweaks,
+  fork-instrument output, etc.).
 - **Source-tree reads instead of declared deps.** If your build
   script reads `packages/registry/<other>/<x>-src/...`, declare `<other>`
   in `depends_on`. The resolver builds deps before you and exports
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
-  source-tree reads break on clean force-rebuild runs.
+  source-tree reads break on clean source-build runs.
 
 ## Existing Build Scripts
 
