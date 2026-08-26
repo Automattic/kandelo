@@ -12,6 +12,7 @@ extern crate wasm_posix_shared;
 
 pub mod audio;
 pub mod blocked_retry;
+pub mod channel_record_decode;
 pub mod channel_result;
 pub mod channel_scratch;
 pub mod credentials;
