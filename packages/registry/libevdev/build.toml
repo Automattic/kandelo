@@ -12,4 +12,5 @@ inputs = [
   "packages/registry/libevdev/build-libevdev.sh",
   "packages/registry/libevdev/src/config.h",
   "packages/registry/libevdev/src/linux-types.h",
+  "scripts/package-build-roots.sh",
 ]

@@ -17,14 +17,14 @@
 # Honors the dep-resolver build-script contract — see
 # packages/registry/libxml2/build-libxml2.sh for the pattern.
 #
-# Output layout:
+# Output layout — the two paths package.toml declares, and nothing else:
 #
 #   $INSTALL_DIR/
-#     bin/espeak-ng.wasm                       (executable wasm binary)
-#     share/espeak-ng-data/                    (phoneme + voice data dir,
-#                                              compiled by the native bin)
-#     share/espeak-ng-data.zip                 (that dir packed as the
-#                                              declared runtime file)
+#     espeak-ng.wasm                           ([[outputs]].wasm)
+#     espeak-ng-data.zip                       ([[runtime_files]].artifact:
+#                                              the phoneme + voice data dir
+#                                              compiled by the native bin,
+#                                              packed)
 #
 # Default install dir for legacy / ad-hoc invocation is
 # ./espeak-ng-install/ next to this script.
@@ -251,15 +251,33 @@ for artifact in lib/libc++.a lib/libc++abi.a include/c++/v1; do
     }
 done
 
+# Under the resolver, project a private sysroot with the resolved libcxx
+# overlaid: the worktree SDK seed is an input tree for every package build
+# and must hold no symlink. A direct invocation has no resolver work dir
+# and indexes the artifacts into the worktree sysroot instead.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/package-build-roots.sh"
+    export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+    SYSROOT="$(
+        kandelo_package_prepare_private_sysroot espeak-ng "$SYSROOT" libcxx
+    )"
+    export WASM_POSIX_SYSROOT="$SYSROOT"
+fi
+
 mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
 ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
 ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
-echo "==> libcxx resolved at $LIBCXX_PREFIX (symlinked into $SYSROOT)"
+echo "==> libcxx resolved at $LIBCXX_PREFIX (projected into $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
+# The private sysroot is a fresh directory per resolve, and cmake bakes
+# --sysroot into CMAKE_CXX_FLAGS at configure time. Configure from scratch so
+# a reused cache cannot pin a sysroot that no longer holds libc++.
 CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
+rm -rf "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 
 echo "==> Cross-compiling espeak-ng for wasm32..."
@@ -286,27 +304,23 @@ cmake --build "$CROSS_BUILD_DIR" --target espeak-ng-bin -j"$(sysctl -n hw.ncpu 2
 
 # --- Phase 4: stage outputs --------------------------------------------
 echo "==> Staging into $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/share"
+mkdir -p "$INSTALL_DIR"
 
 # espeak-ng-bin produces a "espeak-ng" file with no extension; rename
 # to .wasm for the package resolver's binary contract.
-cp "$CROSS_BUILD_DIR/src/espeak-ng" "$INSTALL_DIR/bin/espeak-ng.wasm"
-
-# Data dir: the native build wrote it under NATIVE_BUILD_DIR/espeak-ng-data/.
-rm -rf "$INSTALL_DIR/share/espeak-ng-data"
-cp -R "$NATIVE_BUILD_DIR/espeak-ng-data" "$INSTALL_DIR/share/espeak-ng-data"
+cp "$CROSS_BUILD_DIR/src/espeak-ng" "$INSTALL_DIR/espeak-ng.wasm"
 
 # Restore data.cmake + deps.cmake so the source tree stays clean for next build.
 mv "$DATA_CMAKE_BACKUP" "$DATA_CMAKE"
 mv "$DEPS_CMAKE_BACKUP" "$DEPS_CMAKE"
 
-# Pack the data dir into the declared runtime file. Stored-only, sorted, with
-# a fixed timestamp and mode, so the archive bytes follow the voice data alone
-# and the package cache key stays stable across rebuilds. Same shape as
-# cpython's python-runtime.zip.
-DATA_ZIP="$INSTALL_DIR/share/espeak-ng-data.zip"
+# Pack the native build's data dir into the declared runtime file. Stored-only,
+# sorted, with a fixed timestamp and mode, so the archive bytes follow the voice
+# data alone and the package cache key stays stable across rebuilds. Same shape
+# as cpython's python-runtime.zip.
+DATA_ZIP="$INSTALL_DIR/espeak-ng-data.zip"
 rm -f "$DATA_ZIP"
-python3 - "$INSTALL_DIR/share/espeak-ng-data" "$DATA_ZIP" <<'PY'
+python3 - "$NATIVE_BUILD_DIR/espeak-ng-data" "$DATA_ZIP" <<'PY'
 from pathlib import Path
 import stat
 import sys
@@ -327,9 +341,9 @@ PY
 # Both filenames exactly match the package.toml [[outputs]] and
 # [[runtime_files]] entries; the installer re-checks artifact policy.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary espeak-ng "$INSTALL_DIR/bin/espeak-ng.wasm"
+install_local_binary espeak-ng "$INSTALL_DIR/espeak-ng.wasm"
 install_local_runtime_file espeak-ng "$DATA_ZIP"
 
 echo "==> Done. Outputs:"
-echo "    $INSTALL_DIR/bin/espeak-ng.wasm"
+echo "    $INSTALL_DIR/espeak-ng.wasm"
 echo "    $DATA_ZIP"

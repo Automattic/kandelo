@@ -15,12 +15,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/libevdev-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/libevdev-work" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/libevdev-src"
 
 LIBEVDEV_VERSION="${WASM_POSIX_DEP_VERSION:-1.13.3}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libevdev-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.freedesktop.org/software/libevdev/libevdev-${LIBEVDEV_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-abf1aace86208eebdd5d3550ffded4c8d73bb405b796d51c389c9d0604cbcfbf}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 # --- Toolchain ----------------------------------------------------------
 for tool in wasm32posix-cc wasm32posix-ar python3; do
@@ -31,27 +37,28 @@ for tool in wasm32posix-cc wasm32posix-ar python3; do
     fi
 done
 
-# --- Fetch + verify source ---------------------------------------------
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading libevdev $LIBEVDEV_VERSION..."
-    TARBALL="/tmp/libevdev-${LIBEVDEV_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
-fi
+# --- Stage the resolver-verified source ---------------------------------
+# The resolver acquires and verifies the archive before this script runs, so
+# stage its tree rather than fetch the tarball a second time.
+echo "==> Staging verified libevdev $LIBEVDEV_VERSION source..."
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source libevdev "$SRC_DIR" \
+    "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 
 # Fresh build + install each run — stale objects would shadow config
 # changes and the cache key varies per build.
 BUILD_DIR="$SCRIPT_DIR/libevdev-build"
-rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: libevdev resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/libevdev"
 
 LE="$SRC_DIR/libevdev"

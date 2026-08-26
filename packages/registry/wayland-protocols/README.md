@@ -1,6 +1,6 @@
 # wayland-protocols (vendored v1 XML)
 
-`kind = "source"` package providing the Wayland protocol XML the DRI
+`kind = "library"` package providing the Wayland protocol XML the DRI
 compositor and clients need. See
 [`docs/plans/2026-07-08-dri-wayland-compositor-plan.md`](../../../docs/plans/2026-07-08-dri-wayland-compositor-plan.md)
 for the roadmap.
@@ -55,11 +55,11 @@ darwin = "nix develop (provided by flake.nix)"
 linux  = "nix develop (provided by flake.nix), or apt install wayland-scanner"
 ```
 
-Then in the build script (`$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR`
+Then in the build script (`$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR`
 is injected by the resolver):
 
 ```bash
-XML="$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/xdg-shell.xml"
+XML="$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml"
 wayland-scanner client-header "$XML" xdg-shell-client-protocol.h
 wayland-scanner private-code  "$XML" xdg-shell-protocol.c
 wasm32posix-cc -c xdg-shell-protocol.c -o xdg-shell-protocol.o   # links into the client

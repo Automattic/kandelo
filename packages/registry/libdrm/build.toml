@@ -1,6 +1,7 @@
 script_path = "packages/registry/libdrm/build-libdrm.sh"
 inputs = [
   "packages/registry/libdrm/build-libdrm.sh",
+  "scripts/package-build-roots.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

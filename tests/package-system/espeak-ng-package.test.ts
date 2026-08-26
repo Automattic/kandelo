@@ -46,7 +46,9 @@ describe("espeak-ng package contract", () => {
     expect(build).not.toContain(
       'cmake --build "$CROSS_BUILD_DIR" --target data',
     );
-    expect(build).toContain('cp -R "$NATIVE_BUILD_DIR/espeak-ng-data"');
+    expect(build).toContain(
+      'python3 - "$NATIVE_BUILD_DIR/espeak-ng-data" "$DATA_ZIP"',
+    );
   });
 
   it("declares every host tool the source build invokes", () => {

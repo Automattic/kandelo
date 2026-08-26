@@ -1,14 +1,19 @@
-# Per-package manifest for wayland-protocols. See docs/package-management.md
-# ("Source-kind manifests").
+# Per-package manifest for wayland-protocols.
 #
-# This is a `kind = "source"` package: it provides the Wayland protocol
-# XML definitions that `wayland-scanner` (a host build tool, provided via
-# flake.nix) turns into C marshalling glue. It builds no wasm artifact of
-# its own — the generated glue is compiled by each *consumer* (libwayland
-# in PR3, the compositor and clients in PR6+) against the wasm sysroot.
+# This package provides the Wayland protocol XML definitions that
+# `wayland-scanner` (a host build tool, provided via flake.nix) turns into
+# C marshalling glue. It builds no wasm archive of its own — the generated
+# glue is compiled by each *consumer* (libwayland in PR3, the compositor
+# and clients in PR6+) against the wasm sysroot. Its declared outputs are
+# therefore `outputs.files` only.
 #
-# The XML files are VENDORED in-tree under `xml/` rather than fetched,
-# for three reasons:
+# It is `kind = "library"`, not `kind = "source"`, because the XML is
+# VENDORED in-tree (see below) rather than fetched. Under the
+# `source-only-v1` resolve policy a source-kind package must name a real
+# archive with a verifiable sha256, and its `[build]` script is bypassed
+# entirely — neither holds here.
+#
+# The XML files are vendored under `xml/` for three reasons:
 #   1. Darwin/Linux parity — the core `wayland.xml` ships only inside the
 #      Linux-only `wayland` library, which cannot even evaluate on macOS
 #      (`meta.badPlatforms` includes darwin). Vendoring gives both hosts
@@ -17,7 +22,7 @@
 #      `wl_interface`/`wl_message` tables are frozen by these exact files.
 #      Vendoring makes the pin reviewable and independent of nixpkgs bumps.
 #   3. Simple dep wiring — consumers list `wayland-protocols` in
-#      `depends_on` and read `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/`.
+#      `depends_on` and read `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
 #
 # VERSION PIN (must stay coherent with the host `wayland-scanner` and the
 # eventual `libwayland` port in PR3):
@@ -30,16 +35,14 @@
 #
 # The `[source]` block carries a sentinel URL + zero sha so the manifest
 # schema parses; the `[build]` script stages the vendored `xml/` into the
-# cache instead of fetching (matches the libffi / libinput-lite
-# in-tree-only convention).
+# cache instead of fetching (matches the libffi / mtdev in-tree-only
+# convention).
 
-kind = "source"
+kind = "library"
 
 name = "wayland-protocols"
 version = "1.45"
-# Required because this source package declares a [build] script (the
-# resolver enforces it for script-override sources). The XML is
-# arch-agnostic, but kernel_abi must track ABI_VERSION in
+# The XML is arch-agnostic, but kernel_abi must track ABI_VERSION in
 # crates/shared/src/lib.rs.
 kernel_abi = 16
 depends_on = []
@@ -56,3 +59,26 @@ url = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/1.45/COPY
 
 [build]
 script_path = "packages/registry/wayland-protocols/build-wayland-protocols.sh"
+
+[outputs]
+files = [
+  "xml/cursor-shape-v1.xml",
+  "xml/fractional-scale-v1.xml",
+  "xml/idle-inhibit-unstable-v1.xml",
+  "xml/keyboard-shortcuts-inhibit-unstable-v1.xml",
+  "xml/linux-dmabuf-v1.xml",
+  "xml/pointer-gestures-unstable-v1.xml",
+  "xml/presentation-time.xml",
+  "xml/primary-selection-unstable-v1.xml",
+  "xml/tablet-unstable-v2.xml",
+  "xml/text-input-unstable-v3.xml",
+  "xml/viewporter.xml",
+  "xml/wayland.xml",
+  "xml/wlr-layer-shell-unstable-v1.xml",
+  "xml/xdg-activation-v1.xml",
+  "xml/xdg-decoration-unstable-v1.xml",
+  "xml/xdg-foreign-unstable-v1.xml",
+  "xml/xdg-output-unstable-v1.xml",
+  "xml/xdg-shell-unstable-v6.xml",
+  "xml/xdg-shell.xml",
+]

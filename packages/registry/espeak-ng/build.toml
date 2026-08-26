@@ -2,6 +2,7 @@ script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
 inputs = [
   "packages/registry/espeak-ng/build-espeak-ng.sh",
   "packages/registry/espeak-ng/wasm32-posix-toolchain.cmake",
+  "scripts/package-build-roots.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
