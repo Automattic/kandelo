@@ -46,6 +46,7 @@ import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
+import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -1442,7 +1443,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     });
     createdMemoryLease = memoryLease;
     const channelOffset = layout.channelOffset;
-    const launchEnv = msg.env ?? defaultEnv;
+    const launchEnv = withBrowserMitmCaEnv(msg.env ?? defaultEnv);
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,

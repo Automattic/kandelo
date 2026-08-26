@@ -1,4 +1,5 @@
 import { Duplex } from "node:stream";
+import { gzipSync } from "node:zlib";
 import {
   connect as tlsConnect,
   createServer as createTlsServer,
@@ -315,6 +316,61 @@ it("serves multiple keep-alive requests over one MITM connection (git smart-HTTP
   expect(combined).toContain(bodies[1]);
   expect(fetchMock.mock.calls[0][0] as string).toContain("/info/refs");
   expect(fetchMock.mock.calls[1][0] as string).toContain("/git-upload-pack");
+});
+
+it("decodes a gzip Content-Encoding POST body so it traverses the CORS proxy", async () => {
+  // git gzip-compresses the git-upload-pack fetch command and sets
+  // Content-Encoding: gzip. That header is not in the proxy allow-list, so a
+  // faithful pass-through is refused (previously surfaced to git as HTTP 502).
+  // The MITM decodes the body to identity and drops Content-Encoding so only
+  // allow-listed fields remain.
+  const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+  vi.stubGlobal("fetch", fetchMock);
+  const backend = new TlsNetworkBackend({
+    corsProxy: {
+      url: "https://proxy.example/?",
+      allowedRequestHeaderNames: ["accept", "content-type", "git-protocol"],
+      allowAnonymousGetHeaderOmission: true,
+    },
+  });
+  await backend.init();
+  const handle = 11;
+  backend.connect(handle, backend.getaddrinfo("example.test"), 443);
+  const transport = createTransport(backend, handle, () => {});
+  const client = tlsConnect({
+    socket: transport,
+    servername: "example.test",
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2",
+    maxVersion: "TLSv1.2",
+  });
+
+  const gz = gzipSync(Buffer.from("0011command=fetch0000"));
+  await new Promise<void>((resolve, reject) => {
+    client.on("secureConnect", () => {
+      const head = Buffer.from(
+        "POST /git-upload-pack HTTP/1.1\r\n" +
+          "Host: example.test\r\n" +
+          "Content-Type: application/x-git-upload-pack-request\r\n" +
+          "git-protocol: version=2\r\n" +
+          "Content-Encoding: gzip\r\n" +
+          `Content-Length: ${gz.length}\r\n` +
+          "Connection: close\r\n\r\n",
+      );
+      client.write(Buffer.concat([head, gz]));
+    });
+    client.on("data", () => {});
+    client.on("end", () => resolve());
+    client.on("error", reject);
+  });
+
+  // No BrowserCorsProxyRequestError — the request reached fetch.
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [fetchUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(fetchUrl).toBe("https://proxy.example/?https://example.test/git-upload-pack");
+  expect(new TextDecoder().decode(init.body as Uint8Array)).toBe("0011command=fetch0000");
+  expect((init.headers as Headers).has("content-encoding")).toBe(false);
+  expect((init.headers as Headers).get("git-protocol")).toBe("version=2");
 });
 
 it("reassembles a chunked request body before issuing the fetch", async () => {
