@@ -1,0 +1,14 @@
+script_path = "packages/registry/libffi/build-libffi.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
+revision    = 1
+
+# The bundled shim source + header ARE the package (no upstream fetch),
+# so both are part of the cache key: editing either must invalidate
+# cached archives so consumers rebuild against the new bytes. They are
+# tracked in git, so the resolver can hash them on a clean checkout.
+inputs = [
+  "packages/registry/libffi/build-libffi.sh",
+  "packages/registry/libffi/src/ffi_shim.c",
+  "packages/registry/libffi/include/ffi.h",
+]
