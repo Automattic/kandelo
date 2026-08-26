@@ -859,4 +859,285 @@ mod tests {
             other => panic!("expected msghdr nested, got {other:?}"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Task 3 seeded property tests.
+    //
+    // Deterministic: a fixed const seed array drives an xorshift64 PRNG. No
+    // Math.random, no wall-clock, no thread RNG.
+    // -----------------------------------------------------------------------
+
+    const PROP_SEEDS: [u64; 4] = [
+        0x0123_4567_89AB_CDEF,
+        0xDEAD_BEEF_CAFE_F00D,
+        0xA5A5_5A5A_1234_9876,
+        0x0F1E_2D3C_4B5A_6978,
+    ];
+
+    struct XorShift64(u64);
+    impl XorShift64 {
+        fn new(seed: u64) -> Self {
+            // Avoid the all-zero fixed point.
+            XorShift64(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+        }
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn range(&mut self, n: usize) -> usize {
+            if n == 0 {
+                0
+            } else {
+                (self.next() % (n as u64)) as usize
+            }
+        }
+    }
+
+    /// Byte offset of a subslice within `data`. Valid because every returned
+    /// slice borrows `data`.
+    fn sub_offset(data: &[u8], sub: &[u8]) -> usize {
+        (sub.as_ptr() as usize) - (data.as_ptr() as usize)
+    }
+
+    /// Invariant (b): every returned slice lies fully within `data`, and no two
+    /// top-level span byte ranges overlap.
+    fn assert_slices_within_and_disjoint(data: &[u8], decoded: &DecodedSyscall<'_>) {
+        let base = data.as_ptr() as usize;
+        let end = base + data.len();
+        let within = |s: &[u8]| {
+            let p = s.as_ptr() as usize;
+            p >= base && p + s.len() <= end
+        };
+
+        let mut top: Vec<(usize, usize)> = Vec::new();
+        for span in &decoded.spans {
+            assert!(within(span.bytes), "span bytes escape data");
+            let so = sub_offset(data, span.bytes);
+            if !span.bytes.is_empty() {
+                top.push((so, so + span.bytes.len()));
+            }
+            match &span.nested {
+                Some(Nested::Iovec(bufs)) => {
+                    for buf in bufs {
+                        assert!(within(buf), "iovec buffer escapes data");
+                    }
+                }
+                Some(Nested::MsgHdr {
+                    name,
+                    iov,
+                    control,
+                    ..
+                }) => {
+                    assert!(within(name), "msghdr name escapes data");
+                    assert!(within(control), "msghdr control escapes data");
+                    for buf in iov {
+                        assert!(within(buf), "msghdr iovec escapes data");
+                    }
+                }
+                None => {}
+            }
+        }
+        for i in 0..top.len() {
+            for j in (i + 1)..top.len() {
+                let (a0, a1) = top[i];
+                let (b0, b1) = top[j];
+                assert!(
+                    !(a0 < b1 && b0 < a1),
+                    "top-level spans overlap: {:?} {:?}",
+                    top[i],
+                    top[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn property_decode_never_panics_on_arbitrary_input() {
+        // Invariant (a): decode never panics on any input slice + any capacity
+        // <= slice len. Also feeds capacities > len to exercise that branch.
+        for &seed in &PROP_SEEDS {
+            let mut rng = XorShift64::new(seed);
+            for _ in 0..1000 {
+                let len = rng.range(300);
+                let mut bytes = Vec::with_capacity(len);
+                for _ in 0..len {
+                    bytes.push((rng.next() & 0xFF) as u8);
+                }
+                // Occasionally stamp a valid magic/abi so structural paths run.
+                if len >= RECORD_HEADER_BYTES && (rng.next() & 1) == 0 {
+                    bytes[H_MAGIC..H_MAGIC + 4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
+                    bytes[H_RECORD_ABI..H_RECORD_ABI + 2]
+                        .copy_from_slice(&RECORD_ABI.to_le_bytes());
+                    // Small span_count so descriptor paths engage.
+                    let sc = (rng.range(MAX_SPANS + 2)) as u16;
+                    bytes[H_SPAN_COUNT..H_SPAN_COUNT + 2].copy_from_slice(&sc.to_le_bytes());
+                }
+                let cap = if bytes.is_empty() {
+                    0
+                } else {
+                    rng.range(bytes.len() + 1)
+                };
+                // Must not panic. On Ok, invariant (b) must hold.
+                if let Ok(decoded) = decode(&bytes, cap) {
+                    assert_slices_within_and_disjoint(&bytes, &decoded);
+                }
+                // Also exercise capacity > len (caller misuse): must not panic.
+                let big_cap = bytes.len() + rng.range(64);
+                let _ = decode(&bytes, big_cap);
+            }
+        }
+    }
+
+    #[test]
+    fn property_roundtrip_encode_decode() {
+        // Invariant (c): a record built by the reference encoder decodes back to
+        // the same syscall/scalars/spans.
+        for &seed in &PROP_SEEDS {
+            let mut rng = XorShift64::new(seed);
+            for _ in 0..1000 {
+                let mut b = RecordBuilder::new();
+                b.syscall = (rng.next() & 0xFFFF) as u16;
+                b.flags = 0;
+                for s in b.scalars.iter_mut() {
+                    *s = rng.next() as i64;
+                }
+
+                let span_count = rng.range(MAX_SPANS + 1);
+                // Track expected spans for comparison.
+                let mut expected: Vec<SpanSpec> = Vec::new();
+                for _ in 0..span_count {
+                    let choice = rng.range(6);
+                    let spec = match choice {
+                        0 | 1 | 2 | 3 => {
+                            let kind = (choice as u8) + 1; // 1..=4 flat kinds
+                            let plen = rng.range(24);
+                            let mut p = Vec::with_capacity(plen);
+                            for _ in 0..plen {
+                                p.push((rng.next() & 0xFF) as u8);
+                            }
+                            SpanSpec::Flat {
+                                kind,
+                                arg_index: rng.range(6) as u8,
+                                payload: p,
+                            }
+                        }
+                        4 => {
+                            let nb = rng.range(4);
+                            let mut buffers = Vec::new();
+                            for _ in 0..nb {
+                                let l = rng.range(12);
+                                let mut buf = Vec::with_capacity(l);
+                                for _ in 0..l {
+                                    buf.push((rng.next() & 0xFF) as u8);
+                                }
+                                buffers.push(buf);
+                            }
+                            SpanSpec::Iovec {
+                                arg_index: rng.range(6) as u8,
+                                buffers,
+                            }
+                        }
+                        _ => {
+                            let nl = rng.range(6);
+                            let mut name = Vec::with_capacity(nl);
+                            for _ in 0..nl {
+                                name.push((rng.next() & 0xFF) as u8);
+                            }
+                            let ni = rng.range(3);
+                            let mut iov = Vec::new();
+                            for _ in 0..ni {
+                                let l = rng.range(10);
+                                let mut buf = Vec::with_capacity(l);
+                                for _ in 0..l {
+                                    buf.push((rng.next() & 0xFF) as u8);
+                                }
+                                iov.push(buf);
+                            }
+                            let cl = rng.range(6);
+                            let mut control = Vec::with_capacity(cl);
+                            for _ in 0..cl {
+                                control.push((rng.next() & 0xFF) as u8);
+                            }
+                            SpanSpec::Msghdr {
+                                arg_index: rng.range(6) as u8,
+                                name,
+                                iov,
+                                control,
+                                flags: rng.next() as u32,
+                            }
+                        }
+                    };
+                    expected.push(spec);
+                }
+                b.spans = expected.clone();
+                let data = b.build();
+
+                let decoded = decode(&data, data.len())
+                    .unwrap_or_else(|e| panic!("round-trip record failed to decode: {e:?}"));
+                assert_slices_within_and_disjoint(&data, &decoded);
+
+                assert_eq!(decoded.syscall, b.syscall);
+                assert_eq!(decoded.scalars, b.scalars);
+                assert_eq!(decoded.spans.len(), expected.len());
+                for (span, spec) in decoded.spans.iter().zip(expected.iter()) {
+                    match spec {
+                        SpanSpec::Flat {
+                            kind,
+                            arg_index,
+                            payload,
+                        } => {
+                            assert_eq!(span.kind, *kind);
+                            assert_eq!(span.arg_index, *arg_index);
+                            assert_eq!(span.bytes, &payload[..]);
+                            assert!(span.nested.is_none());
+                        }
+                        SpanSpec::Iovec { arg_index, buffers } => {
+                            assert_eq!(span.kind, SPAN_KIND_IOVEC_ARRAY);
+                            assert_eq!(span.arg_index, *arg_index);
+                            match &span.nested {
+                                Some(Nested::Iovec(bufs)) => {
+                                    assert_eq!(bufs.len(), buffers.len());
+                                    for (got, want) in bufs.iter().zip(buffers.iter()) {
+                                        assert_eq!(*got, &want[..]);
+                                    }
+                                }
+                                other => panic!("expected iovec, got {other:?}"),
+                            }
+                        }
+                        SpanSpec::Msghdr {
+                            arg_index,
+                            name,
+                            iov,
+                            control,
+                            flags,
+                        } => {
+                            assert_eq!(span.kind, SPAN_KIND_MSGHDR);
+                            assert_eq!(span.arg_index, *arg_index);
+                            match &span.nested {
+                                Some(Nested::MsgHdr {
+                                    name: gname,
+                                    iov: giov,
+                                    control: gcontrol,
+                                    flags: gflags,
+                                }) => {
+                                    assert_eq!(*gname, &name[..]);
+                                    assert_eq!(giov.len(), iov.len());
+                                    for (got, want) in giov.iter().zip(iov.iter()) {
+                                        assert_eq!(*got, &want[..]);
+                                    }
+                                    assert_eq!(*gcontrol, &control[..]);
+                                    assert_eq!(*gflags, *flags);
+                                }
+                                other => panic!("expected msghdr, got {other:?}"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
