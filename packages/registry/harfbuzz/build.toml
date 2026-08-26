@@ -1,0 +1,9 @@
+script_path = "packages/registry/harfbuzz/build-harfbuzz.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "b87f313b3"
+revision    = 1
+
+inputs = [
+  "packages/registry/harfbuzz/build-harfbuzz.sh",
+  "scripts/package-build-roots.sh",
+]

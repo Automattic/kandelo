@@ -1,0 +1,30 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Unicode bidi algorithm (libfribidi.a). Ported as pango's bidi
+# dependency (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
+# PR23).
+name = "fribidi"
+version = "1.0.16"
+kernel_abi = 17
+depends_on = []
+
+[source]
+url = "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz"
+sha256 = "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://github.com/fribidi/fribidi/blob/v1.0.16/COPYING"
+
+[build]
+script_path = "packages/registry/fribidi/build-fribidi.sh"
+
+[outputs]
+libs = ["lib/libfribidi.a"]
+headers = ["include/fribidi"]
+pkgconfig = ["lib/pkgconfig/fribidi.pc"]
