@@ -301,6 +301,30 @@ Design rules encoded as consts and documented on the module:
 
 ---
 
+## Task 4b: Kernel dispatch of nested spans (iovec/msghdr) — REQUIRED before Task 6
+
+Task 4 wired the flat span kinds into `prepare_channel_record`
+(`crates/runtime-core/src/channel_scratch.rs`) but returns `EINVAL` for
+`IovecArray`/`MsgHdr` (it deliberately did not reconstruct the host wire
+structs `KernelIovecWire`/`KernelMsghdrWire`). Before the Task 6 flip — after
+which the record path is the ONLY path — the kernel must dispatch these, or
+writev/readv/preadv/pwritev/sendmsg/recvmsg break.
+
+**Files:** `crates/runtime-core/src/channel_scratch.rs` (`prepare_channel_record`
+nested arm) + the iovec/msghdr wire types it must produce (grounding: the
+legacy validator built `KernelIovecWire`/`KernelMsghdrWire`).
+
+- [ ] Reconstruct, from a decoded `IovecArray` span, the same iovec wire the
+  existing `writev`/`readv` dispatch consumes (each sub-buffer laid into scratch,
+  the iov array pointing at scratch addresses), and from a `MsgHdr` span the
+  msghdr wire (name + iov block + control). Reuse `ChannelScratchRegion` bounds.
+- [ ] TDD: a record with a 3-entry `IovecArray` drives `writev` to the same
+  result as the legacy path; a `MsgHdr` record drives `sendmsg`. Assert the
+  copy-back for readv/recvmsg out-buffers.
+- [ ] Validate: `cargo test --workspace --exclude xtask`; kernel.wasm builds;
+  ABI snapshot still unchanged (record path still dormant).
+- [ ] Commit (`Kernel: Dispatch nested iovec/msghdr record spans`).
+
 ## Task 5: Guest self-marshalling in musl glue (additive; validated by round-trip)
 
 **Files:**
