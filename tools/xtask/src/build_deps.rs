@@ -6527,6 +6527,52 @@ fn check_program_package_indexes_in_context(
     Ok(())
 }
 
+/// Ensure every program-package projection is present and current in its
+/// ordered suffix context by regenerating it when missing or drifted.
+///
+/// The derived counterpart to `check_program_package_indexes_in_context`. The
+/// program index is a generated artifact (gitignored), not a committed one, so
+/// there is no baseline for it to be "stale" against: a source build or source
+/// resolver keeps it fresh by writing it from the authenticated source registry
+/// rather than failing. Each physical root owns the index for the ordered
+/// registry context beginning at that root, exactly as the check variant
+/// validates. Writes only when the freshly serialized projection differs from
+/// what is on disk, so an already-current index is left untouched (no mtime
+/// churn that would disturb source-build content caches).
+pub(crate) fn ensure_program_package_indexes_in_context(
+    registry: &Registry,
+) -> Result<(), String> {
+    for (root_index, root) in registry.roots.iter().enumerate() {
+        let root_metadata = match std::fs::metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect configured package registry root {}: {error}",
+                    root.display()
+                ));
+            }
+        };
+        if !root_metadata.is_dir() {
+            return Err(format!(
+                "configured package registry root is not a directory: {}",
+                root.display()
+            ));
+        }
+
+        let index = root.join("program-packages.json");
+        let suffix_registry = Registry {
+            roots: registry.roots[root_index..].to_vec(),
+        };
+        let expected = serialize_program_package_index(root, &suffix_registry)?;
+        let current = std::fs::read_to_string(&index).ok();
+        if current.as_deref() != Some(expected.as_str()) {
+            cmd_program_package_index(root, &index, &suffix_registry)?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_selected_program_package_names(value: &str) -> Result<Vec<String>, String> {
     if value.is_empty() {
         return Err("selected program package list may not be empty".to_string());
@@ -16304,6 +16350,7 @@ fn uses_program_index_source_context(subcommand: &str) -> bool {
             | "program-index"
             | "program-index-check"
             | "program-index-context-check"
+            | "program-index-context-ensure"
             | "program-index-selected"
     )
 }
@@ -16449,7 +16496,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--source-only] [--fetch-only] [--force-source-build] \
          [--source-repo-root <absolute-canonical-path>] \
-         <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|program-index-selected|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|program-index-context-ensure|program-index-selected|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -16529,6 +16576,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err("build-deps program-index-context-check: takes no arguments".into());
             }
             check_program_package_indexes_in_context(&registry, true)
+        }
+        "program-index-context-ensure" => {
+            if target.is_some() || extra.is_some() {
+                return Err("build-deps program-index-context-ensure: takes no arguments".into());
+            }
+            ensure_program_package_indexes_in_context(&registry)
         }
         "program-index-selected" => {
             let selected = target.ok_or_else(|| {
@@ -21034,19 +21087,12 @@ index_url = "https://example.test/releases/download/binaries-abi-v{{abi}}/index.
         );
     }
 
-    #[test]
-    fn committed_program_package_projection_is_current() {
-        let registry_root = crate::repo_root().join("packages/registry");
-        let registry = Registry {
-            roots: vec![registry_root.clone()],
-        };
-        cmd_check_program_package_index(
-            &registry_root,
-            &registry_root.join("program-packages.json"),
-            &registry,
-        )
-        .unwrap();
-    }
+    // NOTE: there is deliberately no test asserting a *committed*
+    // program-packages.json is current. The index is a generated artifact
+    // (gitignored): its cache keys hash the build/toolchain trees, so a
+    // committed copy would drift against whatever checkout last generated it.
+    // Generation is instead exercised by `ensure_program_package_indexes_*`
+    // and the source-root determinism tests in program_index_source_root.rs.
 
     #[test]
     fn program_package_projection_excludes_root_boot_artifacts() {

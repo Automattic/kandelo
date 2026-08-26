@@ -406,9 +406,22 @@ fn generate_vfs_product_catalog(repo: &Path) -> Result<(), String> {
     )
 }
 
+/// Emit the derived program package index
+/// (`packages/registry/program-packages.json`) from the committed package
+/// manifests before any build node runs. Like the VFS product catalog above,
+/// the index is a generated artifact (gitignored, not committed): the TS
+/// resolver, `scripts/build-programs.sh`, and the npm host package consume it,
+/// so every local build regenerates it to keep it current with the manifests it
+/// is derived from. `ensure_*` writes only when the projection has drifted, so
+/// an already-current index is left untouched.
+fn generate_program_package_index(repo: &Path) -> Result<(), String> {
+    crate::build_deps::ensure_program_package_indexes_in_context(&fixed_registry(repo))
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     generate_vfs_product_catalog(&repo)?;
+    generate_program_package_index(&repo)?;
     let set = resolve_repo_file(&repo, &args.set, "supported set")?;
     let set = fs::canonicalize(&set)
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;

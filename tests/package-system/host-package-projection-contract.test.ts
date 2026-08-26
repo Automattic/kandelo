@@ -5,18 +5,21 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(import.meta.dirname, "../..");
 
 describe("standalone host package projection contract", () => {
-  it("checks the generated projection before copying it into the npm package", () => {
+  it("generates the projection before copying it into the npm package", () => {
     const script = readFileSync(
       join(repoRoot, "scripts", "prepare-host-package.sh"),
       "utf8",
     );
-    const check = script.indexOf("build-deps program-index-check \\");
+    // The program index is a generated artifact (gitignored): the package must
+    // regenerate a fresh projection and bundle that, never copy a committed one
+    // that could have drifted from another checkout.
+    const generate = script.indexOf("build-deps program-index \\");
     const copy = script.indexOf(
       'cp \\\n    "$REPO_ROOT/packages/registry/program-packages.json"',
     );
 
-    expect(check).toBeGreaterThan(-1);
-    expect(copy).toBeGreaterThan(check);
+    expect(generate).toBeGreaterThan(-1);
+    expect(copy).toBeGreaterThan(generate);
     expect(script).toContain(
       '"$REPO_ROOT/packages/registry/program-packages.json"',
     );

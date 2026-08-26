@@ -31,10 +31,21 @@ mkdir -p "$OUT_DIR_32" "$OUT_DIR_64" "$TEST_FIXTURE_DIR/wasm32"
 # to replace it. Derive the complete ownership set from the generated package
 # projection so new package-owned programs cannot recreate that collision.
 PROGRAM_PACKAGE_INDEX="$REPO_ROOT/packages/registry/program-packages.json"
-[ -f "$PROGRAM_PACKAGE_INDEX" ] && [ ! -L "$PROGRAM_PACKAGE_INDEX" ] || {
-    echo "Error: program package ownership index is unavailable: $PROGRAM_PACKAGE_INDEX" >&2
+if [ -L "$PROGRAM_PACKAGE_INDEX" ]; then
+    echo "Error: program package ownership index must be a regular file, not a symlink: $PROGRAM_PACKAGE_INDEX" >&2
     exit 1
-}
+fi
+if [ ! -f "$PROGRAM_PACKAGE_INDEX" ]; then
+    # The index is a generated artifact (gitignored). build.sh / local-build
+    # normally emit it first; regenerate it here so a standalone invocation
+    # still derives the ownership set from an up-to-date projection.
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+        build-deps program-index \
+        --source-repo-root "$REPO_ROOT" \
+        "$REPO_ROOT/packages/registry" \
+        "$PROGRAM_PACKAGE_INDEX"
+fi
 PACKAGE_OWNED_PROGRAM_MIRRORS="$(
     node - "$PROGRAM_PACKAGE_INDEX" <<'NODE'
 const fs = require("node:fs");

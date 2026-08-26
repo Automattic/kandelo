@@ -7,10 +7,12 @@ mkdir -p "$HOST_WASM_DIR"
 
 # Keep the standalone npm package on the same Rust-generated program closure
 # and artifact policy as source checkouts. The package has no registry TOML to
-# inspect at runtime. Refuse to copy stale policy into a publishable package.
+# inspect at runtime. The program index is a generated artifact (gitignored),
+# so regenerate it from the committed manifests here and bundle that fresh copy
+# — the package never ships a projection that drifted from another checkout.
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-    build-deps program-index-check \
+    build-deps program-index \
     --source-repo-root "$REPO_ROOT" \
     "$REPO_ROOT/packages/registry" \
     "$REPO_ROOT/packages/registry/program-packages.json"

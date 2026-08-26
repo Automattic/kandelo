@@ -64,6 +64,16 @@ node_modules/
 # tracked; browser demos and the VFS image builder consume the generated copy.
 /images/vfs/products/generated/
 
+# The program package index is a projection of packages/registry/*/package.toml
+# (package identity + per-arch build cache keys). Its cache keys are a content
+# hash of the build/toolchain trees, so a committed copy drifts against whatever
+# checkout last generated it. Like the catalog above it is derived, not tracked:
+# `xtask build-deps program-index` regenerates it (run automatically at the
+# start of every `xtask local-build`, and by build.sh / prepare-host-package.sh
+# / build-programs.sh); the TS resolver generates it on demand from the
+# authenticated source root when a source checkout lacks it.
+/packages/registry/program-packages.json
+
 # OS noise
 .DS_Store
 

@@ -666,7 +666,7 @@ describe("program package source freshness boundary", () => {
       `#!/bin/sh
 [ "$#" = 4 ]
 [ "$1" = build-deps ]
-[ "$2" = program-index-context-check ]
+[ "$2" = program-index-context-ensure ]
 [ "$3" = --source-repo-root ]
 [ "$4" = "${realpathSync(findRepoRoot())}" ]
 [ "$WASM_POSIX_DEPS_REGISTRY" = "${fixtureRegistryRoot}" ]
@@ -751,9 +751,9 @@ exit 23
         )
       ).toThrow(
         new RegExp(
-          "program-index-context-check --source-repo-root "
+          "program-index-context-ensure --source-repo-root "
             + `${sourceRepoRootPattern} failed with status 23[\\s\\S]*`
-            + "checker args: build-deps program-index-context-check "
+            + "checker args: build-deps program-index-context-ensure "
             + `--source-repo-root ${sourceRepoRootPattern}`,
         ),
       );

@@ -731,7 +731,7 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   return preparedProgramIndexChecker.xtaskPath;
 }
 
-function checkProgramIndexesInSourceContext(): void {
+function ensureProgramIndexesInSourceContext(): void {
   const sourceRepoRoot = completeSourceCheckoutRoot();
   if (sourceRepoRoot === null) return;
   const registryRoots = configuredProgramRegistryRoots();
@@ -742,13 +742,17 @@ function checkProgramIndexesInSourceContext(): void {
   }
 
   const xtaskPath = prepareProgramIndexChecker(sourceRepoRoot);
-  // WHY: a relocated, sealed xtask still contains the checkout path where it
-  // was compiled. Carry the already-authenticated source root in argv so every
-  // package identity input comes from this protected source projection, not
-  // from compile-time or caller-controlled ambient state.
+  // WHY: the program index is a generated artifact (gitignored), not a
+  // committed one, so a source checkout keeps it current by regenerating it
+  // rather than failing when it drifts. A relocated, sealed xtask still
+  // contains the checkout path where it was compiled; carry the
+  // already-authenticated source root in argv so every package identity input
+  // comes from this protected source projection, not from compile-time or
+  // caller-controlled ambient state. `program-index-context-ensure` writes only
+  // when the projection has drifted, so an already-current index is untouched.
   const args = [
     "build-deps",
-    "program-index-context-check",
+    "program-index-context-ensure",
     "--source-repo-root",
     sourceRepoRoot,
   ];
@@ -762,7 +766,7 @@ function checkProgramIndexesInSourceContext(): void {
   });
   if (result.status !== 0) {
     throw new Error(
-      `Program package source projection is not current:\n${
+      `Failed to generate the program package source projection:\n${
         commandFailure(xtaskPath, args, result)
       }`,
     );
@@ -781,7 +785,7 @@ function withFreshProgramIndexes<T>(
   }
   programIndexFreshnessBoundaryDepth += 1;
   try {
-    checkProgramIndexesInSourceContext();
+    ensureProgramIndexesInSourceContext();
     return operation();
   } finally {
     programIndexFreshnessBoundaryDepth -= 1;
