@@ -2,9 +2,12 @@ script_path = "packages/registry/sqlite-cli/build-sqlite-cli.sh"
 inputs = [
   "packages/registry/sqlite-cli/build-sqlite-cli.sh",
   "scripts/run-wasm-fork-instrument.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "scripts/install-local-binary.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "f429ff936c877a39d254a559d19bb2c5b671d9ec"
+commit      = "efbb2492782c8451e46897135d86c495f137bedc"
 revision    = 1
 
 [binary]

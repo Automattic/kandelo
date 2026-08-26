@@ -23,5 +23,5 @@ url = "https://www.sqlite.org/copyright.html"
 script_path = "packages/registry/sqlite-cli/build-sqlite-cli.sh"
 
 [[outputs]]
-name = "sqlite-cli"
+name = "sqlite3"
 wasm = "sqlite3.wasm"
