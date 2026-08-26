@@ -671,6 +671,14 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-server-protocol.h"
     wayland-scanner client-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-client-protocol.h"
 
+    # Same for wp_presentation (PR19): frame-timing feedback off the existing
+    # PAGE_FLIP timestamps. foot uses it for frame pacing; clients without it
+    # fall back to wl_surface.frame.
+    PTIME_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/presentation-time.xml"
+    wayland-scanner private-code  "$PTIME_XML" "$WLC_GEN/presentation-time-protocol.c"
+    wayland-scanner server-header "$PTIME_XML" "$WLC_GEN/presentation-time-server-protocol.h"
+    wayland-scanner client-header "$PTIME_XML" "$WLC_GEN/presentation-time-client-protocol.h"
+
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType. It allocates the
     # GPU-tier bo the window renders into and wraps it as a zwp_linux_dmabuf_v1
@@ -704,6 +712,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
         "$WLC_GEN/xdg-decoration-v1-protocol.c" \
         "$WLC_GEN/wlr-layer-shell-v1-protocol.c" \
+        "$WLC_GEN/presentation-time-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
@@ -727,8 +736,10 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
         "$WLC_GEN/xdg-decoration-v1-protocol.c" \
+        "$WLC_GEN/presentation-time-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-client.a" \
+        "$SYSROOT/lib/libxkbcommon.a" \
         "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
         "$SYSROOT/lib/libffi.a" \
         "${LINK_POST_LIBS[@]}" \
