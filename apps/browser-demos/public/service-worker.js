@@ -1095,10 +1095,27 @@ if (typeof window !== "undefined") {
     return allowed;
   }
 
+  // Request-header names the browser sets or forbids on every fetch(): a guest
+  // value can never reach the origin regardless of the proxy allow-list, so
+  // dropping them is the browser's own constraint, not a proxy-imposed loss.
+  // Omitted for ANY method so body-bearing protocols (git smart-HTTP's
+  // git-upload-pack POST, whose request carries content-length/accept-encoding/
+  // user-agent) traverse the proxy instead of failing before dispatch.
+  // Credential names (authorization/cookie/cookie2/proxy-authorization) are
+  // NOT dropped here — they must still fail loudly. Kept in sync with
+  // BROWSER_CONTROLLED_REQUEST_HEADER_NAMES in
+  // host/src/networking/browser-cors-proxy.ts.
+  var BROWSER_CONTROLLED_REQUEST_HEADER_NAMES = new Set([
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length", "date",
+    "dnt", "expect", "host", "keep-alive", "origin", "permissions-policy",
+    "referer", "te", "trailer", "transfer-encoding", "upgrade", "via",
+    "accept-language", "user-agent",
+  ]);
+
   function isBrowserManagedRequestHeader(name) {
-    return name === "accept-language" || name === "sec-ch-ua" ||
-      name === "sec-ch-ua-mobile" || name === "sec-ch-ua-platform" ||
-      name === "user-agent";
+    return BROWSER_CONTROLLED_REQUEST_HEADER_NAMES.has(name) ||
+      name.indexOf("proxy-") === 0 || name.indexOf("sec-") === 0;
   }
 
   function proxyProjectionFailure(request, targetUrl, unsupportedNames) {
@@ -1125,6 +1142,15 @@ if (typeof window !== "undefined") {
       var lower = name.toLowerCase();
       if (allowed.has(lower)) {
         headers.append(name, value);
+      } else if (
+        lower === "authorization" || lower === "cookie" ||
+        lower === "cookie2" || lower === "proxy-authorization"
+      ) {
+        // Credentials are never silently dropped, even though some match the
+        // browser-managed prefixes below — surface them so the request fails
+        // loudly instead of going out unauthenticated.
+        unsupported.push(lower);
+        credential = true;
       } else if (isBrowserManagedRequestHeader(lower)) {
         // Fetch adds these fields independently of the Headers supplied by
         // callers. Do not copy them into the proxy request or classify them as
@@ -1132,12 +1158,6 @@ if (typeof window !== "undefined") {
         // outer request's own values.
       } else {
         unsupported.push(lower);
-        if (
-          lower === "authorization" || lower === "cookie" ||
-          lower === "cookie2" || lower === "proxy-authorization"
-        ) {
-          credential = true;
-        }
       }
     });
     var diagnosticNames = Array.from(new Set(unsupported)).sort();

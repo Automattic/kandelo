@@ -15,9 +15,14 @@ set -euo pipefail
 # hooks, pager, credential helpers, etc.). wasm-fork-instrument auto-discovers
 # fork paths via call-graph analysis — no onlylist is needed.
 #
-# HTTP/HTTPS transport is always built (git-remote-http). HTTPS URLs
-# are rewritten to HTTP at runtime via gitconfig; the browser's
-# fetch() API + CORS proxy handles the actual TLS.
+# HTTP/HTTPS transport is always built (git-remote-http, symlinked to
+# git-remote-https in the VFS). git does a real end-to-end TLS handshake
+# through its libcurl+OpenSSL. On Node the guest's TLS runs over a real
+# outbound socket (TcpNetworkBackend). In the browser the host's
+# TlsNetworkBackend terminates that TLS locally with a per-session MITM CA
+# (installed at /etc/ssl/certs/ca-certificates.crt), decrypts the HTTP
+# request, and re-issues it with fetch() through the configured CORS proxy —
+# so no HTTPS->HTTP gitconfig rewrite is used or needed.
 #
 # Output: packages/registry/git/bin/git.wasm
 #         packages/registry/git/bin/git-remote-http.wasm

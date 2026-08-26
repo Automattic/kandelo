@@ -104,12 +104,13 @@ function parseContentLength(headers: string): number {
 function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   method: string;
   path: string;
+  version: string;
   headers: HttpHeaderOccurrence[];
   body: Uint8Array | null;
 } {
   const headerStr = new TextDecoder().decode(buf.subarray(0, headerEnd));
   const lines = headerStr.split("\r\n");
-  const [method, path] = lines[0].split(" ");
+  const [method, path, version] = lines[0].split(" ");
   const headers: HttpHeaderOccurrence[] = [];
   for (let i = 1; i < lines.length; i++) {
     const colon = lines[i].indexOf(":");
@@ -122,7 +123,88 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   }
   const bodyStart = headerEnd + 4;
   const body = bodyStart < buf.length ? buf.subarray(bodyStart) : null;
-  return { method, path, headers, body };
+  return { method, path, version, headers, body };
+}
+
+function indexOfCRLF(buf: Uint8Array, from: number): number {
+  for (let i = from; i + 1 < buf.length; i++) {
+    if (buf[i] === 0x0d && buf[i + 1] === 0x0a) return i;
+  }
+  return -1;
+}
+
+/** Decode an HTTP/1.1 `Transfer-Encoding: chunked` request body starting at
+ *  `start`. Returns the dechunked bytes plus how many buffer bytes the encoded
+ *  form occupied, or null if the terminating zero-chunk has not arrived yet.
+ *  git streams a large `git-upload-pack` negotiation this way (requests over
+ *  http.postBuffer, default 1 MiB), so the MITM must reassemble it before
+ *  handing a plain body to fetch(). */
+function parseChunkedBody(
+  buf: Uint8Array,
+  start: number,
+): { body: Uint8Array; consumed: number } | null {
+  const chunks: Uint8Array[] = [];
+  let pos = start;
+  for (;;) {
+    const lineEnd = indexOfCRLF(buf, pos);
+    if (lineEnd === -1) return null;
+    const sizeToken = new TextDecoder()
+      .decode(buf.subarray(pos, lineEnd))
+      .split(";")[0]
+      .trim();
+    const size = parseInt(sizeToken, 16);
+    if (!Number.isFinite(size) || size < 0) return null;
+    const dataStart = lineEnd + 2;
+    if (size === 0) {
+      // Last chunk: consume any trailer lines up to the terminating blank line.
+      let trailerPos = dataStart;
+      for (;;) {
+        const trailerEnd = indexOfCRLF(buf, trailerPos);
+        if (trailerEnd === -1) return null;
+        if (trailerEnd === trailerPos) {
+          return { body: concatChunks(chunks), consumed: trailerPos + 2 - start };
+        }
+        trailerPos = trailerEnd + 2;
+      }
+    }
+    const dataEnd = dataStart + size;
+    if (buf.length < dataEnd + 2) return null; // need the data and its CRLF
+    chunks.push(buf.subarray(dataStart, dataEnd));
+    pos = dataEnd + 2;
+  }
+}
+
+function concatChunks(parts: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/** Decide whether the MITM connection stays open after this response.
+ *  HTTP/1.1 defaults to keep-alive unless `Connection: close`; HTTP/1.0
+ *  defaults to close unless `Connection: keep-alive`. git-remote-http / libcurl
+ *  issue ref-discovery and upload-pack as HTTP/1.1 keep-alive requests over one
+ *  connection, so honoring this is what lets a smart-HTTP clone complete. */
+function requestKeepsConnectionAlive(
+  version: string,
+  headers: readonly HttpHeaderOccurrence[],
+): boolean {
+  const connection = (lastHeaderValue(headers, "connection") ?? "").toLowerCase();
+  if (connection.split(",").some((token) => token.trim() === "close")) {
+    return false;
+  }
+  if (version === "HTTP/1.0") {
+    return connection
+      .split(",")
+      .some((token) => token.trim() === "keep-alive");
+  }
+  return true;
 }
 
 function lastHeaderValue(
@@ -487,18 +569,35 @@ export class TlsNetworkBackend implements NetworkIO {
 
     const headerStr = new TextDecoder().decode(conn.plaintextBuf.subarray(0, headerEnd));
     const contentLength = parseContentLength(headerStr);
+    const isChunked = /transfer-encoding:[^\r\n]*\bchunked\b/i.test(headerStr);
     const bodyStart = headerEnd + 4;
     const bodyReceived = conn.plaintextBuf.length - bodyStart;
 
-    if (contentLength > 0 && bodyReceived < contentLength) return;
+    // Determine whether the full request body has arrived, and isolate exactly
+    // its bytes — never trailing bytes from a pipelined next request, which the
+    // connection now stays open to receive.
+    let requestBody: Uint8Array | null;
+    let totalRequestLen: number;
+    if (isChunked) {
+      const parsed = parseChunkedBody(conn.plaintextBuf, bodyStart);
+      if (!parsed) return; // terminating zero-chunk not here yet
+      requestBody = parsed.body.length > 0 ? parsed.body : null;
+      totalRequestLen = bodyStart + parsed.consumed;
+    } else {
+      if (contentLength > 0 && bodyReceived < contentLength) return;
+      requestBody = contentLength > 0
+        ? conn.plaintextBuf.subarray(bodyStart, bodyStart + contentLength)
+        : null;
+      totalRequestLen = bodyStart + Math.max(contentLength, 0);
+    }
 
     // Complete HTTP request — parse and fetch
     conn.httpResponsePending = true;
 
-    const { method, path, headers, body } = parseHttpRequest(conn.plaintextBuf, headerEnd);
+    const { method, path, version, headers } = parseHttpRequest(conn.plaintextBuf, headerEnd);
+    const keepAlive = requestKeepsConnectionAlive(version, headers);
 
-    // Consume the request from the plaintext buffer
-    const totalRequestLen = headerEnd + 4 + Math.max(contentLength, 0);
+    // Consume exactly this request from the plaintext buffer.
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
 
     const host = lastHeaderValue(headers, "host") || conn.hostname;
@@ -506,7 +605,9 @@ export class TlsNetworkBackend implements NetworkIO {
     const browserHeaders = browserRepresentableHeaders(headers);
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
-      body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
+      requestBody && requestBody.length > 0
+        ? new Uint8Array(requestBody) as Uint8Array<ArrayBuffer>
+        : undefined;
     const url = this.corsProxy ? this.corsProxy.urlFor(upstreamUrl) : upstreamUrl;
 
     (async () => {
@@ -535,9 +636,16 @@ export class TlsNetworkBackend implements NetworkIO {
         // Write plaintext response to server downstream — TLS engine encrypts
         // it automatically and it appears on clientEnd.downstream.readable.
         await conn.serverDownstreamWriter.write(responseBytes);
-        await conn.serverDownstreamWriter.close();
+        // Keep the MITM connection open for a keep-alive client so it can send
+        // the next request on the same socket. Closing after every response
+        // (the earlier single-shot behavior) broke git's smart-HTTP clone,
+        // which reuses one connection for info/refs then git-upload-pack.
+        if (!keepAlive) {
+          await conn.serverDownstreamWriter.close();
+        }
       } catch (err) {
-        // Send a 502 Bad Gateway response through TLS
+        // Send a 502 Bad Gateway response through TLS, then close: a failed
+        // fetch leaves no reliable way to continue this connection.
         const errorBody = `Error fetching ${url}: ${err}`;
         const errorResponse = formatHttpResponse(
           502,
@@ -551,8 +659,16 @@ export class TlsNetworkBackend implements NetworkIO {
         } catch {
           // Ignore write errors
         }
+        conn.httpResponsePending = false;
+        return;
       }
       conn.httpResponsePending = false;
+      // A keep-alive client may have already pipelined its next request into
+      // plaintextBuf while this fetch was in flight; drain it now since the
+      // upstream reader only calls this on newly arriving bytes.
+      if (keepAlive && !conn.closed) {
+        this.tryProcessHttpRequest(conn);
+      }
     })();
   }
 
