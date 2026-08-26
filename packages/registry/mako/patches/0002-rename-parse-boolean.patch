@@ -1,0 +1,13 @@
+--- a/include/types.h
++++ b/include/types.h
+@@ -11,6 +11,10 @@
+ 	cairo_operator_t operator;
+ };
+
++/* basu (sd-bus) also exports a parse_boolean, with a different
++ * signature; both land in one wasm symbol namespace, so keep mako's
++ * under its own name. The macro renames the definition and every use. */
++#define parse_boolean mako_parse_boolean
+ bool parse_boolean(const char *string, bool *out);
+ bool parse_int(const char *string, int *out);
+ bool parse_int_ge(const char *string, int *out, int min);
