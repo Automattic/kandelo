@@ -91,6 +91,9 @@
 #include "xdg-decoration-v1-server-protocol.h"
 #include "wlr-layer-shell-v1-server-protocol.h"
 #include "presentation-time-server-protocol.h"
+#include "xdg-output-v1-server-protocol.h"
+#include "viewporter-server-protocol.h"
+#include "fractional-scale-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -125,6 +128,16 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
 #define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
 #define MAX_KWLCTL_CONNS 16
+/* The Hyprland IPC socket pair, where Waybar's hyprland modules expect it:
+ * $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock (request/
+ * reply) + .socket2.sock (event stream). XDG_RUNTIME_DIR is /tmp here (see
+ * WL_SOCKET_PATH above); main() exports the signature so spawned clients
+ * find the dir. Requests answer in hyprctl -j shapes; both sockets share
+ * kwlctl's command table and event broadcast. */
+#define HYPR_INSTANCE_SIG  "wlcompositor"
+#define HYPR_DIR           "/tmp/hypr/" HYPR_INSTANCE_SIG
+#define HYPR_SOCKET1_PATH  HYPR_DIR "/.socket.sock"
+#define HYPR_SOCKET2_PATH  HYPR_DIR "/.socket2.sock"
 #define WL_KEYMAP_PATH "/tmp/wlcompositor-keymap.xkb"
 #define MAX_INPUT_RES  16     /* keyboard/pointer resources we track */
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
@@ -190,7 +203,9 @@ struct surface {
     uint32_t kb_interactive;            /* ZWLR_LAYER_SURFACE_V1_KEYBOARD_* */
     int32_t req_w, req_h;               /* set_size; 0 = compositor decides */
     int layer_configured;               /* first configure sent */
+    int layer_announced;                /* LAYER marker printed while mapped */
     char app_id[32];
+    char title[96];                     /* xdg_toplevel.set_title, for the bar */
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
     int workspace;                      /* 1..N_WORKSPACES; 0 until first map */
@@ -206,6 +221,13 @@ struct surface {
     struct wl_resource *subsurface;
     struct surface *parent;
     int32_t sub_x, sub_y;
+    /* wp_viewport crop + scale. vp_src_w <= 0 = no source rect (w must be
+     * positive when set, so the calloc zero means unset); vp_dst_w <= 0 =
+     * no destination size. */
+    struct wl_resource *viewport;
+    wl_fixed_t vp_src_x, vp_src_y, vp_src_w, vp_src_h;
+    int32_t vp_dst_w, vp_dst_h;
+    struct wl_resource *fractional_scale;
 };
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
@@ -215,8 +237,8 @@ struct surface {
  * the DRI bo registry is (host SharedArrayBuffer). So the client backs its
  * pool with a renderD128 dumb-bo and passes its prime-fd; we import that
  * prime-fd via gbm and map it, aliasing the same shared bytes. This is the
- * "gbm_bo_import path for wl_shm" the plan names (§8.1). We handle the
- * common single-buffer, offset-0, XRGB/ARGB8888 case. */
+ * "gbm_bo_import path for wl_shm" the plan names (§8.1). Buffers may sit
+ * at any offset in the pool; the formats are XRGB/ARGB8888. */
 struct shm_pool {
     int fd;
     int32_t size;
@@ -227,6 +249,9 @@ struct shm_buffer {
     int32_t offset, width, height, stride;
     uint32_t format;
     struct gbm_bo *bo;      /* lazily imported on first composite (CPU path) */
+    int import_failed;      /* the import is a property of the pool fd, so a
+                             * failure is final — retrying it once per frame
+                             * would flood the log and stall the desktop. */
     void *map_data;
     uint32_t *pixels;       /* shared mapping of the client's bytes */
     uint32_t map_stride_px;
@@ -364,6 +389,7 @@ static struct {
     EGLSurface srf;
     GLuint prog;
     GLint loc_rect;             /* vec4 NDC x0,y0(top),x1,y1(bottom) */
+    GLint loc_uv;               /* vec4 texture uv0.xy,uv1.xy */
     GLint loc_use_tex;          /* 1 = sample u_tex, 0 = flat u_color */
     GLint loc_color;
     unsigned wallpaper_tex;
@@ -400,6 +426,7 @@ static void ptr_send_frame(struct wl_resource *p) {
 static int theme_switch(const char *arg);
 static void kwlctl_emit(const char *fmt, ...);
 static void kwlctl_exec(char *args);
+static void workspaces_sync(void);
 
 /* A surface participates in compositing, input, and tiling only when it is
  * mapped AND on the active workspace. A layer surface is a shell component,
@@ -617,15 +644,22 @@ static void layers_arrange(void) {
             if (s->layer != layer) continue;
             int32_t prev_w = s->w, prev_h = s->h;
             layer_place(s, &area);
-            if (s->layer_configured && s->w == prev_w && s->h == prev_h)
-                continue;
-            zwlr_layer_surface_v1_send_configure(
-                s->layer_surface, wl_display_next_serial(g.display),
-                (uint32_t)s->w, (uint32_t)s->h);
-            s->layer_configured = 1;
-            printf("LAYER ns=%s layer=%u x=%d y=%d w=%d h=%d\n", s->app_id,
-                   s->layer, s->x, s->y, s->w, s->h);
-            fflush(stdout);
+            int resized = (s->w != prev_w || s->h != prev_h);
+            if (!s->layer_configured || resized) {
+                zwlr_layer_surface_v1_send_configure(
+                    s->layer_surface, wl_display_next_serial(g.display),
+                    (uint32_t)s->w, (uint32_t)s->h);
+                s->layer_configured = 1;
+            }
+            /* The marker says the strip is live. A layer surface reserves
+             * nothing until it maps, so announcing it at configure time
+             * would put it ahead of the windows re-tiling under it. */
+            if (s->mapped && (!s->layer_announced || resized)) {
+                printf("LAYER ns=%s layer=%u x=%d y=%d w=%d h=%d\n", s->app_id,
+                       s->layer, s->x, s->y, s->w, s->h);
+                fflush(stdout);
+                s->layer_announced = 1;
+            }
         }
     }
 
@@ -754,6 +788,25 @@ static void surface_set_opaque_region(struct wl_client *c, struct wl_resource *r
                                       struct wl_resource *reg) {}
 static void surface_set_input_region(struct wl_client *c, struct wl_resource *r,
                                      struct wl_resource *reg) {}
+/* The on-screen size of a committed buffer, per wp_viewporter's surface-size
+ * rules: the destination wins, then an integral source rect, then the buffer
+ * dims. */
+static void surface_committed_size(struct surface *s, struct shm_buffer *b,
+                                   int32_t *w, int32_t *h) {
+    if (s->vp_dst_w > 0) {
+        *w = s->vp_dst_w;
+        *h = s->vp_dst_h;
+        return;
+    }
+    if (s->vp_src_w > 0) {
+        *w = wl_fixed_to_int(s->vp_src_w);
+        *h = wl_fixed_to_int(s->vp_src_h);
+        return;
+    }
+    *w = b->width;
+    *h = b->height;
+}
+
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
     /* A layer surface's first commit carries no buffer: it exists to apply the
@@ -776,8 +829,15 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         /* The compositor dictates a layer surface's box, so its geometry comes
          * from the arrangement, not from whatever the client attached. */
         if (!s->layer_surface) {
-            s->w = b->width;
-            s->h = b->height;
+            int32_t w, h;
+            surface_committed_size(s, b, &w, &h);
+            if (s->viewport && (w != s->w || h != s->h)) {
+                printf("VIEWPORT bw=%d bh=%d w=%d h=%d\n",
+                       b->width, b->height, w, h);
+                fflush(stdout);
+            }
+            s->w = w;
+            s->h = h;
         }
         b->gl_dirty = 1;   /* GPU path re-uploads this buffer's texture */
     }
@@ -817,10 +877,15 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         if (g.layout == LAYOUT_FLOATING && !s->placed) place_surface(s);
         zorder_raise(s);
         /* A newly mapped window takes keyboard focus (and pointer focus if
-         * the cursor happens to be over it). */
-        kbd_set_focus(s);
+         * the cursor happens to be over it) — unless a layer surface holds
+         * the keyboard exclusively. A window that maps while the launcher
+         * is open would otherwise swallow the keys typed into it. */
+        if (!layer_kb_grab()) kbd_set_focus(s);
         ptr_refresh_focus();
         retile();   /* no-op when floating */
+        kwlctl_emit("openwindow>>%p,%d,%s,%s", (void *)s, s->workspace,
+                    s->app_id, s->title);
+        workspaces_sync();
     }
     schedule_repaint();
 }
@@ -865,6 +930,9 @@ static void surface_resource_destroy(struct wl_resource *r) {
         layer_remove(s);
     }
     if (s->subsurface) wl_resource_set_user_data(s->subsurface, NULL);
+    if (s->viewport) wl_resource_set_user_data(s->viewport, NULL);
+    if (s->fractional_scale)
+        wl_resource_set_user_data(s->fractional_scale, NULL);
     for (int i = 0; i < g.n_all_surfaces; i++) {
         struct surface *c = g.all_surfaces[i];
         if (c->parent != s) continue;
@@ -890,11 +958,14 @@ static void surface_resource_destroy(struct wl_resource *r) {
         wp_presentation_feedback_send_discarded(fb);
         wl_resource_destroy(fb);
     }
+    int was_window = s->mapped && !was_layer && !s->parent;
+    if (was_window) kwlctl_emit("closewindow>>%p", (void *)s);
     free(s);
     /* A closed window frees its slice back to the remaining tiles; a closed
      * layer surface additionally frees its exclusive strip. */
     if (was_layer) layers_arrange();
     else retile();   /* no-op when floating */
+    if (was_window) workspaces_sync();
     schedule_repaint();
 }
 
@@ -908,28 +979,43 @@ static void shm_pool_free(struct shm_pool *p) {
 }
 
 /* Import + map the client's dumb-bo on first use; the mapping aliases the
- * shared host buffer, so later reads see the client's latest pixels. */
+ * shared host buffer, so later reads see the client's latest pixels. A
+ * buffer may sit at any offset in the pool (GTK packs several there), so
+ * the import covers every row up to the buffer's end and the base pointer
+ * walks to the buffer's own first row. */
 static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
+    if (b->import_failed) return NULL;
     if (!b->bo) {
+        uint32_t rows = (uint32_t)((b->offset + b->stride * b->height
+                                    + b->stride - 1) / b->stride);
         struct gbm_import_fd_data d = {
             .fd = b->pool->fd,
-            .width = (uint32_t)b->width,
-            .height = (uint32_t)b->height,
+            .width = (uint32_t)(b->stride / 4),
+            .height = rows,
             .stride = (uint32_t)b->stride,
             .format = DRM_FORMAT_XRGB8888,
         };
         b->bo = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD, &d,
                               GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
-        if (!b->bo) { perror("gbm_bo_import"); return NULL; }
+        if (!b->bo) {
+            perror("gbm_bo_import");
+            b->import_failed = 1;
+            return NULL;
+        }
         uint32_t ms = 0;
-        b->pixels = gbm_bo_map(b->bo, 0, 0, b->width, b->height, 0, &ms,
-                               &b->map_data);
-        if (!b->pixels) {
+        unsigned char *base = gbm_bo_map(b->bo, 0, 0, d.width, rows, 0, &ms,
+                                         &b->map_data);
+        if (!base) {
             perror("gbm_bo_map");
             gbm_bo_destroy(b->bo);
             b->bo = NULL;
+            b->import_failed = 1;
             return NULL;
         }
+        /* The mapping's own stride is what separates its rows, so the
+         * client's offset is walked as whole rows plus the remainder. */
+        b->pixels = (uint32_t *)(base + (size_t)(b->offset / b->stride) * ms
+                                 + (size_t)(b->offset % b->stride));
         b->map_stride_px = ms / 4;
     }
     *stride_px = b->map_stride_px;
@@ -970,9 +1056,12 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *r,
                                int32_t height, int32_t stride,
                                uint32_t format) {
     struct shm_pool *p = wl_resource_get_user_data(r);
-    if (offset != 0) {   /* one buffer at the base of the pool */
+    /* GTK keeps several buffers in one pool and creates each at its own
+     * offset, so only a buffer that leaves the pool is a protocol error. */
+    if (offset < 0 || width <= 0 || height <= 0 || stride < width * 4 ||
+        (int64_t)offset + (int64_t)stride * height > p->size) {
         wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
-                               "compositor supports only offset 0");
+                               "buffer does not fit in the pool");
         return;
     }
     if (format != WL_SHM_FORMAT_XRGB8888 && format != WL_SHM_FORMAT_ARGB8888) {
@@ -1360,8 +1449,15 @@ static void toplevel_set_parent(struct wl_client *c, struct wl_resource *r,
                                 struct wl_resource *parent) {}
 static void toplevel_set_title(struct wl_client *c, struct wl_resource *r,
                                const char *title) {
-    /* Clients draw their own titlebars (CSD); the server has no use for
-     * the title. */
+    /* Clients draw their own titlebars (CSD); the server only relays the
+     * title to the bar over the IPC sockets. */
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s || !title) return;
+    if (strncmp(s->title, title, sizeof(s->title) - 1) == 0) return;
+    snprintf(s->title, sizeof(s->title), "%s", title);
+    if (!s->mapped) return;
+    kwlctl_emit("windowtitle>>%p", (void *)s);
+    kwlctl_emit("windowtitlev2>>%p,%s", (void *)s, s->title);
 }
 static void toplevel_set_app_id(struct wl_client *c, struct wl_resource *r,
                                 const char *app_id) {
@@ -1785,7 +1881,10 @@ static void kbd_set_focus(struct surface *s) {
     g.kbd_focus = s;
     /* Nothing focused, or a shell component took the keyboard: either way no
      * window is active, and the bar clears its title. */
-    if (!s || s->layer_surface) kwlctl_emit("activewindow>>");
+    if (!s || s->layer_surface) {
+        kwlctl_emit("activewindow>>,");
+        kwlctl_emit("activewindowv2>>");
+    }
     if (!s) return;
     struct wl_array keys;
     wl_array_init(&keys);
@@ -1799,7 +1898,8 @@ static void kbd_set_focus(struct surface *s) {
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
     if (s->layer_surface) return;
-    kwlctl_emit("activewindow>>%s", s->app_id);
+    kwlctl_emit("activewindow>>%s,%s", s->app_id, s->title);
+    kwlctl_emit("activewindowv2>>%p", (void *)s);
     /* Observable focus marker: keyboard focus only moves to a window once its
      * first commit maps it (surface_commit), so this is the authoritative
      * "the window is now closeable by killactive" signal — distinct from a
@@ -1841,6 +1941,28 @@ static void ptr_refresh_focus(void) {
 
 /* ---- workspaces --------------------------------------------------------- */
 
+/* Hyprland's protocol has explicit workspace lifetime events; ours exist
+ * implicitly (occupied or active). Diff the derived set against the last
+ * broadcast one and emit create/destroy for the delta. */
+static void workspaces_sync(void) {
+    static uint32_t known;
+    uint32_t mask = 1u << g.active_ws;
+    for (int i = 0; i < g.n_surfaces; i++)
+        if (g.zorder[i]->mapped && g.zorder[i]->workspace)
+            mask |= 1u << g.zorder[i]->workspace;
+    for (int ws = 1; ws <= N_WORKSPACES; ws++) {
+        uint32_t bit = 1u << ws;
+        if ((mask & bit) && !(known & bit)) {
+            kwlctl_emit("createworkspace>>%d", ws);
+            kwlctl_emit("createworkspacev2>>%d,%d", ws, ws);
+        } else if (!(mask & bit) && (known & bit)) {
+            kwlctl_emit("destroyworkspace>>%d", ws);
+            kwlctl_emit("destroyworkspacev2>>%d,%d", ws, ws);
+        }
+    }
+    known = mask;
+}
+
 /* Show workspace `ws`: its surfaces become visible + tiled, the rest hide.
  * Focus restores to that workspace's topmost window (empty → no focus). */
 static void switch_workspace(int ws) {
@@ -1853,6 +1975,10 @@ static void switch_workspace(int ws) {
     printf("WORKSPACE active=%d\n", ws);
     fflush(stdout);
     kwlctl_emit("workspace>>%d", ws);
+    kwlctl_emit("workspacev2>>%d,%d", ws, ws);
+    kwlctl_emit("focusedmon>>virtual-0,%d", ws);
+    kwlctl_emit("focusedmonv2>>virtual-0,%d", ws);
+    workspaces_sync();
 }
 
 /* Send the focused window to workspace `ws`; it vanishes from the current
@@ -1870,6 +1996,9 @@ static void move_focus_to_workspace(int ws) {
     schedule_repaint();
     printf("MOVE_TO_WS \"%s\" ws=%d\n", s->app_id, ws);
     fflush(stdout);
+    kwlctl_emit("movewindow>>%p,%d", (void *)s, ws);
+    kwlctl_emit("movewindowv2>>%p,%d,%d", (void *)s, ws, ws);
+    workspaces_sync();
 }
 
 static void seat_get_pointer(struct wl_client *client,
@@ -1970,6 +2099,12 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
                         (int32_t)g.width, (int32_t)g.height, 60000);
     if (version >= WL_OUTPUT_SCALE_SINCE_VERSION)
         wl_output_send_scale(r, 1);
+    /* v4: the name a client keys config on (mako binds v4 uncondition-
+     * ally); matches the xdg_output name. */
+    if (version >= WL_OUTPUT_NAME_SINCE_VERSION)
+        wl_output_send_name(r, "virtual-0");
+    if (version >= WL_OUTPUT_DESCRIPTION_SINCE_VERSION)
+        wl_output_send_description(r, "Kandelo virtual output");
     if (version >= WL_OUTPUT_DONE_SINCE_VERSION)
         wl_output_send_done(r);
 }
@@ -1981,6 +2116,54 @@ static void send_surface_enter(struct surface *s) {
         if (g.outputs[i] &&
             wl_resource_get_client(g.outputs[i]) == s->client)
             wl_surface_send_enter(s->resource, g.outputs[i]);
+}
+
+/* ====================================================================== */
+/* zxdg_output_manager_v1: logical output geometry                        */
+/* ====================================================================== */
+
+/* The single virtual output is fullscreen at scale 1, so the logical grid
+ * equals the pixel grid: position (0,0), size = the mode. The geometry is
+ * fixed for the process lifetime, so each xdg_output is a one-shot burst
+ * with no tracking list. */
+static void xdg_output_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zxdg_output_v1_interface xdg_output_impl = {
+    .destroy = xdg_output_destroy_req,
+};
+static void xdg_output_mgr_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void xdg_output_mgr_get(struct wl_client *c, struct wl_resource *r,
+                               uint32_t id, struct wl_resource *output) {
+    struct wl_resource *xo = wl_resource_create(
+        c, &zxdg_output_v1_interface, wl_resource_get_version(r), id);
+    if (!xo) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(xo, &xdg_output_impl, NULL, NULL);
+    zxdg_output_v1_send_logical_position(xo, 0, 0);
+    zxdg_output_v1_send_logical_size(xo, (int32_t)g.width, (int32_t)g.height);
+    if (wl_resource_get_version(xo) >= ZXDG_OUTPUT_V1_NAME_SINCE_VERSION)
+        zxdg_output_v1_send_name(xo, "virtual-0");
+    if (wl_resource_get_version(xo) >= ZXDG_OUTPUT_V1_DESCRIPTION_SINCE_VERSION)
+        zxdg_output_v1_send_description(xo, "Kandelo virtual output");
+    /* v3 deprecates xdg_output.done in favor of wl_output.done; a v1/v2
+     * bind still expects it here. */
+    if (wl_resource_get_version(xo) < 3)
+        zxdg_output_v1_send_done(xo);
+    else if (wl_resource_get_version(output) >= WL_OUTPUT_DONE_SINCE_VERSION)
+        wl_output_send_done(output);
+}
+static const struct zxdg_output_manager_v1_interface xdg_output_mgr_impl = {
+    .destroy = xdg_output_mgr_destroy,
+    .get_xdg_output = xdg_output_mgr_get,
+};
+static void xdg_output_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
+                                uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &zxdg_output_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &xdg_output_mgr_impl, NULL, NULL);
 }
 
 /* ====================================================================== */
@@ -2012,7 +2195,9 @@ static uint32_t bo_get_fb(struct gbm_bo *bo) {
 
 /* Copy one committed wl_shm buffer into the scanout bo at the surface's
  * position, clipped to the output. XRGB/ARGB8888 both blit as 32-bit
- * words (opaque compositing); rows are memcpy'd over the clipped span. */
+ * words (opaque compositing); rows are memcpy'd over the clipped span.
+ * A wp_viewport surface instead nearest-samples its source rect across
+ * the destination box. */
 static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_px) {
     if (!s->buffer) return;
     struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
@@ -2020,6 +2205,36 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
     uint32_t src_stride_px = 0;
     uint32_t *src = shm_buffer_pixels(b, &src_stride_px);
     if (!src) return;
+
+    int32_t dw, dh;
+    surface_committed_size(s, b, &dw, &dh);
+    if (s->vp_src_w > 0 || dw != b->width || dh != b->height) {
+        float sx0 = 0.0f, sy0 = 0.0f;
+        float sw = (float)b->width, sh = (float)b->height;
+        if (s->vp_src_w > 0) {
+            sx0 = (float)wl_fixed_to_double(s->vp_src_x);
+            sy0 = (float)wl_fixed_to_double(s->vp_src_y);
+            sw = (float)wl_fixed_to_double(s->vp_src_w);
+            sh = (float)wl_fixed_to_double(s->vp_src_h);
+        }
+        for (int32_t row = 0; row < dh; row++) {
+            int32_t dy = s->y + row;
+            if (dy < 0 || dy >= (int32_t)g.height) continue;
+            int32_t sy = (int32_t)(sy0 + ((float)row + 0.5f) * sh / (float)dh);
+            if (sy < 0) sy = 0;
+            if (sy >= b->height) sy = b->height - 1;
+            for (int32_t col = 0; col < dw; col++) {
+                int32_t dx = s->x + col;
+                if (dx < 0 || dx >= (int32_t)g.width) continue;
+                int32_t sx = (int32_t)(sx0 + ((float)col + 0.5f) * sw / (float)dw);
+                if (sx < 0) sx = 0;
+                if (sx >= b->width) sx = b->width - 1;
+                dst[(size_t)dy * dst_stride_px + dx] =
+                    src[(size_t)sy * src_stride_px + sx];
+            }
+        }
+        return;
+    }
 
     int32_t x0 = s->x < 0 ? -s->x : 0;               /* first visible col */
     int32_t x1 = s->x + b->width > (int32_t)g.width  /* one past last col  */
@@ -2236,6 +2451,148 @@ static void subcompositor_bind(struct wl_client *c, void *data, uint32_t ver,
 }
 
 /* ====================================================================== */
+/* wp_viewporter: per-surface crop + scale                                */
+/* ====================================================================== */
+
+static void viewport_destroy_req(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void viewport_set_source(struct wl_client *c, struct wl_resource *r,
+                                wl_fixed_t x, wl_fixed_t y, wl_fixed_t w,
+                                wl_fixed_t h) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_NO_SURFACE,
+                               "the wl_surface was destroyed");
+        return;
+    }
+    int unset = x == wl_fixed_from_int(-1) && y == wl_fixed_from_int(-1) &&
+                w == wl_fixed_from_int(-1) && h == wl_fixed_from_int(-1);
+    if (!unset && (x < 0 || y < 0 || w <= 0 || h <= 0)) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_BAD_VALUE,
+                               "invalid source rectangle");
+        return;
+    }
+    s->vp_src_x = unset ? 0 : x;
+    s->vp_src_y = unset ? 0 : y;
+    s->vp_src_w = unset ? 0 : w;
+    s->vp_src_h = unset ? 0 : h;
+    schedule_repaint();
+}
+static void viewport_set_destination(struct wl_client *c, struct wl_resource *r,
+                                     int32_t w, int32_t h) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_NO_SURFACE,
+                               "the wl_surface was destroyed");
+        return;
+    }
+    int unset = w == -1 && h == -1;
+    if (!unset && (w <= 0 || h <= 0)) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_BAD_VALUE,
+                               "invalid destination size");
+        return;
+    }
+    s->vp_dst_w = unset ? 0 : w;
+    s->vp_dst_h = unset ? 0 : h;
+    schedule_repaint();
+}
+static const struct wp_viewport_interface viewport_impl = {
+    .destroy = viewport_destroy_req,
+    .set_source = viewport_set_source,
+    .set_destination = viewport_set_destination,
+};
+static void viewport_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->viewport = NULL;
+    s->vp_src_x = s->vp_src_y = s->vp_src_w = s->vp_src_h = 0;
+    s->vp_dst_w = s->vp_dst_h = 0;
+    schedule_repaint();
+}
+
+static void viewporter_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void viewporter_get_viewport(struct wl_client *c, struct wl_resource *r,
+                                    uint32_t id, struct wl_resource *surface) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    if (s->viewport) {
+        wl_resource_post_error(r, WP_VIEWPORTER_ERROR_VIEWPORT_EXISTS,
+                               "the surface already has a viewport");
+        return;
+    }
+    struct wl_resource *vp =
+        wl_resource_create(c, &wp_viewport_interface, 1, id);
+    if (!vp) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(vp, &viewport_impl, s,
+                                   viewport_resource_destroy);
+    s->viewport = vp;
+}
+static const struct wp_viewporter_interface viewporter_impl = {
+    .destroy = viewporter_destroy,
+    .get_viewport = viewporter_get_viewport,
+};
+static void viewporter_bind(struct wl_client *c, void *data, uint32_t ver,
+                            uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(c, &wp_viewporter_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &viewporter_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
+/* wp_fractional_scale_manager_v1: fixed scale-1 preference               */
+/* ====================================================================== */
+
+static void fractional_scale_destroy_req(struct wl_client *c,
+                                         struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct wp_fractional_scale_v1_interface fractional_scale_impl = {
+    .destroy = fractional_scale_destroy_req,
+};
+static void fractional_scale_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (s) s->fractional_scale = NULL;
+}
+static void fractional_scale_mgr_destroy(struct wl_client *c,
+                                         struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void fractional_scale_mgr_get(struct wl_client *c, struct wl_resource *r,
+                                     uint32_t id,
+                                     struct wl_resource *surface) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    if (s->fractional_scale) {
+        wl_resource_post_error(
+            r, WP_FRACTIONAL_SCALE_MANAGER_V1_ERROR_FRACTIONAL_SCALE_EXISTS,
+            "the surface already has a fractional_scale object");
+        return;
+    }
+    struct wl_resource *fs =
+        wl_resource_create(c, &wp_fractional_scale_v1_interface, 1, id);
+    if (!fs) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(fs, &fractional_scale_impl, s,
+                                   fractional_scale_resource_destroy);
+    s->fractional_scale = fs;
+    /* The desktop is fixed at scale 1: 120/120ths. */
+    wp_fractional_scale_v1_send_preferred_scale(fs, 120);
+}
+static const struct wp_fractional_scale_manager_v1_interface
+    fractional_scale_mgr_impl = {
+        .destroy = fractional_scale_mgr_destroy,
+        .get_fractional_scale = fractional_scale_mgr_get,
+};
+static void fractional_scale_mgr_bind(struct wl_client *c, void *data,
+                                      uint32_t ver, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        c, &wp_fractional_scale_manager_v1_interface, (int)ver, id);
+    if (!r) { wl_client_post_no_memory(c); return; }
+    wl_resource_set_implementation(r, &fractional_scale_mgr_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
 /* wl_data_device_manager: inert v3 stub                                  */
 /* ====================================================================== */
 
@@ -2311,10 +2668,11 @@ static void data_dm_bind(struct wl_client *c, void *data, uint32_t ver,
 static const char GLC_VS[] =
     "#version 300 es\n"
     "uniform vec4 u_rect;\n"
+    "uniform vec4 u_uv;\n"
     "out vec2 v_uv;\n"
     "void main() {\n"
     "  vec2 t = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
-    "  v_uv = t;\n"
+    "  v_uv = mix(u_uv.xy, u_uv.zw, t);\n"
     "  vec2 p = mix(u_rect.xy, u_rect.zw, t);\n"
     "  gl_Position = vec4(p, 0.0, 1.0);\n"
     "}\n";
@@ -2360,14 +2718,39 @@ static void glc_rect_ndc(int32_t x, int32_t y, int32_t w, int32_t h,
     out[3] = 1.0f - 2.0f * (float)(y + h) / (float)g.height;
 }
 
-static void glc_draw_tex(unsigned tex, int32_t x, int32_t y,
-                         int32_t w, int32_t h) {
+static void glc_draw_tex_rect(unsigned tex, int32_t x, int32_t y,
+                              int32_t w, int32_t h, const float uv[4]) {
     float r[4];
     glc_rect_ndc(x, y, w, h, r);
     glUniform4f(glc.loc_rect, r[0], r[1], r[2], r[3]);
+    glUniform4f(glc.loc_uv, uv[0], uv[1], uv[2], uv[3]);
     glUniform1i(glc.loc_use_tex, 1);
     glBindTexture(GL_TEXTURE_2D, tex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+static void glc_draw_tex(unsigned tex, int32_t x, int32_t y,
+                         int32_t w, int32_t h) {
+    static const float full_uv[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    glc_draw_tex_rect(tex, x, y, w, h, full_uv);
+}
+
+/* Destination box + source-uv rect for a surface's committed buffer under
+ * its wp_viewport state (the full buffer when none). */
+static void surface_draw_box(struct surface *s, struct shm_buffer *b,
+                             int32_t *dw, int32_t *dh, float uv[4]) {
+    surface_committed_size(s, b, dw, dh);
+    if (s->vp_src_w > 0) {
+        float x0 = (float)wl_fixed_to_double(s->vp_src_x);
+        float y0 = (float)wl_fixed_to_double(s->vp_src_y);
+        uv[0] = x0 / (float)b->width;
+        uv[1] = y0 / (float)b->height;
+        uv[2] = (x0 + (float)wl_fixed_to_double(s->vp_src_w)) / (float)b->width;
+        uv[3] = (y0 + (float)wl_fixed_to_double(s->vp_src_h)) / (float)b->height;
+        return;
+    }
+    uv[0] = uv[1] = 0.0f;
+    uv[2] = uv[3] = 1.0f;
 }
 
 static void glc_draw_solid(uint32_t argb, int32_t x, int32_t y,
@@ -2384,10 +2767,14 @@ static void glc_draw_solid(uint32_t argb, int32_t x, int32_t y,
 }
 
 /* Import-once + rebind-on-commit texture for a client buffer. Returns 0
- * on failure (repaint degrades to the CPU path). NOTE: rebinding flushes
- * the cmdbuf, so this must run BEFORE the frame's draw sequence starts —
- * a flush mid-frame would present a half-composited desktop. */
+ * when the buffer has no GL representation; the caller draws the rest of
+ * the frame without it. NOTE: rebinding flushes the cmdbuf, so this must
+ * run BEFORE the frame's draw sequence starts — a flush mid-frame would
+ * present a half-composited desktop. */
 static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
+    /* The texture is the whole imported bo, so a buffer that starts partway
+     * into the pool has no GL representation — the CPU path reads it. */
+    if (b->offset != 0) return 0;
     if (!b->egl_bo_handle) {
         b->egl_bo_handle = wpkEglImportDmabufHandle(glc.dpy, b->pool->fd);
         if (!b->egl_bo_handle) return 0;
@@ -2491,6 +2878,7 @@ static void setup_gl(void) {
     }
     glUseProgram(glc.prog);
     glc.loc_rect = glGetUniformLocation(glc.prog, "u_rect");
+    glc.loc_uv = glGetUniformLocation(glc.prog, "u_uv");
     glc.loc_use_tex = glGetUniformLocation(glc.prog, "u_use_tex");
     glc.loc_color = glGetUniformLocation(glc.prog, "u_color");
     glUniform1i(glGetUniformLocation(glc.prog, "u_tex"), 0);
@@ -2506,8 +2894,15 @@ static void setup_gl(void) {
 
 /* GPU frame: refresh dirty textures (host-side uploads, safe to flush),
  * then encode clear + wallpaper + z-ordered window quads and present
- * them in ONE cmdbuf flush via eglSwapBuffers. Returns 0 on failure so
- * repaint() can fall back to the CPU blit. */
+ * them in ONE cmdbuf flush via eglSwapBuffers. Returns 0 only when the
+ * GL session itself failed, so repaint() can fall back to the CPU blit.
+ *
+ * A single buffer without a GL representation is NOT such a failure: a
+ * cursor image sits at a non-zero offset in its pool (libwayland-cursor
+ * packs a whole theme into one pool), and tearing the session down for
+ * it would drop the entire desktop onto the CPU path for good. The draw
+ * loops below skip a zero texture, which is what the collection loops
+ * leave behind. */
 static int repaint_gl(void) {
     unsigned texs[MAX_SURFACES] = {0};
     unsigned layer_texs[MAX_LAYERS] = {0};
@@ -2518,7 +2913,6 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         texs[i] = shm_buffer_gl_texture(b);
-        if (!texs[i]) return 0;
     }
     for (int i = 0; i < g.n_layers; i++) {
         struct surface *s = g.layers[i];
@@ -2526,7 +2920,6 @@ static int repaint_gl(void) {
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         layer_texs[i] = shm_buffer_gl_texture(b);
-        if (!layer_texs[i]) return 0;
     }
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -2541,10 +2934,13 @@ static int repaint_gl(void) {
         if (!surface_visible(s) || !s->buffer || !texs[i]) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
+        int32_t dw, dh;
+        float uv[4];
+        surface_draw_box(s, b, &dw, &dh, uv);
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
             glc_draw_solid(th.border_active, s->x - 2, s->y - 2,
-                           b->width + 4, b->height + 4);
-        glc_draw_tex(texs[i], s->x, s->y, b->width, b->height);
+                           dw + 4, dh + 4);
+        glc_draw_tex_rect(texs[i], s->x, s->y, dw, dh, uv);
         for (int j = 0; j < g.n_all_surfaces; j++) {
             struct surface *sub = g.all_surfaces[j];
             if (sub->parent != s || !surface_visible(sub) || !sub->buffer)
@@ -2552,10 +2948,13 @@ static int repaint_gl(void) {
             struct shm_buffer *sb = wl_resource_get_user_data(sub->buffer);
             if (!sb) continue;
             unsigned t = shm_buffer_gl_texture(sb);
-            if (!t) return 0;
+            if (!t) continue;
             sub->x = s->x + sub->sub_x;
             sub->y = s->y + sub->sub_y;
-            glc_draw_tex(t, sub->x, sub->y, sb->width, sb->height);
+            int32_t sdw, sdh;
+            float suv[4];
+            surface_draw_box(sub, sb, &sdw, &sdh, suv);
+            glc_draw_tex_rect(t, sub->x, sub->y, sdw, sdh, suv);
         }
         top = s;
     }
@@ -3679,13 +4078,44 @@ static void kwlctl_emit(const char *fmt, ...) {
         if (g.listeners[i]) kwlctl_send(g.listeners[i]->fd, buf, n);
 }
 
-/* JSON describing one surface, Hyprland `clients -j`-shaped subset. */
+/* Copy `src` as JSON string content: quote, backslash, and control bytes
+ * escaped. Titles are client-controlled text. */
+static const char *json_escape(char *dst, size_t cap, const char *src) {
+    size_t n = 0;
+    for (; *src && n + 7 < cap; src++) {
+        unsigned char ch = (unsigned char)*src;
+        if (ch == '"' || ch == '\\') {
+            dst[n++] = '\\';
+            dst[n++] = (char)ch;
+        } else if (ch < 0x20) {
+            n += (size_t)snprintf(dst + n, cap - n, "\\u%04x", ch);
+        } else {
+            dst[n++] = (char)ch;
+        }
+    }
+    dst[n] = '\0';
+    return dst;
+}
+
+/* JSON describing one surface, Hyprland `hyprctl clients -j`-shaped. The
+ * fields beyond the original subset carry the keys Waybar's hyprland
+ * modules read; extra keys are ignored by kbar's strstr parser. */
 static int kwlctl_window_json(char *buf, size_t cap, struct surface *s) {
+    char klass[64], title[192];
+    json_escape(klass, sizeof(klass), s->app_id);
+    json_escape(title, sizeof(title), s->title);
     return snprintf(buf, cap,
-        "{\"address\":\"%p\",\"class\":\"%s\",\"workspace\":{\"id\":%d},"
-        "\"at\":[%d,%d],\"size\":[%d,%d],\"focused\":%s}",
-        (void *)s, s->app_id, s->workspace, s->x, s->y, s->w, s->h,
-        g.kbd_focus == s ? "true" : "false");
+        "{\"address\":\"%p\",\"class\":\"%s\",\"title\":\"%s\","
+        "\"initialClass\":\"%s\",\"initialTitle\":\"%s\","
+        "\"workspace\":{\"id\":%d,\"name\":\"%d\"},"
+        "\"at\":[%d,%d],\"size\":[%d,%d],\"focused\":%s,"
+        "\"mapped\":true,\"hidden\":false,\"floating\":%s,\"monitor\":0,"
+        "\"pid\":-1,\"xwayland\":false,\"fullscreen\":false,"
+        "\"grouped\":[],\"swallowing\":\"0x0\"}",
+        (void *)s, klass, title, klass, title,
+        s->workspace, s->workspace, s->x, s->y, s->w, s->h,
+        g.kbd_focus == s ? "true" : "false",
+        g.layout == LAYOUT_FLOATING ? "true" : "false");
 }
 
 static int kwlctl_clients_json(char *buf, size_t cap) {
@@ -3702,22 +4132,55 @@ static int kwlctl_clients_json(char *buf, size_t cap) {
     return n;
 }
 
-static int kwlctl_workspaces_json(char *buf, size_t cap) {
-    int counts[N_WORKSPACES + 1] = {0};
+/* One workspace, Hyprland-shaped; `windows` and `active` predate the shape
+ * and stay for kbar. Workspace names are their ids, and everything sits on
+ * the single output. */
+static int kwlctl_workspace_json(char *buf, size_t cap, int ws, int windows) {
+    return snprintf(buf, cap,
+        "{\"id\":%d,\"name\":\"%d\",\"monitor\":\"virtual-0\","
+        "\"monitorID\":0,\"windows\":%d,\"hasfullscreen\":false,"
+        "\"lastwindow\":\"0x0\",\"lastwindowtitle\":\"\",\"active\":%s}",
+        ws, ws, windows, ws == g.active_ws ? "true" : "false");
+}
+
+static void workspace_counts(int counts[N_WORKSPACES + 1]) {
+    memset(counts, 0, (N_WORKSPACES + 1) * sizeof(int));
     for (int i = 0; i < g.n_surfaces; i++)
         if (g.zorder[i]->mapped) counts[g.zorder[i]->workspace]++;
+}
+
+static int kwlctl_workspaces_json(char *buf, size_t cap) {
+    int counts[N_WORKSPACES + 1];
+    workspace_counts(counts);
     int n = snprintf(buf, cap, "[");
     int first = 1;
     for (int ws = 1; ws <= N_WORKSPACES && n < (int)cap; ws++) {
         if (!counts[ws] && ws != g.active_ws) continue;
-        n += snprintf(buf + n, cap - n,
-                      "%s{\"id\":%d,\"windows\":%d,\"active\":%s}",
-                      first ? "" : ",", ws, counts[ws],
-                      ws == g.active_ws ? "true" : "false");
+        if (!first) n += snprintf(buf + n, cap - n, ",");
+        n += kwlctl_workspace_json(buf + n, cap - n, ws, counts[ws]);
         first = 0;
     }
     n += snprintf(buf + n, cap - n, "]\n");
     return n;
+}
+
+static int kwlctl_activeworkspace_json(char *buf, size_t cap) {
+    int counts[N_WORKSPACES + 1];
+    workspace_counts(counts);
+    int n = kwlctl_workspace_json(buf, cap, g.active_ws,
+                                  counts[g.active_ws]);
+    n += snprintf(buf + n, cap - n, "\n");
+    return n;
+}
+
+static int kwlctl_monitors_json(char *buf, size_t cap) {
+    return snprintf(buf, cap,
+        "[{\"id\":0,\"name\":\"virtual-0\",\"description\":\"Kandelo virtual "
+        "output\",\"width\":%u,\"height\":%u,\"x\":0,\"y\":0,"
+        "\"activeWorkspace\":{\"id\":%d,\"name\":\"%d\"},"
+        "\"specialWorkspace\":{\"id\":0,\"name\":\"\"},"
+        "\"scale\":1.00,\"focused\":true}]\n",
+        g.width, g.height, g.active_ws, g.active_ws);
 }
 
 /* The live theme + what is installed, so a shell client that starts after a
@@ -3778,13 +4241,29 @@ static void kwlctl_conn_close(struct kwlctl_conn *c) {
 /* Execute one command line. Returns 1 to keep the connection open (--listen),
  * 0 to close after the reply. */
 static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
-    char buf[4096];
+    /* hyprctl's JSON marker: the reply is JSON either way, so `j/workspaces`
+     * and `workspaces` answer identically. */
+    if (strncmp(line, "j/", 2) == 0) line += 2;
+    /* MAX_SURFACES windows x ~500 bytes of client JSON fits with headroom. */
+    char buf[16384];
     if (strcmp(line, "clients") == 0) {
         kwlctl_send(c->fd, buf, kwlctl_clients_json(buf, sizeof(buf)));
         return 0;
     }
     if (strcmp(line, "workspaces") == 0) {
         kwlctl_send(c->fd, buf, kwlctl_workspaces_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "activeworkspace") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_activeworkspace_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "monitors") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_monitors_json(buf, sizeof(buf)));
+        return 0;
+    }
+    if (strcmp(line, "workspacerules") == 0) {
+        kwlctl_send(c->fd, "[]\n", 3);
         return 0;
     }
     if (strcmp(line, "activewindow") == 0) {
@@ -3799,6 +4278,8 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
         char *op = line + 9;
         if (strncmp(op, "workspace ", 10) == 0)
             switch_workspace(atoi(op + 10));
+        else if (strncmp(op, "focusworkspaceoncurrentmonitor ", 31) == 0)
+            switch_workspace(atoi(op + 31));
         else if (strncmp(op, "movetoworkspace ", 16) == 0)
             move_focus_to_workspace(atoi(op + 16));
         else if (strcmp(op, "close") == 0) {
@@ -3819,6 +4300,7 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
         return 0;
     }
     if (strcmp(line, "--listen") == 0) {
+        if (c->listening) return 1;   /* a socket2 conn already streams */
         for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
             if (!g.listeners[i]) {
                 g.listeners[i] = c;
@@ -3860,21 +4342,55 @@ static int kwlctl_listen_readable(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-static int setup_kwlctl(void) {
-    unlink(KWLCTL_SOCKET_PATH);
+/* A socket2 client gets the event stream from its first byte on; there is
+ * no handshake line to send. */
+static int hypr_socket2_readable(int fd, uint32_t mask, void *data) {
+    (void)mask; (void)data;
+    int cfd = accept(fd, NULL, NULL);
+    if (cfd < 0) return 0;
+    fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    struct kwlctl_conn *c = calloc(1, sizeof(*c));
+    if (!c) { close(cfd); return 0; }
+    c->fd = cfd;
+    c->src = wl_event_loop_add_fd(g.loop, cfd, WL_EVENT_READABLE,
+                                  kwlctl_conn_readable, c);
+    for (int i = 0; i < MAX_KWLCTL_CONNS; i++)
+        if (!g.listeners[i]) {
+            g.listeners[i] = c;
+            c->listening = 1;
+            printf("HYPR_LISTENER slot=%d\n", i);
+            fflush(stdout);
+            return 0;
+        }
+    kwlctl_conn_close(c);
+    return 0;
+}
+
+static int bind_control_socket(const char *path,
+                               wl_event_loop_fd_func_t on_readable) {
+    unlink(path);
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) { perror("socket kwlctl"); return -1; }
+    if (fd < 0) { perror("socket ctl"); return -1; }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, KWLCTL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind kwlctl"); close(fd); return -1;
+        perror("bind ctl"); close(fd); return -1;
     }
-    if (listen(fd, 8) < 0) { perror("listen kwlctl"); close(fd); return -1; }
-    wl_event_loop_add_fd(g.loop, fd, WL_EVENT_READABLE, kwlctl_listen_readable,
-                         NULL);
+    if (listen(fd, 8) < 0) { perror("listen ctl"); close(fd); return -1; }
+    wl_event_loop_add_fd(g.loop, fd, WL_EVENT_READABLE, on_readable, NULL);
     return 0;
+}
+
+static int setup_kwlctl(void) {
+    if (bind_control_socket(KWLCTL_SOCKET_PATH, kwlctl_listen_readable) < 0)
+        return -1;
+    mkdir("/tmp/hypr", 0777);
+    mkdir(HYPR_DIR, 0777);
+    if (bind_control_socket(HYPR_SOCKET1_PATH, kwlctl_listen_readable) < 0)
+        return -1;
+    return bind_control_socket(HYPR_SOCKET2_PATH, hypr_socket2_readable);
 }
 
 static int setup_socket(void) {
@@ -3942,10 +4458,16 @@ int main(void) {
                           presentation_bind) ||
         !wl_global_create(g.display, &wl_subcompositor_interface, 1, NULL,
                           subcompositor_bind) ||
+        !wl_global_create(g.display, &zxdg_output_manager_v1_interface, 3,
+                          NULL, xdg_output_mgr_bind) ||
+        !wl_global_create(g.display, &wp_viewporter_interface, 1, NULL,
+                          viewporter_bind) ||
+        !wl_global_create(g.display, &wp_fractional_scale_manager_v1_interface,
+                          1, NULL, fractional_scale_mgr_bind) ||
         !wl_global_create(g.display, &wl_data_device_manager_interface, 3,
                           NULL, data_dm_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 5, NULL, seat_bind) ||
-        !wl_global_create(g.display, &wl_output_interface, 2, NULL,
+        !wl_global_create(g.display, &wl_output_interface, 4, NULL,
                           output_bind)) {
         fprintf(stderr, "wl_global_create failed\n");
         return 1;
@@ -3972,6 +4494,10 @@ int main(void) {
      * that reply into the closed socket must not take the desktop down with
      * it; kwlctl_send already handles the short write. */
     signal(SIGPIPE, SIG_IGN);
+    /* Children spawned via dispatch exec (Waybar among them) locate the
+     * Hyprland IPC sockets through this pair. */
+    setenv("HYPRLAND_INSTANCE_SIGNATURE", HYPR_INSTANCE_SIG, 1);
+    setenv("XDG_RUNTIME_DIR", "/tmp", 0);
     if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);

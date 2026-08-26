@@ -137,6 +137,10 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
 
         host.spawn(kbarBytes, ["kbar"], {});
         await waitFor(out, /KBAR_READY /, 20_000, dump);
+        // kbar prints KBAR_READY once it commits its first buffer; the
+        // compositor prints LAYER once it processes that commit, which is
+        // strictly later.
+        await waitFor(out, /LAYER ns=bar /, 20_000, dump);
 
         // 1) Anchored full-width along the top edge at the height it asked for.
         const layer = out.value.match(
@@ -220,6 +224,7 @@ describe("wlcompositor — wlr-layer-shell shell components", () => {
           env: [`KLAUNCHER_APPS_DIR=${appsDir}`],
         });
         await waitFor(out, /KLAUNCHER_READY n=2/, 20_000, dump);
+        await waitFor(out, /LAYER ns=launcher /, 20_000, dump);
 
         // Overlay layer, centred, at the size it asked for.
         const layer = out.value.match(/LAYER ns=launcher layer=(\d+) /);

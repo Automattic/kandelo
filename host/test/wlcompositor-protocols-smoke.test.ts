@@ -4,9 +4,8 @@
  * Waybar and mako query beyond the core desktop set.
  *
  * wlclient-test, run with WLC_PROTOS=1, binds the three globals, reads the
- * xdg_output logical geometry burst, receives the scale preference this
- * output runs at (120/120ths), and sets a viewport destination at twice its
- * buffer size.
+ * xdg_output logical geometry burst, receives the fixed scale-1 preference
+ * (120/120ths), and sets a viewport destination at twice its buffer size.
  * The compositor's VIEWPORT marker reports the applied crop/scale box, and
  * the composite sample proves the scaled blit still delivers the client's
  * pixels.
@@ -19,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const hasBinaries = !!compositorBin && !!clientBin;
 
@@ -80,7 +79,7 @@ describe("wlcompositor — xdg-output + viewporter + fractional-scale", () => {
         expect(parseInt(size![1], 10)).toBeGreaterThan(0);
         expect(parseInt(size![2], 10)).toBeGreaterThan(0);
 
-        // fractional-scale: this output runs at scale 1 = 120/120ths.
+        // fractional-scale: the desktop is fixed at scale 1 = 120/120ths.
         expect(out.value).toContain("FRACTIONAL_SCALE scale=120");
 
         // viewporter: the 200x150 buffer maps as a 400x300 window and the
