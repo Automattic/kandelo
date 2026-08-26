@@ -696,7 +696,7 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
-                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                    crate::procfs::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
                 }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 {
@@ -711,7 +711,7 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
-                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                    crate::procfs::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
                 }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 {
@@ -754,7 +754,7 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
     // Cross-process: check if pid exists via process table
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     {
-        let all_pids = crate::wasm_api::procfs_all_pids();
+        let all_pids = crate::procfs::procfs_all_pids();
         if all_pids.contains(&pid) {
             return Ok(());
         }
@@ -779,7 +779,7 @@ pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> 
         } else {
             #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
             {
-                crate::wasm_api::procfs_has_fd_for_pid(*pid, *fd)
+                crate::procfs::procfs_has_fd_for_pid(*pid, *fd)
             }
             #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
             {
@@ -819,7 +819,7 @@ pub fn procfs_readlink(
             if *pid != proc.pid {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
-                    return crate::wasm_api::procfs_readlink_for_pid(*pid, entry, buf)
+                    return crate::procfs::procfs_readlink_for_pid(*pid, entry, buf)
                         .ok_or(Errno::ENOENT);
                 }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
@@ -1095,6 +1095,75 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
         }
     }
     count
+}
+
+// ── Cross-process helpers (moved from wasm_api.rs; core owns them) ────────────
+//
+// These read the global process table directly. SAFETY: only called while
+// inside kernel_handle_channel, where syscall dispatch is serialized by the
+// host.
+
+/// Get all active PIDs from the process table.
+pub(crate) fn procfs_all_pids() -> Vec<u32> {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    table.procfs_pids()
+}
+
+/// Generate procfs content for a foreign process (cross-process access).
+/// Returns None if the pid doesn't exist or is the current process
+/// (caller should use the local Process for self-access).
+pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Option<Vec<u8>> {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    match entry {
+        ProcfsEntry::Stat(_) => Some(generate_stat(proc)),
+        ProcfsEntry::Status(_) => Some(generate_status(proc)),
+        ProcfsEntry::Cmdline(_) => Some(generate_cmdline(proc)),
+        ProcfsEntry::Environ(_) => Some(generate_environ(proc)),
+        ProcfsEntry::Maps(_) => Some(generate_maps(proc)),
+        ProcfsEntry::FdInfo(_, fd) => generate_fdinfo(proc, *fd),
+        _ => None,
+    }
+}
+
+/// Get the readlink target for a procfs symlink in a foreign process.
+pub(crate) fn procfs_readlink_for_pid(
+    pid: u32,
+    entry: &ProcfsEntry,
+    buf: &mut [u8],
+) -> Option<usize> {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    procfs_readlink(proc, entry, buf).ok()
+}
+
+/// Return whether a foreign process owns a complete descriptor/OFD pair.
+pub(crate) fn procfs_has_fd_for_pid(pid: u32, fd: i32) -> bool {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    table.get(pid).is_some_and(|proc| has_open_fd(proc, fd))
+}
+
+/// Return the live OFD metadata exposed by a foreign process's procfs fd link.
+pub(crate) fn procfs_fstat_for_pid(
+    pid: u32,
+    fd: i32,
+    host: &mut dyn crate::process::HostIO,
+) -> Result<WasmStat, Errno> {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    let proc = table.get(pid).ok_or(Errno::ENOENT)?;
+    crate::syscalls::procfs_fd_target_stat(proc, host, fd)
+}
+
+/// Generate directory entries for a foreign process's procfs directory,
+/// reading the current realm's global process table.
+pub(crate) fn procfs_getdents64_for_current_realm_pid(
+    pid: u32,
+    ofd_path: &[u8],
+    buf: &mut [u8],
+    offset: i64,
+) -> Result<(usize, i64, bool), Errno> {
+    let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+    procfs_getdents64_for_pid(table, pid, ofd_path, buf, offset)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

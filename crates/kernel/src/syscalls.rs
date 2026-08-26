@@ -7111,7 +7111,7 @@ fn procfs_entry_stat(
             }
             #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
             {
-                return crate::wasm_api::procfs_fstat_for_pid(*pid, *fd, host);
+                return crate::procfs::procfs_fstat_for_pid(*pid, *fd, host);
             }
             #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
             {
@@ -8068,7 +8068,7 @@ pub fn sys_getdents64(
 
         // Get all PIDs for /proc root listing; includes self + other processes
         #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        let mut pids = crate::wasm_api::procfs_all_pids();
+        let mut pids = crate::procfs::procfs_all_pids();
         #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
         let mut pids = alloc::vec::Vec::<u32>::new();
         if pids.is_empty() {
@@ -8081,7 +8081,7 @@ pub fn sys_getdents64(
             if let Some(target_pid) = crate::procfs::entry_pid(&entry) {
                 if target_pid != proc.pid {
                     let (bytes, new_offset, exhausted) =
-                        crate::wasm_api::procfs_getdents64_for_pid(
+                        crate::procfs::procfs_getdents64_for_current_realm_pid(
                             target_pid,
                             &path,
                             buf,
@@ -17489,7 +17489,6 @@ mod tests {
         let direct_lookup = concat!("crate::process_table::", "current_tid()");
         let syscalls_source = include_str!("syscalls.rs");
         let signal_source = include_str!("signal.rs");
-        let wasm_api_source = include_str!("wasm_api.rs");
 
         // WHY: a syscall already holding &mut Process must not reborrow the
         // ProcessTable that owns it. The one test-only fallback is isolated in
@@ -17497,7 +17496,6 @@ mod tests {
         // mirrored into BlockingRetryState by ProcessTable::bind_current_tid.
         assert_eq!(syscalls_source.matches(direct_lookup).count(), 1);
         assert!(!signal_source.contains(direct_lookup));
-        assert!(!wasm_api_source.contains(direct_lookup));
     }
 
     #[test]
