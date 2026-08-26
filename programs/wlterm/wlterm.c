@@ -18,6 +18,7 @@
  *   WLTERM_READY            — window mapped + first frame committed
  *   WLTERM_GRID "<needle>"  — <needle> is now visible in the cell grid
  *   WLTERM_EXIT code=<n>    — shell exited, clean shutdown
+ *   WLTERM_EXIT signal=<n>  — shell died on a signal
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -192,9 +193,13 @@ int main(int argc, char **argv) {
     close(master);
     int status = 0;
     if (pid > 0) waitpid(pid, &status, 0);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
-
-    printf("WLTERM_EXIT code=%d\n", exit_code);
+    /* WEXITSTATUS is undefined unless WIFEXITED, so a signal death cannot be
+     * reported through code=. */
+    if (WIFSIGNALED(status)) {
+        printf("WLTERM_EXIT signal=%d\n", WTERMSIG(status));
+    } else {
+        printf("WLTERM_EXIT code=%d\n", WIFEXITED(status) ? WEXITSTATUS(status) : 0);
+    }
     fflush(stdout);
 
     vt100_destroy(term);

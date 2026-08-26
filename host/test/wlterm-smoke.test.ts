@@ -49,6 +49,9 @@ const SYN_REPORT = 0x00;
 const KEY_A = 30;
 const KEY_ENTER = 28;
 
+// signal.h
+const SIGKILL = 9;
+
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -143,6 +146,62 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         expect(wltermCode, `wlterm exit.\n${dump()}`).toBe(0);
 
         // The compositor exits once its last client disconnects.
+        const compCode = await Promise.race([
+          compExit,
+          new Promise<number>((_, reject) =>
+            setTimeout(() => reject(new Error(`compositor timed out.\n${dump()}`)), 10_000)),
+        ]);
+        expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "a shell killed by a signal is reported as a signal death, not a clean exit",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const wltermBytes = loadBytes(wltermBin!);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+
+      const dump = () =>
+        `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // WEXITSTATUS is undefined for a signal death, so the status must not
+        // reach the grid as a code=.
+        const wltermExit = host.spawn(
+          wltermBytes,
+          ["wlterm", dashBin!, "-c", `kill -${SIGKILL} $$`],
+          { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
+        );
+
+        await waitFor(out, "WLTERM_READY", 20_000, dump);
+        await waitFor(out, `WLTERM_EXIT signal=${SIGKILL}`, 20_000, dump);
+        expect(out.value, `signal death reported as an exit code.\n${dump()}`)
+          .not.toContain("WLTERM_EXIT code=");
+
+        const wltermCode = await Promise.race([
+          wltermExit,
+          new Promise<number>((_, reject) =>
+            setTimeout(() => reject(new Error(`wlterm timed out.\n${dump()}`)), 25_000)),
+        ]);
+        expect(wltermCode, `wlterm exit.\n${dump()}`).toBe(0);
+
         const compCode = await Promise.race([
           compExit,
           new Promise<number>((_, reject) =>
