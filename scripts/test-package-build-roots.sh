@@ -122,9 +122,11 @@ fi
 case "${KANDELO_PACKAGE_BUILD_ROOTS_TEST_FOCUS:-}" in
 source-dependency|private-sysroot) ;;
 *)
+    # The program index is a generated artifact (gitignored); generate it here
+    # so this build-roots test runs against an up-to-date projection.
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-        build-deps program-index-check \
+        build-deps program-index \
         --source-repo-root "$REPO_ROOT" \
         "$REPO_ROOT/packages/registry" \
         "$REPO_ROOT/packages/registry/program-packages.json"

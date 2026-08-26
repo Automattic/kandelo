@@ -229,6 +229,40 @@ function fixtureBuildContract(
 }
 
 export async function setup() {
+  // The program package index is a generated artifact (gitignored), not a
+  // committed one. Generate it here so resolver and package-system tests that
+  // read packages/registry/program-packages.json directly get a fresh
+  // projection without depending on a prior build — every caller of `vitest
+  // run` gets the prereq for free, exactly like the wasm fixtures below.
+  const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("host: "))
+    ?.slice(6)
+    .trim();
+  if (!hostTarget) {
+    throw new Error("[global-setup] could not determine the Rust host target");
+  }
+  console.log("[global-setup] Generating program package index...");
+  execFileSync(
+    "cargo",
+    [
+      "run",
+      "-p",
+      "xtask",
+      "--target",
+      hostTarget,
+      "--quiet",
+      "--",
+      "build-deps",
+      "program-index",
+      "--source-repo-root",
+      repoRoot,
+      join(repoRoot, "packages/registry"),
+      join(repoRoot, "packages/registry/program-packages.json"),
+    ],
+    { cwd: repoRoot, stdio: "pipe" },
+  );
+
   const wasm32Contract = fixtureBuildContract("wasm32", false);
   const wasm32ForkContract = fixtureBuildContract("wasm32", true);
   const wasm64Contract = fixtureBuildContract("wasm64", false);

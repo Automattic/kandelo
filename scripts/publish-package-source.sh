@@ -60,8 +60,10 @@ source "$KANDELO_ROOT/sdk/activate.sh"
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"
+# The program index is a generated artifact (gitignored), so regenerate it in
+# the combined publish context rather than failing when it has drifted.
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-  build-deps program-index-context-check \
+  build-deps program-index-context-ensure \
   --source-repo-root "$KANDELO_ROOT"
 
 "$KANDELO_ROOT/scripts/sync-package-source.sh" \

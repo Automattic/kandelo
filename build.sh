@@ -20,6 +20,16 @@ cargo build --release --target "$HOST_TRIPLE" -p fork-instrument --bin wasm-fork
 mkdir -p tools/bin
 cp "target/$HOST_TRIPLE/release/wasm-fork-instrument" tools/bin/wasm-fork-instrument
 
+echo "Generating program package index (derived, gitignored)..."
+# The program index is a projection of packages/registry/*/package.toml. Its
+# cache keys hash the build/toolchain trees, so it is generated (not committed);
+# build-programs.sh, the TS resolver, and the npm host package consume it.
+cargo run --release --target "$HOST_TRIPLE" -p xtask --quiet -- \
+    build-deps program-index \
+    --source-repo-root "$PWD" \
+    packages/registry \
+    packages/registry/program-packages.json
+
 if [ -d programs ] && ls programs/*.c >/dev/null 2>&1; then
     echo "Building user programs..."
     bash scripts/build-programs.sh
