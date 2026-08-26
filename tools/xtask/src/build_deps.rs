@@ -3079,7 +3079,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
                     member.mirror_path
                 ));
             }
-            self.validate_materialized_member(member)?;
+            self.validate_materialized_member(member, verify_cache)?;
         }
         self.lock.validate()?;
         let after = capture_source_only_package_authority(
@@ -3103,6 +3103,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
     pub(crate) fn validate_materialized_member(
         &self,
         member: &MaterializedProgramMemberV1,
+        verify_cache: bool,
     ) -> Result<(), String> {
         self.lock.validate()?;
         let relative = Path::new(&member.mirror_path);
@@ -3132,16 +3133,20 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
             "source-only materialized member path may not be empty".to_string()
         })?;
         let path = parent.path.join(&file_name);
-        let snapshot = inspect_regular_projection_file_at(
-            &parent.file,
-            &file_name,
-            &path,
-        )?;
-        let exact = matches!(
-            snapshot.kind,
-            LocalMirrorEntryKind::Regular { len, sha256 }
-                if len == member.size && hex(&sha256) == member.sha256
-        ) && snapshot.mode == member.mode;
+        let exact = if verify_cache {
+            let snapshot = inspect_regular_projection_file_at(&parent.file, &file_name, &path)?;
+            matches!(
+                snapshot.kind,
+                LocalMirrorEntryKind::Regular { len, sha256 }
+                    if len == member.size && hex(&sha256) == member.sha256
+            ) && snapshot.mode == member.mode
+        } else {
+            // Trust the receipt's recorded content digest; confirm only that the
+            // projected file is present as a regular file with the recorded size
+            // and mode, without re-hashing its bytes.
+            let meta = receipt_at_metadata_snapshot(&parent.file, &file_name, &path)?;
+            meta.kind == 1 && meta.len == member.size && meta.mode == member.mode
+        };
         self.lock.validate()?;
         if !exact {
             return Err(format!(
@@ -3276,6 +3281,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
     pub(crate) fn validate_materialized_member(
         &self,
         _member: &MaterializedProgramMemberV1,
+        _verify_cache: bool,
     ) -> Result<(), String> {
         Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
     }
@@ -8693,7 +8699,7 @@ fn capture_source_only_package_authority(
             ));
         }
         match read_source_only_cache_receipt(canonical, &cache_key_sha256)? {
-            Some(sha) => (None, sha),
+            Some(receipt) => (None, receipt.cache_receipt_sha256),
             None => {
                 let snapshot = capture_source_only_cache_entry_snapshot(
                     &manifest,
@@ -8807,20 +8813,23 @@ pub(crate) fn source_only_cache_entry_is_trusted(
     Ok(true)
 }
 
-/// Resolver-owned sidecar recording the content-addressed receipt digest of a
-/// materialized SourceOnlyV1 cache entry, stored beside (never inside) the
-/// entry like the provenance marker. The trusted local-build fast path reads
-/// this instead of re-hashing the whole entry tree; `--verify-cache` recomputes
-/// and rewrites it. Entries built before this record existed simply lack it, so
-/// the trusted path recomputes and persists it once.
-const SOURCE_ONLY_CACHE_RECEIPT_SCHEMA: u32 = 1;
+/// Resolver-owned sidecar recording the full package receipt of a materialized
+/// SourceOnlyV1 cache entry, stored beside (never inside) the entry like the
+/// provenance marker. The trusted local-build fast path reads its
+/// `cache_receipt_sha256` instead of re-hashing the whole entry tree, and the
+/// scheduler reads the whole receipt to skip launching a child for an unchanged
+/// node; `--verify-cache` recomputes and rewrites it. Entries built before this
+/// record existed simply lack it, so the trusted path recomputes and persists
+/// it once. The receipt's `materialized_members` are a deterministic function
+/// of the content-addressed entry, so a persisted receipt describes the same
+/// projection any rebuild would produce.
+const SOURCE_ONLY_CACHE_RECEIPT_SCHEMA: u32 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceOnlyCacheReceiptMarker {
     schema: u32,
-    cache_key_sha256: String,
-    cache_receipt_sha256: String,
+    receipt: PackageNodeReceiptV1,
 }
 
 #[cfg(unix)]
@@ -8849,22 +8858,20 @@ pub(crate) fn source_only_cache_receipt_path(
             canonical.display()
         ));
     }
-    Ok(parent.join(format!(".{basename}.kandelo-receipt.toml")))
+    Ok(parent.join(format!(".{basename}.kandelo-receipt.json")))
 }
 
 #[cfg(unix)]
 pub(crate) fn write_source_only_cache_receipt(
     canonical: &Path,
-    cache_key_sha: &str,
-    cache_receipt_sha: &str,
+    receipt: &PackageNodeReceiptV1,
 ) -> Result<(), String> {
-    let path = source_only_cache_receipt_path(canonical, cache_key_sha)?;
+    let path = source_only_cache_receipt_path(canonical, &receipt.cache_key_sha256)?;
     let marker = SourceOnlyCacheReceiptMarker {
         schema: SOURCE_ONLY_CACHE_RECEIPT_SCHEMA,
-        cache_key_sha256: cache_key_sha.to_string(),
-        cache_receipt_sha256: cache_receipt_sha.to_string(),
+        receipt: receipt.clone(),
     };
-    let body = toml::to_string(&marker)
+    let body = serde_json::to_vec(&marker)
         .map_err(|error| format!("serialize source-only cache receipt marker: {error}"))?;
     let parent = path.parent().ok_or_else(|| {
         format!(
@@ -8873,7 +8880,7 @@ pub(crate) fn write_source_only_cache_receipt(
         )
     })?;
     let temp = parent.join(format!(".kandelo-receipt-tmp-{}", std::process::id()));
-    std::fs::write(&temp, body.as_bytes()).map_err(|error| {
+    std::fs::write(&temp, &body).map_err(|error| {
         format!(
             "write source-only cache receipt {}: {error}",
             temp.display()
@@ -8893,9 +8900,9 @@ pub(crate) fn write_source_only_cache_receipt(
 pub(crate) fn read_source_only_cache_receipt(
     canonical: &Path,
     cache_key_sha: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<PackageNodeReceiptV1>, String> {
     let path = source_only_cache_receipt_path(canonical, cache_key_sha)?;
-    let body = match std::fs::read_to_string(&path) {
+    let body = match std::fs::read(&path) {
         Ok(body) => body,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -8905,7 +8912,7 @@ pub(crate) fn read_source_only_cache_receipt(
             ));
         }
     };
-    let marker: SourceOnlyCacheReceiptMarker = toml::from_str(&body).map_err(|error| {
+    let marker: SourceOnlyCacheReceiptMarker = serde_json::from_slice(&body).map_err(|error| {
         format!(
             "parse source-only cache receipt {}: {error}",
             path.display()
@@ -8918,14 +8925,81 @@ pub(crate) fn read_source_only_cache_receipt(
             marker.schema
         ));
     }
-    if marker.cache_key_sha256 != cache_key_sha {
+    if marker.receipt.cache_key_sha256 != cache_key_sha {
         return Err(format!(
             "source-only cache receipt {} records cache key {} but {cache_key_sha} was requested",
             path.display(),
-            marker.cache_key_sha256,
+            marker.receipt.cache_key_sha256,
         ));
     }
-    Ok(Some(marker.cache_receipt_sha256))
+    Ok(Some(marker.receipt))
+}
+
+/// If a compiled SourceOnlyV1 node is unchanged, return its persisted receipt so
+/// the scheduler can report it `Cached` without launching a child process.
+///
+/// "Unchanged" is decided entirely by the content-addressed cache key (which
+/// folds every declared input, including transitive dependency keys): a changed
+/// input yields a different key and a different, absent canonical path. The node
+/// qualifies only when its entry is present and passes the trusted validation
+/// (declared-output shape + wasm/fork/ABI policy + provenance, no whole-tree
+/// re-hash), its receipt sidecar is present, and every projected member the
+/// receipt claims is present in `output_root`. Any uncertainty — a missing
+/// entry, absent or unreadable sidecar, corrupt provenance, or a missing
+/// projected file — returns `None` so the authoritative child path runs. It
+/// therefore never reports a node cached that a build would have changed.
+#[cfg(unix)]
+pub(crate) fn source_only_skip_receipt_if_clean(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    roots: &SourceOnlyCacheRoots,
+    output_root: &Path,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+) -> Option<PackageNodeReceiptV1> {
+    if target.kind == ManifestKind::Source {
+        return None;
+    }
+    let sha = compute_sha_for_policy(
+        target,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+        memo,
+        &mut Vec::new(),
+    )
+    .ok()?;
+    let cache_key_sha256 = hex(&sha);
+    let canonical = canonical_path(&roots.compiled, target, arch, &sha);
+    // Cheap identity check only: the entry exists and its provenance marker
+    // matches. Deliberately NOT the full `validate_cache_entry` (which reads and
+    // parses every declared wasm) — this pre-pass runs serially over the whole
+    // graph, so re-parsing wasms here would cost more than the parallel children
+    // it replaces. A present entry with a present receipt sidecar was already
+    // fully validated when built, and its content-addressed key means the bytes
+    // (and thus the wasm-policy result) cannot have changed without the key
+    // changing; `--verify-cache` re-runs the full check.
+    if !path_entry_exists(&canonical).unwrap_or(false) {
+        return None;
+    }
+    if validate_cache_provenance(target, &canonical, arch, abi_version, &cache_key_sha256).is_err() {
+        return None;
+    }
+    let receipt = read_source_only_cache_receipt(&canonical, &cache_key_sha256)
+        .ok()
+        .flatten()?;
+    for member in &receipt.materialized_members {
+        let projected = output_root.join(&member.mirror_path);
+        let present = std::fs::symlink_metadata(&projected)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false);
+        if !present {
+            return None;
+        }
+    }
+    Some(receipt)
 }
 
 /// Resolve exactly one scheduler-selected node under SourceOnlyV1. Compiled
@@ -9181,11 +9255,7 @@ where
     // Persist the receipt digest beside the entry so the trusted fast path can
     // read it next run instead of re-hashing the whole tree. Best-effort: a
     // failure here only forces the next run to recompute, never a wrong result.
-    if let Err(error) = write_source_only_cache_receipt(
-        &canonical,
-        &package_receipt.cache_key_sha256,
-        &package_receipt.cache_receipt_sha256,
-    ) {
+    if let Err(error) = write_source_only_cache_receipt(&canonical, &package_receipt) {
         eprintln!(
             "{}: warning: persist source-only cache receipt: {error}",
             target.spec()
@@ -34700,12 +34770,12 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             sha256: hex(&Sha256::digest(b"capability-member")),
         };
         with_source_only_program_projection_lock(&output, |authority| {
-            authority.validate_materialized_member(&member)?;
+            authority.validate_materialized_member(&member, true)?;
             authority.replace_projection_authority(b"first-authority\n")
         })
         .unwrap();
         with_source_only_program_projection_lock(&output, |authority| {
-            authority.validate_materialized_member(&member)?;
+            authority.validate_materialized_member(&member, true)?;
             authority.replace_projection_authority(b"second-authority\n")
         })
         .unwrap();
@@ -35280,20 +35350,31 @@ commit = "1111111111111111111111111111111111111111"
 
     #[cfg(unix)]
     #[test]
-    fn source_only_cache_receipt_round_trips_the_persisted_receipt_sha() {
+    fn source_only_cache_receipt_round_trips_the_persisted_receipt() {
         let cache_root = tempdir("source-only-receipt-round-trip");
         let key = "c".repeat(64);
         let canonical = cache_root
             .join("libs")
             .join(format!("receipt-lib-1.0.0-rev1-wasm32-{key}"));
         fs::create_dir_all(&canonical).unwrap();
-        let receipt_sha = "d".repeat(64);
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "1".repeat(64),
+            cache_key_sha256: key.clone(),
+            cache_receipt_sha256: "d".repeat(64),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: "bin/tool.wasm".to_string(),
+                mirror_path: "programs/wasm32/tool.wasm".to_string(),
+                mode: 0o755,
+                size: 42,
+                sha256: "e".repeat(64),
+            }],
+        };
 
-        write_source_only_cache_receipt(&canonical, &key, &receipt_sha).unwrap();
+        write_source_only_cache_receipt(&canonical, &receipt).unwrap();
 
         assert_eq!(
             read_source_only_cache_receipt(&canonical, &key).unwrap(),
-            Some(receipt_sha),
+            Some(receipt),
         );
     }
 
@@ -35322,16 +35403,81 @@ commit = "1111111111111111111111111111111111111111"
             .join("libs")
             .join(format!("receipt-lib-1.0.0-rev1-wasm32-{key}"));
         fs::create_dir_all(&canonical).unwrap();
-        write_source_only_cache_receipt(&canonical, &key, &"b".repeat(64)).unwrap();
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "1".repeat(64),
+            cache_key_sha256: key.clone(),
+            cache_receipt_sha256: "b".repeat(64),
+            materialized_members: Vec::new(),
+        };
+        write_source_only_cache_receipt(&canonical, &receipt).unwrap();
 
         // A marker whose recorded cache key does not match the requested key is
         // corrupt, not a silent miss: it must fail loudly.
         let other_key = "f".repeat(64);
         let path = source_only_cache_receipt_path(&canonical, &key).unwrap();
-        let mut doc = fs::read_to_string(&path).unwrap();
-        doc = doc.replace(&key, &other_key);
+        let doc = fs::read_to_string(&path).unwrap().replace(&key, &other_key);
         fs::write(&path, doc).unwrap();
         assert!(read_source_only_cache_receipt(&canonical, &key).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_only_skip_returns_receipt_for_clean_node_and_none_when_projection_missing() {
+        let repo = tempdir("source-only-skip-clean");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "skipclean",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("skipclean.wasm", &minimal_executable_wasm()),
+            &[("skipclean", "skipclean.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "skipclean");
+        let manifest_path = repo.join("skipclean/package.toml");
+        let disabled = fs::read_to_string(&manifest_path).unwrap().replace(
+            "wasm = \"skipclean.wasm\"",
+            "wasm = \"skipclean.wasm\"\nfork_instrumentation = \"disabled\"",
+        );
+        fs::write(&manifest_path, &disabled).unwrap();
+        let registry = Registry {
+            roots: vec![repo.clone()],
+        };
+        let target = registry.load("skipclean").unwrap();
+        let (base, compiled) = source_only_test_roots("source-only-skip-clean-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("source-only-skip-clean-output");
+
+        let built =
+            run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false).unwrap();
+        let receipt = built.package_receipt.clone().unwrap();
+
+        // The skip helper computes the cache key in the caller's repo context,
+        // exactly as the local-build parent does; bind that context to the
+        // fixture repo (the parent normally runs in the real repo whose ABI
+        // snapshot matches).
+        let _override =
+            crate::install_repo_root_override(fs::canonicalize(&repo).unwrap()).unwrap();
+
+        let mut memo = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean(
+                &target, &registry, TEST_ARCH, TEST_ABI, &roots, &output, &mut memo,
+            ),
+            Some(receipt.clone()),
+            "a clean built node must be skippable with its persisted receipt"
+        );
+
+        let projected = output.join(&receipt.materialized_members[0].mirror_path);
+        fs::remove_file(&projected).unwrap();
+        let mut memo2 = BTreeMap::new();
+        assert_eq!(
+            source_only_skip_receipt_if_clean(
+                &target, &registry, TEST_ARCH, TEST_ABI, &roots, &output, &mut memo2,
+            ),
+            None,
+            "a node whose projected output is missing must fall back to a child build"
+        );
     }
 
     #[cfg(unix)]
