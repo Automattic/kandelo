@@ -36,7 +36,7 @@ const ANONYMOUS_OMISSION_EXCLUDED_NAMES = new Set([
 // are deliberately NOT included here: those must still fail loudly rather than
 // be silently dropped. Kept in sync with the same list in the service worker
 // (apps/browser-demos/public/service-worker.js).
-const BROWSER_CONTROLLED_REQUEST_HEADER_NAMES = new Set([
+export const BROWSER_CONTROLLED_REQUEST_HEADER_NAMES = new Set([
   // Fetch "forbidden request-header" names.
   "accept-charset",
   "accept-encoding",
