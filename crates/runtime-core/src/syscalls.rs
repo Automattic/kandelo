@@ -1632,7 +1632,10 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
-            host.gl_present(pid);
+            let present_rc = host.gl_present(pid);
+            if present_rc < 0 {
+                return Err(Errno::from_u32((-present_rc) as u32).unwrap_or(Errno::EIO));
+            }
             Ok(())
         }
         gl::GLIO_QUERY => {
@@ -15924,17 +15927,36 @@ pub fn sys_epoll_pwait(
         ep.interests.clone()
     };
 
+    // The same atomic mask swap as sys_ppoll/sys_pselect6, in a per-task
+    // LIFO wait context. The mask stays swapped across EAGAIN retries so a
+    // cross-process signal arriving while parked is deliverable, wakes the
+    // retry loop, and surfaces as EINTR — foot's SIGCHLD reaper blocks the
+    // signal everywhere except inside epoll_pwait.
+    let tid = current_tid_for_process(proc);
+    if let Some(new_mask) = sigmask {
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        let m = new_mask
+            & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+        proc.enter_signal_mask_wait_for(
+            tid,
+            crate::signal::SignalMaskWaitKind::EpollPwait,
+            m,
+        );
+        if proc.deliverable_for(tid) != 0 {
+            return Err(Errno::EINTR);
+        }
+    }
+
     if interests.is_empty() {
-        // No interests — just handle timeout/sigmask
-        if let Some(new_mask) = sigmask {
-            let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-            if timeout_ms != 0 {
-                // Brief sleep if timeout specified
-                if timeout_ms > 0 {
-                    let _ = host.host_nanosleep(0, (timeout_ms as i64) * 1_000_000);
-                }
-            }
-            let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+        // No interests — just handle the timeout
+        if timeout_ms > 0 {
+            let _ = host.host_nanosleep(0, (timeout_ms as i64) * 1_000_000);
+        }
+        if sigmask.is_some() && proc.deliverable_for(tid) == 0 {
+            proc.finish_signal_mask_wait_for(
+                tid,
+                crate::signal::SignalMaskWaitKind::EpollPwait,
+            );
         }
         return Ok((0, Vec::new()));
     }
@@ -15963,20 +15985,18 @@ pub fn sys_epoll_pwait(
         })
         .collect();
 
-    // Apply signal mask if provided
-    let old_mask = if let Some(new_mask) = sigmask {
-        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-        Some(old)
-    } else {
-        None
-    };
-
-    // Delegate to sys_poll
+    // Delegate to sys_poll; on anything but an EAGAIN park, restore the
+    // saved mask unless a signal is pending (then kernel_dequeue_signal
+    // restores it after the dequeue picks the signal that ended the wait).
     let ready = sys_poll(proc, host, &mut pollfds, timeout_ms);
-
-    // Restore signal mask
-    if let Some(old) = old_mask {
-        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    if sigmask.is_some()
+        && !matches!(ready, Err(Errno::EAGAIN))
+        && proc.deliverable_for(tid) == 0
+    {
+        proc.finish_signal_mask_wait_for(
+            tid,
+            crate::signal::SignalMaskWaitKind::EpollPwait,
+        );
     }
 
     let _ready_count = ready?;
@@ -38089,6 +38109,46 @@ mod tests {
         assert_eq!(count, 1);
         assert_ne!(events[0].0 & epollin, 0);
         assert_eq!(events[0].1, 99); // data preserved
+    }
+
+    #[test]
+    fn test_epoll_pwait_sigmask_unblocks_pending_signal() {
+        // foot's reaper pattern: SIGCHLD blocked everywhere except inside
+        // epoll_pwait. A pending-but-blocked signal must surface as EINTR
+        // when the sigmask unblocks it, with the temp mask kept active for
+        // the dequeue (sigsuspend_saved_mask pattern), and the EAGAIN park
+        // must keep the swapped mask so the host sees it deliverable.
+        use wasm_posix_shared::signal::SIGCHLD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, 0x001, 7).unwrap();
+
+        // The reaper's handler must be installed: a default-disposition
+        // SIGCHLD is discarded at raise time and never becomes pending.
+        sys_sigaction(&mut proc, SIGCHLD, 42, 0, 0).unwrap();
+        let orig_mask = proc.signals.blocked;
+        sys_sigprocmask(&mut proc, SIG_BLOCK, crate::signal::sig_bit(SIGCHLD))
+            .unwrap();
+
+        // Nothing pending, nothing readable: parks with the temp mask active.
+        let parked =
+            sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
+        assert_eq!(parked, Err(Errno::EAGAIN));
+        assert_eq!(
+            proc.signals.blocked & crate::signal::sig_bit(SIGCHLD),
+            0,
+            "temp mask must stay swapped while parked so the signal is deliverable"
+        );
+
+        // The signal arrives mid-park (what the host's SYS_KILL does).
+        proc.signals.raise(SIGCHLD);
+        let retried =
+            sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
+        assert_eq!(retried, Err(Errno::EINTR));
+        assert_ne!(proc.signals.deliverable(), 0);
     }
 
     #[test]

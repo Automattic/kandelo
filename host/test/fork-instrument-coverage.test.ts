@@ -474,6 +474,21 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       maxPages: 384,
     });
   });
+
+  // P-12: the child's exit queues SIGCHLD on a parent that has a thread
+  // parked in poll(). Waking those polls by walking the live registration
+  // map never terminates — a poll that is still not ready re-registers as
+  // it retries, and the iterator visits the entry it just added — so the
+  // kernel worker spins and every process on the machine stops. Waybar hit
+  // this through wordexp(), which forks /bin/sh while waybar's signal
+  // thread sits in poll.
+  it("P-12 fork + child exit while another thread is parked in poll", async () => {
+    await runFixture("programs/p_12_fork_with_polling_thread.wasm", {
+      contains: ["THREAD_POLLING", "PRE_FORK", "CHILD: ok", "PARENT: child=", "REAPED", "PASS: P-12"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
