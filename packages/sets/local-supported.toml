@@ -72,6 +72,14 @@ name = "dinit"
 class = "user-software"
 
 [[packages]]
+name = "espeak-ng"
+class = "user-software"
+
+[[packages]]
+name = "evdev-demo"
+class = "user-software"
+
+[[packages]]
 name = "fbdoom"
 class = "user-software"
 

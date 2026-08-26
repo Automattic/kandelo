@@ -1,0 +1,68 @@
+kind = "program"
+name = "espeak-ng"
+version = "1.52.0"
+# Speech synthesis for the browser demo. espeak-ng links upstream
+# pcaudiolib built with only its OSS backend, so playback goes through
+# /dev/dsp like every other Kandelo sound port. Neither source tree is
+# patched. The build bundles a minimal English-only data dir, published as
+# the runtime file below. Consumers install the binary at /usr/bin/espeak-ng
+# and unpack the data at /usr/share/espeak-ng-data, matching
+# CMAKE_INSTALL_PREFIX=/usr so libespeak-ng's PATH_ESPEAK_DATA resolves.
+kernel_abi = 43
+depends_on = ["libcxx@21.1.7"]
+
+# espeak-ng publishes no source archive as a release asset, so the pin
+# is its tag archive. The build script pins pcaudiolib 1.3 separately
+# against its published release tarball.
+[source]
+url = "https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz"
+sha256 = "bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/espeak-ng/espeak-ng/blob/1.52.0/COPYING"
+
+[build]
+script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.15"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.10"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "espeak-ng"
+wasm = "espeak-ng.wasm"
+
+# The voice data is a separate closure member so image builders and the
+# browser demo consume the same immutable bytes through the resolver
+# instead of reading the build tree. Stored-only zip, like cpython's.
+[[runtime_files]]
+artifact = "espeak-ng-data.zip"
+guest_path = "/usr/share/espeak-ng/espeak-ng-data.zip"
