@@ -363,17 +363,29 @@ pub(crate) struct BootstrapStep {
 /// The ordered host-plus-engine build closure for `xtask bootstrap` /
 /// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
 /// `engine` (the `msmtpd` package node consumes the built
-/// `wasm-fork-instrument` CLI); `rootfs` must follow `engine` (`build-rootfs.sh`
-/// assembles the canonical `host/wasm/rootfs.vfs` image from packages the
-/// engine step just built) and precede `host-dist` (the TypeScript host build
-/// should see a fresh rootfs image, even though it does not currently read it
-/// at build time); `host-dist` must follow `engine` (the TypeScript host build
-/// consumes the program package index the engine regenerates).
+/// `wasm-fork-instrument` CLI); `sysroot`/`sysroot64`/`sdk` must precede
+/// `engine` (every package build script in the local-supported set reads the
+/// ambient `sysroot`/`sysroot64` musl toolchain and the `wasm{32,64}posix-cc`
+/// wrappers directly — this is not a graph edge the engine's own dependency
+/// resolution models, so nothing rebuilds it as a side effect of building a
+/// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
+/// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs` image
+/// from packages the engine step just built) and precede `host-dist` (the
+/// TypeScript host build should see a fresh rootfs image, even though it
+/// does not currently read it at build time); `host-dist` must follow
+/// `engine` (the TypeScript host build consumes the program package index
+/// the engine regenerates).
 pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     vec![
         BootstrapStep {
             name: "fork-instrument-tool",
         },
+        BootstrapStep { name: "sysroot" },
+        BootstrapStep {
+            name: "sysroot64",
+        },
+        BootstrapStep { name: "sdk" },
         BootstrapStep { name: "engine" },
         BootstrapStep { name: "rootfs" },
         BootstrapStep {
@@ -458,6 +470,18 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
         "sdk" => Selection::HostStep("sdk"),
         other => Selection::Package(other.to_string()),
     }
+}
+
+/// Whether a bare `xtask bootstrap <target>` package selection needs the
+/// wasm64 musl sysroot provisioned before the engine builds it, mirroring
+/// the historical "64" suffix convention `select_graph_dependencies` already
+/// uses to map a target like `mariadb64` onto the wasm64 node of the
+/// `mariadb` package: a target name ending in "64" is a wasm64 build: every
+/// other target defaults to wasm32 and needs only the (already-required,
+/// via the `sdk` step) wasm32 sysroot. `sysroot64` itself is handled by its
+/// own `Selection::HostStep` arm, not this package-prerequisite path.
+pub(crate) fn package_target_needs_sysroot64(target: &str) -> bool {
+    target.ends_with("64")
 }
 
 /// Parse the leading positional target argument of `xtask bootstrap`. An
@@ -612,12 +636,33 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
         }
         Selection::Package(name) => {
-            // Preserve the universal `need_sdk` (→ `need_sysroot`) prerequisite
-            // that almost every `run.sh` package builder relied on, except for
-            // the kernel itself, which is a pure `cargo build` with no SDK/musl
-            // dependency. The resync is cheap when the sysroot already exists.
+            // Preserve the exact universal prerequisite set every `run.sh`
+            // `build_<pkg>` relied on (`need_kernel` + `need_sdk`, which
+            // itself ensures `need_sysroot`), except for the kernel itself,
+            // which is a pure `cargo build` with no kernel/SDK/musl
+            // dependency of its own. `sdk`'s own step ensures `sysroot`
+            // first (see its `run_bootstrap_step` arm), so this only needs
+            // to ensure `kernel` and `sdk` directly — the `sysroot` resync
+            // underneath `sdk` is cheap when it already exists.
             if name != "kernel" {
-                run_bootstrap_step(&repo, "sysroot", jobs, rebuild, verify_cache, Vec::new())?;
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+                run_bootstrap_step(&repo, "sdk", jobs, rebuild, verify_cache, Vec::new())?;
+                // `need_sysroot64` on memory64 paths: the wasm64 build of a
+                // package (`./run.sh build mariadb64`, `sysroot64` itself
+                // handled by its own `Selection::HostStep` arm) additionally
+                // needs the wasm64 musl sysroot the wasm32 `sdk` step above
+                // does not provision. Only pay for this when the target
+                // actually names a wasm64 build — not on every package.
+                if package_target_needs_sysroot64(&name) {
+                    run_bootstrap_step(&repo, "sysroot64", jobs, rebuild, verify_cache, Vec::new())?;
+                }
             }
             // msmtpd is the one package that consumes the built
             // wasm-fork-instrument CLI (see `bootstrap_step_plan`'s doc
@@ -4822,12 +4867,14 @@ materialization = "lazy"
         let root = temp.path();
         package(root, "base-a", &[], &[]);
         package(root, "mariadb", &["wasm32", "wasm64"], &[]);
+        package(root, "wasm64-only", &["wasm64"], &[]);
         product(root, "unused", &[]);
         let set = authority(
             root,
             &[
                 ("base-a", "platform"),
                 ("mariadb", "user-software"),
+                ("wasm64-only", "platform"),
             ],
             &[],
             &[],
@@ -4868,6 +4915,28 @@ materialization = "lazy"
 
         let error = select_graph_dependencies(&graph, &["not-a-thing".to_string()]).unwrap_err();
         assert!(error.contains("unknown"), "{error}");
+
+        // A package that exists ONLY at wasm64 (no wasm32 counterpart, and
+        // its name has no "64" suffix to strip) must still resolve by its
+        // plain name via the final wasm64-literal fallback, not just via the
+        // "64" suffix convention covered above.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["wasm64-only".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("wasm64-only", "wasm64")]),
+        );
+    }
+
+    #[test]
+    fn package_target_needs_sysroot64_matches_the_64_suffix_convention() {
+        assert!(package_target_needs_sysroot64("mariadb64"));
+        assert!(package_target_needs_sysroot64("sqlite64"));
+        assert!(!package_target_needs_sysroot64("mariadb"));
+        assert!(!package_target_needs_sysroot64("zlib"));
+        assert!(!package_target_needs_sysroot64("kernel"));
     }
 
     #[test]
@@ -4970,17 +5039,29 @@ materialization = "lazy"
     }
 
     #[test]
-    fn bootstrap_step_order_builds_host_tool_before_engine_and_host_after() {
+    fn bootstrap_step_order_builds_toolchain_before_engine_and_host_after() {
         let steps = bootstrap_step_plan();
         let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
         assert_eq!(
             names,
-            vec!["fork-instrument-tool", "engine", "rootfs", "host-dist"],
-            "fork-instrument must precede the engine (msmtpd needs it); rootfs must \
-             follow the engine (build-rootfs.sh consumes the packages the engine just \
-             built) and precede host-dist (host build should see a fresh rootfs \
-             image); host-dist must follow the engine (needs the regenerated program \
-             index)"
+            vec![
+                "fork-instrument-tool",
+                "sysroot",
+                "sysroot64",
+                "sdk",
+                "engine",
+                "rootfs",
+                "host-dist",
+            ],
+            "fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
+             sysroot64/sdk must precede the engine (every package build script reads \
+             the ambient musl sysroot and wasm{{32,64}}posix-cc directly, which the \
+             engine's own dependency graph does not model as an edge) and sdk must \
+             follow sysroot (sdk only checks sysroot's toolchain wrappers resolve); \
+             rootfs must follow the engine (build-rootfs.sh consumes the packages the \
+             engine just built) and precede host-dist (host build should see a fresh \
+             rootfs image); host-dist must follow the engine (needs the regenerated \
+             program index)"
         );
     }
 

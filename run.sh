@@ -433,16 +433,28 @@ has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
 # lives in the local-build engine / xtask, not here; see
 # docs/agent-guidance/packages-and-builds.md.
 
-# bootstrap_target <target> [xtask-bootstrap-args...]: enter the repository
-# dev shell and run `xtask bootstrap <target>` via the same
-# scripts/setup.sh entry `./run.sh setup` uses (scripts/setup.sh forwards
-# its arguments straight to `xtask bootstrap`). This is the one front door
-# every need_* delegator and build_target's generic package/product dispatch
-# call through.
+# bootstrap_target <target> [xtask-bootstrap-args...]: run `xtask bootstrap
+# <target>` inside the repository dev shell. This is the one front door every
+# need_* delegator and the simple build_<pkg> delegators call through.
+#
+# Uses `pkg_xtask_bin` (the same lazy-build-once release binary this file
+# already uses for `build-deps`/`output-metadata` calls) instead of
+# `scripts/setup.sh`'s `cargo run -p xtask -- bootstrap ...`: a composite
+# build_<pkg> (e.g. build_wp_vfs) fans out into several of these calls in one
+# `./run.sh` invocation, and `cargo run` re-pays its own incremental-build
+# check (a debug build/relink, not just a no-op) on every single one of them.
+# Building the release binary once and invoking it directly removes that
+# repeated cost; the dev shell still has to be (re-)entered per call so the
+# invoked xtask process — and the package build scripts it shells out to —
+# see LLVM_BIN/wasm{32,64}posix-cc/etc. on PATH.
 bootstrap_target() {
     local target="$1"; shift
-    bash "$REPO_ROOT/scripts/dev-shell.sh" \
-        bash "$REPO_ROOT/scripts/setup.sh" "$target" "$@"
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "bootstrap_target $target: could not build xtask"
+        return 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" bootstrap "$target" "$@"
 }
 
 need_kernel() {
