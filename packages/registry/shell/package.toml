@@ -26,6 +26,7 @@ depends_on = [
   "nano@8.0",
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
+  "kandelo-sdk-browser-bundle@21.1.7",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact
