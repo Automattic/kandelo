@@ -1,0 +1,297 @@
+//! Native reference host for Kandelo, built on Wasmtime.
+//!
+//! This crate is the third-engine conformance host from the Rust-first
+//! runtime design (`docs/plans/2026-08-25-rust-first-runtime-design.md`,
+//! roadmap phase 3). It loads the *same* real `kernel.wasm` artifact that
+//! the browser and Node hosts run — not the kernel compiled as a native
+//! rlib — on a non-JavaScript engine. Running the real artifact, the real
+//! ABI, and the real channel primitive on Wasmtime is the freeze-gate acid
+//! test that the platform boundary is not secretly JavaScript-shaped.
+//!
+//! This first increment brings the (previously throwaway) feasibility spike
+//! in-tree as committed, tested code:
+//!
+//! * [`load_kernel_and_read_abi`] instantiates `kernel.wasm` with an imported
+//!   shared memory, stubs the `env.host_*` imports as traps, and reads back
+//!   `__abi_version`. It also reports the observed import surface so a future
+//!   ABI change surfaces here as a failed assertion.
+//! * [`run_wait_notify_handshake`] exercises the exact guest-blocks /
+//!   kernel-wakes primitive the syscall channel depends on: a waiter blocks in
+//!   `memory.atomic.wait32` on a shared memory while a notifier on another OS
+//!   thread wakes it with `memory.atomic.notify`.
+//!
+//! HOST-ONLY: Wasmtime does not build for `wasm32-unknown-unknown`; build and
+//! test this crate with an explicit host target (see `Cargo.toml`).
+
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
+
+use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store};
+
+/// ABI version this native host expects the kernel to advertise. Must match
+/// `wasm_posix_shared::ABI_VERSION` (currently 44). A kernel built for a
+/// different ABI will fail the smoke test loudly rather than run wrong.
+pub const EXPECTED_ABI_VERSION: i32 = 44;
+
+/// The kernel imports `env.memory` as a shared memory with this minimum page
+/// count (18 pages) ...
+pub const KERNEL_MEMORY_MIN_PAGES: u32 = 18;
+
+/// ... and this maximum page count (16384 pages == 1 GiB, matching the
+/// `--max-memory=1073741824` link arg in `.cargo/config.toml`).
+pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
+
+/// Number of `env.host_*` function imports the kernel expects the host to
+/// provide (the `HostCapabilities` surface). The native host stubs them as
+/// traps for now; the full implementation lands in later phases. This count is
+/// asserted by the smoke test so an ABI/import-surface change surfaces here.
+///
+/// The 2026-08-25 feasibility spike measured 83 on the ABI-43 kernel; the
+/// ABI-44 opaque-transport flip dropped one, so the real ABI-44 artifact
+/// imports 82.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 82;
+
+/// The observed shape of the kernel's `env.memory` import.
+#[derive(Debug, Clone)]
+pub struct MemoryImport {
+    /// Whether the memory is declared `shared` (required for the atomic
+    /// wait/notify channel handshake).
+    pub shared: bool,
+    /// Minimum size in Wasm pages (64 KiB each).
+    pub minimum: u64,
+    /// Maximum size in Wasm pages, if declared.
+    pub maximum: Option<u64>,
+}
+
+/// The import surface the native host must satisfy to run a kernel module.
+#[derive(Debug, Clone, Default)]
+pub struct KernelImportSurface {
+    /// Names (without the `env.` prefix) of every `host_*` *function* import,
+    /// in module order.
+    pub host_fn_imports: Vec<String>,
+    /// The `env.memory` import shape, if the module imports a memory.
+    pub memory: Option<MemoryImport>,
+    /// Any imports that are neither `env.memory` nor an `env.host_*` function,
+    /// recorded as `"<module>.<name>"` for diagnostics. Expected to be empty.
+    pub other_imports: Vec<String>,
+}
+
+/// A Wasmtime engine configured for the kernel's required feature set: the
+/// threads proposal (shared memory + atomic wait/notify). Bulk-memory and
+/// mutable-globals are enabled by default in this Wasmtime version.
+pub fn kernel_engine() -> wasmtime::Result<Engine> {
+    let mut config = Config::new();
+    config.wasm_threads(true);
+    Engine::new(&config)
+}
+
+/// Enumerate the import surface of a compiled kernel `Module` without
+/// instantiating it.
+pub fn inspect_kernel_module(module: &Module) -> KernelImportSurface {
+    let mut surface = KernelImportSurface::default();
+    for import in module.imports() {
+        match import.ty() {
+            ExternType::Memory(mem) if import.module() == "env" && import.name() == "memory" => {
+                surface.memory = Some(MemoryImport {
+                    shared: mem.is_shared(),
+                    minimum: mem.minimum(),
+                    maximum: mem.maximum(),
+                });
+            }
+            ExternType::Func(_)
+                if import.module() == "env" && import.name().starts_with("host_") =>
+            {
+                surface.host_fn_imports.push(import.name().to_string());
+            }
+            _ => surface
+                .other_imports
+                .push(format!("{}.{}", import.module(), import.name())),
+        }
+    }
+    surface
+}
+
+/// Part 1 of the spike: load a real `kernel.wasm`, define its imported shared
+/// `env.memory`, stub the `env.host_*` imports as traps, instantiate, and read
+/// back `__abi_version`. Returns the ABI value and the observed import surface.
+///
+/// `__abi_version` is a pure accessor that touches none of the host imports,
+/// so stubbing them as traps is sufficient to run it.
+pub fn load_kernel_and_read_abi(path: &Path) -> wasmtime::Result<(i32, KernelImportSurface)> {
+    let engine = kernel_engine()?;
+    let module = Module::from_file(&engine, path)?;
+    let surface = inspect_kernel_module(&module);
+
+    let shared = SharedMemory::new(
+        &engine,
+        MemoryType::shared(KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES),
+    )?;
+    let mut store = Store::new(&engine, ());
+    let mut linker = Linker::new(&engine);
+    linker.define(&mut store, "env", "memory", shared)?;
+    // Stub the 82 env.host_* imports as traps. This first increment only
+    // needs __abi_version, which invokes none of them; the real
+    // HostCapabilities implementation lands in later phases.
+    linker.define_unknown_imports_as_traps(&module)?;
+
+    let instance = linker.instantiate(&mut store, &module)?;
+    let abi = instance.get_typed_func::<(), i32>(&mut store, "__abi_version")?;
+    let version = abi.call(&mut store, ())?;
+    Ok((version, surface))
+}
+
+/// Part 2 of the spike: the syscall-channel blocking primitive. A waiter
+/// instance on its own OS thread blocks in `memory.atomic.wait32(addr, 0, -1)`
+/// on a shared memory; a notifier instance on this thread wakes it with
+/// `memory.atomic.notify(addr, 1)`. This is the exact guest-blocks /
+/// kernel-wakes handshake the channel depends on.
+///
+/// Returns `(woke, wait_result)` where `woke` is the count of waiters the
+/// notify awoke (expected 1) and `wait_result` is the `wait32` return code
+/// (expected 0 == "woken").
+pub fn run_wait_notify_handshake() -> wasmtime::Result<(i32, i32)> {
+    let engine = kernel_engine()?;
+
+    // A minimal module that imports one shared memory and exposes wait/notify.
+    let wat = r#"(module
+        (import "env" "memory" (memory 1 10 shared))
+        (func (export "wait") (param i32 i32) (result i32)
+          (memory.atomic.wait32 (local.get 0) (local.get 1) (i64.const -1)))
+        (func (export "notify") (param i32) (result i32)
+          (memory.atomic.notify (local.get 0) (i32.const 1))))"#;
+    let module = Module::new(&engine, wat)?;
+
+    let shared = SharedMemory::new(&engine, MemoryType::shared(1, 10))?;
+    // Ensure the wait word starts at the expected value (0) so the waiter
+    // actually parks instead of returning "not-equal".
+    unsafe {
+        std::ptr::write_volatile(shared.data().as_ptr() as *mut u8, 0u8);
+    }
+
+    let waiter = {
+        let engine = engine.clone();
+        let module = module.clone();
+        let mem = shared.clone();
+        thread::spawn(move || -> wasmtime::Result<i32> {
+            let mut store = Store::new(&engine, ());
+            let mut linker = Linker::new(&engine);
+            linker.define(&mut store, "env", "memory", mem)?;
+            let instance = linker.instantiate(&mut store, &module)?;
+            let wait = instance.get_typed_func::<(i32, i32), i32>(&mut store, "wait")?;
+            // Block on addr 0, expecting the current value 0, no timeout.
+            wait.call(&mut store, (0, 0))
+        })
+    };
+
+    // Give the waiter time to reach the parked wait32 before notifying.
+    thread::sleep(Duration::from_millis(300));
+
+    let mut store = Store::new(&engine, ());
+    let mut linker = Linker::new(&engine);
+    linker.define(&mut store, "env", "memory", shared)?;
+    let instance = linker.instantiate(&mut store, &module)?;
+    let notify = instance.get_typed_func::<i32, i32>(&mut store, "notify")?;
+    let woke = notify.call(&mut store, 0)?;
+
+    let wait_result = waiter
+        .join()
+        .map_err(|_| wasmtime::Error::msg("waiter thread panicked"))??;
+    Ok((woke, wait_result))
+}
+
+/// Repository root, derived from this crate's manifest location
+/// (`crates/host-native` → `../..`).
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+/// Path to the locally-built kernel artifact the smoke tests load
+/// (`local-binaries/kernel.wasm`, produced by `install_local_binary kernel`).
+pub fn kernel_wasm_path() -> PathBuf {
+    repo_root().join("local-binaries").join("kernel.wasm")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Return the kernel path, or `None` (with a clear skip message) if it has
+    /// not been built. This keeps a fresh checkout without built binaries from
+    /// failing with an obscure file-not-found panic; it is not a substitute for
+    /// building the kernel in CI.
+    fn kernel_path_or_skip() -> Option<PathBuf> {
+        let path = kernel_wasm_path();
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!(
+                "SKIP host-native smoke test: {} not found.\n  Build it with:\n    \
+                 scripts/dev-shell.sh cargo build --release -p kandelo -Z build-std=core,alloc\n    \
+                 source scripts/install-local-binary.sh; \
+                 install_local_binary kernel \
+                 target/wasm32-unknown-unknown/release/kandelo_kernel.wasm kandelo-kernel.wasm",
+                path.display()
+            );
+            None
+        }
+    }
+
+    /// Part 1: Wasmtime loads the real ABI-44 kernel.wasm and `__abi_version`
+    /// reads back 44, over an imported shared memory with the host imports
+    /// stubbed as traps. Also pins the observed import surface.
+    #[test]
+    fn smoke_loads_real_kernel_and_reads_abi() -> wasmtime::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+
+        let (abi, surface) = load_kernel_and_read_abi(&path)?;
+        assert_eq!(
+            abi, EXPECTED_ABI_VERSION,
+            "kernel __abi_version mismatch: an ABI change requires updating EXPECTED_ABI_VERSION"
+        );
+
+        let mem = surface
+            .memory
+            .as_ref()
+            .expect("kernel must import env.memory");
+        assert!(mem.shared, "env.memory must be imported shared");
+        assert_eq!(
+            mem.minimum,
+            u64::from(KERNEL_MEMORY_MIN_PAGES),
+            "env.memory minimum pages"
+        );
+        assert_eq!(
+            mem.maximum,
+            Some(u64::from(KERNEL_MEMORY_MAX_PAGES)),
+            "env.memory maximum pages"
+        );
+
+        assert!(
+            surface.other_imports.is_empty(),
+            "unexpected non-(memory|host_*) imports: {:?}",
+            surface.other_imports
+        );
+        assert_eq!(
+            surface.host_fn_imports.len(),
+            EXPECTED_HOST_IMPORT_COUNT,
+            "env.host_* import count changed (surface pinned so ABI drift is visible): {:?}",
+            surface.host_fn_imports
+        );
+        Ok(())
+    }
+
+    /// Part 2: the cross-thread atomic wait/notify channel handshake. A waiter
+    /// on another OS thread parks in `wait32`; the notifier wakes exactly one
+    /// and `wait32` returns 0 (woken).
+    #[test]
+    fn smoke_channel_wait_notify_handshake() -> wasmtime::Result<()> {
+        let (woke, wait_result) = run_wait_notify_handshake()?;
+        assert_eq!(woke, 1, "notify must wake exactly one waiter");
+        assert_eq!(wait_result, 0, "wait32 must return 0 (woken)");
+        Ok(())
+    }
+}

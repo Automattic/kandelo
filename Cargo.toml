@@ -6,6 +6,7 @@ members = [
     "crates/kernel",
     "crates/fork-instrument",
     "crates/wasm-local-root-spill",
+    "crates/host-native",
     "tools/xtask",
 ]
 
