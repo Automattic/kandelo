@@ -14,12 +14,12 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 const textEncoder = new TextEncoder();
 
 export interface ShellLazyArchiveSpec {
-  id: "vim" | "nethack";
-  dependency: "vim-browser-bundle" | "nethack-browser-bundle";
-  resolverPath: "programs/wasm32/vim.zip" | "programs/wasm32/nethack.zip";
-  archiveUrl: "vim.zip" | "nethack.zip";
+  id: string;
+  dependency: string;
+  resolverPath: string;
+  archiveUrl: string;
   mountPrefix: "/usr/";
-  requiredExecutable: "bin/vim" | "bin/nethack";
+  requiredExecutable: string;
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
@@ -38,6 +38,14 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
     requiredExecutable: "bin/nethack",
+  },
+  {
+    id: "ruby",
+    dependency: "ruby-browser-bundle",
+    resolverPath: "programs/wasm32/ruby.zip",
+    archiveUrl: "ruby.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/ruby",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 

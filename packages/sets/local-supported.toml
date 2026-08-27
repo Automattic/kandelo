@@ -240,6 +240,10 @@ name = "ruby"
 class = "user-software"
 
 [[packages]]
+name = "ruby-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "sdl-dsp-test"
 class = "test-support"
 

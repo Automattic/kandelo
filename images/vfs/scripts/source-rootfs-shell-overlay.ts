@@ -53,6 +53,7 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/vim", "/usr/bin/vi"],
     ["/usr/bin/vim", "/bin/vi"],
     ["/usr/bin/nethack", "/bin/nethack"],
+    ["/usr/bin/ruby", "/bin/ruby"],
   ] as const) {
     symlink(fs, target, alias);
   }

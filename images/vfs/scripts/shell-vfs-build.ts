@@ -461,6 +461,7 @@ export function populateShellEnvironment(
   }
   populateVimArchive(fs, resolveArtifact);
   populateNetHackArchive(fs, resolveArtifact);
+  populateRubyArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -761,6 +762,17 @@ function populateNetHackArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[1],
+    resolveArtifact,
+  );
+}
+
+function populateRubyArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[2],
     resolveArtifact,
   );
 }
