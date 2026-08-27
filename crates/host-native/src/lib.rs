@@ -393,4 +393,39 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Increment 4: the RAW `Out`-buffer copy-back path (untested by the
+    /// In-only `write` and the record-path `uname`). A pipe round-trip —
+    /// pipe (record Out), write into the in-kernel pipe (RAW In), read back
+    /// (RAW Out: the kernel fills the kernel scratch and the host copies it
+    /// into the guest buffer), then write to stdout — proves the RAW Out
+    /// copy-back and in-kernel pipe I/O on a non-JS engine.
+    #[test]
+    fn smoke_runs_raw_out_pipe_roundtrip() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_pipe.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"piped through the native host\n",
+            "the bytes read back from the pipe must arrive via RAW Out copy-back"
+        );
+        // The read (RAW Out) must appear in the trace — the coverage this adds.
+        assert!(
+            outcome.syscall_trace.contains(&(Syscall::Read as u32)),
+            "expected a read syscall in the trace: {:?}",
+            outcome.syscall_trace
+        );
+        Ok(())
+    }
 }
