@@ -151,6 +151,38 @@ for relative, old, new in patches:
         destination.write(content.replace(old, new))
 PYVERSION
 
+    # Errno.pm generation extracts the E* constants from errno.h. On a
+    # non-darwin gcc host it preprocesses with `cc -E -dM`; on a darwin host it
+    # falls back to reading errno.h as a plain file. That fallback finds nothing
+    # when cross-compiling to musl, whose <errno.h> merely #includes
+    # <bits/errno.h> where the real `#define E* n` live — so `make all` dies
+    # with "No error definitions found". Force the preprocessor path so the
+    # cross compiler (which knows the wasm sysroot) expands the include.
+    python3 - "$SRC_DIR/ext/Errno/Errno_pm.PL" << 'PYERRNO'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+import re
+old = "    } elsif ($Config{gccversion} ne '' && $^O ne 'darwin' ) {"
+new = "    } elsif ($Config{cc} ne '' ) {"
+if content.count(old) != 1:
+    raise SystemExit("Errno_pm.PL darwin-gate pattern missing exactly once")
+content = content.replace(old, new)
+
+# get_files() writes an errno.c wrapper then tries to discover the real
+# errno.h path by parsing #line directives from `cppstdin < errno.c` — which
+# emits nothing when cross-compiling from a darwin host, leaving @file empty.
+# Hand the errno.c wrapper straight to process_file (now `cc -E -dM`) instead.
+block = re.compile(r"\t# invoke CPP and read the output\n.*?\tclose\(CPPO\);\n", re.DOTALL)
+if len(block.findall(content)) != 1:
+    raise SystemExit("Errno_pm.PL get_files CPP block not matched exactly once")
+content = block.sub("\tpush(@file, 'errno.c');\n", content)
+
+with open(path, "w") as f:
+    f.write(content)
+PYERRNO
+
     echo "==> Source prepared with perl-cross overlay"
 
     # Patch perl-cross for non-ELF hosts (macOS uses Mach-O).
@@ -342,10 +374,19 @@ if [ ! -f config.sh ]; then
     # <stdint.h>". Pin the host compiler to clang explicitly — it's
     # always on PATH in the nix shell (LLVM_BIN/clang) and ships its
     # own builtin <stdint.h>/<stdarg.h>, so the probes pass.
+    #
+    # -Dosname=linux: the wasm32-unknown-none target leaves osname empty, which
+    # makes ExtUtils::MakeMaker abort ("CONFIG key 'osname' does not exist")
+    # when building every extension. This is not a claim that Kandelo emulates
+    # Linux — Kandelo is POSIX-centric. It is a guest-app compatibility
+    # convenience: `linux` is the value CPAN/core modules branch on most
+    # smoothly (via $^O / $Config{osname}), and picking it is purely metadata
+    # that does not compromise POSIX behavior.
     ./configure \
         --target=wasm32-unknown-none \
         --prefix=/usr \
         --host-cc=clang \
+        -Dosname=linux \
         -Dcc=wasm32posix-cc \
         -Dld=wasm32posix-cc \
         -Dar=wasm32posix-ar \
@@ -591,7 +632,15 @@ fi
 
 # --- Build ---
 echo "==> Building Perl (this takes a while)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$BUILD_LOG" | tail -80
+# `all` (not just `perl`) so the non-XS extension trees are assembled and their
+# generated modules (XSLoader.pm etc.) exist for the stdlib install below; the
+# `perl` target alone links the interpreter but leaves those ungenerated.
+if ! make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" all > "$BUILD_LOG" 2>&1; then
+    echo "==> 'make all' FAILED; last 160 lines:"
+    tail -160 "$BUILD_LOG"
+    exit 1
+fi
+tail -15 "$BUILD_LOG"
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
@@ -621,4 +670,58 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+fi
+
+# --- Standard library runtime archive ---
+# `make install.perl` copies the COMPLETE built standard library (generated .pm
+# such as XSLoader.pm/Config.pm plus every core/dist/cpan/ext module in its
+# final @INC layout) into a throwaway DESTDIR staging prefix — it never writes
+# to the host system's /usr. Package the installed lib/perl5 as perl-runtime.zip
+# so browser bundles and VFS images ship a real stdlib, the way cpython ships
+# python-runtime.zip. (install.perl, not install: install.man needs
+# cross-unfriendly ExtUtils config and ships nothing the runtime needs.)
+echo "==> Installing the Perl standard library into a DESTDIR staging prefix..."
+PERL_STAGE="$KANDELO_PACKAGE_WORK_DIR/install-stage"
+rm -rf "$PERL_STAGE"
+mkdir -p "$PERL_STAGE"
+make install.perl DESTDIR="$PERL_STAGE" 2>&1 | tail -40
+
+PERL_PRIVLIB_DIR="$PERL_STAGE/usr/lib/perl5/$PERL_VERSION"
+[ -d "$PERL_PRIVLIB_DIR" ] || {
+    echo "ERROR: installed Perl stdlib not found at $PERL_PRIVLIB_DIR" >&2
+    exit 1
+}
+# XSLoader.pm is a generated, dual-life module that installs to the archlib
+# (.../5.40.3/<archname>/), not the privlib — assert it landed somewhere under
+# lib/perl5 so a broken install (missing generated files) fails loudly.
+[ -n "$(find "$PERL_STAGE/usr/lib/perl5" -name XSLoader.pm -print -quit)" ] || {
+    echo "ERROR: installed Perl stdlib is missing generated XSLoader.pm" >&2
+    exit 1
+}
+
+RUNTIME_STAGE="$KANDELO_PACKAGE_WORK_DIR/perl-runtime-stage"
+rm -rf "$RUNTIME_STAGE"
+mkdir -p "$RUNTIME_STAGE/lib"
+# Root the archive at lib/perl5 so consumers mount it at /usr/lib/perl5 — the
+# interpreter's compiled-in @INC — and can self-locate every module.
+cp -R "$PERL_STAGE/usr/lib/perl5" "$RUNTIME_STAGE/lib/perl5"
+# Drop documentation from the runtime archive — .pod files and the pod/ tree
+# are several MB and never loaded when running code.
+find "$RUNTIME_STAGE/lib/perl5" -type d -name pod -prune -exec rm -rf {} + 2>/dev/null || true
+find "$RUNTIME_STAGE/lib/perl5" -type f -name '*.pod' -delete 2>/dev/null || true
+if [ -f "$SRC_DIR/Copying" ]; then
+    mkdir -p "$RUNTIME_STAGE/share/licenses/perl"
+    cp "$SRC_DIR/Copying" "$RUNTIME_STAGE/share/licenses/perl/Copying"
+fi
+PERL_RUNTIME_ZIP="$KANDELO_PACKAGE_WORK_DIR/perl-runtime.zip"
+rm -f "$PERL_RUNTIME_ZIP"
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$RUNTIME_STAGE" "$PERL_RUNTIME_ZIP"
+echo "==> perl-runtime.zip: $(find "$RUNTIME_STAGE" -type f | wc -l | tr -d ' ') files"
+
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$PERL_RUNTIME_ZIP" "$WASM_POSIX_DEP_OUT_DIR/perl-runtime.zip"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/perl-runtime.zip (resolver scratch)"
+else
+    install_local_runtime_file perl "$PERL_RUNTIME_ZIP"
 fi
