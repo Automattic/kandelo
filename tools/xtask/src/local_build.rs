@@ -4635,7 +4635,7 @@ mod tests {
         );
         assert_eq!(first.schema, 1);
         assert_eq!(first.policy, "source-only-v1");
-        assert_eq!(first.packages.len(), 75);
+        assert_eq!(first.packages.len(), 77);
         assert_eq!(first.products.len(), 7);
         assert_eq!(
             first
@@ -4647,9 +4647,9 @@ mod tests {
              findutils gawk git grep gzip icu kandelo-sdk kernel lamp less libcurl libcxx \
              libiconv libpng libxml2 libzip login lsof m4 make mariadb mariadb-test modeset \
              msmtpd nano ncurses netcat nethack nethack-browser-bundle nginx nginx-php-vfs \
-             nginx-vfs node node-vfs openssl perl php posix-utils-lite redis rootfs ruby \
-             sdl-dsp-test sdl2 sdl2-mixer-playwave sdl3 sed shell spidermonkey \
-             spidermonkey-node sqlite sudo sudo-lite tar tcl unzip userspace vim \
+             nginx-vfs node node-vfs openssl perl php posix-utils-lite readline redis \
+             rootfs ruby sdl-dsp-test sdl2 sdl2-mixer-playwave sdl3 sed shell spidermonkey \
+             spidermonkey-node sqlite sqlite-cli sudo sudo-lite tar tcl unzip userspace vim \
              vim-browser-bundle wget wordpress xz zip zlib zstd"
                 .split_whitespace()
                 .collect::<Vec<_>>(),
@@ -4664,9 +4664,9 @@ mod tests {
                 },),
             BTreeMap::from([
                 ("browser-product", 8),
-                ("platform", 19),
+                ("platform", 20),
                 ("test-support", 3),
-                ("user-software", 45),
+                ("user-software", 46),
             ]),
         );
         for (class, expected) in [
@@ -4679,7 +4679,7 @@ mod tests {
             (
                 "platform",
                 "icu kernel libcurl libcxx libiconv libpng libxml2 libzip login ncurses \
-                 openssl rootfs sdl2 sdl3 sqlite sudo sudo-lite userspace zlib",
+                 openssl readline rootfs sdl2 sdl3 sqlite sudo sudo-lite userspace zlib",
             ),
         ] {
             assert_eq!(
@@ -4794,7 +4794,7 @@ mod tests {
                 .filter(|entry| entry.disposition == "registry-non-root")
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
-            ["sqlite-cli"],
+            Vec::<&str>::new(),
         );
         assert_eq!(
             first
@@ -6853,14 +6853,14 @@ materialization = "lazy"
             assert!(source.provider_was_explicit, "{name} must be explicit");
             *providers.entry(source.provider.as_str()).or_default() += 1;
         }
-        assert_eq!(set.packages.len(), 75);
+        assert_eq!(set.packages.len(), 77);
         assert_eq!(
             set.dependency_only,
             ["pcre2-source", "wordpress-sqlite-integration-source"],
         );
         assert_eq!(
             providers,
-            BTreeMap::from([("archive", 58), ("dev-shell", 1), ("repository", 18)]),
+            BTreeMap::from([("archive", 60), ("dev-shell", 1), ("repository", 18)]),
         );
     }
 
