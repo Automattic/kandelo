@@ -236,8 +236,17 @@ has_valid_kernel_file() {
 # repeated `pkg_has_output` calls don't pay cargo's setup cost on each
 # call (~50ms × 40 has_* lookups in cmd_status = a real delay).
 PKG_XTASK_BIN=""
+# Set to 1 once this process has freshened $PKG_XTASK_BIN via a real `cargo
+# build` in this run.sh invocation. Distinct from PKG_XTASK_BIN itself: the
+# binary *path* is stable and cheap to recompute, but "is it fresh" must be
+# re-verified exactly once per process, not inferred from the path merely
+# existing (a leftover binary from a previous invocation, built before the
+# most recent `tools/xtask/src/*.rs` edit, must not be trusted un-rebuilt —
+# that is exactly the staleness hazard this whole build-front-door project
+# exists to close).
+PKG_XTASK_FRESH=0
 pkg_xtask_bin() {
-    if [ -n "$PKG_XTASK_BIN" ] && [ -x "$PKG_XTASK_BIN" ]; then
+    if [ "$PKG_XTASK_FRESH" -eq 1 ] && [ -n "$PKG_XTASK_BIN" ] && [ -x "$PKG_XTASK_BIN" ]; then
         echo "$PKG_XTASK_BIN"
         return 0
     fi
@@ -247,18 +256,26 @@ pkg_xtask_bin() {
         return 1
     fi
     PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
-    if [ ! -x "$PKG_XTASK_BIN" ]; then
-        if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
-            # Consumer jobs already run inside the declared dev shell, where
-            # `nix` is intentionally absent. Build directly in that shell if a
-            # caller did not provide the prepared xtask binary.
-            (cd "$REPO_ROOT" && \
-                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
-        else
-            (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
-                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
-        fi
+    # Always run `cargo build`, not just when the binary is absent: cargo's
+    # own incremental check is what gives us the freshness guarantee (a
+    # fast no-op when tools/xtask/src is unchanged, a real rebuild/relink
+    # when it isn't) — the same guarantee `cargo run` gave the old
+    # per-call `bootstrap_target` before it was switched to this cached-path
+    # helper. Gating on `[ ! -x "$PKG_XTASK_BIN" ]` (the prior behavior)
+    # would silently keep serving a binary built before the most recent
+    # xtask source edit.
+    if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+        # Consumer jobs already run inside the declared dev shell, where
+        # `nix` is intentionally absent. Build directly in that shell if a
+        # caller did not provide the prepared xtask binary.
+        (cd "$REPO_ROOT" && \
+            cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+    else
+        (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
+            cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
     fi
+    [ -x "$PKG_XTASK_BIN" ] || return 1
+    PKG_XTASK_FRESH=1
     echo "$PKG_XTASK_BIN"
 }
 
