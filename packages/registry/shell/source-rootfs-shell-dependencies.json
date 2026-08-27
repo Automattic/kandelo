@@ -220,6 +220,11 @@
       "name": "lsof-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
+    },
+    {
+      "name": "kandelo-sdk-browser-bundle",
+      "version": "21.1.7",
+      "role": "lazy-archive"
     }
   ]
 }

@@ -68,6 +68,10 @@ name = "cairomm"
 class = "platform"
 
 [[packages]]
+name = "clang"
+class = "platform"
+
+[[packages]]
 name = "cli11"
 class = "platform"
 
@@ -218,6 +222,10 @@ class = "platform"
 [[packages]]
 name = "kandelo-sdk"
 class = "test-support"
+
+[[packages]]
+name = "kandelo-sdk-browser-bundle"
+class = "browser-product"
 
 [[packages]]
 name = "kernel"

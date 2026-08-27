@@ -835,6 +835,12 @@ Why a pass after instrumentation is safe:
   exists to inspect the transform's raw output; shipped artifacts do not use
   it.
 
+Package installation determines side-module roles from the exact Wasm
+custom sections. A `dylink.0` string in executable data, such as LLVM's
+object-format support, does not require continuation instrumentation.
+Fork imports and partial continuation markers still require the complete
+contract.
+
 Do not add `--closed-world` or other whole-program GC type passes after
 instrumentation: they may rewrite the GC types the reference codecs
 describe in `kandelo.wpk_fork.gc_codec`.
@@ -1484,7 +1490,12 @@ The analysis resolves each `call_indirect` in one of two ways.
   pointer flow per slot, `pthread_cleanup_push` pairs, `jmp_buf` identity,
   each unit's aliasing mode) into a custom section named `kandelo.calltypes`.
   wasm-ld concatenates those sections in input order, so the linked module
-  carries one section made of per-object chunks. The link also records
+  carries one section made of per-object chunks. Large chunks use lossless
+  zlib frames; the reader decodes one chunk at a time before parsing the
+  same format-5 records. Plain and framed objects may be linked together.
+  The framing and expansion limits are specified in
+  [the SDK guide](sdk-guide.md#compiler-facts-for-fork-instrumentation).
+  The link also records
   `kandelo.calltypes.code-sha256`, the SHA-256 of the code section payload
   (from the function count to the section end). The instrumenter uses the
   facts only when that hash matches the code it receives; a tool that

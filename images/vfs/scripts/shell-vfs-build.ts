@@ -475,15 +475,10 @@ export function populateShellEnvironment(
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }
-  populateVimArchive(fs, resolveArtifact);
-  populateNetHackArchive(fs, resolveArtifact);
-  populateRubyArchive(fs, resolveArtifact);
-  populatePythonArchive(fs, resolveArtifact);
-  populateNodeArchive(fs, resolveArtifact);
-  populatePerlArchive(fs, resolveArtifact);
-  populateManArchive(fs, resolveArtifact);
-  populateCoreutilsDocsArchive(fs, resolveArtifact);
-  populateLsofDocsArchive(fs, resolveArtifact);
+  for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
+    registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
+  }
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -761,108 +756,4 @@ function populateMagic(
   }
   const bytes = readFileSync(magicPath);
   writeVfsBinary(fs, "/usr/share/misc/magic", new Uint8Array(bytes), 0o644);
-}
-
-// ── Lazy archives ───────────────────────────────────────────────
-
-function populateVimArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[0],
-    resolveArtifact,
-  );
-}
-
-function populateNetHackArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[1],
-    resolveArtifact,
-  );
-}
-
-function populateRubyArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[2],
-    resolveArtifact,
-  );
-}
-
-function populatePythonArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[3],
-    resolveArtifact,
-  );
-}
-
-function populateNodeArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[4],
-    resolveArtifact,
-  );
-}
-
-function populatePerlArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[5],
-    resolveArtifact,
-  );
-}
-
-function populateManArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man on a
-  // baseProvided rootfs; clear it first so mandoc's formatting `man` wins.
-  displacePosixUtilsLiteManApplet(fs);
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[6],
-    resolveArtifact,
-  );
-}
-
-function populateCoreutilsDocsArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[7],
-    resolveArtifact,
-  );
-}
-
-function populateLsofDocsArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[8],
-    resolveArtifact,
-  );
 }

@@ -47,6 +47,7 @@ is_gnu_response_whitespace() {
 tokenize_gnu_response_file() {
   local source="$1"
   local token=""
+  local token_started=0
   local char quote
   local index=0
   local length
@@ -55,7 +56,7 @@ tokenize_gnu_response_file() {
   source="${source#$'\xef\xbb\xbf'}"
   length="${#source}"
   while (( index < length )); do
-    if [[ -z "$token" ]]; then
+    if (( token_started == 0 )); then
       while (( index < length )); do
         char="${source:index:1}"
         is_gnu_response_whitespace "$char" || break
@@ -68,12 +69,14 @@ tokenize_gnu_response_file() {
     if [[ "$char" == "\\" && $((index + 1)) -lt length ]]; then
       index=$((index + 1))
       token="${token}${source:index:1}"
+      token_started=1
       index=$((index + 1))
       continue
     fi
 
     if [[ "$char" == "'" || "$char" == '"' ]]; then
       quote="$char"
+      token_started=1
       index=$((index + 1))
       while (( index < length )); do
         char="${source:index:1}"
@@ -83,6 +86,7 @@ tokenize_gnu_response_file() {
           char="${source:index:1}"
         fi
         token="${token}${char}"
+        token_started=1
         index=$((index + 1))
       done
       (( index < length )) || break
@@ -91,17 +95,19 @@ tokenize_gnu_response_file() {
     fi
 
     if is_gnu_response_whitespace "$char"; then
-      [[ -z "$token" ]] || response_tokens+=("$token")
+      (( ! token_started )) || response_tokens+=("$token")
       token=""
+      token_started=0
       index=$((index + 1))
       continue
     fi
 
     token="${token}${char}"
+    token_started=1
     index=$((index + 1))
   done
 
-  [[ -z "$token" ]] || response_tokens+=("$token")
+  (( ! token_started )) || response_tokens+=("$token")
 }
 
 response_file_is_active() {

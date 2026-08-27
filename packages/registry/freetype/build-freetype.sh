@@ -60,6 +60,9 @@ mkdir -p "$BUILD_DIR"
 echo "==> Configuring freetype for wasm32 (zlib at $ZLIB_PREFIX)..."
 (
     cd "$BUILD_DIR"
+    # FreeType probes build-gcc/gcc before cc when cross compiling. Select
+    # the native compiler from the declared dev shell for its helper tools.
+    CC_BUILD="$(command -v clang)" \
     CFLAGS="-O2" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
