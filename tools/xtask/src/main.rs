@@ -24,6 +24,10 @@
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
 //!                         Backs `./run.sh setup`.
+//!   verify-fresh          Pre-test freshness check: fails loud if the one
+//!                         local kernel artifact (local-binaries/source-only-v1/
+//!                         kandelo-kernel.wasm) declares a stale ABI version
+//!                         relative to the source tree. Backs `./run.sh test`.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -60,7 +64,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -81,6 +85,7 @@ fn main() -> ExitCode {
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
+        "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

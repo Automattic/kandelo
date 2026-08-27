@@ -2813,6 +2813,20 @@ cmd_test() {
         suites=(cargo vitest libc posix)
     fi
 
+    # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
+    # Node and browser binary resolution onto one hermetic kernel tier, so
+    # there is exactly one kernel copy to go stale). Fails loud here so a
+    # kernel built before the last source change cannot silently pass
+    # Vitest/conformance against yesterday's ABI. A no-op when no local
+    # kernel build exists yet (nothing to verify before `./run.sh setup`).
+    step "Verifying local kernel freshness"
+    local verify_fresh_host_target
+    verify_fresh_host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    if ! (cd "$REPO_ROOT" && cargo run -p xtask --target "$verify_fresh_host_target" --quiet -- verify-fresh); then
+        err "Local kernel artifact is stale; rebuild with ./run.sh setup before running tests"
+        exit 1
+    fi
+
     local failed=0
     for suite in "${suites[@]}"; do
         case "$suite" in

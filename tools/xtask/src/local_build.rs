@@ -487,6 +487,173 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// `xtask verify-fresh` — a pre-test freshness check, not a divergence guard.
+/// Stage 2 converged Node and browser binary resolution onto the one
+/// hermetic tier `local-binaries/source-only-v1/` (see `binaryCandidateTiers`
+/// in `host/src/binary-resolver.ts`), so there is exactly one kernel copy to
+/// go stale, not two copies that could diverge from each other. This closes
+/// the documented hazard that Vitest/conformance can silently exercise a
+/// kernel built before the last source change
+/// (`docs/plans/2026-08-25-rust-first-runtime-design.md`): `./run.sh test`
+/// calls this before its suites run so a stale kernel fails loud instead of
+/// passing tests against yesterday's ABI.
+pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "verify-fresh: unexpected argument(s): {}",
+            args.join(" ")
+        ));
+    }
+    verify_fresh_report(&crate::repo_root())
+}
+
+/// Compare the ABI version the local-build engine's one kernel artifact
+/// declares against the ABI version the source tree currently builds. `Ok`
+/// covers both "current" and "no local kernel build yet" (nothing can be
+/// stale before `./run.sh setup`/`bootstrap` has produced this tier; the
+/// resolver's own "binary not found" error already reports that plainly).
+pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
+    let kernel_path = repo
+        .join("local-binaries")
+        .join("source-only-v1")
+        .join("kandelo-kernel.wasm");
+    let bytes = match fs::read(&kernel_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("read {}: {error}", kernel_path.display()));
+        }
+    };
+    let expected = wasm_posix_shared::ABI_VERSION;
+    let declared = wasm_declared_abi_version(&bytes).map_err(|detail| {
+        format!("{}: {detail}", kernel_path.display())
+    })?
+    .ok_or_else(|| {
+        format!(
+            "{}: kandelo-kernel.wasm has no __abi_version export",
+            kernel_path.display()
+        )
+    })?;
+    if declared != expected {
+        return Err(format!(
+            "{} is stale: kandelo-kernel.wasm declares ABI {declared}, but the \
+             source tree now builds ABI {expected}. Rebuild with `./run.sh setup` \
+             (or `cargo xtask bootstrap`).",
+            kernel_path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Extract the ABI version a wasm module declares via its `__abi_version`
+/// export. Mirrors the "constant" extraction shape in
+/// `wasm_extract_abi_version`/`_wasm_extract_constant_i32_body` in
+/// `scripts/wasm-artifact-guards.sh`: the exported function's body must be
+/// exactly `i32.const <N> end` or `i32.const <N> return end`. Returns `Ok(None)`
+/// only when the module genuinely has no such export; every inspection or
+/// shape failure is an `Err` so this stays fail-closed like its shell
+/// counterpart.
+fn wasm_declared_abi_version(bytes: &[u8]) -> Result<Option<u32>, String> {
+    use wasmparser::{ExternalKind, Imports, Operator, Parser, Payload, TypeRef};
+
+    let mut imported_funcs: u32 = 0;
+    let mut export_func_index: Option<u32> = None;
+    let mut code_bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload = payload.map_err(|error| format!("parse wasm: {error}"))?;
+        match payload {
+            Payload::ImportSection(reader) => {
+                // Three import-group encodings in wasmparser 0.247, matching
+                // `kernel_exports` in dump_abi.rs. Only `Single` appears in
+                // stock LLVM output; the `Compact*` variants come from the
+                // compact-imports proposal and are handled for completeness.
+                for group in reader {
+                    let group = group.map_err(|error| format!("import section: {error}"))?;
+                    match group {
+                        Imports::Single(_, import) => {
+                            if matches!(import.ty, TypeRef::Func(_)) {
+                                imported_funcs += 1;
+                            }
+                        }
+                        Imports::Compact1 { items, .. } => {
+                            for item in items {
+                                let item = item.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(item.ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                        Imports::Compact2 { ty, names, .. } => {
+                            for name in names {
+                                let _ = name.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    let export = export.map_err(|error| format!("export section: {error}"))?;
+                    if export.name == "__abi_version" && export.kind == ExternalKind::Func {
+                        export_func_index = Some(export.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                code_bodies.push(body);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(export_func_index) = export_func_index else {
+        return Ok(None);
+    };
+    let local_index = export_func_index.checked_sub(imported_funcs).ok_or_else(|| {
+        "__abi_version export index is inside the imported function range".to_string()
+    })?;
+    let body = code_bodies.get(local_index as usize).ok_or_else(|| {
+        "__abi_version export has no matching function body".to_string()
+    })?;
+    let mut operators = body
+        .get_operators_reader()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let malformed = || {
+        "__abi_version function body is not a plain `i32.const <N> [return] end` constant"
+            .to_string()
+    };
+
+    let first = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let Operator::I32Const { value } = first else {
+        return Err(malformed());
+    };
+    let second = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let terminated = match second {
+        Operator::End => true,
+        Operator::Return => {
+            let third = operators
+                .read()
+                .map_err(|error| format!("read __abi_version function body: {error}"))?;
+            matches!(third, Operator::End)
+        }
+        _ => false,
+    };
+    if !terminated {
+        return Err(malformed());
+    }
+    u32::try_from(value)
+        .map(Some)
+        .map_err(|_| format!("__abi_version constant {value} is not a valid u32"))
+}
+
 fn run_plan(set: PathBuf) -> Result<(), String> {
     let repo = crate::repo_root();
     let set = resolve_repo_file(&repo, &set, "supported set")?;
@@ -4586,6 +4753,109 @@ materialization = "lazy"
         assert!(
             error.contains("not yet implemented"),
             "unknown positional target must return the not-yet-implemented error: {error}"
+        );
+    }
+
+    fn uleb128(mut value: u32, out: &mut Vec<u8>) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    fn sleb128_i32(mut value: i64, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            let sign_bit = byte & 0x40 != 0;
+            if (value == 0 && !sign_bit) || (value == -1 && sign_bit) {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn wasm_section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
+        out.push(id);
+        uleb128(payload.len() as u32, out);
+        out.extend_from_slice(payload);
+    }
+
+    /// Build the smallest wasm module `wasm_declared_abi_version` accepts: one
+    /// `() -> i32` function, exported as `__abi_version`, whose body is
+    /// exactly `i32.const <abi> end` — the plain constant shape
+    /// `_wasm_extract_constant_i32_body` in `scripts/wasm-artifact-guards.sh`
+    /// also recognizes.
+    fn kernel_wasm_with_abi(abi: u32) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+        // Type section: one type, () -> i32.
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        // Function section: one function using type 0.
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        // Export section: "__abi_version" -> func 0.
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        // Code section: one body, `i32.const <abi> end`.
+        let mut body = vec![0x00]; // no locals
+        body.push(0x41); // i32.const
+        sleb128_i32(abi as i64, &mut body);
+        body.push(0x0b); // end
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(&body);
+        wasm_section(10, &code, &mut module);
+
+        module
+    }
+
+    fn temp_repo_with_kernel(kernel_abi: u32) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().unwrap();
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kandelo-kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, kernel_wasm_with_abi(kernel_abi)).unwrap();
+        temp
+    }
+
+    #[test]
+    fn verify_fresh_flags_a_stale_abi_kernel() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION - 1);
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("kandelo-kernel.wasm") && err.contains("ABI"),
+            "must name the stale kernel and why: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_ok_for_current_kernel() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION);
+        assert!(verify_fresh_report(repo.path()).is_ok());
+    }
+
+    #[test]
+    fn verify_fresh_ok_when_no_local_kernel_build_exists_yet() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(
+            verify_fresh_report(temp.path()).is_ok(),
+            "an unbuilt tree has no stale kernel to flag"
         );
     }
 
