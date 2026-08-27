@@ -8,10 +8,13 @@ commands should run from repo-declared tools, not undeclared host state.
 Use the canonical dev shell for build and verification:
 
 ```bash
-scripts/dev-shell.sh bash scripts/build-musl.sh
 scripts/dev-shell.sh ./run.sh setup
 scripts/dev-shell.sh bash
 ```
+
+`./run.sh setup` provisions the musl sysroot for you on a fresh
+checkout (see "First build in a fresh checkout or worktree" below); it
+only re-syncs overlay headers if a sysroot already exists.
 
 Do not use bare `nix develop` for build verification. `scripts/dev-shell.sh`
 uses `nix develop --ignore-environment` with a curated keep-list so undeclared
@@ -107,8 +110,8 @@ When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
 ```bash
-bash scripts/build-musl.sh   # Build wasm32 musl sysroot when libc overlay/glue changes
-./run.sh setup                # Build fork-instrument tool, kernel wasm, rootfs, and TypeScript host
+./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, every package, rootfs, and TypeScript host
+bash scripts/build-musl.sh   # Rebuild the wasm32 musl sysroot after editing libc overlay/glue (setup only re-syncs headers)
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
 
@@ -129,8 +132,7 @@ validate." The full sequence (see `validation.md` for detail):
 ```bash
 git submodule update --init --recursive           # musl, libc-test, os-test
 # if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
-scripts/dev-shell.sh bash scripts/build-musl.sh    # sysroot (~20s)
-scripts/dev-shell.sh ./run.sh setup                # kernel wasm → local-binaries/, rootfs, host (~1.5min)
+scripts/dev-shell.sh ./run.sh setup                # sysroot(s) (~20s, built from scratch here), kernel wasm → local-binaries/, rootfs, host (~1.5min total)
 npm ci && (cd host && npm ci)                      # root deps (tsx for conformance runners) + host deps
 scripts/dev-shell.sh bash scripts/fetch-binaries.sh # prebuilt test binaries ./run.sh setup does not produce
 ```

@@ -129,6 +129,26 @@ are near-instant.
 
 ## Quick Start
 
+### Which command do I run?
+
+`./run.sh setup` is the front door — run it first and most of the time
+that is all you need:
+
+| Command | What it does |
+|---|---|
+| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
+| `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
+| `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
+| `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |
+| `./run.sh browser` | Build (fast, cached after `setup`) and serve the browser demos. |
+| `./run.sh local-build [--json]` | The packages-only primitive underneath `setup` and `browser`: builds just the package/VFS-product graph, optionally emitting machine-readable JSON. Reach for it directly for a focused package rebuild, scripted/CI output, or VFS-product iteration. |
+
+`./run.sh list` shows the full set of build targets, examples, and
+test suites. Under the hood, these subcommands delegate to a typed
+`cargo xtask` engine (`bootstrap`, `verify-fresh`, `clean`, and more);
+see [docs/agent-guidance/packages-and-builds.md](docs/agent-guidance/packages-and-builds.md)
+if you need to work at that layer directly.
+
 ### Install published packages
 
 For consumers that do not need to rebuild Kandelo itself, the npm
@@ -146,23 +166,30 @@ your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
 bundling a native compiler.
 
 From a source checkout, `npm run pack:packages` builds npm tarballs
-after `bash scripts/build-musl.sh` and `./run.sh setup` have produced
-the sysroot, kernel, and rootfs artifacts.
+after `./run.sh setup` has produced the sysroot, kernel, and rootfs
+artifacts.
 
-### 1. Build the kernel
+### 1. Set up the repository
 
 ```bash
 git submodule update --init libc/musl
 
-# Build musl sysroot (first time only)
-bash scripts/build-musl.sh
-
-# Hermetic build: fork-instrument tool, local-build engine (all
-# packages), rootfs image, then the TypeScript host
+# Hermetic build: musl sysroot(s) and SDK, fork-instrument tool,
+# local-build engine (all packages), rootfs image, then the
+# TypeScript host
 ./run.sh setup
 ```
 
-This builds the kernel from source. Library dependencies (zlib, openssl,
+`./run.sh setup` is the single entry point for a working repo: it
+provisions the musl sysroot (building it from scratch on a fresh
+checkout, or just re-syncing overlay headers if it already exists),
+builds the fork-instrument host tool, resolves and builds every
+package in the local-build graph, produces the rootfs VFS image, and
+builds the TypeScript host. See [Which command do I
+run?](#which-command-do-i-run) below for the rest of the command
+surface.
+
+Library dependencies (zlib, openssl,
 sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
 on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at

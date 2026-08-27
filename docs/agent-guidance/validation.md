@@ -72,28 +72,33 @@ are not "cannot validate" conditions. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **musl sysroot** — one-time, ~20s; required before `./run.sh setup` can
-   compile the user programs and rootfs:
-   ```bash
-   scripts/dev-shell.sh bash scripts/build-musl.sh
-   ```
-3. **Kernel wasm + host + rootfs** — ~1.5min; produces `local-binaries/kernel.wasm`
-   (the binary resolver prefers it over `binaries/`) and `host/wasm/rootfs.vfs`:
+2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
+   builds the musl sysroot from scratch on a fresh checkout (or just
+   re-syncs overlay headers when a sysroot already exists), then the
+   kernel, every package, and the rootfs, producing
+   `local-binaries/kernel.wasm` (the binary resolver prefers it over
+   `binaries/`) and `host/wasm/rootfs.vfs`:
    ```bash
    scripts/dev-shell.sh ./run.sh setup
    ```
-4. **Node dependencies** — `node_modules` are per-checkout, and both the repo
+   If a sysroot already exists and you just edited
+   `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, `setup` will
+   not rebuild musl for you — rebuild it explicitly first:
+   ```bash
+   scripts/dev-shell.sh bash scripts/build-musl.sh
+   ```
+3. **Node dependencies** — `node_modules` are per-checkout, and both the repo
    root (the conformance runners load `tsx` from root) and `host/` are needed:
    ```bash
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
    ```
-5. **Prebuilt test binaries** the source build does not produce, e.g. the
+4. **Prebuilt test binaries** the source build does not produce, e.g. the
    MariaDB/Perl VFS images a few Vitest cases load:
    ```bash
    scripts/dev-shell.sh bash scripts/fetch-binaries.sh
    ```
-6. **wasm64 sysroot** (only for the `wasm64` Vitest cases, which need an LP64
+5. **wasm64 sysroot** (only for the `wasm64` Vitest cases, which need an LP64
    `hello64.wasm` that `fetch-binaries.sh` does not carry):
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix

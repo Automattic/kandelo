@@ -2620,7 +2620,13 @@ The following "optimizations" in `kernel-worker.ts` were benchmarked and **all m
 
 ## Build System
 
-### Kernel Build
+### Repository Setup
+
+`./run.sh setup` is the single entry point for a working repo, not just
+a kernel build: it provisions the musl sysroot (building it from source
+the first time; re-syncing overlay headers on later runs), then builds
+the kernel, the fork-instrument tool, every package, and the rootfs and
+TypeScript host artifacts below.
 
 ```bash
 ./run.sh setup

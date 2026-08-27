@@ -982,7 +982,11 @@ artifact writes.
 
 ## Troubleshooting
 
-**"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
+**"sysroot not found"**: Run `./run.sh setup`, which builds the musl
+sysroot from scratch when it is missing. If the sysroot already exists
+but you just edited `libc/musl-overlay/` or `libc/glue/`, `setup` only
+re-syncs headers — rebuild it explicitly with `bash
+scripts/build-musl.sh`.
 
 **Graphics shim libraries missing**: Programs using DRM/KMS/GBM/EGL/GLES link
 against sysroot libraries built by `scripts/build-musl.sh`. Rebuild the sysroot
