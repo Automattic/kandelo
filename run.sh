@@ -1473,7 +1473,23 @@ build_nginx_php_vfs() {
 }
 
 build_texlive() {
-    bootstrap_target texlive
+    # NOTE: not routed through `bootstrap_target` — `texlive` is an
+    # [[exclusions]] entry in local-supported.toml, so `xtask bootstrap
+    # texlive` errors "unknown product or package". Like build_erlang/
+    # build_dash, this excluded package keeps its standalone bash recipe.
+    if has_texlive; then
+        info "texlive"
+        return
+    fi
+    need_kernel
+    need_sdk
+    if ! has_texlive; then
+        step "Building pdftex (TeX Live)"
+        bash "$REPO_ROOT/packages/registry/texlive/build-texlive.sh"
+        info "pdftex built"
+    else
+        info "pdftex (TeX Live)"
+    fi
 }
 
 build_texlive_vfs() {
