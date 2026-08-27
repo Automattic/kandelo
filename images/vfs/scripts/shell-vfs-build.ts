@@ -466,6 +466,7 @@ export function populateShellEnvironment(
   populatePythonArchive(fs, resolveArtifact);
   registerPythonShellProfile(fs);
   populateNodeArchive(fs, resolveArtifact);
+  populatePerlArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -799,6 +800,17 @@ function populateNodeArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[4],
+    resolveArtifact,
+  );
+}
+
+function populatePerlArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[5],
     resolveArtifact,
   );
 }

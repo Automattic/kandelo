@@ -44,6 +44,11 @@
       "name": "node-browser-bundle",
       "version": "0.1.0",
       "role": "lazy-archive"
+    },
+    {
+      "name": "perl-browser-bundle",
+      "version": "5.40.3",
+      "role": "lazy-archive"
     }
   ]
 }

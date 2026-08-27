@@ -228,6 +228,10 @@ name = "perl"
 class = "user-software"
 
 [[packages]]
+name = "perl-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "php"
 class = "user-software"
 
