@@ -907,10 +907,12 @@ running additional fuzz/thread/mptest binaries.
 Build or fetch `kernel.wasm` before running any browser or Node suite:
 
 ```bash
-bash build.sh
+./run.sh setup
 # or
 scripts/fetch-binaries.sh
 ```
+
+(`bash build.sh` still works as a deprecated delegator to `./run.sh setup`.)
 
 MariaDB needs `mariadbd`, `mysqltest.wasm`, and the `mysql-test/` tree:
 

@@ -30,6 +30,7 @@ import {
   resolveDirectProgramPackageArtifact,
   setBundledProgramPackageIndexPathForTests,
   setProgramIndexContextCheckerForTests,
+  sourceOnlyBinaryRoot,
   tryResolveBinary,
   tryResolveBinaries,
   tryResolveBinarySet,
@@ -56,6 +57,10 @@ let savedRegistry: string | undefined;
 let hadSavedRegistry = false;
 let savedResolverRepoRoot: string | undefined;
 let hadSavedResolverRepoRoot = false;
+let savedResolutionPolicy: string | undefined;
+let hadSavedResolutionPolicy = false;
+let savedSourceOnlyBinaryRoot: string | undefined;
+let hadSavedSourceOnlyBinaryRoot = false;
 let fixtureRegistryRoot = "";
 let fixtureRegistryIdentities: Record<string, unknown> = {};
 let fixtureRegistryPackages: Record<string, unknown> = {};
@@ -82,6 +87,18 @@ beforeEach(() => {
   );
   savedResolverRepoRoot = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
   delete process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
+  hadSavedResolutionPolicy = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_RESOLUTION_POLICY",
+  );
+  savedResolutionPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+  delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+  hadSavedSourceOnlyBinaryRoot = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WASM_POSIX_SOURCE_ONLY_BINARY_ROOT",
+  );
+  savedSourceOnlyBinaryRoot = process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+  delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
   fixtureRegistryRoot = mkdtempSync(
     join(tmpdir(), "kandelo-resolver-registry-"),
   );
@@ -131,6 +148,17 @@ afterEach(() => {
       savedResolverRepoRoot ?? "";
   } else {
     delete process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
+  }
+  if (hadSavedResolutionPolicy) {
+    process.env.WASM_POSIX_RESOLUTION_POLICY = savedResolutionPolicy ?? "";
+  } else {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+  }
+  if (hadSavedSourceOnlyBinaryRoot) {
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT =
+      savedSourceOnlyBinaryRoot ?? "";
+  } else {
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
   }
 });
 
@@ -1025,6 +1053,142 @@ function linkClosureMember(
   symlinkSync(target, mirror);
   return mirror;
 }
+
+/**
+ * A standalone source checkout root for resolver-policy tests that need to
+ * control `binaryCandidateTiers()`'s repo discovery directly, independent of
+ * the shared `fixtureRegistryRoot`. Mirrors the `Cargo.toml`/`package.json`
+ * markers `isRepoRoot` requires. Realpath'd up front so a later
+ * `local-binaries/source-only-v1` root under it satisfies the source-only
+ * policy's canonical-path check (macOS `tmpdir()` sits behind a `/var` ->
+ * `/private/var` symlink).
+ */
+function makeTempRepo(): string {
+  const repo = realpathSync(
+    mkdtempSync(join(tmpdir(), "kandelo-resolver-tier-repo-")),
+  );
+  cleanupDirs.add(repo);
+  writeFileSync(join(repo, "Cargo.toml"), "[workspace]\n");
+  writeFileSync(
+    join(repo, "package.json"),
+    JSON.stringify({ name: "kandelo" }),
+  );
+  return repo;
+}
+
+/** Write a plain, ABI-current kernel artifact directly into `dir`. */
+function writeKernelArtifact(dir: string): string {
+  return writeCandidate(
+    dir,
+    "kandelo-kernel.wasm",
+    kernelWasmWithExports(ABI_VERSION),
+  );
+}
+
+/**
+ * Build a minimal valid source-only-v1 projection authority (per
+ * `readSourceOnlyProjection` in `binary-resolver.ts`) that materializes one
+ * root-mirror `kernel` node, mirroring `writeSourceOnlyProjection` in
+ * `scripts/build-local-vfs-asset-group.test.ts`. `packages`/`identities` stay
+ * empty because a root-mirror node (package name `kernel` or `userspace`,
+ * one slash-free member) is not itself a projected program package.
+ */
+function writeSourceOnlyProjectionWithKernel(root: string): string {
+  mkdirSync(root, { recursive: true });
+  const kernelBytes = kernelWasmWithExports(ABI_VERSION);
+  const kernelPath = join(root, "kandelo-kernel.wasm");
+  writeFileSync(kernelPath, kernelBytes, { mode: 0o644 });
+  chmodSync(kernelPath, 0o644);
+  const metadataDir = join(root, ".kandelo");
+  mkdirSync(metadataDir, { recursive: true, mode: 0o755 });
+  const authorityPath = join(
+    metadataDir,
+    "source-only-program-projection-v1.json",
+  );
+  writeFileSync(
+    authorityPath,
+    `${JSON.stringify({
+      format: "kandelo-source-only-program-projection-v1",
+      graphAuthoritySha256: "e".repeat(64),
+      nodes: [
+        {
+          node: { kind: "package", name: "kernel", targetArch: "wasm32" },
+          manifestSha256: "a".repeat(64),
+          cacheKeySha256: "b".repeat(64),
+          cacheReceiptSha256: "c".repeat(64),
+          members: [
+            {
+              sourceArtifact: "kandelo-kernel.wasm",
+              mirrorPath: "kandelo-kernel.wasm",
+              mode: 0o644,
+              size: kernelBytes.byteLength,
+              sha256: createHash("sha256").update(kernelBytes).digest("hex"),
+            },
+          ],
+        },
+      ],
+      projection: {
+        format: "kandelo-program-packages-v2",
+        identities: {},
+        packages: {},
+      },
+    }, null, 2)}\n`,
+    { mode: 0o644 },
+  );
+  chmodSync(authorityPath, 0o644);
+  return root;
+}
+
+describe("binary resolver policy selection (characterization)", () => {
+  // The policy-selection surface (`sourceOnlyPolicyEnabled`,
+  // `sourceOnlyBinaryRoot`, and the `if (sourceOnlyPolicyEnabled())`
+  // branches throughout binary-resolver.ts) had zero host tests before this
+  // describe. These characterize CURRENT behavior against the unchanged
+  // resolver so the Stage 2 tier collapse cannot silently alter it.
+
+  it("uses the source-only root when WASM_POSIX_RESOLUTION_POLICY=source-only-v1", () => {
+    const repo = makeTempRepo();
+    const root = join(repo, "local-binaries/source-only-v1");
+    writeSourceOnlyProjectionWithKernel(root);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
+    expect(resolveBinary("kandelo-kernel.wasm")).toContain("source-only-v1");
+  });
+
+  it("throws when source-only policy is on but WASM_POSIX_SOURCE_ONLY_BINARY_ROOT is unset", () => {
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    expect(() => sourceOnlyBinaryRoot()).toThrow(
+      /requires WASM_POSIX_SOURCE_ONLY_BINARY_ROOT/,
+    );
+  });
+
+  it("rejects a non-absolute source-only root", () => {
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = "relative/path";
+    expect(() => sourceOnlyBinaryRoot()).toThrow();
+  });
+
+  it("default policy (no env) reads local-binaries then binaries, not source-only", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    const repo = makeTempRepo();
+    writeKernelArtifact(join(repo, "local-binaries"));
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveBinary("kandelo-kernel.wasm")).toContain("local-binaries");
+  });
+});
+
+describe("binary resolver unified tier", () => {
+  it("resolves a kernel present only in the source-only tier under the default policy", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    writeKernelArtifact(join(repo, "local-binaries/source-only-v1")); // abi-current
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveBinary("kandelo-kernel.wasm")).toContain(
+      "local-binaries/source-only-v1",
+    );
+  });
+});
 
 describe("binary resolver artifact policy", () => {
   it("does not mistake an installed package consumer workspace for Kandelo", () => {

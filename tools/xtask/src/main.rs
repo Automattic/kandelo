@@ -20,6 +20,20 @@
 //!                         Stream one exact regular package-archive member to
 //!                         a new output file without exposing partial bytes.
 //!   local-build           Resolve and source-build a package closure locally.
+//!   bootstrap             One-command hermetic build: fork-instrument host
+//!                         tool, then the local-build engine over the whole
+//!                         supported set, then the TypeScript host build.
+//!                         Backs `./run.sh setup`.
+//!   clean                 Remove one package's or product's compiled cache,
+//!                         mirror, and product artifacts, and print the
+//!                         graph-derived cascade of nodes it also
+//!                         invalidates (e.g. cleaning a package a VFS
+//!                         product embeds also invalidates that product).
+//!                         Backs `./run.sh clean <target>`.
+//!   verify-fresh          Pre-test freshness check: fails loud if the one
+//!                         local kernel artifact (local-binaries/source-only-v1/
+//!                         kandelo-kernel.wasm) declares a stale ABI version
+//!                         relative to the source tree. Backs `./run.sh test`.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -56,7 +70,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap, clean, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -76,6 +90,9 @@ fn main() -> ExitCode {
         "archive-extract-member" => archive_extract_member::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
+        "bootstrap" => local_build::run_bootstrap(rest),
+        "clean" => local_build::run_clean(rest),
+        "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

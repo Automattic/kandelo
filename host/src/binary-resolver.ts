@@ -243,7 +243,11 @@ function packagedBinaryCandidates(
 interface BinaryCandidateTier {
   label: string;
   root: string;
-  identity: "local-generation" | "program-cache" | "installed-package";
+  identity:
+    | "local-generation"
+    | "program-cache"
+    | "installed-package"
+    | "source-only-generation";
   /**
    * A genuine installed npm package is one versioned installation identity.
    * A source checkout's host/wasm tree is mutable and never qualifies.
@@ -264,6 +268,26 @@ export class BinaryNotFoundError extends Error {
  * Ordered provenance roots used by both single-artifact and package-closure
  * resolution. Keeping the grouping explicit lets a closure fall back as a
  * unit without ever combining local, fetched, and installed-package bytes.
+ *
+ * `local-binaries/source-only-v1/` is the hermetic tree the source-only-v1
+ * policy materializes for the browser. When it exists on disk it is the
+ * FIRST (highest-priority) tier, so Node/Vitest under the default policy
+ * resolves the same kernel the browser does — one kernel, not an ambient
+ * `local-binaries`/`binaries` copy plus a separate hermetic copy. It is
+ * listed ahead of, not instead of, `local-binaries`/`binaries`: those keep
+ * resolving non-kernel local outputs (built programs) that source-only-v1
+ * does not carry.
+ *
+ * Freshness scope: `tools/xtask`'s `verify-fresh` pre-test check (run from
+ * `./run.sh test`) only inspects `kernel.wasm` (the literal filename the
+ * engine writes here and this tier's `candidatesFor` resolves unadjusted —
+ * not the old `build.sh`-era `kandelo-kernel.wasm` name from the ambient
+ * `local-binaries/` tier, which Stage 1 stopped producing), the one artifact
+ * here with an ABI to go stale (`__abi_version`). `userspace.wasm` exports
+ * no ABI at all, and everything under `programs/` is a content-addressed
+ * generation the local-build engine keys by cache key — a stale input there
+ * is a cache-key mismatch the engine's normal rebuild path already catches,
+ * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
   const tiers: BinaryCandidateTier[] = [];
@@ -271,6 +295,18 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
   try {
     const repo = resolverRepoRoot();
     sourceCheckout = true;
+    const sourceOnlyRoot = join(repo, "local-binaries", "source-only-v1");
+    if (existsSync(sourceOnlyRoot)) {
+      tiers.push({
+        label: "source-only-v1",
+        root: sourceOnlyRoot,
+        identity: "source-only-generation",
+        allowRegularFileClosure: false,
+        candidatesFor(relPath: string): string[] {
+          return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
+        },
+      });
+    }
     for (const [label, root] of [
       ["local-binaries", join(repo, "local-binaries")],
       ["binaries", join(repo, "binaries")],

@@ -9,9 +9,10 @@ use crate::build_deps::{
     ProgramPackageIndex, Registry, ResolvedDependencyGraph, ResolvedDependencyNode,
     SourceOnlyCacheRoots, canonical_package_target_arch,
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
-    resolve_local_build_package_node_with_cache_policy,
-    resolved_dependency_graph_from_manifests, source_only_skip_receipt_if_clean,
-    source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+    read_source_only_cache_receipt, resolve_local_build_package_node_with_cache_policy,
+    resolved_dependency_graph_from_manifests, source_only_cache_receipt_path,
+    source_only_skip_receipt_if_clean, source_only_program_package_index_for_nodes,
+    with_source_only_program_projection_lock,
 };
 use crate::local_build_executor::{
     NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
@@ -354,6 +355,779 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
         LocalBuildCommandV1::Run(args) => run_aggregate(args),
         LocalBuildCommandV1::RunNode(args) => run_node(args),
     }
+}
+
+pub(crate) struct BootstrapStep {
+    pub name: &'static str,
+}
+
+/// The ordered host-plus-engine build closure for `xtask bootstrap` /
+/// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
+/// `engine` (the `msmtpd` package node consumes the built
+/// `wasm-fork-instrument` CLI); `sysroot`/`sysroot64`/`sdk` must precede
+/// `engine` (every package build script in the local-supported set reads the
+/// ambient `sysroot`/`sysroot64` musl toolchain and the `wasm{32,64}posix-cc`
+/// wrappers directly — this is not a graph edge the engine's own dependency
+/// resolution models, so nothing rebuilds it as a side effect of building a
+/// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
+/// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs` image
+/// from packages the engine step just built) and precede `host-dist` (the
+/// TypeScript host build should see a fresh rootfs image, even though it
+/// does not currently read it at build time); `host-dist` must follow
+/// `engine` (the TypeScript host build consumes the program package index
+/// the engine regenerates).
+pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
+    vec![
+        BootstrapStep {
+            name: "fork-instrument-tool",
+        },
+        BootstrapStep { name: "sysroot" },
+        BootstrapStep {
+            name: "sysroot64",
+        },
+        BootstrapStep { name: "sdk" },
+        BootstrapStep { name: "engine" },
+        BootstrapStep { name: "rootfs" },
+        BootstrapStep {
+            name: "host-dist",
+        },
+    ]
+}
+
+/// Default `--source-cache-root` for `bootstrap`, matching
+/// `scripts/run-local-build.sh` so the engine step here and the
+/// `./run.sh local-build` front door share one persistent cache location.
+fn default_source_cache_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(format!(
+            "bootstrap: HOME must be an absolute path, got {}",
+            home.display()
+        ));
+    }
+    Ok(home.join(".cache/kandelo/source-only"))
+}
+
+/// Run `bash <repo>/<rel> <args...>` with inherited stdio, so bootstrap steps
+/// stream their normal output exactly as they would run standalone. Returns
+/// `Err` on a non-zero exit or a failure to launch the script.
+fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> {
+    let script = repo.join(rel);
+    let status = Command::new("bash")
+        .arg(&script)
+        .args(args)
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("spawn {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} exited with {}",
+            script.display(),
+            match status.code() {
+                Some(code) => code.to_string(),
+                None => "no exit code (terminated by signal)".to_string(),
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Selection {
+    /// The whole-tree build closure: `bootstrap_step_plan()` in order.
+    All,
+    /// A single registry package or declared VFS product, built through the
+    /// local-build engine's `--products`-style selection (which already
+    /// resolves the transitive dependency closure and content-addressed
+    /// cache policy for whatever it is given).
+    Package(String),
+    /// A host-side step that is not a local-build engine graph node (the
+    /// fork-instrument CLI, the TypeScript host build, the rootfs image, and
+    /// the ambient musl sysroot/SDK). Named after the step in
+    /// `bootstrap_step_plan`/`run_bootstrap_step` it maps to.
+    HostStep(&'static str),
+}
+
+/// Map a single `xtask bootstrap <target>` positional to what it selects.
+/// Pure and total: every target string resolves to a `Selection`, deferring
+/// "does this actually exist" to the engine/host-step runner, which already
+/// has the real registry and product catalog available to validate against.
+///
+/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, and `sdk` are
+/// the non-graph host steps `./run.sh`'s `need_host`/`need_fork_instrument`/
+/// `need_rootfs`/`need_sysroot`/`need_sysroot64`/`need_sdk` used to build by
+/// hand; everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
+/// package or product name the engine's own graph already understands.
+pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
+    match target {
+        "host" => Selection::HostStep("host-dist"),
+        "fork-instrument" => Selection::HostStep("fork-instrument-tool"),
+        "rootfs" => Selection::HostStep("rootfs"),
+        "sysroot" => Selection::HostStep("sysroot"),
+        "sysroot64" => Selection::HostStep("sysroot64"),
+        "sdk" => Selection::HostStep("sdk"),
+        other => Selection::Package(other.to_string()),
+    }
+}
+
+/// Whether a bare `xtask bootstrap <target>` package selection needs the
+/// wasm64 musl sysroot provisioned before the engine builds it, mirroring
+/// the historical "64" suffix convention `select_graph_dependencies` already
+/// uses to map a target like `mariadb64` onto the wasm64 node of the
+/// `mariadb` package: a target name ending in "64" is a wasm64 build: every
+/// other target defaults to wasm32 and needs only the (already-required,
+/// via the `sdk` step) wasm32 sysroot. `sysroot64` itself is handled by its
+/// own `Selection::HostStep` arm, not this package-prerequisite path.
+pub(crate) fn package_target_needs_sysroot64(target: &str) -> bool {
+    target.ends_with("64")
+}
+
+/// Parse the leading positional target argument of `xtask bootstrap`. An
+/// omitted target and the explicit literal `all` both select the whole-tree
+/// build closure; any other positional is resolved by
+/// `bootstrap_target_to_selection`. Pure and testable, split out of
+/// `run_bootstrap` so the argument-shape decision can be verified without
+/// running the bootstrap steps.
+pub(crate) fn bootstrap_selection_from_args(
+    args: &[String],
+) -> Result<(Selection, Vec<String>), String> {
+    let (target, rest) = match args.split_first() {
+        Some((first, rest)) if !first.starts_with("--") => (Some(first.clone()), rest.to_vec()),
+        _ => (None, args.to_vec()),
+    };
+    match target.as_deref() {
+        None | Some("all") => Ok((Selection::All, rest)),
+        Some(target) => Ok((bootstrap_target_to_selection(target), rest)),
+    }
+}
+
+/// The set of `[[products]]` ids `local-supported.toml` declares active for
+/// the local-build engine. Used to check that a `./run.sh build <target>`
+/// name naming a VFS composite (`shell-vfs`, `wp-vfs`, ...) actually has a
+/// declared product `xtask bootstrap <id>` can select — see
+/// `bootstrap_target_to_selection`'s `Selection::Package` arm, which accepts
+/// both declared product ids and bare package names through the same
+/// `select_graph_dependencies` filter.
+///
+/// Only used by `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+/// below; `#[cfg(test)]` keeps the non-test binary free of a dead-code
+/// warning (matching how `parse_supported_set`, its sole other caller's
+/// dependency, is also test-only today).
+#[cfg(test)]
+fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
+    set.products
+        .iter()
+        .map(|product| product.id.clone())
+        .collect()
+}
+
+/// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
+/// (as a working symlink to a real file) is the same signal
+/// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
+/// directly instead of through PATH so this does not depend on the caller
+/// having sourced `sdk/activate.sh`.
+fn sdk_cc_path(repo: &Path) -> PathBuf {
+    repo.join("sdk/bin/wasm32posix-cc")
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Ensure the musl sysroot for `arch` exists, mirroring the old
+/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
+/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
+/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
+/// existing sysroot without forcing a full musl rebuild.
+fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
+    let sysroot_path = repo.join(sysroot_dir);
+    let libc_a = sysroot_path.join("lib/libc.a");
+    if libc_a.is_file() {
+        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
+        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])
+    } else if arch == "wasm32posix" {
+        run_repo_script(repo, "scripts/build-musl.sh", &[])
+    } else {
+        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])
+    }
+}
+
+/// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
+/// loop and single-target selection, so a target built alone (e.g.
+/// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
+/// exactly the same thing.
+fn run_bootstrap_step(
+    repo: &Path,
+    name: &str,
+    jobs: usize,
+    rebuild: bool,
+    verify_cache: bool,
+    products: Vec<String>,
+) -> Result<(), String> {
+    match name {
+        "fork-instrument-tool" => {
+            run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
+        }
+        "engine" => run_aggregate(LocalBuildRunArgsV1 {
+            set: repo.join("packages/sets/local-supported.toml"),
+            source_cache_root: default_source_cache_root()?,
+            output_root: repo.join("local-binaries/source-only-v1"),
+            products,
+            jobs,
+            rebuild,
+            verify_cache,
+        }),
+        "rootfs" => run_repo_script(repo, "scripts/build-rootfs.sh", &[]),
+        "host-dist" => run_repo_script(repo, "scripts/build-host.sh", &[]),
+        "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
+        "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
+        "sdk" => {
+            bootstrap_sysroot_step(repo, "sysroot", "wasm32posix")?;
+            if is_executable_file(&sdk_cc_path(repo)) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "bootstrap sdk: SDK tools not found. Expected {} to be a working symlink.",
+                    sdk_cc_path(repo).display()
+                ))
+            }
+        }
+        other => Err(format!("bootstrap: unknown step {other:?}")),
+    }
+}
+
+/// `xtask bootstrap [<target>] [--jobs <n>] [--rebuild] [--verify-cache]` —
+/// the single engine-plus-host build closure behind `./run.sh setup` and
+/// `./run.sh build <target>`. An omitted target (or the explicit literal
+/// `all`) builds the whole tree via `bootstrap_step_plan()`; any other
+/// target selects one package/product (routed through the engine's own
+/// dependency-closure and cache-key selection) or one non-graph host step
+/// (see `bootstrap_target_to_selection`).
+pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
+    let (selection, rest) = bootstrap_selection_from_args(&args)?;
+    let repo = crate::repo_root();
+    let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
+    let jobs = select_job_count(
+        flags.values.remove("--jobs").as_deref(),
+        std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
+        std::thread::available_parallelism().ok(),
+    )?;
+    let rebuild = flags.switches.contains("--rebuild");
+    let verify_cache = flags.switches.contains("--verify-cache");
+    match selection {
+        Selection::All => {
+            for step in bootstrap_step_plan() {
+                let products = if step.name == "engine" {
+                    vec!["all".to_string()]
+                } else {
+                    Vec::new()
+                };
+                run_bootstrap_step(&repo, step.name, jobs, rebuild, verify_cache, products)?;
+            }
+            Ok(())
+        }
+        Selection::HostStep(name) => {
+            // The old `need_host` built the kernel before the TypeScript host
+            // (`host/dist` embeds/tests against it); preserve that edge for a
+            // standalone `bootstrap host` the same way `bootstrap_step_plan`
+            // preserves it for the whole-tree path by ordering "engine"
+            // before "host-dist".
+            if name == "host-dist" {
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+            }
+            run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
+        }
+        Selection::Package(name) => {
+            // Preserve the exact universal prerequisite set every `run.sh`
+            // `build_<pkg>` relied on (`need_kernel` + `need_sdk`, which
+            // itself ensures `need_sysroot`), except for the kernel itself,
+            // which is a pure `cargo build` with no kernel/SDK/musl
+            // dependency of its own. `sdk`'s own step ensures `sysroot`
+            // first (see its `run_bootstrap_step` arm), so this only needs
+            // to ensure `kernel` and `sdk` directly — the `sysroot` resync
+            // underneath `sdk` is cheap when it already exists.
+            if name != "kernel" {
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+                run_bootstrap_step(&repo, "sdk", jobs, rebuild, verify_cache, Vec::new())?;
+                // `need_sysroot64` on memory64 paths: the wasm64 build of a
+                // package (`./run.sh build mariadb64`, `sysroot64` itself
+                // handled by its own `Selection::HostStep` arm) additionally
+                // needs the wasm64 musl sysroot the wasm32 `sdk` step above
+                // does not provision. Only pay for this when the target
+                // actually names a wasm64 build — not on every package.
+                if package_target_needs_sysroot64(&name) {
+                    run_bootstrap_step(&repo, "sysroot64", jobs, rebuild, verify_cache, Vec::new())?;
+                }
+            }
+            // msmtpd is the one package that consumes the built
+            // wasm-fork-instrument CLI (see `bootstrap_step_plan`'s doc
+            // comment); every other package does not need it.
+            if name == "msmtpd" {
+                run_bootstrap_step(
+                    &repo,
+                    "fork-instrument-tool",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    Vec::new(),
+                )?;
+            }
+            run_bootstrap_step(&repo, "engine", jobs, rebuild, verify_cache, vec![name])
+        }
+    }
+}
+
+/// `xtask verify-fresh` — a pre-test freshness check, not a divergence guard.
+/// Stage 2 converged Node and browser binary resolution onto the one
+/// hermetic tier `local-binaries/source-only-v1/` (see `binaryCandidateTiers`
+/// in `host/src/binary-resolver.ts`), so there is exactly one kernel copy to
+/// go stale, not two copies that could diverge from each other. This closes
+/// the documented hazard that Vitest/conformance can silently exercise a
+/// kernel built before the last source change
+/// (`docs/plans/2026-08-25-rust-first-runtime-design.md`): `./run.sh test`
+/// calls this before its suites run so a stale kernel fails loud instead of
+/// passing tests against yesterday's ABI.
+pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "verify-fresh: unexpected argument(s): {}",
+            args.join(" ")
+        ));
+    }
+    verify_fresh_report(&crate::repo_root())
+}
+
+/// Compare the ABI version the local-build engine's one kernel artifact
+/// declares against the ABI version the source tree currently builds. `Ok`
+/// covers both "current" and "no local kernel build yet" (nothing can be
+/// stale before `./run.sh setup`/`bootstrap` has produced this tier; the
+/// resolver's own "binary not found" error already reports that plainly).
+///
+/// Scope: this checks only `kernel.wasm`, the one artifact in
+/// `local-binaries/source-only-v1/` that carries an `__abi_version` export
+/// (`crates/kernel/src/wasm_api.rs`'s `__abi_version() -> u32`). That is the
+/// literal filename the local-build engine writes and the resolver's
+/// `source-only-v1` tier requests (`candidatesFor` in `binary-resolver.ts`
+/// resolves the raw `kernel.wasm` relPath, unadjusted) — `kandelo-kernel.wasm`
+/// was the old `build.sh`-era name in the ambient `local-binaries/` tier,
+/// which Stage 1 stopped producing. The other artifacts the tier's
+/// default-policy priority now covers — `userspace.wasm`
+/// (`crates/userspace/src/lib.rs`, which exports only
+/// `memory`/`__data_end`/`__heap_base`, confirmed with `wasm-objdump -x`
+/// against a real build; it declares no ABI at all) and everything under
+/// `programs/` — are content-addressed generations the local-build engine
+/// keys by cache key derived from their own inputs (ABI included, where an
+/// artifact's build depends on it). A stale input there is a cache-key
+/// mismatch that already forces a rebuild through the normal engine path,
+/// not a silent-staleness hazard this freshness check needs to duplicate.
+pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
+    let kernel_path = repo
+        .join("local-binaries")
+        .join("source-only-v1")
+        .join("kernel.wasm");
+    let bytes = match fs::read(&kernel_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("read {}: {error}", kernel_path.display()));
+        }
+    };
+    let expected = wasm_posix_shared::ABI_VERSION;
+    let declared = wasm_declared_abi_version(&bytes).map_err(|detail| {
+        format!("{}: {detail}", kernel_path.display())
+    })?
+    .ok_or_else(|| {
+        format!(
+            "{}: kernel.wasm has no __abi_version export",
+            kernel_path.display()
+        )
+    })?;
+    if declared != expected {
+        return Err(format!(
+            "{} is stale: kernel.wasm declares ABI {declared}, but the \
+             source tree now builds ABI {expected}. Rebuild with `./run.sh setup` \
+             (or `cargo xtask bootstrap`).",
+            kernel_path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Walk REVERSE edges over `graph.dependencies` (which maps a node to the
+/// set of nodes *it* depends on) to find every node that depends on `node`,
+/// directly or transitively — i.e. everything cleaning `node` invalidates.
+/// The returned set always includes `node` itself.
+///
+/// This replaces the hand-written "also invalidated shell.vfs.zst" warnings
+/// `run.sh`'s old `clean_target` hardcoded per package: the dependency graph
+/// already knows which products embed a given package (e.g. `nethack` is
+/// pulled in by `nethack-browser-bundle`, which `shell` depends on, which the
+/// `browser-main-shell` product maps to), so the cascade is derived instead
+/// of maintained by hand.
+///
+/// `O(removed * graph size)` — fine at this repo's scale (dozens of packages,
+/// a handful of products), and simple enough to trust over a fancier
+/// reverse-adjacency index that would need to be kept in sync with
+/// `dependencies` by construction.
+pub(crate) fn clean_removal_set(
+    graph: &PlannedGraphV1,
+    node: &PlanNodeV1,
+) -> BTreeSet<PlanNodeV1> {
+    let mut removal = BTreeSet::new();
+    removal.insert(node.clone());
+    let mut frontier = vec![node.clone()];
+    while let Some(current) = frontier.pop() {
+        for (candidate, deps) in &graph.dependencies {
+            if deps.contains(&current) && removal.insert(candidate.clone()) {
+                frontier.push(candidate.clone());
+            }
+        }
+    }
+    removal
+}
+
+/// Resolve a bare `xtask clean <target>` positional to the graph node it
+/// names: a declared VFS product id, or a package name (tried against every
+/// architecture the graph actually planned for it). Unlike
+/// `bootstrap_target_to_selection`, there is no host-step carve-out here —
+/// `clean` only ever operates on graph nodes with resolver-owned outputs;
+/// non-graph host/toolchain state (`sysroot`, `sdk`, cargo's own
+/// `target/`, ...) is still `run.sh`'s responsibility.
+fn resolve_clean_target(graph: &PlannedGraphV1, target: &str) -> Result<PlanNodeV1, String> {
+    let product = PlanNodeV1::product(target);
+    if graph.dependencies.contains_key(&product) {
+        return Ok(product);
+    }
+    let wasm32 = PlanNodeV1::package(target, "wasm32");
+    if graph.dependencies.contains_key(&wasm32) {
+        return Ok(wasm32);
+    }
+    // `./run.sh clean mariadb64` names the wasm64 build of the `mariadb`
+    // package; the package graph has no node literally named "mariadb64".
+    // Strip the historical "64" suffix convention `select_graph_dependencies`
+    // already uses for the same target strings in `bootstrap`/`build`.
+    if let Some(base) = target.strip_suffix("64") {
+        let wasm64 = PlanNodeV1::package(base, "wasm64");
+        if graph.dependencies.contains_key(&wasm64) {
+            return Ok(wasm64);
+        }
+    }
+    let wasm64 = PlanNodeV1::package(target, "wasm64");
+    if graph.dependencies.contains_key(&wasm64) {
+        return Ok(wasm64);
+    }
+    Err(format!(
+        "clean: {target:?} is not a package or product in packages/sets/local-supported.toml \
+         (the local-build graph); it is not something `xtask clean` can resolve"
+    ))
+}
+
+/// Remove every on-disk trace of one compiled `SourceOnlyV1` package-node
+/// generation: its canonical content-addressed cache directory, the hidden
+/// receipt sidecar next to it, and (read straight from that receipt, before
+/// deleting it) the files it mirrored into `output_root`. Matches by name/
+/// version/revision/arch prefix rather than the current content hash, so a
+/// clean sweeps every generation ever cached for this node — not just the one
+/// matching today's source tree — the same way `rm -rf` would.
+fn clean_package_node_outputs(
+    registry: &Registry,
+    compiled_cache_root: &Path,
+    output_root: &Path,
+    name: &str,
+    target_arch: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let manifest = registry.load(name)?;
+    let kind_subdir = match manifest.kind {
+        ManifestKind::Source => "sources",
+        ManifestKind::Library => "libs",
+        ManifestKind::Program => "programs",
+    };
+    let prefix = match manifest.kind {
+        ManifestKind::Source => format!("{}-{}-rev{}-", manifest.name, manifest.version, manifest.revision),
+        ManifestKind::Library | ManifestKind::Program => format!(
+            "{}-{}-rev{}-{}-",
+            manifest.name, manifest.version, manifest.revision, target_arch
+        ),
+    };
+    let dir = compiled_cache_root.join(kind_subdir);
+    let mut removed = Vec::new();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(error) => return Err(format!("read {}: {error}", dir.display())),
+    };
+    let mut matches = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read {}: {error}", dir.display()))?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if let Some(cache_key_sha) = file_name.strip_prefix(prefix.as_str()) {
+            matches.push((entry.path(), cache_key_sha.to_string()));
+        }
+    }
+    matches.sort();
+    for (canonical, cache_key_sha) in matches {
+        if let Ok(Some(receipt)) = read_source_only_cache_receipt(&canonical, &cache_key_sha) {
+            for member in &receipt.materialized_members {
+                let mirrored = output_root.join(&member.mirror_path);
+                match fs::remove_file(&mirrored) {
+                    Ok(()) => removed.push(mirrored),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("remove {}: {error}", mirrored.display()));
+                    }
+                }
+            }
+        }
+        if let Ok(receipt_path) = source_only_cache_receipt_path(&canonical, &cache_key_sha) {
+            match fs::remove_file(&receipt_path) {
+                Ok(()) => removed.push(receipt_path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("remove {}: {error}", receipt_path.display()));
+                }
+            }
+        }
+        fs::remove_dir_all(&canonical)
+            .map_err(|error| format!("remove {}: {error}", canonical.display()))?;
+        removed.push(canonical);
+    }
+    Ok(removed)
+}
+
+/// Remove the one on-disk artifact a VFS product node owns that its mapped
+/// package node's cache/mirror does not already cover: the legacy
+/// `apps/browser-demos/public/<output>` copy. A product's actual build/cache
+/// decision is entirely the mapped package's (see `PlanNodeV1::Product`
+/// handling in `run_node`), so invalidating the product's cascade entry in
+/// `clean_removal_set` is really about invalidating that mapped package —
+/// which `clean_package_node_outputs` already does when the package node
+/// also appears in the removal set (it always does; every product's mapped
+/// package is a direct dependency edge).
+fn clean_product_node_outputs(
+    repo: &Path,
+    graph: &PlannedGraphV1,
+    id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let entry = graph
+        .plan
+        .products
+        .iter()
+        .find(|product| product.id == id)
+        .ok_or_else(|| format!("clean: product {id:?} is missing from the resolved plan"))?;
+    let manifest_path = repo.join(&entry.manifest);
+    let bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
+    let manifest = parse_product_manifest_bytes(repo, &manifest_path, &bytes)?;
+    let public_asset = repo.join("apps/browser-demos/public").join(&manifest.output);
+    let mut removed = Vec::new();
+    match fs::remove_file(&public_asset) {
+        Ok(()) => removed.push(public_asset),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove {}: {error}", public_asset.display())),
+    }
+    Ok(removed)
+}
+
+/// `xtask clean <target>` — resolve `<target>` to a package or product node
+/// in the local-build graph, derive the full cascade of nodes it invalidates
+/// via `clean_removal_set`, remove every node's on-disk cache/mirror/product
+/// artifacts, and print the derived cascade so a caller sees exactly what
+/// else was invalidated (instead of a static hand-written warning).
+///
+/// Removing the compiled cache entry (and its receipt sidecar) for every
+/// node in the cascade is what makes a subsequent `./run.sh build <target>`
+/// (unforced, ordinary cache-consulting build) do a genuine rebuild rather
+/// than reporting `cached`: `source_only_skip_receipt_if_clean` treats an
+/// absent cache entry as an unconditional cache miss.
+pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
+    let target = match args.as_slice() {
+        [target] if !target.starts_with("--") => target.clone(),
+        _ => return Err("usage: xtask clean <target>".to_string()),
+    };
+
+    let repo = crate::repo_root();
+    let set = repo.join("packages/sets/local-supported.toml");
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let node = resolve_clean_target(&graph, &target)?;
+    let removal = clean_removal_set(&graph, &node);
+
+    let compiled_cache_root =
+        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
+    let output_root = repo.join("local-binaries/source-only-v1");
+
+    let mut removed_paths = Vec::new();
+    for cleaned in &removal {
+        match cleaned {
+            PlanNodeV1::Package { name, target_arch } => {
+                removed_paths.extend(clean_package_node_outputs(
+                    &registry,
+                    &compiled_cache_root,
+                    &output_root,
+                    name,
+                    target_arch,
+                )?);
+            }
+            PlanNodeV1::Product { id } => {
+                removed_paths.extend(clean_product_node_outputs(&repo, &graph, id)?);
+            }
+        }
+    }
+
+    println!("Cleaned {}", node_label(&node));
+    for path in &removed_paths {
+        println!("  removed {}", path.display());
+    }
+    let cascade: Vec<&PlanNodeV1> = removal.iter().filter(|other| *other != &node).collect();
+    if !cascade.is_empty() {
+        println!(
+            "Also invalidated ({} depends on / embeds {}):",
+            if cascade.len() == 1 { "this" } else { "these" },
+            node_label(&node)
+        );
+        for other in cascade {
+            println!("  {}", node_label(other));
+        }
+    }
+    Ok(())
+}
+
+/// Extract the ABI version a wasm module declares via its `__abi_version`
+/// export. Mirrors the "constant" extraction shape in
+/// `wasm_extract_abi_version`/`_wasm_extract_constant_i32_body` in
+/// `scripts/wasm-artifact-guards.sh`: the exported function's body must be
+/// exactly `i32.const <N> end` or `i32.const <N> return end`. Returns `Ok(None)`
+/// only when the module genuinely has no such export; every inspection or
+/// shape failure is an `Err` so this stays fail-closed like its shell
+/// counterpart.
+fn wasm_declared_abi_version(bytes: &[u8]) -> Result<Option<u32>, String> {
+    use wasmparser::{ExternalKind, Imports, Operator, Parser, Payload, TypeRef};
+
+    let mut imported_funcs: u32 = 0;
+    let mut export_func_index: Option<u32> = None;
+    let mut code_bodies: Vec<wasmparser::FunctionBody<'_>> = Vec::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload = payload.map_err(|error| format!("parse wasm: {error}"))?;
+        match payload {
+            Payload::ImportSection(reader) => {
+                // Three import-group encodings in wasmparser 0.247, matching
+                // `kernel_exports` in dump_abi.rs. Only `Single` appears in
+                // stock LLVM output; the `Compact*` variants come from the
+                // compact-imports proposal and are handled for completeness.
+                for group in reader {
+                    let group = group.map_err(|error| format!("import section: {error}"))?;
+                    match group {
+                        Imports::Single(_, import) => {
+                            if matches!(import.ty, TypeRef::Func(_)) {
+                                imported_funcs += 1;
+                            }
+                        }
+                        Imports::Compact1 { items, .. } => {
+                            for item in items {
+                                let item = item.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(item.ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                        Imports::Compact2 { ty, names, .. } => {
+                            for name in names {
+                                let _ = name.map_err(|error| format!("import section: {error}"))?;
+                                if matches!(ty, TypeRef::Func(_)) {
+                                    imported_funcs += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    let export = export.map_err(|error| format!("export section: {error}"))?;
+                    if export.name == "__abi_version" && export.kind == ExternalKind::Func {
+                        export_func_index = Some(export.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                code_bodies.push(body);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(export_func_index) = export_func_index else {
+        return Ok(None);
+    };
+    let local_index = export_func_index.checked_sub(imported_funcs).ok_or_else(|| {
+        "__abi_version export index is inside the imported function range".to_string()
+    })?;
+    let body = code_bodies.get(local_index as usize).ok_or_else(|| {
+        "__abi_version export has no matching function body".to_string()
+    })?;
+    let mut operators = body
+        .get_operators_reader()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let malformed = || {
+        "__abi_version function body is not a plain `i32.const <N> [return] end` constant"
+            .to_string()
+    };
+
+    let first = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let Operator::I32Const { value } = first else {
+        return Err(malformed());
+    };
+    let second = operators
+        .read()
+        .map_err(|error| format!("read __abi_version function body: {error}"))?;
+    let terminated = match second {
+        Operator::End => true,
+        Operator::Return => {
+            let third = operators
+                .read()
+                .map_err(|error| format!("read __abi_version function body: {error}"))?;
+            matches!(third, Operator::End)
+        }
+        _ => false,
+    };
+    if !terminated {
+        return Err(malformed());
+    }
+    u32::try_from(value)
+        .map(Some)
+        .map_err(|_| format!("__abi_version constant {value} is not a valid u32"))
 }
 
 fn run_plan(set: PathBuf) -> Result<(), String> {
@@ -2937,18 +3711,51 @@ fn select_graph_dependencies(
         .filter(|entry| entry.disposition == "dormant-product")
         .map(|entry| entry.name.as_str())
         .collect::<BTreeSet<_>>();
+    // Package nodes, keyed by (name, target_arch), so a bare `xtask bootstrap
+    // <target>` positional (run.sh's former `build_<pkg>` targets: `kernel`,
+    // `zlib`, `mariadb64`, ...) can select a single registry package the same
+    // way a declared product id already can, without requiring every
+    // package to also be declared as a VFS product.
+    let package_names = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, target_arch } => {
+                Some((name.as_str(), target_arch.as_str()))
+            }
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
 
     let mut selected = BTreeSet::new();
     let mut pending = Vec::new();
-    for product in product_filters {
-        if !active_products.contains(product.as_str()) {
-            return if dormant_products.contains(product.as_str()) {
-                Err(format!("product {product:?} is dormant"))
-            } else {
-                Err(format!("unknown product {product:?}"))
-            };
+    for filter in product_filters {
+        if active_products.contains(filter.as_str()) {
+            pending.push(PlanNodeV1::product(filter));
+            continue;
         }
-        pending.push(PlanNodeV1::product(product));
+        if dormant_products.contains(filter.as_str()) {
+            return Err(format!("product {filter:?} is dormant"));
+        }
+        if package_names.contains(&(filter.as_str(), "wasm32")) {
+            pending.push(PlanNodeV1::package(filter, "wasm32"));
+            continue;
+        }
+        // `./run.sh build mariadb64` names the wasm64 build of the `mariadb`
+        // package; the package graph itself has no node literally named
+        // "mariadb64". Strip the historical "64" suffix convention and look
+        // for the wasm64 variant of the base package name.
+        if let Some(base) = filter.strip_suffix("64") {
+            if package_names.contains(&(base, "wasm64")) {
+                pending.push(PlanNodeV1::package(base, "wasm64"));
+                continue;
+            }
+        }
+        if package_names.contains(&(filter.as_str(), "wasm64")) {
+            pending.push(PlanNodeV1::package(filter, "wasm64"));
+            continue;
+        }
+        return Err(format!("unknown product or package {filter:?}"));
     }
     while let Some(node) = pending.pop() {
         if !selected.insert(node.clone()) {
@@ -4008,6 +4815,399 @@ mod tests {
     }
 
     #[test]
+    fn clean_cascades_to_products_embedding_the_package() {
+        // Real checked-in graph: nethack <- nethack-browser-bundle <- shell
+        // <- the browser-main-shell product (packages/registry/shell/
+        // package.toml depends on nethack-browser-bundle; local-supported
+        // .toml's browser-main-shell product maps to the shell package).
+        // `clean_removal_set` must discover this by walking dependency
+        // edges backwards from `nethack` — not by consulting any hand-kept
+        // list of "packages that live inside the shell VFS image".
+        let repo = crate::repo_root();
+        let set = repo.join("packages/sets/local-supported.toml");
+        let registry = Registry::from_env(&repo);
+        let graph = load_and_plan(&repo, &set, &registry).unwrap();
+
+        let nethack = PlanNodeV1::package("nethack", "wasm32");
+        let removal = clean_removal_set(&graph, &nethack);
+
+        assert!(
+            removal.contains(&nethack),
+            "the removal set always includes the cleaned node itself"
+        );
+        assert!(
+            removal.contains(&PlanNodeV1::package("nethack-browser-bundle", "wasm32")),
+            "cleaning nethack invalidates the bundle package that directly depends on it"
+        );
+        assert!(
+            removal.contains(&PlanNodeV1::package("shell", "wasm32")),
+            "cleaning nethack invalidates the shell package that embeds the bundle"
+        );
+        assert!(
+            removal
+                .iter()
+                .any(|node| matches!(node, PlanNodeV1::Product { id } if id.contains("shell"))),
+            "cleaning nethack invalidates the shell product that embeds it; got {removal:?}",
+        );
+
+        // A leaf nothing else depends on (directly or via a product) removes
+        // only itself. `ruby` is not in any package's `depends_on`, any
+        // product's `package_dependencies`/`root_mirror_packages`, or any
+        // product manifest's composition — verified against the checked-in
+        // registry and `local-supported.toml` when this test was written.
+        let leaf_only = clean_removal_set(&graph, &PlanNodeV1::package("ruby", "wasm32"));
+        assert_eq!(
+            leaf_only,
+            BTreeSet::from([PlanNodeV1::package("ruby", "wasm32")])
+        );
+    }
+
+    /// Fabricate one compiled `SourceOnlyV1` generation exactly the way the
+    /// real engine leaves one on disk: a canonical cache directory under
+    /// `<compiled_cache_root>/programs/`, its hidden receipt sidecar (via
+    /// the real `write_source_only_cache_receipt`, so the sidecar's name and
+    /// shape match what `clean_package_node_outputs` actually reads), and
+    /// the one file the receipt's `materialized_members` mirrors into
+    /// `output_root`. Returns the canonical generation directory path.
+    fn fabricate_compiled_generation(
+        compiled_cache_root: &Path,
+        output_root: &Path,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: &str,
+        cache_key_sha: &str,
+        mirror_relative: &str,
+    ) -> PathBuf {
+        let basename = format!("{name}-{version}-rev{revision}-{arch}-{cache_key_sha}");
+        let canonical = compiled_cache_root.join("programs").join(&basename);
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("marker"), b"fixture generation").unwrap();
+
+        let mirror = output_root.join(mirror_relative);
+        write(&mirror, "fixture mirrored output");
+
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "0".repeat(64),
+            cache_key_sha256: cache_key_sha.to_string(),
+            cache_receipt_sha256: "1".repeat(64),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: format!("{name}.wasm"),
+                mirror_path: mirror_relative.to_string(),
+                mode: 0o755,
+                size: fs::metadata(&mirror).unwrap().len(),
+                sha256: "2".repeat(64),
+            }],
+        };
+        crate::build_deps::write_source_only_cache_receipt(&canonical, &receipt).unwrap();
+        canonical
+    }
+
+    #[test]
+    fn clean_package_node_outputs_removes_only_the_targeted_generation() {
+        // This is the destructive path `xtask clean` actually runs: it must
+        // remove exactly the targeted package's compiled cache directory,
+        // its receipt sidecar, and its mirrored output — and must NOT touch
+        // an unrelated sibling package's cache/receipt/mirror, however
+        // similar the on-disk layout looks. A live run proved this once by
+        // hand (see the Stage 5 report); this pins it as a fast, repeatable
+        // tmpdir test instead of relying on that again.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        package(root, "beta", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let alpha_cache_key = "cachekey-alpha-0000000000000000000000000000000000000000";
+        let beta_cache_key = "cachekey-beta-00000000000000000000000000000000000000000";
+        let alpha_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            alpha_cache_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let beta_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "beta",
+            "1.0.0",
+            1,
+            "wasm32",
+            beta_cache_key,
+            "programs/wasm32/beta.wasm",
+        );
+        let alpha_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&alpha_canonical, alpha_cache_key)
+                .unwrap();
+        let beta_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&beta_canonical, beta_cache_key)
+                .unwrap();
+        let alpha_mirror = output_root.join("programs/wasm32/alpha.wasm");
+        let beta_mirror = output_root.join("programs/wasm32/beta.wasm");
+
+        // Sanity: the fixture actually created everything the assertions
+        // below check the disappearance/survival of.
+        assert!(alpha_canonical.is_dir());
+        assert!(beta_canonical.is_dir());
+        assert!(alpha_receipt_sidecar.is_file());
+        assert!(beta_receipt_sidecar.is_file());
+        assert!(alpha_mirror.is_file());
+        assert!(beta_mirror.is_file());
+
+        let removed =
+            clean_package_node_outputs(&reg, &compiled_cache_root, output_root, "alpha", "wasm32")
+                .unwrap();
+        assert!(
+            removed.contains(&alpha_canonical)
+                && removed.contains(&alpha_receipt_sidecar)
+                && removed.contains(&alpha_mirror),
+            "expected the targeted generation dir, receipt sidecar, and mirror in the removed list; got {removed:?}"
+        );
+
+        assert!(
+            !alpha_canonical.exists(),
+            "targeted generation directory must be removed"
+        );
+        assert!(
+            !alpha_receipt_sidecar.exists(),
+            "targeted receipt sidecar must be removed"
+        );
+        assert!(
+            !alpha_mirror.exists(),
+            "targeted mirrored output must be removed"
+        );
+
+        assert!(
+            beta_canonical.is_dir(),
+            "decoy sibling's generation directory must survive"
+        );
+        assert!(
+            beta_receipt_sidecar.is_file(),
+            "decoy sibling's receipt sidecar must survive"
+        );
+        assert!(
+            beta_mirror.is_file(),
+            "decoy sibling's mirrored output must survive"
+        );
+    }
+
+    /// Extract the body (inclusive of the enclosing braces) of a top-level
+    /// bash function named `function` from `source`, by counting brace
+    /// depth from the function's opening `{`. Good enough for the small,
+    /// brace-free-besides-`${...}` bodies this file's folded `build_*_vfs`
+    /// functions have today; not a general bash parser.
+    fn extract_bash_function_body(source: &str, function: &str) -> String {
+        let header = format!("{function}() {{");
+        let start = source
+            .find(&header)
+            .unwrap_or_else(|| panic!("run.sh: no {header:?} function definition found"));
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in source[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(start + offset + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end
+            .unwrap_or_else(|| panic!("run.sh: unterminated body for function {function:?}"));
+        source[start..end].to_string()
+    }
+
+    /// Whether `body` contains a real `bootstrap_target <id>` call — not
+    /// just `id` as a substring of a longer, differently-named id (so a
+    /// `browser-nginx-php` body doesn't falsely satisfy an expectation of
+    /// `browser-nginx`).
+    fn body_calls_bootstrap_target(body: &str, id: &str) -> bool {
+        let needle = format!("bootstrap_target {id}");
+        let mut search_from = 0;
+        while let Some(relative) = body[search_from..].find(&needle) {
+            let match_end = search_from + relative + needle.len();
+            let boundary_ok = body[match_end..]
+                .chars()
+                .next()
+                .map(|next| !(next.is_alphanumeric() || next == '-' || next == '_'))
+                .unwrap_or(true);
+            if boundary_ok {
+                return true;
+            }
+            search_from = search_from + relative + 1;
+        }
+        false
+    }
+
+    /// Assert that `run.sh`'s `<function>` body actually dispatches to
+    /// `bootstrap_target <expected_id>`. This is the run.sh-side half of the
+    /// Stage 4 anti-drift guard: `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+    /// below only checks that `expected_id` is a declared product/package in
+    /// `local-supported.toml` — it says nothing about what `run.sh` actually
+    /// does. Without this, routing `build_wp_vfs` to the wrong product
+    /// (e.g. `browser-lamp` instead of `browser-wordpress`), or reverting a
+    /// folded function back to its old inline bash body, would both still
+    /// pass that check.
+    fn assert_run_sh_folded_dispatch(run_sh_source: &str, function: &str, expected_id: &str) {
+        let body = extract_bash_function_body(run_sh_source, function);
+        assert!(
+            body_calls_bootstrap_target(&body, expected_id),
+            "run.sh's {function}() does not call `bootstrap_target {expected_id}`; \
+             body was:\n{body}",
+        );
+    }
+
+    /// Stage 4 gap enumeration: every `build_*_vfs` function `run.sh` defines
+    /// must be accounted for as either (a) folded into a declared
+    /// `[[products]]` id (or, for `mariadb-test`, a declared bare package —
+    /// see its comment below) that `xtask bootstrap <id>` can already select,
+    /// or (b) left as a bash builder because its underlying package/product
+    /// is a documented, pre-existing exclusion/dormant entry that predates
+    /// this fold and is out of scope to reactivate here. If a future edit
+    /// declares a new product, removes an exclusion, or adds a new
+    /// `build_*_vfs` function without updating this table, this test fails
+    /// and forces the gap to be re-evaluated instead of silently drifting.
+    #[test]
+    fn run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries() {
+        let repo = crate::repo_root();
+        let set = parse_supported_set(&repo.join("packages/sets/local-supported.toml")).unwrap();
+        let product_ids = declared_product_ids(&set);
+        let package_names = set
+            .packages
+            .iter()
+            .map(|package| package.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let dormant_products = set
+            .dormant_products
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let excluded = set
+            .exclusions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        enum Expectation {
+            /// Folded: `run.sh`'s `build_<fn>` delegates to
+            /// `bootstrap_target <id>`, where `<id>` is a declared product id
+            /// (`[[products]]`) or bare package name already selectable by
+            /// `select_graph_dependencies`.
+            FoldedProduct(&'static str),
+            FoldedPackage(&'static str),
+            /// Left as bash: `<excluded_name>` is the registry package or
+            /// product id a pre-existing `[[exclusions]]`/`[[dormant_products]]`
+            /// entry in `local-supported.toml` already keeps out of the
+            /// engine's active graph, for a reason unrelated to whether the
+            /// engine *could* model the composite (it already can — every
+            /// one of these has a manifest and/or resolver-ready build
+            /// script). Reactivating any of these is a product decision, not
+            /// an engine-capability gap, and is out of Stage 4's scope.
+            DormantOrExcluded(&'static str),
+        }
+
+        // run.sh function name -> what it should resolve to today.
+        let table: &[(&str, Expectation)] = &[
+            ("build_shell_vfs", Expectation::FoldedProduct("browser-main-shell")),
+            ("build_wp_vfs", Expectation::FoldedProduct("browser-wordpress")),
+            ("build_lamp_vfs", Expectation::FoldedProduct("browser-lamp")),
+            ("build_nginx_vfs", Expectation::FoldedProduct("browser-nginx")),
+            (
+                "build_nginx_php_vfs",
+                Expectation::FoldedProduct("browser-nginx-php"),
+            ),
+            ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
+    // mariadb-test has no `[[products]]` entry (matching the
+            // sibling test-support manifests test-php.toml/test-sqlite.toml,
+            // which are also manifest-only with no active product) but its
+            // package is already declared and bootstraps the identical
+            // build-mariadb-test.sh the bash builder called directly.
+            ("build_mariadb_test_vfs", Expectation::FoldedPackage("mariadb-test")),
+            // NOTE: keep this table's folded (fn, id) pairs and the
+            // `run_sh_folded_dispatch_matches_this_table` loop below in sync
+            // — the second loop reads run.sh itself and asserts that each
+            // folded function's body literally calls
+            // `bootstrap_target <id>` with the SAME id listed here, so a
+            // routing typo/regression (wrong product, or a revert to inline
+            // bash) fails even though local-supported.toml is untouched.
+            ("build_mariadb_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_mariadb64_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
+            ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
+            ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
+            ("build_redis_vfs", Expectation::DormantOrExcluded("redis-vfs")),
+            // texlive-vfs has no `[[products]]`/`[[packages]]` entry AND no
+            // manifest under images/vfs/products at all (unlike the other
+            // dormant composites, which at least have a written manifest);
+            // its source package "texlive" is the excluded root.
+            ("build_texlive_vfs", Expectation::DormantOrExcluded("texlive")),
+        ];
+
+        let run_sh_source = fs::read_to_string(repo.join("run.sh")).unwrap();
+
+        for (function, expectation) in table {
+            match expectation {
+                Expectation::FoldedProduct(id) => {
+                    assert!(
+                        product_ids.contains(*id),
+                        "{function} expects declared product {id:?}; \
+                         declared_product_ids() = {product_ids:?}",
+                    );
+                    // toml-side declaration alone doesn't prove run.sh
+                    // actually routes here — a wrong id, or a revert to the
+                    // old inline bash body, would leave the assertion above
+                    // passing. Read run.sh itself to close that gap.
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, id);
+                }
+                Expectation::FoldedPackage(name) => {
+                    assert!(
+                        package_names.contains(name),
+                        "{function} expects declared package {name:?}; \
+                         packages = {package_names:?}",
+                    );
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, name);
+                }
+                Expectation::DormantOrExcluded(name) => assert!(
+                    dormant_products.contains(name) || excluded.contains(name),
+                    "{function} names {name:?}, expected to find it in \
+                     dormant_products {dormant_products:?} or exclusions \
+                     {excluded:?} — if it was removed from both, this \
+                     composite is now foldable and this table (and \
+                     run.sh's build_target routing) must be updated",
+                ),
+            }
+        }
+
+        // images/vfs/products/*.toml manifests exist for every dormant
+        // composite except texlive (confirming Stage 4 left it bash for a
+        // different, more fundamental reason: no manifest, no product/package
+        // declaration, and its bash builder has a host-tool-availability
+        // skip that isn't itself expressible as a manifest dependency).
+        for id in ["browser-mariadb-wasm32", "browser-mariadb-wasm64", "browser-erlang", "browser-python", "browser-perl", "browser-redis"] {
+            let manifest = repo.join("images/vfs/products").join(format!("{id}.toml"));
+            assert!(manifest.is_file(), "expected dormant product manifest at {}", manifest.display());
+        }
+        assert!(
+            !repo.join("images/vfs/products/texlive-vfs.toml").exists()
+                && !repo.join("images/vfs/products/browser-texlive.toml").exists(),
+            "texlive-vfs has no manifest today; if one is added, re-evaluate folding it",
+        );
+    }
+
+    #[test]
     fn local_rebuild_graph_private_source_nodes_preserve_public_plan_bytes() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -4318,6 +5518,84 @@ materialization = "lazy"
     }
 
     #[test]
+    fn local_rebuild_graph_filters_select_bare_package_names_and_wasm64_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "mariadb", &["wasm32", "wasm64"], &[]);
+        package(root, "wasm64-only", &["wasm64"], &[]);
+        product(root, "unused", &[]);
+        let set = authority(
+            root,
+            &[
+                ("base-a", "platform"),
+                ("mariadb", "user-software"),
+                ("wasm64-only", "platform"),
+            ],
+            &[],
+            &[],
+            &[],
+        );
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+
+        // `xtask bootstrap kernel`/`./run.sh build zlib`-style bare package
+        // selection: a target that names a registry package directly (not a
+        // declared VFS product) selects that package's wasm32 node.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["base-a".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("base-a", "wasm32")]),
+        );
+
+        // `./run.sh build mariadb64`-style targets: the historical "64"
+        // suffix convention selects the wasm64 node of the base package.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb64".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm64")]),
+        );
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm32")]),
+        );
+
+        let error = select_graph_dependencies(&graph, &["not-a-thing".to_string()]).unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
+
+        // A package that exists ONLY at wasm64 (no wasm32 counterpart, and
+        // its name has no "64" suffix to strip) must still resolve by its
+        // plain name via the final wasm64-literal fallback, not just via the
+        // "64" suffix convention covered above.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["wasm64-only".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("wasm64-only", "wasm64")]),
+        );
+    }
+
+    #[test]
+    fn package_target_needs_sysroot64_matches_the_64_suffix_convention() {
+        assert!(package_target_needs_sysroot64("mariadb64"));
+        assert!(package_target_needs_sysroot64("sqlite64"));
+        assert!(!package_target_needs_sysroot64("mariadb"));
+        assert!(!package_target_needs_sysroot64("zlib"));
+        assert!(!package_target_needs_sysroot64("kernel"));
+    }
+
+    #[test]
     fn local_rebuild_graph_authority_binds_exact_inputs_and_private_edges() {
         use sha2::{Digest, Sha256};
 
@@ -4414,6 +5692,264 @@ materialization = "lazy"
                 "{value:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn bootstrap_step_order_builds_toolchain_before_engine_and_host_after() {
+        let steps = bootstrap_step_plan();
+        let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "fork-instrument-tool",
+                "sysroot",
+                "sysroot64",
+                "sdk",
+                "engine",
+                "rootfs",
+                "host-dist",
+            ],
+            "fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
+             sysroot64/sdk must precede the engine (every package build script reads \
+             the ambient musl sysroot and wasm{{32,64}}posix-cc directly, which the \
+             engine's own dependency graph does not model as an edge) and sdk must \
+             follow sysroot (sdk only checks sysroot's toolchain wrappers resolve); \
+             rootfs must follow the engine (build-rootfs.sh consumes the packages the \
+             engine just built) and precede host-dist (host build should see a fresh \
+             rootfs image); host-dist must follow the engine (needs the regenerated \
+             program index)"
+        );
+    }
+
+    #[test]
+    fn bootstrap_selection_from_args_accepts_omitted_all_and_single_targets() {
+        let (selection, rest) = bootstrap_selection_from_args(&[]).unwrap();
+        assert_eq!(selection, Selection::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) =
+            bootstrap_selection_from_args(&["all".to_string()]).unwrap();
+        assert_eq!(selection, Selection::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "all".to_string(),
+            "--jobs".to_string(),
+            "2".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, Selection::All);
+        assert_eq!(rest, vec!["--jobs".to_string(), "2".to_string()]);
+
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "kernel".to_string(),
+            "--rebuild".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, Selection::Package("kernel".to_string()));
+        assert_eq!(rest, vec!["--rebuild".to_string()]);
+    }
+
+    #[test]
+    fn bootstrap_single_target_maps_to_engine_or_host_step() {
+        assert_eq!(
+            bootstrap_target_to_selection("kernel"),
+            Selection::Package("kernel".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("zlib"),
+            Selection::Package("zlib".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("host"),
+            Selection::HostStep("host-dist")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("fork-instrument"),
+            Selection::HostStep("fork-instrument-tool")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("rootfs"),
+            Selection::HostStep("rootfs")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot"),
+            Selection::HostStep("sysroot")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot64"),
+            Selection::HostStep("sysroot64")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sdk"),
+            Selection::HostStep("sdk")
+        );
+    }
+
+    fn uleb128(mut value: u32, out: &mut Vec<u8>) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    fn sleb128_i32(mut value: i64, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            let sign_bit = byte & 0x40 != 0;
+            if (value == 0 && !sign_bit) || (value == -1 && sign_bit) {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn wasm_section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
+        out.push(id);
+        uleb128(payload.len() as u32, out);
+        out.extend_from_slice(payload);
+    }
+
+    /// Build the smallest wasm module `wasm_declared_abi_version` accepts: one
+    /// `() -> i32` function, exported as `__abi_version`, whose body is
+    /// exactly `i32.const <abi> end` — the plain constant shape
+    /// `_wasm_extract_constant_i32_body` in `scripts/wasm-artifact-guards.sh`
+    /// also recognizes.
+    fn kernel_wasm_with_abi(abi: u32) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+        // Type section: one type, () -> i32.
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        // Function section: one function using type 0.
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        // Export section: "__abi_version" -> func 0.
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        // Code section: one body, `i32.const <abi> end`.
+        let mut body = vec![0x00]; // no locals
+        body.push(0x41); // i32.const
+        sleb128_i32(abi as i64, &mut body);
+        body.push(0x0b); // end
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(&body);
+        wasm_section(10, &code, &mut module);
+
+        module
+    }
+
+    fn temp_repo_with_kernel(kernel_abi: u32) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().unwrap();
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, kernel_wasm_with_abi(kernel_abi)).unwrap();
+        temp
+    }
+
+    #[test]
+    fn verify_fresh_flags_a_stale_abi_kernel() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION - 1);
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("kernel.wasm") && err.contains("ABI"),
+            "must name the stale kernel and why: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_ok_for_current_kernel() {
+        let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION);
+        assert!(verify_fresh_report(repo.path()).is_ok());
+    }
+
+    #[test]
+    fn verify_fresh_ok_when_no_local_kernel_build_exists_yet() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(
+            verify_fresh_report(temp.path()).is_ok(),
+            "an unbuilt tree has no stale kernel to flag"
+        );
+    }
+
+    /// Build a wasm module exporting `__abi_version` (func 0) whose body is
+    /// exactly the given bytes (locals-count prefix included), instead of the
+    /// recognized `i32.const <N> [return] end` constant shape.
+    fn wasm_module_with_abi_version_body(body: &[u8]) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(body);
+        wasm_section(10, &code, &mut module);
+        module
+    }
+
+    fn write_kernel_wasm(temp: &tempfile::TempDir, bytes: &[u8]) {
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, bytes).unwrap();
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_malformed_abi_version_export_body() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // `nop end` (no locals): not the recognized `i32.const <N> [return]
+        // end` constant shape `wasm_declared_abi_version` requires.
+        write_kernel_wasm(
+            &temp,
+            &wasm_module_with_abi_version_body(&[0x00, 0x01, 0x0b]),
+        );
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("i32.const"),
+            "must report the unrecognized constant shape: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_kernel_with_no_abi_version_export() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // The bare 8-byte wasm header: a valid, empty module with no export
+        // section at all, so `wasm_declared_abi_version` finds no
+        // `__abi_version` export and returns `Ok(None)`.
+        write_kernel_wasm(&temp, &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("kernel.wasm has no __abi_version export"),
+            "must name the missing export: {err}"
+        );
     }
 
     #[test]

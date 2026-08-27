@@ -24,6 +24,49 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# pkg_xtask_bin freshens the release xtask binary exactly once per `./run.sh`
+# invocation and records that it did so with this marker file. The name is a
+# fresh random token per invocation (`mktemp -u` only generates an unused
+# name; pkg_xtask_bin creates the file itself after a successful build). A
+# random name — not one keyed by `$$` — is what makes a leaked marker inert:
+# the EXIT trap below does not fire on the many `exec`-terminated command
+# paths (cmd_run's `exec npx tsx …`, cmd_browser's `exec npx vite`, the
+# nginx/mariadb/redis/wordpress/lamp/erlang/dlopen launches), so a marker can
+# leak. Keyed by `$$` (a reusable PID), a later invocation the OS assigned the
+# same PID — after an xtask source edit — would find the leaked marker and
+# skip its rebuild, silently running stale orchestration. With a unique random
+# name no future invocation ever looks for, a leaked marker can never be
+# resurrected by PID reuse. `$(...)` command-substitution subshells inherit
+# this parent global, so every call site sees the same marker path.
+# `|| true`: this is a bare top-level command substitution under
+# `set -euo pipefail`. Without the guard, a failing `mktemp` would abort the
+# whole script here, before argument dispatch. An empty marker path is safe —
+# `[ -f "" ]` is false, so pkg_xtask_bin simply always rebuilds that run (no
+# memoization, no staleness).
+KANDELO_XTASK_FRESH_MARKER="$(mktemp -u "${TMPDIR:-/tmp}/kandelo-xtask-fresh.XXXXXX")" || true
+# Host triple (e.g. aarch64-apple-darwin) for the xtask build target, derived
+# at most once per invocation. Memoized here so a marker-hit pkg_xtask_bin
+# call does not re-run `rustc -vV` on every lookup, and so a transient rustc
+# failure cannot fail a cache-hit call.
+# `|| true`: `rustc` is legitimately absent for a bare `./run.sh <cmd>` run
+# before entering the dev shell (pkg_xtask_bin's KANDELO_DEV_SHELL_TOOL_PATH
+# branch exists for exactly this). Under `set -euo pipefail` the pipeline's
+# exit 127 would otherwise `errexit`-abort the entire script here, before
+# argument dispatch, breaking every subcommand (e.g. `./run.sh list`). Failing
+# soft to an empty string restores the old lazy behavior: pkg_xtask_bin's
+# `[ -z "$host" ] && return 1` guard then fires its normal caller error.
+KANDELO_XTASK_HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')" || true
+
+# Best-effort cleanup for the freshness marker. Some subcommands
+# (cmd_local_build, the source-rootfs-shell browser path) install their own
+# EXIT trap and later clear it with `trap - EXIT INT TERM`, which would
+# clobber this one for the remainder of their run; and `exec`-terminated paths
+# never fire it at all. Both are harmless now: the marker has a unique random
+# name, so a lingering file cannot make any other `./run.sh` invocation skip
+# its own freshness check.
+trap 'rm -f -- "$KANDELO_XTASK_FRESH_MARKER"' EXIT
+
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
@@ -235,31 +278,53 @@ has_valid_kernel_file() {
 # pkg_xtask_bin: build xtask once (lazy) and return the binary path so
 # repeated `pkg_has_output` calls don't pay cargo's setup cost on each
 # call (~50ms × 40 has_* lookups in cmd_status = a real delay).
-PKG_XTASK_BIN=""
+# pkg_xtask_bin: freshen the release xtask binary exactly ONCE per `./run.sh`
+# invocation, then hand back its path.
+#
+# Freshness (not just "does a binary exist") matters here: this now backs
+# the real bootstrap/build path (`bootstrap_target`), not just a peripheral
+# build-deps helper, so a binary compiled before the most recent
+# `tools/xtask/src/*.rs` edit must not be silently reused.
+#
+# "Once per invocation" cannot be a shell variable: every caller invokes
+# this via command substitution (`xtask=$(pkg_xtask_bin)`), and `$(...)`
+# always forks a subshell in bash — any assignment to a global variable
+# inside the function is discarded when that subshell exits, so a plain
+# `PKG_XTASK_FRESH=1` set here would never be visible to the next call.
+# Freshness has to be recorded as real filesystem state instead: the
+# `KANDELO_XTASK_FRESH_MARKER` file computed once at the top of this file.
+# Reading that inherited parent global inside a `$(...)` subshell works fine
+# (unlike writing one out); its unique random name makes a leaked marker inert
+# against PID reuse. See the definition near the top of this file for why the
+# name is random rather than keyed by `$$`.
 pkg_xtask_bin() {
-    if [ -n "$PKG_XTASK_BIN" ] && [ -x "$PKG_XTASK_BIN" ]; then
-        echo "$PKG_XTASK_BIN"
-        return 0
-    fi
-    local host
-    host=$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')
+    local host="$KANDELO_XTASK_HOST_TRIPLE"
     if [ -z "$host" ]; then
         return 1
     fi
-    PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
-    if [ ! -x "$PKG_XTASK_BIN" ]; then
+    local bin="$REPO_ROOT/target/$host/release/xtask"
+    local marker="$KANDELO_XTASK_FRESH_MARKER"
+    if [ ! -f "$marker" ]; then
+        # Always run `cargo build`, not just when the binary is absent:
+        # cargo's own incremental check is what gives us the freshness
+        # guarantee (a fast no-op when tools/xtask/src is unchanged, a real
+        # rebuild/relink when it isn't) — the same guarantee `cargo run`
+        # gave the old per-call `bootstrap_target` before it was switched to
+        # this cached-path helper.
         if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
             # Consumer jobs already run inside the declared dev shell, where
-            # `nix` is intentionally absent. Build directly in that shell if a
-            # caller did not provide the prepared xtask binary.
+            # `nix` is intentionally absent. Build directly in that shell if
+            # a caller did not provide the prepared xtask binary.
             (cd "$REPO_ROOT" && \
                 cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
         else
             (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
                 cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
         fi
+        [ -x "$bin" ] || return 1
+        : > "$marker"
     fi
-    echo "$PKG_XTASK_BIN"
+    echo "$bin"
 }
 
 # pkg_output_rel <pkg-name> <wasm-basename> [arch]
@@ -329,12 +394,6 @@ pkg_has_output() {
     fi
 }
 
-has_kernel()    { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; }
-has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
-has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
-has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
-has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
-has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
 has_browser_memory64_example_fixtures() {
     local output
     local outputs
@@ -431,88 +490,67 @@ has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                       [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
+#
+# Every need_* below (except need_node_modules, a root npm concern with no
+# build artifact) is a thin delegator onto `xtask bootstrap <target>`. The
+# freshness decision — is the kernel's ABI current, is a package's content
+# unchanged, does the sysroot need a full rebuild or just a header resync —
+# lives in the local-build engine / xtask, not here; see
+# docs/agent-guidance/packages-and-builds.md.
+
+# bootstrap_target <target> [xtask-bootstrap-args...]: run `xtask bootstrap
+# <target>` inside the repository dev shell. This is the one front door every
+# need_* delegator and the simple build_<pkg> delegators call through.
+#
+# Uses `pkg_xtask_bin` (the same lazy-build-once release binary this file
+# already uses for `build-deps`/`output-metadata` calls) instead of
+# `scripts/setup.sh`'s `cargo run -p xtask -- bootstrap ...`: a composite
+# build_<pkg> (e.g. build_wp_vfs) fans out into several of these calls in one
+# `./run.sh` invocation, and `cargo run` re-pays its own incremental-build
+# check (a debug build/relink, not just a no-op) on every single one of them.
+# Building the release binary once and invoking it directly removes that
+# repeated cost; the dev shell still has to be (re-)entered per call so the
+# invoked xtask process — and the package build scripts it shells out to —
+# see LLVM_BIN/wasm{32,64}posix-cc/etc. on PATH.
+bootstrap_target() {
+    local target="$1"; shift
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "bootstrap_target $target: could not build xtask"
+        return 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" bootstrap "$target" "$@"
+}
 
 need_kernel() {
-    if ! has_kernel; then
-        step "Building kernel"
-        bash "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"
-        info "Kernel built"
-    else
-        info "Kernel"
-    fi
+    bootstrap_target kernel
 }
 
 need_sysroot() {
-    if ! has_sysroot; then
-        step "Building sysroot (musl)"
-        bash "$REPO_ROOT/scripts/build-musl.sh"
-        info "Sysroot built"
-    else
-        # Re-sync overlay headers into the existing sysroot. Cheap (just a
-        # few cp) and ensures newly-added libc/musl-overlay/include/ files reach
-        # an existing sysroot without forcing a full musl rebuild.
-        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
-        info "Sysroot"
-    fi
-}
-
-need_fork_instrument() {
-    if [ ! -x "$REPO_ROOT/tools/bin/wasm-fork-instrument" ]; then
-        step "Building wasm-fork-instrument"
-        bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
-        info "wasm-fork-instrument built"
-    else
-        info "wasm-fork-instrument"
-    fi
+    bootstrap_target sysroot
 }
 
 need_sysroot64() {
-    if ! has_sysroot64; then
-        step "Building sysroot64 (musl, wasm64)"
-        bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
-        info "Sysroot64 built"
-    else
-        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot64"
-        info "Sysroot64"
-    fi
+    bootstrap_target sysroot64
 }
 
 need_sdk() {
-    need_sysroot
-    # The worktree-local SDK is on PATH via sdk/activate.sh (sourced at
-    # the top of this script). If wasm32posix-cc still isn't found, the
-    # wrappers under sdk/bin are missing or their dispatcher is broken —
-    # not something `npm link` can fix.
-    if ! has_sdk; then
-        err "SDK tools not on PATH after sourcing sdk/activate.sh."
-        err "Expected sdk/bin/wasm32posix-cc to be a working symlink."
-        exit 1
-    fi
-    info "SDK"
+    # `xtask bootstrap sdk` ensures the sysroot first, then still errors if
+    # sdk/bin/wasm32posix-cc isn't a working symlink after that — the SDK
+    # wrappers being missing or broken isn't something a rebuild can fix.
+    bootstrap_target sdk
 }
 
 need_host() {
-    need_kernel
-    if ! has_host; then
-        step "Building TypeScript host"
-        cd "$REPO_ROOT/host"
-        npm install --prefer-offline
-        npm run build
-        cd "$REPO_ROOT"
-        info "Host built"
-    else
-        info "Host"
-    fi
+    bootstrap_target host
 }
 
 need_rootfs() {
-    if ! has_rootfs; then
-        step "Building rootfs.vfs"
-        bash "$REPO_ROOT/scripts/build-rootfs.sh"
-        info "rootfs.vfs built"
-    else
-        info "rootfs.vfs"
-    fi
+    bootstrap_target rootfs
+}
+
+need_fork_instrument() {
+    bootstrap_target fork-instrument
 }
 
 need_node_modules() {
@@ -567,87 +605,37 @@ build_programs() {
 }
 
 build_nginx() {
-    if has_nginx; then
-        info "nginx"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_nginx; then
-        step "Building nginx"
-        bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"
-        info "nginx built"
-    else
-        info "nginx"
-    fi
+    bootstrap_target nginx
 }
 
 build_php() {
-    if has_php; then
-        info "php"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_php; then
-        step "Building PHP CLI"
-        bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-        info "PHP CLI built"
-    else
-        info "PHP CLI"
-    fi
+    bootstrap_target php
 }
 
 build_php_fpm() {
-    if has_php_fpm; then
-        info "php-fpm"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_php_fpm; then
-        step "Building PHP-FPM"
-        bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-        info "PHP-FPM built"
-    else
-        info "PHP-FPM"
-    fi
+    # PHP-FPM is a second output of the same "php" package node (one build
+    # produces both the CLI and the FPM SAPI); there is no separate
+    # "php-fpm" package to select.
+    bootstrap_target php
 }
 
 build_mariadb() {
-    if has_mariadb; then
-        info "mariadb"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_mariadb; then
-        step "Building MariaDB (wasm32)"
-        bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
-        info "MariaDB (wasm32) built"
-    else
-        info "MariaDB (wasm32)"
-    fi
+    bootstrap_target mariadb
 }
 
 build_mariadb64() {
-    if has_mariadb64; then
-        info "mariadb64"
-        return
-    fi
-    need_kernel
-    need_sdk
-    need_sysroot64
-    if ! has_mariadb64; then
-        step "Building MariaDB (wasm64)"
-        bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh" --wasm64
-        info "MariaDB (wasm64) built"
-    else
-        info "MariaDB (wasm64)"
-    fi
+    bootstrap_target mariadb64
 }
 
 build_mariadb_vfs() {
+    # NOT folded: "mariadb-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("dormant browser product") — a
+    # pre-existing product decision predating this stage, not an engine
+    # limitation (its build script and
+    # images/vfs/products/browser-mariadb-wasm32.toml manifest already exist
+    # and validate fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_mariadb_vfs; then
         info "MariaDB VFS image (wasm32)"
         return
@@ -664,6 +652,8 @@ build_mariadb_vfs() {
 }
 
 build_mariadb64_vfs() {
+    # NOT folded: same "mariadb-vfs" exclusion as build_mariadb_vfs above
+    # (this is its wasm64 arch variant of the same excluded package).
     if has_mariadb64_vfs; then
         info "MariaDB VFS image (wasm64)"
         return
@@ -677,20 +667,25 @@ build_mariadb64_vfs() {
 }
 
 build_mariadb_test_vfs() {
-    if has_mariadb_test_vfs; then
-        info "MariaDB test VFS image"
-        return
-    fi
-    build_mariadb
-    build_dash
-    build_coreutils
-    build_dinit
-    step "Building MariaDB test VFS image"
-    bash "$REPO_ROOT/packages/registry/mariadb-test/build-mariadb-test.sh"
-    info "MariaDB test VFS image built"
+    # Declared package (packages/sets/local-supported.toml `[[packages]]`,
+    # class = test-support); the engine resolves mariadb/dash/coreutils/dinit
+    # and runs packages/registry/mariadb-test/build-mariadb-test.sh (unchanged
+    # script). Unlike the six browser-demo composites above, this has no
+    # active `[[products]]` entry — matching its sibling test-support
+    # manifests test-php.toml/test-sqlite.toml, which are also manifest-only
+    # with no declared product — but the bare package is already selectable
+    # by `xtask bootstrap mariadb-test`.
+    bootstrap_target mariadb-test
 }
 
 build_wordpress() {
+    # NOTE: the registry package named "wordpress" is the *composed VFS
+    # image* (depends_on nginx/php/dinit/msmtpd/shell — see
+    # packages/registry/wordpress/package.toml), which is what
+    # `build_wp_vfs` below actually builds. This target predates that
+    # package and only stages the WordPress source tree setup.sh downloads,
+    # so it stays a direct script call rather than `bootstrap_target
+    # wordpress` (which would build the whole composed image here).
     if ! has_wordpress; then
         step "Downloading WordPress"
         bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
@@ -701,23 +696,22 @@ build_wordpress() {
 }
 
 build_wp_vfs() {
-    if has_wp_vfs; then
-        info "WP VFS image"
-        return
-    fi
-    build_shell_vfs
-    # Source needed only if we have to build the VFS from scratch.
-    build_wordpress
-    build_msmtpd
-    step "Building WordPress VFS image"
-    # Delegate to the package-system wrapper so install_local_binary
-    # populates local-binaries/programs/wasm32/wordpress.vfs.zst (the path
-    # the @binaries/ Vite alias resolves against).
-    bash "$REPO_ROOT/packages/registry/wordpress/build-wordpress.sh"
-    info "WP VFS image built"
+    # Declared VFS product (packages/sets/local-supported.toml); the engine's
+    # own dependency closure resolves shell/nginx/php/dinit/msmtpd/kernel and
+    # the WordPress + SQLite-integration sources, then runs
+    # packages/registry/wordpress/build-wordpress.sh (the same script this
+    # used to invoke directly).
+    bootstrap_target browser-wordpress
 }
 
 build_dash() {
+    # NOTE: not routed through `bootstrap_target` — the post-build copy
+    # below reads packages/registry/dash/bin/dash.wasm, the path
+    # build-dash.sh only writes to when run standalone (unset
+    # WASM_POSIX_DEP_OUT_DIR/WASM_POSIX_DEP_WORK_DIR); under the engine it
+    # writes into a resolver-owned work directory instead, so this copy
+    # would silently stop populating host/wasm/sh.wasm if this called
+    # `bootstrap_target dash` directly.
     if has_dash; then
         info "dash"
         return
@@ -739,82 +733,23 @@ build_dash() {
 }
 
 build_bash() {
-    if has_bash; then
-        info "bash"
-        return
-    fi
-    # bash's build script resolves ncurses through the dep cache via
-    # `cargo xtask build-deps resolve ncurses` — no sysroot install
-    # needed here.
-    need_kernel
-    need_sdk
-    step "Building bash shell"
-    bash "$REPO_ROOT/packages/registry/bash/build-bash.sh"
-    info "bash built"
+    bootstrap_target bash
 }
 
 build_coreutils() {
-    if has_coreutils; then
-        info "coreutils"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_coreutils; then
-        step "Building GNU coreutils"
-        bash "$REPO_ROOT/packages/registry/coreutils/build-coreutils.sh"
-        info "coreutils built"
-    else
-        info "coreutils"
-    fi
+    bootstrap_target coreutils
 }
 
 build_grep() {
-    if has_grep; then
-        info "grep"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_grep; then
-        step "Building GNU grep"
-        bash "$REPO_ROOT/packages/registry/grep/build-grep.sh"
-        info "grep built"
-    else
-        info "grep"
-    fi
+    bootstrap_target grep
 }
 
 build_sed() {
-    if has_sed; then
-        info "sed"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_sed; then
-        step "Building GNU sed"
-        bash "$REPO_ROOT/packages/registry/sed/build-sed.sh"
-        info "sed built"
-    else
-        info "sed"
-    fi
+    bootstrap_target sed
 }
 
 build_redis() {
-    if has_redis; then
-        info "redis"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_redis; then
-        step "Building Redis"
-        bash "$REPO_ROOT/packages/registry/redis/build-redis.sh"
-        info "Redis built"
-    else
-        info "Redis"
-    fi
+    bootstrap_target redis
 }
 
 build_dinit() {
@@ -836,40 +771,24 @@ build_dinit() {
 }
 
 build_msmtpd() {
-    if has_msmtpd; then
-        info "msmtpd"
-        return
-    fi
-    need_kernel
-    need_sdk
-    need_sysroot
-    need_fork_instrument
-    if ! has_msmtpd; then
-        step "Building msmtpd"
-        bash "$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
-        info "msmtpd built"
-    else
-        info "msmtpd"
-    fi
+    # `xtask bootstrap msmtpd` builds the wasm-fork-instrument CLI first
+    # (msmtpd is fork-instrumented); see bootstrap_target_to_selection's
+    # Package(name) handling in tools/xtask/src/local_build.rs.
+    bootstrap_target msmtpd
 }
 
 build_cpython() {
-    if has_cpython; then
-        info "cpython"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_cpython; then
-        step "Building CPython 3.13"
-        bash "$REPO_ROOT/packages/registry/cpython/build-cpython.sh"
-        info "CPython built"
-    else
-        info "CPython"
-    fi
+    bootstrap_target cpython
 }
 
 build_python_vfs() {
+    # NOT folded: "python-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("retired standalone browser
+    # product") — a pre-existing product decision predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-python.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_python_vfs; then
         info "Python VFS image"
         return
@@ -881,6 +800,13 @@ build_python_vfs() {
 }
 
 build_perl_vfs() {
+    # NOT folded: "perl-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("retired standalone browser
+    # product") — a pre-existing product decision predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-perl.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if ! has_perl_vfs; then
         if [ ! -f "$REPO_ROOT/packages/registry/perl/perl-src/lib/strict.pm" ]; then
             warn "Perl source not found, skipping perl VFS image"
@@ -943,15 +869,9 @@ build_spidermonkey_node() {
 }
 
 build_node_vfs() {
-    if has_node_vfs; then
-        info "Node VFS image"
-        return
-    fi
-    build_shell_vfs
-    build_node
-    step "Building Node VFS image"
-    bash "$REPO_ROOT/packages/registry/node-vfs/build-node-vfs.sh"
-    info "Node VFS image built"
+    # Declared VFS product; the engine resolves shell/node and runs
+    # packages/registry/node-vfs/build-node-vfs.sh (unchanged script).
+    bootstrap_target browser-node
 }
 
 build_vim_zip() {
@@ -1451,7 +1371,7 @@ verify_source_rootfs_shell_runtime_browser_closure() {
 
 build_shell_vfs() {
     if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # WHY: this branch must return before the canonical `resolve shell`
+        # WHY: this branch must return before the canonical `bootstrap_target`
         # fallback below. The explicit bridge was staged, provenance-checked,
         # and installed by prepare-browser before any browser target ran.
         verify_source_rootfs_shell_runtime_browser_closure
@@ -1459,36 +1379,19 @@ build_shell_vfs() {
         return
     fi
 
-    # `clean` removes only the resolver-owned local link and deliberately keeps
-    # immutable fetched `binaries/`. A rebuild marker must therefore bypass the
-    # ordinary availability guard so the resolver rematerializes the local
-    # output even when the downloaded artifact remains usable.
-    if [ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs; then
-        info "Shell VFS image"
-        return
-    fi
-
-    step "Resolving the bottle-built Shell VFS image"
-    local xtask
-    local resolve_args=(
-        build-deps --arch wasm32
-        --binaries-dir "$REPO_ROOT/local-binaries"
-    )
-    resolve_args+=(resolve shell)
-    xtask="$(pkg_xtask_bin)" || {
-        err "Could not build the package resolver needed for the Shell VFS image"
-        return 1
-    }
-    mkdir -p "$REPO_ROOT/local-binaries"
-    (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
-    if ! pkg_has_output shell shell.vfs.zst; then
-        err "Package resolver did not materialize the declared shell.vfs.zst output"
-        return 1
-    fi
-    info "Bottle-built Shell VFS image resolved"
+    # Declared VFS product (packages/sets/local-supported.toml); the engine
+    # resolves the "shell" package closure and validates it against
+    # images/vfs/products/browser-main-shell.toml.
+    bootstrap_target browser-main-shell
 }
 
 build_erlang() {
+    # NOTE: not routed through `bootstrap_target` — the bin/beam.wasm copy
+    # below reads a path build-erlang.sh only writes to when run standalone
+    # (unset WASM_POSIX_DEP_OUT_DIR); under the engine, output goes to a
+    # resolver-owned directory instead, so this copy would silently stop
+    # populating bin/beam.wasm if this called `bootstrap_target erlang`
+    # directly (see build_dash's identical note above).
     if has_erlang; then
         info "erlang"
         return
@@ -1511,6 +1414,14 @@ build_erlang() {
 }
 
 build_erlang_vfs() {
+    # NOT folded: "erlang-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("deferred product"), and its
+    # underlying "erlang" source package is separately excluded ("deferred
+    # software") — pre-existing product decisions predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-erlang.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_erlang_vfs; then
         info "Erlang VFS image"
         return
@@ -1522,35 +1433,27 @@ build_erlang_vfs() {
 }
 
 build_lamp_vfs() {
-    if has_lamp_vfs; then
-        info "LAMP VFS image"
-        return
-    fi
-    build_shell_vfs
-    build_wordpress
-    build_msmtpd
-    step "Building LAMP VFS image"
-    # Delegate to the package-system wrapper so install_local_binary
-    # populates local-binaries/programs/wasm32/lamp.vfs.zst (the path the
-    # @binaries/ Vite alias resolves against).
-    bash "$REPO_ROOT/packages/registry/lamp/build-lamp.sh"
-    info "LAMP VFS image built"
+    # Declared VFS product; see build_wp_vfs above. The engine resolves
+    # shell/mariadb/nginx/php/dinit/msmtpd/kernel and runs
+    # packages/registry/lamp/build-lamp.sh (unchanged script).
+    bootstrap_target browser-lamp
 }
 
 build_nginx_vfs() {
-    build_dinit
-    build_nginx
-    if ! has_nginx_vfs; then
-        build_shell_vfs
-        step "Building nginx VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-nginx-vfs-image.sh"
-        info "nginx VFS image built"
-    else
-        info "nginx VFS image"
-    fi
+    # Declared VFS product; the engine resolves shell/nginx/dinit and runs
+    # images/vfs/scripts/build-nginx-vfs-image.sh (unchanged script), which
+    # is also the nginx-vfs package's own [build] script_path.
+    bootstrap_target browser-nginx
 }
 
 build_redis_vfs() {
+    # NOT folded: "redis-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("dormant browser product") — a
+    # pre-existing product decision predating this stage, not an engine
+    # limitation (its images/vfs/products/browser-redis.toml manifest
+    # already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     build_dinit
     build_redis
     if ! has_redis_vfs; then
@@ -1563,20 +1466,17 @@ build_redis_vfs() {
 }
 
 build_nginx_php_vfs() {
-    build_dinit
-    build_nginx
-    build_php_fpm
-    if ! has_nginx_php_vfs; then
-        build_shell_vfs
-        step "Building nginx + PHP-FPM VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-nginx-php-vfs-image.sh"
-        info "nginx + PHP-FPM VFS image built"
-    else
-        info "nginx + PHP-FPM VFS image"
-    fi
+    # Declared VFS product; the engine resolves shell/nginx/php/dinit and
+    # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
+    # script), which is also the nginx-php-vfs package's own build script.
+    bootstrap_target browser-nginx-php
 }
 
 build_texlive() {
+    # NOTE: not routed through `bootstrap_target` — `texlive` is an
+    # [[exclusions]] entry in local-supported.toml, so `xtask bootstrap
+    # texlive` errors "unknown product or package". Like build_erlang/
+    # build_dash, this excluded package keeps its standalone bash recipe.
     if has_texlive; then
         info "texlive"
         return
@@ -1593,6 +1493,16 @@ build_texlive() {
 }
 
 build_texlive_vfs() {
+    # NOT folded: "texlive" (its source package) is an `[[exclusions]]`
+    # entry in packages/sets/local-supported.toml ("deferred software"), and
+    # unlike the other dormant composites there is no
+    # images/vfs/products/*.toml manifest for texlive at all — so, unlike
+    # the six products folded above, there is nothing here for a
+    # `[[products]]` entry to even declare yet. This builder also has a
+    # host-tool-availability skip (below) that a static manifest dependency
+    # closure cannot express. See
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs.
     if has_texlive_vfs; then
         info "TeX Live bundle"
         return
@@ -1615,118 +1525,44 @@ build_texlive_vfs() {
 }
 
 build_bc() {
-    if has_bc; then
-        info "bc"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_bc; then
-        step "Building bc"
-        bash "$REPO_ROOT/packages/registry/bc/build-bc.sh"
-        info "bc built"
-    else
-        info "bc"
-    fi
+    bootstrap_target bc
 }
 
 build_file() {
-    if has_file; then
-        info "file"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_file; then
-        step "Building file"
-        bash "$REPO_ROOT/packages/registry/file/build-file.sh"
-        info "file built"
-    else
-        info "file"
-    fi
+    bootstrap_target file
 }
 
 build_less() {
-    if has_less; then
-        info "less"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_less; then
-        step "Building less"
-        bash "$REPO_ROOT/packages/registry/less/build-less.sh"
-        info "less built"
-    else
-        info "less"
-    fi
+    bootstrap_target less
 }
 
 build_lsof() {
-    if has_lsof; then
-        info "lsof"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_lsof; then
-        step "Building lsof"
-        bash "$REPO_ROOT/packages/registry/lsof/build-lsof.sh"
-        info "lsof built"
-    else
-        info "lsof"
-    fi
+    bootstrap_target lsof
 }
 
 build_m4() {
-    if has_m4; then
-        info "m4"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_m4; then
-        step "Building m4"
-        bash "$REPO_ROOT/packages/registry/m4/build-m4.sh"
-        info "m4 built"
-    else
-        info "m4"
-    fi
+    bootstrap_target m4
 }
 
 build_make() {
-    if has_make; then
-        info "make"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_make; then
-        step "Building make"
-        bash "$REPO_ROOT/packages/registry/make/build-make.sh"
-        info "make built"
-    else
-        info "make"
-    fi
+    bootstrap_target make
 }
 
 build_tar() {
-    if has_tar; then
-        info "tar"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_tar; then
-        step "Building tar"
-        bash "$REPO_ROOT/packages/registry/tar/build-tar.sh"
-        info "tar built"
-    else
-        info "tar"
-    fi
+    bootstrap_target tar
 }
 
 build_curl_cli() {
+    # NOTE: unlike most targets above, this one is NOT routed through
+    # `bootstrap_target` (Stage 3 of the unified-build-front-door plan). The
+    # engine's own "curl" package already declares zlib/openssl as real
+    # dependency edges and resolves them through the package resolver, but
+    # this legacy recipe instead links against sysroot copies installed by
+    # build_zlib/build_openssl below — a different, ambient-install
+    # mechanism the engine's resolver-materialized dependencies don't
+    # populate. Migrating this one requires confirming the modern "curl"
+    # package node fully replaces it, which is out of scope here; left as
+    # the pre-Stage-3 bash recipe.
     if has_curl; then
         info "curl"
         return
@@ -1744,131 +1580,43 @@ build_curl_cli() {
 }
 
 build_wget() {
-    if has_wget; then
-        info "wget"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_wget; then
-        step "Building wget"
-        bash "$REPO_ROOT/packages/registry/wget/build-wget.sh"
-        info "wget built"
-    else
-        info "wget"
-    fi
+    bootstrap_target wget
 }
 
 build_gzip() {
-    if has_gzip; then
-        info "gzip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_gzip; then
-        step "Building gzip"
-        bash "$REPO_ROOT/packages/registry/gzip/build-gzip.sh"
-        info "gzip built"
-    else
-        info "gzip"
-    fi
+    bootstrap_target gzip
 }
 
 build_bzip2() {
-    if has_bzip2; then
-        info "bzip2"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_bzip2; then
-        step "Building bzip2"
-        bash "$REPO_ROOT/packages/registry/bzip2/build-bzip2.sh"
-        info "bzip2 built"
-    else
-        info "bzip2"
-    fi
+    bootstrap_target bzip2
 }
 
 build_xz() {
-    if has_xz; then
-        info "xz"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_xz; then
-        step "Building xz"
-        bash "$REPO_ROOT/packages/registry/xz/build-xz.sh"
-        info "xz built"
-    else
-        info "xz"
-    fi
+    bootstrap_target xz
 }
 
 build_zstd() {
-    if has_zstd; then
-        info "zstd"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_zstd; then
-        step "Building zstd"
-        bash "$REPO_ROOT/packages/registry/zstd/build-zstd.sh"
-        info "zstd built"
-    else
-        info "zstd"
-    fi
+    bootstrap_target zstd
 }
 
 build_zip() {
-    if has_zip; then
-        info "zip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_zip; then
-        step "Building zip"
-        bash "$REPO_ROOT/packages/registry/zip/build-zip.sh"
-        info "zip built"
-    else
-        info "zip"
-    fi
+    bootstrap_target zip
 }
 
 build_unzip() {
-    if has_unzip; then
-        info "unzip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_unzip; then
-        step "Building unzip"
-        bash "$REPO_ROOT/packages/registry/unzip/build-unzip.sh"
-        info "unzip built"
-    else
-        info "unzip"
-    fi
+    bootstrap_target unzip
 }
 
 build_nano() {
-    if has_nano; then
-        info "nano"
-        return
-    fi
-    # nano's build script resolves ncurses through the dep cache itself
-    # (`cargo xtask build-deps resolve ncurses`); no sysroot prep here.
-    need_kernel
-    need_sdk
-    step "Building nano"
-    bash "$REPO_ROOT/packages/registry/nano/build-nano.sh"
-    info "nano built"
+    bootstrap_target nano
 }
 
+# zlib/openssl/libcurl below install into the ambient `sysroot/` tree for
+# build_curl_cli's legacy recipe (see the NOTE there). Not routed through
+# `bootstrap_target`: the engine builds these as proper resolver-materialized
+# dependency packages under `local-binaries/source-only-v1/`, not into
+# `sysroot/`, so switching these three to `bootstrap_target` would silently
+# stop populating the ambient copy build_curl_cli still reads.
 build_zlib() {
     if has_zlib; then
         info "zlib"
@@ -1957,62 +1705,27 @@ build_libcurl() {
 }
 
 build_ncurses() {
-    if has_ncurses; then
-        info "ncurses"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_ncurses; then
-        step "Building ncurses"
-        bash "$REPO_ROOT/packages/registry/ncurses/build-ncurses.sh"
-        info "ncurses built"
-    else
-        info "ncurses"
-    fi
+    bootstrap_target ncurses
 }
 
 build_nethack() {
-    if has_nethack; then
-        info "NetHack"
-        return
-    fi
-    # nethack's build script resolves ncurses through the dep cache.
-    need_kernel
-    need_sdk
-    step "Building NetHack"
-    bash "$REPO_ROOT/packages/registry/nethack/build-nethack.sh"
-    info "NetHack built"
+    bootstrap_target nethack
 }
 
 build_fbdoom() {
-    if has_fbdoom; then
-        info "fbDOOM"
-        return
-    fi
-    need_kernel
-    need_sdk
-    step "Building fbDOOM"
-    bash "$REPO_ROOT/packages/registry/fbdoom/build-fbdoom.sh"
-    info "fbDOOM built"
+    bootstrap_target fbdoom
 }
 
 build_vim() {
-    if has_vim; then
-        info "Vim"
-        return
-    fi
-    # Vim's build script now resolves ncurses through the dep cache
-    # (`cargo xtask build-deps resolve ncurses`), so we don't prep it
-    # into the sysroot here.
-    need_kernel
-    need_sdk
-    step "Building Vim"
-    bash "$REPO_ROOT/packages/registry/vim/build-vim.sh"
-    info "Vim built"
+    bootstrap_target vim
 }
 
 build_git() {
+    # NOTE: not routed through `bootstrap_target` — the stub fallback below
+    # writes a placeholder git-remote-http.wasm at an ambient path a real
+    # build script controls; leaving this on the pre-Stage-3 bash path
+    # avoids changing that fallback's behavior without being able to verify
+    # it here.
     if has_git; then
         info "git"
         return
@@ -2033,35 +1746,11 @@ build_git() {
 }
 
 build_perl() {
-    if has_perl; then
-        info "perl"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_perl; then
-        step "Building Perl"
-        bash "$REPO_ROOT/packages/registry/perl/build-perl.sh"
-        info "Perl built"
-    else
-        info "Perl"
-    fi
+    bootstrap_target perl
 }
 
 build_ruby() {
-    if has_ruby; then
-        info "ruby"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_ruby; then
-        step "Building Ruby"
-        bash "$REPO_ROOT/packages/registry/ruby/build-ruby.sh"
-        info "Ruby built"
-    else
-        info "Ruby"
-    fi
+    bootstrap_target ruby
 }
 
 build_dlopen() {
@@ -2231,10 +1920,44 @@ build_all() {
 
 # ─── Clean targets ────────────────────────────────────────────────────────────
 
+# xtask_clean_target <name> — invalidate one package's or product's compiled
+# cache, resolver mirror, and (for products) published browser asset via the
+# local-build engine's own dependency graph, inside the dev shell (mirrors
+# `bootstrap_target`'s calling convention). `<name>` is the *graph* name
+# (a `packages/sets/local-supported.toml` package or product id), which is
+# not always the `./run.sh clean` target name that calls it — callers below
+# translate the historical target name first, the same way `build_shell_vfs`
+# already translates `shell-vfs` to `browser-main-shell` for `bootstrap_target`.
+#
+# This is what makes `./run.sh rebuild <target>` (clean, then build) actually
+# rebuild instead of reporting a cache hit: the old hand-written clean only
+# removed a package's legacy standalone-invocation scratch directories
+# (`<pkg>-src`, `bin`, ...), which the engine never reads. The compiled cache
+# under `~/.cache/kandelo/source-only` is what `bootstrap`'s cache check
+# actually consults, and only `xtask clean` knows how to invalidate it — and,
+# via `clean_removal_set`, which *other* packages/products also embed this
+# one and must be invalidated too (replacing the old hand-kept "also
+# invalidated shell.vfs.zst" warnings).
+xtask_clean_target() {
+    local name="$1"
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "xtask_clean_target $name: could not build xtask"
+        return 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" clean "$name"
+}
+
 clean_target() {
     local target="$1"
     case "$target" in
         kernel)
+            # "kernel" is itself a local-build engine package (its build is a
+            # pure `cargo build`, routed through `bootstrap_target kernel`);
+            # xtask_clean_target invalidates its compiled cache/mirror. The
+            # cargo `target/` directories below are the underlying build's
+            # own scratch space, which the engine's cache does not track.
+            xtask_clean_target kernel
             rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" \
                   "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
@@ -2266,30 +1989,37 @@ clean_target() {
             fi
             warn "Cleaned programs" ;;
         dash)
+            xtask_clean_target dash
             rm -rf "$REPO_ROOT/packages/registry/dash/dash-src" \
                    "$REPO_ROOT/packages/registry/dash/bin"
             warn "Cleaned dash" ;;
         bash)
+            xtask_clean_target bash
             rm -rf "$REPO_ROOT/packages/registry/bash/bash-src" \
                    "$REPO_ROOT/packages/registry/bash/bin"
             warn "Cleaned bash" ;;
         coreutils)
+            xtask_clean_target coreutils
             rm -rf "$REPO_ROOT/packages/registry/coreutils/coreutils-src" \
                    "$REPO_ROOT/packages/registry/coreutils/bin"
             warn "Cleaned coreutils" ;;
         grep)
+            xtask_clean_target grep
             rm -rf "$REPO_ROOT/packages/registry/grep/grep-src" \
                    "$REPO_ROOT/packages/registry/grep/bin"
             warn "Cleaned grep" ;;
         sed)
+            xtask_clean_target sed
             rm -rf "$REPO_ROOT/packages/registry/sed/sed-src" \
                    "$REPO_ROOT/packages/registry/sed/bin"
             warn "Cleaned sed" ;;
         nginx)
+            xtask_clean_target nginx
             rm -rf "$REPO_ROOT/packages/registry/nginx/nginx-src"
             rm -f "$REPO_ROOT/packages/registry/nginx/nginx.wasm"
             warn "Cleaned nginx" ;;
         php)
+            xtask_clean_target php
             rm -rf "$REPO_ROOT/packages/registry/php/php-src" \
                    "$REPO_ROOT/packages/registry/php/php-install"
             warn "Cleaned PHP CLI" ;;
@@ -2298,6 +2028,7 @@ clean_target() {
                   "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm"
             warn "Cleaned PHP-FPM" ;;
         mariadb)
+            xtask_clean_target mariadb
             rm -rf "$REPO_ROOT/packages/registry/mariadb/mariadb-src" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-install" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-cross-build" \
@@ -2307,6 +2038,10 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/mariadb/pcre2-wasm-build"
             ;;
         mariadb64)
+            # "mariadb64" names the wasm64 build of the mariadb package (the
+            # graph has no node literally named "mariadb64"); xtask clean
+            # already knows this "64" suffix convention.
+            xtask_clean_target mariadb64
             rm -rf "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-cross-build-64" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-glue-objs-64"
@@ -2320,19 +2055,23 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm64/mariadb-vfs.vfs.zst"
             warn "Cleaned MariaDB VFS image (wasm64)" ;;
         redis)
+            xtask_clean_target redis
             rm -rf "$REPO_ROOT/packages/registry/redis/redis-src" \
                    "$REPO_ROOT/packages/registry/redis/bin"
             warn "Cleaned Redis" ;;
         dinit)
+            xtask_clean_target dinit
             rm -rf "$REPO_ROOT/packages/registry/dinit/dinit-src" \
                    "$REPO_ROOT/packages/registry/dinit/bin"
             warn "Cleaned dinit" ;;
         msmtpd)
+            xtask_clean_target msmtpd
             rm -rf "$REPO_ROOT/packages/registry/msmtpd/msmtp-src" \
                    "$REPO_ROOT/packages/registry/msmtpd/bin" \
                    "$REPO_ROOT/packages/registry/msmtpd"/msmtp-*.tar.xz
             warn "Cleaned msmtpd" ;;
         cpython)
+            xtask_clean_target cpython
             rm -rf "$REPO_ROOT/packages/registry/cpython/cpython-src" \
                    "$REPO_ROOT/packages/registry/cpython/cpython-host-build" \
                    "$REPO_ROOT/packages/registry/cpython/cpython-cross-build" \
@@ -2346,34 +2085,49 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst"
             warn "Cleaned Perl VFS image" ;;
         shell-vfs)
+            # "shell-vfs" maps to the browser-main-shell product the same way
+            # `build_shell_vfs` maps it to `bootstrap_target browser-main-shell`.
+            xtask_clean_target browser-main-shell
             rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
             pkg_remove_local_output shell shell.vfs.zst wasm32
             warn "Cleaned Shell VFS image" ;;
         node)
+            xtask_clean_target node
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/node.wasm"
             warn "Cleaned node" ;;
         spidermonkey-node)
+            xtask_clean_target spidermonkey-node
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
             warn "Cleaned spidermonkey-node" ;;
         node-vfs)
+            xtask_clean_target node-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
             warn "Cleaned Node VFS image" ;;
         wordpress)
+            xtask_clean_target wordpress
             rm -rf "$REPO_ROOT/packages/registry/wordpress/wordpress" \
                    "$REPO_ROOT/packages/registry/wordpress/sqlite-database-integration"
             warn "Cleaned WordPress" ;;
         wp-vfs)
+            # "wp-vfs" maps to the browser-wordpress product (package
+            # "wordpress"), the same way `build_wp_vfs` maps it to
+            # `bootstrap_target browser-wordpress`.
+            xtask_clean_target browser-wordpress
             rm -f "$REPO_ROOT/apps/browser-demos/public/wordpress.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/wordpress.vfs.zst"
             warn "Cleaned WP VFS image" ;;
         lamp-vfs)
+            # "lamp-vfs" maps to the browser-lamp product, the same way
+            # `build_lamp_vfs` maps it to `bootstrap_target browser-lamp`.
+            xtask_clean_target browser-lamp
             rm -f "$REPO_ROOT/apps/browser-demos/public/lamp.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs.zst"
             warn "Cleaned LAMP VFS image" ;;
         nginx-vfs)
+            xtask_clean_target nginx-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs.zst"
             warn "Cleaned nginx VFS image" ;;
@@ -2382,6 +2136,7 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs.zst"
             warn "Cleaned Redis VFS image" ;;
         nginx-php-vfs)
+            xtask_clean_target nginx-php-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst"
             warn "Cleaned nginx + PHP-FPM VFS image" ;;
@@ -2394,73 +2149,96 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst"
             warn "Cleaned Erlang VFS image" ;;
         bc)
+            xtask_clean_target bc
             rm -rf "$REPO_ROOT/packages/registry/bc/bc-src" \
                    "$REPO_ROOT/packages/registry/bc/bin"
             warn "Cleaned bc" ;;
         file)
+            xtask_clean_target file
             rm -rf "$REPO_ROOT/packages/registry/file/file-src" \
                    "$REPO_ROOT/packages/registry/file/bin"
             warn "Cleaned file" ;;
         less)
+            xtask_clean_target less
             rm -rf "$REPO_ROOT/packages/registry/less/less-src" \
                    "$REPO_ROOT/packages/registry/less/bin"
             warn "Cleaned less" ;;
         m4)
+            xtask_clean_target m4
             rm -rf "$REPO_ROOT/packages/registry/m4/m4-src" \
                    "$REPO_ROOT/packages/registry/m4/bin"
             warn "Cleaned m4" ;;
         make)
+            xtask_clean_target make
             rm -rf "$REPO_ROOT/packages/registry/make/make-src" \
                    "$REPO_ROOT/packages/registry/make/bin"
             warn "Cleaned make" ;;
         tar)
+            xtask_clean_target tar
             rm -rf "$REPO_ROOT/packages/registry/tar/tar-src" \
                    "$REPO_ROOT/packages/registry/tar/bin"
             warn "Cleaned tar" ;;
         curl-cli)
+            # The registry package is named "curl"; "curl-cli" is this
+            # script's target name for it.
+            xtask_clean_target curl
             rm -rf "$REPO_ROOT/packages/registry/curl/curl-src" \
                    "$REPO_ROOT/packages/registry/curl/bin"
             warn "Cleaned curl" ;;
         wget)
+            xtask_clean_target wget
             rm -rf "$REPO_ROOT/packages/registry/wget/wget-src" \
                    "$REPO_ROOT/packages/registry/wget/bin"
             warn "Cleaned wget" ;;
         gzip)
+            xtask_clean_target gzip
             rm -rf "$REPO_ROOT/packages/registry/gzip/gzip-src" \
                    "$REPO_ROOT/packages/registry/gzip/bin"
             warn "Cleaned gzip" ;;
         bzip2)
+            xtask_clean_target bzip2
             rm -rf "$REPO_ROOT/packages/registry/bzip2/bzip2-src" \
                    "$REPO_ROOT/packages/registry/bzip2/bin"
             warn "Cleaned bzip2" ;;
         xz)
+            xtask_clean_target xz
             rm -rf "$REPO_ROOT/packages/registry/xz/xz-src" \
                    "$REPO_ROOT/packages/registry/xz/bin"
             warn "Cleaned xz" ;;
         zstd)
+            xtask_clean_target zstd
             rm -rf "$REPO_ROOT/packages/registry/zstd/zstd-src" \
                    "$REPO_ROOT/packages/registry/zstd/bin"
             warn "Cleaned zstd" ;;
         zip)
+            xtask_clean_target zip
             rm -rf "$REPO_ROOT/packages/registry/zip/zip-src" \
                    "$REPO_ROOT/packages/registry/zip/bin"
             warn "Cleaned zip" ;;
         unzip)
+            xtask_clean_target unzip
             rm -rf "$REPO_ROOT/packages/registry/unzip/unzip-src" \
                    "$REPO_ROOT/packages/registry/unzip/bin"
             warn "Cleaned unzip" ;;
         nano)
+            xtask_clean_target nano
             rm -rf "$REPO_ROOT/packages/registry/nano/nano-src" \
                    "$REPO_ROOT/packages/registry/nano/bin"
             warn "Cleaned nano" ;;
         nethack)
+            # The cascade to nethack-browser-bundle's nethack.zip and the
+            # shell product's shell.vfs.zst is derived from the dependency
+            # graph and reported by `xtask clean` itself (nethack <-
+            # nethack-browser-bundle <- shell <- browser-main-shell) — not a
+            # hand-kept warning here.
+            xtask_clean_target nethack
             rm -rf "$REPO_ROOT/packages/registry/nethack/nethack-src" \
                    "$REPO_ROOT/packages/registry/nethack/bin" \
                    "$REPO_ROOT/packages/registry/nethack/runtime"
-            rm -f "$REPO_ROOT/apps/browser-demos/public/nethack.zip" \
-                  "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
-            warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+            rm -f "$REPO_ROOT/apps/browser-demos/public/nethack.zip"
+            warn "Cleaned NetHack" ;;
         fbdoom)
+            xtask_clean_target fbdoom
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
                    "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
@@ -2472,42 +2250,63 @@ clean_target() {
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS-MUSIC.txt"
             warn "Cleaned fbDOOM" ;;
         ncurses)
+            xtask_clean_target ncurses
             rm -rf "$REPO_ROOT/packages/registry/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
             warn "Cleaned ncurses (rebuild sysroot to fully clean)" ;;
         zlib)
+            xtask_clean_target zlib
             rm -rf "$REPO_ROOT/packages/registry/zlib/zlib-src" \
                    "$REPO_ROOT/packages/registry/zlib/zlib-install"
             # zlib installs into sysroot, cleaned with sysroot
             warn "Cleaned zlib (rebuild sysroot to fully clean)" ;;
         openssl)
+            xtask_clean_target openssl
             rm -rf "$REPO_ROOT/packages/registry/openssl/openssl-src" \
                    "$REPO_ROOT/packages/registry/openssl/openssl-install"
             warn "Cleaned OpenSSL (rebuild sysroot to fully clean)" ;;
         libcurl)
+            xtask_clean_target libcurl
             rm -rf "$REPO_ROOT/packages/registry/libcurl/curl-src"
             warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
+            # xtask_clean_target invalidates the vim package's own compiled
+            # cache/mirror AND (via clean_removal_set's graph cascade) the
+            # vim-browser-bundle PACKAGE's and shell PACKAGE's engine cache
+            # entries. But vim-browser-bundle is a package node, not a
+            # product — clean_package_node_outputs only removes files under
+            # local-binaries/source-only-v1/, never apps/browser-demos/
+            # public/vim.zip or the legacy local-binaries/programs/wasm32/
+            # vim.zip ambient-tier mirror. Those are written by a separate
+            # path (build_vim_zip -> images/vfs/scripts/build-vim-zip.sh +
+            # install_local_binary), and has_vim_zip() treats either file's
+            # mere existence as "already built" — so they must still be
+            # removed by hand here, the same way the nethack branch removes
+            # nethack.zip.
+            xtask_clean_target vim
             rm -rf "$REPO_ROOT/packages/registry/vim/vim-src" \
                    "$REPO_ROOT/packages/registry/vim/bin" \
                    "$REPO_ROOT/packages/registry/vim/runtime"
             rm -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" \
-                  "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
-            warn "Cleaned Vim (also invalidated vim.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+            warn "Cleaned Vim" ;;
         vim-zip)
+            xtask_clean_target vim-browser-bundle
             rm -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
             warn "Cleaned vim.zip" ;;
         git)
+            xtask_clean_target git
             rm -rf "$REPO_ROOT/packages/registry/git/git-src" \
                    "$REPO_ROOT/packages/registry/git/bin"
             warn "Cleaned git" ;;
         perl)
+            xtask_clean_target perl
             rm -rf "$REPO_ROOT/packages/registry/perl/perl-src" \
                    "$REPO_ROOT/packages/registry/perl/bin"
             warn "Cleaned Perl" ;;
         ruby)
+            xtask_clean_target ruby
             rm -rf "$REPO_ROOT/packages/registry/ruby/ruby-src" \
                    "$REPO_ROOT/packages/registry/ruby/ruby-host-build" \
                    "$REPO_ROOT/packages/registry/ruby/ruby-cross-build" \
@@ -2576,9 +2375,16 @@ cmd_rebuild() {
         err "Use 'rebuild all' to rebuild everything"
         exit 1
     fi
+    # `clean_target` now derives the local-build engine's cache/mirror
+    # invalidation from the dependency graph (`xtask clean`), so an ordinary
+    # `build_target` after it is a genuine rebuild rather than a cache hit.
+    # There used to be a "rebuild target" environment signal threaded through
+    # here for `build_target` to read; its one reader (`build_shell_vfs`'s
+    # stale-cache guard) was removed when the local-build engine took over
+    # cache freshness, so the signal was dead and has been dropped too.
     for t in "$@"; do
         clean_target "$t"
-        KANDELO_REBUILD_TARGET="$t" build_target "$t"
+        build_target "$t"
     done
     echo ""
     info "Rebuild complete"
@@ -2690,6 +2496,15 @@ cmd_local_build() {
     if [ "$outcome" != "succeeded" ]; then
         return 1
     fi
+}
+
+# One-command hermetic setup: fork-instrument host tool, then the
+# local-build engine over the whole supported set, then the TypeScript host
+# build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
+# repository dev shell; see docs/agent-guidance/packages-and-builds.md.
+cmd_setup() {
+    exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }
 
 cmd_run() {
@@ -2804,6 +2619,20 @@ cmd_test() {
         suites=(cargo vitest libc posix)
     fi
 
+    # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
+    # Node and browser binary resolution onto one hermetic kernel tier, so
+    # there is exactly one kernel copy to go stale). Fails loud here so a
+    # kernel built before the last source change cannot silently pass
+    # Vitest/conformance against yesterday's ABI. A no-op when no local
+    # kernel build exists yet (nothing to verify before `./run.sh setup`).
+    step "Verifying local kernel freshness"
+    local verify_fresh_host_target
+    verify_fresh_host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    if ! (cd "$REPO_ROOT" && cargo run -p xtask --target "$verify_fresh_host_target" --quiet -- verify-fresh); then
+        err "Local kernel artifact is stale; rebuild with ./run.sh setup before running tests"
+        exit 1
+    fi
+
     local failed=0
     for suite in "${suites[@]}"; do
         case "$suite" in
@@ -2907,18 +2736,29 @@ cmd_test() {
 }
 
 cmd_list() {
+    echo "${BOLD}One-command setup:${RESET}"
+    echo "  ./run.sh setup                       Hermetic build: fork-instrument tool,"
+    echo "                                        local-build engine (all packages),"
+    echo "                                        then the TypeScript host"
+    echo ""
     echo "${BOLD}Local SourceOnly build:${RESET}"
     echo "  ./run.sh local-build                Build all seven local VFS products"
     echo "                                        and their package dependencies"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
     echo ""
     echo "${BOLD}Build targets:${RESET}"
-    echo "  kernel      Rust kernel + userspace Wasm         $(has_kernel && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sysroot     musl libc sysroot (wasm32)           $(has_sysroot && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sysroot64   musl libc sysroot (wasm64)           $(has_sysroot64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sdk         SDK cross-compilation tools           $(has_sdk && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  rootfs      Canonical host rootfs.vfs             $(has_rootfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    # kernel/sysroot/sysroot64/sdk/host/rootfs status below is inlined
+    # rather than going through a has_* helper: xtask's local-build engine
+    # (not a bash existence check) is the freshness authority for these
+    # now, and this display is only ever a "does something exist on disk
+    # yet" hint, not a build gate — see docs/agent-guidance/
+    # packages-and-builds.md.
+    echo "  kernel      Rust kernel + userspace Wasm         $( { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; } && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot     musl libc sysroot (wasm32)           $([ -f "$REPO_ROOT/sysroot/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  host        TypeScript host (tsup)                $([ -d "$REPO_ROOT/host/dist" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs             $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -3022,6 +2862,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
+    setup)    cmd_setup "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;

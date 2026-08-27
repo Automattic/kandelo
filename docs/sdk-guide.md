@@ -22,8 +22,10 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
    ```
 3. **Kernel built**:
    ```bash
-   bash build.sh
+   ./run.sh setup
    ```
+   (`bash build.sh` still works as a deprecated delegator to the same
+   command.)
 
 ### Install the SDK
 
@@ -568,6 +570,6 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
   are invalid.
 - **For DRM/KMS/EGL/GLES programs**: Rebuild the wasm32 sysroot with
   `scripts/dev-shell.sh bash scripts/build-musl.sh` if `libdrm`, `libgbm`,
-  `libEGL`, or `libGLESv2` is missing. `build.sh` does not rebuild musl or
-  these sysroot libraries.
+  `libEGL`, or `libGLESv2` is missing. `./run.sh setup` (and the deprecated
+  `build.sh` delegator) does not rebuild musl or these sysroot libraries.
 - **Memory limit**: Default max memory is 1GB (16384 pages). Processes start with a smaller computed shared memory and grow on demand up to `maxMemoryPages`.

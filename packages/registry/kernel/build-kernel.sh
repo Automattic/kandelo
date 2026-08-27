@@ -120,9 +120,16 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     exit 0
 fi
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary kernel "$OUT" kandelo-kernel.wasm
-
+# NOTE: standalone (non-resolver) runs used to also `install_local_binary
+# kernel "$OUT" kandelo-kernel.wasm` here, writing a second, ambient
+# `local-binaries/kandelo-kernel.wasm` copy alongside the engine's own
+# canonical `local-binaries/source-only-v1/kernel.wasm`. That is the
+# divergent second copy the single-tier design
+# (docs/plans/2026-08-26-unified-build-front-door-design.md, "Component 2:
+# One artifact tier") intends to eliminate: the engine is the sole owner of
+# where a built kernel lives, so a standalone build-kernel.sh run installs
+# only the host/wasm copy below, which is a distinct, still-needed
+# convenience path (e.g. for a dev-server kernel), not a resolver tier.
 mkdir -p "$REPO_ROOT/host/wasm"
 cp "$OUT" "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
 echo "build-kernel: installed host/wasm/kandelo-kernel.wasm"

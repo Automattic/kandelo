@@ -116,9 +116,9 @@ autotools/cmake/binaryen/wabt stack the build scripts need. With
 Determinate Systems Nix has them on by default):
 
 ```bash
-scripts/dev-shell.sh bash            # interactive pure shell
+scripts/dev-shell.sh bash              # interactive pure shell
 # or
-scripts/dev-shell.sh bash build.sh   # one-shot
+scripts/dev-shell.sh ./run.sh setup    # one-shot hermetic build
 ```
 
 The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` / `LLVM_VERSION` so the
@@ -146,7 +146,7 @@ your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
 bundling a native compiler.
 
 From a source checkout, `npm run pack:packages` builds npm tarballs
-after `bash scripts/build-musl.sh` and `bash build.sh` have produced
+after `bash scripts/build-musl.sh` and `./run.sh setup` have produced
 the sysroot, kernel, and rootfs artifacts.
 
 ### 1. Build the kernel
@@ -157,8 +157,9 @@ git submodule update --init libc/musl
 # Build musl sysroot (first time only)
 bash scripts/build-musl.sh
 
-# Build kernel Wasm + TypeScript host
-bash build.sh
+# Hermetic build: fork-instrument tool, local-build engine (all
+# packages), rootfs image, then the TypeScript host
+./run.sh setup
 ```
 
 This builds the kernel from source. Library dependencies (zlib, openssl,
@@ -172,7 +173,7 @@ full schema, resolution order, and release-archive contract.
 
 If you prefer to skip cargo-driven dep resolution and pull every
 pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`bash build.sh`. It walks every `packages/registry/<pkg>/package.toml`
+`./run.sh setup`. It walks every `packages/registry/<pkg>/package.toml`
 with a `[binary.<arch>]` block and resolves the archives into the
 content-addressed cache plus `binaries/programs/<arch>/` symlinks.
 
