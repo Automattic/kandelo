@@ -1,0 +1,8 @@
+script_path = "packages/registry/readline/build-readline.sh"
+inputs = [
+  "packages/registry/readline/build-readline.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
