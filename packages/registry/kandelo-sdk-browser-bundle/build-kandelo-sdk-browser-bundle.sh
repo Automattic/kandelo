@@ -35,6 +35,8 @@ require_real_directory() {
     fi
 }
 
+[ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" = wasm32 ] ||
+    fail "only wasm32 supported (got ${WASM_POSIX_DEP_TARGET_ARCH:-})"
 require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
 require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
 require_real_directory WASM_POSIX_DEP_CLANG_DIR "$CLANG_DIR"

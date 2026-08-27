@@ -66,6 +66,10 @@ require_file "config.site" "$REPO_ROOT/sdk/config.site"
 if [ -n "${CLANG_RESOURCE_DIR:-}" ]; then
     HOST_CLANG_RESOURCE_DIR="$CLANG_RESOURCE_DIR"
 else
+    command -v clang >/dev/null || {
+        echo "build-kandelo-sdk-zip: host clang not found (need it for --print-resource-dir); run via scripts/dev-shell.sh or set CLANG_RESOURCE_DIR" >&2
+        exit 1
+    }
     HOST_CLANG_RESOURCE_DIR="$(clang --print-resource-dir)"
 fi
 if [ -z "$HOST_CLANG_RESOURCE_DIR" ]; then
@@ -135,7 +139,7 @@ export WASM_POSIX_CLANG_RESOURCE_DIR="$HOST_CLANG_RESOURCE_DIR"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 export WASM_POSIX_GLUE_OBJ_DIR="$STAGING/wasm32posix/glue-objects"
 for src in channel_syscall compiler_rt cxxrt dlopen; do
-    wasm32posix-cc -O2 -c "$REPO_ROOT/libc/glue/${src}.c" \
+    wasm32posix-cc -O2 -c "$WASM_POSIX_GLUE_DIR/${src}.c" \
         -o "$STAGING/wasm32posix/glue-objects/${src}.o"
 done
 

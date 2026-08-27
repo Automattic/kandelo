@@ -4,6 +4,7 @@ inputs = [
   "images/vfs/scripts/build-kandelo-sdk-zip.sh",
   "images/vfs/scripts/create-deterministic-zip.sh",
   "scripts/install-local-binary.sh",
+  "sdk/activate.sh",
   "sdk/kandelo/bin",
   "sdk/config.site",
   "libc/glue",
