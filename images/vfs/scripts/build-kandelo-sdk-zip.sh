@@ -128,9 +128,13 @@ rm -rf "$STAGING/wasm32posix/sysroot/include/c++/v1"
 mkdir -p "$STAGING/wasm32posix/sysroot/include/c++"
 cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/wasm32posix/sysroot/include/c++/v1"
 
-# --- wasm32posix/glue — the glue sources the wrapper recompiles ---
+# --- wasm32posix/glue — the glue sources AND their headers. The guest cc
+# wrapper recompiles channel_syscall.c per invocation, and it #includes
+# abi_constants.h (plus gl_abi.h / syscall_imports.h), so the headers must
+# ship alongside the .c files — matching the canonical SDK image, which
+# copies the whole glue directory.
 mkdir -p "$STAGING/wasm32posix/glue"
-cp "$REPO_ROOT/libc/glue/"*.c "$STAGING/wasm32posix/glue/"
+cp "$REPO_ROOT/libc/glue/"* "$STAGING/wasm32posix/glue/"
 
 # --- wasm32posix/glue-objects — precompiled glue objects ---
 mkdir -p "$STAGING/wasm32posix/glue-objects"
