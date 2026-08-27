@@ -36,7 +36,11 @@ describe("CatchRef fresh process worker replay", () => {
       "-o",
       rawPath,
     ]);
-    execFileSync(instrumenter, [rawPath, "-o", programPath]);
+    // The committed fixture declares a placeholder sentinel __abi_version, not a
+    // real ABI epoch; stamp the current ABI at instrumentation time (test-only
+    // flag) so it tracks the running ABI. This unblocks the artifact gate only —
+    // the reconstruction assertions below are what prove correctness.
+    execFileSync(instrumenter, ["--stamp-abi-version", rawPath, "-o", programPath]);
 
     const referencePayloadRawPath = join(
       workDir,
@@ -54,6 +58,7 @@ describe("CatchRef fresh process worker replay", () => {
       referencePayloadRawPath,
     ]);
     execFileSync(instrumenter, [
+      "--stamp-abi-version",
       referencePayloadRawPath,
       "-o",
       referencePayloadProgramPath,

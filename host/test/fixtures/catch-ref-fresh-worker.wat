@@ -1,4 +1,9 @@
-;; ABI 43 integration fixture for real process workers.
+;; Fork-continuation integration fixture for real process workers.
+;;
+;; The __abi_version body is a placeholder sentinel (999999999), NOT a real ABI
+;; epoch; wasm-fork-instrument --stamp-abi-version overwrites it with the current
+;; ABI at build time. Instrumenting without the flag leaves the sentinel, which
+;; the host rejects as stale (exercised by the ABI-staleness negative test).
 ;;
 ;; The parent catches a scalar tag through CatchRef, forks from the handler,
 ;; and waits for the child. Rewind can succeed only if the copied continuation
@@ -18,7 +23,7 @@
     (i32.const 65536))
 
   (func (export "__abi_version") (result i32)
-    i32.const 43)
+    i32.const 999999999)
 
   (func $wait_child (param $pid i32) (result i32)
     (local $base i32)
