@@ -31,6 +31,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   registerDeclaredShellLazyArchive,
+  registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
 import {
@@ -462,6 +463,8 @@ export function populateShellEnvironment(
   populateVimArchive(fs, resolveArtifact);
   populateNetHackArchive(fs, resolveArtifact);
   populateRubyArchive(fs, resolveArtifact);
+  populatePythonArchive(fs, resolveArtifact);
+  registerPythonShellProfile(fs);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -773,6 +776,17 @@ function populateRubyArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[2],
+    resolveArtifact,
+  );
+}
+
+function populatePythonArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[3],
     resolveArtifact,
   );
 }

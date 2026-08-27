@@ -28,6 +28,7 @@ depends_on = [
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
   "ruby-browser-bundle@4.0.5",
+  "python-browser-bundle@3.13.3",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

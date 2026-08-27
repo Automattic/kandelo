@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
+  ensureDirRecursive,
+  writeVfsFile,
+} from "../../../host/src/vfs/image-helpers";
+import {
   extractZipEntry,
   parseZipCentralDirectory,
   type ZipEntry,
@@ -47,7 +51,36 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredExecutable: "bin/ruby",
   },
+  {
+    id: "python",
+    dependency: "python-browser-bundle",
+    resolverPath: "programs/wasm32/python.zip",
+    archiveUrl: "python.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/python3",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
+
+// The python lazy-archive mounts a statically-linked CPython at /usr/bin with
+// its standard library at /usr/lib/python3.13. A static build ships no
+// platform-dependent (lib-dynload) modules, so CPython's exec_prefix probe
+// fails and prints "Could not find platform dependent libraries <exec_prefix>"
+// to stderr on every launch (the pure-Python stdlib still self-locates, so the
+// REPL otherwise works). Pinning PYTHONHOME=/usr makes exec_prefix explicit —
+// the interpreter stops probing and the REPL starts cleanly. This mirrors the
+// dedicated python VFS product, which sets the same value in its boot env.
+// Sourced by /etc/profile for interactive login shells.
+export function registerPythonShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/python.sh",
+    "# Static CPython ships no lib-dynload; pin the prefix so exec_prefix\n" +
+      "# resolves without probing and the REPL starts without a warning.\n" +
+      "export PYTHONHOME=/usr\n",
+    0o644,
+  );
+}
 
 export interface DeclaredShellLazyArchive {
   spec: ShellLazyArchiveSpec;

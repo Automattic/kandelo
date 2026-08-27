@@ -48,6 +48,10 @@ name = "cpython"
 class = "user-software"
 
 [[packages]]
+name = "python-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "curl"
 class = "user-software"
 

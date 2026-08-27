@@ -79,8 +79,8 @@ grep -Eq '\bcurl\b|\bwget\b' "$SHELL_BUILDER" &&
 mapfile -t declared_dependencies < <(
     node "$CONTRACT_READER" --print-resolver-owned "$CONTRACT" "$PACKAGE_TOML"
 )
-[ "${#declared_dependencies[@]}" -eq 18 ] ||
-    fail "canonical contract must expose 18 lazy resolver dependencies"
+[ "${#declared_dependencies[@]}" -eq 19 ] ||
+    fail "canonical contract must expose 19 lazy resolver dependencies"
 [ "$(grep -Fc '[[outputs]]' "$PACKAGE_TOML")" -eq 1 ] ||
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
