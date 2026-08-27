@@ -2623,10 +2623,17 @@ The following "optimizations" in `kernel-worker.ts` were benchmarked and **all m
 ### Repository Setup
 
 `./run.sh setup` is the single entry point for a working repo, not just
-a kernel build: it provisions the musl sysroot (building it from source
-the first time; re-syncing overlay headers on later runs), then builds
-the kernel, the fork-instrument tool, every package, and the rootfs and
-TypeScript host artifacts below.
+a kernel build. It delegates to xtask's bootstrap step plan
+(`tools/xtask/src/local_build.rs::bootstrap_step_plan`), which runs, in
+order:
+
+1. `fork-instrument-tool` — builds the Wasm fork continuation instrumentation tool
+2. `sysroot` — provisions the wasm32 musl sysroot: builds it from source the first time, or just re-syncs overlay headers if it already exists
+3. `sysroot64` — provisions the wasm64 musl sysroot the same way
+4. `sdk` — verifies the `wasm32posix-cc` toolchain wrappers resolve against `sysroot`
+5. `engine` — builds every package in the local-build graph, including the kernel: `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`, then copies `kandelo-kernel.wasm` to `host/wasm/`
+6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+7. `host-dist` — builds the TypeScript host via `npm run build` (tsup → ESM + CJS)
 
 ```bash
 ./run.sh setup
@@ -2634,11 +2641,10 @@ TypeScript host artifacts below.
 
 (`bash build.sh` still works as a deprecated delegator to the same command.)
 
-1. `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`
-2. Copies `kandelo-kernel.wasm` to `host/wasm/`
-3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
-4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
-5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+Building the example/test C programs under `programs/*.c` is a separate
+step that `./run.sh setup` does not run: use `./run.sh build programs`
+(`scripts/build-programs.sh`) when you need them, e.g. for the wasm64
+Vitest cases or benchmark suites.
 
 `host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 

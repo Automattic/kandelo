@@ -186,7 +186,7 @@ checkout, or just re-syncing overlay headers if it already exists),
 builds the fork-instrument host tool, resolves and builds every
 package in the local-build graph, produces the rootfs VFS image, and
 builds the TypeScript host. See [Which command do I
-run?](#which-command-do-i-run) below for the rest of the command
+run?](#which-command-do-i-run) above for the rest of the command
 surface.
 
 Library dependencies (zlib, openssl,

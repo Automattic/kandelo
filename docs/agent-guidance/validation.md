@@ -98,11 +98,19 @@ are not "cannot validate" conditions. Build or fetch what is missing:
    ```bash
    scripts/dev-shell.sh bash scripts/fetch-binaries.sh
    ```
-5. **wasm64 sysroot** (only for the `wasm64` Vitest cases, which need an LP64
-   `hello64.wasm` that `fetch-binaries.sh` does not carry):
+5. **`hello64.wasm`** (only for the `wasm64` Vitest cases, which need this
+   LP64 program that `fetch-binaries.sh` does not carry). `./run.sh setup`
+   already builds the wasm64 sysroot (its bootstrap step plan runs
+   `sysroot64` unconditionally, alongside the wasm32 `sysroot`), so you
+   only need to build the program itself:
+   ```bash
+   scripts/dev-shell.sh bash scripts/build-programs.sh
+   ```
+   If the wasm64 sysroot is missing (e.g. a partial checkout) or you just
+   edited `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, rebuild
+   it explicitly first:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
-   scripts/dev-shell.sh bash scripts/build-programs.sh
    ```
 
 After that the full suites run. Do **not** report "I can't run Vitest / the
