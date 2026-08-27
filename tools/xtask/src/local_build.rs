@@ -510,6 +510,12 @@ pub(crate) fn bootstrap_selection_from_args(
 /// `bootstrap_target_to_selection`'s `Selection::Package` arm, which accepts
 /// both declared product ids and bare package names through the same
 /// `select_graph_dependencies` filter.
+///
+/// Only used by `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+/// below; `#[cfg(test)]` keeps the non-test binary free of a dead-code
+/// warning (matching how `parse_supported_set`, its sole other caller's
+/// dependency, is also test-only today).
+#[cfg(test)]
 fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
     set.products
         .iter()
@@ -4565,6 +4571,76 @@ mod tests {
         );
     }
 
+    /// Extract the body (inclusive of the enclosing braces) of a top-level
+    /// bash function named `function` from `source`, by counting brace
+    /// depth from the function's opening `{`. Good enough for the small,
+    /// brace-free-besides-`${...}` bodies this file's folded `build_*_vfs`
+    /// functions have today; not a general bash parser.
+    fn extract_bash_function_body(source: &str, function: &str) -> String {
+        let header = format!("{function}() {{");
+        let start = source
+            .find(&header)
+            .unwrap_or_else(|| panic!("run.sh: no {header:?} function definition found"));
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, ch) in source[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(start + offset + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end
+            .unwrap_or_else(|| panic!("run.sh: unterminated body for function {function:?}"));
+        source[start..end].to_string()
+    }
+
+    /// Whether `body` contains a real `bootstrap_target <id>` call — not
+    /// just `id` as a substring of a longer, differently-named id (so a
+    /// `browser-nginx-php` body doesn't falsely satisfy an expectation of
+    /// `browser-nginx`).
+    fn body_calls_bootstrap_target(body: &str, id: &str) -> bool {
+        let needle = format!("bootstrap_target {id}");
+        let mut search_from = 0;
+        while let Some(relative) = body[search_from..].find(&needle) {
+            let match_end = search_from + relative + needle.len();
+            let boundary_ok = body[match_end..]
+                .chars()
+                .next()
+                .map(|next| !(next.is_alphanumeric() || next == '-' || next == '_'))
+                .unwrap_or(true);
+            if boundary_ok {
+                return true;
+            }
+            search_from = search_from + relative + 1;
+        }
+        false
+    }
+
+    /// Assert that `run.sh`'s `<function>` body actually dispatches to
+    /// `bootstrap_target <expected_id>`. This is the run.sh-side half of the
+    /// Stage 4 anti-drift guard: `run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries`
+    /// below only checks that `expected_id` is a declared product/package in
+    /// `local-supported.toml` — it says nothing about what `run.sh` actually
+    /// does. Without this, routing `build_wp_vfs` to the wrong product
+    /// (e.g. `browser-lamp` instead of `browser-wordpress`), or reverting a
+    /// folded function back to its old inline bash body, would both still
+    /// pass that check.
+    fn assert_run_sh_folded_dispatch(run_sh_source: &str, function: &str, expected_id: &str) {
+        let body = extract_bash_function_body(run_sh_source, function);
+        assert!(
+            body_calls_bootstrap_target(&body, expected_id),
+            "run.sh's {function}() does not call `bootstrap_target {expected_id}`; \
+             body was:\n{body}",
+        );
+    }
+
     /// Stage 4 gap enumeration: every `build_*_vfs` function `run.sh` defines
     /// must be accounted for as either (a) folded into a declared
     /// `[[products]]` id (or, for `mariadb-test`, a declared bare package —
@@ -4625,12 +4701,19 @@ mod tests {
                 Expectation::FoldedProduct("browser-nginx-php"),
             ),
             ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
-            // mariadb-test has no `[[products]]` entry (matching the
+    // mariadb-test has no `[[products]]` entry (matching the
             // sibling test-support manifests test-php.toml/test-sqlite.toml,
             // which are also manifest-only with no active product) but its
             // package is already declared and bootstraps the identical
             // build-mariadb-test.sh the bash builder called directly.
             ("build_mariadb_test_vfs", Expectation::FoldedPackage("mariadb-test")),
+            // NOTE: keep this table's folded (fn, id) pairs and the
+            // `run_sh_folded_dispatch_matches_this_table` loop below in sync
+            // — the second loop reads run.sh itself and asserts that each
+            // folded function's body literally calls
+            // `bootstrap_target <id>` with the SAME id listed here, so a
+            // routing typo/regression (wrong product, or a revert to inline
+            // bash) fails even though local-supported.toml is untouched.
             ("build_mariadb_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
             ("build_mariadb64_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
             ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
@@ -4644,18 +4727,30 @@ mod tests {
             ("build_texlive_vfs", Expectation::DormantOrExcluded("texlive")),
         ];
 
+        let run_sh_source = fs::read_to_string(repo.join("run.sh")).unwrap();
+
         for (function, expectation) in table {
             match expectation {
-                Expectation::FoldedProduct(id) => assert!(
-                    product_ids.contains(*id),
-                    "{function} expects declared product {id:?}; \
-                     declared_product_ids() = {product_ids:?}",
-                ),
-                Expectation::FoldedPackage(name) => assert!(
-                    package_names.contains(name),
-                    "{function} expects declared package {name:?}; \
-                     packages = {package_names:?}",
-                ),
+                Expectation::FoldedProduct(id) => {
+                    assert!(
+                        product_ids.contains(*id),
+                        "{function} expects declared product {id:?}; \
+                         declared_product_ids() = {product_ids:?}",
+                    );
+                    // toml-side declaration alone doesn't prove run.sh
+                    // actually routes here — a wrong id, or a revert to the
+                    // old inline bash body, would leave the assertion above
+                    // passing. Read run.sh itself to close that gap.
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, id);
+                }
+                Expectation::FoldedPackage(name) => {
+                    assert!(
+                        package_names.contains(name),
+                        "{function} expects declared package {name:?}; \
+                         packages = {package_names:?}",
+                    );
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, name);
+                }
                 Expectation::DormantOrExcluded(name) => assert!(
                     dormant_products.contains(name) || excluded.contains(name),
                     "{function} names {name:?}, expected to find it in \
