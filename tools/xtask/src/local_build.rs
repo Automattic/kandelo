@@ -423,39 +423,155 @@ fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> 
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum BootstrapSelectionV1 {
+pub(crate) enum Selection {
+    /// The whole-tree build closure: `bootstrap_step_plan()` in order.
     All,
+    /// A single registry package or declared VFS product, built through the
+    /// local-build engine's `--products`-style selection (which already
+    /// resolves the transitive dependency closure and content-addressed
+    /// cache policy for whatever it is given).
+    Package(String),
+    /// A host-side step that is not a local-build engine graph node (the
+    /// fork-instrument CLI, the TypeScript host build, the rootfs image, and
+    /// the ambient musl sysroot/SDK). Named after the step in
+    /// `bootstrap_step_plan`/`run_bootstrap_step` it maps to.
+    HostStep(&'static str),
+}
+
+/// Map a single `xtask bootstrap <target>` positional to what it selects.
+/// Pure and total: every target string resolves to a `Selection`, deferring
+/// "does this actually exist" to the engine/host-step runner, which already
+/// has the real registry and product catalog available to validate against.
+///
+/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, and `sdk` are
+/// the non-graph host steps `./run.sh`'s `need_host`/`need_fork_instrument`/
+/// `need_rootfs`/`need_sysroot`/`need_sysroot64`/`need_sdk` used to build by
+/// hand; everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
+/// package or product name the engine's own graph already understands.
+pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
+    match target {
+        "host" => Selection::HostStep("host-dist"),
+        "fork-instrument" => Selection::HostStep("fork-instrument-tool"),
+        "rootfs" => Selection::HostStep("rootfs"),
+        "sysroot" => Selection::HostStep("sysroot"),
+        "sysroot64" => Selection::HostStep("sysroot64"),
+        "sdk" => Selection::HostStep("sdk"),
+        other => Selection::Package(other.to_string()),
+    }
 }
 
 /// Parse the leading positional target argument of `xtask bootstrap`. An
 /// omitted target and the explicit literal `all` both select the whole-tree
-/// build closure; any other positional is not yet implemented in this stage.
-/// Pure and testable, split out of `run_bootstrap` so the argument-shape
-/// decision can be verified without running the bootstrap steps.
+/// build closure; any other positional is resolved by
+/// `bootstrap_target_to_selection`. Pure and testable, split out of
+/// `run_bootstrap` so the argument-shape decision can be verified without
+/// running the bootstrap steps.
 pub(crate) fn bootstrap_selection_from_args(
     args: &[String],
-) -> Result<(BootstrapSelectionV1, Vec<String>), String> {
+) -> Result<(Selection, Vec<String>), String> {
     let (target, rest) = match args.split_first() {
         Some((first, rest)) if !first.starts_with("--") => (Some(first.clone()), rest.to_vec()),
         _ => (None, args.to_vec()),
     };
     match target.as_deref() {
-        None | Some("all") => Ok((BootstrapSelectionV1::All, rest)),
-        Some(target) => Err(format!(
-            "bootstrap: target selection ({target:?}) is not yet implemented in this stage; \
-             omit the target or pass \"all\" to build the whole tree"
-        )),
+        None | Some("all") => Ok((Selection::All, rest)),
+        Some(target) => Ok((bootstrap_target_to_selection(target), rest)),
     }
 }
 
-/// `xtask bootstrap [all] [--jobs <n>] [--rebuild] [--verify-cache]` — the
-/// single engine-plus-host build closure behind `./run.sh setup`. Accepts an
-/// optional leading positional target (e.g. `bootstrap kernel`) for a later
-/// stage to add single-target selection; Stage 1 only implements the
-/// whole-tree path (target omitted, or the explicit literal `all`) and
-/// returns a clear error for any other target.
+/// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
+/// (as a working symlink to a real file) is the same signal
+/// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
+/// directly instead of through PATH so this does not depend on the caller
+/// having sourced `sdk/activate.sh`.
+fn sdk_cc_path(repo: &Path) -> PathBuf {
+    repo.join("sdk/bin/wasm32posix-cc")
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Ensure the musl sysroot for `arch` exists, mirroring the old
+/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
+/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
+/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
+/// existing sysroot without forcing a full musl rebuild.
+fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
+    let sysroot_path = repo.join(sysroot_dir);
+    let libc_a = sysroot_path.join("lib/libc.a");
+    if libc_a.is_file() {
+        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
+        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])
+    } else if arch == "wasm32posix" {
+        run_repo_script(repo, "scripts/build-musl.sh", &[])
+    } else {
+        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])
+    }
+}
+
+/// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
+/// loop and single-target selection, so a target built alone (e.g.
+/// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
+/// exactly the same thing.
+fn run_bootstrap_step(
+    repo: &Path,
+    name: &str,
+    jobs: usize,
+    rebuild: bool,
+    verify_cache: bool,
+    products: Vec<String>,
+) -> Result<(), String> {
+    match name {
+        "fork-instrument-tool" => {
+            run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
+        }
+        "engine" => run_aggregate(LocalBuildRunArgsV1 {
+            set: repo.join("packages/sets/local-supported.toml"),
+            source_cache_root: default_source_cache_root()?,
+            output_root: repo.join("local-binaries/source-only-v1"),
+            products,
+            jobs,
+            rebuild,
+            verify_cache,
+        }),
+        "rootfs" => run_repo_script(repo, "scripts/build-rootfs.sh", &[]),
+        "host-dist" => run_repo_script(repo, "scripts/build-host.sh", &[]),
+        "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
+        "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
+        "sdk" => {
+            bootstrap_sysroot_step(repo, "sysroot", "wasm32posix")?;
+            if is_executable_file(&sdk_cc_path(repo)) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "bootstrap sdk: SDK tools not found. Expected {} to be a working symlink.",
+                    sdk_cc_path(repo).display()
+                ))
+            }
+        }
+        other => Err(format!("bootstrap: unknown step {other:?}")),
+    }
+}
+
+/// `xtask bootstrap [<target>] [--jobs <n>] [--rebuild] [--verify-cache]` —
+/// the single engine-plus-host build closure behind `./run.sh setup` and
+/// `./run.sh build <target>`. An omitted target (or the explicit literal
+/// `all`) builds the whole tree via `bootstrap_step_plan()`; any other
+/// target selects one package/product (routed through the engine's own
+/// dependency-closure and cache-key selection) or one non-graph host step
+/// (see `bootstrap_target_to_selection`).
 pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
-    let (BootstrapSelectionV1::All, rest) = bootstrap_selection_from_args(&args)?;
+    let (selection, rest) = bootstrap_selection_from_args(&args)?;
     let repo = crate::repo_root();
     let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
     let jobs = select_job_count(
@@ -465,26 +581,60 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     )?;
     let rebuild = flags.switches.contains("--rebuild");
     let verify_cache = flags.switches.contains("--verify-cache");
-    for step in bootstrap_step_plan() {
-        match step.name {
-            "fork-instrument-tool" => {
-                run_repo_script(&repo, "scripts/build-fork-instrument-tool.sh", &[])?
+    match selection {
+        Selection::All => {
+            for step in bootstrap_step_plan() {
+                let products = if step.name == "engine" {
+                    vec!["all".to_string()]
+                } else {
+                    Vec::new()
+                };
+                run_bootstrap_step(&repo, step.name, jobs, rebuild, verify_cache, products)?;
             }
-            "engine" => run_aggregate(LocalBuildRunArgsV1 {
-                set: repo.join("packages/sets/local-supported.toml"),
-                source_cache_root: default_source_cache_root()?,
-                output_root: repo.join("local-binaries/source-only-v1"),
-                products: vec!["all".to_string()],
-                jobs,
-                rebuild,
-                verify_cache,
-            })?,
-            "rootfs" => run_repo_script(&repo, "scripts/build-rootfs.sh", &[])?,
-            "host-dist" => run_repo_script(&repo, "scripts/build-host.sh", &[])?,
-            other => return Err(format!("bootstrap: unknown step {other:?}")),
+            Ok(())
+        }
+        Selection::HostStep(name) => {
+            // The old `need_host` built the kernel before the TypeScript host
+            // (`host/dist` embeds/tests against it); preserve that edge for a
+            // standalone `bootstrap host` the same way `bootstrap_step_plan`
+            // preserves it for the whole-tree path by ordering "engine"
+            // before "host-dist".
+            if name == "host-dist" {
+                run_bootstrap_step(
+                    &repo,
+                    "engine",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    vec!["kernel".to_string()],
+                )?;
+            }
+            run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
+        }
+        Selection::Package(name) => {
+            // Preserve the universal `need_sdk` (→ `need_sysroot`) prerequisite
+            // that almost every `run.sh` package builder relied on, except for
+            // the kernel itself, which is a pure `cargo build` with no SDK/musl
+            // dependency. The resync is cheap when the sysroot already exists.
+            if name != "kernel" {
+                run_bootstrap_step(&repo, "sysroot", jobs, rebuild, verify_cache, Vec::new())?;
+            }
+            // msmtpd is the one package that consumes the built
+            // wasm-fork-instrument CLI (see `bootstrap_step_plan`'s doc
+            // comment); every other package does not need it.
+            if name == "msmtpd" {
+                run_bootstrap_step(
+                    &repo,
+                    "fork-instrument-tool",
+                    jobs,
+                    rebuild,
+                    verify_cache,
+                    Vec::new(),
+                )?;
+            }
+            run_bootstrap_step(&repo, "engine", jobs, rebuild, verify_cache, vec![name])
         }
     }
-    Ok(())
 }
 
 /// `xtask verify-fresh` — a pre-test freshness check, not a divergence guard.
@@ -3253,18 +3403,51 @@ fn select_graph_dependencies(
         .filter(|entry| entry.disposition == "dormant-product")
         .map(|entry| entry.name.as_str())
         .collect::<BTreeSet<_>>();
+    // Package nodes, keyed by (name, target_arch), so a bare `xtask bootstrap
+    // <target>` positional (run.sh's former `build_<pkg>` targets: `kernel`,
+    // `zlib`, `mariadb64`, ...) can select a single registry package the same
+    // way a declared product id already can, without requiring every
+    // package to also be declared as a VFS product.
+    let package_names = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Package { name, target_arch } => {
+                Some((name.as_str(), target_arch.as_str()))
+            }
+            PlanNodeV1::Product { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
 
     let mut selected = BTreeSet::new();
     let mut pending = Vec::new();
-    for product in product_filters {
-        if !active_products.contains(product.as_str()) {
-            return if dormant_products.contains(product.as_str()) {
-                Err(format!("product {product:?} is dormant"))
-            } else {
-                Err(format!("unknown product {product:?}"))
-            };
+    for filter in product_filters {
+        if active_products.contains(filter.as_str()) {
+            pending.push(PlanNodeV1::product(filter));
+            continue;
         }
-        pending.push(PlanNodeV1::product(product));
+        if dormant_products.contains(filter.as_str()) {
+            return Err(format!("product {filter:?} is dormant"));
+        }
+        if package_names.contains(&(filter.as_str(), "wasm32")) {
+            pending.push(PlanNodeV1::package(filter, "wasm32"));
+            continue;
+        }
+        // `./run.sh build mariadb64` names the wasm64 build of the `mariadb`
+        // package; the package graph itself has no node literally named
+        // "mariadb64". Strip the historical "64" suffix convention and look
+        // for the wasm64 variant of the base package name.
+        if let Some(base) = filter.strip_suffix("64") {
+            if package_names.contains(&(base, "wasm64")) {
+                pending.push(PlanNodeV1::package(base, "wasm64"));
+                continue;
+            }
+        }
+        if package_names.contains(&(filter.as_str(), "wasm64")) {
+            pending.push(PlanNodeV1::package(filter, "wasm64"));
+            continue;
+        }
+        return Err(format!("unknown product or package {filter:?}"));
     }
     while let Some(node) = pending.pop() {
         if !selected.insert(node.clone()) {
@@ -4634,6 +4817,60 @@ materialization = "lazy"
     }
 
     #[test]
+    fn local_rebuild_graph_filters_select_bare_package_names_and_wasm64_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        package(root, "mariadb", &["wasm32", "wasm64"], &[]);
+        product(root, "unused", &[]);
+        let set = authority(
+            root,
+            &[
+                ("base-a", "platform"),
+                ("mariadb", "user-software"),
+            ],
+            &[],
+            &[],
+            &[],
+        );
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+
+        // `xtask bootstrap kernel`/`./run.sh build zlib`-style bare package
+        // selection: a target that names a registry package directly (not a
+        // declared VFS product) selects that package's wasm32 node.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["base-a".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("base-a", "wasm32")]),
+        );
+
+        // `./run.sh build mariadb64`-style targets: the historical "64"
+        // suffix convention selects the wasm64 node of the base package.
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb64".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm64")]),
+        );
+        assert_eq!(
+            select_graph_dependencies(&graph, &["mariadb".to_string()])
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([PlanNodeV1::package("mariadb", "wasm32")]),
+        );
+
+        let error = select_graph_dependencies(&graph, &["not-a-thing".to_string()]).unwrap_err();
+        assert!(error.contains("unknown"), "{error}");
+    }
+
+    #[test]
     fn local_rebuild_graph_authority_binds_exact_inputs_and_private_edges() {
         use sha2::{Digest, Sha256};
 
@@ -4748,14 +4985,14 @@ materialization = "lazy"
     }
 
     #[test]
-    fn bootstrap_selection_from_args_accepts_omitted_and_all_rejects_other_targets() {
+    fn bootstrap_selection_from_args_accepts_omitted_all_and_single_targets() {
         let (selection, rest) = bootstrap_selection_from_args(&[]).unwrap();
-        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert_eq!(selection, Selection::All);
         assert!(rest.is_empty());
 
         let (selection, rest) =
             bootstrap_selection_from_args(&["all".to_string()]).unwrap();
-        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert_eq!(selection, Selection::All);
         assert!(rest.is_empty());
 
         let (selection, rest) = bootstrap_selection_from_args(&[
@@ -4764,13 +5001,51 @@ materialization = "lazy"
             "2".to_string(),
         ])
         .unwrap();
-        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert_eq!(selection, Selection::All);
         assert_eq!(rest, vec!["--jobs".to_string(), "2".to_string()]);
 
-        let error = bootstrap_selection_from_args(&["kernel".to_string()]).unwrap_err();
-        assert!(
-            error.contains("not yet implemented"),
-            "unknown positional target must return the not-yet-implemented error: {error}"
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "kernel".to_string(),
+            "--rebuild".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, Selection::Package("kernel".to_string()));
+        assert_eq!(rest, vec!["--rebuild".to_string()]);
+    }
+
+    #[test]
+    fn bootstrap_single_target_maps_to_engine_or_host_step() {
+        assert_eq!(
+            bootstrap_target_to_selection("kernel"),
+            Selection::Package("kernel".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("zlib"),
+            Selection::Package("zlib".to_string())
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("host"),
+            Selection::HostStep("host-dist")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("fork-instrument"),
+            Selection::HostStep("fork-instrument-tool")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("rootfs"),
+            Selection::HostStep("rootfs")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot"),
+            Selection::HostStep("sysroot")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sysroot64"),
+            Selection::HostStep("sysroot64")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("sdk"),
+            Selection::HostStep("sdk")
         );
     }
 

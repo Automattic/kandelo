@@ -329,12 +329,6 @@ pkg_has_output() {
     fi
 }
 
-has_kernel()    { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; }
-has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
-has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
-has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
-has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
-has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
 has_browser_memory64_example_fixtures() {
     local output
     local outputs
@@ -431,88 +425,55 @@ has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
                       [ -f "$REPO_ROOT/examples/dlopen/main.wasm" ]; }
 
 # ─── Need functions (ensure dependency is built) ─────────────────────────────
+#
+# Every need_* below (except need_node_modules, a root npm concern with no
+# build artifact) is a thin delegator onto `xtask bootstrap <target>`. The
+# freshness decision — is the kernel's ABI current, is a package's content
+# unchanged, does the sysroot need a full rebuild or just a header resync —
+# lives in the local-build engine / xtask, not here; see
+# docs/agent-guidance/packages-and-builds.md.
+
+# bootstrap_target <target> [xtask-bootstrap-args...]: enter the repository
+# dev shell and run `xtask bootstrap <target>` via the same
+# scripts/setup.sh entry `./run.sh setup` uses (scripts/setup.sh forwards
+# its arguments straight to `xtask bootstrap`). This is the one front door
+# every need_* delegator and build_target's generic package/product dispatch
+# call through.
+bootstrap_target() {
+    local target="$1"; shift
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        bash "$REPO_ROOT/scripts/setup.sh" "$target" "$@"
+}
 
 need_kernel() {
-    if ! has_kernel; then
-        step "Building kernel"
-        bash "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"
-        info "Kernel built"
-    else
-        info "Kernel"
-    fi
+    bootstrap_target kernel
 }
 
 need_sysroot() {
-    if ! has_sysroot; then
-        step "Building sysroot (musl)"
-        bash "$REPO_ROOT/scripts/build-musl.sh"
-        info "Sysroot built"
-    else
-        # Re-sync overlay headers into the existing sysroot. Cheap (just a
-        # few cp) and ensures newly-added libc/musl-overlay/include/ files reach
-        # an existing sysroot without forcing a full musl rebuild.
-        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
-        info "Sysroot"
-    fi
-}
-
-need_fork_instrument() {
-    if [ ! -x "$REPO_ROOT/tools/bin/wasm-fork-instrument" ]; then
-        step "Building wasm-fork-instrument"
-        bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
-        info "wasm-fork-instrument built"
-    else
-        info "wasm-fork-instrument"
-    fi
+    bootstrap_target sysroot
 }
 
 need_sysroot64() {
-    if ! has_sysroot64; then
-        step "Building sysroot64 (musl, wasm64)"
-        bash "$REPO_ROOT/scripts/build-musl.sh" --arch wasm64posix
-        info "Sysroot64 built"
-    else
-        bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot64"
-        info "Sysroot64"
-    fi
+    bootstrap_target sysroot64
 }
 
 need_sdk() {
-    need_sysroot
-    # The worktree-local SDK is on PATH via sdk/activate.sh (sourced at
-    # the top of this script). If wasm32posix-cc still isn't found, the
-    # wrappers under sdk/bin are missing or their dispatcher is broken —
-    # not something `npm link` can fix.
-    if ! has_sdk; then
-        err "SDK tools not on PATH after sourcing sdk/activate.sh."
-        err "Expected sdk/bin/wasm32posix-cc to be a working symlink."
-        exit 1
-    fi
-    info "SDK"
+    # `xtask bootstrap sdk` ensures the sysroot first, then still errors if
+    # sdk/bin/wasm32posix-cc isn't a working symlink after that — the SDK
+    # wrappers being missing or broken isn't something a rebuild can fix.
+    bootstrap_target sdk
 }
 
 need_host() {
-    need_kernel
-    if ! has_host; then
-        step "Building TypeScript host"
-        cd "$REPO_ROOT/host"
-        npm install --prefer-offline
-        npm run build
-        cd "$REPO_ROOT"
-        info "Host built"
-    else
-        info "Host"
-    fi
+    bootstrap_target host
 }
 
 need_rootfs() {
-    if ! has_rootfs; then
-        step "Building rootfs.vfs"
-        bash "$REPO_ROOT/scripts/build-rootfs.sh"
-        info "rootfs.vfs built"
-    else
-        info "rootfs.vfs"
-    fi
+    bootstrap_target rootfs
+}
+
+need_fork_instrument() {
+    bootstrap_target fork-instrument
 }
 
 need_node_modules() {
@@ -567,84 +528,26 @@ build_programs() {
 }
 
 build_nginx() {
-    if has_nginx; then
-        info "nginx"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_nginx; then
-        step "Building nginx"
-        bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"
-        info "nginx built"
-    else
-        info "nginx"
-    fi
+    bootstrap_target nginx
 }
 
 build_php() {
-    if has_php; then
-        info "php"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_php; then
-        step "Building PHP CLI"
-        bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-        info "PHP CLI built"
-    else
-        info "PHP CLI"
-    fi
+    bootstrap_target php
 }
 
 build_php_fpm() {
-    if has_php_fpm; then
-        info "php-fpm"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_php_fpm; then
-        step "Building PHP-FPM"
-        bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-        info "PHP-FPM built"
-    else
-        info "PHP-FPM"
-    fi
+    # PHP-FPM is a second output of the same "php" package node (one build
+    # produces both the CLI and the FPM SAPI); there is no separate
+    # "php-fpm" package to select.
+    bootstrap_target php
 }
 
 build_mariadb() {
-    if has_mariadb; then
-        info "mariadb"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_mariadb; then
-        step "Building MariaDB (wasm32)"
-        bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
-        info "MariaDB (wasm32) built"
-    else
-        info "MariaDB (wasm32)"
-    fi
+    bootstrap_target mariadb
 }
 
 build_mariadb64() {
-    if has_mariadb64; then
-        info "mariadb64"
-        return
-    fi
-    need_kernel
-    need_sdk
-    need_sysroot64
-    if ! has_mariadb64; then
-        step "Building MariaDB (wasm64)"
-        bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh" --wasm64
-        info "MariaDB (wasm64) built"
-    else
-        info "MariaDB (wasm64)"
-    fi
+    bootstrap_target mariadb64
 }
 
 build_mariadb_vfs() {
@@ -691,6 +594,13 @@ build_mariadb_test_vfs() {
 }
 
 build_wordpress() {
+    # NOTE: the registry package named "wordpress" is the *composed VFS
+    # image* (depends_on nginx/php/dinit/msmtpd/shell — see
+    # packages/registry/wordpress/package.toml), which is what
+    # `build_wp_vfs` below actually builds. This target predates that
+    # package and only stages the WordPress source tree setup.sh downloads,
+    # so it stays a direct script call rather than `bootstrap_target
+    # wordpress` (which would build the whole composed image here).
     if ! has_wordpress; then
         step "Downloading WordPress"
         bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
@@ -718,6 +628,13 @@ build_wp_vfs() {
 }
 
 build_dash() {
+    # NOTE: not routed through `bootstrap_target` — the post-build copy
+    # below reads packages/registry/dash/bin/dash.wasm, the path
+    # build-dash.sh only writes to when run standalone (unset
+    # WASM_POSIX_DEP_OUT_DIR/WASM_POSIX_DEP_WORK_DIR); under the engine it
+    # writes into a resolver-owned work directory instead, so this copy
+    # would silently stop populating host/wasm/sh.wasm if this called
+    # `bootstrap_target dash` directly.
     if has_dash; then
         info "dash"
         return
@@ -739,82 +656,23 @@ build_dash() {
 }
 
 build_bash() {
-    if has_bash; then
-        info "bash"
-        return
-    fi
-    # bash's build script resolves ncurses through the dep cache via
-    # `cargo xtask build-deps resolve ncurses` — no sysroot install
-    # needed here.
-    need_kernel
-    need_sdk
-    step "Building bash shell"
-    bash "$REPO_ROOT/packages/registry/bash/build-bash.sh"
-    info "bash built"
+    bootstrap_target bash
 }
 
 build_coreutils() {
-    if has_coreutils; then
-        info "coreutils"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_coreutils; then
-        step "Building GNU coreutils"
-        bash "$REPO_ROOT/packages/registry/coreutils/build-coreutils.sh"
-        info "coreutils built"
-    else
-        info "coreutils"
-    fi
+    bootstrap_target coreutils
 }
 
 build_grep() {
-    if has_grep; then
-        info "grep"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_grep; then
-        step "Building GNU grep"
-        bash "$REPO_ROOT/packages/registry/grep/build-grep.sh"
-        info "grep built"
-    else
-        info "grep"
-    fi
+    bootstrap_target grep
 }
 
 build_sed() {
-    if has_sed; then
-        info "sed"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_sed; then
-        step "Building GNU sed"
-        bash "$REPO_ROOT/packages/registry/sed/build-sed.sh"
-        info "sed built"
-    else
-        info "sed"
-    fi
+    bootstrap_target sed
 }
 
 build_redis() {
-    if has_redis; then
-        info "redis"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_redis; then
-        step "Building Redis"
-        bash "$REPO_ROOT/packages/registry/redis/build-redis.sh"
-        info "Redis built"
-    else
-        info "Redis"
-    fi
+    bootstrap_target redis
 }
 
 build_dinit() {
@@ -836,37 +694,14 @@ build_dinit() {
 }
 
 build_msmtpd() {
-    if has_msmtpd; then
-        info "msmtpd"
-        return
-    fi
-    need_kernel
-    need_sdk
-    need_sysroot
-    need_fork_instrument
-    if ! has_msmtpd; then
-        step "Building msmtpd"
-        bash "$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
-        info "msmtpd built"
-    else
-        info "msmtpd"
-    fi
+    # `xtask bootstrap msmtpd` builds the wasm-fork-instrument CLI first
+    # (msmtpd is fork-instrumented); see bootstrap_target_to_selection's
+    # Package(name) handling in tools/xtask/src/local_build.rs.
+    bootstrap_target msmtpd
 }
 
 build_cpython() {
-    if has_cpython; then
-        info "cpython"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_cpython; then
-        step "Building CPython 3.13"
-        bash "$REPO_ROOT/packages/registry/cpython/build-cpython.sh"
-        info "CPython built"
-    else
-        info "CPython"
-    fi
+    bootstrap_target cpython
 }
 
 build_python_vfs() {
@@ -1489,6 +1324,12 @@ build_shell_vfs() {
 }
 
 build_erlang() {
+    # NOTE: not routed through `bootstrap_target` — the bin/beam.wasm copy
+    # below reads a path build-erlang.sh only writes to when run standalone
+    # (unset WASM_POSIX_DEP_OUT_DIR); under the engine, output goes to a
+    # resolver-owned directory instead, so this copy would silently stop
+    # populating bin/beam.wasm if this called `bootstrap_target erlang`
+    # directly (see build_dash's identical note above).
     if has_erlang; then
         info "erlang"
         return
@@ -1577,19 +1418,7 @@ build_nginx_php_vfs() {
 }
 
 build_texlive() {
-    if has_texlive; then
-        info "texlive"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_texlive; then
-        step "Building pdftex (TeX Live)"
-        bash "$REPO_ROOT/packages/registry/texlive/build-texlive.sh"
-        info "pdftex built"
-    else
-        info "pdftex (TeX Live)"
-    fi
+    bootstrap_target texlive
 }
 
 build_texlive_vfs() {
@@ -1615,118 +1444,44 @@ build_texlive_vfs() {
 }
 
 build_bc() {
-    if has_bc; then
-        info "bc"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_bc; then
-        step "Building bc"
-        bash "$REPO_ROOT/packages/registry/bc/build-bc.sh"
-        info "bc built"
-    else
-        info "bc"
-    fi
+    bootstrap_target bc
 }
 
 build_file() {
-    if has_file; then
-        info "file"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_file; then
-        step "Building file"
-        bash "$REPO_ROOT/packages/registry/file/build-file.sh"
-        info "file built"
-    else
-        info "file"
-    fi
+    bootstrap_target file
 }
 
 build_less() {
-    if has_less; then
-        info "less"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_less; then
-        step "Building less"
-        bash "$REPO_ROOT/packages/registry/less/build-less.sh"
-        info "less built"
-    else
-        info "less"
-    fi
+    bootstrap_target less
 }
 
 build_lsof() {
-    if has_lsof; then
-        info "lsof"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_lsof; then
-        step "Building lsof"
-        bash "$REPO_ROOT/packages/registry/lsof/build-lsof.sh"
-        info "lsof built"
-    else
-        info "lsof"
-    fi
+    bootstrap_target lsof
 }
 
 build_m4() {
-    if has_m4; then
-        info "m4"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_m4; then
-        step "Building m4"
-        bash "$REPO_ROOT/packages/registry/m4/build-m4.sh"
-        info "m4 built"
-    else
-        info "m4"
-    fi
+    bootstrap_target m4
 }
 
 build_make() {
-    if has_make; then
-        info "make"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_make; then
-        step "Building make"
-        bash "$REPO_ROOT/packages/registry/make/build-make.sh"
-        info "make built"
-    else
-        info "make"
-    fi
+    bootstrap_target make
 }
 
 build_tar() {
-    if has_tar; then
-        info "tar"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_tar; then
-        step "Building tar"
-        bash "$REPO_ROOT/packages/registry/tar/build-tar.sh"
-        info "tar built"
-    else
-        info "tar"
-    fi
+    bootstrap_target tar
 }
 
 build_curl_cli() {
+    # NOTE: unlike most targets above, this one is NOT routed through
+    # `bootstrap_target` (Stage 3 of the unified-build-front-door plan). The
+    # engine's own "curl" package already declares zlib/openssl as real
+    # dependency edges and resolves them through the package resolver, but
+    # this legacy recipe instead links against sysroot copies installed by
+    # build_zlib/build_openssl below — a different, ambient-install
+    # mechanism the engine's resolver-materialized dependencies don't
+    # populate. Migrating this one requires confirming the modern "curl"
+    # package node fully replaces it, which is out of scope here; left as
+    # the pre-Stage-3 bash recipe.
     if has_curl; then
         info "curl"
         return
@@ -1744,131 +1499,43 @@ build_curl_cli() {
 }
 
 build_wget() {
-    if has_wget; then
-        info "wget"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_wget; then
-        step "Building wget"
-        bash "$REPO_ROOT/packages/registry/wget/build-wget.sh"
-        info "wget built"
-    else
-        info "wget"
-    fi
+    bootstrap_target wget
 }
 
 build_gzip() {
-    if has_gzip; then
-        info "gzip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_gzip; then
-        step "Building gzip"
-        bash "$REPO_ROOT/packages/registry/gzip/build-gzip.sh"
-        info "gzip built"
-    else
-        info "gzip"
-    fi
+    bootstrap_target gzip
 }
 
 build_bzip2() {
-    if has_bzip2; then
-        info "bzip2"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_bzip2; then
-        step "Building bzip2"
-        bash "$REPO_ROOT/packages/registry/bzip2/build-bzip2.sh"
-        info "bzip2 built"
-    else
-        info "bzip2"
-    fi
+    bootstrap_target bzip2
 }
 
 build_xz() {
-    if has_xz; then
-        info "xz"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_xz; then
-        step "Building xz"
-        bash "$REPO_ROOT/packages/registry/xz/build-xz.sh"
-        info "xz built"
-    else
-        info "xz"
-    fi
+    bootstrap_target xz
 }
 
 build_zstd() {
-    if has_zstd; then
-        info "zstd"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_zstd; then
-        step "Building zstd"
-        bash "$REPO_ROOT/packages/registry/zstd/build-zstd.sh"
-        info "zstd built"
-    else
-        info "zstd"
-    fi
+    bootstrap_target zstd
 }
 
 build_zip() {
-    if has_zip; then
-        info "zip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_zip; then
-        step "Building zip"
-        bash "$REPO_ROOT/packages/registry/zip/build-zip.sh"
-        info "zip built"
-    else
-        info "zip"
-    fi
+    bootstrap_target zip
 }
 
 build_unzip() {
-    if has_unzip; then
-        info "unzip"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_unzip; then
-        step "Building unzip"
-        bash "$REPO_ROOT/packages/registry/unzip/build-unzip.sh"
-        info "unzip built"
-    else
-        info "unzip"
-    fi
+    bootstrap_target unzip
 }
 
 build_nano() {
-    if has_nano; then
-        info "nano"
-        return
-    fi
-    # nano's build script resolves ncurses through the dep cache itself
-    # (`cargo xtask build-deps resolve ncurses`); no sysroot prep here.
-    need_kernel
-    need_sdk
-    step "Building nano"
-    bash "$REPO_ROOT/packages/registry/nano/build-nano.sh"
-    info "nano built"
+    bootstrap_target nano
 }
 
+# zlib/openssl/libcurl below install into the ambient `sysroot/` tree for
+# build_curl_cli's legacy recipe (see the NOTE there). Not routed through
+# `bootstrap_target`: the engine builds these as proper resolver-materialized
+# dependency packages under `local-binaries/source-only-v1/`, not into
+# `sysroot/`, so switching these three to `bootstrap_target` would silently
+# stop populating the ambient copy build_curl_cli still reads.
 build_zlib() {
     if has_zlib; then
         info "zlib"
@@ -1957,62 +1624,27 @@ build_libcurl() {
 }
 
 build_ncurses() {
-    if has_ncurses; then
-        info "ncurses"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_ncurses; then
-        step "Building ncurses"
-        bash "$REPO_ROOT/packages/registry/ncurses/build-ncurses.sh"
-        info "ncurses built"
-    else
-        info "ncurses"
-    fi
+    bootstrap_target ncurses
 }
 
 build_nethack() {
-    if has_nethack; then
-        info "NetHack"
-        return
-    fi
-    # nethack's build script resolves ncurses through the dep cache.
-    need_kernel
-    need_sdk
-    step "Building NetHack"
-    bash "$REPO_ROOT/packages/registry/nethack/build-nethack.sh"
-    info "NetHack built"
+    bootstrap_target nethack
 }
 
 build_fbdoom() {
-    if has_fbdoom; then
-        info "fbDOOM"
-        return
-    fi
-    need_kernel
-    need_sdk
-    step "Building fbDOOM"
-    bash "$REPO_ROOT/packages/registry/fbdoom/build-fbdoom.sh"
-    info "fbDOOM built"
+    bootstrap_target fbdoom
 }
 
 build_vim() {
-    if has_vim; then
-        info "Vim"
-        return
-    fi
-    # Vim's build script now resolves ncurses through the dep cache
-    # (`cargo xtask build-deps resolve ncurses`), so we don't prep it
-    # into the sysroot here.
-    need_kernel
-    need_sdk
-    step "Building Vim"
-    bash "$REPO_ROOT/packages/registry/vim/build-vim.sh"
-    info "Vim built"
+    bootstrap_target vim
 }
 
 build_git() {
+    # NOTE: not routed through `bootstrap_target` — the stub fallback below
+    # writes a placeholder git-remote-http.wasm at an ambient path a real
+    # build script controls; leaving this on the pre-Stage-3 bash path
+    # avoids changing that fallback's behavior without being able to verify
+    # it here.
     if has_git; then
         info "git"
         return
@@ -2033,35 +1665,11 @@ build_git() {
 }
 
 build_perl() {
-    if has_perl; then
-        info "perl"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_perl; then
-        step "Building Perl"
-        bash "$REPO_ROOT/packages/registry/perl/build-perl.sh"
-        info "Perl built"
-    else
-        info "Perl"
-    fi
+    bootstrap_target perl
 }
 
 build_ruby() {
-    if has_ruby; then
-        info "ruby"
-        return
-    fi
-    need_kernel
-    need_sdk
-    if ! has_ruby; then
-        step "Building Ruby"
-        bash "$REPO_ROOT/packages/registry/ruby/build-ruby.sh"
-        info "Ruby built"
-    else
-        info "Ruby"
-    fi
+    bootstrap_target ruby
 }
 
 build_dlopen() {
@@ -2941,12 +2549,18 @@ cmd_list() {
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
     echo ""
     echo "${BOLD}Build targets:${RESET}"
-    echo "  kernel      Rust kernel + userspace Wasm         $(has_kernel && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sysroot     musl libc sysroot (wasm32)           $(has_sysroot && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sysroot64   musl libc sysroot (wasm64)           $(has_sysroot64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  sdk         SDK cross-compilation tools           $(has_sdk && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  rootfs      Canonical host rootfs.vfs             $(has_rootfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    # kernel/sysroot/sysroot64/sdk/host/rootfs status below is inlined
+    # rather than going through a has_* helper: xtask's local-build engine
+    # (not a bash existence check) is the freshness authority for these
+    # now, and this display is only ever a "does something exist on disk
+    # yet" hint, not a build gate — see docs/agent-guidance/
+    # packages-and-builds.md.
+    echo "  kernel      Rust kernel + userspace Wasm         $( { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; } && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot     musl libc sysroot (wasm32)           $([ -f "$REPO_ROOT/sysroot/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  host        TypeScript host (tsup)                $([ -d "$REPO_ROOT/host/dist" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs             $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
