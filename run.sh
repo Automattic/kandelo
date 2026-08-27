@@ -24,6 +24,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# Best-effort cleanup for pkg_xtask_bin's per-invocation freshness marker
+# (see its definition below). Some subcommands (cmd_local_build, the
+# source-rootfs-shell browser path) install their own EXIT trap and later
+# clear it with `trap - EXIT INT TERM`, which would clobber this one for the
+# remainder of their run; that is harmless here — the marker is keyed by
+# this process's PID, so a lingering 0-byte file cannot make a *different*
+# (later) `./run.sh` invocation skip its own freshness check.
+trap 'rm -f -- "${TMPDIR:-/tmp}/kandelo-xtask-fresh-$$"' EXIT
+
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
@@ -235,48 +245,55 @@ has_valid_kernel_file() {
 # pkg_xtask_bin: build xtask once (lazy) and return the binary path so
 # repeated `pkg_has_output` calls don't pay cargo's setup cost on each
 # call (~50ms × 40 has_* lookups in cmd_status = a real delay).
-PKG_XTASK_BIN=""
-# Set to 1 once this process has freshened $PKG_XTASK_BIN via a real `cargo
-# build` in this run.sh invocation. Distinct from PKG_XTASK_BIN itself: the
-# binary *path* is stable and cheap to recompute, but "is it fresh" must be
-# re-verified exactly once per process, not inferred from the path merely
-# existing (a leftover binary from a previous invocation, built before the
-# most recent `tools/xtask/src/*.rs` edit, must not be trusted un-rebuilt —
-# that is exactly the staleness hazard this whole build-front-door project
-# exists to close).
-PKG_XTASK_FRESH=0
+# pkg_xtask_bin: freshen the release xtask binary exactly ONCE per `./run.sh`
+# invocation, then hand back its path.
+#
+# Freshness (not just "does a binary exist") matters here: this now backs
+# the real bootstrap/build path (`bootstrap_target`), not just a peripheral
+# build-deps helper, so a binary compiled before the most recent
+# `tools/xtask/src/*.rs` edit must not be silently reused.
+#
+# "Once per invocation" cannot be a shell variable: every caller invokes
+# this via command substitution (`xtask=$(pkg_xtask_bin)`), and `$(...)`
+# always forks a subshell in bash — any assignment to a global variable
+# inside the function is discarded when that subshell exits, so a plain
+# `PKG_XTASK_FRESH=1` set here would never be visible to the next call.
+# Freshness has to be recorded as real filesystem state instead: a marker
+# file keyed by `$$` (this run.sh process's PID, which stays constant across
+# `$(...)` subshells within one invocation, but is different for the next
+# `./run.sh` run — so a stale marker can never cause a future edit to be
+# missed). The marker is cleaned up by the top-level EXIT trap above
+# (best-effort; a lingering marker is harmless since a new invocation uses a
+# new PID).
 pkg_xtask_bin() {
-    if [ "$PKG_XTASK_FRESH" -eq 1 ] && [ -n "$PKG_XTASK_BIN" ] && [ -x "$PKG_XTASK_BIN" ]; then
-        echo "$PKG_XTASK_BIN"
-        return 0
-    fi
     local host
     host=$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')
     if [ -z "$host" ]; then
         return 1
     fi
-    PKG_XTASK_BIN="$REPO_ROOT/target/$host/release/xtask"
-    # Always run `cargo build`, not just when the binary is absent: cargo's
-    # own incremental check is what gives us the freshness guarantee (a
-    # fast no-op when tools/xtask/src is unchanged, a real rebuild/relink
-    # when it isn't) — the same guarantee `cargo run` gave the old
-    # per-call `bootstrap_target` before it was switched to this cached-path
-    # helper. Gating on `[ ! -x "$PKG_XTASK_BIN" ]` (the prior behavior)
-    # would silently keep serving a binary built before the most recent
-    # xtask source edit.
-    if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
-        # Consumer jobs already run inside the declared dev shell, where
-        # `nix` is intentionally absent. Build directly in that shell if a
-        # caller did not provide the prepared xtask binary.
-        (cd "$REPO_ROOT" && \
-            cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
-    else
-        (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
-            cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+    local bin="$REPO_ROOT/target/$host/release/xtask"
+    local marker="${TMPDIR:-/tmp}/kandelo-xtask-fresh-$$"
+    if [ ! -f "$marker" ]; then
+        # Always run `cargo build`, not just when the binary is absent:
+        # cargo's own incremental check is what gives us the freshness
+        # guarantee (a fast no-op when tools/xtask/src is unchanged, a real
+        # rebuild/relink when it isn't) — the same guarantee `cargo run`
+        # gave the old per-call `bootstrap_target` before it was switched to
+        # this cached-path helper.
+        if [ -n "${KANDELO_DEV_SHELL_TOOL_PATH:-}" ]; then
+            # Consumer jobs already run inside the declared dev shell, where
+            # `nix` is intentionally absent. Build directly in that shell if
+            # a caller did not provide the prepared xtask binary.
+            (cd "$REPO_ROOT" && \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        else
+            (cd "$REPO_ROOT" && bash scripts/dev-shell.sh \
+                cargo build --release -p xtask --target "$host" --quiet) >&2 || return 1
+        fi
+        [ -x "$bin" ] || return 1
+        : > "$marker"
     fi
-    [ -x "$PKG_XTASK_BIN" ] || return 1
-    PKG_XTASK_FRESH=1
-    echo "$PKG_XTASK_BIN"
+    echo "$bin"
 }
 
 # pkg_output_rel <pkg-name> <wasm-basename> [arch]
