@@ -71,7 +71,7 @@ const KERNEL_WORKER_SOURCE = readFileSync(
   "utf8",
 );
 const BLOCKED_RETRY_SOURCE = readFileSync(
-  new URL("../../crates/kernel/src/blocked_retry.rs", import.meta.url),
+  new URL("../../crates/runtime-core/src/blocked_retry.rs", import.meta.url),
   "utf8",
 );
 const CHANNEL_SYSCALL_SOURCE = readFileSync(
@@ -675,7 +675,7 @@ describe("blocking retry snapshot contract", () => {
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
-      /pub\(crate\) fn from_syscall\(syscall: u32\) -> Result<Self, Errno> \{([\s\S]*?)\n    \}/,
+      /pub fn from_syscall\(syscall: u32\) -> Result<Self, Errno> \{([\s\S]*?)\n    \}/,
     )?.[1];
     expect(fromSyscall, "BlockingRetryOperation::from_syscall").toBeDefined();
     const targetedFamilies = Array.from(

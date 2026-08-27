@@ -108,7 +108,7 @@ const muslSpawnSource = readFileSync(
   "utf8",
 );
 const kernelSpawnSource = readFileSync(
-  new URL("../../crates/kernel/src/spawn.rs", import.meta.url),
+  new URL("../../crates/runtime-core/src/spawn.rs", import.meta.url),
   "utf8",
 );
 const kernelWasmApiSource = readFileSync(
