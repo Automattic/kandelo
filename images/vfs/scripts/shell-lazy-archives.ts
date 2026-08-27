@@ -101,6 +101,14 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
+  {
+    id: "kandelo-sdk",
+    dependency: "kandelo-sdk-browser-bundle",
+    resolverPath: "programs/wasm32/kandelo-sdk.zip",
+    archiveUrl: "kandelo-sdk.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/wasm32posix-cc",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
 /**

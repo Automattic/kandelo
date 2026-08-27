@@ -24,4 +24,4 @@ commit      = "UNPUBLISHED"
 # Kandelo.cmake, a Unix) instead of Generic, so libc++abi builds
 # cxa_thread_atexit.cpp and thread_local destructors run; seed
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF (musl has no _impl).
-revision    = 8
+revision    = 9

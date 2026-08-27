@@ -2312,6 +2312,28 @@ exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
+### Compiler engine limits
+
+The base shell lazily loads its C/C++ SDK on first use. Compiler acceptance
+passes the full sequential C/C++ cases on Node and Chromium, and its C
+cases and a small C++ program on the bundled WebKit engine. Firefox passes
+the libc++ containers/entropy case using `<random>` in a fresh shell, but
+repeated LLVM launches can exhaust its [executable-code arena](#firefox-executable-code-limit).
+The engine warns `failed to allocate executable memory for module`, and
+the shell reports an I/O error before Clang starts. The compiler browser
+test checks that exact boundary and tests fresh-session C++ separately;
+large-module sharing/reclamation remains follow-up work.
+
+That template-heavy case fails during compilation on the tested WebKit
+engine: Clang's recursive template instantiation exhausts the engine's
+native Wasm call stack. The worker reports `Maximum call stack size
+exceeded` inside `clang::Sema`, and the shell reports compiler SIGSEGV.
+This is separate from the C stack stored in Wasm linear memory. Raising
+the compiled program's linker stack size does not enlarge the running
+compiler's engine stack. The compiler browser test checks this exact
+diagnostic and exit status as a known boundary; it does not treat the
+failed compilation as success. See [in-guest compilation](sdk-guide.md#compile-inside-the-base-shell).
+
 ### Text-mode web browsing (ELinks) in the browser
 
 The shell image ships ELinks, a text-mode web browser, built with the

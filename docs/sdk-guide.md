@@ -250,6 +250,17 @@ The facts travel inside each object as a Wasm custom section named
 `kandelo.calltypes`, so they follow the object through static archives and
 caches. wasm-ld concatenates the sections of every linked object in input
 order, so a linked module holds the facts of exactly the code it contains.
+Chunks of at least 1 MiB are stored losslessly in zlib frames. Repeating
+long C++ names across many records otherwise makes LLVM-sized programs
+exceed the linker's signed 32-bit custom-section offsets. The instrumenter
+decodes one object chunk at a time and parses the same format-5 records;
+plain and compressed objects may appear together in one link. A frame is
+the eight bytes `KCTZ\0\0\0\x01`, little-endian 64-bit decoded and
+compressed byte counts, then the zlib bytes. The reader rejects malformed
+frames, trailing bytes, size mismatches, invalid text, chunks expanding
+beyond 512 MiB, and sections expanding beyond 16 GiB. This is storage for
+compile-time facts; it changes no guest instructions or runtime ABI.
+
 The CFI flags only produce type information: the plugin records clang's
 type tests and deletes them before optimization, so the generated code is
 the code of an ordinary build. One known exception: when an indirect call
@@ -732,5 +743,93 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
 - **For DRM/KMS/EGL/GLES programs**: Rebuild the wasm32 sysroot with
   `scripts/dev-shell.sh bash scripts/build-musl.sh` if `libdrm`, `libgbm`,
   `libEGL`, or `libGLESv2` is missing. `./run.sh setup` (and the deprecated
-  `build.sh` delegator) does not rebuild musl or these sysroot libraries.
+  `build.sh` delegator) checks musl freshness and refreshes these graphics
+  libraries through their own build stamps.
 - **Memory limit**: Default max memory is 1GB (16384 pages). Processes start with a smaller computed shared memory and grow on demand up to `maxMemoryPages`.
+
+## Compile inside the base shell
+
+The `browser-main-shell` product registers the compiler tools as lazy
+references in `shell.vfs.zst`. Opening a compiler or SDK file fetches
+`kandelo-sdk.zip` once and materializes the complete toolchain under
+`/usr`. Shell startup does not fetch the ZIP. Its compressed byte count
+and SHA-256 are recorded in the shell image and verified on download.
+
+The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
+It contains the source-built `clang@21.1.7` tools, matching Clang resource
+headers, musl and libc++ sysroot, syscall glue, and guest shell wrappers.
+The five tools live in `/usr/lib/llvm/bin`; wrappers and the `cc` and
+`c++` aliases live in `/usr/bin`. This delivery uses the base shell's
+existing lazy archive mechanism and requires no separate compiler image.
+
+In a shell session:
+
+```sh
+cat > /tmp/hello.c <<'C'
+#include <stdio.h>
+int main(void) { puts("Hello, Kandelo!"); return 0; }
+C
+cc /tmp/hello.c -o /tmp/hello
+/tmp/hello
+```
+
+Use `c++ hello.cpp -o hello` for C++. The guest wrapper runs clang's
+integrated compiler and then `wasm-ld` as separate processes. It supplies
+the Kandelo target, sysroot, host import allowlist, memory layout, and
+libc/glue inputs. Invoke `cc` or `c++` for the supported compilation and
+linking path. The LLVM tools receive the normal host-side continuation
+instrumentation before packaging: their linked code imports `fork`, so
+untransformed tools fail the runtime's executable admission checks.
+The recipe runs Binaryen's full post-instrumentation optimization on one
+core, avoiding the small native worker stacks on macOS.
+
+The `clang` recipe uses the Kandelo CMake platform, a private sysroot,
+and verified LLVM sources in resolver-owned work directories. Its
+patches select the WebAssembly linker driver and conservatively handle
+LLVM's BSD-specific filesystem locality probe. It uses normal libc++
+`std::random_device` backed by `/dev/urandom` and normal LLVM file output;
+it does not replace entropy with fixed seeds or patch out mmap writeback.
+
+This is an in-guest compiler for ordinary programs that do not require
+fork continuation instrumentation. A fully native SDK remains future
+work: the guest pipeline does not yet run the host SDK's compiler fact
+plugin, Binaryen transforms, or `wasm-fork-instrument`. Porting those
+components is required before programs compiled here that call `fork`
+can run through the normal continuation path. See
+[the saved self-hosting work items](superpowers/specs/2026-08-26-in-kandelo-clang-toolchain-design.md#future-work-recorded-explicitly).
+
+Guest-linked outputs also lack the `kandelo.abi.contract` digest stamp
+added by package admission. The current host accepts an absent stamp
+with a warning during the digest rollout; a present mismatched digest
+still fails. Adding digest stamping to guest compilation is remaining
+native SDK work.
+
+Node and Chromium pass the full sequential compiler acceptance. Firefox
+passes the C++ containers/entropy case in a fresh shell, but repeated LLVM
+launches in one session can exhaust its executable-code arena. Its engine
+reports `failed to allocate executable memory for module`, and the shell
+reports an I/O error before the compiler starts. This is compiled native
+code, separate from the guest linear-memory budget. The browser test records
+this exact failure as a boundary and separately tests fresh-session C++.
+The cache currently retains only 16 MiB of modules briefly; the LLVM tools
+are larger, so sharing/reclamation for repeated large tool launches remains
+follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit).
+
+The bundled WebKit engine passes the C cases and small C++ programs,
+but reports native Wasm call-stack exhaustion while Clang instantiates
+the templates used by `<random>`. Compilation then exits with SIGSEGV;
+the worker diagnostic says `Maximum call stack size exceeded` inside
+`clang::Sema`. This engine stack is separate from the linear-memory C
+stack. Use Node, Chromium, or Firefox for this template-heavy case. The
+browser test checks the exact WebKit failure rather than accepting any
+compiler error or claiming that case compiled.
+
+Compiler acceptance boots the actual base shell on Node and in a browser.
+`host/test/clang-in-guest.test.ts` checks deferred image entries and one
+SDK download, then compiles/runs `int main(void)`, argc/argv main,
+nonstandard `void main`, mmap writeback, small C++, and C++ containers/entropy.
+An archive case compiles an object, exercises `llvm-ar`, `llvm-ranlib`,
+and `llvm-nm` through the guest wrappers, then links and runs its caller.
+`apps/browser-demos/test/kandelo-compiler.spec.ts` runs the same guest
+programs and checks browser ZIP requests. The `void main` adapter is a
+compatibility extension; portable C programs should return `int`.

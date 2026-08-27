@@ -18,6 +18,7 @@ use walrus::Module;
 use crate::sink::CallFacts;
 
 pub mod bind;
+mod codec;
 mod side;
 mod targets;
 
@@ -174,11 +175,11 @@ pub fn binding(module: &Module, section: &[u8]) -> Result<Vec<(u32, Vec<(usize, 
 }
 
 fn parse(section: &[u8], sigs: &mut side::Interner, effective_types: bool) -> Result<side::Side> {
-    let text = std::str::from_utf8(section).context("facts section is not UTF-8")?;
     let mut parsed = side::Side { effective_types, ..Default::default() };
-    for (i, chunk) in side::split_chunks(text)?.into_iter().enumerate() {
+    codec::visit_chunks(section, |i, chunk| {
         parsed.parse_chunk(chunk, sigs).with_context(|| format!("facts chunk {i}"))?;
-    }
+        Ok(())
+    })?;
     Ok(parsed)
 }
 
