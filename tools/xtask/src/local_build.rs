@@ -512,6 +512,19 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// covers both "current" and "no local kernel build yet" (nothing can be
 /// stale before `./run.sh setup`/`bootstrap` has produced this tier; the
 /// resolver's own "binary not found" error already reports that plainly).
+///
+/// Scope: this checks only `kandelo-kernel.wasm`, the one artifact in
+/// `local-binaries/source-only-v1/` that carries an `__abi_version` export
+/// (`crates/kernel/src/wasm_api.rs`'s `__abi_version() -> u32`). The other
+/// artifacts the tier's default-policy priority now covers —
+/// `userspace.wasm` (`crates/userspace/src/lib.rs`, which exports only
+/// `memory`/`__data_end`/`__heap_base`, confirmed with `wasm-objdump -x`
+/// against a real build; it declares no ABI at all) and everything under
+/// `programs/` — are content-addressed generations the local-build engine
+/// keys by cache key derived from their own inputs (ABI included, where an
+/// artifact's build depends on it). A stale input there is a cache-key
+/// mismatch that already forces a rebuild through the normal engine path,
+/// not a silent-staleness hazard this freshness check needs to duplicate.
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     let kernel_path = repo
         .join("local-binaries")
@@ -4856,6 +4869,69 @@ materialization = "lazy"
         assert!(
             verify_fresh_report(temp.path()).is_ok(),
             "an unbuilt tree has no stale kernel to flag"
+        );
+    }
+
+    /// Build a wasm module exporting `__abi_version` (func 0) whose body is
+    /// exactly the given bytes (locals-count prefix included), instead of the
+    /// recognized `i32.const <N> [return] end` constant shape.
+    fn wasm_module_with_abi_version_body(body: &[u8]) -> Vec<u8> {
+        let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        wasm_section(1, &[0x01, 0x60, 0x00, 0x01, 0x7f], &mut module);
+        wasm_section(3, &[0x01, 0x00], &mut module);
+        let name = b"__abi_version";
+        let mut exports = Vec::new();
+        exports.push(0x01);
+        uleb128(name.len() as u32, &mut exports);
+        exports.extend_from_slice(name);
+        exports.push(0x00); // func kind
+        exports.push(0x00); // func index
+        wasm_section(7, &exports, &mut module);
+        let mut code = Vec::new();
+        code.push(0x01);
+        uleb128(body.len() as u32, &mut code);
+        code.extend_from_slice(body);
+        wasm_section(10, &code, &mut module);
+        module
+    }
+
+    fn write_kernel_wasm(temp: &tempfile::TempDir, bytes: &[u8]) {
+        let kernel_path = temp
+            .path()
+            .join("local-binaries/source-only-v1/kandelo-kernel.wasm");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, bytes).unwrap();
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_malformed_abi_version_export_body() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // `nop end` (no locals): not the recognized `i32.const <N> [return]
+        // end` constant shape `wasm_declared_abi_version` requires.
+        write_kernel_wasm(
+            &temp,
+            &wasm_module_with_abi_version_body(&[0x00, 0x01, 0x0b]),
+        );
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("i32.const"),
+            "must report the unrecognized constant shape: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_fresh_reports_a_kernel_with_no_abi_version_export() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // The bare 8-byte wasm header: a valid, empty module with no export
+        // section at all, so `wasm_declared_abi_version` finds no
+        // `__abi_version` export and returns `Ok(None)`.
+        write_kernel_wasm(&temp, &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+        let err = verify_fresh_report(temp.path()).unwrap_err();
+        assert!(
+            err.contains("kandelo-kernel.wasm has no __abi_version export"),
+            "must name the missing export: {err}"
         );
     }
 

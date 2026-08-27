@@ -277,6 +277,14 @@ export class BinaryNotFoundError extends Error {
  * listed ahead of, not instead of, `local-binaries`/`binaries`: those keep
  * resolving non-kernel local outputs (built programs) that source-only-v1
  * does not carry.
+ *
+ * Freshness scope: `tools/xtask`'s `verify-fresh` pre-test check (run from
+ * `./run.sh test`) only inspects `kandelo-kernel.wasm`, the one artifact
+ * here with an ABI to go stale (`__abi_version`). `userspace.wasm` exports
+ * no ABI at all, and everything under `programs/` is a content-addressed
+ * generation the local-build engine keys by cache key — a stale input there
+ * is a cache-key mismatch the engine's normal rebuild path already catches,
+ * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
   const tiers: BinaryCandidateTier[] = [];
