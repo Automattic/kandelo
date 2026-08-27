@@ -103,6 +103,32 @@ beyond EOF.
 **Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
 
+### Re-evaluate the Linux-specificity of the VT keyboard input path
+
+The framebuffer keyboard path is Linux-shaped end to end so that
+Linux-VT software such as fbDOOM runs unmodified. The host encodes key
+events as single-byte Linux console MEDIUMRAW (`byte = keycode`, bit 7
+set on release) in `host/src/framebuffer/browser-controls.ts`, the
+kernel carries those bytes opaquely, and the guest decodes them. The
+kernel also answers three Linux-VT keyboard ioctls
+(`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) on the process's terminal fd as
+compatibility stubs: they report a Linux VT keyboard with sensible
+defaults and treat mode changes as a no-op, without translating the
+byte stream.
+
+This is deliberate Linux-observable compatibility at a non-POSIX
+boundary — VT keyboard input has no POSIX equivalent — but it has not
+been evaluated as a long-term contract. Revisit whether the MEDIUMRAW
+encoding and the VT-ioctl stubs are the model we want, whether they
+should sit behind an explicitly documented input-device boundary, and
+what the correct behavior is for non-VT consumers. Any change must keep
+existing Linux-VT guests working and preserve Node/browser parity.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` (VT keyboard ioctls),
+`host/src/framebuffer/browser-controls.ts`
+(`encodeLinuxMediumRawKeyCode`), `crates/shared/src/ioctl_contract.rs`,
+`docs/posix-status.md`
+
 ## Browser
 
 ### Replace the constrained public CORS proxy with an owned relay

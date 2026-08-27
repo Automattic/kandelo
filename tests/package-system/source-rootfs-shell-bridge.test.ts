@@ -348,7 +348,7 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*29$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*30$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -538,6 +538,7 @@ describe("canonical source-rootfs shell", () => {
     expect(resolveDemoPresentation(demo!, "doom")?.autoCommand).toBe(
       "/usr/local/bin/fbdoom -iwad /doom1.wad",
     );
+    expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
       "terminal",

@@ -153,8 +153,10 @@ Images consumed by the Kandelo UI can include:
 ```
 
 This file lets the image declare presentation preferences, guide actions,
-companion HTML, assets, automatic commands, and an optional fixed-path file
-ingest. Build scripts in this repo write it with:
+companion HTML, assets, automatic commands, an optional fixed-path file
+ingest, and whether the demo wants an on-screen touch control overlay on
+coarse-pointer devices (`presentation.touchControls`). Build scripts in
+this repo write it with:
 
 ```ts
 writeKandeloDemoConfig(fs, {

@@ -479,6 +479,12 @@ export interface DemoPresentation {
    * framebuffer demos so exiting the app returns to the shell command.
    */
   autoCommand?: string;
+  /**
+   * Whether the demo wants an on-screen touch control overlay on coarse-pointer
+   * devices. Used by keyboard-driven framebuffer demos that are otherwise
+   * unplayable without a physical keyboard.
+   */
+  touchControls?: boolean;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
