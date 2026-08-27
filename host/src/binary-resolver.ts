@@ -279,7 +279,10 @@ export class BinaryNotFoundError extends Error {
  * does not carry.
  *
  * Freshness scope: `tools/xtask`'s `verify-fresh` pre-test check (run from
- * `./run.sh test`) only inspects `kandelo-kernel.wasm`, the one artifact
+ * `./run.sh test`) only inspects `kernel.wasm` (the literal filename the
+ * engine writes here and this tier's `candidatesFor` resolves unadjusted —
+ * not the old `build.sh`-era `kandelo-kernel.wasm` name from the ambient
+ * `local-binaries/` tier, which Stage 1 stopped producing), the one artifact
  * here with an ABI to go stale (`__abi_version`). `userspace.wasm` exports
  * no ABI at all, and everything under `programs/` is a content-addressed
  * generation the local-build engine keys by cache key — a stale input there

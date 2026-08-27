@@ -513,11 +513,16 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// stale before `./run.sh setup`/`bootstrap` has produced this tier; the
 /// resolver's own "binary not found" error already reports that plainly).
 ///
-/// Scope: this checks only `kandelo-kernel.wasm`, the one artifact in
+/// Scope: this checks only `kernel.wasm`, the one artifact in
 /// `local-binaries/source-only-v1/` that carries an `__abi_version` export
-/// (`crates/kernel/src/wasm_api.rs`'s `__abi_version() -> u32`). The other
-/// artifacts the tier's default-policy priority now covers —
-/// `userspace.wasm` (`crates/userspace/src/lib.rs`, which exports only
+/// (`crates/kernel/src/wasm_api.rs`'s `__abi_version() -> u32`). That is the
+/// literal filename the local-build engine writes and the resolver's
+/// `source-only-v1` tier requests (`candidatesFor` in `binary-resolver.ts`
+/// resolves the raw `kernel.wasm` relPath, unadjusted) — `kandelo-kernel.wasm`
+/// was the old `build.sh`-era name in the ambient `local-binaries/` tier,
+/// which Stage 1 stopped producing. The other artifacts the tier's
+/// default-policy priority now covers — `userspace.wasm`
+/// (`crates/userspace/src/lib.rs`, which exports only
 /// `memory`/`__data_end`/`__heap_base`, confirmed with `wasm-objdump -x`
 /// against a real build; it declares no ABI at all) and everything under
 /// `programs/` — are content-addressed generations the local-build engine
@@ -529,7 +534,7 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     let kernel_path = repo
         .join("local-binaries")
         .join("source-only-v1")
-        .join("kandelo-kernel.wasm");
+        .join("kernel.wasm");
     let bytes = match fs::read(&kernel_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -543,13 +548,13 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     })?
     .ok_or_else(|| {
         format!(
-            "{}: kandelo-kernel.wasm has no __abi_version export",
+            "{}: kernel.wasm has no __abi_version export",
             kernel_path.display()
         )
     })?;
     if declared != expected {
         return Err(format!(
-            "{} is stale: kandelo-kernel.wasm declares ABI {declared}, but the \
+            "{} is stale: kernel.wasm declares ABI {declared}, but the \
              source tree now builds ABI {expected}. Rebuild with `./run.sh setup` \
              (or `cargo xtask bootstrap`).",
             kernel_path.display()
@@ -4841,7 +4846,7 @@ materialization = "lazy"
         let temp = tempfile::TempDir::new().unwrap();
         let kernel_path = temp
             .path()
-            .join("local-binaries/source-only-v1/kandelo-kernel.wasm");
+            .join("local-binaries/source-only-v1/kernel.wasm");
         fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
         fs::write(&kernel_path, kernel_wasm_with_abi(kernel_abi)).unwrap();
         temp
@@ -4852,7 +4857,7 @@ materialization = "lazy"
         let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION - 1);
         let err = verify_fresh_report(repo.path()).unwrap_err();
         assert!(
-            err.contains("kandelo-kernel.wasm") && err.contains("ABI"),
+            err.contains("kernel.wasm") && err.contains("ABI"),
             "must name the stale kernel and why: {err}"
         );
     }
@@ -4898,7 +4903,7 @@ materialization = "lazy"
     fn write_kernel_wasm(temp: &tempfile::TempDir, bytes: &[u8]) {
         let kernel_path = temp
             .path()
-            .join("local-binaries/source-only-v1/kandelo-kernel.wasm");
+            .join("local-binaries/source-only-v1/kernel.wasm");
         fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
         fs::write(&kernel_path, bytes).unwrap();
     }
@@ -4930,7 +4935,7 @@ materialization = "lazy"
 
         let err = verify_fresh_report(temp.path()).unwrap_err();
         assert!(
-            err.contains("kandelo-kernel.wasm has no __abi_version export"),
+            err.contains("kernel.wasm has no __abi_version export"),
             "must name the missing export: {err}"
         );
     }
