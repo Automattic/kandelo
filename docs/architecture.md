@@ -2623,8 +2623,10 @@ The following "optimizations" in `kernel-worker.ts` were benchmarked and **all m
 ### Kernel Build
 
 ```bash
-bash build.sh
+./run.sh setup
 ```
+
+(`bash build.sh` still works as a deprecated delegator to the same command.)
 
 1. `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`
 2. Copies `kandelo-kernel.wasm` to `host/wasm/`

@@ -12,7 +12,7 @@ every package is always source-built through the SDK/libc/resolver and
 cached locally. There is no remote prebuilt-binary channel. The same
 machinery serves two audiences:
 
-- A developer running `bash build.sh` or `./run.sh local-build` whose
+- A developer running `./run.sh setup` or `./run.sh local-build` whose
   local edits invalidate the affected cache keys and trigger a source
   rebuild of exactly the changed packages.
 - A developer overriding an artifact by hand via `local-libs/` or

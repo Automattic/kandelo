@@ -356,6 +356,114 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+pub(crate) struct BootstrapStep {
+    pub name: &'static str,
+}
+
+/// The ordered host-plus-engine build closure for `xtask bootstrap` /
+/// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
+/// `engine` (the `msmtpd` package node consumes the built
+/// `wasm-fork-instrument` CLI); `host-dist` must follow `engine` (the
+/// TypeScript host build consumes the program package index the engine
+/// regenerates).
+pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
+    vec![
+        BootstrapStep {
+            name: "fork-instrument-tool",
+        },
+        BootstrapStep { name: "engine" },
+        BootstrapStep {
+            name: "host-dist",
+        },
+    ]
+}
+
+/// Default `--source-cache-root` for `bootstrap`, matching
+/// `scripts/run-local-build.sh` so the engine step here and the
+/// `./run.sh local-build` front door share one persistent cache location.
+fn default_source_cache_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(format!(
+            "bootstrap: HOME must be an absolute path, got {}",
+            home.display()
+        ));
+    }
+    Ok(home.join(".cache/kandelo/source-only"))
+}
+
+/// Run `bash <repo>/<rel> <args...>` with inherited stdio, so bootstrap steps
+/// stream their normal output exactly as they would run standalone. Returns
+/// `Err` on a non-zero exit or a failure to launch the script.
+fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> {
+    let script = repo.join(rel);
+    let status = Command::new("bash")
+        .arg(&script)
+        .args(args)
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("spawn {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} exited with {}",
+            script.display(),
+            match status.code() {
+                Some(code) => code.to_string(),
+                None => "no exit code (terminated by signal)".to_string(),
+            }
+        ));
+    }
+    Ok(())
+}
+
+/// `xtask bootstrap [--jobs <n>] [--rebuild] [--verify-cache]` — the single
+/// engine-plus-host build closure behind `./run.sh setup`. Accepts an
+/// optional leading positional target (e.g. `bootstrap kernel`) for a later
+/// stage to add single-target selection; Stage 1 only implements the
+/// whole-tree ("all") path and returns a clear error for any other target.
+pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
+    let (target, rest) = match args.split_first() {
+        Some((first, rest)) if !first.starts_with("--") => (Some(first.clone()), rest.to_vec()),
+        _ => (None, args),
+    };
+    if let Some(target) = target {
+        return Err(format!(
+            "bootstrap: target selection ({target:?}) is not yet implemented in this stage; \
+             omit the target to build the whole tree"
+        ));
+    }
+    let repo = crate::repo_root();
+    let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
+    let jobs = select_job_count(
+        flags.values.remove("--jobs").as_deref(),
+        std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
+        std::thread::available_parallelism().ok(),
+    )?;
+    let rebuild = flags.switches.contains("--rebuild");
+    let verify_cache = flags.switches.contains("--verify-cache");
+    for step in bootstrap_step_plan() {
+        match step.name {
+            "fork-instrument-tool" => {
+                run_repo_script(&repo, "scripts/build-fork-instrument-tool.sh", &[])?
+            }
+            "engine" => run_aggregate(LocalBuildRunArgsV1 {
+                set: repo.join("packages/sets/local-supported.toml"),
+                source_cache_root: default_source_cache_root()?,
+                output_root: repo.join("local-binaries/source-only-v1"),
+                products: vec!["all".to_string()],
+                jobs,
+                rebuild,
+                verify_cache,
+            })?,
+            "host-dist" => run_repo_script(&repo, "scripts/build-host.sh", &[])?,
+            other => return Err(format!("bootstrap: unknown step {other:?}")),
+        }
+    }
+    Ok(())
+}
+
 fn run_plan(set: PathBuf) -> Result<(), String> {
     let repo = crate::repo_root();
     let set = resolve_repo_file(&repo, &set, "supported set")?;
@@ -4414,6 +4522,17 @@ materialization = "lazy"
                 "{value:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn bootstrap_step_order_builds_host_tool_before_engine_and_host_after() {
+        let steps = bootstrap_step_plan();
+        let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            vec!["fork-instrument-tool", "engine", "host-dist"],
+            "fork-instrument must precede the engine (msmtpd needs it); host/dist must follow (needs the regenerated program index)"
+        );
     }
 
     #[test]

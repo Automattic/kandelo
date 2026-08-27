@@ -991,7 +991,7 @@ with `scripts/dev-shell.sh bash scripts/build-musl.sh`, then use
 build script. Do not vendor these libraries into the package archive; package
 the resulting program or VFS image instead.
 
-**"kandelo-kernel.wasm not found"**: Run `bash build.sh` first.
+**"kandelo-kernel.wasm not found"**: Run `./run.sh setup` first.
 
 **Fork fails or the host rejects `asyncify_*` exports**: Rebuild the program
 through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export

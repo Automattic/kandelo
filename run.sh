@@ -2692,6 +2692,15 @@ cmd_local_build() {
     fi
 }
 
+# One-command hermetic setup: fork-instrument host tool, then the
+# local-build engine over the whole supported set, then the TypeScript host
+# build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
+# repository dev shell; see docs/agent-guidance/packages-and-builds.md.
+cmd_setup() {
+    exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        bash "$REPO_ROOT/scripts/setup.sh" "$@"
+}
+
 cmd_run() {
     if [ $# -eq 0 ]; then
         err "Usage: $0 run <example> [args...]"
@@ -2907,6 +2916,11 @@ cmd_test() {
 }
 
 cmd_list() {
+    echo "${BOLD}One-command setup:${RESET}"
+    echo "  ./run.sh setup                       Hermetic build: fork-instrument tool,"
+    echo "                                        local-build engine (all packages),"
+    echo "                                        then the TypeScript host"
+    echo ""
     echo "${BOLD}Local SourceOnly build:${RESET}"
     echo "  ./run.sh local-build                Build all seven local VFS products"
     echo "                                        and their package dependencies"
@@ -3022,6 +3036,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     local-build) cmd_local_build "${@:2}" ;;
+    setup)    cmd_setup "${@:2}" ;;
     prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;

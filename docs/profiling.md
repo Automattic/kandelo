@@ -83,7 +83,7 @@ Build the kernel and benchmark programs:
 # Required first whenever libc/musl-overlay or libc/glue changed.
 scripts/dev-shell.sh bash scripts/build-musl.sh
 
-scripts/dev-shell.sh bash build.sh
+./run.sh setup
 scripts/dev-shell.sh bash scripts/build-programs.sh
 ```
 
