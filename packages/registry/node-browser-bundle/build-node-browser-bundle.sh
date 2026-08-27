@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Build the browser lazy-archive bundle for Node.js. Reshapes the node
-# package's node.wasm into a root-relative node.zip (bin/node). Consumers see
-# the bare zip at programs/wasm32/node.zip.
+# package's node.wasm plus npm (this package's [source]) into a root-relative
+# node.zip (bin/node + bin/npm + bin/npx + local/lib/npm/…). Consumers see the
+# bare zip at programs/wasm32/node.zip.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,6 +11,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
 NODE_DIR="${WASM_POSIX_DEP_NODE_DIR:-}"
+SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 
 fail() { echo "build-node-browser-bundle: $*" >&2; exit 2; }
@@ -24,9 +26,28 @@ require_real_directory() {
 require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
 require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
 require_real_directory WASM_POSIX_DEP_NODE_DIR "$NODE_DIR"
+require_real_directory WASM_POSIX_DEP_SOURCE_DIR "$SOURCE_DIR"
+
+node_wasm="$NODE_DIR/node.wasm"
+[ -f "$node_wasm" ] || fail "node.wasm not found under $NODE_DIR"
+[ -f "$SOURCE_DIR/bin/npm-cli.js" ] || fail "npm dist not found at $SOURCE_DIR/bin/npm-cli.js"
+
+# Run the memfs->zip staging through the repo-locked tsx (never `npx`, which
+# would download a fresh tsx and fail offline). Point TMPDIR at a short /tmp
+# scratch dir so tsx's IPC socket path stays under the macOS unix-socket limit.
+DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-$PATH}"
+NODE_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P node || true)"
+[ -n "$NODE_BIN" ] || fail "node is not available from KANDELO_DEV_SHELL_TOOL_PATH"
+TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
+[ -f "$TSX_CLI" ] || fail "locked tsx CLI not found at $TSX_CLI"
+TSX_TMP="$(mktemp -d /tmp/kandelo-node.XXXXXX)"
+trap 'rm -rf -- "$TSX_TMP"' EXIT
 
 archive="$WORK_DIR/node.zip"
-bash "$REPO_ROOT/images/vfs/scripts/build-node-zip.sh" "$NODE_DIR" "$archive"
+TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
+    "$NODE_BIN" "$TSX_CLI" \
+    "$REPO_ROOT/images/vfs/scripts/build-node-zip.ts" \
+    "$node_wasm" "$SOURCE_DIR" "$archive"
 
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
