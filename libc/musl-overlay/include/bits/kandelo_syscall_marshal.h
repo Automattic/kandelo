@@ -95,6 +95,120 @@ struct kandelo_marshal_syscall {
     const struct kandelo_marshal_arg *args;
 };
 
+/* Ioctl arg representation and copy direction (mirror
+* wasm_posix_shared::ioctl_contract::{IoctlArgKind, IoctlDirection}). */
+#define KANDELO_IOCTL_ARG_NONE 0u
+#define KANDELO_IOCTL_ARG_SCALAR_I32 1u
+#define KANDELO_IOCTL_ARG_POINTER 2u
+#define KANDELO_IOCTL_DIR_NONE 0u
+#define KANDELO_IOCTL_DIR_IN 1u
+#define KANDELO_IOCTL_DIR_OUT 2u
+#define KANDELO_IOCTL_DIR_INOUT 3u
+/* Known request unsupported for this caller data model (None). */
+#define KANDELO_IOCTL_SIZE_UNSUPPORTED 0xFFFFFFFFu
+
+struct kandelo_ioctl_contract {
+    uint32_t request;
+    uint8_t arg_kind;   /* KANDELO_IOCTL_ARG_* */
+    uint8_t direction;  /* KANDELO_IOCTL_DIR_* */
+    uint32_t wasm32_size;
+    uint32_t wasm64_size;
+};
+
+static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
+    { 0x00000040u, 2u, 1u, 4u, 4u },
+    { 0x00000041u, 0u, 0u, 0u, 0u },
+    { 0x00000042u, 2u, 1u, 16u, 16u },
+    { 0x00000043u, 0u, 0u, 0u, 0u },
+    { 0x00000044u, 2u, 1u, 32u, 32u },
+    { 0x00000045u, 0u, 0u, 0u, 0u },
+    { 0x00000046u, 0u, 0u, 0u, 0u },
+    { 0x00000047u, 2u, 1u, 8u, 8u },
+    { 0x00000048u, 0u, 0u, 0u, 0u },
+    { 0x00000049u, 2u, 1u, 24u, 4294967295u },
+    { 0x00004600u, 2u, 2u, 160u, 160u },
+    { 0x00004601u, 2u, 1u, 160u, 160u },
+    { 0x00004602u, 2u, 2u, 80u, 80u },
+    { 0x00004606u, 2u, 1u, 160u, 160u },
+    { 0x00004B33u, 2u, 2u, 1u, 1u },
+    { 0x00004B44u, 2u, 2u, 4u, 4u },
+    { 0x00004B45u, 1u, 0u, 0u, 0u },
+    { 0x00005000u, 0u, 0u, 0u, 0u },
+    { 0x00005001u, 0u, 0u, 0u, 0u },
+    { 0x00005008u, 0u, 0u, 0u, 0u },
+    { 0x0000500Eu, 0u, 0u, 0u, 0u },
+    { 0x00005015u, 0u, 0u, 0u, 0u },
+    { 0x00005016u, 0u, 0u, 0u, 0u },
+    { 0x00005401u, 2u, 2u, 60u, 60u },
+    { 0x00005402u, 2u, 1u, 60u, 60u },
+    { 0x00005403u, 2u, 1u, 60u, 60u },
+    { 0x00005404u, 2u, 1u, 60u, 60u },
+    { 0x00005409u, 1u, 0u, 0u, 0u },
+    { 0x0000540Au, 1u, 0u, 0u, 0u },
+    { 0x0000540Bu, 1u, 0u, 0u, 0u },
+    { 0x0000540Eu, 1u, 0u, 0u, 0u },
+    { 0x0000540Fu, 2u, 2u, 4u, 4u },
+    { 0x00005410u, 2u, 1u, 4u, 4u },
+    { 0x00005413u, 2u, 2u, 8u, 8u },
+    { 0x00005414u, 2u, 1u, 8u, 8u },
+    { 0x0000541Bu, 2u, 2u, 4u, 4u },
+    { 0x00005421u, 2u, 1u, 4u, 4u },
+    { 0x00005422u, 0u, 0u, 0u, 0u },
+    { 0x00005429u, 2u, 2u, 4u, 4u },
+    { 0x00005450u, 0u, 0u, 0u, 0u },
+    { 0x00005451u, 0u, 0u, 0u, 0u },
+    { 0x00005452u, 2u, 1u, 4u, 4u },
+    { 0x0000641Eu, 0u, 0u, 0u, 0u },
+    { 0x0000641Fu, 0u, 0u, 0u, 0u },
+    { 0x00008905u, 2u, 2u, 4u, 4u },
+    { 0x40045004u, 2u, 1u, 4u, 4u },
+    { 0x40045010u, 2u, 1u, 4u, 4u },
+    { 0x40045431u, 2u, 1u, 4u, 4u },
+    { 0x40086409u, 2u, 1u, 8u, 8u },
+    { 0x80045002u, 2u, 2u, 4u, 4u },
+    { 0x80045005u, 2u, 2u, 4u, 4u },
+    { 0x80045006u, 2u, 2u, 4u, 4u },
+    { 0x80045007u, 2u, 2u, 4u, 4u },
+    { 0x8004500Bu, 2u, 2u, 4u, 4u },
+    { 0x8004500Fu, 2u, 2u, 4u, 4u },
+    { 0x80045010u, 2u, 2u, 4u, 4u },
+    { 0x80045017u, 2u, 2u, 4u, 4u },
+    { 0x80045430u, 2u, 2u, 4u, 4u },
+    { 0x80085013u, 2u, 2u, 8u, 8u },
+    { 0x80085014u, 2u, 2u, 8u, 8u },
+    { 0x800C5011u, 2u, 2u, 12u, 12u },
+    { 0x800C5012u, 2u, 2u, 12u, 12u },
+    { 0x8010500Cu, 2u, 2u, 16u, 16u },
+    { 0x8010500Du, 2u, 2u, 16u, 16u },
+    { 0xC0045002u, 2u, 3u, 4u, 4u },
+    { 0xC0045003u, 2u, 3u, 4u, 4u },
+    { 0xC0045004u, 2u, 2u, 4u, 4u },
+    { 0xC0045005u, 2u, 3u, 4u, 4u },
+    { 0xC0045006u, 2u, 3u, 4u, 4u },
+    { 0xC0045007u, 2u, 3u, 4u, 4u },
+    { 0xC0045009u, 2u, 3u, 4u, 4u },
+    { 0xC004500Au, 2u, 3u, 4u, 4u },
+    { 0xC00464AFu, 2u, 1u, 4u, 4u },
+    { 0xC00464B4u, 2u, 1u, 4u, 4u },
+    { 0xC00C642Du, 2u, 3u, 12u, 12u },
+    { 0xC00C642Eu, 2u, 3u, 12u, 12u },
+    { 0xC010640Cu, 2u, 3u, 16u, 16u },
+    { 0xC010643Au, 2u, 3u, 16u, 16u },
+    { 0xC01064B3u, 2u, 3u, 16u, 16u },
+    { 0xC01464A6u, 2u, 3u, 20u, 20u },
+    { 0xC01864B0u, 2u, 1u, 24u, 24u },
+    { 0xC02064B2u, 2u, 3u, 32u, 32u },
+    { 0xC0246400u, 2u, 3u, 36u, 4294967295u },
+    { 0xC0406400u, 2u, 3u, 4294967295u, 64u },
+    { 0xC04064A0u, 2u, 3u, 64u, 64u },
+    { 0xC05064A7u, 2u, 3u, 80u, 80u },
+    { 0xC06864A1u, 2u, 3u, 104u, 104u },
+    { 0xC06864A2u, 2u, 1u, 104u, 104u },
+    { 0xC06864B8u, 2u, 3u, 104u, 104u },
+};
+
+#define KANDELO_IOCTL_CONTRACT_COUNT 89u
+
 static const struct kandelo_marshal_arg kandelo_marshal_args_1[] = {
     { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },
 };

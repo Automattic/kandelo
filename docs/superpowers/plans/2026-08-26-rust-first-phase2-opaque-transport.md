@@ -349,6 +349,28 @@ legacy validator built `KernelIovecWire`/`KernelMsghdrWire`).
 - [ ] **Step 5: Commit** (`libc: Self-marshal syscall args into the opaque
   channel record`). (Still behind the marker — not yet the live path.)
 
+### Task 5c note — semctl GETALL/SETALL sizing decision (interim)
+
+The record format carries no kernel-computed span length, but the semctl
+GETALL/SETALL buffer is `nsems * sizeof(unsigned short)`, where `nsems` is
+kernel state absent from the syscall arguments. Three options were weighed:
+
+- **(a)** the guest issues one preliminary `semctl(semid, 0, IPC_STAT, &buf)`
+  to read `sem_nsems`, sizes the buffer, and marshals a plain `IN`/`OUT` span
+  at the region base (which the kernel semctl dispatch already re-proves via
+  `checked_channel_scratch_start_range`);
+- **(b)** add a kernel-sized-span record kind the kernel fills in;
+- **(c)** leave semctl GETALL/SETALL on the raw fallback path.
+
+**Option (a) is chosen for now** (implemented in Task 5c): it keeps the record
+format uniform at the cost of one extra `IPC_STAT` round-trip **on the
+GETALL/SETALL path only**. This is deliberately left open to future
+reinterpretation as (b) or (c). The decision is also documented at the semctl
+marshal site in `libc/glue/channel_syscall.c`. `SETVAL`/`GETVAL` keep arg 3 as
+a scalar (no span). This closes the last of the three Task 5b coverage gaps
+(ioctl request-sizing, select/pselect6 timeout, semctl GETALL/SETALL); the
+encoder remains dormant (not wired into `__do_syscall_impl`) until Task 6.
+
 ---
 
 ## Task 6: THE ATOMIC FLIP — record path live, host blind, ABI 44 (one commit)

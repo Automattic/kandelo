@@ -2721,4 +2721,120 @@ mod tests {
         assert_eq!(validated.pointer(3), Ok(start + 2 * fd));
         assert_eq!(validated.pointer(5), Ok(start + 3 * fd));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 5c (Phase 2 opaque transport): the final three guest-side gaps.
+    //
+    // One representative golden per gap the C encoder now covers: ioctl
+    // request-sized buffers, select's timeout-as-scalar conversion, and semctl
+    // GETALL/SETALL. Each hand-encodes the record the guest self-marshaller
+    // emits and asserts `prepare_channel_record` produces a scratch layout the
+    // UNCHANGED validators / dispatch accept, with copy-back for OUT buffers.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn record_ioctl_tiocgwinsz_matches_legacy_validator() {
+        // ioctl(fd=3, TIOCGWINSZ, winsize): the guest sizes arg 2 from the
+        // ioctl contract (Out, 8 bytes) and sets arg 3 = size, arg 5 = pointer
+        // width -- exactly what the unchanged `validate_ioctl_layout` re-proves.
+        let request = wasm_posix_shared::ioctl_contract::TIOCGWINSZ as i64;
+        let size = 8usize;
+        let (start, prep, _data) = prep_record(
+            Syscall::Ioctl as u32,
+            // fd, request, arg2(overwritten), size, _, pointer_width
+            [3, request, 0, size as i64, 0, 4],
+            &[RecSpan {
+                kind: SPAN_KIND_OUT_PTR,
+                arg_index: 2,
+                payload: alloc::vec![0u8; size],
+            }],
+        );
+        assert_eq!(prep.syscall_nr, Syscall::Ioctl as u32);
+        // The winsize buffer is rewritten to the allocation base.
+        assert_eq!(prep.args[2] as usize, start);
+        assert_eq!(prep.args[3], size as i64);
+        assert_eq!(prep.args[5], 4);
+        // TIOCGWINSZ writes the window size back -> one OUT copy-back.
+        assert_eq!(prep.copy_back.len(), 1);
+        assert_eq!(prep.copy_back[0].scratch_src, start);
+        assert_eq!(prep.copy_back[0].len, size);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed ioctl layout");
+        assert_eq!(validated.pointer(2), Ok(start));
+    }
+
+    #[test]
+    fn record_select_carries_timeout_scalar_and_places_fdset() {
+        // select(nfds, readfds, NULL, NULL, &tv): the guest converts the timeval
+        // to a millisecond scalar in word 4 and emits an INOUT fd_set span. The
+        // kernel `prepare_select_record` places the fd_set and carries the
+        // timeout scalar through unchanged (kernel_select reads it from a5).
+        let fd = wasm_posix_shared::select::FD_SET_BYTES;
+        let timeout_ms = 250i64;
+        let (start, prep, _data) = prep_record(
+            Syscall::Select as u32,
+            // nfds, read(overwritten), write, except, timeout_ms, _
+            [8, 0, 0, 0, timeout_ms, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_IN_OUT_PTR,
+                arg_index: 1,
+                payload: alloc::vec![0u8; fd],
+            }],
+        );
+        assert_eq!(prep.syscall_nr, Syscall::Select as u32);
+        assert_eq!(prep.args[0], 8);
+        assert_eq!(prep.args[1] as usize, start); // readfds at the base slot
+        assert_eq!(prep.args[2], 0); // writefds null
+        assert_eq!(prep.args[3], 0); // exceptfds null
+        // The computed timeout millisecond scalar survives reconstruction.
+        assert_eq!(prep.args[4], timeout_ms);
+        // The value-result fd_set copies back.
+        assert_eq!(prep.copy_back.len(), 1);
+        assert_eq!(prep.copy_back[0].scratch_src, start);
+        assert_eq!(prep.copy_back[0].len, fd);
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        let validated =
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+                .expect("legacy validator accepts the reconstructed select layout");
+        assert_eq!(validated.pointer(1), Ok(start));
+    }
+
+    #[test]
+    fn record_semctl_getall_lays_output_buffer_at_base() {
+        // semctl(semid, 0, GETALL, arg): the guest sizes the u16[] array via a
+        // preliminary IPC_STAT (nsems), then emits an OUT span at arg 3. The
+        // kernel semctl dispatch proves this buffer INLINE via
+        // `checked_channel_scratch_start_range` (arg 3 must equal the region
+        // base), not through a pre-dispatch special validator, so the golden
+        // asserts the base placement and the OUT copy-back directly.
+        const GETALL: i64 = 13;
+        let nsems = 3usize;
+        let bytes = nsems * core::mem::size_of::<u16>();
+        let (start, prep, _data) = prep_record(
+            extended_syscalls::SYS_SEMCTL,
+            // semid, semnum, cmd=GETALL, arg(overwritten), _, _
+            [9, 0, GETALL, 0, 0, 0],
+            &[RecSpan {
+                kind: SPAN_KIND_OUT_PTR,
+                arg_index: 3,
+                payload: alloc::vec![0u8; bytes],
+            }],
+        );
+        assert_eq!(prep.syscall_nr, extended_syscalls::SYS_SEMCTL);
+        assert_eq!(prep.args[2], GETALL);
+        // The array buffer is rewritten to the allocation base, which the kernel
+        // dispatch's `checked_channel_scratch_start_range(args[3], ...)` requires.
+        assert_eq!(prep.args[3] as usize, start);
+        // GETALL writes the semaphore values back -> one OUT copy-back to the
+        // record's original span offset.
+        assert_eq!(prep.copy_back.len(), 1);
+        assert_eq!(prep.copy_back[0].scratch_src, start);
+        assert_eq!(prep.copy_back[0].len, bytes);
+        assert_eq!(
+            prep.copy_back[0].channel_dest,
+            start + RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES
+        );
+    }
 }

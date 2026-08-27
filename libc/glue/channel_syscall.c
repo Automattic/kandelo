@@ -35,9 +35,11 @@
 #include <sys/soundcard.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/epoll.h>
 #include <sys/msg.h>
 #include <sys/shm.h>
+#include <sys/sem.h>
 #include <bits/kandelo_channel_scalars.h>
 #include <bits/kandelo_process_layouts.h>
 #include <bits/kandelo_syscall_marshal.h>
@@ -772,11 +774,13 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 /*                                                                     */
 /* Returns the encoded record byte length on success, or a negative    */
 /* value when the syscall cannot be faithfully marshalled inline (the   */
-/* caller must fall back to the raw-arg path). Coverage today is the    */
-/* flat descriptor-table syscalls plus the nested iovec/msghdr shapes;  */
-/* the bespoke special-layout families (ioctl/select/epoll/prctl/       */
-/* fcntl-lock/SysV IPC) are not yet encoded and marshal as scalar-only  */
-/* records -- Task 6 must extend coverage before making this live.      */
+/* caller must fall back to the raw-arg path). Coverage is the flat      */
+/* descriptor-table syscalls, the nested iovec/msghdr shapes, and the    */
+/* bespoke special-layout families (ioctl, select/pselect6, epoll,       */
+/* prctl, fcntl-lock, SysV IPC including semctl GETALL/SETALL). ioctl    */
+/* sizing uses the generated ioctl contract table; select converts its   */
+/* timeout to the kernel's millisecond scalar; semctl GETALL/SETALL      */
+/* size their buffer via one preliminary IPC_STAT (see that case).       */
 /* ================================================================== */
 
 #define KANDELO_MARSHAL_FALLBACK (-1)
@@ -800,6 +804,19 @@ kandelo_marshal_lookup(uint32_t syscall_number) {
             return &kandelo_marshal_table[i];
     }
     return (const struct kandelo_marshal_syscall *)0;
+}
+
+/* Look up an ioctl request in the generated request->size/direction contract
+ * (bits/kandelo_syscall_marshal.h, projected from
+ * wasm_posix_shared::ioctl_contract). The table is sorted by request; a linear
+ * scan keeps the dormant encoder simple. Returns NULL for an unknown request. */
+static const struct kandelo_ioctl_contract *
+kandelo_ioctl_lookup(uint32_t request) {
+    for (uint32_t i = 0; i < KANDELO_IOCTL_CONTRACT_COUNT; i++) {
+        if (kandelo_ioctl_contracts[i].request == request)
+            return &kandelo_ioctl_contracts[i];
+    }
+    return (const struct kandelo_ioctl_contract *)0;
 }
 
 /* Compute the flat span byte length for one pointer arg, reading from guest
@@ -1105,25 +1122,163 @@ static long kandelo_marshal_special(long n, const long long *args_in,
         return (long)(off + (uint32_t)wire);
     }
     case KANDELO_SYS_SELECT:
-    case KANDELO_SYS_PSELECT6:
-        /* Kernel-side placement is covered (channel_scratch::prepare_select_-
-         * record lays the fd_sets/mask at fixed offsets), but the guest encoder
-         * also needs to convert the arg-4 timeval/timespec into the scalar
-         * millisecond value the kernel dispatch reads (the host does this today)
-         * -- a scalar transform outside this pass. Defer. */
-        return KANDELO_MARSHAL_FALLBACK;
-    case KANDELO_SYS_IOCTL:
-        /* Needs the request -> (size, direction) contract; legacy request
-         * numbers (e.g. TIOCGWINSZ 0x5413) do not encode their size, so
-         * _IOC_SIZE is insufficient. Requires projecting
-         * wasm_posix_shared::ioctl_contract into a guest table. Defer. */
-        return KANDELO_MARSHAL_FALLBACK;
-    case KANDELO_SYS_SEMCTL:
-        /* GETALL/SETALL buffer size is nsems*sizeof(u16) where nsems is the
-         * semaphore set's cardinality the kernel derives (semctl_array_bytes);
-         * the guest cannot size it from the syscall arguments, and the record
-         * format carries no kernel-computed length. Defer. */
-        return KANDELO_MARSHAL_FALLBACK;
+    case KANDELO_SYS_PSELECT6: {
+        /* select(nfds, readfds, writefds, exceptfds, timeout[, sigmask]).
+         * The kernel's prepare_select_record lays each present fd_set (args
+         * 1..3) and the pselect6 sigmask (arg 5) at fixed disjoint offsets, so
+         * the guest just emits an INOUT span per non-null fd_set (each the fixed
+         * sizeof(fd_set) the kernel re-proves) and an IN span for the 8-byte
+         * sigmask. The kernel dispatch reads the timeout as a scalar millisecond
+         * value in a5 (word 4); the host converts it today, so the guest does it
+         * here, matching that read exactly. A null timeout keeps the -1 infinite
+         * sentinel the kernel already uses. */
+        int is_pselect6 = ((uint32_t)n == KANDELO_SYS_PSELECT6);
+
+        for (uint8_t fdset_arg = 1; fdset_arg <= 3; fdset_arg++) {
+            uintptr_t p = (uintptr_t)(unsigned long long)sargs[fdset_arg];
+            if (p == 0)
+                continue; /* null fd_set: scalar 0, no span */
+            plan[nplan].kind = KANDELO_MARSHAL_SPAN_IN_OUT_PTR;
+            plan[nplan].arg_index = fdset_arg;
+            plan[nplan].src = (const void *)p;
+            plan[nplan].len = (uint32_t)sizeof(fd_set);
+            nplan++;
+        }
+
+        /* Timeout -> milliseconds in word 4 (a5), from the caller's own struct
+         * (timeval for select, timespec for pselect6), matching the current
+         * host conversion. A null pointer means "wait forever" (-1). */
+        uintptr_t tp = (uintptr_t)(unsigned long long)sargs[4];
+        long long timeout_ms;
+        if (tp == 0) {
+            timeout_ms = -1;
+        } else if (is_pselect6) {
+            const struct timespec *ts = (const struct timespec *)tp;
+            timeout_ms = (long long)ts->tv_sec * 1000
+                         + (long long)ts->tv_nsec / 1000000;
+        } else {
+            const struct timeval *tv = (const struct timeval *)tp;
+            timeout_ms = (long long)tv->tv_sec * 1000
+                         + (long long)tv->tv_usec / 1000;
+            if (timeout_ms < 0)
+                timeout_ms = 0;
+        }
+        sargs[4] = timeout_ms;
+
+        /* pselect6 sigmask: word 5 points at { const sigset_t *ss; size_t
+         * ss_len }. The kernel reads the inner 8-byte sigset directly from word
+         * 5, so emit an IN span with those bytes when a mask is present, and set
+         * word 5 to 0 (no mask) otherwise. */
+        if (is_pselect6) {
+            /* Read the outer descriptor from the untouched inputs before
+             * clearing word 5 to the "no mask" sentinel. */
+            uintptr_t dp = (uintptr_t)(unsigned long long)args_in[5];
+            sargs[5] = 0;
+            if (dp != 0) {
+                struct kandelo_pselect6_sigmask {
+                    const void *ss;
+                    size_t ss_len;
+                } *desc = (struct kandelo_pselect6_sigmask *)dp;
+                uintptr_t ss = (uintptr_t)desc->ss;
+                if (ss != 0) {
+                    if (desc->ss_len != 8u)
+                        return KANDELO_MARSHAL_FALLBACK; /* wrong sigset size */
+                    plan[nplan].kind = KANDELO_MARSHAL_SPAN_IN_PTR;
+                    plan[nplan].arg_index = 5;
+                    plan[nplan].src = (const void *)ss;
+                    plan[nplan].len = 8u; /* SIGNAL_MASK_BYTES */
+                    nplan++;
+                }
+            }
+        }
+        break;
+    }
+    case KANDELO_SYS_IOCTL: {
+        /* ioctl(fd, request, arg): the request number selects arg's size and
+         * direction. The generated kandelo_ioctl_contracts table (projected
+         * from wasm_posix_shared::ioctl_contract) is the guest's source of
+         * truth, since legacy request encodings (TIOCGWINSZ 0x5413, etc.) do
+         * not embed their size. */
+        uint32_t request = (uint32_t)sargs[1];
+        const struct kandelo_ioctl_contract *c = kandelo_ioctl_lookup(request);
+        if (c == (const struct kandelo_ioctl_contract *)0)
+            return KANDELO_MARSHAL_FALLBACK; /* unknown request: not inline */
+        if (c->arg_kind != KANDELO_IOCTL_ARG_POINTER)
+            break; /* None / scalar-i32 arg: no pointer span, scalar-only */
+        uint32_t size = (sizeof(void *) == 8) ? c->wasm64_size : c->wasm32_size;
+        if (size == KANDELO_IOCTL_SIZE_UNSUPPORTED)
+            return KANDELO_MARSHAL_FALLBACK; /* known but unsupported width */
+        uintptr_t p = (uintptr_t)(unsigned long long)sargs[2];
+        if (p == 0)
+            return KANDELO_MARSHAL_FALLBACK; /* required buffer absent */
+        uint8_t kind;
+        switch (c->direction) {
+        case KANDELO_IOCTL_DIR_IN:    kind = KANDELO_MARSHAL_SPAN_IN_PTR; break;
+        case KANDELO_IOCTL_DIR_OUT:   kind = KANDELO_MARSHAL_SPAN_OUT_PTR; break;
+        case KANDELO_IOCTL_DIR_INOUT: kind = KANDELO_MARSHAL_SPAN_IN_OUT_PTR; break;
+        default: return KANDELO_MARSHAL_FALLBACK; /* pointer with no direction */
+        }
+        plan[nplan].kind = kind;
+        plan[nplan].arg_index = 2;
+        plan[nplan].src = (const void *)p;
+        plan[nplan].len = size;
+        nplan++;
+        /* The kernel's validate_ioctl_layout re-proves arg 2 at the region base
+         * from these two scalar words: arg 3 carries the buffer size and arg 5
+         * the caller pointer width. */
+        sargs[3] = (long long)size;
+        sargs[5] = (long long)sizeof(void *);
+        break;
+    }
+    case KANDELO_SYS_SEMCTL: {
+        /* semctl(semid, semnum, cmd, arg): only GETALL (13) and SETALL (17)
+         * carry a pointer buffer (the `union semun`'s `array` field) at arg 3.
+         * SETVAL/GETVAL and the other commands keep arg 3 as a scalar and marshal
+         * as a scalar-only record.
+         *
+         * ------------------------------------------------------------------
+         * DESIGN DECISION (interim) -- GETALL/SETALL buffer sizing.
+         *
+         * The buffer size is `nsems * sizeof(unsigned short)`, where `nsems` is
+         * the semaphore set's cardinality. That count is kernel state; it is NOT
+         * present in the syscall arguments, and the opaque record format carries
+         * no kernel-computed span length. Three options were considered:
+         *   (a) the guest issues one preliminary semctl(semid, 0, IPC_STAT,&buf)
+         *       to read `sem_nsems`, then sizes and marshals the buffer;
+         *   (b) add a kernel-sized-span record kind the kernel fills in;
+         *   (c) leave semctl GETALL/SETALL on the raw fallback path.
+         * Option (a) is chosen for now: it keeps the record format uniform (a
+         * plain IN/OUT span at the region base, which the kernel semctl dispatch
+         * already re-proves via checked_channel_scratch_start_range) at the cost
+         * of one extra IPC_STAT round-trip on the GETALL/SETALL path only. This
+         * is deliberately left open to future reinterpretation as (b) or (c).
+         * ------------------------------------------------------------------ */
+        long long cmd = sargs[2] & ~0x100LL; /* strip IPC_64 */
+        if (cmd != GETALL && cmd != SETALL)
+            break; /* SETVAL/GETVAL/etc.: arg 3 stays scalar */
+        uintptr_t p = (uintptr_t)(unsigned long long)sargs[3];
+        if (p == 0)
+            return KANDELO_MARSHAL_FALLBACK;
+        /* Option (a): one preliminary IPC_STAT to read the set's cardinality.
+         * This issues through the ordinary (raw-arg) syscall path -- the record
+         * encoder is dormant -- so it completes before this record is built. */
+        struct semid_ds ds;
+        long rc = __do_syscall_impl(KANDELO_SYS_SEMCTL, sargs[0], 0, IPC_STAT,
+                                    (long long)(uintptr_t)&ds, 0, 0, 0, 0);
+        if (rc < 0)
+            return KANDELO_MARSHAL_FALLBACK; /* surface the error via raw path */
+        unsigned long long nbytes =
+            (unsigned long long)ds.sem_nsems * sizeof(unsigned short);
+        if (nbytes > 0xFFFFFFFFull)
+            return KANDELO_MARSHAL_FALLBACK;
+        plan[nplan].kind = (cmd == GETALL) ? KANDELO_MARSHAL_SPAN_OUT_PTR
+                                           : KANDELO_MARSHAL_SPAN_IN_PTR;
+        plan[nplan].arg_index = 3;
+        plan[nplan].src = (const void *)p;
+        plan[nplan].len = (uint32_t)nbytes;
+        nplan++;
+        break;
+    }
     default:
         return KANDELO_MARSHAL_NOT_SPECIAL;
     }

@@ -551,6 +551,74 @@ fn render_marshal_header() -> String {
          \n",
     );
 
+    // Ioctl request -> (arg representation, direction, buffer size) contract,
+    // projected from wasm_posix_shared::ioctl_contract. Ioctl is NOT in the flat
+    // descriptor table because its arg-2 buffer size is selected by the request
+    // number, and legacy request encodings (e.g. TIOCGWINSZ = 0x5413) do not
+    // embed their size, so `_IOC_SIZE` is insufficient. The guest sizes the
+    // buffer from this table. Additive: like the rest of this header it is not
+    // on the live syscall path and does NOT participate in the ABI snapshot.
+    // A wasm32/wasm64 size of KANDELO_IOCTL_SIZE_UNSUPPORTED means the request
+    // is known but unsupported for that caller data model (`Option::None`),
+    // intentionally distinct from a zero-length buffer.
+    {
+        use shared::ioctl_contract::{IoctlArgKind, IoctlDirection, IOCTL_REQUEST_CONTRACTS};
+        const IOCTL_SIZE_UNSUPPORTED: u32 = 0xFFFF_FFFF;
+        fn ioctl_arg_kind(kind: IoctlArgKind) -> u8 {
+            match kind {
+                IoctlArgKind::None => 0,
+                IoctlArgKind::ScalarI32 => 1,
+                IoctlArgKind::Pointer => 2,
+            }
+        }
+        fn ioctl_direction(dir: IoctlDirection) -> u8 {
+            match dir {
+                IoctlDirection::None => 0,
+                IoctlDirection::In => 1,
+                IoctlDirection::Out => 2,
+                IoctlDirection::InOut => 3,
+            }
+        }
+        out.push_str(
+            "/* Ioctl arg representation and copy direction (mirror\n\
+             * wasm_posix_shared::ioctl_contract::{IoctlArgKind, IoctlDirection}). */\n\
+             #define KANDELO_IOCTL_ARG_NONE 0u\n\
+             #define KANDELO_IOCTL_ARG_SCALAR_I32 1u\n\
+             #define KANDELO_IOCTL_ARG_POINTER 2u\n\
+             #define KANDELO_IOCTL_DIR_NONE 0u\n\
+             #define KANDELO_IOCTL_DIR_IN 1u\n\
+             #define KANDELO_IOCTL_DIR_OUT 2u\n\
+             #define KANDELO_IOCTL_DIR_INOUT 3u\n\
+             /* Known request unsupported for this caller data model (None). */\n\
+             #define KANDELO_IOCTL_SIZE_UNSUPPORTED 0xFFFFFFFFu\n\
+             \n\
+             struct kandelo_ioctl_contract {\n\
+             \x20   uint32_t request;\n\
+             \x20   uint8_t arg_kind;   /* KANDELO_IOCTL_ARG_* */\n\
+             \x20   uint8_t direction;  /* KANDELO_IOCTL_DIR_* */\n\
+             \x20   uint32_t wasm32_size;\n\
+             \x20   uint32_t wasm64_size;\n\
+             };\n\
+             \n\
+             static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {\n",
+        );
+        for contract in IOCTL_REQUEST_CONTRACTS {
+            out.push_str(&format!(
+                "    {{ 0x{request:08X}u, {arg}u, {dir}u, {w32}u, {w64}u }},\n",
+                request = contract.request,
+                arg = ioctl_arg_kind(contract.arg_kind),
+                dir = ioctl_direction(contract.direction),
+                w32 = contract.wasm32_size.unwrap_or(IOCTL_SIZE_UNSUPPORTED),
+                w64 = contract.wasm64_size.unwrap_or(IOCTL_SIZE_UNSUPPORTED),
+            ));
+        }
+        out.push_str("};\n\n");
+        out.push_str(&format!(
+            "#define KANDELO_IOCTL_CONTRACT_COUNT {}u\n\n",
+            IOCTL_REQUEST_CONTRACTS.len()
+        ));
+    }
+
     for entry in &entries {
         out.push_str(&format!(
             "static const struct kandelo_marshal_arg kandelo_marshal_args_{}[] = {{\n",
