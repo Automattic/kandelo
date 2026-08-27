@@ -628,6 +628,14 @@ build_mariadb64() {
 }
 
 build_mariadb_vfs() {
+    # NOT folded: "mariadb-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("dormant browser product") — a
+    # pre-existing product decision predating this stage, not an engine
+    # limitation (its build script and
+    # images/vfs/products/browser-mariadb-wasm32.toml manifest already exist
+    # and validate fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_mariadb_vfs; then
         info "MariaDB VFS image (wasm32)"
         return
@@ -644,6 +652,8 @@ build_mariadb_vfs() {
 }
 
 build_mariadb64_vfs() {
+    # NOT folded: same "mariadb-vfs" exclusion as build_mariadb_vfs above
+    # (this is its wasm64 arch variant of the same excluded package).
     if has_mariadb64_vfs; then
         info "MariaDB VFS image (wasm64)"
         return
@@ -657,17 +667,15 @@ build_mariadb64_vfs() {
 }
 
 build_mariadb_test_vfs() {
-    if has_mariadb_test_vfs; then
-        info "MariaDB test VFS image"
-        return
-    fi
-    build_mariadb
-    build_dash
-    build_coreutils
-    build_dinit
-    step "Building MariaDB test VFS image"
-    bash "$REPO_ROOT/packages/registry/mariadb-test/build-mariadb-test.sh"
-    info "MariaDB test VFS image built"
+    # Declared package (packages/sets/local-supported.toml `[[packages]]`,
+    # class = test-support); the engine resolves mariadb/dash/coreutils/dinit
+    # and runs packages/registry/mariadb-test/build-mariadb-test.sh (unchanged
+    # script). Unlike the six browser-demo composites above, this has no
+    # active `[[products]]` entry — matching its sibling test-support
+    # manifests test-php.toml/test-sqlite.toml, which are also manifest-only
+    # with no declared product — but the bare package is already selectable
+    # by `xtask bootstrap mariadb-test`.
+    bootstrap_target mariadb-test
 }
 
 build_wordpress() {
@@ -688,20 +696,12 @@ build_wordpress() {
 }
 
 build_wp_vfs() {
-    if has_wp_vfs; then
-        info "WP VFS image"
-        return
-    fi
-    build_shell_vfs
-    # Source needed only if we have to build the VFS from scratch.
-    build_wordpress
-    build_msmtpd
-    step "Building WordPress VFS image"
-    # Delegate to the package-system wrapper so install_local_binary
-    # populates local-binaries/programs/wasm32/wordpress.vfs.zst (the path
-    # the @binaries/ Vite alias resolves against).
-    bash "$REPO_ROOT/packages/registry/wordpress/build-wordpress.sh"
-    info "WP VFS image built"
+    # Declared VFS product (packages/sets/local-supported.toml); the engine's
+    # own dependency closure resolves shell/nginx/php/dinit/msmtpd/kernel and
+    # the WordPress + SQLite-integration sources, then runs
+    # packages/registry/wordpress/build-wordpress.sh (the same script this
+    # used to invoke directly).
+    bootstrap_target browser-wordpress
 }
 
 build_dash() {
@@ -782,6 +782,13 @@ build_cpython() {
 }
 
 build_python_vfs() {
+    # NOT folded: "python-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("retired standalone browser
+    # product") — a pre-existing product decision predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-python.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_python_vfs; then
         info "Python VFS image"
         return
@@ -793,6 +800,13 @@ build_python_vfs() {
 }
 
 build_perl_vfs() {
+    # NOT folded: "perl-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("retired standalone browser
+    # product") — a pre-existing product decision predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-perl.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if ! has_perl_vfs; then
         if [ ! -f "$REPO_ROOT/packages/registry/perl/perl-src/lib/strict.pm" ]; then
             warn "Perl source not found, skipping perl VFS image"
@@ -855,15 +869,9 @@ build_spidermonkey_node() {
 }
 
 build_node_vfs() {
-    if has_node_vfs; then
-        info "Node VFS image"
-        return
-    fi
-    build_shell_vfs
-    build_node
-    step "Building Node VFS image"
-    bash "$REPO_ROOT/packages/registry/node-vfs/build-node-vfs.sh"
-    info "Node VFS image built"
+    # Declared VFS product; the engine resolves shell/node and runs
+    # packages/registry/node-vfs/build-node-vfs.sh (unchanged script).
+    bootstrap_target browser-node
 }
 
 build_vim_zip() {
@@ -1363,7 +1371,7 @@ verify_source_rootfs_shell_runtime_browser_closure() {
 
 build_shell_vfs() {
     if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # WHY: this branch must return before the canonical `resolve shell`
+        # WHY: this branch must return before the canonical `bootstrap_target`
         # fallback below. The explicit bridge was staged, provenance-checked,
         # and installed by prepare-browser before any browser target ran.
         verify_source_rootfs_shell_runtime_browser_closure
@@ -1371,33 +1379,10 @@ build_shell_vfs() {
         return
     fi
 
-    # `clean` removes only the resolver-owned local link and deliberately keeps
-    # immutable fetched `binaries/`. A rebuild marker must therefore bypass the
-    # ordinary availability guard so the resolver rematerializes the local
-    # output even when the downloaded artifact remains usable.
-    if [ "${KANDELO_REBUILD_TARGET:-}" != "shell-vfs" ] && has_shell_vfs; then
-        info "Shell VFS image"
-        return
-    fi
-
-    step "Resolving the bottle-built Shell VFS image"
-    local xtask
-    local resolve_args=(
-        build-deps --arch wasm32
-        --binaries-dir "$REPO_ROOT/local-binaries"
-    )
-    resolve_args+=(resolve shell)
-    xtask="$(pkg_xtask_bin)" || {
-        err "Could not build the package resolver needed for the Shell VFS image"
-        return 1
-    }
-    mkdir -p "$REPO_ROOT/local-binaries"
-    (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
-    if ! pkg_has_output shell shell.vfs.zst; then
-        err "Package resolver did not materialize the declared shell.vfs.zst output"
-        return 1
-    fi
-    info "Bottle-built Shell VFS image resolved"
+    # Declared VFS product (packages/sets/local-supported.toml); the engine
+    # resolves the "shell" package closure and validates it against
+    # images/vfs/products/browser-main-shell.toml.
+    bootstrap_target browser-main-shell
 }
 
 build_erlang() {
@@ -1429,6 +1414,14 @@ build_erlang() {
 }
 
 build_erlang_vfs() {
+    # NOT folded: "erlang-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("deferred product"), and its
+    # underlying "erlang" source package is separately excluded ("deferred
+    # software") — pre-existing product decisions predating this stage, not
+    # an engine limitation (its images/vfs/products/browser-erlang.toml
+    # manifest already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     if has_erlang_vfs; then
         info "Erlang VFS image"
         return
@@ -1440,35 +1433,27 @@ build_erlang_vfs() {
 }
 
 build_lamp_vfs() {
-    if has_lamp_vfs; then
-        info "LAMP VFS image"
-        return
-    fi
-    build_shell_vfs
-    build_wordpress
-    build_msmtpd
-    step "Building LAMP VFS image"
-    # Delegate to the package-system wrapper so install_local_binary
-    # populates local-binaries/programs/wasm32/lamp.vfs.zst (the path the
-    # @binaries/ Vite alias resolves against).
-    bash "$REPO_ROOT/packages/registry/lamp/build-lamp.sh"
-    info "LAMP VFS image built"
+    # Declared VFS product; see build_wp_vfs above. The engine resolves
+    # shell/mariadb/nginx/php/dinit/msmtpd/kernel and runs
+    # packages/registry/lamp/build-lamp.sh (unchanged script).
+    bootstrap_target browser-lamp
 }
 
 build_nginx_vfs() {
-    build_dinit
-    build_nginx
-    if ! has_nginx_vfs; then
-        build_shell_vfs
-        step "Building nginx VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-nginx-vfs-image.sh"
-        info "nginx VFS image built"
-    else
-        info "nginx VFS image"
-    fi
+    # Declared VFS product; the engine resolves shell/nginx/dinit and runs
+    # images/vfs/scripts/build-nginx-vfs-image.sh (unchanged script), which
+    # is also the nginx-vfs package's own [build] script_path.
+    bootstrap_target browser-nginx
 }
 
 build_redis_vfs() {
+    # NOT folded: "redis-vfs" is an `[[exclusions]]` entry in
+    # packages/sets/local-supported.toml ("dormant browser product") — a
+    # pre-existing product decision predating this stage, not an engine
+    # limitation (its images/vfs/products/browser-redis.toml manifest
+    # already exists and validates fine; see
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
     build_dinit
     build_redis
     if ! has_redis_vfs; then
@@ -1481,17 +1466,10 @@ build_redis_vfs() {
 }
 
 build_nginx_php_vfs() {
-    build_dinit
-    build_nginx
-    build_php_fpm
-    if ! has_nginx_php_vfs; then
-        build_shell_vfs
-        step "Building nginx + PHP-FPM VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-nginx-php-vfs-image.sh"
-        info "nginx + PHP-FPM VFS image built"
-    else
-        info "nginx + PHP-FPM VFS image"
-    fi
+    # Declared VFS product; the engine resolves shell/nginx/php/dinit and
+    # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
+    # script), which is also the nginx-php-vfs package's own build script.
+    bootstrap_target browser-nginx-php
 }
 
 build_texlive() {
@@ -1499,6 +1477,16 @@ build_texlive() {
 }
 
 build_texlive_vfs() {
+    # NOT folded: "texlive" (its source package) is an `[[exclusions]]`
+    # entry in packages/sets/local-supported.toml ("deferred software"), and
+    # unlike the other dormant composites there is no
+    # images/vfs/products/*.toml manifest for texlive at all — so, unlike
+    # the six products folded above, there is nothing here for a
+    # `[[products]]` entry to even declare yet. This builder also has a
+    # host-tool-availability skip (below) that a static manifest dependency
+    # closure cannot express. See
+    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
+    # tools/xtask/src/local_build.rs.
     if has_texlive_vfs; then
         info "TeX Live bundle"
         return

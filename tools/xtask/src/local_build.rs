@@ -503,6 +503,20 @@ pub(crate) fn bootstrap_selection_from_args(
     }
 }
 
+/// The set of `[[products]]` ids `local-supported.toml` declares active for
+/// the local-build engine. Used to check that a `./run.sh build <target>`
+/// name naming a VFS composite (`shell-vfs`, `wp-vfs`, ...) actually has a
+/// declared product `xtask bootstrap <id>` can select — see
+/// `bootstrap_target_to_selection`'s `Selection::Package` arm, which accepts
+/// both declared product ids and bare package names through the same
+/// `select_graph_dependencies` filter.
+fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
+    set.products
+        .iter()
+        .map(|product| product.id.clone())
+        .collect()
+}
+
 /// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
 /// (as a working symlink to a real file) is the same signal
 /// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
@@ -4548,6 +4562,124 @@ mod tests {
                 "browser-python",
                 "browser-redis",
             ],
+        );
+    }
+
+    /// Stage 4 gap enumeration: every `build_*_vfs` function `run.sh` defines
+    /// must be accounted for as either (a) folded into a declared
+    /// `[[products]]` id (or, for `mariadb-test`, a declared bare package —
+    /// see its comment below) that `xtask bootstrap <id>` can already select,
+    /// or (b) left as a bash builder because its underlying package/product
+    /// is a documented, pre-existing exclusion/dormant entry that predates
+    /// this fold and is out of scope to reactivate here. If a future edit
+    /// declares a new product, removes an exclusion, or adds a new
+    /// `build_*_vfs` function without updating this table, this test fails
+    /// and forces the gap to be re-evaluated instead of silently drifting.
+    #[test]
+    fn run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries() {
+        let repo = crate::repo_root();
+        let set = parse_supported_set(&repo.join("packages/sets/local-supported.toml")).unwrap();
+        let product_ids = declared_product_ids(&set);
+        let package_names = set
+            .packages
+            .iter()
+            .map(|package| package.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let dormant_products = set
+            .dormant_products
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let excluded = set
+            .exclusions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        enum Expectation {
+            /// Folded: `run.sh`'s `build_<fn>` delegates to
+            /// `bootstrap_target <id>`, where `<id>` is a declared product id
+            /// (`[[products]]`) or bare package name already selectable by
+            /// `select_graph_dependencies`.
+            FoldedProduct(&'static str),
+            FoldedPackage(&'static str),
+            /// Left as bash: `<excluded_name>` is the registry package or
+            /// product id a pre-existing `[[exclusions]]`/`[[dormant_products]]`
+            /// entry in `local-supported.toml` already keeps out of the
+            /// engine's active graph, for a reason unrelated to whether the
+            /// engine *could* model the composite (it already can — every
+            /// one of these has a manifest and/or resolver-ready build
+            /// script). Reactivating any of these is a product decision, not
+            /// an engine-capability gap, and is out of Stage 4's scope.
+            DormantOrExcluded(&'static str),
+        }
+
+        // run.sh function name -> what it should resolve to today.
+        let table: &[(&str, Expectation)] = &[
+            ("build_shell_vfs", Expectation::FoldedProduct("browser-main-shell")),
+            ("build_wp_vfs", Expectation::FoldedProduct("browser-wordpress")),
+            ("build_lamp_vfs", Expectation::FoldedProduct("browser-lamp")),
+            ("build_nginx_vfs", Expectation::FoldedProduct("browser-nginx")),
+            (
+                "build_nginx_php_vfs",
+                Expectation::FoldedProduct("browser-nginx-php"),
+            ),
+            ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
+            // mariadb-test has no `[[products]]` entry (matching the
+            // sibling test-support manifests test-php.toml/test-sqlite.toml,
+            // which are also manifest-only with no active product) but its
+            // package is already declared and bootstraps the identical
+            // build-mariadb-test.sh the bash builder called directly.
+            ("build_mariadb_test_vfs", Expectation::FoldedPackage("mariadb-test")),
+            ("build_mariadb_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_mariadb64_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
+            ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
+            ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
+            ("build_redis_vfs", Expectation::DormantOrExcluded("redis-vfs")),
+            // texlive-vfs has no `[[products]]`/`[[packages]]` entry AND no
+            // manifest under images/vfs/products at all (unlike the other
+            // dormant composites, which at least have a written manifest);
+            // its source package "texlive" is the excluded root.
+            ("build_texlive_vfs", Expectation::DormantOrExcluded("texlive")),
+        ];
+
+        for (function, expectation) in table {
+            match expectation {
+                Expectation::FoldedProduct(id) => assert!(
+                    product_ids.contains(*id),
+                    "{function} expects declared product {id:?}; \
+                     declared_product_ids() = {product_ids:?}",
+                ),
+                Expectation::FoldedPackage(name) => assert!(
+                    package_names.contains(name),
+                    "{function} expects declared package {name:?}; \
+                     packages = {package_names:?}",
+                ),
+                Expectation::DormantOrExcluded(name) => assert!(
+                    dormant_products.contains(name) || excluded.contains(name),
+                    "{function} names {name:?}, expected to find it in \
+                     dormant_products {dormant_products:?} or exclusions \
+                     {excluded:?} — if it was removed from both, this \
+                     composite is now foldable and this table (and \
+                     run.sh's build_target routing) must be updated",
+                ),
+            }
+        }
+
+        // images/vfs/products/*.toml manifests exist for every dormant
+        // composite except texlive (confirming Stage 4 left it bash for a
+        // different, more fundamental reason: no manifest, no product/package
+        // declaration, and its bash builder has a host-tool-availability
+        // skip that isn't itself expressible as a manifest dependency).
+        for id in ["browser-mariadb-wasm32", "browser-mariadb-wasm64", "browser-erlang", "browser-python", "browser-perl", "browser-redis"] {
+            let manifest = repo.join("images/vfs/products").join(format!("{id}.toml"));
+            assert!(manifest.is_file(), "expected dormant product manifest at {}", manifest.display());
+        }
+        assert!(
+            !repo.join("images/vfs/products/texlive-vfs.toml").exists()
+                && !repo.join("images/vfs/products/browser-texlive.toml").exists(),
+            "texlive-vfs has no manifest today; if one is added, re-evaluate folding it",
         );
     }
 
