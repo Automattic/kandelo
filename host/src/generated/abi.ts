@@ -41,6 +41,8 @@ export const HOST_RAW_SYSCALLS: ReadonlySet<number> = new Set<number>([
   90,
   92,
   103,
+  110,
+  111,
   124,
   126,
   137,

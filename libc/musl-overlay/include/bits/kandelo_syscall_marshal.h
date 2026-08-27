@@ -956,6 +956,8 @@ static const uint32_t kandelo_raw_syscalls[] = {
     90u,
     92u,
     103u,
+    110u,
+    111u,
     124u,
     126u,
     137u,
@@ -1005,6 +1007,6 @@ static const uint32_t kandelo_raw_syscalls[] = {
     500u,
 };
 
-#define KANDELO_RAW_SYSCALL_COUNT 76u
+#define KANDELO_RAW_SYSCALL_COUNT 78u
 
 #endif /* KANDELO_SYSCALL_MARSHAL_H */

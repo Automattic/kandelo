@@ -49,6 +49,15 @@
 //! wholly RAW (rather than per-request / per-cmd) so the syscall-number-level
 //! host guard stays airtight for them.
 //!
+//! Blocking is not one set. `GENERIC_BLOCKING_SNAPSHOT_SYSCALLS` covers the
+//! host EAGAIN park/retry *snapshot* family, but it is not the whole blocking
+//! surface: `sigsuspend` and `pause` block through the distinct
+//! `host_sigsuspend_wait` signal-wait park (see `sys_sigsuspend`) and appear in
+//! neither snapshot set. They must be RAW too — `sigsuspend` carries a mask
+//! pointer, so absent this entry the guest would marshal it onto the record
+//! fast-path, which performs no EAGAIN park and would leak the kernel's
+//! blocking EAGAIN straight to the caller.
+//!
 //! Every value here is drawn from [`crate::Syscall`],
 //! [`crate::abi::extended_syscalls`], or [`crate::abi::host_intercepted`], so
 //! adding or removing an entry is an ABI-adjacent change captured by the
@@ -152,6 +161,16 @@ pub const HOST_RAW_SYSCALLS: &[u32] = &[
     Syscall::Poll as u32,
     ext::SYS_PPOLL,
     ext::SYS_RT_SIGTIMEDWAIT,
+    // --- BLK: signal-wait blockers parked via host_sigsuspend_wait (NOT in
+    // GENERIC_BLOCKING_SNAPSHOT_SYSCALLS; they block through a distinct host
+    // signal-wait park/retry rather than the generic snapshot machinery). The
+    // record fast-path performs no EAGAIN park, so routing sigsuspend/pause
+    // through it would leak the kernel's blocking EAGAIN straight to the guest.
+    // sigsuspend carries a mask pointer (so it would otherwise take the record
+    // path); pause is scalar-only but is host-blocking-managed and kept RAW to
+    // honor the "union of every host-involved syscall" completeness contract. ---
+    Syscall::Sigsuspend as u32,
+    Syscall::Pause as u32,
     ext::SYS_SENDFILE,
     ext::SYS_COPY_FILE_RANGE,
     ext::SYS_SPLICE,
