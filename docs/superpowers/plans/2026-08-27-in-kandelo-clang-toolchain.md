@@ -475,6 +475,17 @@ git commit -m "Packages: build clang wasm toolchain from source on local-build"
 
 ---
 
+> **SUPERSEDED (2026-08-27):** Tasks 4–6 below were revised during
+> execution per a user directive. The toolchain is delivered as a SINGLE
+> lazy VFS archive (`kandelo-sdk-browser-bundle` → `kandelo-sdk.zip`,
+> containing the compiler binaries AND the sysroot/wrapper/headers/glue)
+> registered in the BASE SHELL demo image — not a separate
+> `clang-browser-bundle` nor a dedicated SDK image. The authoritative
+> revised Task 4–6 definitions live in the SDD ledger
+> (`.superpowers/sdd/2026-08-27-in-kandelo-clang-toolchain/progress.md`,
+> "REVISED T5-6 DESIGN" + "SINGLE-BUNDLE RESTRUCTURE"). Tasks 1–3 above
+> are unchanged and complete. The text below is kept for history.
+
 ### Task 4: `clang-browser-bundle` package + deterministic zip builder
 
 **Files:**
