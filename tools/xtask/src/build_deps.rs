@@ -14323,6 +14323,27 @@ fn wasm_artifact_policy_failures_for(
         ));
     }
 
+    // An artifact that must export __abi_version must export the *current*
+    // one. Presence alone lets a stale marker through: a package whose build
+    // tree relinks nothing after an ABI bump re-collects the previous
+    // binary, and the resolver then caches it under the current ABI's key —
+    // where the host rejects it at exec. Side modules are checked further
+    // down, against the same identity helper.
+    if required_exports.contains(&"__abi_version") && facts.dylink_section_count == 0 {
+        use fork_instrument::contract_inventory::ArtifactAbiVersion;
+
+        if let Ok(identity) = fork_instrument::contract_inventory::artifact_identity(bytes) {
+            if let ArtifactAbiVersion::Present(version) = identity.abi_version {
+                if version != wasm_posix_shared::ABI_VERSION {
+                    failures.push(format!(
+                        "declares __abi_version {version}, expected current ABI {}",
+                        wasm_posix_shared::ABI_VERSION,
+                    ));
+                }
+            }
+        }
+    }
+
     let fork_exports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_EXPORTS;
     let fork_imports = wasm_posix_shared::abi::WPK_FORK_REQUIRED_IMPORTS;
     let present_fork_exports = fork_exports
@@ -21890,6 +21911,12 @@ wasm = "second.wasm"
     }
 
     fn wasm_exporting_names(names: &[&str]) -> Vec<u8> {
+        wasm_exporting_names_declaring_abi(names, wasm_posix_shared::ABI_VERSION)
+    }
+
+    // The single shared body returns `abi_version`, so a fixture exporting
+    // __abi_version declares that marker.
+    fn wasm_exporting_names_declaring_abi(names: &[&str], abi_version: u32) -> Vec<u8> {
         let mut bytes = b"\0asm\x01\0\0\0".to_vec();
         bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
         bytes.extend(wasm_section(3, vec![0x01, 0x00]));
@@ -21901,7 +21928,15 @@ wasm = "second.wasm"
             exports.push(0x00); // func index
         }
         bytes.extend(wasm_section(7, exports));
-        bytes.extend(wasm_section(10, vec![0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]));
+
+        let mut body = vec![0x00]; // no local declarations
+        body.push(0x41); // i32.const
+        body.extend(sleb_i32(abi_version as i32));
+        body.push(0x0b); // end
+        let mut code_section = uleb(1);
+        code_section.extend(uleb(body.len() as u32));
+        code_section.extend(body);
+        bytes.extend(wasm_section(10, code_section));
         bytes
     }
 
@@ -25665,7 +25700,7 @@ wasm = "vim.wasm"
             "0.1.0",
             &[],
             // Build script writes the declared wasm.
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/tinyprog.wasm""#,
+            &emit_wasm_build_script("tinyprog.wasm", &minimal_executable_wasm()),
             &[("tinyprog", "tinyprog.wasm")],
         );
         let reg = Registry { roots: vec![root] };
@@ -25702,9 +25737,11 @@ wasm = "vim.wasm"
             "runtimeprog",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimeprog.wasm"
+            &format!(
+                r#"{}
 printf runtime-data > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+                emit_wasm_build_script("runtimeprog.wasm", &minimal_executable_wasm()),
+            ),
             &[("runtimeprog", "runtimeprog.wasm")],
         );
         append_program_runtime_file(&root, "runtimeprog", "icu.dat", "/usr/lib/php/icu.dat");
@@ -27955,8 +27992,7 @@ wasm = "scalar.zip"
             "runtimemissing",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimemissing.wasm""#,
+            &emit_wasm_build_script("runtimemissing.wasm", &minimal_executable_wasm()),
             &[("runtimemissing", "runtimemissing.wasm")],
         );
         append_program_runtime_file(&root, "runtimemissing", "icu.dat", "/usr/lib/php/icu.dat");
@@ -27983,9 +28019,9 @@ printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\
             "0.1.0",
             &[],
             &format!(
-                r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimesymlink.wasm"
+                r#"{}
 ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+                emit_wasm_build_script("runtimesymlink.wasm", &minimal_executable_wasm()),
                 outside
             ),
             &[("runtimesymlink", "runtimesymlink.wasm")],
@@ -28102,6 +28138,33 @@ wasm = "bad.wasm"
             )
             .is_empty(),
             "minimal executable wasm must satisfy validation",
+        );
+    }
+
+    #[test]
+    fn wasm_artifact_policy_rejects_an_executable_declaring_a_stale_abi() {
+        // A package whose build tree relinks nothing after an ABI bump
+        // re-collects the previous binary. It still exports __abi_version, so
+        // the presence check above passes and the resolver caches it under the
+        // current ABI's key — where the host rejects it at exec. That is how
+        // an ABI 43 vim.wasm reached an ABI 44 desktop. Check the value.
+        let stale = wasm_exporting_names_declaring_abi(
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+            wasm_posix_shared::ABI_VERSION - 1,
+        );
+        let failures = wasm_artifact_policy_failures_for(
+            &stale,
+            ForkInstrumentationPolicy::Auto,
+            &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS,
+        );
+        assert_eq!(failures.len(), 1, "got: {failures:?}");
+        assert!(
+            failures[0].contains(&format!(
+                "declares __abi_version {}, expected current ABI {}",
+                wasm_posix_shared::ABI_VERSION - 1,
+                wasm_posix_shared::ABI_VERSION,
+            )),
+            "got: {failures:?}",
         );
     }
 
@@ -33670,9 +33733,11 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             "runtimebin",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/runtimebin.wasm"
+            &format!(
+                r#"{}
 printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
+                emit_wasm_build_script("runtimebin.wasm", &minimal_executable_wasm()),
+            ),
             &[("runtimebin", "runtimebin.wasm")],
         );
         append_program_runtime_file(&root, "runtimebin", "icu.dat", "/usr/lib/php/icu.dat");
@@ -36065,12 +36130,11 @@ commit = "1111111111111111111111111111111111111111"
         let canonical = first.canonical.unwrap();
         let wasm = canonical.join("trustskip.wasm");
         let original = fs::read(&wasm).unwrap();
+        // Different bytes, same policy-valid shape: a custom section the
+        // artifact policy ignores. Rewriting the __abi_version body would
+        // fail validation before the generation check runs.
         let mut alternate = original.clone();
-        let body = alternate
-            .windows(3)
-            .position(|window| window == [0x41, 0x00, 0x0b])
-            .expect("minimal executable has an i32.const 0 body");
-        alternate[body + 1] = 1;
+        alternate.extend([0x00, 0x05, 0x04, b'd', b'i', b'f', b'f']);
 
         // verify_cache = true: mutating the canonical entry after the first
         // authority capture is re-checked before projection and rejected.
@@ -36165,12 +36229,11 @@ commit = "1111111111111111111111111111111111111111"
         let canonical = first.canonical.unwrap();
         let wasm = canonical.join("coherent.wasm");
         let original_wasm = fs::read(&wasm).unwrap();
+        // Different bytes, same policy-valid shape: a custom section the
+        // artifact policy ignores. Rewriting the __abi_version body would
+        // fail validation before the generation check runs.
         let mut alternate_wasm = original_wasm.clone();
-        let body_constant = alternate_wasm
-            .windows(3)
-            .position(|window| window == [0x41, 0x00, 0x0b])
-            .expect("minimal executable has an i32.const 0 body");
-        alternate_wasm[body_constant + 1] = 1;
+        alternate_wasm.extend([0x00, 0x05, 0x04, b'd', b'i', b'f', b'f']);
 
         let changed_output = tempdir("local-rebuild-coherent-output-changed-cache");
         let error = resolve_local_build_package_node(
