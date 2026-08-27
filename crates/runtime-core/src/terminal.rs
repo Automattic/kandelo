@@ -91,6 +91,12 @@ pub struct TerminalState {
     pub line_buffer: Vec<u8>,
     /// Completed lines ready to be read (includes the terminating newline).
     pub cooked_buffer: Vec<u8>,
+    /// One-shot end-of-input, armed when VEOF (Ctrl-D) is received on an
+    /// empty line in canonical mode. A zero-length cooked buffer alone is
+    /// indistinguishable from "no input yet", so the read paths consume this
+    /// flag to return Ok(0) (EOF) instead of EAGAIN. Consumed on the read
+    /// that reports EOF and cleared by any fresh input.
+    pub eof_pending: bool,
 }
 
 impl TerminalState {
@@ -132,6 +138,7 @@ impl TerminalState {
             session_id: 0,
             line_buffer: Vec::new(),
             cooked_buffer: Vec::new(),
+            eof_pending: false,
         }
     }
 
@@ -219,6 +226,7 @@ impl TerminalState {
                 if self.c_lflag & NOFLSH == 0 {
                     self.line_buffer.clear();
                     self.cooked_buffer.clear();
+                    self.eof_pending = false;
                 }
                 return (echo, Some(signum));
             }
@@ -255,14 +263,24 @@ impl TerminalState {
 
         // Check for VEOF (^D)
         if self.control_char_matches(VEOF, byte) {
-            // Flush current line buffer without adding the EOF character
-            self.cooked_buffer.extend_from_slice(&self.line_buffer);
-            self.line_buffer.clear();
+            if self.line_buffer.is_empty() {
+                // POSIX: VEOF on an empty line delivers end-of-input. The
+                // next read returns 0 (EOF). Represented as a one-shot flag
+                // because an empty cooked buffer is otherwise read as EAGAIN.
+                self.eof_pending = true;
+            } else {
+                // Non-empty line: flush the partial line immediately as a
+                // short read, without adding the EOF character or a newline.
+                self.cooked_buffer.extend_from_slice(&self.line_buffer);
+                self.line_buffer.clear();
+            }
             return (echo, None);
         }
 
         // Newline or VEOL: complete the line
         if byte == b'\n' || self.control_char_matches(VEOL, byte) {
+            // A completed line supersedes any stale empty-line EOF.
+            self.eof_pending = false;
             self.line_buffer.push(byte);
             self.cooked_buffer.extend_from_slice(&self.line_buffer);
             self.line_buffer.clear();
@@ -272,7 +290,9 @@ impl TerminalState {
             return (echo, None);
         }
 
-        // Regular character: add to line buffer
+        // Regular character: add to line buffer. Fresh input supersedes any
+        // stale empty-line EOF that no reader has consumed yet.
+        self.eof_pending = false;
         self.line_buffer.push(byte);
         if do_echo {
             echo.push(byte);
@@ -295,6 +315,18 @@ impl TerminalState {
     /// Check if cooked data is available for reading.
     pub fn has_cooked_data(&self) -> bool {
         !self.cooked_buffer.is_empty()
+    }
+
+    /// Whether a one-shot canonical EOF (VEOF on an empty line) is armed.
+    /// Used by read/poll paths to treat EOF as a readable condition.
+    pub fn eof_pending(&self) -> bool {
+        self.eof_pending
+    }
+
+    /// Consume the one-shot canonical EOF. Returns true exactly once per
+    /// VEOF-on-empty-line, then false until another is armed.
+    pub fn take_eof(&mut self) -> bool {
+        core::mem::take(&mut self.eof_pending)
     }
 
     /// Take every byte already accepted by the canonical line discipline.
@@ -477,6 +509,49 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = ts.read_cooked(&mut buf);
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_veof_empty_line_arms_one_shot_eof() {
+        let mut ts = TerminalState::new();
+        assert!(!ts.eof_pending());
+
+        // ^D on an empty line arms a one-shot EOF. A zero-length cooked
+        // buffer is otherwise indistinguishable from "no input yet", so the
+        // read paths need this flag to return Ok(0) instead of EAGAIN.
+        ts.process_input_byte(0x04);
+        assert!(ts.eof_pending(), "VEOF on empty line must arm EOF");
+
+        let mut buf = [0u8; 8];
+        assert_eq!(ts.read_cooked(&mut buf), 0);
+
+        // One-shot: consumed once, then gone.
+        assert!(ts.take_eof());
+        assert!(!ts.take_eof());
+        assert!(!ts.eof_pending());
+    }
+
+    #[test]
+    fn test_veof_nonempty_line_does_not_arm_eof() {
+        let mut ts = TerminalState::new();
+        for &b in b"data" {
+            ts.process_input_byte(b);
+        }
+        // ^D on a non-empty line flushes the partial line as a short read,
+        // NOT an EOF.
+        ts.process_input_byte(0x04);
+        assert!(!ts.eof_pending());
+        assert!(ts.has_cooked_data());
+    }
+
+    #[test]
+    fn test_fresh_input_clears_pending_eof() {
+        let mut ts = TerminalState::new();
+        ts.process_input_byte(0x04); // arm EOF on empty line
+        assert!(ts.eof_pending());
+        // Fresh input supersedes a stale empty-line EOF nobody read yet.
+        ts.process_input_byte(b'x');
+        assert!(!ts.eof_pending());
     }
 
     #[test]
