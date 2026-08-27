@@ -1356,6 +1356,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
+        eof_pending: false,
     };
 
     // ── Program break ──
@@ -2031,6 +2032,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         session_id,
         line_buffer: Vec::new(),
         cooked_buffer: Vec::new(),
+        eof_pending: false,
     };
 
     // ── Program break ──

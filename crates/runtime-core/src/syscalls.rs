@@ -4525,6 +4525,9 @@ pub fn sys_read(
             if n > 0 {
                 return Ok(n);
             }
+            if pty.slave_take_eof() {
+                return Ok(0); // VEOF (Ctrl-D) on an empty line → EOF
+            }
             Err(Errno::EAGAIN)
         }
         _ => {
@@ -4592,6 +4595,12 @@ pub fn sys_read(
                             let n = proc.terminal.read_cooked(buf);
                             return Ok(n);
                         }
+                        // A VEOF armed on a prior read (e.g. "line\n^D" delivered
+                        // the line first) surfaces as EOF now, before blocking
+                        // on more host input.
+                        if proc.terminal.take_eof() {
+                            return Ok(0); // VEOF (Ctrl-D) on an empty line → EOF
+                        }
                         // Need more input — read from host and process through line discipline
                         let mut raw = [0u8; 256];
                         let raw_n = host.host_read(0, &mut raw)?;
@@ -4609,6 +4618,10 @@ pub fn sys_read(
                         let n = proc.terminal.read_cooked(buf);
                         if n > 0 {
                             return Ok(n);
+                        }
+                        // A Ctrl-D in this batch (empty line) delivers EOF.
+                        if proc.terminal.take_eof() {
+                            return Ok(0);
                         }
                         return Err(Errno::EAGAIN);
                     }
