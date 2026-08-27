@@ -14,6 +14,7 @@ host/test/browser-cors-proxy.test.ts	source-only
 host/test/browser-demo-cors-proxy.test.ts	source-only
 host/test/browser-engine-detection.test.ts	source-only
 host/test/browser-immediate-polyfill.test.ts	source-only
+host/test/browser-input-source.test.ts	source-only
 host/test/browser-kernel.test.ts	source-only
 host/test/browser-lazy-fetcher.test.ts	source-only
 host/test/browser-mitm-ca-env.test.ts	source-only
@@ -102,6 +103,7 @@ host/test/framebuffer-integration.test.ts	prepared-product
 host/test/framebuffer-registry.test.ts	source-only
 host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
+host/test/gbm-surface-ring.test.ts	prepared-product
 host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
 host/test/generated-abi.test.ts	source-only
 host/test/getaddrinfo.test.ts	prepared-product
@@ -117,8 +119,12 @@ host/test/ifhwaddr.test.ts	prepared-product
 host/test/image-owned-runtime-urls.test.ts	source-only
 host/test/in-kernel-http-bounds.test.ts	source-only
 host/test/in-kernel-http.test.ts	prepared-product
+host/test/input-attach-source.test.ts	prepared-product
+host/test/input-evdev.test.ts	prepared-product
+host/test/input-source.test.ts	source-only
 host/test/interactive-stdin.test.ts	prepared-product
 host/test/ioctl-arg-size.test.ts	source-only
+host/test/ioctl-contract.test.ts	source-only
 host/test/kernel-allocator-churn.test.ts	prepared-product
 host/test/kernel-authority-boundary.test.ts	prepared-product
 host/test/kernel-blocking-retry-snapshot.test.ts	source-only
@@ -156,6 +162,13 @@ host/test/lazy-prepared-io.test.ts	source-only
 host/test/lazy-tree.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
 host/test/lazy-vfs.test.ts	source-only
+host/test/libevdev-smoke.test.ts	prepared-product
+host/test/libffi-shim-unit.test.ts	source-only
+host/test/libinput-smoke.test.ts	prepared-product
+host/test/libkwl-smoke.test.ts	prepared-product
+host/test/libudev-input-id-smoke.test.ts	prepared-product
+host/test/libwayland-smoke.test.ts	prepared-product
+host/test/libxkbcommon-smoke.test.ts	prepared-product
 host/test/locale-info.test.ts	prepared-product
 host/test/login.test.ts	prepared-product
 host/test/lseek-invalid-guest.test.ts	prepared-product
@@ -165,6 +178,7 @@ host/test/mmap-file.test.ts	prepared-product
 host/test/mmap-shared.test.ts	prepared-product
 host/test/mmap-tracking.test.ts	source-only
 host/test/mouse-integration.test.ts	source-only
+host/test/mtdev-smoke.test.ts	prepared-product
 host/test/multi-worker.test.ts	prepared-product
 host/test/native-open-create-race.test.ts	source-only
 host/test/network-hostname.test.ts	source-only
@@ -172,6 +186,7 @@ host/test/node-demo-workspace.test.ts	prepared-product
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
 host/test/node-image-runtime.test.ts	prepared-product
+host/test/node-input-source.test.ts	source-only
 host/test/node-kernel-fatal.test.ts	prepared-product
 host/test/node-kernel-host-diagnostic.test.ts	prepared-product
 host/test/node-kernel-init-seal.test.ts	prepared-product
@@ -238,6 +253,10 @@ host/test/run-example-vfs.test.ts	source-only
 host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product
+host/test/sdl2-editor-unit.test.ts	source-only
+host/test/sdl2-evdev-smoke.test.ts	prepared-product
+host/test/sdl2-kmsdrm-smoke.test.ts	prepared-product
+host/test/sdl2.test.ts	prepared-product
 host/test/secure-exec.test.ts	prepared-product
 host/test/select-signal-guest.test.ts	prepared-product
 host/test/select-signal-outcome.test.ts	source-only
@@ -309,13 +328,19 @@ host/test/wasm-memory-write-audit.test.ts	prepared-product
 host/test/wasm-module-reflection.test.ts	source-only
 host/test/wasm-trap.test.ts	prepared-product
 host/test/wasm64.test.ts	prepared-product
+host/test/wayland-protocols-scanner.test.ts	source-only
 host/test/webgl-bridge.test.ts	source-only
+host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
 host/test/webgl-submit-queue.test.ts	source-only
+host/test/wlcompositor-smoke.test.ts	prepared-product
+host/test/wldesktop-liveness-smoke.test.ts	prepared-product
+host/test/wldesktop-smoke.test.ts	prepared-product
+host/test/wlterm-smoke.test.ts	prepared-product
 host/test/wordpress-benchmark-state.test.ts	source-only
 host/test/wordpress-source-layout.test.ts	prepared-product
 host/test/worker-adapter.test.ts	source-only
@@ -323,6 +348,7 @@ host/test/worker-entry.test.ts	prepared-product
 host/test/worker-exit-trap.test.ts	source-only
 host/test/worker-kernel-import-contract.test.ts	source-only
 host/test/worker-quiescence.test.ts	source-only
+host/test/wpkdraw-smoke.test.ts	prepared-product
 host/test/zip.test.ts	source-only
 packages/registry/bash/test/bash.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product
@@ -365,6 +391,7 @@ tests/package-system/binary-dev-access.test.ts	prepared-product
 tests/package-system/browser-binary-dependencies.test.ts	prepared-product
 tests/package-system/build-input-crate-closure.test.ts	source-only
 tests/package-system/build-input-import-closure.test.ts	prepared-product
+tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
