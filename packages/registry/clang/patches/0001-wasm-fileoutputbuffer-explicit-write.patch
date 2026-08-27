@@ -1,0 +1,79 @@
+# Kandelo compatibility boundary: file-backed mmap does not flush to the VFS
+#
+# Kandelo's WebAssembly host implements mmap() over its virtual filesystem,
+# but dirty pages written through a MAP_SHARED mapping are not flushed back
+# to the backing VFS file on unmap(). Upstream FileOutputBuffer::OnDiskBuffer
+# relies on that OS-level flush-on-unmap behavior to make commit() durable.
+#
+# This patch adds a __wasm__/__wasm32__ commit() path that copies the mapped
+# bytes to the destination file explicitly (via an ordinary write) instead of
+# relying on the mmap flush, and discards the temp file rather than renaming
+# it into place. Non-wasm targets are unaffected (original mmap-flush path
+# preserved under #else).
+#
+# Upstream: llvm-project, tag llvmorg-21.1.7 (LLVM 21.1.7).
+--- a/llvm/lib/Support/FileOutputBuffer.cpp	2025-12-01 07:58:50
++++ b/llvm/lib/Support/FileOutputBuffer.cpp	2026-08-27 13:49:18
+@@ -32,8 +32,10 @@
+ // with the temporary file on commit().
+ class OnDiskBuffer : public FileOutputBuffer {
+ public:
+-  OnDiskBuffer(StringRef Path, fs::TempFile Temp, fs::mapped_file_region Buf)
+-      : FileOutputBuffer(Path), Buffer(std::move(Buf)), Temp(std::move(Temp)) {}
++  OnDiskBuffer(StringRef Path, fs::TempFile Temp, fs::mapped_file_region Buf,
++               unsigned Mode)
++      : FileOutputBuffer(Path), Buffer(std::move(Buf)), Temp(std::move(Temp)),
++        Mode(Mode) {}
+ 
+   uint8_t *getBufferStart() const override { return (uint8_t *)Buffer.data(); }
+ 
+@@ -46,11 +48,32 @@
+   Error commit() override {
+     llvm::TimeTraceScope timeScope("Commit buffer to disk");
+ 
++#if defined(__wasm__) || defined(__wasm32__)
++    // Kandelo's file-backed mmap does not flush dirty pages back into the VFS
++    // file. Copy the mapped bytes to the destination explicitly before
++    // discarding the temporary file.
++    {
++      using namespace sys::fs;
++      int FD;
++      if (auto EC =
++              openFileForWrite(FinalPath, FD, CD_CreateAlways, OF_Delete, Mode))
++        return errorCodeToError(EC);
++      raw_fd_ostream OS(FD, /*shouldClose=*/true, /*unbuffered=*/true);
++      OS << StringRef((const char *)Buffer.data(), Buffer.size());
++      OS.flush();
++      if (std::error_code EC = OS.error())
++        return errorCodeToError(EC);
++    }
++
++    Buffer.unmap();
++    return Temp.discard();
++#else
+     // Unmap buffer, letting OS flush dirty pages to file on disk.
+     Buffer.unmap();
+ 
+     // Atomically replace the existing file with the new one.
+     return Temp.keep(FinalPath);
++#endif
+   }
+ 
+   ~OnDiskBuffer() override {
+@@ -69,6 +92,7 @@
+ private:
+   fs::mapped_file_region Buffer;
+   fs::TempFile Temp;
++  unsigned Mode;
+ };
+ 
+ // A FileOutputBuffer which keeps data in memory and writes to the final
+@@ -151,7 +175,7 @@
+   }
+ 
+   return std::make_unique<OnDiskBuffer>(Path, std::move(File),
+-                                         std::move(MappedFile));
++                                         std::move(MappedFile), Mode);
+ }
+ 
+ // Create an instance of FileOutputBuffer.
