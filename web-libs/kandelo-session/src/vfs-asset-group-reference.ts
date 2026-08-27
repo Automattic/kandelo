@@ -24,7 +24,7 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
   }
   if (
     reference === "vim.zip" || reference === "nethack.zip" ||
-    reference === "ruby.zip"
+    reference === "ruby.zip" || reference === "python.zip"
   ) {
     return `assets/programs/wasm32/${reference}`;
   }
