@@ -43,6 +43,32 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+## Line editing for REPL CLIs
+
+A command-line program with an interactive REPL — a read-eval-print loop that
+reads lines from a TTY, such as `sqlite3` or a language shell — should link a
+line-editing library so users get history, cursor movement, and the REPL's own
+Ctrl-D/EOF handling, unless the upstream maintainer explicitly omits it. A bare
+`fgets`/`getline` reader is the fallback, not the default.
+
+Choose the editor by the *consuming program's* license, because the standard
+choice — GNU `readline` — is GPL-3.0-or-later, and linking it makes the
+resulting **binary** a GPL aggregate. That aggregate is scoped to that one
+binary; it does not relicense other libraries the binary also links (e.g.
+`libsqlite3` stays public domain).
+
+- Public-domain / MIT / BSD / Apache-2.0 / otherwise GPL-compatible program:
+  GNU `readline` is the default — the `readline` package linked against
+  `ncurses`' `libtinfow` (define `-DHAVE_READLINE=1`, link
+  `-lreadline -lhistory -ltinfow`). Note in the package that the binary is a
+  GPL aggregate.
+- GPL-incompatible program (proprietary, GPLv2-only, or one that must stay
+  under a permissive license): do NOT link GPL `readline`. Use a BSD line
+  editor (libedit) or the program's built-in editor instead.
+
+Record which shipped binaries link GPL `readline` so each binary's aggregate
+license is known.
+
 Builds must use the worktree-local SDK. Source `sdk/activate.sh` from package
 scripts; do not rely on `npm link` or a globally installed wrapper. If a build
 only works because the host PATH leaks a tool, fix `flake.nix` or the build

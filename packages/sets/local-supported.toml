@@ -176,6 +176,10 @@ name = "ncurses"
 class = "platform"
 
 [[packages]]
+name = "readline"
+class = "platform"
+
+[[packages]]
 name = "netcat"
 class = "user-software"
 
