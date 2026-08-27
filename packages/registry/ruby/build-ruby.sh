@@ -1268,6 +1268,26 @@ load File.expand_path("bundle", __dir__)
 EOF
 chmod 755 "$RUBY_INSTALL_ROOT/bin/gem" "$RUBY_INSTALL_ROOT/bin/bundle" "$RUBY_INSTALL_ROOT/bin/bundler"
 
+# irb + reline are bundled default gems. `make install` would place them, but
+# it fails on this cross target (it runs the wasm ruby) and the manual fallback
+# above only copies lib/, so irb was missing from the runtime entirely. Install
+# the extracted bundled-gem lib trees onto the default load path and add a
+# bin/irb stub so the irb REPL works. reline provides irb's line editing atop
+# the statically-linked io/console extension.
+for gem_lib in "$SRC_DIR"/.bundle/gems/irb-*/lib "$SRC_DIR"/.bundle/gems/reline-*/lib; do
+    [ -d "$gem_lib" ] && cp -R "$gem_lib"/. "$RUBY_LIB_DIR"/
+done
+if [ ! -f "$RUBY_LIB_DIR/irb.rb" ]; then
+    echo "ERROR: irb library not installed to $RUBY_LIB_DIR (bundled irb gem missing under $SRC_DIR/.bundle/gems)" >&2
+    exit 1
+fi
+cat >"$RUBY_INSTALL_ROOT/bin/irb" <<'EOF'
+#!/usr/bin/env ruby
+require "irb"
+IRB.start(__FILE__)
+EOF
+chmod 755 "$RUBY_INSTALL_ROOT/bin/irb"
+
 rm -f "$RUNTIME_ZIP"
 RUNTIME_STAGE="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_STAGE"' EXIT
