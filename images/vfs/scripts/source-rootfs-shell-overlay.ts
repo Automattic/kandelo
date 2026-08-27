@@ -57,6 +57,7 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/ruby", "/bin/ruby"],
     ["/usr/bin/python3", "/bin/python3"],
     ["/usr/bin/python3", "/bin/python"],
+    ["/usr/bin/node", "/bin/node"],
   ] as const) {
     symlink(fs, target, alias);
   }

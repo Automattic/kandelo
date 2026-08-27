@@ -39,6 +39,11 @@
       "name": "python-browser-bundle",
       "version": "3.13.3",
       "role": "lazy-archive"
+    },
+    {
+      "name": "node-browser-bundle",
+      "version": "0.1.0",
+      "role": "lazy-archive"
     }
   ]
 }

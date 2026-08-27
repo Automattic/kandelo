@@ -59,6 +59,14 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredExecutable: "bin/python3",
   },
+  {
+    id: "node",
+    dependency: "node-browser-bundle",
+    resolverPath: "programs/wasm32/node.zip",
+    archiveUrl: "node.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/node",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
 // The python lazy-archive mounts a statically-linked CPython at /usr/bin with

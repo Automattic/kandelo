@@ -212,6 +212,10 @@ name = "node"
 class = "user-software"
 
 [[packages]]
+name = "node-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "node-vfs"
 class = "browser-product"
 
