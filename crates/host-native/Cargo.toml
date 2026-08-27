@@ -34,6 +34,17 @@ path = "src/lib.rs"
 # freeze-gate acid test that the platform boundary is not JavaScript-shaped.
 wasmtime = "35"
 
+# The authoritative ABI: syscall numbers, channel offsets, and the pointer-arg
+# marshalling descriptors. A `no_std` constants/types crate with no external
+# dependencies, so linking it into this `std` host binary is free and keeps the
+# native pump keyed off the same source of truth the kernel and guest glue use —
+# never hand-copied magic numbers.
+wasm-posix-shared = { path = "../shared" }
+
+# Ergonomic error propagation for the pump (`bail!`, `?` across the many
+# fallible kernel-export calls). Wasmtime already pulls anyhow into the tree.
+anyhow = "1"
+
 [dev-dependencies]
 # `wat` compiles the tiny WAT wait/notify probe module in-test, keeping the
 # fixture readable alongside the assertions that consume it.

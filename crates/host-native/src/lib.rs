@@ -29,6 +29,11 @@ use std::time::Duration;
 
 use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMemory, Store};
 
+/// Increment 2: boot the kernel and run a trivial guest through the real
+/// channel. See [`guest::run_trivial_guest`].
+pub mod guest;
+pub use guest::{run_trivial_guest, RunOutcome};
+
 /// ABI version this native host expects the kernel to advertise. Must match
 /// `wasm_posix_shared::ABI_VERSION` (currently 44). A kernel built for a
 /// different ABI will fail the smoke test loudly rather than run wrong.
@@ -217,6 +222,7 @@ pub fn kernel_wasm_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::Syscall;
 
     /// Return the kernel path, or `None` (with a clear skip message) if it has
     /// not been built. This keeps a fresh checkout without built binaries from
@@ -292,6 +298,53 @@ mod tests {
         let (woke, wait_result) = run_wait_notify_handshake()?;
         assert_eq!(woke, 1, "notify must wake exactly one waiter");
         assert_eq!(wait_result, 0, "wait32 must return 0 (woken)");
+        Ok(())
+    }
+
+    /// Increment 2: the native host boots the real kernel and runs a real
+    /// SDK-built guest end-to-end through the channel. The guest issues exactly
+    /// mmap → getpid → write → exit_group; a green run proves the whole native
+    /// spine (process creation, layout, two-thread wait/notify, RAW pointer
+    /// marshalling for write, anon-mmap growth, host_write → stdout, exit code).
+    #[test]
+    fn smoke_runs_trivial_guest_through_channel() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        // The committed fixture is built through the SDK exactly like
+        // scripts/build-programs.sh (see fixtures/README.md).
+        let guest = include_bytes!("../fixtures/native_hello.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout,
+            b"hello from the native wasmtime host\n",
+            "guest stdout must arrive via host_write"
+        );
+        assert!(outcome.stderr.is_empty(), "guest wrote unexpected stderr");
+        // The exact syscall path the program takes, proving it ran (not just
+        // exited): the startup argv mmap, __init_tp's set_tid_address, getpid,
+        // the write, then exit_group.
+        use wasm_posix_shared::abi::extended_syscalls;
+        assert_eq!(
+            outcome.syscall_trace,
+            vec![
+                Syscall::Mmap as u32,
+                extended_syscalls::SYS_SET_TID_ADDRESS,
+                Syscall::Getpid as u32,
+                Syscall::Write as u32,
+                extended_syscalls::SYS_EXIT_GROUP,
+            ],
+            "unexpected syscall trace"
+        );
         Ok(())
     }
 }
