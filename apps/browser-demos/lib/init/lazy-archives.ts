@@ -1,9 +1,11 @@
 import vimZipUrl from "@binaries/programs/vim.zip?url";
 import nethackZipUrl from "@binaries/programs/nethack.zip?url";
+import kandeloSdkZipUrl from "@binaries/programs/kandelo-sdk.zip?url";
 
 const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "vim.zip": vimZipUrl,
   "nethack.zip": nethackZipUrl,
+  "kandelo-sdk.zip": kandeloSdkZipUrl,
 };
 
 export function resolveShellLazyArchiveUrl(url: string): string {
