@@ -281,9 +281,10 @@ whoever can move the ref can change what executes in a job holding
 the sole exception; they resolve to the running commit. Dependabot keeps the
 pins current.
 
-`bash build.sh` does not rebuild musl. After editing `libc/musl-overlay/` or
+`./run.sh setup` does not rebuild musl once a sysroot already exists —
+it only re-syncs overlay headers. After editing `libc/musl-overlay/` or
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`build.sh`, Vitest, or conformance tests.
+`./run.sh setup`, Vitest, or conformance tests.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,

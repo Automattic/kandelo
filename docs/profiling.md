@@ -80,11 +80,17 @@ The benchmark suite runs reproducible workloads on both Node.js and browser host
 Build the kernel and benchmark programs:
 
 ```bash
-# Required first whenever libc/musl-overlay or libc/glue changed.
-scripts/dev-shell.sh bash scripts/build-musl.sh
-
 ./run.sh setup
 scripts/dev-shell.sh bash scripts/build-programs.sh
+```
+
+`./run.sh setup` provisions the musl sysroot for you on a fresh
+checkout. If a sysroot already exists and you changed
+`libc/musl-overlay` or `libc/glue`, `setup` only re-syncs headers —
+rebuild it explicitly first:
+
+```bash
+scripts/dev-shell.sh bash scripts/build-musl.sh
 ```
 
 Some suites require additional binaries:

@@ -27,6 +27,76 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=build-step-input-hash.sh
+source "$REPO_ROOT/scripts/build-step-input-hash.sh"
+
+OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
+STAMP="$OUT.input-hash"
+
+# Resolve the manifest path, source-tree path, and target kernel ABI version
+# BEFORE computing the input digest below. All three are overridable via env
+# vars (ROOTFS_MANIFEST, ROOTFS_SOURCE_TREE, ROOTFS_ABI_VERSION) that this
+# script's own invocation of mkrootfs (further down) actually consumes, so
+# the digest must track the RESOLVED value, not the literal default —
+# otherwise a caller that overrides one of these while still writing to the
+# default $ROOTFS_OUT would get a false "up to date" skip against a
+# rootfs.vfs built from different inputs.
+ROOTFS_MANIFEST_PATH="${ROOTFS_MANIFEST:-MANIFEST}"
+ROOTFS_SOURCE_TREE_PATH="${ROOTFS_SOURCE_TREE:-images/rootfs}"
+if [ -n "${ROOTFS_ABI_VERSION:-}" ]; then
+    ABI_VERSION="$ROOTFS_ABI_VERSION"
+else
+    ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
+fi
+if [ -z "$ABI_VERSION" ]; then
+    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 1
+fi
+case "$ABI_VERSION" in
+    *[!0-9]*)
+        echo "ERROR: ROOTFS_ABI_VERSION must be a non-negative integer" >&2
+        exit 2
+        ;;
+esac
+if [ -n "${ROOTFS_ABI_SNAPSHOT_SHA256:-}" ] &&
+   ! printf '%s' "$ROOTFS_ABI_SNAPSHOT_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "ERROR: ROOTFS_ABI_SNAPSHOT_SHA256 must be lowercase SHA-256" >&2
+    exit 2
+fi
+
+# The exact input set for host/wasm/rootfs.vfs. The engine's per-package
+# projection file carries a content hash (`cacheKeys`) of the fully resolved
+# binary set the image bundles, so hashing it stands in for hashing every
+# resolved package artifact directly; the projection is guaranteed current
+# here because this step always runs after the engine step in
+# `bootstrap_step_plan` (see tools/xtask/src/local_build.rs). Do NOT swap
+# this for the engine's `authority_sha256` — that only folds `package.toml`
+# shas and misses build-script/patch/source edits within a package.
+#
+# `crates/shared/src/lib.rs` is hashed directly too (harmless
+# over-inclusion) even though only its `ABI_VERSION` line matters here — the
+# `literal:ABI_VERSION=...` entry is what actually captures the RESOLVED ABI
+# value the build below uses, including an `ROOTFS_ABI_VERSION` override
+# that never touches `lib.rs`.
+ROOTFS_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
+    local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json \
+    "$ROOTFS_MANIFEST_PATH" \
+    "$ROOTFS_SOURCE_TREE_PATH" \
+    tools/mkrootfs/src \
+    host/src/vfs/memory-fs.ts \
+    host/src/vfs/zip.ts \
+    scripts/build-rootfs.sh \
+    scripts/generate-rootfs-package-manifest.mjs \
+    scripts/build-step-input-hash.sh \
+    crates/shared/src/lib.rs \
+    "literal:ABI_VERSION=$ABI_VERSION")"
+
+if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
+   build_step_is_current "$OUT" "$STAMP" "$ROOTFS_INPUT_HASH"; then
+    echo "==> rootfs.vfs up to date ($ROOTFS_INPUT_HASH)"
+    exit 0
+fi
+
 # Resolver-owned package builds must be read-only with respect to the source
 # checkout. Their CI callers install the repository's locked JavaScript
 # dependencies before invoking the package resolver.
@@ -52,35 +122,12 @@ else
     fi
 fi
 
-OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
 PKG_MANIFEST="${ROOTFS_PACKAGE_MANIFEST:-target/rootfs-packages.MANIFEST}"
 ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
 ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-268435456}"
 ROOTFS_PACKAGES="${ROOTFS_PACKAGES_CONFIG:-images/rootfs/PACKAGES.toml}"
-ROOTFS_MANIFEST_PATH="${ROOTFS_MANIFEST:-MANIFEST}"
-ROOTFS_SOURCE_TREE_PATH="${ROOTFS_SOURCE_TREE:-images/rootfs}"
 ROOTFS_BUILD_REPO_ROOT="${ROOTFS_REPO_ROOT:-$REPO_ROOT}"
 mkdir -p "$(dirname "$OUT")"
-if [ -n "${ROOTFS_ABI_VERSION:-}" ]; then
-    ABI_VERSION="$ROOTFS_ABI_VERSION"
-else
-    ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
-fi
-if [ -z "$ABI_VERSION" ]; then
-    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
-    exit 1
-fi
-case "$ABI_VERSION" in
-    *[!0-9]*)
-        echo "ERROR: ROOTFS_ABI_VERSION must be a non-negative integer" >&2
-        exit 2
-        ;;
-esac
-if [ -n "${ROOTFS_ABI_SNAPSHOT_SHA256:-}" ] &&
-   ! printf '%s' "$ROOTFS_ABI_SNAPSHOT_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
-    echo "ERROR: ROOTFS_ABI_SNAPSHOT_SHA256 must be lowercase SHA-256" >&2
-    exit 2
-fi
 
 if [ "${ROOTFS_SKIP_PACKAGE_RESOLVE:-0}" != "1" ]; then
     for tool in cargo rustc; do
@@ -161,3 +208,8 @@ fi
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "==> Built $OUT ($SIZE bytes)"
+
+# Record the stamp only after a successful build, so a failed/interrupted
+# build never leaves behind a stamp that would make a broken/stale output
+# look up to date on the next run.
+write_build_stamp "$STAMP" "$ROOTFS_INPUT_HASH"

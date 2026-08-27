@@ -15,9 +15,16 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
      See the README's "Using Nix" section.
 2. **musl sysroot**. If you installed `wasm-posix-sdk` from npm, the
    package already contains the published sysroot and glue files. If
-   you are working from a source checkout, build them locally:
+   you are working from a source checkout, initialize the submodule
+   and let `./run.sh setup` (step 3) build the sysroot for you:
    ```bash
    git submodule update --init libc/musl
+   ```
+   `./run.sh setup` builds the sysroot from scratch when it is
+   missing, but only re-syncs overlay headers when it already exists.
+   If you edit `libc/musl-overlay/` or `libc/glue/channel_syscall.c`
+   after the sysroot has already been built, rebuild it explicitly:
+   ```bash
    bash scripts/build-musl.sh
    ```
 3. **Kernel built**:
