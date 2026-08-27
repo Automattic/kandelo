@@ -41,7 +41,9 @@ fi
 
 [ "$ARCH" = wasm32 ] || { echo "ERROR: clang supports wasm32 only" >&2; exit 1; }
 [ -f "$SYSROOT/lib/libc.a" ] || { echo "ERROR: sysroot missing; run scripts/build-musl.sh" >&2; exit 1; }
-command -v wasm32posix-c++ >/dev/null || { echo "ERROR: SDK wrappers not on PATH" >&2; exit 1; }
+for _t in wasm32posix-cc wasm32posix-c++ wasm32posix-ar wasm32posix-ranlib wasm32posix-nm; do
+  command -v "$_t" >/dev/null || { echo "ERROR: SDK wrapper $_t not on PATH; source sdk/activate.sh" >&2; exit 1; }
+done
 
 # libc++ from the resolved dependency; fall back to an in-sysroot copy.
 if [ -z "$LIBCXX_DIR" ] && [ -f "$SYSROOT/lib/libc++.a" ]; then LIBCXX_DIR="$SYSROOT"; fi
@@ -53,12 +55,25 @@ if [ -z "$LIBCXX_DIR" ] && [ -f "$SYSROOT/lib/libc++.a" ]; then LIBCXX_DIR="$SYS
 # dependency (CheckAtomic's `#include <atomic>` try-compile fails
 # otherwise). Same private-sysroot pattern as
 # packages/registry/icu/build-icu.sh.
+# Make SYSROOT private in BOTH modes so the libc++ merge below never
+# mutates the shared platform sysroot ($REPO_ROOT/sysroot).
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
   export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_DIR"
   SYSROOT="$(kandelo_package_prepare_private_sysroot clang "$SYSROOT" libcxx)"
-  export WASM_POSIX_SYSROOT="$SYSROOT"
+else
+  # Direct (non-resolver) mode: seed a throwaway private sysroot from the
+  # shared one and merge libc++ there. The shared sysroot is never written.
+  PRIV_SYSROOT="$WORK_DIR/private-sysroot"
+  rm -rf "$PRIV_SYSROOT"
+  mkdir -p "$PRIV_SYSROOT"
+  cp -a "$SYSROOT/." "$PRIV_SYSROOT/"
+  SYSROOT="$PRIV_SYSROOT"
 fi
-echo "==> Linking libcxx into sysroot ($LIBCXX_DIR)..."
+export WASM_POSIX_SYSROOT="$SYSROOT"
+# $SYSROOT is now private in both modes. In resolver mode
+# kandelo_package_prepare_private_sysroot already overlaid libcxx; re-linking
+# here is harmless and keeps the direct-mode path self-contained.
+echo "==> Linking libcxx into private sysroot ($LIBCXX_DIR)..."
 mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
 ln -sf  "$LIBCXX_DIR/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
 ln -sf  "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
@@ -154,6 +169,9 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   2>&1 | tail -40
 
 echo "==> Building clang tools..."
+# Default to -j1: the final link of the ~44 MB clang.wasm binary is
+# memory-hungry, and parallel LLVM links at higher -j can OOM the host.
+# Override with KANDELO_CLANG_BUILD_JOBS on machines with enough memory.
 cmake --build "$BUILD_DIR" --target clang lld llvm-ar llvm-ranlib llvm-nm \
   -j"${KANDELO_CLANG_BUILD_JOBS:-1}" 2>&1 | tail -40
 
