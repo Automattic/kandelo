@@ -25,14 +25,35 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-# Best-effort cleanup for pkg_xtask_bin's per-invocation freshness marker
-# (see its definition below). Some subcommands (cmd_local_build, the
-# source-rootfs-shell browser path) install their own EXIT trap and later
-# clear it with `trap - EXIT INT TERM`, which would clobber this one for the
-# remainder of their run; that is harmless here — the marker is keyed by
-# this process's PID, so a lingering 0-byte file cannot make a *different*
-# (later) `./run.sh` invocation skip its own freshness check.
-trap 'rm -f -- "${TMPDIR:-/tmp}/kandelo-xtask-fresh-$$"' EXIT
+# pkg_xtask_bin freshens the release xtask binary exactly once per `./run.sh`
+# invocation and records that it did so with this marker file. The name is a
+# fresh random token per invocation (`mktemp -u` only generates an unused
+# name; pkg_xtask_bin creates the file itself after a successful build). A
+# random name — not one keyed by `$$` — is what makes a leaked marker inert:
+# the EXIT trap below does not fire on the many `exec`-terminated command
+# paths (cmd_run's `exec npx tsx …`, cmd_browser's `exec npx vite`, the
+# nginx/mariadb/redis/wordpress/lamp/erlang/dlopen launches), so a marker can
+# leak. Keyed by `$$` (a reusable PID), a later invocation the OS assigned the
+# same PID — after an xtask source edit — would find the leaked marker and
+# skip its rebuild, silently running stale orchestration. With a unique random
+# name no future invocation ever looks for, a leaked marker can never be
+# resurrected by PID reuse. `$(...)` command-substitution subshells inherit
+# this parent global, so every call site sees the same marker path.
+KANDELO_XTASK_FRESH_MARKER="$(mktemp -u "${TMPDIR:-/tmp}/kandelo-xtask-fresh.XXXXXX")"
+# Host triple (e.g. aarch64-apple-darwin) for the xtask build target, derived
+# at most once per invocation. Memoized here so a marker-hit pkg_xtask_bin
+# call does not re-run `rustc -vV` on every lookup, and so a transient rustc
+# failure cannot fail a cache-hit call.
+KANDELO_XTASK_HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+
+# Best-effort cleanup for the freshness marker. Some subcommands
+# (cmd_local_build, the source-rootfs-shell browser path) install their own
+# EXIT trap and later clear it with `trap - EXIT INT TERM`, which would
+# clobber this one for the remainder of their run; and `exec`-terminated paths
+# never fire it at all. Both are harmless now: the marker has a unique random
+# name, so a lingering file cannot make any other `./run.sh` invocation skip
+# its own freshness check.
+trap 'rm -f -- "$KANDELO_XTASK_FRESH_MARKER"' EXIT
 
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
@@ -258,21 +279,19 @@ has_valid_kernel_file() {
 # always forks a subshell in bash — any assignment to a global variable
 # inside the function is discarded when that subshell exits, so a plain
 # `PKG_XTASK_FRESH=1` set here would never be visible to the next call.
-# Freshness has to be recorded as real filesystem state instead: a marker
-# file keyed by `$$` (this run.sh process's PID, which stays constant across
-# `$(...)` subshells within one invocation, but is different for the next
-# `./run.sh` run — so a stale marker can never cause a future edit to be
-# missed). The marker is cleaned up by the top-level EXIT trap above
-# (best-effort; a lingering marker is harmless since a new invocation uses a
-# new PID).
+# Freshness has to be recorded as real filesystem state instead: the
+# `KANDELO_XTASK_FRESH_MARKER` file computed once at the top of this file.
+# Reading that inherited parent global inside a `$(...)` subshell works fine
+# (unlike writing one out); its unique random name makes a leaked marker inert
+# against PID reuse. See the definition near the top of this file for why the
+# name is random rather than keyed by `$$`.
 pkg_xtask_bin() {
-    local host
-    host=$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')
+    local host="$KANDELO_XTASK_HOST_TRIPLE"
     if [ -z "$host" ]; then
         return 1
     fi
     local bin="$REPO_ROOT/target/$host/release/xtask"
-    local marker="${TMPDIR:-/tmp}/kandelo-xtask-fresh-$$"
+    local marker="$KANDELO_XTASK_FRESH_MARKER"
     if [ ! -f "$marker" ]; then
         # Always run `cargo build`, not just when the binary is absent:
         # cargo's own incremental check is what gives us the freshness
