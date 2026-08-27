@@ -959,7 +959,7 @@ SITE_EOF
         --without-fiddle \
         --without-readline \
         --with-static-linked-ext \
-        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation \
+        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,io/wait,pty,socket,continuation,ripper \
         --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal \
         2>&1 | tail -50
 
@@ -1167,8 +1167,8 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor psych pty socket stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
+STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console io/wait json/ext/generator json/ext/parser monitor psych pty ripper socket stringio strscan zlib"
+STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/io/wait/wait.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/ripper/ripper.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
 STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
@@ -1281,8 +1281,14 @@ if [ ! -f "$RUBY_LIB_DIR/irb.rb" ]; then
     echo "ERROR: irb library not installed to $RUBY_LIB_DIR (bundled irb gem missing under $SRC_DIR/.bundle/gems)" >&2
     exit 1
 fi
+# This Ruby does not auto-load RubyGems at startup (like bin/gem, scripts must
+# require it explicitly). irb's locale loader calls Gem.try_activate to find
+# localized message files, so without RubyGems it dies with "undefined method
+# 'try_activate' for module Gem" whenever LANG is set (as the shell demo sets
+# LANG=en_US.UTF-8). Require rubygems first so Gem is fully defined.
 cat >"$RUBY_INSTALL_ROOT/bin/irb" <<'EOF'
 #!/usr/bin/env ruby
+require "rubygems"
 require "irb"
 IRB.start(__FILE__)
 EOF
