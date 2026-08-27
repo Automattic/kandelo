@@ -35,6 +35,19 @@ if [ ! -f "$SQLITE_DIR/lib/libsqlite3.a" ]; then
     exit 1
 fi
 
+# GNU readline gives the CLI real line editing (history, arrows, and its own
+# Ctrl-D handling). readline links against ncurses' libtinfow terminfo backend.
+READLINE_DIR="${WASM_POSIX_DEP_READLINE_DIR:?resolver did not provide the readline dependency}"
+NCURSES_DIR="${WASM_POSIX_DEP_NCURSES_DIR:?resolver did not provide the ncurses dependency}"
+if [ ! -f "$READLINE_DIR/lib/libreadline.a" ]; then
+    echo "ERROR: libreadline.a missing in $READLINE_DIR/lib" >&2
+    exit 1
+fi
+if [ ! -f "$NCURSES_DIR/lib/libtinfow.a" ]; then
+    echo "ERROR: libtinfow.a missing in $NCURSES_DIR/lib" >&2
+    exit 1
+fi
+
 # --- Stage OUR source purely for shell.c (matches lib version 3.49.1). ---
 SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-3.49.1}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
@@ -74,12 +87,16 @@ BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 mkdir -p "$BIN_DIR"
 OUT="$BIN_DIR/sqlite3.wasm"
 
-echo "==> Linking sqlite3 CLI against libsqlite3.a..."
+echo "==> Linking sqlite3 CLI against libsqlite3.a + readline..."
 # shellcheck disable=SC2086
-"$CC" $SQLITE_CFLAGS \
+"$CC" $SQLITE_CFLAGS -DHAVE_READLINE=1 \
     -I"$SQLITE_DIR/include" \
+    -I"$READLINE_DIR/include" \
     "$SRC_DIR/shell.c" \
-    -L"$SQLITE_DIR/lib" -lsqlite3 -lm \
+    -L"$SQLITE_DIR/lib" -lsqlite3 \
+    -L"$READLINE_DIR/lib" -lreadline -lhistory \
+    -L"$NCURSES_DIR/lib" -ltinfow \
+    -lm \
     -Wl,-z,stack-size=1048576 -Wl,--export=__abi_version \
     -o "$OUT"
 

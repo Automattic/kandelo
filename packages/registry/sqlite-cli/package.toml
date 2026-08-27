@@ -8,7 +8,9 @@ kind = "program"
 name = "sqlite-cli"
 version = "3.49.1"
 kernel_abi = 7
-depends_on = ["sqlite@3.49.1"]
+# sqlite: the engine (single source of truth, no PHP rebuild). readline +
+# ncurses: line editing (history, arrows, Ctrl-D) via -DHAVE_READLINE.
+depends_on = ["sqlite@3.49.1", "readline@8.2", "ncurses@6.5"]
 
 [source]
 url = "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
