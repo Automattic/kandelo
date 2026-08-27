@@ -363,15 +363,19 @@ pub(crate) struct BootstrapStep {
 /// The ordered host-plus-engine build closure for `xtask bootstrap` /
 /// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
 /// `engine` (the `msmtpd` package node consumes the built
-/// `wasm-fork-instrument` CLI); `host-dist` must follow `engine` (the
-/// TypeScript host build consumes the program package index the engine
-/// regenerates).
+/// `wasm-fork-instrument` CLI); `rootfs` must follow `engine` (`build-rootfs.sh`
+/// assembles the canonical `host/wasm/rootfs.vfs` image from packages the
+/// engine step just built) and precede `host-dist` (the TypeScript host build
+/// should see a fresh rootfs image, even though it does not currently read it
+/// at build time); `host-dist` must follow `engine` (the TypeScript host build
+/// consumes the program package index the engine regenerates).
 pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     vec![
         BootstrapStep {
             name: "fork-instrument-tool",
         },
         BootstrapStep { name: "engine" },
+        BootstrapStep { name: "rootfs" },
         BootstrapStep {
             name: "host-dist",
         },
@@ -418,22 +422,40 @@ fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> 
     Ok(())
 }
 
-/// `xtask bootstrap [--jobs <n>] [--rebuild] [--verify-cache]` — the single
-/// engine-plus-host build closure behind `./run.sh setup`. Accepts an
-/// optional leading positional target (e.g. `bootstrap kernel`) for a later
-/// stage to add single-target selection; Stage 1 only implements the
-/// whole-tree ("all") path and returns a clear error for any other target.
-pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BootstrapSelectionV1 {
+    All,
+}
+
+/// Parse the leading positional target argument of `xtask bootstrap`. An
+/// omitted target and the explicit literal `all` both select the whole-tree
+/// build closure; any other positional is not yet implemented in this stage.
+/// Pure and testable, split out of `run_bootstrap` so the argument-shape
+/// decision can be verified without running the bootstrap steps.
+pub(crate) fn bootstrap_selection_from_args(
+    args: &[String],
+) -> Result<(BootstrapSelectionV1, Vec<String>), String> {
     let (target, rest) = match args.split_first() {
         Some((first, rest)) if !first.starts_with("--") => (Some(first.clone()), rest.to_vec()),
-        _ => (None, args),
+        _ => (None, args.to_vec()),
     };
-    if let Some(target) = target {
-        return Err(format!(
+    match target.as_deref() {
+        None | Some("all") => Ok((BootstrapSelectionV1::All, rest)),
+        Some(target) => Err(format!(
             "bootstrap: target selection ({target:?}) is not yet implemented in this stage; \
-             omit the target to build the whole tree"
-        ));
+             omit the target or pass \"all\" to build the whole tree"
+        )),
     }
+}
+
+/// `xtask bootstrap [all] [--jobs <n>] [--rebuild] [--verify-cache]` — the
+/// single engine-plus-host build closure behind `./run.sh setup`. Accepts an
+/// optional leading positional target (e.g. `bootstrap kernel`) for a later
+/// stage to add single-target selection; Stage 1 only implements the
+/// whole-tree path (target omitted, or the explicit literal `all`) and
+/// returns a clear error for any other target.
+pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
+    let (BootstrapSelectionV1::All, rest) = bootstrap_selection_from_args(&args)?;
     let repo = crate::repo_root();
     let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
     let jobs = select_job_count(
@@ -457,6 +479,7 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
                 rebuild,
                 verify_cache,
             })?,
+            "rootfs" => run_repo_script(&repo, "scripts/build-rootfs.sh", &[])?,
             "host-dist" => run_repo_script(&repo, "scripts/build-host.sh", &[])?,
             other => return Err(format!("bootstrap: unknown step {other:?}")),
         }
@@ -4530,8 +4553,39 @@ materialization = "lazy"
         let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
         assert_eq!(
             names,
-            vec!["fork-instrument-tool", "engine", "host-dist"],
-            "fork-instrument must precede the engine (msmtpd needs it); host/dist must follow (needs the regenerated program index)"
+            vec!["fork-instrument-tool", "engine", "rootfs", "host-dist"],
+            "fork-instrument must precede the engine (msmtpd needs it); rootfs must \
+             follow the engine (build-rootfs.sh consumes the packages the engine just \
+             built) and precede host-dist (host build should see a fresh rootfs \
+             image); host-dist must follow the engine (needs the regenerated program \
+             index)"
+        );
+    }
+
+    #[test]
+    fn bootstrap_selection_from_args_accepts_omitted_and_all_rejects_other_targets() {
+        let (selection, rest) = bootstrap_selection_from_args(&[]).unwrap();
+        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) =
+            bootstrap_selection_from_args(&["all".to_string()]).unwrap();
+        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert!(rest.is_empty());
+
+        let (selection, rest) = bootstrap_selection_from_args(&[
+            "all".to_string(),
+            "--jobs".to_string(),
+            "2".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(selection, BootstrapSelectionV1::All);
+        assert_eq!(rest, vec!["--jobs".to_string(), "2".to_string()]);
+
+        let error = bootstrap_selection_from_args(&["kernel".to_string()]).unwrap_err();
+        assert!(
+            error.contains("not yet implemented"),
+            "unknown positional target must return the not-yet-implemented error: {error}"
         );
     }
 

@@ -9,7 +9,7 @@ Use the canonical dev shell for build and verification:
 
 ```bash
 scripts/dev-shell.sh bash scripts/build-musl.sh
-scripts/dev-shell.sh bash build.sh
+scripts/dev-shell.sh ./run.sh setup
 scripts/dev-shell.sh bash
 ```
 
@@ -108,15 +108,16 @@ directly:
 
 ```bash
 bash scripts/build-musl.sh   # Build wasm32 musl sysroot when libc overlay/glue changes
-bash build.sh                # Build kernel wasm, host TypeScript, and programs
+./run.sh setup                # Build fork-instrument tool, kernel wasm, rootfs, and TypeScript host
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
 
-`bash build.sh` does not rebuild musl. After editing `libc/musl-overlay/` or
+`./run.sh setup` does not rebuild musl. After editing `libc/musl-overlay/` or
 `libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`build.sh`, Vitest, or conformance tests. Otherwise user programs can link
+`./run.sh setup`, Vitest, or conformance tests. Otherwise user programs can link
 against a stale `sysroot/lib/libc.a`, hiding or inventing syscall, ABI, and
-libc behavior.
+libc behavior. (`bash build.sh` still works as a deprecated delegator to
+`./run.sh setup`.)
 
 ### First build in a fresh checkout or worktree
 
@@ -129,13 +130,13 @@ validate." The full sequence (see `validation.md` for detail):
 git submodule update --init --recursive           # musl, libc-test, os-test
 # if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
 scripts/dev-shell.sh bash scripts/build-musl.sh    # sysroot (~20s)
-scripts/dev-shell.sh bash build.sh                 # kernel wasm → local-binaries/, host, rootfs (~1.5min)
+scripts/dev-shell.sh ./run.sh setup                # kernel wasm → local-binaries/, rootfs, host (~1.5min)
 npm ci && (cd host && npm ci)                      # root deps (tsx for conformance runners) + host deps
-scripts/dev-shell.sh bash scripts/fetch-binaries.sh # prebuilt test binaries build.sh does not produce
+scripts/dev-shell.sh bash scripts/fetch-binaries.sh # prebuilt test binaries ./run.sh setup does not produce
 ```
 
 A stale `local-binaries/kernel.wasm` silently runs OLD kernel code in
-Vitest/conformance, so rebuild with `bash build.sh` after any kernel Rust edit.
+Vitest/conformance, so rebuild with `./run.sh setup` after any kernel Rust edit.
 
 ## Documentation And PRs
 

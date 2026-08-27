@@ -72,15 +72,15 @@ are not "cannot validate" conditions. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **musl sysroot** — one-time, ~20s; required before `build.sh` can compile the
-   user programs and rootfs:
+2. **musl sysroot** — one-time, ~20s; required before `./run.sh setup` can
+   compile the user programs and rootfs:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh
    ```
 3. **Kernel wasm + host + rootfs** — ~1.5min; produces `local-binaries/kernel.wasm`
    (the binary resolver prefers it over `binaries/`) and `host/wasm/rootfs.vfs`:
    ```bash
-   scripts/dev-shell.sh bash build.sh
+   scripts/dev-shell.sh ./run.sh setup
    ```
 4. **Node dependencies** — `node_modules` are per-checkout, and both the repo
    root (the conformance runners load `tsx` from root) and `host/` are needed:
@@ -116,11 +116,12 @@ build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.
 local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
 pre-existing failure as pre-existing, not as your regression.
 
-After editing kernel Rust, rebuild the kernel wasm (`bash build.sh`) before the
+After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
 Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. `bash build.sh` does not rebuild musl;
+wasm silently runs your OLD kernel code. `./run.sh setup` does not rebuild musl;
 after editing `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
-`scripts/build-musl.sh` first.
+`scripts/build-musl.sh` first. (`bash build.sh` still works as a deprecated
+delegator to `./run.sh setup`.)
 
 The table names primary evidence, not a universal checklist. Choose the suites
 that support the claim you will make, broaden coverage when a change crosses
