@@ -39,12 +39,24 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 # name no future invocation ever looks for, a leaked marker can never be
 # resurrected by PID reuse. `$(...)` command-substitution subshells inherit
 # this parent global, so every call site sees the same marker path.
-KANDELO_XTASK_FRESH_MARKER="$(mktemp -u "${TMPDIR:-/tmp}/kandelo-xtask-fresh.XXXXXX")"
+# `|| true`: this is a bare top-level command substitution under
+# `set -euo pipefail`. Without the guard, a failing `mktemp` would abort the
+# whole script here, before argument dispatch. An empty marker path is safe —
+# `[ -f "" ]` is false, so pkg_xtask_bin simply always rebuilds that run (no
+# memoization, no staleness).
+KANDELO_XTASK_FRESH_MARKER="$(mktemp -u "${TMPDIR:-/tmp}/kandelo-xtask-fresh.XXXXXX")" || true
 # Host triple (e.g. aarch64-apple-darwin) for the xtask build target, derived
 # at most once per invocation. Memoized here so a marker-hit pkg_xtask_bin
 # call does not re-run `rustc -vV` on every lookup, and so a transient rustc
 # failure cannot fail a cache-hit call.
-KANDELO_XTASK_HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+# `|| true`: `rustc` is legitimately absent for a bare `./run.sh <cmd>` run
+# before entering the dev shell (pkg_xtask_bin's KANDELO_DEV_SHELL_TOOL_PATH
+# branch exists for exactly this). Under `set -euo pipefail` the pipeline's
+# exit 127 would otherwise `errexit`-abort the entire script here, before
+# argument dispatch, breaking every subcommand (e.g. `./run.sh list`). Failing
+# soft to an empty string restores the old lazy behavior: pkg_xtask_bin's
+# `[ -z "$host" ] && return 1` guard then fires its normal caller error.
+KANDELO_XTASK_HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')" || true
 
 # Best-effort cleanup for the freshness marker. Some subcommands
 # (cmd_local_build, the source-rootfs-shell browser path) install their own
