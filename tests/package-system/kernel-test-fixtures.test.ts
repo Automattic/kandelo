@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { registryPackagesWithoutBuildToml } from "../../scripts/browser-binary-package-roots.mjs";
+import { gitIgnoredPaths } from "../../scripts/git-ignored-paths.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const manifestPath = join(repoRoot, "tests", "test-artifacts", "kernel-test-programs.json");
@@ -70,6 +71,10 @@ function fileExists(relPath: string): boolean {
   return existsSync(join(repoRoot, relPath));
 }
 
+// Local build output is not a consumer of a kernel test fixture. Skipping it
+// keeps this walk off the vendored upstream trees a source build unpacks.
+const ignoredSourcePaths = gitIgnoredPaths(repoRoot);
+
 function sourceFilesUnder(path: string): string[] {
   const absolute = join(repoRoot, path);
   if (!existsSync(absolute)) return [];
@@ -77,6 +82,7 @@ function sourceFilesUnder(path: string): string[] {
   return entries.flatMap((entry) => {
     if (["node_modules", "target", "dist", ".git"].includes(entry.name)) return [];
     const child = join(path, entry.name);
+    if (ignoredSourcePaths.has(child)) return [];
     if (entry.isDirectory()) return sourceFilesUnder(child);
     return /\.(?:c|cc|cpp|js|mjs|sh|ts|tsx|toml)$/.test(entry.name)
       ? [child]
