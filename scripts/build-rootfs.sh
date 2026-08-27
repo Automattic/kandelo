@@ -27,6 +27,38 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=build-step-input-hash.sh
+source "$REPO_ROOT/scripts/build-step-input-hash.sh"
+
+OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
+STAMP="$OUT.input-hash"
+
+# The exact input set for host/wasm/rootfs.vfs. The engine's per-package
+# projection file carries a content hash (`cacheKeys`) of the fully resolved
+# binary set the image bundles, so hashing it stands in for hashing every
+# resolved package artifact directly; the projection is guaranteed current
+# here because this step always runs after the engine step in
+# `bootstrap_step_plan` (see tools/xtask/src/local_build.rs). Do NOT swap
+# this for the engine's `authority_sha256` — that only folds `package.toml`
+# shas and misses build-script/patch/source edits within a package.
+ROOTFS_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
+    local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json \
+    MANIFEST \
+    images/rootfs \
+    tools/mkrootfs/src \
+    host/src/vfs/memory-fs.ts \
+    host/src/vfs/zip.ts \
+    scripts/build-rootfs.sh \
+    scripts/generate-rootfs-package-manifest.mjs \
+    scripts/build-step-input-hash.sh \
+    crates/shared/src/lib.rs)"
+
+if [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != "1" ] &&
+   build_step_is_current "$OUT" "$STAMP" "$ROOTFS_INPUT_HASH"; then
+    echo "==> rootfs.vfs up to date ($ROOTFS_INPUT_HASH)"
+    exit 0
+fi
+
 # Resolver-owned package builds must be read-only with respect to the source
 # checkout. Their CI callers install the repository's locked JavaScript
 # dependencies before invoking the package resolver.
@@ -52,7 +84,6 @@ else
     fi
 fi
 
-OUT="${ROOTFS_OUT:-host/wasm/rootfs.vfs}"
 PKG_MANIFEST="${ROOTFS_PACKAGE_MANIFEST:-target/rootfs-packages.MANIFEST}"
 ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
 ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-268435456}"
@@ -161,3 +192,8 @@ fi
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "==> Built $OUT ($SIZE bytes)"
+
+# Record the stamp only after a successful build, so a failed/interrupted
+# build never leaves behind a stamp that would make a broken/stale output
+# look up to date on the next run.
+write_build_stamp "$STAMP" "$ROOTFS_INPUT_HASH"

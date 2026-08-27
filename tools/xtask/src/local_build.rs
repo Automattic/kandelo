@@ -415,11 +415,27 @@ fn default_source_cache_root() -> Result<PathBuf, String> {
 /// stream their normal output exactly as they would run standalone. Returns
 /// `Err` on a non-zero exit or a failure to launch the script.
 fn run_repo_script(repo: &Path, rel: &str, args: &[&str]) -> Result<(), String> {
+    run_repo_script_with_env(repo, rel, args, &[])
+}
+
+/// Same as `run_repo_script`, plus extra environment variables set on the
+/// child process. Used by the `rootfs`/`host-dist` bootstrap steps to pass
+/// `KANDELO_BOOTSTRAP_FORCE_REBUILD` through to their scripts' own
+/// input-hash skip check (see `scripts/build-step-input-hash.sh`), without
+/// changing the call shape every other `run_repo_script` caller uses.
+fn run_repo_script_with_env(
+    repo: &Path,
+    rel: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<(), String> {
     let script = repo.join(rel);
-    let status = Command::new("bash")
-        .arg(&script)
-        .args(args)
-        .current_dir(repo)
+    let mut command = Command::new("bash");
+    command.arg(&script).args(args).current_dir(repo);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("spawn {}: {error}", script.display()))?;
     if !status.success() {
@@ -589,8 +605,27 @@ fn run_bootstrap_step(
             rebuild,
             verify_cache,
         }),
-        "rootfs" => run_repo_script(repo, "scripts/build-rootfs.sh", &[]),
-        "host-dist" => run_repo_script(repo, "scripts/build-host.sh", &[]),
+        // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
+        // these two scripts' own input-hash skip check, so a forced rebuild
+        // is never masked by a matching stamp from a previous run.
+        "rootfs" => run_repo_script_with_env(
+            repo,
+            "scripts/build-rootfs.sh",
+            &[],
+            &[(
+                "KANDELO_BOOTSTRAP_FORCE_REBUILD",
+                if rebuild { "1" } else { "0" },
+            )],
+        ),
+        "host-dist" => run_repo_script_with_env(
+            repo,
+            "scripts/build-host.sh",
+            &[],
+            &[(
+                "KANDELO_BOOTSTRAP_FORCE_REBUILD",
+                if rebuild { "1" } else { "0" },
+            )],
+        ),
         "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
         "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
         "sdk" => {
