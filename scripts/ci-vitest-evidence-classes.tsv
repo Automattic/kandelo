@@ -34,6 +34,7 @@ host/test/compiled-worker-entry.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
+host/test/dbus-smoke.test.ts	prepared-product
 host/test/deferred-worker-start.test.ts	source-only
 host/test/demo-login-image.test.ts	source-only
 host/test/derived-vfs-symlink.test.ts	prepared-product
@@ -63,6 +64,8 @@ host/test/exec.test.ts	prepared-product
 host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-shared-memory.test.ts	source-only
+host/test/fontstack-smoke.test.ts	prepared-product
+host/test/foot-smoke.test.ts	prepared-product
 host/test/fork-abort-unwind.test.ts	source-only
 host/test/fork-activation-registry.test.ts	source-only
 host/test/fork-anyref-transit.test.ts	source-only
@@ -109,6 +112,8 @@ host/test/generated-abi.test.ts	source-only
 host/test/getaddrinfo.test.ts	prepared-product
 host/test/getdents-boundary.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
+host/test/glib-smoke.test.ts	prepared-product
+host/test/gtk3-smoke.test.ts	prepared-product
 host/test/hardlink-graph.test.ts	source-only
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
@@ -163,6 +168,7 @@ host/test/lazy-tree.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
 host/test/lazy-vfs.test.ts	source-only
 host/test/libevdev-smoke.test.ts	prepared-product
+host/test/libffi-full-unit.test.ts	prepared-product
 host/test/libffi-shim-unit.test.ts	source-only
 host/test/libinput-smoke.test.ts	prepared-product
 host/test/libkwl-smoke.test.ts	prepared-product
@@ -172,6 +178,7 @@ host/test/libxkbcommon-smoke.test.ts	prepared-product
 host/test/locale-info.test.ts	prepared-product
 host/test/login.test.ts	prepared-product
 host/test/lseek-invalid-guest.test.ts	prepared-product
+host/test/mako-smoke.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/mmap-file.test.ts	prepared-product
@@ -206,6 +213,7 @@ host/test/optional-demo-vfs.test.ts	source-only
 host/test/ordinary-process-exit.test.ts	prepared-product
 host/test/package-deferred-tree.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
+host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product
 host/test/pcm-audio-worklet.test.ts	source-only
@@ -215,9 +223,11 @@ host/test/php-browser-kernel-owned-vfs.test.ts	source-only
 host/test/php-phpt-harness.test.ts	prepared-product
 host/test/php-test-fixtures.test.ts	prepared-product
 host/test/php-test-lazy-assets.test.ts	prepared-product
+host/test/pixman-smoke.test.ts	prepared-product
 host/test/plain-catch-payload-lifetime.test.ts	source-only
 host/test/platform-node.test.ts	source-only
 host/test/platform/native-metadata.test.ts	source-only
+host/test/poll-timeout-preserves-pollfds.test.ts	prepared-product
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
@@ -260,6 +270,7 @@ host/test/sdl2.test.ts	prepared-product
 host/test/secure-exec.test.ts	prepared-product
 host/test/select-signal-guest.test.ts	prepared-product
 host/test/select-signal-outcome.test.ts	source-only
+host/test/sendmsg-iovec-gather.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
@@ -267,7 +278,9 @@ host/test/shared-wasm-memory-growth.test.ts	source-only
 host/test/sharedfs-safety.test.ts	source-only
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
+host/test/signal-no-restart.test.ts	prepared-product
 host/test/signal-process.test.ts	prepared-product
+host/test/signal-to-threaded.test.ts	prepared-product
 host/test/sigpending.test.ts	prepared-product
 host/test/sjlj-noexcept-boundary.test.ts	prepared-product
 host/test/socket-timeout-options.test.ts	prepared-product
@@ -289,6 +302,7 @@ host/test/teardown-reclaim.test.ts	prepared-product
 host/test/terminal-attributes-api.test.ts	prepared-product
 host/test/thread-allocator.test.ts	source-only
 host/test/thread-exit-coordinator.test.ts	source-only
+host/test/thread-vararg-alignment.test.ts	prepared-product
 host/test/thread-wasm-patch.test.ts	source-only
 host/test/thread-worker-disposition.test.ts	source-only
 host/test/time-provider.test.ts	source-only
@@ -296,6 +310,7 @@ host/test/timerfd-signalfd-scratch.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
 host/test/unix-listener-exec.test.ts	prepared-product
+host/test/utf8proc-smoke.test.ts	prepared-product
 host/test/vfork-lifecycle-guest.test.ts	prepared-product
 host/test/vfork-lifetime.test.ts	source-only
 host/test/vfork-mechanism-trace.test.ts	source-only
@@ -328,6 +343,7 @@ host/test/wasm-memory-write-audit.test.ts	prepared-product
 host/test/wasm-module-reflection.test.ts	source-only
 host/test/wasm-trap.test.ts	prepared-product
 host/test/wasm64.test.ts	prepared-product
+host/test/waybar-smoke.test.ts	prepared-product
 host/test/wayland-protocols-scanner.test.ts	source-only
 host/test/webgl-bridge.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
