@@ -1,0 +1,9 @@
+script_path = "packages/registry/node-browser-bundle/build-node-browser-bundle.sh"
+inputs = [
+  "packages/registry/node-browser-bundle/build-node-browser-bundle.sh",
+  "images/vfs/scripts/build-node-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "26a1aa8ed0dfd4264a58ef28353b4ce2f34debd1"
+revision    = 1
