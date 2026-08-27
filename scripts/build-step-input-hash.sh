@@ -18,29 +18,69 @@
 # treated as authoritative on its own, only as a fast-path skip when it
 # already agrees with the current tree.
 
-# repo_input_hash <repo_root> <relative_path>...
-# Each argument is a path relative to `repo_root`: a file is hashed
-# directly; a directory is expanded to every regular file beneath it
-# (recursively). Missing paths are silently skipped, so a step's input list
-# can name a not-yet-created path (e.g. a projection file from a step that
-# has not run yet) without failing — the resulting digest simply will not
-# match any stamp recorded after that path started existing, which is the
-# correct "rebuild" behavior.
+# repo_input_hash <repo_root> <relative_path-or-literal>...
+# Each argument is either a path relative to `repo_root`, or a literal
+# value to fold in as-is, written `literal:<value>` (e.g.
+# `literal:ABI_VERSION=43`) — for a resolved config value (an env-var
+# override, a value read out of a file at a different location than the
+# file itself, ...) that a build step's digest must track even though the
+# value has no repo-relative path of its own. A `literal:` argument is
+# never looked up on disk; everything after the first `:` is folded
+# directly.
+#
+# A path argument that is a regular file is hashed directly; one that is a
+# symlink is hashed by its literal target string, NOT the content it
+# resolves to (see below); one that is a directory is expanded to every
+# regular file and symlink beneath it (recursively). A missing path is
+# silently skipped, so a step's input list can name a not-yet-created path
+# (e.g. a projection file from a step that has not run yet) without
+# failing — the resulting digest simply will not match any stamp recorded
+# after that path started existing, which is the correct "rebuild"
+# behavior.
+#
+# Symlinks are enumerated (not skipped by a bare `-type f` find, which
+# would otherwise make a symlink invisible to the digest) and hashed by
+# folding in `"<path> -> <readlink target>"` rather than running
+# `git hash-object` directly on the symlink path: `git hash-object`
+# follows a symlink and hashes whatever it points to, which is both the
+# wrong signal (retargeting a symlink without touching the pointed-to file
+# would go undetected) and unsafe (fails outright on a dangling symlink or
+# one that points at a directory).
 repo_input_hash() {
     local repo_root="$1"
     shift
     (
-        cd "$repo_root"
+        cd "$repo_root" || exit 1
         local path
         for path in "$@"; do
-            if [ -d "$path" ]; then
-                find "$path" -type f -print
+            case "$path" in
+                literal:*)
+                    printf '%s\n' "$path"
+                    continue
+                    ;;
+            esac
+            if [ -L "$path" ]; then
+                printf '%s\n' "$path"
+            elif [ -d "$path" ]; then
+                find "$path" \( -type f -o -type l \) -print
             elif [ -f "$path" ]; then
                 printf '%s\n' "$path"
             fi
         done | LC_ALL=C sort -u | while IFS= read -r relative_path; do
             printf '%s\0' "$relative_path"
-            git hash-object -- "$relative_path"
+            case "$relative_path" in
+                literal:*)
+                    printf '%s' "${relative_path#literal:}" | git hash-object --stdin
+                    ;;
+                *)
+                    if [ -L "$relative_path" ]; then
+                        printf '%s -> %s' "$relative_path" "$(readlink "$relative_path")" |
+                            git hash-object --stdin
+                    else
+                        git hash-object -- "$relative_path"
+                    fi
+                    ;;
+            esac
         done | git hash-object --stdin
     )
 }
