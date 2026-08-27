@@ -45,8 +45,8 @@ use wasmtime::{
 };
 
 use wasm_posix_shared::channel::{
-    ARGS_OFFSET, ARG_SIZE, DATA_OFFSET, ERRNO_OFFSET, MIN_CHANNEL_SIZE, RETURN_OFFSET,
-    STATUS_OFFSET, SYSCALL_OFFSET,
+    ARGS_OFFSET, ARG_SIZE, DATA_OFFSET, DATA_SIZE, ERRNO_OFFSET, MIN_CHANNEL_SIZE,
+    REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::SYS_EXIT_GROUP;
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
@@ -532,37 +532,20 @@ fn run_pump(
         }
 
         // The SeqCst load of PENDING happens-after the guest's SeqCst store, so
-        // the syscall number and args written before it are visible.
+        // the syscall number, args, and request flags written before it are
+        // visible.
         let syscall_nr = unsafe { read_u32(guest_mem, layout.channel_offset + SYSCALL_OFFSET) };
         let mut args = [0i64; 6];
         for (i, a) in args.iter_mut().enumerate() {
             *a = unsafe { read_i64(guest_mem, layout.channel_offset + ARGS_OFFSET + i * ARG_SIZE) };
         }
+        // The record vs RAW decision is read from the header flag (written fresh
+        // every request beside the syscall number), never the data-buffer magic:
+        // that magic can be stale across fork or a reused channel slot, but the
+        // flag cannot. RAW syscalls never set it. Matches kernel-worker.ts.
+        let request_flags = unsafe { read_u32(guest_mem, layout.channel_offset + REQUEST_FLAGS_OFFSET) };
+        let is_record = request_flags & REQUEST_FLAG_OPAQUE_RECORD != 0;
         trace.push(syscall_nr);
-
-        // Stage the scratch: clear the DATA magic slot so a scalar syscall never
-        // trips the kernel's record-decode magic check, write the syscall number
-        // and (possibly pointer-rewritten) args, then marshal RAW pointer bufs.
-        unsafe {
-            write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
-            write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-        }
-        let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
-        unsafe {
-            for (i, a) in args.iter().enumerate() {
-                write_bytes(kernel_mem, scratch_ptr + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
-            }
-        }
-        // Guard against a RAW buffer that begins with the opaque-record magic:
-        // the kernel keys record decoding on DATA[0..4], so such a buffer would
-        // misroute. Fail loudly rather than silently corrupt (Option A boundary).
-        let magic = unsafe { read_u32(kernel_mem, scratch_ptr + DATA_OFFSET) };
-        if magic == RECORD_MAGIC {
-            anyhow::bail!(
-                "RAW syscall {syscall_nr} staged a buffer starting with RECORD_MAGIC; \
-                 the kernel would misroute it as an opaque record"
-            );
-        }
 
         // Bind the leader task (tid == pid) — dispatch returns ESRCH without it.
         let bind = set_current_tid.call(&mut *kernel_store, (pid, pid))?;
@@ -570,44 +553,98 @@ fn run_pump(
             anyhow::bail!("kernel_set_current_tid({pid},{pid}) failed: {bind}");
         }
 
-        // The kernel dispatches exit/exit_group by committing the exit status
-        // and then calling its `kernel_exit` export, which ends in `unreachable`
-        // to halt the task. So `kernel_handle_channel` *traps* on exit — that is
-        // the expected, successful end of the run, not an error. The status is
-        // committed before the trap, so read it afterward and finish; the guest
-        // is left parked on the (never-completed) exit channel and reclaimed at
-        // process teardown.
-        let is_exit = syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP;
-        let rc_result =
-            handle_channel.call(&mut *kernel_store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, 0));
-        if is_exit {
-            let code = get_exit_status
-                .call(&mut *kernel_store, pid)
-                .unwrap_or(args[0] as i32 & 0xff);
-            break code;
-        }
-        let rc = rc_result?;
-
-        let ret = unsafe { read_i64(kernel_mem, scratch_ptr + RETURN_OFFSET) };
-        let errno = unsafe { read_u32(kernel_mem, scratch_ptr + ERRNO_OFFSET) };
-
-        // Copy back any Out/InOut buffers into the guest.
-        for s in &staged {
-            if s.copy_back {
-                let bytes = unsafe { read_bytes(kernel_mem, scratch_ptr + s.data_off, s.len) };
-                unsafe { write_bytes(guest_mem, s.guest_ptr, &bytes) };
+        let (ret, errno) = if is_record {
+            // --- Phase 2 opaque-record blind transport (Option A) -----------
+            // The guest self-marshalled every pointer span into a record at
+            // CH_DATA. The host is out of the data path: stamp the syscall
+            // number, blind-copy the whole data region into the kernel scratch,
+            // dispatch (the kernel decodes the record, writes OUT/InOut results
+            // back into it at their span offsets), then blind-copy the data
+            // region back so the guest's __unmarshal delivers them. No
+            // descriptors, no arg rewriting, no mmap growth — the record is
+            // authoritative for both scalars and pointers.
+            unsafe {
+                write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+                let record_in = read_bytes(guest_mem, layout.channel_offset + DATA_OFFSET, DATA_SIZE);
+                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &record_in);
             }
-        }
-
-        // mmap/brk hand out addresses at/above the initial memory end; grow the
-        // guest memory to cover them before the guest resumes and writes there.
-        if rc == 0 || ret >= 0 {
-            if syscall_nr == Syscall::Mmap as u32 && ret >= 0 {
-                grow_to_cover(guest_mem, ret as usize + args[1] as u32 as usize)?;
-            } else if syscall_nr == Syscall::Brk as u32 && ret >= 0 {
-                grow_to_cover(guest_mem, ret as usize)?;
+            handle_channel.call(&mut *kernel_store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, 0))?;
+            let ret = unsafe { read_i64(kernel_mem, scratch_ptr + RETURN_OFFSET) };
+            let errno = unsafe { read_u32(kernel_mem, scratch_ptr + ERRNO_OFFSET) };
+            unsafe {
+                let record_out = read_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, DATA_SIZE);
+                write_bytes(guest_mem, layout.channel_offset + DATA_OFFSET, &record_out);
+                // Clear the record magic in the reusable scratch so a later RAW
+                // scalar-only syscall is not wrongly decoded as a record.
+                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
             }
-        }
+            (ret, errno)
+        } else {
+            // --- RAW descriptor-marshalled path -----------------------------
+            // Clear the DATA magic slot so a scalar syscall never trips the
+            // kernel's record-decode magic check, write the syscall number and
+            // (possibly pointer-rewritten) args, then marshal RAW pointer bufs.
+            unsafe {
+                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
+                write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+            }
+            let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
+            unsafe {
+                for (i, a) in args.iter().enumerate() {
+                    write_bytes(kernel_mem, scratch_ptr + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
+                }
+            }
+            // Guard against a RAW buffer that begins with the opaque-record
+            // magic: the kernel keys record decoding on DATA[0..4], so such a
+            // buffer would misroute. Fail loudly rather than corrupt silently.
+            let magic = unsafe { read_u32(kernel_mem, scratch_ptr + DATA_OFFSET) };
+            if magic == RECORD_MAGIC {
+                anyhow::bail!(
+                    "RAW syscall {syscall_nr} staged a buffer starting with RECORD_MAGIC; \
+                     the kernel would misroute it as an opaque record"
+                );
+            }
+
+            // The kernel dispatches exit/exit_group by committing the exit status
+            // and then calling its `kernel_exit` export, which ends in
+            // `unreachable` to halt the task. So `kernel_handle_channel` *traps*
+            // on exit — the expected, successful end of the run, not an error.
+            // The status is committed before the trap; read it and finish. The
+            // guest is left parked on the never-completed exit channel and
+            // reclaimed at process teardown.
+            let is_exit = syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP;
+            let rc_result = handle_channel
+                .call(&mut *kernel_store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, 0));
+            if is_exit {
+                let code = get_exit_status
+                    .call(&mut *kernel_store, pid)
+                    .unwrap_or(args[0] as i32 & 0xff);
+                break code;
+            }
+            let rc = rc_result?;
+
+            let ret = unsafe { read_i64(kernel_mem, scratch_ptr + RETURN_OFFSET) };
+            let errno = unsafe { read_u32(kernel_mem, scratch_ptr + ERRNO_OFFSET) };
+
+            // Copy back any Out/InOut buffers into the guest.
+            for s in &staged {
+                if s.copy_back {
+                    let bytes = unsafe { read_bytes(kernel_mem, scratch_ptr + s.data_off, s.len) };
+                    unsafe { write_bytes(guest_mem, s.guest_ptr, &bytes) };
+                }
+            }
+
+            // mmap/brk hand out addresses at/above the initial memory end; grow
+            // the guest memory to cover them before the guest resumes.
+            if rc == 0 || ret >= 0 {
+                if syscall_nr == Syscall::Mmap as u32 && ret >= 0 {
+                    grow_to_cover(guest_mem, ret as usize + args[1] as u32 as usize)?;
+                } else if syscall_nr == Syscall::Brk as u32 && ret >= 0 {
+                    grow_to_cover(guest_mem, ret as usize)?;
+                }
+            }
+            (ret, errno)
+        };
 
         // Publish result to the guest channel, then wake it: release-store
         // COMPLETE first so the guest's re-check of the wait word sees the

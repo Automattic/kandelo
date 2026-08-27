@@ -347,4 +347,50 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Increment 3: the native host carries a **Phase 2 opaque-record** syscall
+    /// end-to-end. `uname(2)` is non-RAW, so the flipped glue self-marshals the
+    /// struct-utsname pointer into a record; the host blind-transports it, the
+    /// kernel decodes it and writes the struct back into the record's Out span,
+    /// and the host blind-copies it back for the guest to unmarshal. A correct
+    /// `sysname` line proves the whole opaque-transport round-trip works on a
+    /// non-JS engine — the freeze-gate point of the rust-first roadmap.
+    #[test]
+    fn smoke_runs_record_path_guest_uname() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_uname.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        // The kernel's compiled-in uname sysname (crates/runtime-core sys_uname).
+        // If the record round-trip dropped or corrupted the Out span, this line
+        // would be empty or garbage instead.
+        assert_eq!(
+            outcome.stdout, b"wasm-posix\n",
+            "uname sysname must arrive via the opaque-record round-trip"
+        );
+        // The record-path syscall (uname = 75) sits between startup and the write.
+        use wasm_posix_shared::abi::extended_syscalls;
+        assert_eq!(
+            outcome.syscall_trace,
+            vec![
+                Syscall::Mmap as u32,
+                extended_syscalls::SYS_SET_TID_ADDRESS,
+                Syscall::Uname as u32,
+                Syscall::Write as u32,
+                extended_syscalls::SYS_EXIT_GROUP,
+            ],
+            "unexpected syscall trace"
+        );
+        Ok(())
+    }
 }
