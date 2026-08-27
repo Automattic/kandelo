@@ -5,6 +5,7 @@ inputs = [
     "Cargo.toml",
     "Cargo.lock",
     "crates/kernel",
+    "crates/runtime-core",
     "crates/shared",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
