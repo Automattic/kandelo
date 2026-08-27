@@ -351,15 +351,20 @@ if [ ! -f config.sh ]; then
     # On macOS aarch64, Perl's format macros use %l (unsigned long) but UV is
     # unsigned long long — same size but different type. Suppress host warnings.
     #
-    # `-fno-strict-aliasing` is load-bearing: perl's interpreter relies on
-    # C type-punning patterns the C standard treats as UB, and clang -O2
-    # optimizes the resulting code into a host miniperl that panics in
-    # `magic_killbackrefs` (warnings.pm:620) the first time it traverses
-    # weak refs. Reproduces with Nix's clang 21 in the pure-shell on Mac
-    # arm64; perl's own hints/* set this flag for a reason on every
-    # platform that builds perl with clang. (Adding it to HOSTCFLAGS
-    # ensures the buildmini sub-configure inherits it — perl-cross
-    # propagates HOSTCFLAGS into the host CC invocation.)
+    # `-fno-strict-aliasing` is load-bearing on BOTH the host miniperl and
+    # the target perl.wasm: perl's interpreter relies on C type-punning
+    # patterns the C standard treats as UB, and clang -O2 miscompiles the
+    # resulting weak-backref bookkeeping in sv.c. The first `use warnings`
+    # then dies with `panic: del_backref, svp=0` at warnings.pm's stash
+    # cleanup (`delete @warnings::{qw(NORMAL FATAL MESSAGE LEVEL)}` walks the
+    # deleted constant subs' CV->glob backrefs). Because nearly every module
+    # does `use warnings`, the whole standard library is unusable without it.
+    # perl's own hints/* set this flag for a reason on every platform that
+    # builds perl with clang.
+    #
+    # HOSTCFLAGS carries it to the host miniperl (perl-cross's buildmini
+    # sub-configure propagates HOSTCFLAGS into the host CC invocation);
+    # -Doptimize below carries it to the target cross-compile.
     export HOSTCFLAGS="-Wno-format -fno-strict-aliasing"
 
     # perl-cross's `--mode=cross` spawns two sub-configures: one for
@@ -382,8 +387,32 @@ if [ ! -f config.sh ]; then
     # convenience: `linux` is the value CPAN/core modules branch on most
     # smoothly (via $^O / $Config{osname}), and picking it is purely metadata
     # that does not compromise POSIX behavior.
+    #
+    # -Dusedl=undef: Kandelo has no runtime dlopen for perl's XS (C) extensions,
+    # so build every extension statically into perl.wasm instead of as loadable
+    # .so files. Without this, perl-cross leaves usedl=define with
+    # dlsrc=dl_dlopen.xs even though d_dlopen is undef (below); it then emits
+    # ~48 .so extensions whose DynaLoader load fails at runtime with "dlerror()
+    # not implemented", breaking every XS module (List::Util, Scalar::Util,
+    # Data::Dumper, POSIX, Fcntl, ...) and therefore most of CPAN. usedl=undef
+    # switches dlsrc to dl_none.xs, folds the extensions into static_ext, and
+    # links them into the interpreter — the same static-extension approach the
+    # ruby package uses for ripper and io-wait.
+    #
+    # --disable-mod=re: the `re` pragma extension deliberately recompiles core
+    # regex translation units (regcomp.c, regexec.c, ...) with PERL_EXT_RE_BUILD
+    # to provide a debug/pluggable engine. As a loadable .so that is harmless,
+    # but static-linking it (usedl=undef) beside libperl gives wasm-ld duplicate
+    # definitions of Perl_reg_add_data and friends — perl 5.40's ext/re/re_top.h
+    # does not rename every duplicated symbol, and wasm-ld rejects duplicate
+    # object symbols where native ld silently takes the first archive
+    # definition. perl-cross selects extensions with --disable-mod (it ignores
+    # perl's own -Dnoextensions), so drop `re` here. The core regex engine
+    # stays compiled in; only the optional `use re` pluggable-engine pragma is
+    # unavailable.
     ./configure \
         --target=wasm32-unknown-none \
+        --disable-mod=re \
         --prefix=/usr \
         --host-cc=clang \
         -Dosname=linux \
@@ -392,7 +421,7 @@ if [ ! -f config.sh ]; then
         -Dar=wasm32posix-ar \
         -Dranlib=wasm32posix-ranlib \
         -Dnm=wasm32posix-nm \
-        -Doptimize="-O2" \
+        -Doptimize="-O2 -fno-strict-aliasing" \
         -Dccflags="-D_GNU_SOURCE -DNO_ENV_ARRAY_IN_MAIN -fvisibility=default" \
         -Dldflags="" \
         -Dlddlflags="" \
@@ -517,6 +546,7 @@ if [ ! -f config.sh ]; then
         -Dd_utimensat=define \
         -Dd_futimens=define \
         \
+        -Dusedl=undef \
         -Dd_dlopen=undef \
         -Dd_dlerror=undef \
         -Dd_dlsym=undef \
@@ -627,6 +657,19 @@ if [ ! -f config.sh ]; then
     sed -i.bak \
         -e '/^perl\$x: LDFLAGS += -Wl,-E/d' \
         -e 's|\$(CC) \$(LDFLAGS) -o \$@ \$(filter %\$o,\$^) \$(LIBPERL) \$(statars) \$(LIBS) \$(extlibs)|$(CC) $(LDFLAGS) -Wl,--no-gc-sections -o $@ perlmain$o op$o perl$o $(obj) $(dynaloader_o) $(statars) $(LIBS) $(extlibs)|' \
+        Makefile
+
+    # Stage static extensions' Perl-side .pm files. perl-cross builds each
+    # static XS extension by running only MakeMaker's `static` target, which
+    # produces the .a linked into perl.wasm but never runs `pm_to_blib` — so
+    # under usedl=undef the extensions' .pm (List/Util.pm, POSIX.pm,
+    # Data/Dumper.pm, ...) are never copied into lib/ and install.perl omits
+    # them, leaving `Can't locate List/Util.pm in @INC` at runtime even though
+    # the XS is compiled in. The dynamic-ext rule invokes the default target
+    # (pure_all), which does run pm_to_blib; make the static rule do the same
+    # so the .pm land in lib/ alongside the compiled-in XS.
+    sed -i.bak2 \
+        -e 's|LINKTYPE=static static$|LINKTYPE=static static pure_all|' \
         Makefile
 fi
 
