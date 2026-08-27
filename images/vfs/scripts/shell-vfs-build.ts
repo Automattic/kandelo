@@ -459,8 +459,9 @@ export function populateShellEnvironment(
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }
-  populateVimArchive(fs, resolveArtifact);
-  populateNetHackArchive(fs, resolveArtifact);
+  for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
+  }
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -741,26 +742,3 @@ function populateMagic(
   writeVfsBinary(fs, "/usr/share/misc/magic", new Uint8Array(bytes), 0o644);
 }
 
-// ── Lazy archives ───────────────────────────────────────────────
-
-function populateVimArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[0],
-    resolveArtifact,
-  );
-}
-
-function populateNetHackArchive(
-  fs: MemoryFileSystem,
-  resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  registerDeclaredShellLazyArchive(
-    fs,
-    SHELL_LAZY_ARCHIVE_SPECS[1],
-    resolveArtifact,
-  );
-}

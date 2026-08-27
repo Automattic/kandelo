@@ -14,12 +14,18 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 const textEncoder = new TextEncoder();
 
 export interface ShellLazyArchiveSpec {
-  id: "vim" | "nethack";
-  dependency: "vim-browser-bundle" | "nethack-browser-bundle";
-  resolverPath: "programs/wasm32/vim.zip" | "programs/wasm32/nethack.zip";
-  archiveUrl: "vim.zip" | "nethack.zip";
+  id: "vim" | "nethack" | "kandelo-sdk";
+  dependency:
+    | "vim-browser-bundle"
+    | "nethack-browser-bundle"
+    | "kandelo-sdk-browser-bundle";
+  resolverPath:
+    | "programs/wasm32/vim.zip"
+    | "programs/wasm32/nethack.zip"
+    | "programs/wasm32/kandelo-sdk.zip";
+  archiveUrl: "vim.zip" | "nethack.zip" | "kandelo-sdk.zip";
   mountPrefix: "/usr/";
-  requiredExecutable: "bin/vim" | "bin/nethack";
+  requiredExecutable: "bin/vim" | "bin/nethack" | "bin/wasm32posix-cc";
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
@@ -38,6 +44,14 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
     requiredExecutable: "bin/nethack",
+  },
+  {
+    id: "kandelo-sdk",
+    dependency: "kandelo-sdk-browser-bundle",
+    resolverPath: "programs/wasm32/kandelo-sdk.zip",
+    archiveUrl: "kandelo-sdk.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/wasm32posix-cc",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 

@@ -28,6 +28,11 @@
       "name": "nethack-browser-bundle",
       "version": "3.6.7",
       "role": "lazy-archive"
+    },
+    {
+      "name": "kandelo-sdk-browser-bundle",
+      "version": "21.1.7",
+      "role": "lazy-archive"
     }
   ]
 }
