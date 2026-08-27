@@ -1,0 +1,13 @@
+script_path = "packages/registry/kandelo-sdk-browser-bundle/build-kandelo-sdk-browser-bundle.sh"
+inputs = [
+  "packages/registry/kandelo-sdk-browser-bundle/build-kandelo-sdk-browser-bundle.sh",
+  "images/vfs/scripts/build-kandelo-sdk-zip.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-local-binary.sh",
+  "sdk/kandelo/bin",
+  "sdk/config.site",
+  "libc/glue",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
