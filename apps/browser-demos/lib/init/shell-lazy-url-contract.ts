@@ -16,7 +16,8 @@ export function assertShellLazyUrlsResolved(fs: MemoryFileSystem): void {
     entry.url.startsWith(SHELL_LAZY_URL_PREFIX)
   );
   const unresolvedArchives = fs.exportLazyArchiveEntries().filter((entry) =>
-    entry.url === "vim.zip" || entry.url === "nethack.zip"
+    entry.url === "vim.zip" || entry.url === "nethack.zip" ||
+    entry.url === "ruby.zip"
   );
   if (unresolvedFiles.length === 0 && unresolvedArchives.length === 0) return;
   const details = [
