@@ -1,0 +1,26 @@
+# Browser lazy-archive bundle for Ruby. Reshapes the ruby package's
+# ruby.wasm + ruby-runtime.zip into a single root-relative zip
+# (bin/ruby + bin/gem… + lib/ruby/4.0.0/…) that the shell overlay
+# mounts at /usr/. The ruby package itself is untouched.
+kind = "program"
+name = "ruby-browser-bundle"
+version = "4.0.5"
+kernel_abi = 15
+depends_on = ["ruby@4.0.5"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Ruby OR BSD-2-Clause"
+url = "https://github.com/ruby/ruby/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/ruby-browser-bundle/build-ruby-browser-bundle.sh"
+
+[[outputs]]
+name = "ruby"
+wasm = "ruby.zip"
+fork_instrumentation = "disabled"
