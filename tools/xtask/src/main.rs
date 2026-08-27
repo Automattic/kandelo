@@ -24,6 +24,12 @@
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
 //!                         Backs `./run.sh setup`.
+//!   clean                 Remove one package's or product's compiled cache,
+//!                         mirror, and product artifacts, and print the
+//!                         graph-derived cascade of nodes it also
+//!                         invalidates (e.g. cleaning a package a VFS
+//!                         product embeds also invalidates that product).
+//!                         Backs `./run.sh clean <target>`.
 //!   verify-fresh          Pre-test freshness check: fails loud if the one
 //!                         local kernel artifact (local-binaries/source-only-v1/
 //!                         kandelo-kernel.wasm) declares a stale ABI version
@@ -64,7 +70,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap, verify-fresh"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap, clean, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -85,6 +91,7 @@ fn main() -> ExitCode {
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
+        "clean" => local_build::run_clean(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");

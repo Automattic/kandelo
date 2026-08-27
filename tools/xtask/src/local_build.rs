@@ -9,9 +9,10 @@ use crate::build_deps::{
     ProgramPackageIndex, Registry, ResolvedDependencyGraph, ResolvedDependencyNode,
     SourceOnlyCacheRoots, canonical_package_target_arch,
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
-    resolve_local_build_package_node_with_cache_policy,
-    resolved_dependency_graph_from_manifests, source_only_skip_receipt_if_clean,
-    source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+    read_source_only_cache_receipt, resolve_local_build_package_node_with_cache_policy,
+    resolved_dependency_graph_from_manifests, source_only_cache_receipt_path,
+    source_only_skip_receipt_if_clean, source_only_program_package_index_for_nodes,
+    with_source_only_program_projection_lock,
 };
 use crate::local_build_executor::{
     NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
@@ -774,6 +775,248 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
              (or `cargo xtask bootstrap`).",
             kernel_path.display()
         ));
+    }
+    Ok(())
+}
+
+/// Walk REVERSE edges over `graph.dependencies` (which maps a node to the
+/// set of nodes *it* depends on) to find every node that depends on `node`,
+/// directly or transitively — i.e. everything cleaning `node` invalidates.
+/// The returned set always includes `node` itself.
+///
+/// This replaces the hand-written "also invalidated shell.vfs.zst" warnings
+/// `run.sh`'s old `clean_target` hardcoded per package: the dependency graph
+/// already knows which products embed a given package (e.g. `nethack` is
+/// pulled in by `nethack-browser-bundle`, which `shell` depends on, which the
+/// `browser-main-shell` product maps to), so the cascade is derived instead
+/// of maintained by hand.
+///
+/// `O(removed * graph size)` — fine at this repo's scale (dozens of packages,
+/// a handful of products), and simple enough to trust over a fancier
+/// reverse-adjacency index that would need to be kept in sync with
+/// `dependencies` by construction.
+pub(crate) fn clean_removal_set(
+    graph: &PlannedGraphV1,
+    node: &PlanNodeV1,
+) -> BTreeSet<PlanNodeV1> {
+    let mut removal = BTreeSet::new();
+    removal.insert(node.clone());
+    let mut frontier = vec![node.clone()];
+    while let Some(current) = frontier.pop() {
+        for (candidate, deps) in &graph.dependencies {
+            if deps.contains(&current) && removal.insert(candidate.clone()) {
+                frontier.push(candidate.clone());
+            }
+        }
+    }
+    removal
+}
+
+/// Resolve a bare `xtask clean <target>` positional to the graph node it
+/// names: a declared VFS product id, or a package name (tried against every
+/// architecture the graph actually planned for it). Unlike
+/// `bootstrap_target_to_selection`, there is no host-step carve-out here —
+/// `clean` only ever operates on graph nodes with resolver-owned outputs;
+/// non-graph host/toolchain state (`sysroot`, `sdk`, cargo's own
+/// `target/`, ...) is still `run.sh`'s responsibility.
+fn resolve_clean_target(graph: &PlannedGraphV1, target: &str) -> Result<PlanNodeV1, String> {
+    let product = PlanNodeV1::product(target);
+    if graph.dependencies.contains_key(&product) {
+        return Ok(product);
+    }
+    let wasm32 = PlanNodeV1::package(target, "wasm32");
+    if graph.dependencies.contains_key(&wasm32) {
+        return Ok(wasm32);
+    }
+    // `./run.sh clean mariadb64` names the wasm64 build of the `mariadb`
+    // package; the package graph has no node literally named "mariadb64".
+    // Strip the historical "64" suffix convention `select_graph_dependencies`
+    // already uses for the same target strings in `bootstrap`/`build`.
+    if let Some(base) = target.strip_suffix("64") {
+        let wasm64 = PlanNodeV1::package(base, "wasm64");
+        if graph.dependencies.contains_key(&wasm64) {
+            return Ok(wasm64);
+        }
+    }
+    let wasm64 = PlanNodeV1::package(target, "wasm64");
+    if graph.dependencies.contains_key(&wasm64) {
+        return Ok(wasm64);
+    }
+    Err(format!(
+        "clean: {target:?} is not a package or product in packages/sets/local-supported.toml \
+         (the local-build graph); it is not something `xtask clean` can resolve"
+    ))
+}
+
+/// Remove every on-disk trace of one compiled `SourceOnlyV1` package-node
+/// generation: its canonical content-addressed cache directory, the hidden
+/// receipt sidecar next to it, and (read straight from that receipt, before
+/// deleting it) the files it mirrored into `output_root`. Matches by name/
+/// version/revision/arch prefix rather than the current content hash, so a
+/// clean sweeps every generation ever cached for this node — not just the one
+/// matching today's source tree — the same way `rm -rf` would.
+fn clean_package_node_outputs(
+    registry: &Registry,
+    compiled_cache_root: &Path,
+    output_root: &Path,
+    name: &str,
+    target_arch: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let manifest = registry.load(name)?;
+    let kind_subdir = match manifest.kind {
+        ManifestKind::Source => "sources",
+        ManifestKind::Library => "libs",
+        ManifestKind::Program => "programs",
+    };
+    let prefix = match manifest.kind {
+        ManifestKind::Source => format!("{}-{}-rev{}-", manifest.name, manifest.version, manifest.revision),
+        ManifestKind::Library | ManifestKind::Program => format!(
+            "{}-{}-rev{}-{}-",
+            manifest.name, manifest.version, manifest.revision, target_arch
+        ),
+    };
+    let dir = compiled_cache_root.join(kind_subdir);
+    let mut removed = Vec::new();
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+        Err(error) => return Err(format!("read {}: {error}", dir.display())),
+    };
+    let mut matches = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read {}: {error}", dir.display()))?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if let Some(cache_key_sha) = file_name.strip_prefix(prefix.as_str()) {
+            matches.push((entry.path(), cache_key_sha.to_string()));
+        }
+    }
+    matches.sort();
+    for (canonical, cache_key_sha) in matches {
+        if let Ok(Some(receipt)) = read_source_only_cache_receipt(&canonical, &cache_key_sha) {
+            for member in &receipt.materialized_members {
+                let mirrored = output_root.join(&member.mirror_path);
+                match fs::remove_file(&mirrored) {
+                    Ok(()) => removed.push(mirrored),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("remove {}: {error}", mirrored.display()));
+                    }
+                }
+            }
+        }
+        if let Ok(receipt_path) = source_only_cache_receipt_path(&canonical, &cache_key_sha) {
+            match fs::remove_file(&receipt_path) {
+                Ok(()) => removed.push(receipt_path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("remove {}: {error}", receipt_path.display()));
+                }
+            }
+        }
+        fs::remove_dir_all(&canonical)
+            .map_err(|error| format!("remove {}: {error}", canonical.display()))?;
+        removed.push(canonical);
+    }
+    Ok(removed)
+}
+
+/// Remove the one on-disk artifact a VFS product node owns that its mapped
+/// package node's cache/mirror does not already cover: the legacy
+/// `apps/browser-demos/public/<output>` copy. A product's actual build/cache
+/// decision is entirely the mapped package's (see `PlanNodeV1::Product`
+/// handling in `run_node`), so invalidating the product's cascade entry in
+/// `clean_removal_set` is really about invalidating that mapped package —
+/// which `clean_package_node_outputs` already does when the package node
+/// also appears in the removal set (it always does; every product's mapped
+/// package is a direct dependency edge).
+fn clean_product_node_outputs(
+    repo: &Path,
+    graph: &PlannedGraphV1,
+    id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let entry = graph
+        .plan
+        .products
+        .iter()
+        .find(|product| product.id == id)
+        .ok_or_else(|| format!("clean: product {id:?} is missing from the resolved plan"))?;
+    let manifest_path = repo.join(&entry.manifest);
+    let bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
+    let manifest = parse_product_manifest_bytes(repo, &manifest_path, &bytes)?;
+    let public_asset = repo.join("apps/browser-demos/public").join(&manifest.output);
+    let mut removed = Vec::new();
+    match fs::remove_file(&public_asset) {
+        Ok(()) => removed.push(public_asset),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove {}: {error}", public_asset.display())),
+    }
+    Ok(removed)
+}
+
+/// `xtask clean <target>` — resolve `<target>` to a package or product node
+/// in the local-build graph, derive the full cascade of nodes it invalidates
+/// via `clean_removal_set`, remove every node's on-disk cache/mirror/product
+/// artifacts, and print the derived cascade so a caller sees exactly what
+/// else was invalidated (instead of a static hand-written warning).
+///
+/// Removing the compiled cache entry (and its receipt sidecar) for every
+/// node in the cascade is what makes a subsequent `./run.sh build <target>`
+/// (unforced, ordinary cache-consulting build) do a genuine rebuild rather
+/// than reporting `cached`: `source_only_skip_receipt_if_clean` treats an
+/// absent cache entry as an unconditional cache miss.
+pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
+    let target = match args.as_slice() {
+        [target] if !target.starts_with("--") => target.clone(),
+        _ => return Err("usage: xtask clean <target>".to_string()),
+    };
+
+    let repo = crate::repo_root();
+    let set = repo.join("packages/sets/local-supported.toml");
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let node = resolve_clean_target(&graph, &target)?;
+    let removal = clean_removal_set(&graph, &node);
+
+    let compiled_cache_root =
+        plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
+    let output_root = repo.join("local-binaries/source-only-v1");
+
+    let mut removed_paths = Vec::new();
+    for cleaned in &removal {
+        match cleaned {
+            PlanNodeV1::Package { name, target_arch } => {
+                removed_paths.extend(clean_package_node_outputs(
+                    &registry,
+                    &compiled_cache_root,
+                    &output_root,
+                    name,
+                    target_arch,
+                )?);
+            }
+            PlanNodeV1::Product { id } => {
+                removed_paths.extend(clean_product_node_outputs(&repo, &graph, id)?);
+            }
+        }
+    }
+
+    println!("Cleaned {}", node_label(&node));
+    for path in &removed_paths {
+        println!("  removed {}", path.display());
+    }
+    let cascade: Vec<&PlanNodeV1> = removal.iter().filter(|other| *other != &node).collect();
+    if !cascade.is_empty() {
+        println!(
+            "Also invalidated ({} depends on / embeds {}):",
+            if cascade.len() == 1 { "this" } else { "these" },
+            node_label(&node)
+        );
+        for other in cascade {
+            println!("  {}", node_label(other));
+        }
     }
     Ok(())
 }
@@ -4568,6 +4811,54 @@ mod tests {
                 "browser-python",
                 "browser-redis",
             ],
+        );
+    }
+
+    #[test]
+    fn clean_cascades_to_products_embedding_the_package() {
+        // Real checked-in graph: nethack <- nethack-browser-bundle <- shell
+        // <- the browser-main-shell product (packages/registry/shell/
+        // package.toml depends on nethack-browser-bundle; local-supported
+        // .toml's browser-main-shell product maps to the shell package).
+        // `clean_removal_set` must discover this by walking dependency
+        // edges backwards from `nethack` — not by consulting any hand-kept
+        // list of "packages that live inside the shell VFS image".
+        let repo = crate::repo_root();
+        let set = repo.join("packages/sets/local-supported.toml");
+        let registry = Registry::from_env(&repo);
+        let graph = load_and_plan(&repo, &set, &registry).unwrap();
+
+        let nethack = PlanNodeV1::package("nethack", "wasm32");
+        let removal = clean_removal_set(&graph, &nethack);
+
+        assert!(
+            removal.contains(&nethack),
+            "the removal set always includes the cleaned node itself"
+        );
+        assert!(
+            removal.contains(&PlanNodeV1::package("nethack-browser-bundle", "wasm32")),
+            "cleaning nethack invalidates the bundle package that directly depends on it"
+        );
+        assert!(
+            removal.contains(&PlanNodeV1::package("shell", "wasm32")),
+            "cleaning nethack invalidates the shell package that embeds the bundle"
+        );
+        assert!(
+            removal
+                .iter()
+                .any(|node| matches!(node, PlanNodeV1::Product { id } if id.contains("shell"))),
+            "cleaning nethack invalidates the shell product that embeds it; got {removal:?}",
+        );
+
+        // A leaf nothing else depends on (directly or via a product) removes
+        // only itself. `ruby` is not in any package's `depends_on`, any
+        // product's `package_dependencies`/`root_mirror_packages`, or any
+        // product manifest's composition — verified against the checked-in
+        // registry and `local-supported.toml` when this test was written.
+        let leaf_only = clean_removal_set(&graph, &PlanNodeV1::package("ruby", "wasm32"));
+        assert_eq!(
+            leaf_only,
+            BTreeSet::from([PlanNodeV1::package("ruby", "wasm32")])
         );
     }
 

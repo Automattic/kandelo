@@ -1904,10 +1904,44 @@ build_all() {
 
 # ─── Clean targets ────────────────────────────────────────────────────────────
 
+# xtask_clean_target <name> — invalidate one package's or product's compiled
+# cache, resolver mirror, and (for products) published browser asset via the
+# local-build engine's own dependency graph, inside the dev shell (mirrors
+# `bootstrap_target`'s calling convention). `<name>` is the *graph* name
+# (a `packages/sets/local-supported.toml` package or product id), which is
+# not always the `./run.sh clean` target name that calls it — callers below
+# translate the historical target name first, the same way `build_shell_vfs`
+# already translates `shell-vfs` to `browser-main-shell` for `bootstrap_target`.
+#
+# This is what makes `./run.sh rebuild <target>` (clean, then build) actually
+# rebuild instead of reporting a cache hit: the old hand-written clean only
+# removed a package's legacy standalone-invocation scratch directories
+# (`<pkg>-src`, `bin`, ...), which the engine never reads. The compiled cache
+# under `~/.cache/kandelo/source-only` is what `bootstrap`'s cache check
+# actually consults, and only `xtask clean` knows how to invalidate it — and,
+# via `clean_removal_set`, which *other* packages/products also embed this
+# one and must be invalidated too (replacing the old hand-kept "also
+# invalidated shell.vfs.zst" warnings).
+xtask_clean_target() {
+    local name="$1"
+    local xtask
+    xtask="$(pkg_xtask_bin)" || {
+        err "xtask_clean_target $name: could not build xtask"
+        return 1
+    }
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" clean "$name"
+}
+
 clean_target() {
     local target="$1"
     case "$target" in
         kernel)
+            # "kernel" is itself a local-build engine package (its build is a
+            # pure `cargo build`, routed through `bootstrap_target kernel`);
+            # xtask_clean_target invalidates its compiled cache/mirror. The
+            # cargo `target/` directories below are the underlying build's
+            # own scratch space, which the engine's cache does not track.
+            xtask_clean_target kernel
             rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" \
                   "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
@@ -1939,30 +1973,37 @@ clean_target() {
             fi
             warn "Cleaned programs" ;;
         dash)
+            xtask_clean_target dash
             rm -rf "$REPO_ROOT/packages/registry/dash/dash-src" \
                    "$REPO_ROOT/packages/registry/dash/bin"
             warn "Cleaned dash" ;;
         bash)
+            xtask_clean_target bash
             rm -rf "$REPO_ROOT/packages/registry/bash/bash-src" \
                    "$REPO_ROOT/packages/registry/bash/bin"
             warn "Cleaned bash" ;;
         coreutils)
+            xtask_clean_target coreutils
             rm -rf "$REPO_ROOT/packages/registry/coreutils/coreutils-src" \
                    "$REPO_ROOT/packages/registry/coreutils/bin"
             warn "Cleaned coreutils" ;;
         grep)
+            xtask_clean_target grep
             rm -rf "$REPO_ROOT/packages/registry/grep/grep-src" \
                    "$REPO_ROOT/packages/registry/grep/bin"
             warn "Cleaned grep" ;;
         sed)
+            xtask_clean_target sed
             rm -rf "$REPO_ROOT/packages/registry/sed/sed-src" \
                    "$REPO_ROOT/packages/registry/sed/bin"
             warn "Cleaned sed" ;;
         nginx)
+            xtask_clean_target nginx
             rm -rf "$REPO_ROOT/packages/registry/nginx/nginx-src"
             rm -f "$REPO_ROOT/packages/registry/nginx/nginx.wasm"
             warn "Cleaned nginx" ;;
         php)
+            xtask_clean_target php
             rm -rf "$REPO_ROOT/packages/registry/php/php-src" \
                    "$REPO_ROOT/packages/registry/php/php-install"
             warn "Cleaned PHP CLI" ;;
@@ -1971,6 +2012,7 @@ clean_target() {
                   "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm"
             warn "Cleaned PHP-FPM" ;;
         mariadb)
+            xtask_clean_target mariadb
             rm -rf "$REPO_ROOT/packages/registry/mariadb/mariadb-src" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-install" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-cross-build" \
@@ -1980,6 +2022,10 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/mariadb/pcre2-wasm-build"
             ;;
         mariadb64)
+            # "mariadb64" names the wasm64 build of the mariadb package (the
+            # graph has no node literally named "mariadb64"); xtask clean
+            # already knows this "64" suffix convention.
+            xtask_clean_target mariadb64
             rm -rf "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-cross-build-64" \
                    "$REPO_ROOT/packages/registry/mariadb/mariadb-glue-objs-64"
@@ -1993,19 +2039,23 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm64/mariadb-vfs.vfs.zst"
             warn "Cleaned MariaDB VFS image (wasm64)" ;;
         redis)
+            xtask_clean_target redis
             rm -rf "$REPO_ROOT/packages/registry/redis/redis-src" \
                    "$REPO_ROOT/packages/registry/redis/bin"
             warn "Cleaned Redis" ;;
         dinit)
+            xtask_clean_target dinit
             rm -rf "$REPO_ROOT/packages/registry/dinit/dinit-src" \
                    "$REPO_ROOT/packages/registry/dinit/bin"
             warn "Cleaned dinit" ;;
         msmtpd)
+            xtask_clean_target msmtpd
             rm -rf "$REPO_ROOT/packages/registry/msmtpd/msmtp-src" \
                    "$REPO_ROOT/packages/registry/msmtpd/bin" \
                    "$REPO_ROOT/packages/registry/msmtpd"/msmtp-*.tar.xz
             warn "Cleaned msmtpd" ;;
         cpython)
+            xtask_clean_target cpython
             rm -rf "$REPO_ROOT/packages/registry/cpython/cpython-src" \
                    "$REPO_ROOT/packages/registry/cpython/cpython-host-build" \
                    "$REPO_ROOT/packages/registry/cpython/cpython-cross-build" \
@@ -2019,34 +2069,49 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst"
             warn "Cleaned Perl VFS image" ;;
         shell-vfs)
+            # "shell-vfs" maps to the browser-main-shell product the same way
+            # `build_shell_vfs` maps it to `bootstrap_target browser-main-shell`.
+            xtask_clean_target browser-main-shell
             rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
             pkg_remove_local_output shell shell.vfs.zst wasm32
             warn "Cleaned Shell VFS image" ;;
         node)
+            xtask_clean_target node
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/node.wasm"
             warn "Cleaned node" ;;
         spidermonkey-node)
+            xtask_clean_target spidermonkey-node
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
             warn "Cleaned spidermonkey-node" ;;
         node-vfs)
+            xtask_clean_target node-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
             warn "Cleaned Node VFS image" ;;
         wordpress)
+            xtask_clean_target wordpress
             rm -rf "$REPO_ROOT/packages/registry/wordpress/wordpress" \
                    "$REPO_ROOT/packages/registry/wordpress/sqlite-database-integration"
             warn "Cleaned WordPress" ;;
         wp-vfs)
+            # "wp-vfs" maps to the browser-wordpress product (package
+            # "wordpress"), the same way `build_wp_vfs` maps it to
+            # `bootstrap_target browser-wordpress`.
+            xtask_clean_target browser-wordpress
             rm -f "$REPO_ROOT/apps/browser-demos/public/wordpress.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/wordpress.vfs.zst"
             warn "Cleaned WP VFS image" ;;
         lamp-vfs)
+            # "lamp-vfs" maps to the browser-lamp product, the same way
+            # `build_lamp_vfs` maps it to `bootstrap_target browser-lamp`.
+            xtask_clean_target browser-lamp
             rm -f "$REPO_ROOT/apps/browser-demos/public/lamp.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs.zst"
             warn "Cleaned LAMP VFS image" ;;
         nginx-vfs)
+            xtask_clean_target nginx-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs.zst"
             warn "Cleaned nginx VFS image" ;;
@@ -2055,6 +2120,7 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm32/redis-vfs.vfs.zst"
             warn "Cleaned Redis VFS image" ;;
         nginx-php-vfs)
+            xtask_clean_target nginx-php-vfs
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx-php-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst"
             warn "Cleaned nginx + PHP-FPM VFS image" ;;
@@ -2067,73 +2133,96 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst"
             warn "Cleaned Erlang VFS image" ;;
         bc)
+            xtask_clean_target bc
             rm -rf "$REPO_ROOT/packages/registry/bc/bc-src" \
                    "$REPO_ROOT/packages/registry/bc/bin"
             warn "Cleaned bc" ;;
         file)
+            xtask_clean_target file
             rm -rf "$REPO_ROOT/packages/registry/file/file-src" \
                    "$REPO_ROOT/packages/registry/file/bin"
             warn "Cleaned file" ;;
         less)
+            xtask_clean_target less
             rm -rf "$REPO_ROOT/packages/registry/less/less-src" \
                    "$REPO_ROOT/packages/registry/less/bin"
             warn "Cleaned less" ;;
         m4)
+            xtask_clean_target m4
             rm -rf "$REPO_ROOT/packages/registry/m4/m4-src" \
                    "$REPO_ROOT/packages/registry/m4/bin"
             warn "Cleaned m4" ;;
         make)
+            xtask_clean_target make
             rm -rf "$REPO_ROOT/packages/registry/make/make-src" \
                    "$REPO_ROOT/packages/registry/make/bin"
             warn "Cleaned make" ;;
         tar)
+            xtask_clean_target tar
             rm -rf "$REPO_ROOT/packages/registry/tar/tar-src" \
                    "$REPO_ROOT/packages/registry/tar/bin"
             warn "Cleaned tar" ;;
         curl-cli)
+            # The registry package is named "curl"; "curl-cli" is this
+            # script's target name for it.
+            xtask_clean_target curl
             rm -rf "$REPO_ROOT/packages/registry/curl/curl-src" \
                    "$REPO_ROOT/packages/registry/curl/bin"
             warn "Cleaned curl" ;;
         wget)
+            xtask_clean_target wget
             rm -rf "$REPO_ROOT/packages/registry/wget/wget-src" \
                    "$REPO_ROOT/packages/registry/wget/bin"
             warn "Cleaned wget" ;;
         gzip)
+            xtask_clean_target gzip
             rm -rf "$REPO_ROOT/packages/registry/gzip/gzip-src" \
                    "$REPO_ROOT/packages/registry/gzip/bin"
             warn "Cleaned gzip" ;;
         bzip2)
+            xtask_clean_target bzip2
             rm -rf "$REPO_ROOT/packages/registry/bzip2/bzip2-src" \
                    "$REPO_ROOT/packages/registry/bzip2/bin"
             warn "Cleaned bzip2" ;;
         xz)
+            xtask_clean_target xz
             rm -rf "$REPO_ROOT/packages/registry/xz/xz-src" \
                    "$REPO_ROOT/packages/registry/xz/bin"
             warn "Cleaned xz" ;;
         zstd)
+            xtask_clean_target zstd
             rm -rf "$REPO_ROOT/packages/registry/zstd/zstd-src" \
                    "$REPO_ROOT/packages/registry/zstd/bin"
             warn "Cleaned zstd" ;;
         zip)
+            xtask_clean_target zip
             rm -rf "$REPO_ROOT/packages/registry/zip/zip-src" \
                    "$REPO_ROOT/packages/registry/zip/bin"
             warn "Cleaned zip" ;;
         unzip)
+            xtask_clean_target unzip
             rm -rf "$REPO_ROOT/packages/registry/unzip/unzip-src" \
                    "$REPO_ROOT/packages/registry/unzip/bin"
             warn "Cleaned unzip" ;;
         nano)
+            xtask_clean_target nano
             rm -rf "$REPO_ROOT/packages/registry/nano/nano-src" \
                    "$REPO_ROOT/packages/registry/nano/bin"
             warn "Cleaned nano" ;;
         nethack)
+            # The cascade to nethack-browser-bundle's nethack.zip and the
+            # shell product's shell.vfs.zst is derived from the dependency
+            # graph and reported by `xtask clean` itself (nethack <-
+            # nethack-browser-bundle <- shell <- browser-main-shell) — not a
+            # hand-kept warning here.
+            xtask_clean_target nethack
             rm -rf "$REPO_ROOT/packages/registry/nethack/nethack-src" \
                    "$REPO_ROOT/packages/registry/nethack/bin" \
                    "$REPO_ROOT/packages/registry/nethack/runtime"
-            rm -f "$REPO_ROOT/apps/browser-demos/public/nethack.zip" \
-                  "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
-            warn "Cleaned NetHack (also invalidated nethack.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+            rm -f "$REPO_ROOT/apps/browser-demos/public/nethack.zip"
+            warn "Cleaned NetHack" ;;
         fbdoom)
+            xtask_clean_target fbdoom
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
                    "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
@@ -2145,42 +2234,51 @@ clean_target() {
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS-MUSIC.txt"
             warn "Cleaned fbDOOM" ;;
         ncurses)
+            xtask_clean_target ncurses
             rm -rf "$REPO_ROOT/packages/registry/ncurses/ncurses-src"
             # ncurses installs into sysroot, cleaned with sysroot
             warn "Cleaned ncurses (rebuild sysroot to fully clean)" ;;
         zlib)
+            xtask_clean_target zlib
             rm -rf "$REPO_ROOT/packages/registry/zlib/zlib-src" \
                    "$REPO_ROOT/packages/registry/zlib/zlib-install"
             # zlib installs into sysroot, cleaned with sysroot
             warn "Cleaned zlib (rebuild sysroot to fully clean)" ;;
         openssl)
+            xtask_clean_target openssl
             rm -rf "$REPO_ROOT/packages/registry/openssl/openssl-src" \
                    "$REPO_ROOT/packages/registry/openssl/openssl-install"
             warn "Cleaned OpenSSL (rebuild sysroot to fully clean)" ;;
         libcurl)
+            xtask_clean_target libcurl
             rm -rf "$REPO_ROOT/packages/registry/libcurl/curl-src"
             warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
+            # The cascade to vim-browser-bundle's vim.zip and the shell
+            # product's shell.vfs.zst is derived from the dependency graph
+            # and reported by `xtask clean` itself, the same way as nethack.
+            xtask_clean_target vim
             rm -rf "$REPO_ROOT/packages/registry/vim/vim-src" \
                    "$REPO_ROOT/packages/registry/vim/bin" \
                    "$REPO_ROOT/packages/registry/vim/runtime"
-            rm -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" \
-                  "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
-            warn "Cleaned Vim (also invalidated vim.zip and shell.vfs.zst; run '$0 build shell-vfs' to regenerate for browser demo)" ;;
+            warn "Cleaned Vim" ;;
         vim-zip)
+            xtask_clean_target vim-browser-bundle
             rm -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
             warn "Cleaned vim.zip" ;;
         git)
+            xtask_clean_target git
             rm -rf "$REPO_ROOT/packages/registry/git/git-src" \
                    "$REPO_ROOT/packages/registry/git/bin"
             warn "Cleaned git" ;;
         perl)
+            xtask_clean_target perl
             rm -rf "$REPO_ROOT/packages/registry/perl/perl-src" \
                    "$REPO_ROOT/packages/registry/perl/bin"
             warn "Cleaned Perl" ;;
         ruby)
+            xtask_clean_target ruby
             rm -rf "$REPO_ROOT/packages/registry/ruby/ruby-src" \
                    "$REPO_ROOT/packages/registry/ruby/ruby-host-build" \
                    "$REPO_ROOT/packages/registry/ruby/ruby-cross-build" \
@@ -2249,9 +2347,16 @@ cmd_rebuild() {
         err "Use 'rebuild all' to rebuild everything"
         exit 1
     fi
+    # `clean_target` now derives the local-build engine's cache/mirror
+    # invalidation from the dependency graph (`xtask clean`), so an ordinary
+    # `build_target` after it is a genuine rebuild rather than a cache hit.
+    # There used to be a "rebuild target" environment signal threaded through
+    # here for `build_target` to read; its one reader (`build_shell_vfs`'s
+    # stale-cache guard) was removed when the local-build engine took over
+    # cache freshness, so the signal was dead and has been dropped too.
     for t in "$@"; do
         clean_target "$t"
-        KANDELO_REBUILD_TARGET="$t" build_target "$t"
+        build_target "$t"
     done
     echo ""
     info "Rebuild complete"
