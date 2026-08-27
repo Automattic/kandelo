@@ -4862,6 +4862,144 @@ mod tests {
         );
     }
 
+    /// Fabricate one compiled `SourceOnlyV1` generation exactly the way the
+    /// real engine leaves one on disk: a canonical cache directory under
+    /// `<compiled_cache_root>/programs/`, its hidden receipt sidecar (via
+    /// the real `write_source_only_cache_receipt`, so the sidecar's name and
+    /// shape match what `clean_package_node_outputs` actually reads), and
+    /// the one file the receipt's `materialized_members` mirrors into
+    /// `output_root`. Returns the canonical generation directory path.
+    fn fabricate_compiled_generation(
+        compiled_cache_root: &Path,
+        output_root: &Path,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: &str,
+        cache_key_sha: &str,
+        mirror_relative: &str,
+    ) -> PathBuf {
+        let basename = format!("{name}-{version}-rev{revision}-{arch}-{cache_key_sha}");
+        let canonical = compiled_cache_root.join("programs").join(&basename);
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("marker"), b"fixture generation").unwrap();
+
+        let mirror = output_root.join(mirror_relative);
+        write(&mirror, "fixture mirrored output");
+
+        let receipt = PackageNodeReceiptV1 {
+            manifest_sha256: "0".repeat(64),
+            cache_key_sha256: cache_key_sha.to_string(),
+            cache_receipt_sha256: "1".repeat(64),
+            materialized_members: vec![MaterializedProgramMemberV1 {
+                source_artifact: format!("{name}.wasm"),
+                mirror_path: mirror_relative.to_string(),
+                mode: 0o755,
+                size: fs::metadata(&mirror).unwrap().len(),
+                sha256: "2".repeat(64),
+            }],
+        };
+        crate::build_deps::write_source_only_cache_receipt(&canonical, &receipt).unwrap();
+        canonical
+    }
+
+    #[test]
+    fn clean_package_node_outputs_removes_only_the_targeted_generation() {
+        // This is the destructive path `xtask clean` actually runs: it must
+        // remove exactly the targeted package's compiled cache directory,
+        // its receipt sidecar, and its mirrored output — and must NOT touch
+        // an unrelated sibling package's cache/receipt/mirror, however
+        // similar the on-disk layout looks. A live run proved this once by
+        // hand (see the Stage 5 report); this pins it as a fast, repeatable
+        // tmpdir test instead of relying on that again.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        package(root, "beta", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let alpha_cache_key = "cachekey-alpha-0000000000000000000000000000000000000000";
+        let beta_cache_key = "cachekey-beta-00000000000000000000000000000000000000000";
+        let alpha_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            alpha_cache_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let beta_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "beta",
+            "1.0.0",
+            1,
+            "wasm32",
+            beta_cache_key,
+            "programs/wasm32/beta.wasm",
+        );
+        let alpha_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&alpha_canonical, alpha_cache_key)
+                .unwrap();
+        let beta_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&beta_canonical, beta_cache_key)
+                .unwrap();
+        let alpha_mirror = output_root.join("programs/wasm32/alpha.wasm");
+        let beta_mirror = output_root.join("programs/wasm32/beta.wasm");
+
+        // Sanity: the fixture actually created everything the assertions
+        // below check the disappearance/survival of.
+        assert!(alpha_canonical.is_dir());
+        assert!(beta_canonical.is_dir());
+        assert!(alpha_receipt_sidecar.is_file());
+        assert!(beta_receipt_sidecar.is_file());
+        assert!(alpha_mirror.is_file());
+        assert!(beta_mirror.is_file());
+
+        let removed =
+            clean_package_node_outputs(&reg, &compiled_cache_root, output_root, "alpha", "wasm32")
+                .unwrap();
+        assert!(
+            removed.contains(&alpha_canonical)
+                && removed.contains(&alpha_receipt_sidecar)
+                && removed.contains(&alpha_mirror),
+            "expected the targeted generation dir, receipt sidecar, and mirror in the removed list; got {removed:?}"
+        );
+
+        assert!(
+            !alpha_canonical.exists(),
+            "targeted generation directory must be removed"
+        );
+        assert!(
+            !alpha_receipt_sidecar.exists(),
+            "targeted receipt sidecar must be removed"
+        );
+        assert!(
+            !alpha_mirror.exists(),
+            "targeted mirrored output must be removed"
+        );
+
+        assert!(
+            beta_canonical.is_dir(),
+            "decoy sibling's generation directory must survive"
+        );
+        assert!(
+            beta_receipt_sidecar.is_file(),
+            "decoy sibling's receipt sidecar must survive"
+        );
+        assert!(
+            beta_mirror.is_file(),
+            "decoy sibling's mirrored output must survive"
+        );
+    }
+
     /// Extract the body (inclusive of the enclosing braces) of a top-level
     /// bash function named `function` from `source`, by counting brace
     /// depth from the function's opening `{`. Good enough for the small,

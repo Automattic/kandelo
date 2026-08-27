@@ -2254,13 +2254,25 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/libcurl/curl-src"
             warn "Cleaned libcurl (rebuild sysroot to fully clean)" ;;
         vim)
-            # The cascade to vim-browser-bundle's vim.zip and the shell
-            # product's shell.vfs.zst is derived from the dependency graph
-            # and reported by `xtask clean` itself, the same way as nethack.
+            # xtask_clean_target invalidates the vim package's own compiled
+            # cache/mirror AND (via clean_removal_set's graph cascade) the
+            # vim-browser-bundle PACKAGE's and shell PACKAGE's engine cache
+            # entries. But vim-browser-bundle is a package node, not a
+            # product — clean_package_node_outputs only removes files under
+            # local-binaries/source-only-v1/, never apps/browser-demos/
+            # public/vim.zip or the legacy local-binaries/programs/wasm32/
+            # vim.zip ambient-tier mirror. Those are written by a separate
+            # path (build_vim_zip -> images/vfs/scripts/build-vim-zip.sh +
+            # install_local_binary), and has_vim_zip() treats either file's
+            # mere existence as "already built" — so they must still be
+            # removed by hand here, the same way the nethack branch removes
+            # nethack.zip.
             xtask_clean_target vim
             rm -rf "$REPO_ROOT/packages/registry/vim/vim-src" \
                    "$REPO_ROOT/packages/registry/vim/bin" \
                    "$REPO_ROOT/packages/registry/vim/runtime"
+            rm -f "$REPO_ROOT/apps/browser-demos/public/vim.zip" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/vim.zip"
             warn "Cleaned Vim" ;;
         vim-zip)
             xtask_clean_target vim-browser-bundle
