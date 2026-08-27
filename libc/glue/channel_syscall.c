@@ -101,6 +101,8 @@ int *__errno_location(void);
 #define CH_ARG_SIZE    WASM_POSIX_CHANNEL_ARG_SIZE
 #define CH_RETURN      WASM_POSIX_CHANNEL_RETURN_OFFSET
 #define CH_ERRNO       WASM_POSIX_CHANNEL_ERRNO_OFFSET
+#define CH_DATA        WASM_POSIX_CHANNEL_DATA_OFFSET
+#define CH_DATA_SIZE   WASM_POSIX_CHANNEL_DATA_SIZE
 #define CH_REQUEST_FLAGS WASM_POSIX_CHANNEL_REQUEST_FLAGS_OFFSET
 #define CH_REQUEST_FLAG_CANCELLATION_POINT \
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
@@ -108,6 +110,8 @@ int *__errno_location(void);
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
 #define CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY \
     WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+#define CH_REQUEST_FLAG_OPAQUE_RECORD \
+    WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD
 #define CH_SIG_SIGNUM  WASM_POSIX_CHANNEL_SIG_SIGNUM_OFFSET
 #define CH_SIG_HANDLER WASM_POSIX_CHANNEL_SIG_HANDLER_OFFSET
 #define CH_SIG_FLAGS   WASM_POSIX_CHANNEL_SIG_FLAGS_OFFSET
@@ -127,7 +131,8 @@ _Static_assert(
     WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK
         == (WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
             | WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-            | WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY),
+            | WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+            | WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD),
     "channel request flag mask drift"
 );
 _Static_assert(WASM_POSIX_CHANNEL_SIG_DELIVERY_SIZE
@@ -785,6 +790,25 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 
 #define KANDELO_MARSHAL_FALLBACK (-1)
 
+/* Guest linear-memory size in bytes (wasm pages are 64 KiB). */
+static inline uint64_t kandelo_guest_memory_bytes(void) {
+    return (uint64_t)__builtin_wasm_memory_size(0) * 65536ull;
+}
+
+/* True when [ptr, ptr+len) lies fully within guest memory. A pointer argument
+ * that fails this must NOT be read by the encoder: the legacy host path
+ * bounds-checked every pointer and surfaced EFAULT, so an out-of-range span is
+ * a fallback to the raw path (where the kernel returns the same EFAULT) rather
+ * than an out-of-bounds trap in the guest. */
+static inline int kandelo_range_in_bounds(uintptr_t ptr, uint64_t len) {
+    uint64_t mem = kandelo_guest_memory_bytes();
+    if ((uint64_t)ptr > mem)
+        return 0;
+    if (len > mem - (uint64_t)ptr)
+        return 0;
+    return 1;
+}
+
 static inline void kandelo_store_u16(uint8_t *p, uint16_t v) {
     __builtin_memcpy(p, &v, sizeof v);
 }
@@ -827,9 +851,17 @@ static long kandelo_marshal_arg_len(const struct kandelo_marshal_arg *arg,
     switch (arg->size_kind) {
     case KANDELO_MARSHAL_SIZE_CSTRING: {
         /* PATH_STR: scan for the terminator, len includes the NUL, bounded by
-         * `a` (max_bytes). No terminator within the ceiling is a fallback. */
+         * `a` (max_bytes) AND by guest memory so a string near the memory edge
+         * cannot be scanned out of bounds. No terminator within the available
+         * ceiling is a fallback (the raw path then surfaces the real errno). */
         const uint8_t *s = (const uint8_t *)ptr;
+        uint64_t mem = kandelo_guest_memory_bytes();
+        if ((uint64_t)ptr >= mem)
+            return KANDELO_MARSHAL_FALLBACK;
+        uint64_t avail = mem - (uint64_t)ptr;
         uint32_t max = arg->a;
+        if ((uint64_t)max > avail)
+            max = (uint32_t)avail;
         for (uint32_t i = 0; i < max; i++) {
             if (s[i] == 0)
                 return (long)i + 1;
@@ -848,7 +880,7 @@ static long kandelo_marshal_arg_len(const struct kandelo_marshal_arg *arg,
     }
     case KANDELO_MARSHAL_SIZE_DEREF: {
         uintptr_t lp = (uintptr_t)(unsigned long long)args[arg->a];
-        if (lp == 0)
+        if (lp == 0 || !kandelo_range_in_bounds(lp, sizeof(uint32_t)))
             return KANDELO_MARSHAL_FALLBACK;
         uint32_t v;
         __builtin_memcpy(&v, (const void *)lp, sizeof v);
@@ -927,8 +959,10 @@ static void kandelo_write_record_header(uint8_t *data, long n,
     kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);
     kandelo_store_u32(data + 12u, 0); /* _reserved */
     for (uint32_t si = 0; si < 6; si++) {
-        kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u,
-                          (int64_t)sargs[si]);
+        /* Slot 5 carries the caller pointer width in bytes, mirroring the host
+         * PROCESS_POINTER_WIDTH_ARG_INDEX injection. See kandelo_record_scalar. */
+        int64_t word = (si == 5u) ? (int64_t)sizeof(void *) : (int64_t)sargs[si];
+        kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u, word);
     }
 }
 
@@ -1336,8 +1370,11 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
         kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);                    \
         kandelo_store_u32(data + 12u, 0); /* _reserved */                      \
         for (uint32_t si = 0; si < 6; si++) {                                  \
+            int64_t kwh_word = (si == 5u)                                      \
+                ? (int64_t)sizeof(void *) /* caller pointer width, slot 5 */   \
+                : (int64_t)args[si];                                           \
             kandelo_store_i64(                                                 \
-                data + KANDELO_RECORD_H_SCALARS + si * 8u, (int64_t)args[si]); \
+                data + KANDELO_RECORD_H_SCALARS + si * 8u, kwh_word);          \
         }                                                                      \
     } while (0)
 
@@ -1521,6 +1558,11 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
         long len = kandelo_marshal_arg_len(arg, args, ptr);
         if (len < 0)
             return KANDELO_MARSHAL_FALLBACK;
+        /* The span bytes are read from (IN/InOut) or reserved at (OUT) this
+         * caller pointer; an out-of-range pointer must fall back to the raw
+         * path so the kernel returns EFAULT instead of trapping the encoder. */
+        if (!kandelo_range_in_bounds(ptr, (uint64_t)len))
+            return KANDELO_MARSHAL_FALLBACK;
         if (nplan >= KANDELO_RECORD_MAX_SPANS)
             return KANDELO_MARSHAL_FALLBACK;
         plan[nplan].kind = arg->span_kind;
@@ -1554,6 +1596,62 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
     KANDELO_WRITE_HEADER(nplan);
     #undef KANDELO_WRITE_HEADER
     return (int)cursor;
+}
+
+/* True when `n` keeps raw args in Phase 2 (never a record). The generated
+ * kandelo_raw_syscalls table is sorted ascending; the set is tiny, so a linear
+ * scan is fine on this pre-dispatch path. Single source of truth:
+ * wasm_posix_shared::host_raw_syscalls (mirrored in host abi.ts). */
+static int kandelo_syscall_is_raw(long n) {
+    uint32_t needle = (uint32_t)n;
+    for (uint32_t i = 0; i < KANDELO_RAW_SYSCALL_COUNT; i++) {
+        if (kandelo_raw_syscalls[i] == needle)
+            return 1;
+        if (kandelo_raw_syscalls[i] > needle)
+            break; /* sorted ascending */
+    }
+    return 0;
+}
+
+/* Copy each OUT / InOut flat span's result bytes back into the caller's
+ * original pointer arg.
+ *
+ * The kernel reconstructs its scratch layout IN PLACE over the record region,
+ * so after completion the record's header and descriptors in the data buffer
+ * are destroyed. The kernel does, however, write each OUT/InOut result back at
+ * the span's ORIGINAL byte offset (channel_dest = region_start + offset). So the
+ * guest must supply the span descriptors it saved BEFORE issuing the syscall,
+ * and read the results from the live data buffer at those saved offsets — it can
+ * never re-read the (overwritten) descriptors from the buffer.
+ *
+ * FLAT ONLY: the nested iovec/msghdr syscalls are all in the RAW set, so a live
+ * record never carries a nested span. IN_PTR / PATH_STR spans are guest->kernel
+ * only and are skipped here. `data` points at the data buffer base (channel base
+ * + CH_DATA); saved span offsets are relative to that base. `saved_descriptors`
+ * is the descriptor block copied out of the record before the syscall. */
+static void __unmarshal_channel_record(const uint8_t *data,
+                                       const uint8_t *saved_descriptors,
+                                       uint16_t span_count,
+                                       const long long *args) {
+    for (uint16_t i = 0; i < span_count; i++) {
+        const uint8_t *d = saved_descriptors
+                           + (uint32_t)i * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
+        uint8_t kind = d[KANDELO_RECORD_D_KIND];
+        if (kind != KANDELO_MARSHAL_SPAN_OUT_PTR &&
+            kind != KANDELO_MARSHAL_SPAN_IN_OUT_PTR)
+            continue;
+        uint8_t arg_index = d[KANDELO_RECORD_D_ARG_INDEX];
+        if (arg_index >= 6u)
+            continue;
+        uint32_t offset;
+        uint32_t len;
+        __builtin_memcpy(&offset, d + KANDELO_RECORD_D_OFFSET, sizeof offset);
+        __builtin_memcpy(&len, d + KANDELO_RECORD_D_LEN, sizeof len);
+        uintptr_t dst = (uintptr_t)(unsigned long long)args[arg_index];
+        if (dst == 0 || len == 0)
+            continue;
+        __builtin_memcpy((void *)dst, data + offset, (size_t)len);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1646,16 +1744,69 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
     int32_t err;
     uint32_t delivered_flags;
     int delivered_signal;
+    int used_record;
+    /* Span descriptors saved from the record BEFORE the syscall: the kernel
+     * overwrites the record region with its scratch layout, so the OUT/InOut
+     * copy-back can only rely on descriptors captured here. */
+    uint16_t saved_span_count = 0;
+    uint8_t saved_descriptors[KANDELO_RECORD_MAX_SPANS
+                              * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES];
 
 restart_wait_syscall:
     base = get_channel_base();
+
+    /* Phase 2 opaque transport (Option A). A non-RAW syscall self-marshals its
+     * pointer arguments into a channel record at CH_DATA; the host transports
+     * that region blindly and the kernel decodes it. RAW syscalls keep raw args
+     * because the host owns their capability or blocking behaviour. On a record
+     * marshal fallback (< 0) — an unmarshallable shape — fall back to raw args
+     * for this attempt. Recomputed each retry so a modified arg (e.g. a
+     * restarted deadline) re-marshals; RAW blocking syscalls own all retries. */
+    used_record = 0;
+    if (!kandelo_syscall_is_raw(n)) {
+        int rlen = __marshal_channel_record(
+            n, a1, a2, a3, a4, a5, a6,
+            (void *)(uintptr_t)(base + CH_DATA), CH_DATA_SIZE);
+        if (rlen >= 0) {
+            /* Only take the record path when there is at least one pointer span
+             * to move off the host. A scalar-only syscall (e.g. getpid, close)
+             * gains nothing from the record transport, so keep it on the raw
+             * path — the host descriptor path handles it trivially, and this
+             * avoids exercising the record transport for the trivial syscalls
+             * that dominate fork-child startup. */
+            uint16_t span_count;
+            __builtin_memcpy(
+                &span_count,
+                (const void *)(uintptr_t)(base + CH_DATA
+                                          + KANDELO_RECORD_H_SPAN_COUNT),
+                sizeof span_count);
+            if (span_count > 0 && span_count <= KANDELO_RECORD_MAX_SPANS) {
+                used_record = 1;
+                /* Save the descriptor block before the kernel overwrites the
+                 * record region with its scratch layout. */
+                saved_span_count = span_count;
+                __builtin_memcpy(
+                    saved_descriptors,
+                    (const void *)(uintptr_t)(base + CH_DATA
+                                              + KANDELO_RECORD_HEADER_BYTES),
+                    (size_t)span_count * KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES);
+            }
+        }
+    }
 
     /* Write syscall number and arguments directly using base offsets.
      * These are one-shot writes — if the shadow stack value of 'base' is
      * corrupted after these writes, it doesn't matter because we re-read
      * the global for the atomic operations below.
      * Args are written as i64 — on wasm32, long long values are sign-extended
-     * from 32-bit long; on wasm64, they are native 64-bit. */
+     * from 32-bit long; on wasm64, they are native 64-bit.
+     *
+     * The raw arg words are always published: they drive the host's syscall
+     * diagnostics/logging and are harmless on the record path (there the kernel
+     * reads args from the record, not these words). The record-vs-raw decision
+     * travels in the header via CH_REQUEST_FLAG_OPAQUE_RECORD (written below),
+     * never via a data-buffer magic, which a fork child or reused channel slot
+     * could inherit stale. */
     *(int32_t *)(uintptr_t)(base + CH_SYSCALL) = (int32_t)n;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 0 * CH_ARG_SIZE) = (int64_t)a1;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 1 * CH_ARG_SIZE) = (int64_t)a2;
@@ -1669,6 +1820,11 @@ restart_wait_syscall:
      * release-ordered PENDING store. The host consumes and clears it with this
      * request, so mailbox reuse cannot inherit cancellation authority. */
     uint32_t request_flags = extra_request_flags;
+    /* Publish the opaque-record transport decision in the header, fresh every
+     * request, so a fork child or reused channel slot inheriting a stale record
+     * magic in the data buffer cannot misroute a RAW syscall. */
+    if (used_record)
+        request_flags |= CH_REQUEST_FLAG_OPAQUE_RECORD;
     if (cancellation_point) {
         request_flags |= CH_REQUEST_FLAG_CANCELLATION_POINT;
         /*
@@ -1725,6 +1881,16 @@ restart_wait_syscall:
     /* Reset status to IDLE for next syscall */
     __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(base + CH_STATUS),
                        CH_IDLE, __ATOMIC_SEQ_CST);
+
+    /* Record path: copy each OUT/InOut span's result bytes back to the caller's
+     * pointer arg. On error the kernel produced no fresh output, so leave the
+     * caller buffers untouched, matching the host's success-only copy-out. */
+    if (used_record && err == 0) {
+        const long long uargs[6] = {a1, a2, a3, a4, a5, a6};
+        __unmarshal_channel_record(
+            (const uint8_t *)(uintptr_t)(base + CH_DATA),
+            saved_descriptors, saved_span_count, uargs);
+    }
 
 #if __SIZEOF_POINTER__ == 8
     if (translate_sigaction && sigaction_old_guest != 0 && err == 0) {

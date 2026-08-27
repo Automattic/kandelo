@@ -1,5 +1,5 @@
 {
-  "abi_version": 43,
+  "abi_version": 44,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -47,7 +47,7 @@
     "request_flags": {
       "cancellation_point": 1,
       "cancellation_wake_allowed": 2,
-      "known_mask": 7
+      "known_mask": 15
     },
     "size": 72
   },
@@ -976,7 +976,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 43,
+      "abi_version": 44,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,

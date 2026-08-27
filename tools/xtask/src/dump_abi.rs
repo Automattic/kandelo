@@ -646,6 +646,31 @@ fn render_marshal_header() -> String {
         "#define KANDELO_MARSHAL_SYSCALL_COUNT {}u\n\n",
         entries.len()
     ));
+
+    // Phase 2 (Option A) RAW syscall set, projected from
+    // wasm_posix_shared::host_raw_syscalls. A RAW syscall keeps its raw i64 args
+    // in the channel and is NEVER marshalled into a record: the guest glue skips
+    // the encoder for it, and the host asserts a RAW syscall never carries a
+    // record magic. Sorted ascending so the guest can binary/linear scan.
+    {
+        use shared::host_raw_syscalls::host_raw_syscalls_sorted;
+        let (sorted, len) = host_raw_syscalls_sorted();
+        out.push_str(
+            "/* Phase 2 RAW syscalls: keep raw args, never build a record.\n\
+             * Source of truth: wasm_posix_shared::host_raw_syscalls. Sorted\n\
+             * ascending. Additive to this header; the host guard (abi.ts\n\
+             * HOST_RAW_SYSCALLS) is the cross-checked mirror. */\n\
+             static const uint32_t kandelo_raw_syscalls[] = {\n",
+        );
+        for &n in &sorted[..len] {
+            out.push_str(&format!("    {n}u,\n"));
+        }
+        out.push_str("};\n\n");
+        out.push_str(&format!(
+            "#define KANDELO_RAW_SYSCALL_COUNT {len}u\n\n",
+        ));
+    }
+
     out.push_str("#endif /* KANDELO_SYSCALL_MARSHAL_H */\n");
     out
 }
@@ -1086,6 +1111,7 @@ fn render_c_channel_contract() -> String {
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY {defer_signal_delivery}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT {request_flag_cancellation_point}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED {request_flag_cancellation_wake_allowed}u\n\
+         #define WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD {request_flag_opaque_record}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK {request_flags_known_mask}u\n\
          #define WASM_POSIX_CHANNEL_DATA_OFFSET {data_offset}u\n\
          #define WASM_POSIX_CHANNEL_DATA_SIZE {data_size}u\n\
@@ -1132,6 +1158,7 @@ fn render_c_channel_contract() -> String {
         defer_signal_delivery = channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
         request_flag_cancellation_point = channel::REQUEST_FLAG_CANCELLATION_POINT,
         request_flag_cancellation_wake_allowed = channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
+        request_flag_opaque_record = channel::REQUEST_FLAG_OPAQUE_RECORD,
         request_flags_known_mask = channel::REQUEST_FLAGS_KNOWN_MASK,
         data_offset = channel::DATA_OFFSET,
         data_size = channel::DATA_SIZE,
@@ -1441,6 +1468,31 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+
+    // Phase 2 (Option A) RAW syscall set, projected from
+    // wasm_posix_shared::host_raw_syscalls. These syscalls keep raw i64 args and
+    // are never carried as an opaque record. The blind record fast-path in
+    // kernel-worker.ts asserts a RAW syscall never arrives with RECORD_MAGIC.
+    out.push_str(&format!(
+        "/* Opaque channel-record sentinel (wasm_posix_shared::channel_record). */\n\
+         export const RECORD_MAGIC = 0x{:08X} as const;\n\n",
+        shared::channel_record::RECORD_MAGIC,
+    ));
+    {
+        use shared::host_raw_syscalls::host_raw_syscalls_sorted;
+        let (sorted, len) = host_raw_syscalls_sorted();
+        out.push_str(
+            "/* Phase 2 RAW syscalls (keep raw args, never a record). Source of\n\
+             * truth: wasm_posix_shared::host_raw_syscalls; mirror of the guest\n\
+             * marshal header's kandelo_raw_syscalls. */\n\
+             export const HOST_RAW_SYSCALLS: ReadonlySet<number> = new Set<number>([\n",
+        );
+        for &n in &sorted[..len] {
+            out.push_str(&format!("  {n},\n"));
+        }
+        out.push_str("]);\n\n");
+    }
+
     out.push_str(&format!(
         "export const WPK_FORK_LINKED_FRAME_FORMAT_SECTION = {:?} as const;\n",
         shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION
@@ -3269,6 +3321,10 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED = {} as const;\n",
         channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+    ));
+    out.push_str(&format!(
+        "export const CHANNEL_REQUEST_FLAG_OPAQUE_RECORD = {} as const;\n",
+        channel::REQUEST_FLAG_OPAQUE_RECORD
     ));
     out.push_str(&format!(
         "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = {} as const;\n",
@@ -7933,7 +7989,8 @@ mod tests {
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY 4u",
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT 1u",
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED 2u",
-            "#define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK 7u",
+            "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD 8u",
+            "#define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK 15u",
             "#define WASM_POSIX_CHANNEL_DATA_OFFSET 72u",
             "#define WASM_POSIX_CHANNEL_DATA_SIZE 65536u",
             "#define WASM_POSIX_CHANNEL_HEADER_SIZE 72u",
@@ -7966,7 +8023,8 @@ mod tests {
             "export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = 4 as const;",
             "export const CHANNEL_REQUEST_FLAG_CANCELLATION_POINT = 1 as const;",
             "export const CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED = 2 as const;",
-            "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = 7 as const;",
+            "export const CHANNEL_REQUEST_FLAG_OPAQUE_RECORD = 8 as const;",
+            "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = 15 as const;",
             "export const CH_SIG_AREA_SIZE = 56 as const;",
             "export const CH_SIG_DELIVERY_SIZE = 56 as const;",
             "export const CH_SIG_SI_VALUE = 65564 as const;",

@@ -114,7 +114,9 @@ import {
   FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
+  CHANNEL_REQUEST_FLAG_OPAQUE_RECORD,
   HOST_INTERCEPTED_SYSCALLS,
+  HOST_RAW_SYSCALLS,
   IOCTL_REQUESTS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
@@ -1120,7 +1122,7 @@ const WRITE_LIKE_SYSCALLS = new Set<number>([
  * Generic-channel data transfers whose complete request must survive a host
  * EAGAIN park. Vector/message transfers have dedicated snapshot kinds below.
  */
-const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
+export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Open,
   ABI_SYSCALLS.Read,
   ABI_SYSCALLS.Write,
@@ -11508,6 +11510,42 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // --- Phase 2 opaque record fast-path (Option A) ---
+    // A non-RAW syscall self-marshalled its pointer arguments into a record at
+    // CH_DATA and set REQUEST_FLAG_OPAQUE_RECORD in the channel header. Transport
+    // that byte region blindly to the kernel and return, bypassing the entire
+    // Tier-A intercept ladder and Tier-B descriptor machinery below. The record
+    // decision is read from the header flag (written fresh every request beside
+    // the syscall number), NOT the data-buffer magic: that magic can be stale in
+    // a fork child or a reused per-thread channel slot, while the header cannot.
+    // RAW syscalls never set the flag, so their raw args fall through unchanged.
+    const channelRequestFlags =
+      this.activeChannelRequests.get(channel)?.requestFlags
+      ?? processView.getUint32(CH_REQUEST_FLAGS, true);
+    if ((channelRequestFlags & CHANNEL_REQUEST_FLAG_OPAQUE_RECORD) !== 0) {
+      if (HOST_RAW_SYSCALLS.has(syscallNr)) {
+        // Defense in depth: a RAW syscall must NEVER set the record flag. If one
+        // does, the guest RAW set and this guard have drifted — fail loud instead
+        // of blind-transporting a syscall whose host capability or blocking
+        // behaviour would be silently skipped. Deadlock/corruption net, not a
+        // recoverable condition.
+        this.#failBlockingRetryProtocol(
+          `RAW syscall ${syscallNr} arrived with REQUEST_FLAG_OPAQUE_RECORD set; `
+            + `the guest RAW set and host guard have drifted`,
+        );
+      }
+      if (logging) console.error(logEntry);
+      this.#handleRecordSyscall(
+        channel,
+        syscallNr,
+        origArgs,
+        processMem,
+        logging ? logEntry : "",
+        entry,
+      );
+      return;
+    }
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // direct kernel dispatch.
@@ -13568,6 +13606,142 @@ export class CentralizedKernelWorker {
       }
       throw err;
     }
+  }
+
+  /**
+   * Phase 2 opaque-record blind transport (Option A).
+   *
+   * The guest self-marshalled this non-RAW syscall's pointer arguments into a
+   * `channel_record` at CH_DATA (magic already verified by the caller). The
+   * host is out of the data path here: it blind-copies the record's data region
+   * into the kernel lease, calls kernel_handle_channel (which decodes,
+   * validates, dispatches, and writes OUT/InOut results back into the record at
+   * the span offsets), copies the data region back to process memory, then
+   * delivers any pending signal and completes the channel.
+   *
+   * There are NO plannedScratchWrites and NO plannedChannelScratchArgs: the
+   * record carries every pointer span, so the host performs zero per-syscall
+   * marshalling. Only non-blocking, purely-marshalling syscalls reach here
+   * (every host-involved or blocking syscall is RAW), so the descriptor-path
+   * post-processing (mmap growth, shared-mapping flush, blocking retry, …) does
+   * not apply; the sole shared tail is signal delivery + channel completion.
+   */
+  #handleRecordSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    processMem: Uint8Array,
+    logEntry: string,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const recordStart = channel.channelOffset + CH_DATA;
+    // Read-once snapshot of the guest-authored record data region.
+    const recordIn = processMem.slice(recordStart, recordStart + CH_DATA_SIZE);
+
+    this.currentHandlePid = channel.pid;
+    let rawRetVal = -1n;
+    let errVal = EIO;
+    let recordOut: Uint8Array | null = null;
+    try {
+      const dispatched = this.#executeCapacityOwnedChannel(
+        channel,
+        CH_TOTAL_SIZE,
+        entry,
+        (lease) => {
+          // Stamp the syscall number for the kernel header mirror + logging,
+          // then blind-copy the record data region into the kernel lease. No
+          // arg words or scratch pointers are staged: the record is
+          // authoritative for both scalars and pointer spans.
+          lease.dataView(0, CH_DATA).setUint32(CH_SYSCALL, syscallNr, true);
+          lease.copyFrom(recordIn, CH_DATA, 0, CH_DATA_SIZE);
+        },
+        (lease) => {
+          const view = lease.dataView(0, CH_DATA);
+          rawRetVal = view.getBigInt64(CH_RETURN, true);
+          errVal = view.getUint32(CH_ERRNO, true);
+          // The kernel wrote OUT/InOut results back into the record at their
+          // span offsets; copy the whole data region back so the guest's
+          // __unmarshal_channel_record can deliver them to caller pointers.
+          const out = lease.copyOut(CH_DATA, CH_DATA_SIZE);
+          // Clear the record magic from the shared lease before releasing it.
+          // This is the ONLY path that writes a record into the lease, and the
+          // kernel keys its decode on the magic; a later RAW scalar-only syscall
+          // (no scratch write at CH_DATA offset 0) would otherwise reuse this
+          // lease and be wrongly decoded as a record.
+          lease.dataView(CH_DATA, 4).setUint32(0, 0, true);
+          return out;
+        },
+      );
+      recordOut = dispatched.value;
+    } catch (err) {
+      this.#rethrowKernelEntryFatal(err);
+      if (
+        this.#kernelFatalError !== null
+        || err instanceof KernelTransferExecuteTrapError
+        || err instanceof KernelTaskBindingError
+        || err instanceof KernelReentrantEntryError
+      ) {
+        throw err;
+      }
+      const recent = this.dumpLastSyscalls(channel.pid);
+      console.error(
+        (logEntry || `syscall ${syscallNr}`)
+          + " = KERNEL THROW (record path)",
+      );
+      if (recent) {
+        console.error(
+          `[handleRecordSyscall] recent syscalls for pid=${channel.pid}:\n${recent}`,
+        );
+      }
+      console.error(
+        `[handleRecordSyscall] kernel threw for pid=${channel.pid} `
+          + `syscall=${syscallNr}:`,
+        err,
+      );
+      this.completeChannelRawAndRelisten(channel, -5, 5, entry); // -EIO
+      return;
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    // A terminating signal action may have marked the process dead inside the
+    // kernel call; do not post-process an execution that must not resume.
+    if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
+      this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
+      return;
+    }
+
+    if (recordOut !== null) {
+      // Re-fetch the process view: a coherence sync inside the kernel entry
+      // could have replaced Memory.buffer. Record-eligible syscalls never grow
+      // process memory, but this stays correct if that ever changes.
+      new Uint8Array(channel.memory.buffer).set(recordOut, recordStart);
+    }
+
+    const { publicationRetVal, errVal: normErr } =
+      this.normalizeKernelSyscallResult(channel, syscallNr, rawRetVal, errVal);
+
+    // Deliver any pending caught signal into the process channel exactly as the
+    // descriptor path does; the guest invokes the handler after waking.
+    this.#dequeueSignalForDelivery(channel, entry);
+
+    if (logEntry) {
+      console.error(
+        logEntry
+          + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
+      );
+    }
+    this.completeChannel(
+      channel,
+      syscallNr,
+      origArgs,
+      undefined,
+      publicationRetVal,
+      normErr,
+      [],
+      undefined,
+      entry,
+    );
   }
 
   /**

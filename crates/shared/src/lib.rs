@@ -3,6 +3,7 @@
 pub mod channel_record;
 pub mod channel_scalar;
 pub mod host_abi;
+pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod process_layout;
 
@@ -112,7 +113,7 @@ pub mod process_layout;
 ///     ioctl transfers use request-sized arguments, `/dev/dsp` descriptors
 ///     share a refcounted stream across fork and exec, and the host consumes a
 ///     versioned bounded transport paced by the audio clock.
-pub const ABI_VERSION: u32 = 43;
+pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1275,10 +1276,23 @@ pub mod channel {
     /// until an explicit guest checkpoint can invoke the handler after the
     /// owning host transition returns.
     pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 2;
+    /// The guest self-marshalled this request's pointer arguments into an opaque
+    /// [`crate::channel_record`] record at [`DATA_OFFSET`] (Phase 2 transport).
+    ///
+    /// WHY a header flag, not a data-region magic: the record magic lives in the
+    /// reusable/inheritable data buffer, so a fork child or a reused per-thread
+    /// channel slot can carry a stale magic from a prior process into a RAW
+    /// syscall. This flag is written fresh in the channel header on every
+    /// request (beside the syscall number), exactly like
+    /// [`REQUEST_FLAG_CANCELLATION_POINT`], so it can never be stale. The host
+    /// keys the record vs raw transport decision on this bit; the record magic
+    /// remains the kernel's decode sentinel over the host-owned lease it copies.
+    pub const REQUEST_FLAG_OPAQUE_RECORD: u32 = 1 << 3;
     /// Every request flag understood by this ABI epoch.
     pub const REQUEST_FLAGS_KNOWN_MASK: u32 = REQUEST_FLAG_CANCELLATION_POINT
         | REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY;
+        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+        | REQUEST_FLAG_OPAQUE_RECORD;
     /// Total header size before data buffer.
     pub const HEADER_SIZE: usize = REQUEST_FLAGS_OFFSET + REQUEST_FLAGS_SIZE;
     /// Byte offset of the data buffer region.
@@ -1357,7 +1371,8 @@ mod channel_abi_tests {
             channel::REQUEST_FLAGS_KNOWN_MASK,
             channel::REQUEST_FLAG_CANCELLATION_POINT
                 | channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
+                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+                | channel::REQUEST_FLAG_OPAQUE_RECORD,
         );
         assert_eq!(
             channel::SIG_BASE + channel::SIG_AREA_SIZE,
