@@ -1,0 +1,14 @@
+script_path = "packages/registry/clang/build-clang.sh"
+inputs = [
+  "packages/registry/clang/build-clang.sh",
+  "packages/registry/clang/patches/0001-wasm-fileoutputbuffer-explicit-write.patch",
+  "packages/registry/clang/patches/0002-remove-random-device.patch",
+  "packages/registry/clang/patches/0003-wasm-only-lld-driver.patch",
+  "packages/registry/clang/patches/0004-wasm-path-statvfs.patch",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "sdk/activate.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
