@@ -19,6 +19,7 @@
     { "name": "unzip", "version": "6.0", "role": "lazy-file" },
     { "name": "lsof", "version": "0.1.0", "role": "lazy-file" },
     { "name": "nano", "version": "8.0", "role": "lazy-file" },
+    { "name": "sqlite-cli", "version": "3.49.1", "role": "lazy-file" },
     {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",

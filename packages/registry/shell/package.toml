@@ -24,6 +24,7 @@ depends_on = [
   "unzip@6.0",
   "lsof@0.1.0",
   "nano@8.0",
+  "sqlite-cli@3.49.1",
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
 ]
