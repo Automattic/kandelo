@@ -2090,7 +2090,7 @@ fn namespace_lstat_raw(
     // browser. Its root metadata must come from that mount rather than the
     // synthetic devfs directory fallback.
     if path == b"/dev/shm" {
-        match host.host_lstat(path) {
+        match fs_lstat(host, path) {
             Ok(stat) if stat.st_mode & S_IFMT == S_IFDIR => return Ok(stat),
             Ok(_) | Err(Errno::ENOENT) => {}
             Err(error) => return Err(error),
@@ -2128,7 +2128,12 @@ fn namespace_lstat_raw(
     if let Some(st) = fifo_path_stat_raw(host, path, false)? {
         return Ok(st);
     }
-    host.host_lstat(path)
+    // In-kernel tmpfs owns the scratch mounts (/tmp, /var/*, ...). Serve their
+    // metadata from Rust; the host is never consulted for these paths.
+    if crate::tmpfs::claims_path(path) {
+        return crate::tmpfs::lstat(path);
+    }
+    fs_lstat(host, path)
 }
 
 fn namespace_readlink_raw(
@@ -2516,7 +2521,7 @@ fn check_open_permissions(
 ) -> Result<bool, Errno> {
     check_search_path(proc, host, resolved)?;
 
-    match host.host_stat(resolved) {
+    match fs_stat(host, resolved) {
         Ok(st) => {
             if oflags & O_CREAT != 0 && st.st_mode & S_IFMT == S_IFDIR {
                 return Err(Errno::EISDIR);
@@ -3195,6 +3200,12 @@ pub fn sys_open(
         };
     }
 
+    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
+    // Serve the open entirely from Rust; the host is never consulted.
+    if crate::tmpfs::claims_path(&resolved) {
+        return open_scratch_tmpfs(proc, resolved, oflags, effective_mode);
+    }
+
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
@@ -3242,6 +3253,72 @@ pub fn sys_open(
 
     let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
     Ok(fd)
+}
+
+/// Open (optionally creating) a regular file on an in-kernel tmpfs scratch
+/// mount, entirely without the host. Shared by `open(2)` and `openat(2)`.
+///
+/// Directory opens are not yet routed to tmpfs; `crate::tmpfs::open` returns
+/// EISDIR for a directory path until a later increment adds directory OFDs.
+/// Permission enforcement against the inode mode is likewise deferred; scratch
+/// mounts are broadly writable today.
+fn open_scratch_tmpfs(
+    proc: &mut Process,
+    resolved: Vec<u8>,
+    oflags: u32,
+    effective_mode: u32,
+) -> Result<i32, Errno> {
+    let host_handle = crate::tmpfs::open(
+        &resolved,
+        oflags,
+        effective_mode,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    )?;
+    // Lock identity from the freshly opened inode's stable tmpfs dev/ino.
+    let stat = match crate::tmpfs::fstat(host_handle) {
+        Ok(stat) => stat,
+        Err(err) => {
+            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+            return Err(err);
+        }
+    };
+    let status_flags = oflags & !CREATION_FLAGS;
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::Regular, status_flags, host_handle, resolved);
+    if stat.st_ino != 0 {
+        proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Host {
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+        });
+    }
+    let fd_flags = oflags_to_fd_flags(oflags);
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(err) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+            Err(err)
+        }
+    }
+}
+
+/// Path `stat(2)` routed through the in-kernel tmpfs for scratch mounts. tmpfs
+/// has no symlinks yet, so `stat` and `lstat` resolve identically there.
+fn fs_stat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
+    if crate::tmpfs::claims_path(path) {
+        return crate::tmpfs::lstat(path);
+    }
+    host.host_stat(path)
+}
+
+/// Path `lstat(2)` routed through the in-kernel tmpfs for scratch mounts.
+fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
+    if crate::tmpfs::claims_path(path) {
+        return crate::tmpfs::lstat(path);
+    }
+    host.host_lstat(path)
 }
 
 fn publish_advisory_lock_mutation(mutation: LockMutation) {
@@ -3836,7 +3913,8 @@ fn release_ofd_reference_impl(
                 // lifetime used by procfs and read-only synthetic files.
                 if file_type == FileType::Regular
                     && (crate::procfs::is_procfs_buf_handle(host_handle)
-                        || crate::descriptor_backing::is_synthetic_regular_handle(host_handle))
+                        || crate::descriptor_backing::is_synthetic_regular_handle(host_handle)
+                        || crate::tmpfs::is_tmpfs_file_handle(host_handle))
                 {
                     if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
@@ -4693,6 +4771,20 @@ pub fn sys_read(
                 return Ok(n);
             }
 
+            // In-kernel tmpfs: byte source is Rust memory; cursor is Rust-owned
+            // like ordinary files.
+            if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+                let current_offset =
+                    proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
+                let n = crate::tmpfs::read(host_handle, current_offset, buf)?;
+                let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
+                proc.ofd_table
+                    .get_mut(ofd_idx)
+                    .ok_or(Errno::EBADF)?
+                    .set_offset(new_offset);
+                return Ok(n);
+            }
+
             let current_offset = proc
                 .ofd_table
                 .get(ofd_idx)
@@ -4898,6 +4990,32 @@ pub fn sys_write(
             Ok(n)
         }
         _ => {
+            // In-kernel tmpfs write (tmpfs files are FileType::Regular, so they
+            // fall into this arm). Compute the start position ourselves and pass
+            // it to write_operation_plan as an explicit offset so the plan's
+            // O_APPEND branch never fstats the tmpfs handle against the host;
+            // RLIMIT_FSIZE clipping still applies. Intercept before the
+            // host-backed CharDevice/append/pwrite paths below.
+            if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+                let caller_tid = current_tid_for_process(proc);
+                let start = if status_flags & O_APPEND != 0 {
+                    crate::tmpfs::size(host_handle)?
+                } else {
+                    proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset()
+                };
+                let write_plan =
+                    write_operation_plan(proc, host, caller_tid, fd, Some(start), buf.len())?;
+                let writable_len = write_plan.length;
+                checked_offset_advance(start, writable_len)?;
+                let n = crate::tmpfs::write(host_handle, start, &buf[..writable_len])?;
+                let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
+                proc.ofd_table
+                    .get_mut(ofd_idx)
+                    .ok_or(Errno::EBADF)?
+                    .set_offset(new_offset);
+                return Ok(n);
+            }
+
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -5283,6 +5401,24 @@ pub fn sys_lseek(
         return Ok(new_pos);
     }
 
+    // In-kernel tmpfs: the seek is computed against Rust-owned size/cursor;
+    // there is no host cursor to move.
+    if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
+        let size = crate::tmpfs::size(ofd.host_handle)?;
+        let current = ofd.offset();
+        let new_pos = match whence {
+            SEEK_SET => offset,
+            SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            _ => return Err(Errno::EINVAL),
+        };
+        if new_pos < 0 {
+            return Err(Errno::EINVAL);
+        }
+        ofd.set_offset(new_pos);
+        return Ok(new_pos);
+    }
+
     let new_offset = match whence {
         SEEK_SET => {
             if offset < 0 {
@@ -5368,6 +5504,11 @@ pub fn sys_pread(
         let n = buf.len().min(data.len() - start);
         buf[..n].copy_from_slice(&data[start..start + n]);
         return Ok(n);
+    }
+
+    // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
+    if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        return crate::tmpfs::read(host_handle, offset, buf);
     }
 
     if ofd.file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(host_handle) {
@@ -5801,6 +5942,11 @@ pub fn sys_pwrite(
             backing.data[start..end].copy_from_slice(&buf[..writable_len]);
             Ok(writable_len)
         });
+    }
+
+    // In-kernel tmpfs: positioned write into Rust memory, no cursor change.
+    if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        return crate::tmpfs::write(host_handle, offset, &buf[..writable_len]);
     }
 
     // WHY: the host owns the backing cursor. Only a true positioned call can
@@ -6509,6 +6655,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
             .ok_or(Errno::EBADF)
+    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
+        crate::tmpfs::fstat(ofd.host_handle)
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
     {
@@ -7030,9 +7178,9 @@ fn unix_socket_path_stat(
     // chown(2), chmod(2), and stat(2) round-trip like a POSIX socket node.
     check_search_path(proc, host, resolved)?;
     let mut st = if follow {
-        host.host_stat(resolved)?
+        fs_stat(host, resolved)?
     } else {
-        host.host_lstat(resolved)?
+        fs_lstat(host, resolved)?
     };
     st.st_mode = wasm_posix_shared::mode::S_IFSOCK | (st.st_mode & 0o7777);
     Ok(Some(st))
@@ -7048,9 +7196,9 @@ fn fifo_path_stat_raw(
         None => return Ok(None),
     };
     let mut st = if follow {
-        host.host_stat(resolved)?
+        fs_stat(host, resolved)?
     } else {
-        host.host_lstat(resolved)?
+        fs_lstat(host, resolved)?
     };
     st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
     st.st_size = 0;
@@ -7174,7 +7322,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     // VFS is the source of truth for ownership: host_stat already returns the
     // file's real uid/gid, so just propagate.
     check_search_path(proc, host, &resolved)?;
-    host.host_stat(&resolved)
+    fs_stat(host, &resolved)
 }
 
 pub fn sys_lstat(
@@ -7220,7 +7368,7 @@ pub fn sys_lstat(
     // VFS is the source of truth for ownership: host_lstat already returns the
     // link's real uid/gid, so just propagate.
     check_search_path(proc, host, &resolved)?;
-    host.host_lstat(&resolved)
+    fs_lstat(host, &resolved)
 }
 
 pub fn sys_mkdir(
@@ -7231,6 +7379,17 @@ pub fn sys_mkdir(
 ) -> Result<(), Errno> {
     let resolved =
         resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    // In-kernel tmpfs owns the scratch mounts; create the directory in Rust and
+    // assign ownership from the caller's credentials directly.
+    if crate::tmpfs::claims_path(&resolved) {
+        let effective_mode = mode & !proc.umask;
+        return crate::tmpfs::mkdir(
+            &resolved,
+            effective_mode,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        );
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
@@ -7240,6 +7399,9 @@ pub fn sys_mkdir(
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::rmdir(&resolved);
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
@@ -7300,7 +7462,7 @@ fn make_fifo(
         return Err(error);
     }
 
-    let mut metadata = match host.host_stat(&resolved.path) {
+    let mut metadata = match fs_stat(host, &resolved.path) {
         Ok(metadata) => metadata,
         Err(error) => {
             let _ = host.host_unlink(&resolved.path);
@@ -7324,7 +7486,7 @@ fn unlink_host_entry(host: &mut dyn HostIO, resolved: &[u8]) -> Result<(), Errno
         Err(Errno::EPERM) => {
             // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
             // musl's remove() depends on EISDIR to fall through to rmdir().
-            if let Ok(st) = host.host_stat(resolved) {
+            if let Ok(st) = fs_stat(host, resolved) {
                 if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR
                 {
                     return Err(Errno::EISDIR);
@@ -7417,6 +7579,11 @@ fn register_fifo_hardlink(
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    // In-kernel tmpfs owns the scratch mounts. (AF_UNIX socket and FIFO names on
+    // tmpfs are not yet routed here; they are added with those features.)
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::unlink(&resolved);
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
@@ -7464,7 +7631,7 @@ pub fn sys_rename(
     check_parent_writable(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
     check_sticky_child(proc, host, &old)?;
-    if host.host_lstat(&new).is_ok() {
+    if fs_lstat(host, &new).is_ok() {
         check_sticky_child(proc, host, &new)?;
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
@@ -7547,7 +7714,7 @@ pub fn sys_chmod(
     }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
 }
@@ -7633,7 +7800,7 @@ pub fn sys_chown(
     }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let st = fs_stat(host, &resolved)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     host.host_chown(&resolved, uid, gid)
 }
@@ -9163,7 +9330,7 @@ pub fn sys_utimensat(
                 unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
             {
                 host.host_utimensat(&live_path, atime_sec, atime_nsec, mtime_sec, mtime_nsec)?;
-                let refreshed = host.host_stat(&live_path)?;
+                let refreshed = fs_stat(host, &live_path)?;
                 return update_fifo_metadata(pipe_idx, |metadata| {
                     metadata.st_atime_sec = refreshed.st_atime_sec;
                     metadata.st_atime_nsec = refreshed.st_atime_nsec;
@@ -9239,7 +9406,7 @@ pub fn sys_utimensat(
     ensure_host_mutable_namespace_path(&resolved)?;
 
     check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let st = fs_stat(host, &resolved)?;
     if !check_utimens_permissions(proc, &st, times)? {
         return Ok(());
     }
@@ -14067,6 +14234,12 @@ pub fn sys_openat(
         mode
     };
 
+    // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
+    // Serve the open entirely from Rust; the host is never consulted.
+    if crate::tmpfs::claims_path(&resolved) {
+        return open_scratch_tmpfs(proc, resolved, oflags, effective_mode);
+    }
+
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
@@ -14188,9 +14361,9 @@ pub fn sys_fstatat(
     // already return the real uid/gid, so just propagate.
     check_search_path(proc, host, &resolved)?;
     if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        host.host_lstat(&resolved)
+        fs_lstat(host, &resolved)
     } else {
-        host.host_stat(&resolved)
+        fs_stat(host, &resolved)
     }
 }
 
@@ -14281,7 +14454,7 @@ pub fn sys_renameat(
     check_parent_writable(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
     check_sticky_child(proc, host, &old_resolved)?;
-    if host.host_lstat(&new_resolved).is_ok() {
+    if fs_lstat(host, &new_resolved).is_ok() {
         check_sticky_child(proc, host, &new_resolved)?;
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
@@ -16344,7 +16517,7 @@ pub fn sys_fchmodat(
     }
     ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
 }
@@ -17317,6 +17490,83 @@ mod tests {
         } else {
             sys_open(proc, host, path, O_RDWR, 0)
         }
+    }
+
+    /// The scratch mounts are served entirely by the in-kernel tmpfs
+    /// (`crate::tmpfs`); the host is never consulted for those prefixes. This
+    /// drives the real syscall path with a recording host and asserts both the
+    /// POSIX behavior and that no scratch-path host FS op ever fired — the
+    /// completeness guarantee for the Phase 5 wiring (a missed interception site
+    /// would surface here as a `/srv` open or lstat reaching the host).
+    /// Restores the tmpfs enable flag on drop so this test's activation never
+    /// leaks into the rest of the (serial) suite, even on panic.
+    struct TmpfsEnableGuard(bool);
+    impl Drop for TmpfsEnableGuard {
+        fn drop(&mut self) {
+            crate::tmpfs::set_enabled(self.0);
+        }
+    }
+
+    #[test]
+    fn tmpfs_scratch_mounts_served_entirely_in_kernel() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+
+        // Distinct st_dev per scratch mount lives in this range (crate::tmpfs).
+        const TMPFS_DEV_LO: u64 = 0x7400_0000;
+        const TMPFS_DEV_HI: u64 = 0x7400_0000 + 16;
+        let in_tmpfs_range = |dev: u64| (TMPFS_DEV_LO..TMPFS_DEV_HI).contains(&dev);
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Create + write + read a file on a scratch mount.
+        let fd = sys_open(&mut proc, &mut host, b"/srv/wire_f", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"hello").unwrap(), 5);
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap(), 0);
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello");
+
+        // fstat is served by the in-kernel tmpfs (distinctive st_dev), size 5.
+        let st = sys_fstat(&proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_size, 5);
+        assert!(in_tmpfs_range(st.st_dev), "fstat st_dev {:#x} not tmpfs", st.st_dev);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        // Path lstat also comes from tmpfs, not the host.
+        let lst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        assert_eq!(lst.st_size, 5);
+        assert!(in_tmpfs_range(lst.st_dev));
+
+        // mkdir under a scratch mount is served by tmpfs.
+        sys_mkdir(&mut proc, &mut host, b"/srv/wire_d", 0o755).unwrap();
+        let dst = sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap();
+        assert_eq!(dst.st_mode & S_IFMT, S_IFDIR);
+        assert!(in_tmpfs_range(dst.st_dev));
+
+        // The host was NEVER consulted for a scratch path: no open, no lstat.
+        assert!(
+            !host.handle_paths.values().any(|p| p.starts_with(b"/srv")),
+            "host was asked to open a scratch path: {:?}",
+            host.handle_paths,
+        );
+        assert!(
+            !host.lstat_paths.iter().any(|p| p.starts_with(b"/srv")),
+            "host was asked to lstat a scratch path: {:?}",
+            host.lstat_paths,
+        );
+
+        // unlink/rmdir remove them from the tmpfs namespace.
+        sys_unlink(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap_err(),
+            Errno::ENOENT
+        );
+        sys_rmdir(&mut proc, &mut host, b"/srv/wire_d").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap_err(),
+            Errno::ENOENT
+        );
     }
 
     struct PtyFixture {

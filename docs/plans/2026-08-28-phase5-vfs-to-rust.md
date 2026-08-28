@@ -97,6 +97,57 @@ the same runtime-core module for free.
 3. **`statfs`/`ST_NOSUID` parity** for scratch mounts.
 4. **Node/browser parity** — both hosts drop the scratch backend identically.
 
+## As-built wiring (increments 1a + 1b)
+
+**Dormant by default.** A master flag (`crate::tmpfs::set_enabled`, default
+off) gates all path-op interception via `claims_path` (= enabled AND
+scratch-prefix). So the whole tmpfs stays inert on real hosts and in the
+existing test corpus — which uses `/tmp`, `/root`, `/home/maker`, etc. as
+ordinary mock-host paths — until the cutover increment enables it at boot and
+removes the host-side scratch mounts. Unconditional interception broke ~114
+existing unit tests that assumed host-served scratch paths; gating restores them
+and matches the "no behavior change until cutover" principle. `owns_path` stays
+a pure prefix predicate (used by unit tests); the syscall dispatch gates on
+`claims_path`; handle-op arms need no flag (a tmpfs handle only exists when
+enabled). The Phase 5 wiring test flips the flag on (via an RAII guard).
+
+The interception lives in the **runtime-core syscall path** (not the `WasmHostIO`
+adapter) so it is unit-testable with a recording mock host — the mock-host test
+is the completeness guarantee: any missed interception site surfaces as a
+scratch-path host FS op. Shape:
+
+- **Path metadata:** `namespace_lstat_raw` gets a tmpfs arm; `fs_stat`/`fs_lstat`
+  helpers replace the ~23 direct `host.host_stat`/`host_lstat` call sites (used
+  by `stat`/`lstat`/`fstatat`/existence checks) so path stat is consistent.
+- **open:** `open_scratch_tmpfs` helper, called from both `sys_open` and
+  `sys_openat`, builds a `FileType::Regular` OFD with a tmpfs handle and
+  `FileId::Host{tmpfs dev,ino}` (gives locks a stable identity for free).
+- **Handle I/O:** targeted tmpfs arms in `sys_read`/`sys_pread`/`sys_write`/
+  `sys_pwrite`/`sys_lseek`/`sys_fstat` (tmpfs files are `FileType::Regular`, so
+  read/write fall into the ordinary arm; the cursor stays Rust-owned in
+  `OpenFileDesc::offset`).
+- **Lifecycle:** four `descriptor_backing` arms (`manages_ofd`,
+  `is_live_managed_ofd`, `add_ref_for_ofd`, `release_for_ofd`) mirror the
+  synthetic-regular pattern, so fork/dup/exec/close refcount `open_count`
+  correctly (unlink-while-open works); the `sys_close` dispatch routes tmpfs
+  handles to `release_for_ofd` instead of `host_close`.
+- **Directory path ops:** `sys_mkdir`/`sys_mkdirat`, `sys_rmdir`, `sys_unlink`
+  get early tmpfs arms.
+- **Handle ranges (disjoint):** procfs `(-200, -1e9]`, synthetic regular
+  `(-2e9, -1e9]` (now upper-and-lower bounded), tmpfs file `(-3e9, -2e9]`, tmpfs
+  dir `<= -3e9`. The prior unbounded synthetic range would have shadowed tmpfs
+  handles in the synthetic dispatch arms.
+
+**Deferred (needed before the 1d real-host cutover, not for the 1b cargo test):**
+directory OFDs (`open`/getdents on a tmpfs directory currently returns EISDIR);
+symlinks (`symlink`/`readlink` + cross-mount resolution); `rename`/`link`/`chmod`/
+`chown`/`access`/`utimensat`/`statfs`/`ftruncate` on tmpfs; AF_UNIX socket and
+FIFO names created under a scratch prefix (still host-backed → would split-brain);
+per-inode permission enforcement against the caller's credentials; `st_dev`-based
+EXDEV on cross-authority rename/link. Until the full set lands, running a real
+host against a partially-wired tree is inconsistent — browser/Node validation is
+gated on 1d, and nothing merges until the migration is complete.
+
 ## Validation contract per increment
 
 host Vitest (`host/test`) + a guest exercise + (from 1d) WordPress Chromium boot
