@@ -505,4 +505,43 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Phase 4, epoll readiness. The browser/Node host is the one place epoll
+    /// readiness is still reimplemented in TypeScript: epoll_pwait is converted
+    /// to a host-built poll and never reaches the kernel's sys_epoll_pwait (a
+    /// Chrome V8 crash workaround). This proves the kernel's own epoll path is
+    /// sound when driven through the real channel on a non-V8 engine — the
+    /// prerequisite for moving that decision back into the kernel for the JS
+    /// hosts. The guest makes a pipe readable, registers EPOLLIN via epoll_ctl,
+    /// and the kernel's sys_epoll_pwait detects and reports it.
+    #[test]
+    fn smoke_epoll_readiness_via_kernel() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_epoll.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"epoll ready\n",
+            "epoll_wait must report the readable pipe (kernel-decided readiness)"
+        );
+        use wasm_posix_shared::abi::extended_syscalls as ext;
+        assert!(
+            outcome.syscall_trace.contains(&ext::SYS_EPOLL_CTL)
+                && outcome.syscall_trace.contains(&ext::SYS_EPOLL_PWAIT),
+            "expected epoll_ctl and epoll_pwait in the trace (routed to the kernel, \
+             not a host poll conversion): {:?}",
+            outcome.syscall_trace
+        );
+        Ok(())
+    }
 }

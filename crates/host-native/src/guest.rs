@@ -250,14 +250,55 @@ fn grow_to_cover(mem: &SharedMemory, end_addr: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The pointer-arg descriptors declared for `syscall_nr`, or `&[]` when the
-/// syscall marshals no pointers (pure scalar).
-fn descriptors_for(syscall_nr: u32) -> &'static [SyscallArgDesc] {
+/// The pointer-arg descriptors the native marshaller uses for `syscall_nr`.
+///
+/// Most come from the authoritative `SYSCALL_ARG_DESCRIPTORS`. The epoll
+/// syscalls are the exception: they carry pointer args but have no table entry
+/// because the browser/Node host special-cases epoll rather than using the
+/// generic descriptor path. The kernel dispatch (crates/kernel/src/wasm_api.rs)
+/// still reads epoll_ctl's event at arg3 and epoll_pwait's events array at arg1
+/// from the channel scratch, so the native host must stage them itself. The
+/// `epoll_event` record is 16 bytes (events: u32 @0, data: u64 @8).
+fn arg_descriptors(syscall_nr: u32) -> Vec<SyscallArgDesc> {
+    use wasm_posix_shared::abi::extended_syscalls as ext;
+
+    fn desc(
+        arg_index: u8,
+        direction: SyscallArgDirection,
+        size: SyscallArgSize,
+        nullable: bool,
+    ) -> SyscallArgDesc {
+        SyscallArgDesc {
+            arg_index,
+            direction,
+            size,
+            nullable,
+            required: !nullable,
+            copy_out_length: None,
+        }
+    }
+
+    if syscall_nr == ext::SYS_EPOLL_CTL {
+        return vec![desc(3, SyscallArgDirection::In, SyscallArgSize::Fixed { size: 16 }, false)];
+    }
+    if syscall_nr == ext::SYS_EPOLL_PWAIT {
+        return vec![
+            // events array [out], sized maxevents (arg2) * 16 bytes.
+            desc(
+                1,
+                SyscallArgDirection::Out,
+                SyscallArgSize::Arg { arg_index: 2, multiplier: 16, add: 0 },
+                false,
+            ),
+            // optional sigmask [in], 8 bytes; NULL (skipped) for plain epoll_wait.
+            desc(4, SyscallArgDirection::In, SyscallArgSize::Fixed { size: 8 }, true),
+        ];
+    }
     SYSCALL_ARG_DESCRIPTORS
         .iter()
         .find(|d| d.syscall_number == syscall_nr)
-        .map(|d| d.args)
-        .unwrap_or(&[])
+        .map(|d| d.args.to_vec())
+        .unwrap_or_default()
 }
 
 /// One pointer buffer the host staged into the kernel scratch for a RAW syscall.
@@ -1002,7 +1043,7 @@ fn marshal_in(
 ) -> anyhow::Result<Vec<StagedArg>> {
     let mut staged = Vec::new();
     let mut cursor = 0usize;
-    for d in descriptors_for(syscall_nr) {
+    for d in &arg_descriptors(syscall_nr) {
         if d.copy_out_length.is_some() {
             anyhow::bail!("syscall {syscall_nr}: copy_out_length special-case not implemented");
         }
