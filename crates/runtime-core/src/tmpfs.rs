@@ -332,9 +332,36 @@ fn match_mount(path: &[u8]) -> Option<(usize, &[u8])> {
     best
 }
 
-/// Whether a canonical path is owned by the in-kernel tmpfs.
+/// Master switch for in-kernel tmpfs authority over the scratch mounts.
+///
+/// Defaults OFF so this machinery is dormant: real hosts keep serving the
+/// scratch mounts from their own backends until the cutover increment enables
+/// tmpfs (and removes the host-side scratch mounts) at boot. Tests enable it
+/// explicitly. `owns_path` stays a pure prefix predicate; the syscall dispatch
+/// gates on `claims_path`, which additionally requires this flag.
+static TMPFS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable in-kernel tmpfs authority. Returns the previous value.
+pub fn set_enabled(enabled: bool) -> bool {
+    TMPFS_ENABLED.swap(enabled, Ordering::SeqCst)
+}
+
+/// Whether in-kernel tmpfs authority is currently active.
+pub fn is_enabled() -> bool {
+    TMPFS_ENABLED.load(Ordering::SeqCst)
+}
+
+/// Whether a canonical path lies within a scratch-mount prefix. Pure predicate;
+/// does not consider whether tmpfs authority is enabled.
 pub fn owns_path(path: &[u8]) -> bool {
     match_mount(path).is_some()
+}
+
+/// Whether the in-kernel tmpfs currently claims authority over a path: tmpfs is
+/// enabled AND the path is within a scratch mount. The syscall dispatch gates
+/// every path-op interception on this.
+pub fn claims_path(path: &[u8]) -> bool {
+    is_enabled() && owns_path(path)
 }
 
 /// Whether a host handle names an open tmpfs regular file.
@@ -528,8 +555,11 @@ pub fn add_ref_handle(handle: i64) -> bool {
 }
 
 /// Drop one owning reference (close/exec-cloexec). Frees the inode if it was the
-/// last reference and the file had already been unlinked. Returns whether the
-/// handle was a tmpfs file handle.
+/// last reference and the file had already been unlinked. Returns `true` when
+/// this drop released the final open reference (open_count reached zero),
+/// mirroring `descriptor_backing::release_for_ofd` so the caller knows to
+/// release this description's advisory locks. A stale/unrecognized handle
+/// returns `false`.
 pub fn release_handle(handle: i64) -> bool {
     let Ok(idx) = file_handle_to_inode(handle) else {
         return false;
@@ -539,8 +569,9 @@ pub fn release_handle(handle: i64) -> bool {
             return false;
         };
         inode.open_count = inode.open_count.saturating_sub(1);
+        let was_last = inode.open_count == 0;
         state.maybe_free(idx);
-        true
+        was_last
     })
 }
 
@@ -884,8 +915,12 @@ mod tests {
         assert!(!is_tmpfs_dir_handle(fh));
         assert!(is_tmpfs_dir_handle(dh));
         assert!(!is_tmpfs_file_handle(dh));
-        // Neither collides with the synthetic-regular range (1e9).
+        // Neither collides with the synthetic-regular range (1e9): a tmpfs
+        // handle must not be misclassified as a synthetic regular, or the
+        // synthetic dispatch arms would shadow it.
         assert!(fh <= -TMPFS_FILE_HANDLE_BASE);
+        assert!(!crate::descriptor_backing::is_synthetic_regular_handle(fh));
+        assert!(!crate::descriptor_backing::is_synthetic_regular_handle(dh));
         closedir(dh).unwrap();
         release_handle(fh);
     }
