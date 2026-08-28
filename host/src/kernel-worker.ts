@@ -7592,7 +7592,9 @@ export class CentralizedKernelWorker {
       throw new Error("Kernel missing required kernel_set_cwd export");
     }
     if (result < 0) {
-      throw new Error(`setCwd failed for pid ${pid}: errno ${-result}`);
+      throw new Error(
+        `setCwd failed for pid ${pid}: errno ${-result} (cwd=${JSON.stringify(cwd)})`,
+      );
     }
   }
 
