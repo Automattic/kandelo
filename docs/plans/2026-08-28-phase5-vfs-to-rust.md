@@ -221,6 +221,39 @@ rename/link. Until the full set lands, running a real host against a
 partially-wired tree is inconsistent — browser/Node validation is gated on the
 cutover, and nothing merges until the migration is complete.
 
+## Cutover invariant: nothing may be mounted under a scratch prefix
+
+While the in-kernel tmpfs owns a scratch prefix (`/tmp`, `/var/*`, `/root`,
+`/srv`, ...), it claims **every** path under that prefix. A host submount placed
+under the prefix is therefore shadowed: tmpfs answers `lstat`/`open`/etc. for the
+submount's paths from its own (empty-of-that-subtree) store and returns ENOENT,
+never consulting the submount.
+
+This is by design, not a defect. The whole value of tmpfs — kernel-owned scratch
+mounts with the host never consulted for those prefixes — is what buys the Safari
+worker-memory reclaim and the split-brain guarantee (the recording-host test
+asserts exactly this). Teaching tmpfs to defer to host submounts would unwind
+that invariant and reintroduce host consultation for scratch paths, to
+accommodate a scenario that does not exist post-cutover: once the host stops
+owning `/tmp`, there are no host submounts under it. Real workloads do not mount
+*under* scratch prefixes — they create files and directories there, which tmpfs
+serves.
+
+Consequences:
+- **The mount system must not place a mount under a scratch prefix once tmpfs
+  owns it.** If a genuine need to mount under a scratch prefix ever arises, that
+  is a kernel-owned-mount-into-tmpfs feature (the kernel learns the mount point
+  and composes it into tmpfs resolution) — not host deferral.
+- This was surfaced by the libc `functional` conformance oracle (2026-08-28,
+  tmpfs enabled): 62/63 baseline, 61/63 with tmpfs on. The one deviation is
+  `functional/spawn`, because the test harness mounts its isolated fixture at
+  `/tmp/kandelo-run` (a submount under `/tmp`) and a spawned child's cwd
+  (`/tmp/kandelo-run/work`) is validated via `setCwd`→`sys_chdir`, which tmpfs
+  correctly reports ENOENT for. Every real filesystem test — including the
+  `/tmp` temp-file tests — passes with tmpfs on. The fix belongs in the harness
+  (move the fixture out of `/tmp`, e.g. `ISOLATED_FIXTURE_DESTINATION` →
+  `/run/kandelo-run`), applied when tmpfs is wired into CI — not in tmpfs.
+
 ## Validation contract per increment
 
 host Vitest (`host/test`) + a guest exercise + (from 1d) WordPress Chromium boot
