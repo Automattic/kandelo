@@ -1435,6 +1435,15 @@ pub extern "C" fn kernel_create_process_with_stdio(
 /// Set the program's initial brk to the value of its `__heap_base` export.
 /// Called by the host once per process — between process creation
 /// (or post-exec re-init) and the first syscall from the new program — so
+/// Enable (nonzero) or disable (zero) in-kernel tmpfs authority over the scratch
+/// mounts (`/tmp`, `/var/*`, `/root`, `/srv`, ...). The host calls this at boot
+/// once it hands scratch-mount ownership to the kernel and stops mounting its
+/// own scratch backends. Returns the previous state (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_tmpfs_enabled(enabled: i32) -> i32 {
+    crate::tmpfs::set_enabled(enabled != 0) as i32
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]

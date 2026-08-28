@@ -1098,6 +1098,30 @@ const EAGAIN_RETRY_MS = 1;
 /** Profiling: enabled via WASM_POSIX_PROFILE env var. Zero-cost when disabled. */
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
 
+/**
+ * In-kernel tmpfs (Phase 5): the scratch mounts (`/tmp`, `/var/*`, `/root`,
+ * `/srv`, ...) are served by the Rust kernel instead of a host-side memory FS.
+ * Gated during bring-up so the default remains host-owned scratch mounts;
+ * enabled via `WASM_POSIX_TMPFS=1` (Node, for conformance validation) or
+ * `globalThis.__WASM_POSIX_TMPFS__ = true` (browser). This is the validation
+ * toggle; the eventual cutover makes it the default and drops the host mounts.
+ */
+const KERNEL_TMPFS_ENABLED =
+  (typeof process !== 'undefined' && !!process.env?.WASM_POSIX_TMPFS) ||
+  (typeof globalThis !== 'undefined' &&
+    (globalThis as { __WASM_POSIX_TMPFS__?: boolean }).__WASM_POSIX_TMPFS__ === true);
+
+/** Hand scratch-mount ownership to the in-kernel tmpfs when the gate is set. */
+function maybeEnableKernelTmpfs(instance: WebAssembly.Instance): void {
+  if (!KERNEL_TMPFS_ENABLED) return;
+  const fn = instance.exports.kernel_set_tmpfs_enabled as
+    | ((enabled: number) => number)
+    | undefined;
+  if (typeof fn === 'function') {
+    fn(1);
+  }
+}
+
 /** Read-like syscalls that may block on pipe/socket data */
 const READ_LIKE_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Read,
@@ -5084,6 +5108,10 @@ export class CentralizedKernelWorker {
         }
         const abiVersion = abiVersionFn();
         validateKernelHostAdapterManifest(instance, this.#kernelMemory!);
+
+        // Phase 5 bring-up: optionally hand scratch-mount ownership to the
+        // in-kernel tmpfs before any guest filesystem op runs.
+        maybeEnableKernelTmpfs(instance);
 
         // Allocate scratch from the kernel heap. Host-side memory.grow() would
         // create pages unknown to dlmalloc and let later Rust allocations
