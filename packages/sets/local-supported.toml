@@ -160,6 +160,10 @@ name = "mandoc"
 class = "user-software"
 
 [[packages]]
+name = "mandoc-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "mariadb"
 class = "user-software"
 
