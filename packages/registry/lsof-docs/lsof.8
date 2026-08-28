@@ -1,0 +1,150 @@
+.TH LSOF 8 "August 2026" "Kandelo" "System Manager's Manual"
+.SH NAME
+lsof \- list open files from /proc
+.SH SYNOPSIS
+.B lsof
+.RB [ \-p
+.IR pid ]
+.RB [ \-c
+.IR command ]
+.RI [ file ]
+.br
+.B lsof
+.RB { \-h | \-\-help }
+.SH DESCRIPTION
+.B lsof
+lists open file descriptors for processes on the running Kandelo
+machine by reading the kernel's
+.I /proc
+filesystem: it enumerates the numeric entries of
+.I /proc
+as process IDs, and for each one reads
+.I /proc/PID/cmdline
+for the command name and walks
+.I /proc/PID/fd
+to report each open descriptor's target.
+.PP
+This is an in-tree, minimal implementation
+.RI ( examples/lsof.c )
+tailored to this kernel's procfs. It is not the upstream lsof and
+implements only the behavior documented on this page: it has no
+network, user, or PID-namespace filters, no sorting, and no
+field-selection or output-formatting options.
+.PP
+With no arguments,
+.B lsof
+lists every open file descriptor of every process it can enumerate.
+The
+.B \-p
+and
+.B \-c
+options and the
+.I file
+operand may be combined; an entry is printed only when it satisfies
+every filter given. A process whose
+.I /proc/PID/fd
+directory cannot be opened (for example because the process has
+already exited, or the directory is not readable) contributes no
+output and is not reported as an error.
+.SH OPTIONS
+.TP
+.BI \-p " pid"
+List only open file descriptors belonging to the process whose ID is
+.IR pid .
+.I pid
+is parsed as a decimal integer; a value that is not a positive
+integer (including non-numeric text) leaves the PID filter disabled.
+.TP
+.BI \-c " command"
+List only processes whose command name contains
+.I command
+as a substring. The command name is the final path component of the
+first NUL-separated field of
+.IR /proc/PID/cmdline ,
+or
+.B ?
+if that file cannot be read.
+.TP
+.I file
+List only open file descriptors whose target is exactly
+.IR file .
+The target is the literal string returned by reading the
+.I /proc/PID/fd/N
+symbolic link; it is compared verbatim and is not resolved or
+canonicalized. If more than one non-option argument is given, only
+the last one is used.
+.TP
+.BR \-h ", " \-\-help
+Print a short usage message and exit.
+.SH OUTPUT FORMAT
+.B lsof
+prints one header line, then one line per matching open file
+descriptor, in the order
+.I /proc
+happens to enumerate processes and descriptors (this order is not
+guaranteed to be sorted by PID or file descriptor number). Each line
+has five whitespace-separated fields:
+.TP
+.B COMMAND
+The process's command name, as described under
+.B \-c
+above.
+.TP
+.B PID
+The process ID.
+.TP
+.B FD
+The file descriptor number.
+.TP
+.B TYPE
+The kind of file the descriptor refers to, determined by
+.BR stat (2)
+on the descriptor's target:
+.BR REG ", " DIR ", " CHR ", " BLK ", or " FIFO
+for regular files, directories, character devices, block devices, and
+named pipes; lower-case
+.B sock
+for sockets. If
+.BR stat (2)
+fails,
+.B lsof
+falls back to inspecting the raw target text: a target beginning with
+.B pipe:
+is reported as
+.BR FIFO ,
+one beginning with
+.B socket:
+is reported as
+.BR sock ,
+and anything else is reported as
+.BR unknown .
+.TP
+.B NAME
+The raw target of the descriptor, as returned by
+.BR readlink (2)
+on
+.IR /proc/PID/fd/N .
+For an open regular file or directory this is its path; for an
+anonymous pipe or socket it is a synthetic string such as
+.I pipe:[12345]
+supplied by the kernel's procfs, not a filesystem path.
+.SH EXIT STATUS
+.B lsof
+exits 0 on success, including after
+.BR \-h / \-\-help .
+It exits 1 if
+.I /proc
+cannot be opened, or if it is given an option it does not recognize.
+.SH FILES
+.TP
+.I /proc
+Process and file-descriptor state enumerated by this tool.
+.SH BUGS
+.B lsof
+does not implement upstream lsof's option set (there is no
+.BR \-i ", " \-u ", " \-t ", " \-n ", " +D ,
+or similar); it does not sort its output; and it reports neither file
+offsets, sizes, locks, nor inode numbers.
+.SH SEE ALSO
+.BR ps (1),
+.BR proc (5)
