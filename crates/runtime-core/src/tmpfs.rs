@@ -538,6 +538,23 @@ pub fn fstat(handle: i64) -> Result<WasmStat, Errno> {
     TMPFS.with(|state| Ok(state.get(idx).ok_or(Errno::EBADF)?.stat()))
 }
 
+/// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
+/// The caller enforces access mode and RLIMIT_FSIZE.
+pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        match &mut inode.kind {
+            InodeKind::Regular(data) => {
+                data.resize(new_len, 0);
+                Ok(())
+            }
+            InodeKind::Dir(_) => Err(Errno::EISDIR),
+        }
+    })
+}
+
 /// Add an owning reference (fork/dup inheriting a tmpfs fd). Returns whether the
 /// handle was recognized as a tmpfs file handle.
 pub fn add_ref_handle(handle: i64) -> bool {
@@ -816,6 +833,18 @@ mod tests {
         assert_eq!(lst.st_ino, st.st_ino);
         assert_eq!(lst.st_size, 11);
         assert!(release_handle(h));
+    }
+
+    #[test]
+    fn truncate_grows_and_shrinks() {
+        let h = open(b"/tmp/trunc_h", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        write(h, 0, b"abcdef").unwrap();
+        truncate_handle(h, 3).unwrap();
+        assert_eq!(read_all(h), b"abc");
+        truncate_handle(h, 5).unwrap();
+        assert_eq!(read_all(h), &[b'a', b'b', b'c', 0, 0]);
+        assert_eq!(fstat(h).unwrap().st_size, 5);
+        release_handle(h);
     }
 
     #[test]

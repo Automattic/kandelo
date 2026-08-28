@@ -16158,6 +16158,21 @@ pub fn sys_ftruncate(
         return Err(Errno::EINVAL);
     }
 
+    // In-kernel tmpfs: truncate Rust memory. RLIMIT_FSIZE still applies; size
+    // comes from tmpfs so the tmpfs handle is never fstat'd against the host.
+    if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        let current_size = crate::tmpfs::size(host_handle)? as u64;
+        let fsize_limit = proc.rlimits[RLIMIT_FSIZE as usize][0];
+        if fsize_limit != RLIM_INFINITY
+            && (length as u64) > current_size
+            && (length as u64) > fsize_limit
+        {
+            raise_fsize_signal_for_caller(proc, current_tid_for_process(proc))?;
+            return Err(Errno::EFBIG);
+        }
+        return crate::tmpfs::truncate_handle(host_handle, length);
+    }
+
     let current_size = if file_type == FileType::MemFd {
         let memfd_idx = (-(host_handle + 1)) as usize;
         crate::descriptor_backing::with_memfds(|table| {
@@ -17537,6 +17552,13 @@ mod tests {
         let lst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
         assert_eq!(lst.st_size, 5);
         assert!(in_tmpfs_range(lst.st_dev));
+
+        // truncate(path) works end-to-end (open + ftruncate + close, all tmpfs).
+        sys_truncate(&mut proc, &mut host, b"/srv/wire_f", 2).unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap().st_size,
+            2
+        );
 
         // mkdir under a scratch mount is served by tmpfs.
         sys_mkdir(&mut proc, &mut host, b"/srv/wire_d", 0o755).unwrap();
