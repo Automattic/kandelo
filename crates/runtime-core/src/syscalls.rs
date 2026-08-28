@@ -2148,6 +2148,8 @@ fn namespace_readlink_raw(
             return Err(Errno::EINVAL);
         }
         crate::procfs::procfs_readlink(proc, &entry, &mut target)?
+    } else if crate::tmpfs::claims_path(path) {
+        crate::tmpfs::readlink(path, &mut target)?
     } else {
         host.host_readlink(path, &mut target)?
     };
@@ -7710,6 +7712,9 @@ pub fn sys_symlink(
 ) -> Result<(), Errno> {
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
     let link = resolve_namespace_path(proc, host, linkpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    if crate::tmpfs::claims_path(&link) {
+        return crate::tmpfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
+    }
     ensure_host_mutable_namespace_path(&link)?;
     check_parent_writable(proc, host, &link)?;
     host.host_symlink(target, &link)
@@ -7738,6 +7743,10 @@ pub fn sys_readlink(
         let n = buf.len().min(target.len());
         buf[..n].copy_from_slice(&target[..n]);
         return Ok(n);
+    }
+
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::readlink(&resolved, buf);
     }
 
     check_search_path(proc, host, &resolved)?;
@@ -16693,6 +16702,14 @@ pub fn sys_symlinkat(
         PathResolveOptions::CREATE_ENTRY,
     )?
     .path;
+    if crate::tmpfs::claims_path(&resolved_link) {
+        return crate::tmpfs::symlink(
+            target,
+            &resolved_link,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        );
+    }
     ensure_host_mutable_namespace_path(&resolved_link)?;
     check_parent_writable(proc, host, &resolved_link)?;
     host.host_symlink(target, &resolved_link)
@@ -16722,6 +16739,10 @@ pub fn sys_readlinkat(
         let n = buf.len().min(target.len());
         buf[..n].copy_from_slice(&target[..n]);
         return Ok(n);
+    }
+
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::readlink(&resolved, buf);
     }
 
     check_search_path(proc, host, &resolved)?;
@@ -17667,6 +17688,20 @@ mod tests {
             alloc::vec![b".".to_vec(), b"..".to_vec(), b"child".to_vec()]
         );
         sys_close(&mut proc, &mut host, dfd).unwrap();
+
+        // Symlink create / readlink / follow, entirely within tmpfs.
+        sys_symlink(&mut proc, &mut host, b"wire_f", b"/srv/wire_link").unwrap();
+        let ll = sys_lstat(&mut proc, &mut host, b"/srv/wire_link").unwrap();
+        assert_eq!(ll.st_mode & S_IFMT, S_IFLNK);
+        assert_eq!(ll.st_size, 6); // len("wire_f")
+        let mut tgt = [0u8; 32];
+        let tn = sys_readlink(&mut proc, &mut host, b"/srv/wire_link", &mut tgt).unwrap();
+        assert_eq!(&tgt[..tn], b"wire_f");
+        // stat() follows the relative link to /srv/wire_f (2 bytes after truncate).
+        let sl = sys_stat(&mut proc, &mut host, b"/srv/wire_link").unwrap();
+        assert_eq!(sl.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(sl.st_size, 2);
+        sys_unlink(&mut proc, &mut host, b"/srv/wire_link").unwrap();
 
         // The host was NEVER consulted for a scratch path: no open, no lstat.
         assert!(
