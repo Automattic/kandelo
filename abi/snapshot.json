@@ -2997,6 +2997,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_set_tmpfs_enabled",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_setegid",
       "signature": "(i32) -> (i32)"
     },
