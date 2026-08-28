@@ -740,9 +740,184 @@ fn spawn_guest_thread(
     })
 }
 
-/// Run the channel pump until the guest posts `exit`/`exit_group`. Returns the
-/// kernel-recorded exit code. Records the syscall trace into `trace` and the
-/// thread-local `LAST_TRACE`.
+/// A live guest channel the pump services: its byte offset in guest memory and
+/// the tid to bind (kernel_set_current_tid) before dispatching its syscalls.
+#[derive(Clone, Copy)]
+struct PumpChannel {
+    offset: usize,
+    tid: u32,
+    is_main: bool,
+}
+
+/// A blocking syscall parked awaiting readiness (or its timeout deadline). The
+/// pump re-dispatches it under `token` on later iterations instead of looping in
+/// place, so one channel's blocked op never starves another channel.
+#[derive(Clone, Copy)]
+struct BlockedOp {
+    channel: PumpChannel,
+    syscall_nr: u32,
+    /// `> 0` pins a stable OFD target that must be released on completion; `0`
+    /// is a host-only-snapshot syscall (poll) with nothing to pin.
+    token: i64,
+    deadline: Option<Instant>,
+}
+
+/// Read a channel's 6 syscall args.
+fn read_channel_args(guest_mem: &SharedMemory, offset: usize) -> [i64; 6] {
+    let mut args = [0i64; 6];
+    for (i, a) in args.iter_mut().enumerate() {
+        *a = unsafe { read_i64(guest_mem, offset + ARGS_OFFSET + i * ARG_SIZE) };
+    }
+    args
+}
+
+/// Read a channel's posted request: syscall number, args, and whether it is an
+/// opaque record (from the header flag, never the stale data-buffer magic).
+fn read_channel_request(guest_mem: &SharedMemory, offset: usize) -> (u32, [i64; 6], bool) {
+    let syscall_nr = unsafe { read_u32(guest_mem, offset + SYSCALL_OFFSET) };
+    let args = read_channel_args(guest_mem, offset);
+    let request_flags = unsafe { read_u32(guest_mem, offset + REQUEST_FLAGS_OFFSET) };
+    (syscall_nr, args, request_flags & REQUEST_FLAG_OPAQUE_RECORD != 0)
+}
+
+/// Stage a RAW request into the scratch: clear the record-magic slot, stamp the
+/// syscall number, marshal In/Out pointer buffers (rewriting `args`), and write
+/// the args. Returns the staged buffers for post-call copy-back.
+fn stage_raw(
+    kernel_mem: &SharedMemory,
+    guest_mem: &SharedMemory,
+    scratch_ptr: usize,
+    syscall_nr: u32,
+    args: &mut [i64; 6],
+) -> anyhow::Result<Vec<StagedArg>> {
+    unsafe {
+        write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
+        write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+    }
+    let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
+    unsafe {
+        for (i, a) in args.iter().enumerate() {
+            write_bytes(kernel_mem, scratch_ptr + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
+        }
+    }
+    // The kernel keys record decoding on DATA[0..4]; a RAW buffer that begins
+    // with the opaque-record magic would misroute. Fail loudly, never corrupt.
+    if unsafe { read_u32(kernel_mem, scratch_ptr + DATA_OFFSET) } == RECORD_MAGIC {
+        anyhow::bail!(
+            "RAW syscall {syscall_nr} staged a buffer starting with RECORD_MAGIC; \
+             the kernel would misroute it as an opaque record"
+        );
+    }
+    Ok(staged)
+}
+
+/// Stage and dispatch one channel request once under `retry_token`, binding the
+/// channel's tid first. Returns `(ret, errno, staged)`. For a record it blind-
+/// transports the data region both ways; for RAW it marshals pointer args. Does
+/// not complete the channel and does not handle exit (the caller does).
+#[allow(clippy::too_many_arguments)]
+fn dispatch_once(
+    store: &mut Store<()>,
+    guest_mem: &SharedMemory,
+    kernel_mem: &SharedMemory,
+    scratch_ptr: usize,
+    pid: u32,
+    ch: PumpChannel,
+    syscall_nr: u32,
+    is_record: bool,
+    args: &mut [i64; 6],
+    retry_token: i64,
+    set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
+    handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
+) -> anyhow::Result<(i64, u32, Vec<StagedArg>)> {
+    if is_record {
+        // Opaque-record blind transport: stamp the syscall, blind-copy the data
+        // region into the scratch, dispatch (the kernel decodes it and writes
+        // OUT spans back), blind-copy the data region back for the guest to
+        // unmarshal, then clear the scratch magic for the next RAW syscall.
+        unsafe {
+            write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+            let record_in = read_bytes(guest_mem, ch.offset + DATA_OFFSET, DATA_SIZE);
+            write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &record_in);
+        }
+        bind_and_dispatch(store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel)?;
+        let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+        unsafe {
+            let record_out = read_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, DATA_SIZE);
+            write_bytes(guest_mem, ch.offset + DATA_OFFSET, &record_out);
+            write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
+        }
+        Ok((ret, errno, Vec::new()))
+    } else {
+        let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
+        bind_and_dispatch(store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel)?;
+        let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+        Ok((ret, errno, staged))
+    }
+}
+
+/// Bind the channel's tid (a one-shot binding consumed by the dispatch) and call
+/// `kernel_handle_channel`.
+fn bind_and_dispatch(
+    store: &mut Store<()>,
+    scratch_ptr: usize,
+    pid: u32,
+    tid: u32,
+    retry_token: i64,
+    set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
+    handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
+) -> anyhow::Result<()> {
+    let bind = set_current_tid.call(&mut *store, (pid, tid))?;
+    if bind < 0 {
+        anyhow::bail!("kernel_set_current_tid({pid},{tid}) failed: {bind}");
+    }
+    handle_channel.call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, retry_token))?;
+    Ok(())
+}
+
+/// Publish a completed syscall to its channel and wake the guest: copy back Out
+/// buffers, grow guest memory for mmap/brk, write RETURN/ERRNO, then release-
+/// store COMPLETE and notify the guest's `wait32`.
+fn complete_channel(
+    guest_mem: &SharedMemory,
+    kernel_mem: &SharedMemory,
+    scratch_ptr: usize,
+    ch: PumpChannel,
+    syscall_nr: u32,
+    args: &[i64; 6],
+    staged: &[StagedArg],
+    ret: i64,
+    errno: u32,
+) -> anyhow::Result<()> {
+    for s in staged {
+        if s.copy_back {
+            let bytes = unsafe { read_bytes(kernel_mem, scratch_ptr + s.data_off, s.len) };
+            unsafe { write_bytes(guest_mem, s.guest_ptr, &bytes) };
+        }
+    }
+    if ret >= 0 {
+        if syscall_nr == Syscall::Mmap as u32 {
+            grow_to_cover(guest_mem, ret as usize + args[1] as u32 as usize)?;
+        } else if syscall_nr == Syscall::Brk as u32 {
+            grow_to_cover(guest_mem, ret as usize)?;
+        }
+    }
+    unsafe {
+        write_bytes(guest_mem, ch.offset + RETURN_OFFSET, &ret.to_le_bytes());
+        write_bytes(guest_mem, ch.offset + ERRNO_OFFSET, &errno.to_le_bytes());
+        atomic_u32(guest_mem, ch.offset + STATUS_OFFSET).store(STATUS_COMPLETE, Ordering::SeqCst);
+    }
+    guest_mem
+        .atomic_notify((ch.offset + STATUS_OFFSET) as u64, 1)
+        .map_err(|e| anyhow::anyhow!("atomic_notify failed: {e}"))?;
+    Ok(())
+}
+
+/// The channel pump: a single-threaded event loop that services every live guest
+/// channel and parks blocking syscalls in a table (re-dispatching them across
+/// iterations) rather than looping in place — so a blocked op on one channel
+/// never starves another. Returns the process exit code when the main channel
+/// posts exit/exit_group.
 #[allow(clippy::too_many_arguments)]
 fn run_pump(
     kernel_store: &mut Store<()>,
@@ -758,185 +933,128 @@ fn run_pump(
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
-    let status_off = layout.channel_offset + STATUS_OFFSET;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Only the main channel today; thread channels join here in a later increment.
+    let channels = vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }];
+    let mut blocked: Vec<BlockedOp> = Vec::new();
+    let hard_cap = Instant::now() + Duration::from_secs(30);
 
-    let exit_code = loop {
-        if Instant::now() > deadline {
-            anyhow::bail!("pump timed out after 30s (trace so far: {trace:?})");
+    loop {
+        if Instant::now() > hard_cap {
+            anyhow::bail!(
+                "pump timed out after 30s ({} channel(s), {} blocked op(s))",
+                channels.len(),
+                blocked.len()
+            );
         }
-        let status = unsafe { atomic_u32(guest_mem, status_off) }.load(Ordering::SeqCst);
-        if status != STATUS_PENDING {
-            thread::yield_now();
-            std::thread::sleep(Duration::from_micros(50));
-            continue;
+        let mut progressed = false;
+
+        // 1) Re-dispatch parked blocking ops under their tokens. The kernel
+        // re-decides readiness each attempt; on a timeout deadline a final
+        // non-blocking evaluation ends the wait.
+        let mut i = 0;
+        while i < blocked.len() {
+            let op = blocked[i];
+            let mut args = read_channel_args(guest_mem, op.channel.offset);
+            let deadline_passed = op.deadline.is_some_and(|d| Instant::now() >= d);
+
+            let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, op.syscall_nr, &mut args)?;
+            if deadline_passed {
+                force_zero_timeout(kernel_mem, scratch_ptr, op.syscall_nr);
+            }
+            bind_and_dispatch(
+                kernel_store,
+                scratch_ptr,
+                pid,
+                op.channel.tid,
+                op.token.max(0),
+                set_current_tid,
+                handle_channel,
+            )?;
+            let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+
+            if !deadline_passed && ret == -1 && errno == libc_errno::EAGAIN as u32 {
+                i += 1;
+                continue; // still blocked
+            }
+            complete_channel(
+                guest_mem, kernel_mem, scratch_ptr, op.channel, op.syscall_nr, &args, &staged, ret, errno,
+            )?;
+            if op.token > 0 {
+                blocking_retry_release.call(&mut *kernel_store, (pid, op.channel.tid, op.token))?;
+            }
+            blocked.remove(i);
+            progressed = true;
         }
 
-        // The SeqCst load of PENDING happens-after the guest's SeqCst store, so
-        // the syscall number, args, and request flags written before it are
-        // visible.
-        let syscall_nr = unsafe { read_u32(guest_mem, layout.channel_offset + SYSCALL_OFFSET) };
-        let mut args = [0i64; 6];
-        for (i, a) in args.iter_mut().enumerate() {
-            *a = unsafe { read_i64(guest_mem, layout.channel_offset + ARGS_OFFSET + i * ARG_SIZE) };
-        }
-        // The record vs RAW decision is read from the header flag (written fresh
-        // every request beside the syscall number), never the data-buffer magic:
-        // that magic can be stale across fork or a reused channel slot, but the
-        // flag cannot. RAW syscalls never set it. Matches kernel-worker.ts.
-        let request_flags = unsafe { read_u32(guest_mem, layout.channel_offset + REQUEST_FLAGS_OFFSET) };
-        let is_record = request_flags & REQUEST_FLAG_OPAQUE_RECORD != 0;
-        trace.push(syscall_nr);
+        // 2) Service each live channel's newly posted request.
+        let mut ci = 0;
+        while ci < channels.len() {
+            let ch = channels[ci];
+            // A channel whose request is already parked stays PENDING until the
+            // op completes; the retry loop owns it, so do not re-dispatch it here
+            // (that would double-process and leak a second retry token).
+            if blocked.iter().any(|op| op.channel.offset == ch.offset) {
+                ci += 1;
+                continue;
+            }
+            let status = unsafe { atomic_u32(guest_mem, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+            if status != STATUS_PENDING {
+                ci += 1;
+                continue;
+            }
+            progressed = true;
+            let (syscall_nr, mut args, is_record) = read_channel_request(guest_mem, ch.offset);
+            trace.push(syscall_nr);
 
-        // Bind the leader task (tid == pid) — dispatch returns ESRCH without it.
-        let bind = set_current_tid.call(&mut *kernel_store, (pid, pid))?;
-        if bind < 0 {
-            anyhow::bail!("kernel_set_current_tid({pid},{pid}) failed: {bind}");
-        }
-
-        let (ret, errno) = if is_record {
-            // --- Phase 2 opaque-record blind transport (Option A) -----------
-            // The guest self-marshalled every pointer span into a record at
-            // CH_DATA. The host is out of the data path: stamp the syscall
-            // number, blind-copy the whole data region into the kernel scratch,
-            // dispatch (the kernel decodes the record, writes OUT/InOut results
-            // back into it at their span offsets), then blind-copy the data
-            // region back so the guest's __unmarshal delivers them. No
-            // descriptors, no arg rewriting, no mmap growth — the record is
-            // authoritative for both scalars and pointers.
-            unsafe {
-                write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-                let record_in = read_bytes(guest_mem, layout.channel_offset + DATA_OFFSET, DATA_SIZE);
-                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &record_in);
-            }
-            handle_channel.call(&mut *kernel_store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, 0))?;
-            let ret = unsafe { read_i64(kernel_mem, scratch_ptr + RETURN_OFFSET) };
-            let errno = unsafe { read_u32(kernel_mem, scratch_ptr + ERRNO_OFFSET) };
-            unsafe {
-                let record_out = read_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, DATA_SIZE);
-                write_bytes(guest_mem, layout.channel_offset + DATA_OFFSET, &record_out);
-                // Clear the record magic in the reusable scratch so a later RAW
-                // scalar-only syscall is not wrongly decoded as a record.
-                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
-            }
-            (ret, errno)
-        } else {
-            // --- RAW descriptor-marshalled path -----------------------------
-            // Clear the DATA magic slot so a scalar syscall never trips the
-            // kernel's record-decode magic check, write the syscall number and
-            // (possibly pointer-rewritten) args, then marshal RAW pointer bufs.
-            unsafe {
-                write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
-                write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-            }
-            let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
-            unsafe {
-                for (i, a) in args.iter().enumerate() {
-                    write_bytes(kernel_mem, scratch_ptr + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
-                }
-            }
-            // Guard against a RAW buffer that begins with the opaque-record
-            // magic: the kernel keys record decoding on DATA[0..4], so such a
-            // buffer would misroute. Fail loudly rather than corrupt silently.
-            let magic = unsafe { read_u32(kernel_mem, scratch_ptr + DATA_OFFSET) };
-            if magic == RECORD_MAGIC {
-                anyhow::bail!(
-                    "RAW syscall {syscall_nr} staged a buffer starting with RECORD_MAGIC; \
-                     the kernel would misroute it as an opaque record"
+            // Exit: the kernel commits the status then traps via kernel_exit's
+            // `unreachable`. On the MAIN channel that ends the run. (Thread-exit
+            // on a non-main channel is a later increment.)
+            if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
+                let _ = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
+                let _ = bind_and_dispatch(
+                    kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
                 );
-            }
-
-            // The kernel dispatches exit/exit_group by committing the exit status
-            // and then calling its `kernel_exit` export, which ends in
-            // `unreachable` to halt the task. So `kernel_handle_channel` *traps*
-            // on exit — the expected, successful end of the run, not an error.
-            // The status is committed before the trap; read it and finish. The
-            // guest is left parked on the never-completed exit channel and
-            // reclaimed at process teardown.
-            let is_exit = syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP;
-            let rc_result = handle_channel
-                .call(&mut *kernel_store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, 0));
-            if is_exit {
                 let code = get_exit_status
                     .call(&mut *kernel_store, pid)
                     .unwrap_or(args[0] as i32 & 0xff);
-                break code;
+                return Ok(code);
             }
-            let rc = rc_result?;
 
-            let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+            let (ret, errno, staged) = dispatch_once(
+                kernel_store, guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
+                &mut args, 0, set_current_tid, handle_channel,
+            )?;
 
-            // Blocking-retry (Phase 4 wait capability): a blocking syscall that
-            // would block returns EAGAIN. The host owns the *waiting* — it asks
-            // the kernel for a retry token, re-dispatches under it until the op
-            // is ready or its timeout deadline forces a final non-blocking
-            // evaluation, then releases the token. The kernel still owns the
-            // readiness *decision* (it re-runs sys_poll/sys_read each dispatch).
-            let (ret, errno) = if ret == -1
+            if !is_record
+                && ret == -1
                 && errno == libc_errno::EAGAIN as u32
-                && syscall_blocks_with_timeout(syscall_nr)
+                && syscall_can_block(syscall_nr)
             {
-                let token = blocking_retry_token.call(&mut *kernel_store, (pid, pid, syscall_nr))?;
+                let token = blocking_retry_token.call(&mut *kernel_store, (pid, ch.tid, syscall_nr))?;
                 if token < 0 {
                     anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
                 }
-                // token == 0 means a host-only-snapshot syscall (poll) with no
-                // target to pin; re-dispatch under retry_token 0. token > 0 pins
-                // a stable target (an OFD) that must be released afterward.
-                let dispatch_token = token.max(0);
-                let result = blocking_wait(
-                    &mut *kernel_store,
-                    kernel_mem,
-                    scratch_ptr,
-                    pid,
+                blocked.push(BlockedOp {
+                    channel: ch,
                     syscall_nr,
-                    &args,
-                    dispatch_token,
-                    set_current_tid,
-                    handle_channel,
-                )?;
-                if token > 0 {
-                    blocking_retry_release.call(&mut *kernel_store, (pid, pid, token))?;
-                }
-                result
+                    token,
+                    deadline: blocking_deadline(syscall_nr, &args),
+                });
+                // Leave the guest parked; do not complete.
             } else {
-                (ret, errno)
-            };
-
-            // Copy back any Out/InOut buffers into the guest.
-            for s in &staged {
-                if s.copy_back {
-                    let bytes = unsafe { read_bytes(kernel_mem, scratch_ptr + s.data_off, s.len) };
-                    unsafe { write_bytes(guest_mem, s.guest_ptr, &bytes) };
-                }
+                complete_channel(
+                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &staged, ret, errno,
+                )?;
             }
-
-            // mmap/brk hand out addresses at/above the initial memory end; grow
-            // the guest memory to cover them before the guest resumes.
-            if rc == 0 || ret >= 0 {
-                if syscall_nr == Syscall::Mmap as u32 && ret >= 0 {
-                    grow_to_cover(guest_mem, ret as usize + args[1] as u32 as usize)?;
-                } else if syscall_nr == Syscall::Brk as u32 && ret >= 0 {
-                    grow_to_cover(guest_mem, ret as usize)?;
-                }
-            }
-            (ret, errno)
-        };
-
-        // Publish result to the guest channel, then wake it: release-store
-        // COMPLETE first so the guest's re-check of the wait word sees the
-        // change, then notify to unpark its wait32.
-        unsafe {
-            write_bytes(guest_mem, layout.channel_offset + RETURN_OFFSET, &ret.to_le_bytes());
-            write_bytes(guest_mem, layout.channel_offset + ERRNO_OFFSET, &errno.to_le_bytes());
+            ci += 1;
         }
-        unsafe { atomic_u32(guest_mem, status_off) }.store(STATUS_COMPLETE, Ordering::SeqCst);
-        guest_mem
-            .atomic_notify(status_off as u64, 1)
-            .map_err(|e| anyhow::anyhow!("atomic_notify failed: {e}"))?;
-    };
 
-    Ok(exit_code)
+        // Idle only when nothing was ready this pass, to keep latency low while
+        // avoiding a hot spin.
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 /// Read the `(RETURN, ERRNO)` pair the kernel wrote into the scratch header.
@@ -949,11 +1067,11 @@ fn read_ret_errno(mem: &SharedMemory, scratch_ptr: usize) -> (i64, u32) {
     }
 }
 
-/// Whether a blocking syscall's wait is bounded by a caller timeout the host can
-/// read from its args (and therefore can drive to completion with no external
-/// readiness source). This first Phase 4 increment handles `poll`; readiness-
-/// driven waits (read/accept woken by another task) come next.
-fn syscall_blocks_with_timeout(syscall_nr: u32) -> bool {
+/// Whether a syscall can block (return EAGAIN meaning "not ready, wait") and so
+/// should be parked and re-dispatched by the pump rather than completed. `poll`
+/// is bounded by a caller timeout; readiness-driven waits (read/accept woken by
+/// another task) return `None` from [`blocking_deadline`] and wait indefinitely.
+fn syscall_can_block(syscall_nr: u32) -> bool {
     syscall_nr == Syscall::Poll as u32
 }
 
@@ -981,50 +1099,6 @@ fn force_zero_timeout(mem: &SharedMemory, scratch_ptr: usize, syscall_nr: u32) {
     if syscall_nr == Syscall::Poll as u32 {
         unsafe {
             write_bytes(mem, scratch_ptr + ARGS_OFFSET + 2 * ARG_SIZE, &0i64.to_le_bytes());
-        }
-    }
-}
-
-/// Drive the host wait/retry loop for a blocking RAW syscall that returned
-/// EAGAIN, re-dispatching under the retry token until the op becomes ready or
-/// its deadline forces a final non-blocking evaluation. Returns the final
-/// `(ret, errno)` and leaves the final result in the scratch for copy-back.
-#[allow(clippy::too_many_arguments)]
-fn blocking_wait(
-    store: &mut Store<()>,
-    kernel_mem: &SharedMemory,
-    scratch_ptr: usize,
-    pid: u32,
-    syscall_nr: u32,
-    args: &[i64; 6],
-    dispatch_token: i64,
-    set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
-    handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
-) -> anyhow::Result<(i64, u32)> {
-    let deadline = blocking_deadline(syscall_nr, args);
-    // A safety cap so a protocol bug fails as a bounded error, not a hang.
-    let hard_cap = Instant::now() + Duration::from_secs(30);
-    loop {
-        if Instant::now() >= hard_cap {
-            anyhow::bail!("blocking_wait for syscall {syscall_nr} exceeded 30s");
-        }
-        if deadline.is_some_and(|d| Instant::now() >= d) {
-            force_zero_timeout(kernel_mem, scratch_ptr, syscall_nr);
-            set_current_tid.call(&mut *store, (pid, pid))?;
-            handle_channel
-                .call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, dispatch_token))?;
-            return Ok(read_ret_errno(kernel_mem, scratch_ptr));
-        }
-        // No readiness wake source on the pure-timeout path; re-check on a short
-        // interval. Readiness-driven waits will instead drain kernel wake events.
-        std::thread::sleep(Duration::from_millis(2));
-        // Each dispatch consumes the tid binding, so re-bind before re-dispatch.
-        set_current_tid.call(&mut *store, (pid, pid))?;
-        handle_channel
-            .call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, dispatch_token))?;
-        let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
-        if !(ret == -1 && errno == libc_errno::EAGAIN as u32) {
-            return Ok((ret, errno));
         }
     }
 }
