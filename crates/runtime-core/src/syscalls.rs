@@ -3205,6 +3205,9 @@ pub fn sys_open(
     // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
+        // Enforce search/access/parent-write permissions exactly as the host
+        // path does; this is host-free for tmpfs paths (fs_stat is tmpfs-aware).
+        check_open_permissions(proc, host, &resolved, oflags)?;
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -14326,6 +14329,9 @@ pub fn sys_openat(
     // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
+        // Enforce search/access/parent-write permissions exactly as the host
+        // path does; this is host-free for tmpfs paths (fs_stat is tmpfs-aware).
+        check_open_permissions(proc, host, &resolved, oflags)?;
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -17821,6 +17827,41 @@ mod tests {
             sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap_err(),
             Errno::ENOENT
         );
+    }
+
+    /// `open` on a tmpfs path enforces the same search/access/parent-write
+    /// permission checks as the host path (via `check_open_permissions`).
+    #[test]
+    fn tmpfs_open_enforces_permissions() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut host = MockHostIO::new();
+
+        // Root creates a 0600 file (in world-writable /var/tmp) owned by uid 1000.
+        let mut root = Process::new(1);
+        let fd =
+            sys_open(&mut root, &mut host, b"/var/tmp/secret", O_CREAT | O_RDWR, 0o600).unwrap();
+        sys_close(&mut root, &mut host, fd).unwrap();
+        sys_chown(&mut root, &mut host, b"/var/tmp/secret", 1000, 1000).unwrap();
+
+        // An unrelated unprivileged user is denied read and write.
+        let mut other = Process::new(2);
+        set_test_credentials(&mut other, 2000, 2000, 2000, 2000, &[]);
+        assert_eq!(
+            sys_open(&mut other, &mut host, b"/var/tmp/secret", O_RDONLY, 0).unwrap_err(),
+            Errno::EACCES
+        );
+        assert_eq!(
+            sys_open(&mut other, &mut host, b"/var/tmp/secret", O_WRONLY, 0).unwrap_err(),
+            Errno::EACCES
+        );
+
+        // The owner can open it read/write.
+        let mut owner = Process::new(3);
+        set_test_credentials(&mut owner, 1000, 1000, 1000, 1000, &[]);
+        let ofd = sys_open(&mut owner, &mut host, b"/var/tmp/secret", O_RDWR, 0).unwrap();
+        sys_close(&mut owner, &mut host, ofd).unwrap();
+
+        sys_unlink(&mut root, &mut host, b"/var/tmp/secret").unwrap();
     }
 
     struct PtyFixture {

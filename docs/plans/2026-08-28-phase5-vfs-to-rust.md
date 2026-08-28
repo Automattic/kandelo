@@ -177,14 +177,18 @@ scratch mounts.
 
 **statfs (done):** `tmpfs::statfs` reports a memory-backed, nosuid filesystem
 (TMPFS_MAGIC, generous nominal free space); `sys_statfs`/`sys_fstatfs` route
-tmpfs paths/handles to it. **access (already correct):** `sys_access` computes
-the result from `resolved.stat` (tmpfs-aware) via `check_access_for_ids` with no
-host call, so tmpfs permission checks work as-is — which also narrows the
-permission-enforcement gap to `open` alone.
+tmpfs paths/handles to it. **access + open permission enforcement (done):**
+`sys_access` already computed from the tmpfs-aware stat via `check_access_for_ids`
+(no host call); the tmpfs `open` arm now also calls `check_open_permissions`
+(host-free for tmpfs paths — `fs_stat` is tmpfs-aware, only the host-owned `/` is
+queried), so search/access/parent-write checks are enforced on open exactly like
+the host path. The permission-enforcement gap is closed.
 
 **Still deferred before the real-host cutover:**
-`link`/`utimensat` on tmpfs; AF_UNIX
-socket and FIFO names created under a scratch prefix
+`link` (hardlinks) and `utimensat` on tmpfs (the latter needs atime/mtime/ctime
+fields on the inode and the host clock threaded into open/write); AF_UNIX
+socket and FIFO names created under a scratch prefix (still host-backed → would
+split-brain).
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority
 rename/link. Until the full set lands, running a real host against a
