@@ -66,6 +66,16 @@ interpreter bundles. There are two archive kinds:
   carries `bin/mandoc`, `bin/man` (and the `apropos`/`whatis`
   front-ends, unused until Future Work) plus mandoc's support files.
   This is a normal executable-bearing archive.
+
+  **Supersedes an existing raw applet.** `posix-utils-lite` already
+  provides a `man` applet that just `cat`s
+  `/usr/share/man/manN/<name>.N` with no formatting — a reader would
+  see raw `.TH`/`.SH` troff macros. mandoc's `man` at `/usr/bin/man`
+  replaces it for readable output; the shell wiring must ensure the
+  mandoc `man` (and its `/bin/man` alias) takes PATH/symlink
+  precedence over the applet. The applet's expected page layout
+  (`/usr/share/man/manN/<name>.N`) is exactly what mandoc searches, so
+  the docs archives serve both.
 - **Per-package docs archives** `<pkg>-docs.zip` (built by `<pkg>-docs`
   packages): carry only `share/man/manN/*.N` files. **No executable.**
   Proof set: `coreutils-docs.zip`, `lsof-docs.zip`.
@@ -119,14 +129,22 @@ Because directories are shared and files are per-archive stubs, multiple
   files), declared output `name=man wasm=man.zip`. Mirrors the
   interpreter `-browser-bundle` packages.
 
-### `lsof-docs` package (direct capture)
+### `lsof-docs` package (committed page for an in-tree tool)
 
-lsof's upstream source tarball ships a ready nroff man page
-(`Lsof.8`). The recipe extracts it, installs it as
-`share/man/man8/lsof.8`, and emits `lsof-docs.zip`. No runtime, no
-compilation — pure extraction. `depends_on` includes lsof's source
-only as needed to obtain the page. This is the lightweight template
-that most future `-docs` bundles will follow.
+Important: this repo's `lsof` is **not** upstream lsof. It is an
+in-tree `/proc` reader compiled from `examples/lsof.c`
+(`provider = "repository"`, all-zero SHA sentinel) — there is no
+upstream tarball and no `Lsof.8` to extract. Because Kandelo *is* the
+upstream for this tool, the faithful page is one we author ourselves:
+a committed nroff/man source that describes the real behavior of the
+in-tree `lsof`. The recipe stages that committed source as
+`share/man/man8/lsof.8` and emits `lsof-docs.zip`. No runtime, no
+compilation — pure staging of a checked-in page.
+
+This is the lightweight template for `-docs` bundles whose man page is
+either committed in-repo (our own tools) or extractable from an
+upstream source tree (for real third-party packages, extract via
+`kandelo_package_stage_verified_source` rather than authoring).
 
 ### `coreutils-docs` package (runtime-driven generation)
 
@@ -160,22 +178,30 @@ shim.
 
 ### Lazy-archive spec generalization
 
-`ShellLazyArchiveSpec` today assumes every archive carries exactly one
-`bin/<exe>` (`requiredExecutable`), and `loadDeclaredShellLazyArchive`
-asserts "exactly one regular executable". Docs archives have **no**
-executable. The spec is widened:
+`ShellLazyArchiveSpec` today names the archive's proof-of-resolution
+member `requiredExecutable`, and `loadDeclaredShellLazyArchive` asserts
+"exactly one regular, non-dir, non-symlink entry at that path". That
+validation is already generic — it checks for one regular *file*, not
+specifically an executable. Docs archives carry no executable but do
+carry regular files (man pages).
 
-- add a `kind: "program" | "docs"` discriminator (or an optional
-  `requiredMember`);
-- for `program` archives, keep the existing "exactly one executable"
-  validation on `requiredExecutable`;
-- for `docs` archives, validate on a required *file* member instead
-  (e.g. a known man page such as `share/man/man8/lsof.8`), and skip the
-  executable assertion.
+So rather than add a `kind` discriminator and branch the validation,
+the field is simply **renamed** `requiredExecutable` → `requiredMember`
+with the same semantics ("the one member whose presence proves the
+archive resolved"):
 
-`host/test/shell-lazy-archive-inputs.test.ts` iterates the specs with
-`it.each`, so new specs are auto-covered; a focused test is added for
-the new `docs` validation path.
+- program archives set it to their executable (`bin/man`, `bin/perl`);
+- docs archives set it to a known man page they carry
+  (`share/man/man8/lsof.8` for `lsof-docs`,
+  `share/man/man1/ls.1` for `coreutils-docs`).
+
+The validation logic is unchanged. Call sites are the field rename in
+`shell-lazy-archives.ts` (interface + every spec entry) and the two
+consumers in `loadDeclaredShellLazyArchive` and the `it.each` fixture
+`archiveFor` in `host/test/shell-lazy-archive-inputs.test.ts` (which
+synthesizes `{ [spec.requiredMember]: ... }`). A focused test asserts a
+docs spec (member = a man page, no executable) validates and indexes
+correctly.
 
 ### manpath and pager configuration
 
