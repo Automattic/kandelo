@@ -506,6 +506,35 @@ mod tests {
         Ok(())
     }
 
+    /// Phase 4, readiness-driven blocking on one channel. A blocking read on
+    /// stdin returns EAGAIN (the host serves it as not-ready-yet), so the pump
+    /// parks it with a retry token and re-dispatches until the host delivers the
+    /// line — the read completes from data that arrived after it blocked. This
+    /// isolates the read-park/retry path before the two-thread test adds
+    /// concurrency.
+    #[test]
+    fn smoke_blocking_read_becomes_ready() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_stdin.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"stdin via blocking read\n",
+            "the blocked read must complete with the line the host delivered"
+        );
+        Ok(())
+    }
+
     /// Phase 4, epoll readiness. The browser/Node host is the one place epoll
     /// readiness is still reimplemented in TypeScript: epoll_pwait is converted
     /// to a host-built poll and never reaches the kernel's sys_epoll_pwait (a

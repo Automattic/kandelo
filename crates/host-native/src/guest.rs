@@ -154,14 +154,23 @@ const HOST_FS_FIRST_HANDLE: i64 = 1000;
 const HOST_FS_FILE_PATH: &[u8] = b"/native.txt";
 const HOST_FS_FILE_CONTENTS: &[u8] = b"hello from the host filesystem\n";
 
-/// The single file this host filesystem serves, and the read cursors of its
-/// open handles.
+/// A blocking stdin (fd 0, a HostPipe) whose data is not ready on the first
+/// read. `host_read(0)` returns EAGAIN once — forcing the kernel to block and
+/// the pump to park the read — then delivers the line, then EOF. This is how a
+/// real host pipe behaves when input arrives on a later poll; the call counter
+/// just makes it deterministic for the test.
+const HOST_STDIN_LINE: &[u8] = b"stdin via blocking read\n";
+
+/// The single file this host filesystem serves, plus its open-handle read
+/// cursors and the blocking-stdin delivery counter.
 struct HostFs {
     path: Vec<u8>,
     contents: Vec<u8>,
     /// Open host handle -> current read offset.
     cursors: Mutex<HashMap<i64, usize>>,
     next_handle: Mutex<i64>,
+    /// Number of host_read(0) calls so far (drives the EAGAIN-then-data stdin).
+    stdin_reads: Mutex<u32>,
 }
 
 impl HostFs {
@@ -171,6 +180,7 @@ impl HostFs {
             contents: contents.to_vec(),
             cursors: Mutex::new(HashMap::new()),
             next_handle: Mutex::new(HOST_FS_FIRST_HANDLE),
+            stdin_reads: Mutex::new(0),
         }
     }
 }
@@ -575,8 +585,12 @@ fn define_kernel_host_imports(
             },
         )?;
     }
-    // host_read(handle, buf_ptr, len) -> i32: serve the file contents from the
-    // handle's read cursor, advancing it; returns bytes read (0 at EOF).
+    // host_read(handle, buf_ptr, len) -> i32:
+    //   - fd 0 (stdin, a HostPipe): a blocking source — EAGAIN on the first read
+    //     (so the kernel blocks and the pump parks it), then one line, then EOF.
+    //     This is how a real host pipe behaves when input arrives on a later
+    //     poll; the call counter just makes it deterministic.
+    //   - an open host-FS handle: serve the served file from its read cursor.
     {
         let fs = fs.clone();
         let mem = kernel_mem.clone();
@@ -586,6 +600,19 @@ fn define_kernel_host_imports(
             move |_c: Caller<'_, ()>, handle: i64, buf_ptr: i32, len: i32| -> i32 {
                 if len < 0 {
                     return -libc_errno::EINVAL;
+                }
+                if handle == 0 {
+                    let mut calls = fs.stdin_reads.lock().unwrap();
+                    *calls += 1;
+                    return match *calls {
+                        1 => -libc_errno::EAGAIN, // not ready yet: block
+                        2 => {
+                            let n = HOST_STDIN_LINE.len().min(len as usize);
+                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n]) };
+                            n as i32
+                        }
+                        _ => 0, // EOF
+                    };
                 }
                 let mut cursors = fs.cursors.lock().unwrap();
                 let Some(off) = cursors.get_mut(&handle) else {
@@ -1072,7 +1099,7 @@ fn read_ret_errno(mem: &SharedMemory, scratch_ptr: usize) -> (i64, u32) {
 /// is bounded by a caller timeout; readiness-driven waits (read/accept woken by
 /// another task) return `None` from [`blocking_deadline`] and wait indefinitely.
 fn syscall_can_block(syscall_nr: u32) -> bool {
-    syscall_nr == Syscall::Poll as u32
+    syscall_nr == Syscall::Poll as u32 || syscall_nr == Syscall::Read as u32
 }
 
 /// The wall-clock deadline for a timeout-bounded blocking syscall, or `None` for
