@@ -184,9 +184,16 @@ tmpfs paths/handles to it. **access + open permission enforcement (done):**
 queried), so search/access/parent-write checks are enforced on open exactly like
 the host path. The permission-enforcement gap is closed.
 
+**utimensat + timestamps (done):** the inode carries atime/mtime/ctime. The
+syscall layer publishes the host wall-clock via `tmpfs_stamp_now` before each
+mutating tmpfs op (one CLOCK_REALTIME read per mutating tmpfs syscall — the core
+stays host-free); `Inode::new` stamps create-time, write/truncate bump
+mtime+ctime, chmod/chown bump ctime. `sys_utimensat`/`futimens` resolve
+UTIME_NOW/UTIME_OMIT in-kernel and store the times. (Also fixed a latent gap:
+`sys_mkdirat` had no tmpfs arm and would have created on the host.)
+
 **Still deferred before the real-host cutover:**
-`link` (hardlinks) and `utimensat` on tmpfs (the latter needs atime/mtime/ctime
-fields on the inode and the host clock threaded into open/write); AF_UNIX
+`link` (hardlinks) on tmpfs; AF_UNIX
 socket and FIFO names created under a scratch prefix (still host-backed → would
 split-brain).
 (still host-backed → would split-brain); per-inode permission enforcement
