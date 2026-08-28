@@ -78,11 +78,18 @@ wasm = "infotocap.wasm"
 
 # The shared runtime terminfo database: a curated, GENEROUS terminal set
 # (roughly ncurses-base) compiled from this ncurses's own misc/terminfo.src,
-# rooted at share/terminfo/... so VFS image builders stage its contents at
-# /usr/share/terminfo. Every ncurses/termcap-linked guest program (less,
-# vim, ...) already searches that path (see --with-default-terminfo-dir /
-# --with-terminfo-dirs above); this file is what makes the search succeed
-# for terminals beyond the 4-entry compiled-in fallback floor.
+# rooted at share/terminfo/... Every ncurses/termcap-linked guest program
+# (less, vim, ...) already searches /usr/share/terminfo (see
+# --with-default-terminfo-dir / --with-terminfo-dirs above); this database is
+# what makes the search succeed for terminals beyond the 4-entry compiled-in
+# fallback floor.
+#
+# NOTE: unlike other [[runtime_files]] (e.g. perl-runtime.zip, python-runtime.
+# zip) which are placed verbatim at their guest_path, this archive is NOT
+# shipped as a file. The shell VFS image builders (populateTerminfoDatabase in
+# images/vfs/scripts/shell-lazy-archives.ts) EXTRACT its members into
+# /usr/share/terminfo. guest_path below is the nominal artifact location; the
+# .zip itself never appears in the guest filesystem.
 [[runtime_files]]
 artifact = "terminfo.zip"
 guest_path = "/usr/share/terminfo/terminfo.zip"

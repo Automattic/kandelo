@@ -88,21 +88,17 @@ if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     (
         cd "$HOST_BUILD_DIR"
-        # WHY cf_cv_mixedcase=yes: ncurses picks its on-disk terminfo leaf
-        # naming (literal first character vs. a 2-digit hex code) at configure
-        # time based on whether the filesystem preserves mixed-case names.
-        # This host tic build probes *this build machine's* filesystem, which
-        # is case-insensitive on default macOS volumes and would otherwise
-        # write e.g. share/terminfo/78/xterm-256color. The cross-compiled
-        # wasm32 target below can't run that probe, so its ncurses configure
-        # (aclocal.m4 CF_MIXEDCASE_FILENAMES) falls back to cf_cv_mixedcase=yes
-        # for any non-Windows/Cygwin/Darwin target_alias — i.e. the guest
-        # ncurses that actually reads /usr/share/terminfo at runtime always
-        # expects literal-character leaves (share/terminfo/x/xterm-256color).
-        # Pin the host tic build to the same value so the runtime database it
-        # compiles is byte-for-byte host-independent and matches what the
-        # guest looks up, instead of silently depending on the build host's
-        # filesystem case sensitivity.
+        # cf_cv_mixedcase=yes is a best-effort hint: ncurses picks its terminfo
+        # leaf naming (literal first character vs. a 2-hex-digit code) based on
+        # whether the filesystem preserves mixed-case names. The guest ncurses
+        # (cross-compiled below, cf_cv_mixedcase=yes for any non-Windows/Cygwin/
+        # Darwin target) always reads literal leaves (share/terminfo/x/xterm-
+        # 256color), so we want the host tic to emit the same. This pin nudges it
+        # there, but it is NOT reliably honored — on a case-insensitive volume
+        # (default macOS) the host tic can still write hashed leaves (78/...).
+        # The runtime-database compile below therefore does NOT trust this pin:
+        # it normalizes tic's output to the literal layout explicitly, which is
+        # what actually makes the shipped database byte-for-byte host-independent.
         cf_cv_mixedcase=yes \
         "$SRC_DIR/configure" \
             --without-cxx \
@@ -153,6 +149,28 @@ if [ ! -f "$RUNTIME_TERMINFO_DIR/x/xterm-256color" ]; then
     curated_csv="$(IFS=,; echo "${CURATED_TERMINFO_NAMES[*]}")"
     TERMINFO="$RUNTIME_TERMINFO_DIR" "$HOST_TIC" -x -e "$curated_csv" \
         "$SRC_DIR/misc/terminfo.src" || true
+
+    # Normalize to literal single-character leaf directories, deterministically.
+    # tic's on-disk layout depends on the BUILD HOST filesystem's case
+    # sensitivity: on a case-insensitive volume (default macOS) it writes hashed
+    # two-hex-digit leaves (share/terminfo/78/xterm-256color); on a
+    # case-sensitive one it writes literal leaves (share/terminfo/x/xterm-256color).
+    # cf_cv_mixedcase on the host tic build does not reliably override this. The
+    # guest ncurses is built cf_cv_mixedcase=yes and always reads literal leaves,
+    # so rebuild the tree in that layout regardless of what the host produced.
+    # cp -L dereferences tic's alias links into regular files, so the shipped db
+    # is byte-identical across build hosts.
+    NORMALIZED_TERMINFO_DIR="$WORK_DIR/terminfo-normalized"
+    rm -rf "$NORMALIZED_TERMINFO_DIR"
+    mkdir -p "$NORMALIZED_TERMINFO_DIR"
+    while IFS= read -r terminfo_entry; do
+        entry_base="$(basename "$terminfo_entry")"
+        entry_first="${entry_base:0:1}"
+        mkdir -p "$NORMALIZED_TERMINFO_DIR/$entry_first"
+        cp -L "$terminfo_entry" "$NORMALIZED_TERMINFO_DIR/$entry_first/$entry_base"
+    done < <(find "$RUNTIME_TERMINFO_DIR" \( -type f -o -type l \) | LC_ALL=C sort)
+    rm -rf "$RUNTIME_TERMINFO_DIR"
+    mv "$NORMALIZED_TERMINFO_DIR" "$RUNTIME_TERMINFO_DIR"
 
     dropped_terminfo_names=()
     for name in "${CURATED_TERMINFO_NAMES[@]}"; do

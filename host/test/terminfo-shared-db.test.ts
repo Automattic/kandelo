@@ -39,7 +39,7 @@ describe.skipIf(!available)("shared /usr/share/terminfo database", () => {
       'echo "===DIR==="',
       "ls /usr/share/terminfo 2>&1",
       'echo "===SCREEN_FILE==="',
-      "ls /usr/share/terminfo/73/screen-256color 2>&1",
+      "ls /usr/share/terminfo/s/screen-256color 2>&1",
       'echo "===INFOCMP==="',
       "infocmp -1 screen-256color 2>&1 | head -3",
       'echo "===TPUT_SCREEN==="',
