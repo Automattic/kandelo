@@ -157,8 +157,17 @@ the kernel path resolver follows tmpfs symlinks (including relative targets that
 resolve back into the same mount). lstat reports `S_IFLNK`; getdents reports
 `DT_LNK`.
 
+**chmod/chown (done):** `tmpfs::chmod`/`chown`/`fchmod`/`fchown` update inode
+mode/uid/gid; arms in `sys_chmod`/`sys_fchmodat`/`sys_fchmod`, `sys_chown`/
+`sys_lchown`/`sys_fchownat`/`sys_fchown`. The existing permission checks
+(`check_owner_or_root`, `prepare_chown_ids`) run against the tmpfs stat, so
+`_POSIX_CHOWN_RESTRICTED` and owner checks are enforced; the fd-based paths
+handle both the tmpfs file handle and the directory sentinel. (Note: open still
+does not *enforce* mode bits on access — that per-inode enforcement is a separate
+deferred item; chmod correctly stores and reports them.)
+
 **Still deferred before the real-host cutover:**
-`rename`/`link`/`chmod`/`chown`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
+`rename`/`link`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
 socket and FIFO names created under a scratch prefix
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority

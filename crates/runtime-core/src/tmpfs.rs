@@ -777,6 +777,66 @@ pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usi
     })
 }
 
+/// Walk to a tmpfs inode index for a metadata update. The final component is
+/// not followed (the kernel already resolved symlinks per the syscall's FOLLOW
+/// policy before calling), so lchown-style callers land on the link itself.
+fn walk_to_inode(path: &[u8]) -> Result<u32, Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    TMPFS.with(|state| {
+        let root = state.mount_root(mount_idx);
+        state.walk(root, &comps)
+    })
+}
+
+/// chmod a tmpfs path (permission bits only).
+pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    TMPFS.with(|state| {
+        state.get_mut(idx).ok_or(Errno::ENOENT)?.mode = mode & 0o7777;
+        Ok(())
+    })
+}
+
+/// chown a tmpfs path. A field of `u32::MAX` (-1) is left unchanged.
+pub fn chown(path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        Ok(())
+    })
+}
+
+/// fchmod an open tmpfs file handle.
+pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        state.get_mut(idx).ok_or(Errno::EBADF)?.mode = mode & 0o7777;
+        Ok(())
+    })
+}
+
+/// fchown an open tmpfs file handle. A field of `u32::MAX` (-1) is unchanged.
+pub fn fchown(handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        Ok(())
+    })
+}
+
 /// Create a symbolic link at a tmpfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(linkpath).ok_or(Errno::ENOENT)?;
@@ -955,6 +1015,27 @@ mod tests {
         truncate_handle(h, 5).unwrap();
         assert_eq!(read_all(h), &[b'a', b'b', b'c', 0, 0]);
         assert_eq!(fstat(h).unwrap().st_size, 5);
+        release_handle(h);
+    }
+
+    #[test]
+    fn chmod_chown_update_metadata() {
+        let h = open(b"/tmp/meta", O_CREAT | O_RDWR, 0o644, 7, 7).unwrap();
+        chmod(b"/tmp/meta", 0o600).unwrap();
+        assert_eq!(lstat(b"/tmp/meta").unwrap().st_mode & 0o777, 0o600);
+        chown(b"/tmp/meta", 1000, 1001).unwrap();
+        let st = lstat(b"/tmp/meta").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (1000, 1001));
+        // u32::MAX leaves a field unchanged.
+        chown(b"/tmp/meta", u32::MAX, 2002).unwrap();
+        let st = lstat(b"/tmp/meta").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (1000, 2002));
+        // fchmod/fchown via the open handle.
+        fchmod(h, 0o640).unwrap();
+        fchown(h, 3003, u32::MAX).unwrap();
+        let st = fstat(h).unwrap();
+        assert_eq!(st.st_mode & 0o777, 0o640);
+        assert_eq!((st.st_uid, st.st_gid), (3003, 2002));
         release_handle(h);
     }
 

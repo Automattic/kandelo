@@ -7767,6 +7767,9 @@ pub fn sys_chmod(
     check_search_path(proc, host, &resolved)?;
     let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::chmod(&resolved, mode);
+    }
     host.host_chmod(&resolved, mode)
 }
 
@@ -7853,6 +7856,9 @@ pub fn sys_chown(
     check_search_path(proc, host, &resolved)?;
     let st = fs_stat(host, &resolved)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::chown(&resolved, uid, gid);
+    }
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -7871,6 +7877,9 @@ pub fn sys_lchown(
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    if crate::tmpfs::claims_path(&resolved.path) {
+        return crate::tmpfs::chown(&resolved.path, uid, gid);
+    }
     host.host_lchown(&resolved.path, uid, gid)
 }
 
@@ -16390,6 +16399,16 @@ pub fn sys_fchmod(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
+            if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
+                let st = crate::tmpfs::fstat(ofd.host_handle)?;
+                check_owner_or_root(proc, &st)?;
+                return crate::tmpfs::fchmod(ofd.host_handle, mode);
+            }
+            if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
+                let st = crate::tmpfs::lstat(&ofd.path)?;
+                check_owner_or_root(proc, &st)?;
+                return crate::tmpfs::chmod(&ofd.path, mode);
+            }
             let st = host.host_fstat(ofd.host_handle)?;
             check_owner_or_root(proc, &st)?;
             host.host_fchmod(ofd.host_handle, mode)
@@ -16455,6 +16474,16 @@ pub fn sys_fchown(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
+            if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
+                let st = crate::tmpfs::fstat(ofd.host_handle)?;
+                let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+                return crate::tmpfs::fchown(ofd.host_handle, uid, gid);
+            }
+            if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
+                let st = crate::tmpfs::lstat(&ofd.path)?;
+                let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+                return crate::tmpfs::chown(&ofd.path, uid, gid);
+            }
             let st = host.host_fstat(ofd.host_handle)?;
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
             host.host_fchown(ofd.host_handle, uid, gid)
@@ -16611,6 +16640,9 @@ pub fn sys_fchmodat(
     check_search_path(proc, host, &resolved)?;
     let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::chmod(&resolved, mode);
+    }
     host.host_chmod(&resolved, mode)
 }
 
@@ -16643,6 +16675,9 @@ pub fn sys_fchownat(
     check_search_path(proc, host, &resolved.path)?;
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    if crate::tmpfs::claims_path(&resolved.path) {
+        return crate::tmpfs::chown(&resolved.path, uid, gid);
+    }
     if nofollow {
         host.host_lchown(&resolved.path, uid, gid)
     } else {
@@ -17648,6 +17683,16 @@ mod tests {
             sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap().st_size,
             2
         );
+
+        // chmod/chown on a tmpfs file are served in Rust and reflected by stat.
+        sys_chmod(&mut proc, &mut host, b"/srv/wire_f", 0o600).unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap().st_mode & 0o777,
+            0o600
+        );
+        sys_chown(&mut proc, &mut host, b"/srv/wire_f", 1000, 1000).unwrap();
+        let cst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
+        assert_eq!((cst.st_uid, cst.st_gid), (1000, 1000));
 
         // mkdir under a scratch mount is served by tmpfs.
         sys_mkdir(&mut proc, &mut host, b"/srv/wire_d", 0o755).unwrap();
