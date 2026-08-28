@@ -17176,6 +17176,9 @@ pub fn sys_statfs(
     if synthetic_file_content(&resolved).is_some() {
         return host_statfs_or_default(host, b"/");
     }
+    if crate::tmpfs::claims_path(&resolved) {
+        return crate::tmpfs::statfs(&resolved);
+    }
 
     host_statfs_or_default(host, &resolved)
 }
@@ -17194,6 +17197,9 @@ pub fn sys_fstatfs(
     }
     if synthetic_file_content(&ofd.path).is_some() {
         return host_statfs_or_default(host, b"/");
+    }
+    if crate::tmpfs::claims_path(&ofd.path) {
+        return crate::tmpfs::statfs(&ofd.path);
     }
 
     match ofd.file_type {
@@ -17712,6 +17718,14 @@ mod tests {
         sys_chown(&mut proc, &mut host, b"/srv/wire_f", 1000, 1000).unwrap();
         let cst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
         assert_eq!((cst.st_uid, cst.st_gid), (1000, 1000));
+
+        // statfs reports the in-kernel tmpfs (TMPFS_MAGIC); access is computed
+        // from the tmpfs stat, no host call.
+        assert_eq!(
+            sys_statfs(&mut proc, &mut host, b"/srv/wire_f").unwrap().f_type,
+            0x0102_1994
+        );
+        sys_access(&mut proc, &mut host, b"/srv/wire_f", R_OK).unwrap();
 
         // Atomic write-temp-then-rename, entirely within tmpfs.
         let tmpf =
