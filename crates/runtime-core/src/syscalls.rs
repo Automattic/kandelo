@@ -7645,9 +7645,15 @@ fn register_fifo_hardlink(
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
-    // In-kernel tmpfs owns the scratch mounts. (AF_UNIX socket and FIFO names on
-    // tmpfs are not yet routed here; they are added with those features.)
+    // In-kernel tmpfs owns the scratch mounts. A bound AF_UNIX socket node also
+    // has a path-keyed registry entry; drop it (waking any parked datagram
+    // senders) before removing the tmpfs node. (FIFO names on tmpfs are not yet
+    // routed here; they are added with that feature.)
     if crate::tmpfs::claims_path(&resolved) {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.unregister(&resolved) {
+            crate::wakeup::push_datagram_writable();
+        }
         return crate::tmpfs::unlink(&resolved);
     }
     ensure_host_mutable_namespace_path(&resolved)?;
@@ -12611,13 +12617,31 @@ pub fn sys_bind(
                 // filtered through the creating process's umask. Abstract sockets
                 // have no backing VFS inode at all.
                 let socket_mode = 0o777 & !proc.umask;
-                let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, socket_mode) {
-                    Ok(h) => h,
-                    Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
-                    Err(e) => return Err(e),
-                };
-                host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
-                let _ = host.host_close(h);
+                if crate::tmpfs::claims_path(&resolved) {
+                    // In-kernel tmpfs owns the node; the socket endpoint stays in
+                    // the path-keyed registry below.
+                    tmpfs_stamp_now(host)?;
+                    match crate::tmpfs::mknod_special(
+                        &resolved,
+                        socket_mode,
+                        proc.effective_uid(),
+                        proc.effective_gid(),
+                        wasm_posix_shared::mode::S_IFSOCK,
+                    ) {
+                        Ok(()) => {}
+                        Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, socket_mode)
+                    {
+                        Ok(h) => h,
+                        Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                        Err(e) => return Err(e),
+                    };
+                    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
+                    let _ = host.host_close(h);
+                }
             }
 
             // Register in global Unix socket registry. If a stale entry exists
@@ -12626,7 +12650,11 @@ pub fn sys_bind(
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.register(resolved.clone(), proc.pid, sock_idx) {
                 if !abstract_unix {
-                    let _ = host.host_unlink(&resolved);
+                    if crate::tmpfs::claims_path(&resolved) {
+                        let _ = crate::tmpfs::unlink(&resolved);
+                    } else {
+                        let _ = host.host_unlink(&resolved);
+                    }
                 }
                 return Err(Errno::EADDRINUSE);
             }
@@ -17956,6 +17984,48 @@ mod tests {
         sys_close(&mut owner, &mut host, ofd).unwrap();
 
         sys_unlink(&mut root, &mut host, b"/var/tmp/secret").unwrap();
+    }
+
+    /// Binding an AF_UNIX socket to a scratch-mount path creates the node in the
+    /// in-kernel tmpfs (not on the host), while the socket endpoint stays in the
+    /// path-keyed registry; unlink removes both.
+    #[test]
+    fn tmpfs_af_unix_socket_bind_creates_kernel_node() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        let _guard = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let addr = test_unix_addr(b"/var/run/wire.sock");
+        let s = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, s, &addr).unwrap();
+
+        // The node is a tmpfs S_IFSOCK and the registry knows the path.
+        let st = sys_lstat(&mut proc, &mut host, b"/var/run/wire.sock").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFSOCK);
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .contains(b"/var/run/wire.sock")
+        );
+        // The host was never asked to create the socket file.
+        assert!(
+            !host.handle_paths.values().any(|p| p.starts_with(b"/var/run")),
+            "host was asked to create a scratch socket file: {:?}",
+            host.handle_paths,
+        );
+
+        // Unlink removes both the tmpfs node and the registry entry.
+        sys_unlink(&mut proc, &mut host, b"/var/run/wire.sock").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/var/run/wire.sock").unwrap_err(),
+            Errno::ENOENT
+        );
+        assert!(
+            !unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .contains(b"/var/run/wire.sock")
+        );
     }
 
     struct PtyFixture {
