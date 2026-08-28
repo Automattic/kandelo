@@ -14,6 +14,10 @@ import type { MountConfig } from "./types";
 import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
+import {
+  kernelTmpfsOwnsMountPath,
+  kernelTmpfsScratchEnabled,
+} from "./kernel-tmpfs-gate";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
@@ -186,6 +190,22 @@ export function ensureMountParentDirectories(
   }
 }
 
+/**
+ * Drop the scratch mounts the in-kernel tmpfs owns when it is enabled, so the
+ * host materialises no backend for a prefix the kernel serves — the cutover's
+ * "host stops owning scratch" half. Image mounts, and host-owned scratch mounts
+ * outside tmpfs's prefixes (e.g. `/run`), are preserved. A no-op while the gate
+ * is off (bring-up default), so the ordinary boot is unchanged.
+ */
+export function filterMountSpecForKernelTmpfs(
+  spec: readonly MountSpec[],
+): MountSpec[] {
+  if (!kernelTmpfsScratchEnabled()) return [...spec];
+  return spec.filter(
+    (m) => !(m.source === "scratch" && kernelTmpfsOwnsMountPath(m.path)),
+  );
+}
+
 export function validateSpec(spec: MountSpec[]): void {
   const seen = new Set<string>();
   for (const m of spec) {
@@ -274,9 +294,10 @@ async function resolveValidatedForBrowser(
   rootfsImage: Uint8Array,
   options: BrowserResolverOptions,
 ): Promise<MountConfig[]> {
-  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
+  const effective = filterMountSpecForKernelTmpfs(spec);
+  const imageMounts = await restoreVerifiedImageMounts(effective, rootfsImage);
   const out: MountConfig[] = [];
-  for (const m of spec) {
+  for (const m of effective) {
     if (m.source === "image") {
       const backend = imageMounts.get(m);
       if (backend === undefined) {

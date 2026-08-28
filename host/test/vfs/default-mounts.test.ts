@@ -19,9 +19,11 @@ import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
   ensureMountParentDirectories,
+  filterMountSpecForKernelTmpfs,
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
+import { KERNEL_TMPFS_OWNED_PREFIXES } from "../../src/vfs/kernel-tmpfs-gate";
 import {
   resolveForNode,
   resolveForNodeKernelSession,
@@ -853,5 +855,43 @@ describe("resolveForBrowser", () => {
       { path: "/tmp", source: "scratch" },
     ];
     expect(() => resolveForBrowser(dup, image)).toThrow(/duplicate/i);
+  });
+});
+
+describe("filterMountSpecForKernelTmpfs (Phase 5 cutover)", () => {
+  const previous = process.env.WASM_POSIX_TMPFS;
+  afterAll(() => {
+    if (previous === undefined) delete process.env.WASM_POSIX_TMPFS;
+    else process.env.WASM_POSIX_TMPFS = previous;
+  });
+
+  const spec: MountSpec[] = [
+    { path: "/", source: "image" },
+    ...KERNEL_TMPFS_OWNED_PREFIXES.map((path) => ({
+      path,
+      source: "scratch" as const,
+    })),
+    { path: "/run", source: "scratch" }, // host-owned; tmpfs never claims it
+  ];
+
+  it("is a no-op while the gate is off (bring-up default)", () => {
+    delete process.env.WASM_POSIX_TMPFS;
+    expect(filterMountSpecForKernelTmpfs(spec)).toEqual(spec);
+  });
+
+  it("keeps the spec when explicitly disabled", () => {
+    process.env.WASM_POSIX_TMPFS = "0";
+    expect(filterMountSpecForKernelTmpfs(spec)).toEqual(spec);
+  });
+
+  it("drops only the tmpfs-owned scratch mounts when enabled", () => {
+    process.env.WASM_POSIX_TMPFS = "1";
+    const kept = filterMountSpecForKernelTmpfs(spec);
+    // The image root and the non-tmpfs `/run` scratch mount survive; every
+    // prefix the kernel serves is gone so the host materialises no backend.
+    expect(kept.map((m) => m.path)).toEqual(["/", "/run"]);
+    for (const prefix of KERNEL_TMPFS_OWNED_PREFIXES) {
+      expect(kept.some((m) => m.path === prefix)).toBe(false);
+    }
   });
 });
