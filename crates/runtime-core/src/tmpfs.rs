@@ -37,6 +37,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
+use wasm_posix_shared::WasmStatfs;
 
 // Open-file creation flags we honor here (mirrors syscalls.rs values).
 const O_ACCMODE: u32 = 0o3;
@@ -737,6 +738,27 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
         }
         state.maybe_free(target);
         Ok(())
+    })
+}
+
+/// statfs for a tmpfs scratch mount: a memory-backed, nosuid filesystem.
+/// Reports a generous nominal capacity (the store grows within kernel Wasm
+/// memory, not a fixed reservation), so free-space precondition checks pass.
+pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
+    match_mount(path).ok_or(Errno::ENOENT)?;
+    Ok(WasmStatfs {
+        f_type: 0x0102_1994, // TMPFS_MAGIC
+        f_bsize: 4096,
+        f_blocks: 262_144, // 1 GiB nominal at 4 KiB blocks
+        f_bfree: 262_144,
+        f_bavail: 262_144,
+        f_files: 65_536,
+        f_ffree: 65_536,
+        f_fsid: 0,
+        f_namelen: 255,
+        f_frsize: 4096,
+        f_flags: wasm_posix_shared::statfs_flags::ST_NOSUID,
+        _pad: 0,
     })
 }
 

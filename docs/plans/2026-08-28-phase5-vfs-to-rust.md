@@ -175,8 +175,15 @@ tmpfs → in-kernel rename; a tmpfs/host or cross-scratch-mount mix → EXDEV. T
 makes the ubiquitous write-temp-then-rename atomic-commit pattern work on the
 scratch mounts.
 
+**statfs (done):** `tmpfs::statfs` reports a memory-backed, nosuid filesystem
+(TMPFS_MAGIC, generous nominal free space); `sys_statfs`/`sys_fstatfs` route
+tmpfs paths/handles to it. **access (already correct):** `sys_access` computes
+the result from `resolved.stat` (tmpfs-aware) via `check_access_for_ids` with no
+host call, so tmpfs permission checks work as-is — which also narrows the
+permission-enforcement gap to `open` alone.
+
 **Still deferred before the real-host cutover:**
-`link`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
+`link`/`utimensat` on tmpfs; AF_UNIX
 socket and FIFO names created under a scratch prefix
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority
