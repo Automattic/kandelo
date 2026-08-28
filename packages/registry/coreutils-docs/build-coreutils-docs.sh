@@ -26,8 +26,13 @@ COREUTILS_WASM="$COREUTILS_DIR/coreutils.wasm"
 command -v help2man >/dev/null || { echo "help2man not on PATH (add pkgs.help2man to flake.nix)" >&2; exit 2; }
 
 CAP="$WORK/help-capture"; rm -rf "$CAP"
+# Point TMPDIR at a short /tmp scratch dir so tsx's IPC socket path stays
+# under the macOS unix-socket limit (the resolver's own work dir is a long,
+# content-hashed path that overflows sun_path).
+TSX_TMP="$(mktemp -d /tmp/kandelo-coreutils-docs.XXXXXX)"
+trap 'rm -rf -- "$TSX_TMP"' EXIT
 # Capture --help/--version from the real wasm binary running inside Kandelo.
-node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
+TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
     "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" "$COREUTILS_WASM" "$CAP"
 
 STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/share/man/man1"
