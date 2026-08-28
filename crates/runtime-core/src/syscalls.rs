@@ -3208,6 +3208,9 @@ pub fn sys_open(
         // Enforce search/access/parent-write permissions exactly as the host
         // path does; this is host-free for tmpfs paths (fs_stat is tmpfs-aware).
         check_open_permissions(proc, host, &resolved, oflags)?;
+        if oflags & O_CREAT != 0 {
+            tmpfs_stamp_now(host)?;
+        }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -3331,6 +3334,19 @@ fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
         return crate::tmpfs::lstat(path);
     }
     host.host_lstat(path)
+}
+
+/// Publish the current wall-clock time to the in-kernel tmpfs so a subsequent
+/// metadata mutation (create/write/truncate/chmod/chown) stamps accurate
+/// atime/mtime/ctime. One host clock read per mutating tmpfs syscall; the tmpfs
+/// core stays host-free.
+fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
+    let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+    crate::tmpfs::set_now(
+        u64::try_from(sec).map_err(|_| Errno::EINVAL)?,
+        u32::try_from(nsec).map_err(|_| Errno::EINVAL)?,
+    );
+    Ok(())
 }
 
 /// Open a tmpfs directory for iteration. Mirrors `devfs_open_dir`: a
@@ -5051,6 +5067,7 @@ pub fn sys_write(
                     write_operation_plan(proc, host, caller_tid, fd, Some(start), buf.len())?;
                 let writable_len = write_plan.length;
                 checked_offset_advance(start, writable_len)?;
+                tmpfs_stamp_now(host)?;
                 let n = crate::tmpfs::write(host_handle, start, &buf[..writable_len])?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
                 proc.ofd_table
@@ -5991,6 +6008,7 @@ pub fn sys_pwrite(
 
     // In-kernel tmpfs: positioned write into Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::write(host_handle, offset, &buf[..writable_len]);
     }
 
@@ -7430,6 +7448,7 @@ pub fn sys_mkdir(
     // assign ownership from the caller's credentials directly.
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::mkdir(
             &resolved,
             effective_mode,
@@ -7726,6 +7745,7 @@ pub fn sys_symlink(
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
     let link = resolve_namespace_path(proc, host, linkpath, PathResolveOptions::CREATE_ENTRY)?.path;
     if crate::tmpfs::claims_path(&link) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
     }
     ensure_host_mutable_namespace_path(&link)?;
@@ -7781,6 +7801,7 @@ pub fn sys_chmod(
     let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
     if crate::tmpfs::claims_path(&resolved) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::chmod(&resolved, mode);
     }
     host.host_chmod(&resolved, mode)
@@ -7870,6 +7891,7 @@ pub fn sys_chown(
     let st = fs_stat(host, &resolved)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::chown(&resolved, uid, gid);
     }
     host.host_chown(&resolved, uid, gid)
@@ -7891,6 +7913,7 @@ pub fn sys_lchown(
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::chown(&resolved.path, uid, gid);
     }
     host.host_lchown(&resolved.path, uid, gid)
@@ -9501,6 +9524,35 @@ pub fn sys_utimensat(
     let st = fs_stat(host, &resolved)?;
     if !check_utimens_permissions(proc, &st, times)? {
         return Ok(());
+    }
+    if crate::tmpfs::claims_path(&resolved) {
+        let (now_sec, now_nsec) = {
+            let (s, n) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+            (
+                u64::try_from(s).map_err(|_| Errno::EINVAL)?,
+                u32::try_from(n).map_err(|_| Errno::EINVAL)?,
+            )
+        };
+        let resolve = |req_sec: i64,
+                       req_nsec: i64,
+                       cur_sec: u64,
+                       cur_nsec: u32|
+         -> Result<(u64, u32), Errno> {
+            match req_nsec {
+                UTIME_OMIT => Ok((cur_sec, cur_nsec)),
+                UTIME_NOW => Ok((now_sec, now_nsec)),
+                0..=999_999_999 => Ok((
+                    u64::try_from(req_sec).map_err(|_| Errno::EINVAL)?,
+                    req_nsec as u32,
+                )),
+                _ => Err(Errno::EINVAL),
+            }
+        };
+        let (a_sec, a_nsec) = resolve(atime_sec, atime_nsec, st.st_atime_sec, st.st_atime_nsec)?;
+        let (m_sec, m_nsec) = resolve(mtime_sec, mtime_nsec, st.st_mtime_sec, st.st_mtime_nsec)?;
+        return crate::tmpfs::utimensat(
+            &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
+        );
     }
     host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
 }
@@ -14332,6 +14384,9 @@ pub fn sys_openat(
         // Enforce search/access/parent-write permissions exactly as the host
         // path does; this is host-free for tmpfs paths (fs_stat is tmpfs-aware).
         check_open_permissions(proc, host, &resolved, oflags)?;
+        if oflags & O_CREAT != 0 {
+            tmpfs_stamp_now(host)?;
+        }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -14524,6 +14579,16 @@ pub fn sys_mkdirat(
         PathResolveOptions::CREATE_DIRECTORY,
     )?
     .path;
+    if crate::tmpfs::claims_path(&resolved) {
+        let effective_mode = mode & !proc.umask;
+        tmpfs_stamp_now(host)?;
+        return crate::tmpfs::mkdir(
+            &resolved,
+            effective_mode,
+            proc.effective_uid(),
+            proc.effective_gid(),
+        );
+    }
     ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
@@ -16281,6 +16346,7 @@ pub fn sys_ftruncate(
             raise_fsize_signal_for_caller(proc, current_tid_for_process(proc))?;
             return Err(Errno::EFBIG);
         }
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::truncate_handle(host_handle, length);
     }
 
@@ -16427,11 +16493,13 @@ pub fn sys_fchmod(
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
                 check_owner_or_root(proc, &st)?;
+                tmpfs_stamp_now(host)?;
                 return crate::tmpfs::fchmod(ofd.host_handle, mode);
             }
             if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
                 let st = crate::tmpfs::lstat(&ofd.path)?;
                 check_owner_or_root(proc, &st)?;
+                tmpfs_stamp_now(host)?;
                 return crate::tmpfs::chmod(&ofd.path, mode);
             }
             let st = host.host_fstat(ofd.host_handle)?;
@@ -16502,11 +16570,13 @@ pub fn sys_fchown(
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+                tmpfs_stamp_now(host)?;
                 return crate::tmpfs::fchown(ofd.host_handle, uid, gid);
             }
             if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
                 let st = crate::tmpfs::lstat(&ofd.path)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+                tmpfs_stamp_now(host)?;
                 return crate::tmpfs::chown(&ofd.path, uid, gid);
             }
             let st = host.host_fstat(ofd.host_handle)?;
@@ -16666,6 +16736,7 @@ pub fn sys_fchmodat(
     let st = fs_stat(host, &resolved)?;
     check_owner_or_root(proc, &st)?;
     if crate::tmpfs::claims_path(&resolved) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::chmod(&resolved, mode);
     }
     host.host_chmod(&resolved, mode)
@@ -16701,6 +16772,7 @@ pub fn sys_fchownat(
     let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::chown(&resolved.path, uid, gid);
     }
     if nofollow {
@@ -16763,6 +16835,7 @@ pub fn sys_symlinkat(
     )?
     .path;
     if crate::tmpfs::claims_path(&resolved_link) {
+        tmpfs_stamp_now(host)?;
         return crate::tmpfs::symlink(
             target,
             &resolved_link,

@@ -32,7 +32,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 use wasm_posix_shared::Errno;
@@ -112,9 +112,54 @@ struct Inode {
     open_count: u32,
     st_dev: u64,
     ino: u64,
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
 }
 
 impl Inode {
+    /// Create an inode, stamping all three timestamps with the current
+    /// published wall-clock time (see `set_now`).
+    fn new(kind: InodeKind, mode: u32, uid: u32, gid: u32, nlink: u32, st_dev: u64, ino: u64) -> Self {
+        let (sec, nsec) = now();
+        Inode {
+            kind,
+            mode,
+            uid,
+            gid,
+            nlink,
+            open_count: 0,
+            st_dev,
+            ino,
+            atime_sec: sec,
+            atime_nsec: nsec,
+            mtime_sec: sec,
+            mtime_nsec: nsec,
+            ctime_sec: sec,
+            ctime_nsec: nsec,
+        }
+    }
+
+    /// Stamp mtime and ctime with the current published wall-clock time (a
+    /// content mutation: write, truncate).
+    fn touch_modified(&mut self) {
+        let (sec, nsec) = now();
+        self.mtime_sec = sec;
+        self.mtime_nsec = nsec;
+        self.ctime_sec = sec;
+        self.ctime_nsec = nsec;
+    }
+
+    /// Stamp ctime only (a metadata mutation: chmod, chown).
+    fn touch_changed(&mut self) {
+        let (sec, nsec) = now();
+        self.ctime_sec = sec;
+        self.ctime_nsec = nsec;
+    }
+
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
@@ -134,12 +179,12 @@ impl Inode {
             st_uid: self.uid,
             st_gid: self.gid,
             st_size: size,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
+            st_atime_sec: self.atime_sec,
+            st_atime_nsec: self.atime_nsec,
+            st_mtime_sec: self.mtime_sec,
+            st_mtime_nsec: self.mtime_nsec,
+            st_ctime_sec: self.ctime_sec,
+            st_ctime_nsec: self.ctime_nsec,
             _pad: 0,
         }
     }
@@ -246,17 +291,16 @@ impl TmpfsState {
         }
         let mount = &SCRATCH_MOUNTS[mount_idx];
         let ino = self.alloc_ino();
-        let root = self.insert_inode(Inode {
-            kind: InodeKind::Dir(BTreeMap::new()),
-            mode: mount.mode,
-            uid: mount.uid,
-            gid: mount.gid,
-            // A fresh directory has two links: its own entry and `.`.
-            nlink: 2,
-            open_count: 0,
-            st_dev: mount.st_dev,
+        // A fresh directory has two links: its own entry and `.`.
+        let root = self.insert_inode(Inode::new(
+            InodeKind::Dir(BTreeMap::new()),
+            mount.mode,
+            mount.uid,
+            mount.gid,
+            2,
+            mount.st_dev,
             ino,
-        });
+        ));
         self.mount_roots[mount_idx] = Some(root);
         root
     }
@@ -385,6 +429,26 @@ pub fn is_enabled() -> bool {
     TMPFS_ENABLED.load(Ordering::SeqCst)
 }
 
+/// The wall-clock time (CLOCK_REALTIME) the syscall layer stamps onto inode
+/// metadata mutations. The tmpfs core is host-free, so the kernel reads the host
+/// clock once per mutating syscall and publishes it here; the store reads it
+/// when stamping atime/mtime/ctime. Defaults to the epoch until first set.
+static TMPFS_NOW_SEC: AtomicU64 = AtomicU64::new(0);
+static TMPFS_NOW_NSEC: AtomicU32 = AtomicU32::new(0);
+
+/// Publish the current wall-clock time for subsequent metadata stamps.
+pub fn set_now(sec: u64, nsec: u32) {
+    TMPFS_NOW_SEC.store(sec, Ordering::Relaxed);
+    TMPFS_NOW_NSEC.store(nsec, Ordering::Relaxed);
+}
+
+fn now() -> (u64, u32) {
+    (
+        TMPFS_NOW_SEC.load(Ordering::Relaxed),
+        TMPFS_NOW_NSEC.load(Ordering::Relaxed),
+    )
+}
+
 /// Whether a canonical path lies within a scratch-mount prefix. Pure predicate;
 /// does not consider whether tmpfs authority is enabled.
 pub fn owns_path(path: &[u8]) -> bool {
@@ -483,16 +547,15 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 }
                 let last = last.ok_or(Errno::ENOENT)?;
                 let ino = state.alloc_ino();
-                let new_idx = state.insert_inode(Inode {
-                    kind: InodeKind::Regular(Vec::new()),
-                    mode: mode & 0o7777,
+                let new_idx = state.insert_inode(Inode::new(
+                    InodeKind::Regular(Vec::new()),
+                    mode & 0o7777,
                     uid,
                     gid,
-                    nlink: 1,
-                    open_count: 0,
+                    1,
                     st_dev,
                     ino,
-                });
+                ));
                 if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) {
                     entries.insert(last.to_vec(), new_idx);
                 } else {
@@ -541,15 +604,18 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     }
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        let InodeKind::Regular(data) = &mut inode.kind else {
-            return Err(Errno::EISDIR);
-        };
-        let start = offset as usize;
-        let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
-        if end > data.len() {
-            data.resize(end, 0);
+        {
+            let InodeKind::Regular(data) = &mut inode.kind else {
+                return Err(Errno::EISDIR);
+            };
+            let start = offset as usize;
+            let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            if end > data.len() {
+                data.resize(end, 0);
+            }
+            data[start..end].copy_from_slice(buf);
         }
-        data[start..end].copy_from_slice(buf);
+        inode.touch_modified();
         Ok(buf.len())
     })
 }
@@ -580,12 +646,11 @@ pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
         match &mut inode.kind {
-            InodeKind::Regular(data) => {
-                data.resize(new_len, 0);
-                Ok(())
-            }
-            _ => Err(Errno::EISDIR),
+            InodeKind::Regular(data) => data.resize(new_len, 0),
+            _ => return Err(Errno::EISDIR),
         }
+        inode.touch_modified();
+        Ok(())
     })
 }
 
@@ -659,16 +724,15 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
         let last = last.ok_or(Errno::ENOENT)?;
         let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
         let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode {
-            kind: InodeKind::Dir(BTreeMap::new()),
-            mode: mode & 0o7777,
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Dir(BTreeMap::new()),
+            mode & 0o7777,
             uid,
             gid,
-            nlink: 2,
-            open_count: 0,
+            2,
             st_dev,
             ino,
-        });
+        ));
         match state.get_mut(parent).map(|i| &mut i.kind) {
             Some(InodeKind::Dir(entries)) => {
                 entries.insert(last.to_vec(), new_idx);
@@ -917,7 +981,9 @@ fn walk_to_inode(path: &[u8]) -> Result<u32, Errno> {
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
-        state.get_mut(idx).ok_or(Errno::ENOENT)?.mode = mode & 0o7777;
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
         Ok(())
     })
 }
@@ -933,6 +999,7 @@ pub fn chown(path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
         if gid != u32::MAX {
             inode.gid = gid;
         }
+        inode.touch_changed();
         Ok(())
     })
 }
@@ -941,7 +1008,9 @@ pub fn chown(path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
-        state.get_mut(idx).ok_or(Errno::EBADF)?.mode = mode & 0o7777;
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
         Ok(())
     })
 }
@@ -957,6 +1026,31 @@ pub fn fchown(handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
         if gid != u32::MAX {
             inode.gid = gid;
         }
+        inode.touch_changed();
+        Ok(())
+    })
+}
+
+/// Set a tmpfs inode's timestamps to already-resolved values (the caller has
+/// applied UTIME_NOW/UTIME_OMIT). ctime is set to the supplied change time.
+pub fn utimensat(
+    path: &[u8],
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.atime_sec = atime_sec;
+        inode.atime_nsec = atime_nsec;
+        inode.mtime_sec = mtime_sec;
+        inode.mtime_nsec = mtime_nsec;
+        inode.ctime_sec = ctime_sec;
+        inode.ctime_nsec = ctime_nsec;
         Ok(())
     })
 }
@@ -979,16 +1073,15 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
         let last = last.ok_or(Errno::ENOENT)?;
         let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
         let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode {
-            kind: InodeKind::Symlink(target.to_vec()),
-            mode: 0o777,
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Symlink(target.to_vec()),
+            0o777,
             uid,
             gid,
-            nlink: 1,
-            open_count: 0,
+            1,
             st_dev,
             ino,
-        });
+        ));
         match state.get_mut(parent).map(|i| &mut i.kind) {
             Some(InodeKind::Dir(entries)) => {
                 entries.insert(last.to_vec(), new_idx);
@@ -1186,6 +1279,32 @@ mod tests {
         release_handle(h3);
         assert_eq!(rename(b"/tmp/rn_g", b"/tmp/rn_e").unwrap_err(), Errno::EISDIR);
         assert_eq!(rename(b"/tmp/rn_e", b"/tmp/rn_g").unwrap_err(), Errno::ENOTDIR);
+    }
+
+    #[test]
+    fn timestamps_track_create_write_and_utimensat() {
+        set_now(1000, 5);
+        let h = open(b"/tmp/ts", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let st = fstat(h).unwrap();
+        assert_eq!((st.st_mtime_sec, st.st_mtime_nsec), (1000, 5));
+        assert_eq!(st.st_ctime_sec, 1000);
+        assert_eq!(st.st_atime_sec, 1000);
+
+        // A later write bumps mtime and ctime (not atime).
+        set_now(2000, 0);
+        write(h, 0, b"x").unwrap();
+        let st = fstat(h).unwrap();
+        assert_eq!(st.st_mtime_sec, 2000);
+        assert_eq!(st.st_ctime_sec, 2000);
+        assert_eq!(st.st_atime_sec, 1000);
+
+        // utimensat sets explicit atime/mtime; ctime is the change time.
+        utimensat(b"/tmp/ts", 500, 1, 600, 2, 2500, 3).unwrap();
+        let st = lstat(b"/tmp/ts").unwrap();
+        assert_eq!((st.st_atime_sec, st.st_atime_nsec), (500, 1));
+        assert_eq!((st.st_mtime_sec, st.st_mtime_nsec), (600, 2));
+        assert_eq!((st.st_ctime_sec, st.st_ctime_nsec), (2500, 3));
+        release_handle(h);
     }
 
     #[test]
