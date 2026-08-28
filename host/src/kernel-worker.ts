@@ -288,6 +288,7 @@ import {
   growMemoryToCover,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
+import { kernelTmpfsScratchEnabled } from "./vfs/kernel-tmpfs-gate";
 import { readForkContinuationAnchor } from "./fork-continuation";
 import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
 import {
@@ -1105,15 +1106,14 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
  * enabled via `WASM_POSIX_TMPFS=1` (Node, for conformance validation) or
  * `globalThis.__WASM_POSIX_TMPFS__ = true` (browser). This is the validation
  * toggle; the eventual cutover makes it the default and drops the host mounts.
+ *
+ * The gate lives in `kernelTmpfsScratchEnabled` — a single source of truth
+ * shared with the mount resolvers, which drop the host-side scratch backends
+ * under the same gate, so the kernel-enable and host-mount-removal halves of
+ * the cutover never disagree.
  */
-const KERNEL_TMPFS_ENABLED =
-  (typeof process !== 'undefined' && !!process.env?.WASM_POSIX_TMPFS) ||
-  (typeof globalThis !== 'undefined' &&
-    (globalThis as { __WASM_POSIX_TMPFS__?: boolean }).__WASM_POSIX_TMPFS__ === true);
-
-/** Hand scratch-mount ownership to the in-kernel tmpfs when the gate is set. */
 function maybeEnableKernelTmpfs(instance: WebAssembly.Instance): void {
-  if (!KERNEL_TMPFS_ENABLED) return;
+  if (!kernelTmpfsScratchEnabled()) return;
   const fn = instance.exports.kernel_set_tmpfs_enabled as
     | ((enabled: number) => number)
     | undefined;
