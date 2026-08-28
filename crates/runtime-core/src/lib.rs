@@ -46,6 +46,7 @@ pub mod socket_wire;
 pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
+pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
 pub mod wakeup;
