@@ -23,7 +23,7 @@ export interface ShellLazyArchiveSpec {
   resolverPath: string;
   archiveUrl: string;
   mountPrefix: "/usr/";
-  requiredExecutable: string;
+  requiredMember: string;
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
@@ -33,7 +33,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/vim.zip",
     archiveUrl: "vim.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/vim",
+    requiredMember: "bin/vim",
   },
   {
     id: "nethack",
@@ -41,7 +41,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/nethack.zip",
     archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/nethack",
+    requiredMember: "bin/nethack",
   },
   {
     id: "ruby",
@@ -49,7 +49,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/ruby.zip",
     archiveUrl: "ruby.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/ruby",
+    requiredMember: "bin/ruby",
   },
   {
     id: "python",
@@ -57,7 +57,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/python.zip",
     archiveUrl: "python.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/python3",
+    requiredMember: "bin/python3",
   },
   {
     id: "node",
@@ -65,7 +65,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/node.zip",
     archiveUrl: "node.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/node",
+    requiredMember: "bin/node",
   },
   {
     id: "perl",
@@ -73,7 +73,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/perl.zip",
     archiveUrl: "perl.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/perl",
+    requiredMember: "bin/perl",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
@@ -177,16 +177,16 @@ export function loadDeclaredShellLazyArchive(
     );
   }
 
-  const executableEntries = entries.filter(
+  const requiredMemberEntries = entries.filter(
     (entry) =>
-      entry.fileName === spec.requiredExecutable &&
+      entry.fileName === spec.requiredMember &&
       !entry.isDirectory &&
       !entry.isSymlink,
   );
-  if (executableEntries.length !== 1) {
+  if (requiredMemberEntries.length !== 1) {
     throw new Error(
       `${spec.dependency} output ${sourcePath} must contain exactly one ` +
-      `regular executable ${spec.requiredExecutable}; found ${executableEntries.length}`,
+      `regular member ${spec.requiredMember}; found ${requiredMemberEntries.length}`,
     );
   }
 
