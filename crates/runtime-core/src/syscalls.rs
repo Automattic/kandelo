@@ -7670,6 +7670,16 @@ pub fn sys_rename(
     };
     let new = resolve_namespace_path(proc, host, newpath, new_options)?.path;
     let old = old_entry.path;
+    // Route by in-kernel tmpfs authority: both endpoints on tmpfs → in-kernel
+    // rename; a tmpfs/host mix is a cross-filesystem rename → EXDEV.
+    let old_tmpfs = crate::tmpfs::claims_path(&old);
+    let new_tmpfs = crate::tmpfs::claims_path(&new);
+    if old_tmpfs || new_tmpfs {
+        if old_tmpfs != new_tmpfs {
+            return Err(Errno::EXDEV);
+        }
+        return crate::tmpfs::rename(&old, &new);
+    }
     ensure_host_mutable_namespace_path(&old)?;
     ensure_host_mutable_namespace_path(&new)?;
     check_parent_writable(proc, host, &old)?;
@@ -14535,6 +14545,15 @@ pub fn sys_renameat(
     };
     let new_resolved = resolve_at_path(proc, host, newdirfd, newpath, new_options)?.path;
     let old_resolved = old_entry.path;
+    // See sys_rename: both endpoints on tmpfs → in-kernel rename; a mix → EXDEV.
+    let old_tmpfs = crate::tmpfs::claims_path(&old_resolved);
+    let new_tmpfs = crate::tmpfs::claims_path(&new_resolved);
+    if old_tmpfs || new_tmpfs {
+        if old_tmpfs != new_tmpfs {
+            return Err(Errno::EXDEV);
+        }
+        return crate::tmpfs::rename(&old_resolved, &new_resolved);
+    }
     ensure_host_mutable_namespace_path(&old_resolved)?;
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_parent_writable(proc, host, &old_resolved)?;
@@ -17693,6 +17712,22 @@ mod tests {
         sys_chown(&mut proc, &mut host, b"/srv/wire_f", 1000, 1000).unwrap();
         let cst = sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap();
         assert_eq!((cst.st_uid, cst.st_gid), (1000, 1000));
+
+        // Atomic write-temp-then-rename, entirely within tmpfs.
+        let tmpf =
+            sys_open(&mut proc, &mut host, b"/srv/atomic.tmp", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, tmpf, b"committed").unwrap(), 9);
+        sys_close(&mut proc, &mut host, tmpf).unwrap();
+        sys_rename(&mut proc, &mut host, b"/srv/atomic.tmp", b"/srv/atomic").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/atomic.tmp").unwrap_err(),
+            Errno::ENOENT
+        );
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/srv/atomic").unwrap().st_size,
+            9
+        );
+        sys_unlink(&mut proc, &mut host, b"/srv/atomic").unwrap();
 
         // mkdir under a scratch mount is served by tmpfs.
         sys_mkdir(&mut proc, &mut host, b"/srv/wire_d", 0o755).unwrap();

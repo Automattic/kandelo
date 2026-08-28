@@ -166,8 +166,17 @@ handle both the tmpfs file handle and the directory sentinel. (Note: open still
 does not *enforce* mode bits on access — that per-inode enforcement is a separate
 deferred item; chmod correctly stores and reports them.)
 
+**rename (done):** `tmpfs::rename` performs a same-mount move with full POSIX
+replace semantics (atomic replace of a compatible destination; ENOTDIR/EISDIR on
+type mismatch; ENOTEMPTY for a non-empty destination directory; EINVAL for
+moving a directory into its own subtree), recomputing parent link counts
+robustly. `sys_rename`/`sys_renameat` route by tmpfs authority: both endpoints on
+tmpfs → in-kernel rename; a tmpfs/host or cross-scratch-mount mix → EXDEV. This
+makes the ubiquitous write-temp-then-rename atomic-commit pattern work on the
+scratch mounts.
+
 **Still deferred before the real-host cutover:**
-`rename`/`link`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
+`link`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
 socket and FIFO names created under a scratch prefix
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority

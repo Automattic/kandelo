@@ -207,6 +207,25 @@ impl TmpfsState {
             .and_then(|slot| slot.as_mut())
     }
 
+    /// Recompute a directory's link count from scratch: 2 (self + `.`) plus one
+    /// per child subdirectory (each child dir's `..`). Robust against any move,
+    /// replace, or removal, avoiding fragile incremental bookkeeping.
+    fn recompute_dir_nlink(&mut self, dir_idx: u32) {
+        let child_dirs = match self.get(dir_idx) {
+            Some(inode) => match &inode.kind {
+                InodeKind::Dir(entries) => entries
+                    .values()
+                    .filter(|&&child| self.get(child).is_some_and(|i| i.is_dir()))
+                    .count(),
+                _ => return,
+            },
+            None => return,
+        };
+        if let Some(inode) = self.get_mut(dir_idx) {
+            inode.nlink = 2 + child_dirs as u32;
+        }
+    }
+
     /// Free an inode if it has no remaining names and no open descriptions.
     fn maybe_free(&mut self, idx: u32) {
         let drop_it = self
@@ -721,6 +740,89 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
     })
 }
 
+/// Rename `old` to `new` within the tmpfs. Both paths must lie in the *same*
+/// scratch mount; a caller must map a cross-mount or tmpfs/host rename to EXDEV
+/// before reaching here (this returns EXDEV defensively for cross-mount). POSIX
+/// replace semantics: an existing destination of a compatible type is atomically
+/// replaced; type mismatches yield ENOTDIR/EISDIR and a non-empty destination
+/// directory yields ENOTEMPTY.
+pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
+    let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
+    if old_mount != new_mount {
+        return Err(Errno::EXDEV);
+    }
+    // A directory cannot be moved into its own subtree.
+    if new.len() > old.len() && new.starts_with(old) && new[old.len()] == b'/' {
+        return Err(Errno::EINVAL);
+    }
+    let old_comps = split_components(old_rel);
+    let new_comps = split_components(new_rel);
+    if old_comps.is_empty() || new_comps.is_empty() {
+        return Err(Errno::EBUSY); // cannot rename a mount root
+    }
+    TMPFS.with(|state| {
+        let (old_parent, old_name, old_target) = state.resolve(old_mount, &old_comps)?;
+        let old_target = old_target.ok_or(Errno::ENOENT)?;
+        let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
+        let (new_parent, new_name, new_existing) = state.resolve(new_mount, &new_comps)?;
+        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
+
+        // Renaming a name to itself (same inode) is a no-op.
+        if new_existing == Some(old_target) {
+            return Ok(());
+        }
+
+        let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
+
+        if let Some(existing) = new_existing {
+            let new_is_dir = state.get(existing).ok_or(Errno::ENOENT)?.is_dir();
+            if old_is_dir && !new_is_dir {
+                return Err(Errno::ENOTDIR);
+            }
+            if !old_is_dir && new_is_dir {
+                return Err(Errno::EISDIR);
+            }
+            if new_is_dir {
+                let empty = matches!(
+                    &state.get(existing).ok_or(Errno::ENOENT)?.kind,
+                    InodeKind::Dir(entries) if entries.is_empty()
+                );
+                if !empty {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+            // Detach and free the replaced destination.
+            if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) {
+                entries.remove(&new_name);
+            }
+            if let Some(inode) = state.get_mut(existing) {
+                inode.nlink = 0;
+            }
+            state.maybe_free(existing);
+        }
+
+        // Detach the source name and reattach under the destination name.
+        if let Some(InodeKind::Dir(entries)) = state.get_mut(old_parent).map(|i| &mut i.kind) {
+            entries.remove(&old_name);
+        }
+        match state.get_mut(new_parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(new_name, old_target);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+
+        // Parent link counts change when a subdirectory moves or a destination
+        // directory is replaced; recompute both robustly.
+        state.recompute_dir_nlink(old_parent);
+        if new_parent != old_parent {
+            state.recompute_dir_nlink(new_parent);
+        }
+        Ok(())
+    })
+}
+
 /// Open a directory stream over a tmpfs directory, returning an encoded handle.
 pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
@@ -1016,6 +1118,52 @@ mod tests {
         assert_eq!(read_all(h), &[b'a', b'b', b'c', 0, 0]);
         assert_eq!(fstat(h).unwrap().st_size, 5);
         release_handle(h);
+    }
+
+    #[test]
+    fn rename_moves_replaces_and_guards() {
+        // Simple file rename.
+        let h = open(b"/tmp/rn_a", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        write(h, 0, b"data").unwrap();
+        release_handle(h);
+        rename(b"/tmp/rn_a", b"/tmp/rn_b").unwrap();
+        assert_eq!(lstat(b"/tmp/rn_a").unwrap_err(), Errno::ENOENT);
+        assert_eq!(lstat(b"/tmp/rn_b").unwrap().st_size, 4);
+
+        // Rename over an existing file replaces it (source content wins).
+        let h2 = open(b"/tmp/rn_c", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        write(h2, 0, b"longer").unwrap();
+        release_handle(h2);
+        rename(b"/tmp/rn_b", b"/tmp/rn_c").unwrap();
+        assert_eq!(lstat(b"/tmp/rn_c").unwrap().st_size, 4);
+        assert_eq!(lstat(b"/tmp/rn_b").unwrap_err(), Errno::ENOENT);
+
+        // Cross-mount rename → EXDEV.
+        assert_eq!(
+            rename(b"/tmp/rn_c", b"/var/tmp/rn_c").unwrap_err(),
+            Errno::EXDEV
+        );
+
+        // Directory rename + into-own-subtree guard.
+        mkdir(b"/tmp/rn_d", 0o755, 0, 0).unwrap();
+        mkdir(b"/tmp/rn_d/sub", 0o755, 0, 0).unwrap();
+        assert_eq!(
+            rename(b"/tmp/rn_d", b"/tmp/rn_d/sub/x").unwrap_err(),
+            Errno::EINVAL
+        );
+        rename(b"/tmp/rn_d", b"/tmp/rn_e").unwrap();
+        assert_eq!(lstat(b"/tmp/rn_e").unwrap().st_mode & S_IFMT, S_IFDIR);
+
+        // Replacing a non-empty directory fails; type mismatches fail.
+        mkdir(b"/tmp/rn_f", 0o755, 0, 0).unwrap();
+        assert_eq!(
+            rename(b"/tmp/rn_f", b"/tmp/rn_e").unwrap_err(),
+            Errno::ENOTEMPTY
+        );
+        let h3 = open(b"/tmp/rn_g", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(h3);
+        assert_eq!(rename(b"/tmp/rn_g", b"/tmp/rn_e").unwrap_err(), Errno::EISDIR);
+        assert_eq!(rename(b"/tmp/rn_e", b"/tmp/rn_g").unwrap_err(), Errno::ENOTDIR);
     }
 
     #[test]
