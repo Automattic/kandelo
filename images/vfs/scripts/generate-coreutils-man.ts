@@ -22,11 +22,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
-// The GNU coreutils 9.6 tool set, minus the five tools coreutils disables
-// by default (arch, hostname, su, uptime, users — kill/vdir stay in since
-// they build here). Listed explicitly rather than derived from the binary
-// so the recipe stays legible; duplicates below are intentionally present
-// in the source list and are collapsed by the `Set` at load time.
+// The GNU coreutils 9.6 tool set, minus the tools this build disables via
+// --enable-no-install-program=stdbuf,pinky,who,users,uptime (see
+// packages/registry/coreutils/build-coreutils.sh). Listed explicitly rather
+// than derived from the binary so the recipe stays legible; duplicates below
+// are intentionally present in the source list and are collapsed by the
+// `Set` at load time.
 const TOOLS = [
   "base32", "base64", "basename", "basenc", "cat", "cksum", "comm", "cp",
   "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname", "du",
