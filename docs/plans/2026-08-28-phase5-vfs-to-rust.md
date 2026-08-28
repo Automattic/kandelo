@@ -198,9 +198,23 @@ links (EXDEV), and existing destinations (EEXIST); the existing unlink already
 frees only at nlink 0, so unlink-of-one-name works. `sys_link`/`sys_linkat`
 route by tmpfs authority (mix → EXDEV).
 
-**Still deferred before the real-host cutover:** AF_UNIX
-socket and FIFO names created under a scratch prefix (still host-backed → would
-split-brain).
+**AF_UNIX sockets (done):** `InodeKind::Special(type_bits)` gives tmpfs
+metadata-only socket/FIFO nodes (S_IFSOCK/S_IFIFO in stat, DT_SOCK/DT_FIFO in
+getdents; opening one as a file is ENXIO). `sys_bind` creates a tmpfs S_IFSOCK
+node for scratch paths (EEXIST → EADDRINUSE) instead of a host marker file; the
+socket endpoint stays in the path-keyed `unix_socket` registry (unchanged, so
+connect() is unaffected). `sys_unlink` on a scratch path drops the registry
+entry (waking parked datagram senders) before removing the tmpfs node; close
+already only touched the registry, not the FS node (Linux semantics). This is
+the WordPress-critical part (php-fpm/mariadb listen on `/var/run`,`/tmp`
+sockets).
+
+**Still deferred before the real-host cutover:** FIFO nodes on tmpfs. FIFOs are
+harder than sockets because the fifo table itself tracks path-keyed *metadata*
+(mode via fchmod, times), which would double-authority against a tmpfs inode —
+`make_fifo` currently creates a host marker file + fifo-table entry. Needs a
+decision on which side owns fifo metadata after cutover; lower priority than
+sockets for the WordPress stack.
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority
 rename/link. Until the full set lands, running a real host against a
