@@ -192,8 +192,13 @@ mtime+ctime, chmod/chown bump ctime. `sys_utimensat`/`futimens` resolve
 UTIME_NOW/UTIME_OMIT in-kernel and store the times. (Also fixed a latent gap:
 `sys_mkdirat` had no tmpfs arm and would have created on the host.)
 
-**Still deferred before the real-host cutover:**
-`link` (hardlinks) on tmpfs; AF_UNIX
+**link / hard links (done):** `tmpfs::link` creates a second name for a file
+inode (nlink++, ctime bumped), refusing directory links (EPERM), cross-mount
+links (EXDEV), and existing destinations (EEXIST); the existing unlink already
+frees only at nlink 0, so unlink-of-one-name works. `sys_link`/`sys_linkat`
+route by tmpfs authority (mix → EXDEV).
+
+**Still deferred before the real-host cutover:** AF_UNIX
 socket and FIFO names created under a scratch prefix (still host-backed → would
 split-brain).
 (still host-backed → would split-brain); per-inode permission enforcement

@@ -7728,6 +7728,17 @@ pub fn sys_link(
 ) -> Result<(), Errno> {
     let old = resolve_namespace_path(proc, host, oldpath, PathResolveOptions::NOFOLLOW)?.path;
     let new = resolve_namespace_path(proc, host, newpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    // Route by tmpfs authority: both endpoints on tmpfs → in-kernel hard link;
+    // a tmpfs/host mix (or cross-scratch-mount) → EXDEV.
+    let old_tmpfs = crate::tmpfs::claims_path(&old);
+    let new_tmpfs = crate::tmpfs::claims_path(&new);
+    if old_tmpfs || new_tmpfs {
+        if old_tmpfs != new_tmpfs {
+            return Err(Errno::EXDEV);
+        }
+        tmpfs_stamp_now(host)?;
+        return crate::tmpfs::link(&old, &new);
+    }
     ensure_host_mutable_namespace_path(&old)?;
     ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
@@ -16807,6 +16818,16 @@ pub fn sys_linkat(
         PathResolveOptions::CREATE_ENTRY,
     )?
     .path;
+    // See sys_link: both endpoints on tmpfs → in-kernel hard link; a mix → EXDEV.
+    let old_tmpfs = crate::tmpfs::claims_path(&old_resolved);
+    let new_tmpfs = crate::tmpfs::claims_path(&new_resolved);
+    if old_tmpfs || new_tmpfs {
+        if old_tmpfs != new_tmpfs {
+            return Err(Errno::EXDEV);
+        }
+        tmpfs_stamp_now(host)?;
+        return crate::tmpfs::link(&old_resolved, &new_resolved);
+    }
     ensure_host_mutable_namespace_path(&old_resolved)?;
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
