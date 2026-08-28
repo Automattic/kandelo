@@ -156,6 +156,10 @@ name = "make"
 class = "user-software"
 
 [[packages]]
+name = "mandoc"
+class = "user-software"
+
+[[packages]]
 name = "mariadb"
 class = "user-software"
 
