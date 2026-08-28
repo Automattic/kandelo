@@ -209,13 +209,17 @@ already only touched the registry, not the FS node (Linux semantics). This is
 the WordPress-critical part (php-fpm/mariadb listen on `/var/run`,`/tmp`
 sockets).
 
-**Still deferred before the real-host cutover:** FIFO nodes on tmpfs. FIFOs are
-harder than sockets because the fifo table itself tracks path-keyed *metadata*
-(mode via fchmod, times), which would double-authority against a tmpfs inode —
-`make_fifo` currently creates a host marker file + fifo-table entry. Needs a
-decision on which side owns fifo metadata after cutover; lower priority than
-sockets for the WordPress stack.
-(still host-backed → would split-brain); per-inode permission enforcement
+**FIFOs / named pipes (done):** `make_fifo` grows a tmpfs branch that builds the
+S_IFIFO metadata in memory (mode less umask, effective uid/gid, CLOCK_REALTIME
+times), stores it on the `PipeBuffer`, and registers the fifo in the path-keyed
+`fifo` table with **no host marker** — the pipe (not a host file) is the single
+metadata authority, so there is no double-authority/split-brain against a tmpfs
+inode. `fifo_path_stat_raw` reads that stored metadata for tmpfs fifos instead of
+lstat'ing the (absent) marker; `sys_unlink` drops the fifo-table entry without a
+host unlink. Mirrors the AF_UNIX socket path. (php-fpm/shell process
+substitution create fifos under the scratch mounts.)
+
+**Still deferred before the real-host cutover:** per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority
 rename/link. Until the full set lands, running a real host against a
 partially-wired tree is inconsistent — browser/Node validation is gated on the
