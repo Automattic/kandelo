@@ -138,15 +138,26 @@ scratch-path host FS op. Shape:
   dir `<= -3e9`. The prior unbounded synthetic range would have shadowed tmpfs
   handles in the synthetic dispatch arms.
 
-**Deferred (needed before the 1d real-host cutover, not for the 1b cargo test):**
-directory OFDs (`open`/getdents on a tmpfs directory currently returns EISDIR);
-symlinks (`symlink`/`readlink` + cross-mount resolution); `rename`/`link`/`chmod`/
-`chown`/`access`/`utimensat`/`statfs`/`ftruncate` on tmpfs; AF_UNIX socket and
-FIFO names created under a scratch prefix (still host-backed → would split-brain);
-per-inode permission enforcement against the caller's credentials; `st_dev`-based
-EXDEV on cross-authority rename/link. Until the full set lands, running a real
-host against a partially-wired tree is inconsistent — browser/Node validation is
-gated on 1d, and nothing merges until the migration is complete.
+**Directory OFDs (done):** a tmpfs directory opens as a
+`FileType::Directory` OFD carrying a dedicated sentinel handle
+(`TMPFS_DIR_SENTINEL = -170`, disjoint from procfs -150 / devfs -160), mirroring
+`devfs_open_dir`. `sys_getdents64` gains a tmpfs branch that regenerates entries
+from the live store via `tmpfs::getdents64` → `procfs::write_virtual_dirents64`
+(which injects `.`/`..` and honors the cookie/short-buffer protocol). The
+sentinel is added to the four other directory special-case sites: the lseek
+kernel-generated-directory branch (seekdir/rewinddir), `sys_fstat` (returns the
+tmpfs dir stat), the close "nothing to clean up" branch, and the negative-handle
+directory-backing validity check. `ftruncate`/`truncate`/`fallocate` also done
+(increment 1c).
+
+**Still deferred before the real-host cutover:** symlinks (`symlink`/`readlink`
++ cross-mount resolution); `rename`/`link`/`chmod`/`chown`/`access`/`utimensat`/
+`statfs` on tmpfs; AF_UNIX socket and FIFO names created under a scratch prefix
+(still host-backed → would split-brain); per-inode permission enforcement
+against the caller's credentials; `st_dev`-based EXDEV on cross-authority
+rename/link. Until the full set lands, running a real host against a
+partially-wired tree is inconsistent — browser/Node validation is gated on the
+cutover, and nothing merges until the migration is complete.
 
 ## Validation contract per increment
 
