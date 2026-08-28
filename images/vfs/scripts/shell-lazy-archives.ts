@@ -122,16 +122,23 @@ export function registerPythonShellProfile(fs: MemoryFileSystem): void {
   );
 }
 
-// mandoc's `man` front-end pipes to a pager when stdout is a terminal, which
-// would fork a pager the shell demos do not ship. Pin MANPAGER=cat so pages
-// render inline. /etc/man.conf gives the manpath root the docs archives fill.
+// mandoc's `man` front-end pipes to a pager when stdout is a terminal. Page
+// through `less -R` (raw mode so mandoc's bold/overstrike and any SGR escape
+// sequences render correctly instead of printing as literal escapes); less
+// is a shipped shell lazy-archive dependency and lazy-loads on first use,
+// same as coreutils' cat. /etc/man.conf gives the manpath root the docs
+// archives fill.
 export function registerManShellProfile(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
     "/etc/profile.d/man.sh",
-    "# mandoc: render inline (no pager fork) and search /usr/share/man.\n" +
-      "export MANPAGER=cat\n" +
+    "# mandoc: page formatted output through less (raw mode so mandoc's\n" +
+      "# bold/overstrike and any SGR escape sequences render correctly\n" +
+      "# instead of printing as literal escapes); less is a shell\n" +
+      "# lazy-archive dependency and lazy-loads on first use, just like\n" +
+      "# coreutils' cat. Search /usr/share/man for man pages.\n" +
+      "export MANPAGER='less -R'\n" +
       "export MANPATH=/usr/share/man\n",
     0o644,
   );
