@@ -3203,6 +3203,13 @@ pub fn sys_open(
     // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
+        if crate::tmpfs::is_dir(&resolved) {
+            // A directory cannot be opened for writing.
+            if oflags & O_ACCMODE != O_RDONLY {
+                return Err(Errno::EISDIR);
+            }
+            return open_scratch_tmpfs_dir(proc, resolved, oflags);
+        }
         return open_scratch_tmpfs(proc, resolved, oflags, effective_mode);
     }
 
@@ -3321,6 +3328,35 @@ fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     host.host_lstat(path)
 }
 
+/// Open a tmpfs directory for iteration. Mirrors `devfs_open_dir`: a
+/// `FileType::Directory` OFD carrying the tmpfs directory sentinel in both
+/// `host_handle` and `dir_host_handle`; getdents regenerates entries from the
+/// live store, so there is no host handle and no backing to refcount.
+fn open_scratch_tmpfs_dir(
+    proc: &mut Process,
+    resolved: Vec<u8>,
+    oflags: u32,
+) -> Result<i32, Errno> {
+    let status_flags = oflags & !CREATION_FLAGS;
+    let ofd_idx = proc.ofd_table.create(
+        FileType::Directory,
+        status_flags,
+        crate::tmpfs::TMPFS_DIR_SENTINEL,
+        resolved,
+    );
+    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+        ofd.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
+    }
+    let fd_flags = oflags_to_fd_flags(oflags);
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(err) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            Err(err)
+        }
+    }
+}
+
 fn publish_advisory_lock_mutation(mutation: LockMutation) {
     if mutation.may_unblock {
         crate::wakeup::push_advisory_lock();
@@ -3385,7 +3421,9 @@ pub fn validate_scm_rights_transfer_metadata(
         }
         FileType::Directory if host_handle < 0 => matches!(
             host_handle,
-            crate::procfs::PROCFS_DIR_HANDLE | crate::devfs::DEVFS_DIR_HANDLE
+            crate::procfs::PROCFS_DIR_HANDLE
+                | crate::devfs::DEVFS_DIR_HANDLE
+                | crate::tmpfs::TMPFS_DIR_SENTINEL
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
@@ -3921,8 +3959,9 @@ fn release_ofd_reference_impl(
                     }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
+                    || host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
                 {
-                    // Procfs/devfs directory: nothing to clean up
+                    // Procfs/devfs/tmpfs directory: nothing to clean up
                 } else if file_type == FileType::CharDevice && host_handle < 0 {
                     // Virtual char devices have no host handle to close.
                     // Nothing to clean up on host side
@@ -5225,6 +5264,7 @@ pub fn sys_lseek(
         // same integer cookie directly as their entry-list position.
         if backing_handle == crate::procfs::PROCFS_DIR_HANDLE
             || backing_handle == crate::devfs::DEVFS_DIR_HANDLE
+            || backing_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
         {
             let sentinel = backing_handle;
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
@@ -6686,6 +6726,8 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 true,
             ))
         }
+    } else if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
+        crate::tmpfs::lstat(&ofd.path)
     } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         Ok(
             crate::devfs::match_devfs_stat(
@@ -8286,6 +8328,25 @@ pub fn sys_getdents64(
             ofd.set_directory_offset(new_offset);
             if exhausted {
                 ofd.dir_host_handle = -2; // mark exhausted
+            }
+        }
+        return Ok(bytes);
+    }
+
+    // In-kernel tmpfs directories: generate entries from the live store.
+    if dir_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
+        let entry_offset = proc
+            .ofd_table
+            .get(ofd_idx)
+            .ok_or(Errno::EBADF)?
+            .dir_entry_offset;
+        let (bytes, new_offset, exhausted) =
+            crate::tmpfs::getdents64(&path, buf, entry_offset)?;
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = new_offset;
+            ofd.set_directory_offset(new_offset);
+            if exhausted {
+                ofd.dir_host_handle = -2;
             }
         }
         return Ok(bytes);
@@ -14237,6 +14298,13 @@ pub fn sys_openat(
     // In-kernel tmpfs backing for the scratch mounts (/tmp, /var/*, /root, ...).
     // Serve the open entirely from Rust; the host is never consulted.
     if crate::tmpfs::claims_path(&resolved) {
+        if crate::tmpfs::is_dir(&resolved) {
+            // A directory cannot be opened for writing.
+            if oflags & O_ACCMODE != O_RDONLY {
+                return Err(Errno::EISDIR);
+            }
+            return open_scratch_tmpfs_dir(proc, resolved, oflags);
+        }
         return open_scratch_tmpfs(proc, resolved, oflags, effective_mode);
     }
 
@@ -17566,6 +17634,40 @@ mod tests {
         assert_eq!(dst.st_mode & S_IFMT, S_IFDIR);
         assert!(in_tmpfs_range(dst.st_dev));
 
+        // Directory listing via getdents64 on a tmpfs directory OFD.
+        let child =
+            sys_open(&mut proc, &mut host, b"/srv/wire_d/child", O_CREAT | O_RDWR, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, child).unwrap();
+        let dfd =
+            sys_open(&mut proc, &mut host, b"/srv/wire_d", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut names: Vec<Vec<u8>> = Vec::new();
+        let mut dbuf = [0u8; 512];
+        loop {
+            let n = sys_getdents64(&mut proc, &mut host, dfd, &mut dbuf).unwrap();
+            if n == 0 {
+                break;
+            }
+            let mut pos = 0usize;
+            while pos < n {
+                let reclen =
+                    u16::from_le_bytes(dbuf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+                let name_start = pos + 19;
+                let name_end = dbuf[name_start..pos + reclen]
+                    .iter()
+                    .position(|b| *b == 0)
+                    .map(|e| name_start + e)
+                    .unwrap();
+                names.push(dbuf[name_start..name_end].to_vec());
+                pos += reclen;
+            }
+        }
+        names.sort();
+        assert_eq!(
+            names,
+            alloc::vec![b".".to_vec(), b"..".to_vec(), b"child".to_vec()]
+        );
+        sys_close(&mut proc, &mut host, dfd).unwrap();
+
         // The host was NEVER consulted for a scratch path: no open, no lstat.
         assert!(
             !host.handle_paths.values().any(|p| p.starts_with(b"/srv")),
@@ -17584,6 +17686,7 @@ mod tests {
             sys_lstat(&mut proc, &mut host, b"/srv/wire_f").unwrap_err(),
             Errno::ENOENT
         );
+        sys_unlink(&mut proc, &mut host, b"/srv/wire_d/child").unwrap();
         sys_rmdir(&mut proc, &mut host, b"/srv/wire_d").unwrap();
         assert_eq!(
             sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap_err(),

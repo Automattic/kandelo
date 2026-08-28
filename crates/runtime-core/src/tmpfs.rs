@@ -34,7 +34,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use wasm_posix_shared::mode::{S_IFDIR, S_IFREG};
+use wasm_posix_shared::mode::{S_IFDIR, S_IFMT, S_IFREG};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 
@@ -764,6 +764,48 @@ pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usi
     })
 }
 
+/// Sentinel host handle marking an open tmpfs *directory* descriptor. Distinct
+/// from the procfs (-150) and devfs (-160) directory sentinels. A tmpfs
+/// directory OFD carries this in both `host_handle` and `dir_host_handle`;
+/// contents are regenerated per getdents from the live store (mirrors devfs), so
+/// no per-open backing is needed.
+pub const TMPFS_DIR_SENTINEL: i64 = -170;
+
+/// Whether a canonical tmpfs path names an existing directory.
+pub fn is_dir(path: &[u8]) -> bool {
+    lstat(path)
+        .map(|st| st.st_mode & S_IFMT == S_IFDIR)
+        .unwrap_or(false)
+}
+
+/// getdents64 for a tmpfs directory: build the entry list from the live store
+/// and hand it to the shared virtual-dirent formatter, which injects `.`/`..`
+/// and honors the cookie/short-buffer protocol. Returns
+/// `(bytes_written, new_cookie, exhausted)`.
+pub fn getdents64(path: &[u8], buf: &mut [u8], offset: i64) -> Result<(usize, i64, bool), Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    let (dir_ino, entries) = TMPFS.with(|state| {
+        let root = state.mount_root(mount_idx);
+        let idx = state.walk(root, &comps)?;
+        let dir = state.get(idx).ok_or(Errno::ENOENT)?;
+        let InodeKind::Dir(map) = &dir.kind else {
+            return Err(Errno::ENOTDIR);
+        };
+        let dir_ino = dir.ino;
+        let mut out: Vec<(Vec<u8>, u8, u64)> = Vec::with_capacity(map.len());
+        for (name, &child_idx) in map.iter() {
+            let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
+            let d_type = if child.is_dir() { DT_DIR as u8 } else { DT_REG as u8 };
+            out.push((name.clone(), d_type, child.ino));
+        }
+        Ok((dir_ino, out))
+    })?;
+    // `..` inode is not tracked across the tmpfs/host boundary; report the
+    // directory's own inode, which callers never rely on for `..`.
+    crate::procfs::write_virtual_dirents64(buf, offset, dir_ino, dir_ino, &entries)
+}
+
 /// Close a tmpfs directory stream.
 pub fn closedir(handle: i64) -> Result<(), Errno> {
     let iter_idx = dir_handle_to_iter(handle)?;
@@ -784,7 +826,6 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_posix_shared::mode::S_IFMT;
 
     const O_RDWR: u32 = 0o2;
 
