@@ -909,6 +909,48 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     })
 }
 
+/// Create a hard link `new` to the existing file `old` within one scratch mount.
+/// Cross-mount links are EXDEV; hard links to directories are EPERM; an existing
+/// destination is EEXIST. `old` is not dereferenced (the kernel already applied
+/// the syscall's follow policy), so a link to a symlink links the symlink.
+pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
+    let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
+    if old_mount != new_mount {
+        return Err(Errno::EXDEV);
+    }
+    let old_comps = split_components(old_rel);
+    let new_comps = split_components(new_rel);
+    if new_comps.is_empty() {
+        return Err(Errno::EEXIST); // cannot link over a mount root
+    }
+    TMPFS.with(|state| {
+        let old_idx = {
+            let root = state.mount_root(old_mount);
+            state.walk(root, &old_comps)?
+        };
+        if state.get(old_idx).ok_or(Errno::ENOENT)?.is_dir() {
+            return Err(Errno::EPERM); // no hard links to directories
+        }
+        let (new_parent, new_name, new_existing) = state.resolve(new_mount, &new_comps)?;
+        if new_existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
+        match state.get_mut(new_parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(new_name, old_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        if let Some(inode) = state.get_mut(old_idx) {
+            inode.nlink += 1;
+            inode.touch_changed();
+        }
+        Ok(())
+    })
+}
+
 /// Open a directory stream over a tmpfs directory, returning an encoded handle.
 pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
@@ -1233,6 +1275,41 @@ mod tests {
         assert_eq!(read_all(h), &[b'a', b'b', b'c', 0, 0]);
         assert_eq!(fstat(h).unwrap().st_size, 5);
         release_handle(h);
+    }
+
+    #[test]
+    fn hard_link_shares_inode_and_survives_unlink() {
+        let h = open(b"/tmp/hl_a", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        write(h, 0, b"shared").unwrap();
+        release_handle(h);
+        link(b"/tmp/hl_a", b"/tmp/hl_b").unwrap();
+
+        // Both names reference one inode (same ino) with nlink 2.
+        let sa = lstat(b"/tmp/hl_a").unwrap();
+        let sb = lstat(b"/tmp/hl_b").unwrap();
+        assert_eq!(sa.st_ino, sb.st_ino);
+        assert_eq!(sa.st_nlink, 2);
+
+        // Write via one name is visible via the other.
+        let hb = open(b"/tmp/hl_b", O_RDWR, 0, 0, 0).unwrap();
+        write(hb, 0, b"HELLO!").unwrap();
+        release_handle(hb);
+        let ha = open(b"/tmp/hl_a", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(read_all(ha), b"HELLO!");
+        release_handle(ha);
+
+        // Unlink one name: content persists under the other; nlink drops to 1.
+        unlink(b"/tmp/hl_a").unwrap();
+        assert_eq!(lstat(b"/tmp/hl_a").unwrap_err(), Errno::ENOENT);
+        assert_eq!(lstat(b"/tmp/hl_b").unwrap().st_nlink, 1);
+
+        // Guards: cross-mount EXDEV, directory EPERM, existing destination EEXIST.
+        assert_eq!(link(b"/tmp/hl_b", b"/var/tmp/x").unwrap_err(), Errno::EXDEV);
+        mkdir(b"/tmp/hl_d", 0o755, 0, 0).unwrap();
+        assert_eq!(link(b"/tmp/hl_d", b"/tmp/hl_e").unwrap_err(), Errno::EPERM);
+        let hc = open(b"/tmp/hl_c", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(hc);
+        assert_eq!(link(b"/tmp/hl_b", b"/tmp/hl_c").unwrap_err(), Errno::EEXIST);
     }
 
     #[test]
