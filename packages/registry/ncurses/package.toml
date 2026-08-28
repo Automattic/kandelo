@@ -8,8 +8,11 @@
 # lib dir — they're host binaries, not cacheable wasm artifacts, so
 # they don't go through the resolver). The compiled-in terminal
 # fallback entries (xterm-256color, xterm, vt100, dumb) are linked
-# into libtinfow.a via MKfallback.sh; consumers don't need a runtime
-# terminfo database for the common demo terminals.
+# into libtinfow.a via MKfallback.sh as a safety-net floor. The
+# `terminfo.zip` [[runtime_files]] artifact below is the real runtime
+# terminfo database (a curated, generous terminal set) that VFS image
+# builders stage at /usr/share/terminfo so every ncurses/termcap-linked
+# guest program gets correct behavior beyond that 4-entry floor.
 
 kind = "program"
 
@@ -72,3 +75,14 @@ wasm = "captoinfo.wasm"
 [[outputs]]
 name = "infotocap"
 wasm = "infotocap.wasm"
+
+# The shared runtime terminfo database: a curated, GENEROUS terminal set
+# (roughly ncurses-base) compiled from this ncurses's own misc/terminfo.src,
+# rooted at share/terminfo/... so VFS image builders stage its contents at
+# /usr/share/terminfo. Every ncurses/termcap-linked guest program (less,
+# vim, ...) already searches that path (see --with-default-terminfo-dir /
+# --with-terminfo-dirs above); this file is what makes the search succeed
+# for terminals beyond the 4-entry compiled-in fallback floor.
+[[runtime_files]]
+artifact = "terminfo.zip"
+guest_path = "/usr/share/terminfo/terminfo.zip"

@@ -16,13 +16,21 @@
 # falls back to the in-tree `ncurses-install/` layout.
 #
 # Produces libncursesw.a and libtinfow.a with compiled-in fallback
-# terminal entries (xterm-256color, xterm, vt100, dumb), plus the
-# standard ncurses terminal utilities as wasm program outputs. Consumers
-# don't need a runtime terminfo database for the common demo terminals —
-# ncurses resolves these names against the linked-in table.
+# terminal entries (xterm-256color, xterm, vt100, dumb) as a safety-net
+# floor, plus the standard ncurses terminal utilities as wasm program
+# outputs. ncurses is built --with-default-terminfo-dir=/usr/share/terminfo
+# and --with-terminfo-dirs=/usr/share/terminfo, so every ncurses/termcap-
+# linked guest program already searches that path at runtime; this script
+# also compiles a curated, GENEROUS terminfo database (roughly the
+# ncurses-base terminal set — not just the 4-entry fallback floor) and
+# publishes it as the `terminfo.zip` runtime-file artifact declared in
+# package.toml. The image builder stages that zip's contents at
+# /usr/share/terminfo so every guest program gets correct behavior for
+# $TERM values beyond the compiled-in floor.
 #
 # Host `tic` and `infocmp` are needed during the build to regenerate
-# `fallback.c` from `terminfo.src`. They live under
+# `fallback.c` from `terminfo.src`, and to compile the runtime terminfo
+# database from the same `terminfo.src`. They live under
 # `$SCRIPT_DIR/ncurses-host-build/` and are not cached by the
 # resolver (they're host binaries, not wasm artifacts).
 
@@ -80,6 +88,22 @@ if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     (
         cd "$HOST_BUILD_DIR"
+        # WHY cf_cv_mixedcase=yes: ncurses picks its on-disk terminfo leaf
+        # naming (literal first character vs. a 2-digit hex code) at configure
+        # time based on whether the filesystem preserves mixed-case names.
+        # This host tic build probes *this build machine's* filesystem, which
+        # is case-insensitive on default macOS volumes and would otherwise
+        # write e.g. share/terminfo/78/xterm-256color. The cross-compiled
+        # wasm32 target below can't run that probe, so its ncurses configure
+        # (aclocal.m4 CF_MIXEDCASE_FILENAMES) falls back to cf_cv_mixedcase=yes
+        # for any non-Windows/Cygwin/Darwin target_alias — i.e. the guest
+        # ncurses that actually reads /usr/share/terminfo at runtime always
+        # expects literal-character leaves (share/terminfo/x/xterm-256color).
+        # Pin the host tic build to the same value so the runtime database it
+        # compiles is byte-for-byte host-independent and matches what the
+        # guest looks up, instead of silently depending on the build host's
+        # filesystem case sensitivity.
+        cf_cv_mixedcase=yes \
         "$SRC_DIR/configure" \
             --without-cxx \
             --without-cxx-binding \
@@ -105,6 +129,49 @@ if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     mkdir -p "$TERMINFO_DIR"
     TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
         "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
+fi
+
+# --- Compile the shared runtime terminfo database (shipped to guests) ---
+# A GENEROUS curated set — roughly the Debian ncurses-base terminal list —
+# compiled from this ncurses's own misc/terminfo.src using the host tic.
+# Any requested name tic cannot find is skipped with a warning; the report
+# below records exactly which names were dropped so that stays visible
+# rather than silently absorbed.
+RUNTIME_TERMINFO_DIR="$WORK_DIR/terminfo-runtime"
+CURATED_TERMINFO_NAMES=(
+    xterm-256color xterm xterm-color xterm-16color
+    vt100 vt102 vt220 vt52
+    ansi linux dumb
+    screen screen-256color tmux tmux-256color
+    rxvt-unicode-256color rxvt vt320
+    putty konsole-256color st-256color alacritty xterm-kitty
+)
+if [ ! -f "$RUNTIME_TERMINFO_DIR/x/xterm-256color" ]; then
+    echo "==> Compiling the shared runtime terminfo database..."
+    rm -rf "$RUNTIME_TERMINFO_DIR"
+    mkdir -p "$RUNTIME_TERMINFO_DIR"
+    curated_csv="$(IFS=,; echo "${CURATED_TERMINFO_NAMES[*]}")"
+    TERMINFO="$RUNTIME_TERMINFO_DIR" "$HOST_TIC" -x -e "$curated_csv" \
+        "$SRC_DIR/misc/terminfo.src" || true
+
+    dropped_terminfo_names=()
+    for name in "${CURATED_TERMINFO_NAMES[@]}"; do
+        first_char="${name:0:1}"
+        if [ ! -f "$RUNTIME_TERMINFO_DIR/$first_char/$name" ]; then
+            dropped_terminfo_names+=("$name")
+        fi
+    done
+    compiled_terminfo_count="$(find "$RUNTIME_TERMINFO_DIR" -type f | wc -l | tr -d ' ')"
+    echo "==> Shared terminfo database: $compiled_terminfo_count entries compiled" \
+        "(requested ${#CURATED_TERMINFO_NAMES[@]})"
+    if [ "${#dropped_terminfo_names[@]}" -gt 0 ]; then
+        echo "    dropped (absent from this ncurses's misc/terminfo.src):" \
+            "${dropped_terminfo_names[*]}" >&2
+    fi
+    if [ "$compiled_terminfo_count" -eq 0 ]; then
+        echo "ERROR: shared terminfo database compiled zero entries" >&2
+        exit 1
+    fi
 fi
 
 # --- Cross-compile ncurses for wasm32 ---
@@ -241,6 +308,24 @@ echo "==> Installing to $INSTALL_DIR..."
     done
 )
 
+# --- Package the shared runtime terminfo database as a runtime-file artifact ---
+# Rooted at share/terminfo/... so consumers mount its contents at
+# /usr/share/terminfo, matching --with-default-terminfo-dir above.
+echo "==> Packaging the shared terminfo database..."
+TERMINFO_RUNTIME_STAGE="$WORK_DIR/terminfo-runtime-stage"
+rm -rf "$TERMINFO_RUNTIME_STAGE"
+mkdir -p "$TERMINFO_RUNTIME_STAGE/share/terminfo"
+cp -R "$RUNTIME_TERMINFO_DIR/." "$TERMINFO_RUNTIME_STAGE/share/terminfo/"
+TERMINFO_RUNTIME_ZIP="$WORK_DIR/terminfo.zip"
+rm -f "$TERMINFO_RUNTIME_ZIP"
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$TERMINFO_RUNTIME_STAGE" "$TERMINFO_RUNTIME_ZIP"
+echo "==> terminfo.zip: $(find "$TERMINFO_RUNTIME_STAGE" -type f | wc -l | tr -d ' ') files," \
+    "$(wc -c <"$TERMINFO_RUNTIME_ZIP" | tr -d ' ') bytes"
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_runtime_file ncurses "$TERMINFO_RUNTIME_ZIP" terminfo.zip
+
 source_program_for() {
     case "$1" in
         reset) echo "tset" ;;
@@ -275,7 +360,6 @@ for program in "${NCURSES_PROGRAMS[@]}"; do
     cp "$source_path" "$BIN_DIR/$program.wasm"
 done
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
 for program in "${NCURSES_PROGRAMS[@]}"; do
     install_local_binary ncurses "$BIN_DIR/$program.wasm"
 done
