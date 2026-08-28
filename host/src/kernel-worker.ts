@@ -19469,65 +19469,36 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // EPOLL event flags → poll event flags
-    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
-    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
-
-    // Build fixed pollfd records in kernel scratch data.
-    const nfds = interests.length;
-    const pollfdSize = nfds * STRUCT_SIZE_WASM_POLL_FD;
-
-    if (pollfdSize > CH_DATA_SIZE) {
-      // Too many fds — unlikely but handle gracefully
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // -EINVAL
-      return;
-    }
-
-    let pollResult: {
+    // Dispatch epoll_pwait through the kernel as a non-blocking readiness check
+    // (timeout 0). This host still owns the wait/retry loop below, but the
+    // kernel — not a host-side poll conversion — now computes epoll readiness
+    // (sys_epoll_pwait) and writes the ready epoll_events into the scratch data
+    // region, which we copy back to the caller's array. (The interest mirror is
+    // retained only to resolve targeted wake indices for the retry loop.)
+    let epollResult: {
       retVal: number;
       errVal: number;
-      pollfds: Uint8Array;
+      events: Uint8Array | null;
     };
     try {
-      pollResult = this.#requireMainScratchRegion().withLease((lease) => {
+      epollResult = this.#requireMainScratchRegion().withLease((lease) => {
         const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        const pollfdsView = lease.dataView(CH_DATA, pollfdSize);
-        for (let i = 0; i < nfds; i++) {
-          const interest = interests[i]!;
-          const off = i * STRUCT_SIZE_WASM_POLL_FD;
-          let pollEvents = 0;
-          if (interest.events & EPOLLIN) pollEvents |= POLLIN;
-          if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
-          pollfdsView.setInt32(
-            off + WASM_POLL_FD_FD_OFFSET,
-            interest.fd,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_EVENTS_OFFSET,
-            pollEvents,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_REVENTS_OFFSET,
-            0,
-            true,
-          );
-        }
-
-        kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
+        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_PWAIT, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
+        // events output array [out], staged at CH_DATA.
         lease.writeAddress(
-          CH_ARGS,
+          CH_ARGS + CH_ARG_SIZE,
           CH_DATA,
-          pollfdSize,
+          maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
           "u64-le",
         );
-        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(nfds), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true);
-        for (let i = 3; i < CH_ARGS_COUNT; i++) {
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(maxevents), true);
+        // timeout 0: this host owns the blocking wait, so the kernel does a
+        // single non-blocking readiness evaluation each dispatch.
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true);
+        for (let i = 4; i < CH_ARGS_COUNT; i++) {
           kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
         }
-
         this.#bindKernelTidForChannel(channel, entry);
         this.currentHandlePid = channel.pid;
         try {
@@ -19546,11 +19517,15 @@ export class CentralizedKernelWorker {
           this.currentHandlePid = 0;
         }
         const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errVal: resultView.getUint32(CH_ERRNO, true),
-          pollfds: lease.copyOut(CH_DATA, pollfdSize),
-        };
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        const errVal = resultView.getUint32(CH_ERRNO, true);
+        const events = retVal > 0
+          ? lease.copyOut(
+              CH_DATA,
+              Math.min(retVal, maxevents) * STRUCT_SIZE_WASM_EPOLL_EVENT,
+            )
+          : null;
+        return { retVal, errVal, events };
       });
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -19558,71 +19533,25 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const { retVal, errVal, pollfds } = pollResult;
+    const { retVal, errVal, events } = epollResult;
 
-    // This host-side emulation performs a nonblocking poll and owns the
-    // wait/retry loop, so it must preserve the syscall-boundary signal
-    // outcome that kernel_handle_channel would normally return to the guest.
-    // A default terminating action leaves an exited kernel Process and must
-    // reap the worker without waking guest code. A caught handler interrupts
-    // epoll with EINTR so the glue can run the copied handler metadata before
-    // the application decides whether to restart the wait.
+    // This host owns the wait/retry loop, so it must preserve the
+    // syscall-boundary signal outcome that kernel_handle_channel would normally
+    // return to the guest: a default terminating action reaps the worker; a
+    // caught handler interrupts epoll with EINTR.
     if (this.completeEpollSignalOutcome(channel, entry)) return;
 
-    // If poll returned error (not EAGAIN), propagate it
+    // Propagate a real error (anything other than the would-block EAGAIN).
     if (retVal < 0 && errVal !== EAGAIN) {
       this.completeChannelRawAndRelisten(channel, retVal, errVal, entry);
       return;
     }
 
-    // Count ready events and map back to epoll_event format
-    let readyCount = 0;
-    if (retVal > 0) {
-      const processView = new DataView(channel.memory.buffer);
-      const pollfdsView = new DataView(
-        pollfds.buffer,
-        pollfds.byteOffset,
-        pollfds.byteLength,
-      );
-      for (let i = 0; i < nfds && readyCount < maxevents; i++) {
-        const off = i * STRUCT_SIZE_WASM_POLL_FD;
-        const revents = pollfdsView.getInt16(
-          off + WASM_POLL_FD_REVENTS_OFFSET,
-          true,
-        );
-        if (revents !== 0) {
-          // Map poll revents back to epoll events
-          let epEvents = 0;
-          if (revents & POLLIN) epEvents |= EPOLLIN;
-          if (revents & POLLOUT) epEvents |= EPOLLOUT;
-          if (revents & POLLERR) epEvents |= EPOLLERR;
-          if (revents & POLLHUP) epEvents |= EPOLLHUP;
-
-          const evOff =
-            eventsPtr + readyCount * STRUCT_SIZE_WASM_EPOLL_EVENT;
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_EVENTS_OFFSET,
-            epEvents,
-            true,
-          );
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_PAD_OFFSET,
-            0,
-            true,
-          );
-          processView.setBigUint64(
-            evOff + WASM_EPOLL_EVENT_DATA_OFFSET,
-            interests[i].data,
-            true,
-          );
-          readyCount++;
-        }
-      }
-    }
-
-    // If we got events, return them
-    if (readyCount > 0) {
-      this.completeChannelRawAndRelisten(channel, readyCount, 0, entry);
+    // Ready: the kernel wrote the ready epoll_events into the scratch; copy them
+    // into the caller's array and return the count.
+    if (retVal > 0 && events !== null) {
+      new Uint8Array(channel.memory.buffer).set(events, eventsPtr);
+      this.completeChannelRawAndRelisten(channel, retVal, 0, entry);
       return;
     }
 
