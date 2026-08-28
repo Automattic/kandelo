@@ -428,4 +428,41 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Increment 5: the host-backed filesystem. The kernel uses the host's
+    /// host_lstat/host_open/host_read capabilities as its root filesystem, so
+    /// opening and reading a path exercises that whole capability path — the
+    /// first fixture to reach a real (host-backed) file rather than staying
+    /// kernel-internal. It also covers the RAW CString path arg (open) end to
+    /// end through host resolution. The native host serves "/native.txt"; a
+    /// correct echo proves open()/read() route through the FS capabilities.
+    #[test]
+    fn smoke_runs_host_fs_open_read() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_hostfs.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"hello from the host filesystem\n",
+            "the guest must open and read the host-served file via host_open/host_read"
+        );
+        // open (CString path -> host resolution) and read (RAW Out -> host_read)
+        // are the coverage this adds.
+        assert!(
+            outcome.syscall_trace.contains(&(Syscall::Open as u32)),
+            "expected an open syscall in the trace: {:?}",
+            outcome.syscall_trace
+        );
+        Ok(())
+    }
 }
