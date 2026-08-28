@@ -41,7 +41,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wasmtime::{
-    Caller, Engine, Global, GlobalType, Linker, MemoryType, Module, Mutability, SharedMemory,
+    Caller, Engine, Global, GlobalType, Linker, MemoryType, Module, Mutability, Ref, SharedMemory,
     Store, Val, ValType,
 };
 
@@ -49,7 +49,7 @@ use wasm_posix_shared::channel::{
     ARGS_OFFSET, ARG_SIZE, DATA_OFFSET, DATA_SIZE, ERRNO_OFFSET, MIN_CHANNEL_SIZE,
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
-use wasm_posix_shared::abi::extended_syscalls::SYS_EXIT_GROUP;
+use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::host_abi::{
     SyscallArgDesc, SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS,
@@ -83,6 +83,18 @@ const MAIN_CHANNEL_PRIMARY_PAGE: usize = 1;
 /// `ceil(MIN_CHANNEL_SIZE / WASM_PAGE_SIZE)` — the channel spans this many pages.
 const CHANNEL_PAGES: usize = (MIN_CHANNEL_SIZE + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
 
+// Per-thread slot layout (mirrors host/src/thread-allocator.ts + the
+// PROCESS_MEMORY_THREAD_SLOT_* constants in the generated ABI). Each spawned
+// thread gets a 4-page slot; within it the TLS page is page 0 and the channel's
+// primary page is page 2 (page 1 is the fork-save page, unused here).
+const PAGES_PER_THREAD_SLOT: usize = 4;
+const THREAD_SLOT_TLS_PAGE: usize = 0;
+const THREAD_SLOT_CHANNEL_PRIMARY_PAGE: usize = 2;
+/// Thread slots reserved below `brk_base`, so a spawned thread's channel/TLS
+/// pages never collide with the guest's brk/mmap allocations. A test needs one;
+/// this leaves generous headroom.
+const RESERVED_THREAD_SLOTS: usize = 16;
+
 /// The kernel imports `env.memory` with these bounds (see increment 1).
 const KERNEL_MEMORY_MIN_PAGES: u32 = 18;
 const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
@@ -100,6 +112,9 @@ struct ProcessLayout {
     channel_offset: usize,
     brk_base: usize,
     max_addr: usize,
+    /// First page of the thread-slot arena (just past the main channel); thread
+    /// slot N begins at `first_thread_slot_page + N * PAGES_PER_THREAD_SLOT`.
+    first_thread_slot_page: usize,
 }
 
 impl ProcessLayout {
@@ -112,10 +127,14 @@ impl ProcessLayout {
         let control_base_page = first_free_byte.div_ceil(WASM_PAGE_SIZE);
         let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE;
         let channel_offset = channel_page * WASM_PAGE_SIZE;
-        // Thread slots are not preallocated for this single-threaded guest, so
-        // the arena ends right after the main channel's pages.
-        let thread_arena_end_page = channel_page + CHANNEL_PAGES;
-        let initial_pages = min_pages.max(thread_arena_end_page);
+        // The thread-slot arena sits between the main channel and brk_base, so
+        // thread channels/TLS never collide with the guest's brk/mmap region.
+        let first_thread_slot_page = channel_page + CHANNEL_PAGES;
+        let thread_arena_end_page =
+            first_thread_slot_page + RESERVED_THREAD_SLOTS * PAGES_PER_THREAD_SLOT;
+        // Initial memory need only cover the main channel; thread slots and brk
+        // grow lazily. brk starts above the reserved thread arena.
+        let initial_pages = min_pages.max(first_thread_slot_page);
         let brk_base = thread_arena_end_page * WASM_PAGE_SIZE;
         let max_addr = DEFAULT_MAX_PAGES * WASM_PAGE_SIZE;
         Self {
@@ -123,6 +142,7 @@ impl ProcessLayout {
             channel_offset,
             brk_base,
             max_addr,
+            first_thread_slot_page,
         }
     }
 }
@@ -334,6 +354,21 @@ fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemor
 pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Result<RunOutcome> {
     let engine = crate::kernel_engine()?;
 
+    // --- Guest module, layout, and memory (created first so kernel host imports
+    // that touch process memory — e.g. host_futex_wake — can reference it) -----
+    let guest_module = Module::new(&engine, guest_wasm)?;
+    let imported_min_pages = guest_module
+        .imports()
+        .find_map(|i| match i.ty() {
+            wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => {
+                Some(m.minimum() as usize)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
+    let layout = ProcessLayout::compute(imported_min_pages);
+    let guest_mem = new_shared(&engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+
     // --- Kernel instance (this thread owns it and the pump) -----------------
     let kernel_module = Module::from_file(&engine, kernel_wasm)?;
     let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES)?;
@@ -346,7 +381,7 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
     klinker.define(&mut kernel_store, "env", "memory", kernel_mem.clone())?;
-    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs)?;
+    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &guest_mem)?;
     // Everything else the kernel imports (the ~78 unused host_* capabilities)
     // traps: a trivial no-VFS program touches none of them, and a trap is a
     // truthful boundary that surfaces any surprise syscall loudly.
@@ -377,6 +412,10 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
         kernel.get_typed_func::<(u32, u32, u32), i64>(&mut kernel_store, "kernel_blocking_retry_token")?;
     let blocking_retry_release =
         kernel.get_typed_func::<(u32, u32, i64), i32>(&mut kernel_store, "kernel_blocking_retry_release")?;
+    // A worker thread's exit routes here (not the process-exit path), returning
+    // the thread's clear-child-tid pointer for the pump to clear + notify.
+    let thread_exit =
+        kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_exit")?;
 
     // --- Kernel-side process setup ------------------------------------------
     let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
@@ -398,19 +437,6 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     }
     let pid = pid_i as u32;
 
-    // Compile the guest and read its imported-memory minimum for the layout.
-    let guest_module = Module::new(&engine, guest_wasm)?;
-    let imported_min_pages = guest_module
-        .imports()
-        .find_map(|i| match i.ty() {
-            wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => {
-                Some(m.minimum() as usize)
-            }
-            _ => None,
-        })
-        .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
-    let layout = ProcessLayout::compute(imported_min_pages);
-
     for (name, val) in [
         ("kernel_set_brk_base", set_brk_base.call(&mut kernel_store, (pid, layout.brk_base as i32))?),
         ("kernel_set_mmap_base", set_mmap_base.call(&mut kernel_store, (pid, layout.brk_base as i32))?),
@@ -422,17 +448,24 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     }
 
     // --- Guest instance on its own OS thread --------------------------------
-    let guest_mem = new_shared(&engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
     // Records the status the guest requests if it ever calls the `kernel_exit`
     // import directly (the SIGKILL fast-path); the normal exit path is
     // `SYS_exit_group` over the channel, handled by the pump.
     let import_exit_status = Arc::new(Mutex::new(None::<i32>));
-    spawn_guest_thread(&engine, guest_module, guest_mem.clone(), layout, import_exit_status.clone());
+    spawn_guest_thread(
+        &engine,
+        guest_module.clone(),
+        guest_mem.clone(),
+        layout,
+        import_exit_status.clone(),
+    );
 
     // --- The channel pump ---------------------------------------------------
     let mut syscall_trace = Vec::new();
     let exit_code = run_pump(
         &mut kernel_store,
+        &engine,
+        &guest_module,
         &guest_mem,
         &kernel_mem,
         scratch_ptr_u,
@@ -443,6 +476,7 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
         &get_exit_status,
         &blocking_retry_token,
         &blocking_retry_release,
+        &thread_exit,
         &mut syscall_trace,
     )?;
 
@@ -462,7 +496,24 @@ fn define_kernel_host_imports(
     kernel_mem: &SharedMemory,
     captured: &Arc<Mutex<CapturedIo>>,
     fs: &Arc<HostFs>,
+    guest_mem: &SharedMemory,
 ) -> anyhow::Result<()> {
+    // host_futex_wake(addr, count) -> i32: wake up to `count` waiters parked on
+    // the futex word at process address `addr` (in GUEST memory). musl's
+    // pthread machinery and clear-child-tid use this. Returns the count.
+    {
+        let mem = guest_mem.clone();
+        linker.func_wrap(
+            "env",
+            "host_futex_wake",
+            move |_c: Caller<'_, ()>, addr: i32, count: i32| -> i32 {
+                let n = if count < 0 { i32::MAX } else { count };
+                mem.atomic_notify(addr as u32 as u64, n as u32)
+                    .map(|woke| woke as i32)
+                    .unwrap_or(0)
+            },
+        )?;
+    }
     // host_write(handle, buf_ptr, buf_len) -> i32: route fd 1/2 to captured
     // stdout/stderr (the process was created with HostPipe stdio). buf_ptr is a
     // kernel-memory address the pump staged the bytes at.
@@ -748,6 +799,61 @@ fn spawn_guest_thread(
                 })
                 .unwrap();
         }
+        // kernel_clone: pthread_create calls this import directly (not the
+        // syscall glue) so the thread entry fn/arg can travel in the channel
+        // data region. Post a SYS_CLONE request on this (main) channel and block
+        // for the pump to allocate the child tid and launch the worker thread.
+        {
+            let mem = guest_mem.clone();
+            let ch = layout.channel_offset;
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_clone",
+                    move |_c: Caller<'_, ()>,
+                          fn_ptr: i32,
+                          stack_ptr: i32,
+                          flags: i32,
+                          arg: i32,
+                          ptid: i32,
+                          tls: i32,
+                          ctid: i32|
+                          -> i32 {
+                        let clone_args = [
+                            flags as i64,
+                            stack_ptr as i64,
+                            ptid as i64,
+                            tls as i64,
+                            ctid as i64,
+                            0i64,
+                        ];
+                        unsafe {
+                            write_bytes(&mem, ch + SYSCALL_OFFSET, &SYS_CLONE.to_le_bytes());
+                            for (i, a) in clone_args.iter().enumerate() {
+                                write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
+                            }
+                            write_bytes(&mem, ch + DATA_OFFSET, &(fn_ptr as u32).to_le_bytes());
+                            write_bytes(&mem, ch + DATA_OFFSET + 4, &(arg as u32).to_le_bytes());
+                            write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                        }
+                        let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                        loop {
+                            let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                            if s != STATUS_PENDING {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_micros(200));
+                        }
+                        let tid = unsafe { read_i64(&mem, ch + RETURN_OFFSET) } as i32;
+                        unsafe {
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                        }
+                        tid
+                    },
+                )
+                .unwrap();
+        }
         // argv_read / environ_get / the fork-exec set are imported but never
         // reached on this path; a trap is the truthful boundary.
         linker.define_unknown_imports_as_traps(&module).unwrap();
@@ -765,6 +871,135 @@ fn spawn_guest_thread(
         // Blocks until the guest parks after exit_group (normal), or traps.
         let _ = start.call(&mut store, ());
     })
+}
+
+/// Launch a worker (pthread) on a fresh OS thread over the shared guest memory.
+/// It sets the thread's channel base, stack, and TLS, calls the thread entry via
+/// the indirect function table, then posts SYS_EXIT on its channel and parks for
+/// the pump to release it. Detached — the pump routes its exit; never joined.
+#[allow(clippy::too_many_arguments)]
+fn spawn_worker_thread(
+    engine: &Engine,
+    module: &Module,
+    guest_mem: SharedMemory,
+    channel_offset: usize,
+    tls_offset: usize,
+    stack_ptr: u32,
+    tls_ptr: u32,
+    fn_ptr: u32,
+    arg: u32,
+) -> thread::JoinHandle<()> {
+    let engine = engine.clone();
+    let module = module.clone();
+    thread::spawn(move || {
+        if let Err(e) = run_worker_thread(
+            &engine, &module, &guest_mem, channel_offset, tls_offset, stack_ptr, tls_ptr, fn_ptr, arg,
+        ) {
+            eprintln!("worker thread (channel {channel_offset:#x}) failed: {e:?}");
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_worker_thread(
+    engine: &Engine,
+    module: &Module,
+    guest_mem: &SharedMemory,
+    channel_offset: usize,
+    tls_offset: usize,
+    stack_ptr: u32,
+    tls_ptr: u32,
+    fn_ptr: u32,
+    arg: u32,
+) -> anyhow::Result<()> {
+    let mut store = Store::new(engine, ());
+    let mut linker: Linker<()> = Linker::new(engine);
+    linker.define(&mut store, "env", "memory", guest_mem.clone())?;
+    let channel_base = Global::new(
+        &mut store,
+        GlobalType::new(ValType::I32, Mutability::Var),
+        Val::I32(channel_offset as i32),
+    )?;
+    linker.define(&mut store, "env", "__channel_base", channel_base)?;
+    // The worker reaches the kernel through the syscall glue (its own channel),
+    // not through the kernel.* imports, so every kernel.* import can trap.
+    linker.define_unknown_imports_as_traps(module)?;
+
+    let instance = linker.instantiate(&mut store, module)?;
+
+    // Thread prelude (mirrors the TS thread worker): initialize this thread's
+    // TLS in its slot, point __stack_pointer at the pthread stack, then run musl
+    // thread-pointer setup. __channel_base was already set as an import global.
+    if let Ok(init_tls) = instance.get_typed_func::<i32, ()>(&mut store, "__wasm_init_tls") {
+        init_tls.call(&mut store, tls_offset as i32)?;
+    }
+    let sp = instance
+        .get_global(&mut store, "__stack_pointer")
+        .ok_or_else(|| anyhow::anyhow!("guest missing __stack_pointer"))?;
+    sp.set(&mut store, Val::I32(stack_ptr as i32))?;
+    if let Ok(thread_init) = instance.get_typed_func::<i32, ()>(&mut store, "__wasm_thread_init") {
+        thread_init.call(&mut store, tls_ptr as i32)?;
+    }
+
+    // Call the thread entry via the indirect function table with its argument.
+    let table = instance
+        .get_table(&mut store, "__indirect_function_table")
+        .ok_or_else(|| anyhow::anyhow!("guest missing __indirect_function_table"))?;
+    let entry = table
+        .get(&mut store, u64::from(fn_ptr))
+        .ok_or_else(|| anyhow::anyhow!("thread entry {fn_ptr} out of table range"))?;
+    let func = match entry {
+        Ref::Func(Some(f)) => f,
+        _ => anyhow::bail!("thread entry {fn_ptr} is not a function"),
+    };
+    let results_len = func.ty(&store).results().len();
+    let mut results = vec![Val::I32(0); results_len];
+    match func.call(&mut store, &[Val::I32(arg as i32)], &mut results) {
+        // musl's detached-thread exit (__unmapself) issues SYS_munmap + SYS_exit
+        // — which the pump routes to kernel_thread_exit — then executes
+        // `unreachable` to halt the thread. That trap is the expected, clean end
+        // of the thread, exactly like the process exit trap on the main thread.
+        Err(e) if is_unreachable_trap(&e) => Ok(()),
+        Err(e) => Err(e),
+        // A thread entry that returns without self-exiting is unusual (musl
+        // always exits via __pthread_exit); post the exit ourselves as a fallback.
+        Ok(()) => {
+            post_thread_exit(guest_mem, channel_offset);
+            Ok(())
+        }
+    }
+}
+
+/// Whether a Wasmtime error is a guest `unreachable` trap (the expected halt at
+/// the end of the process/thread exit path).
+fn is_unreachable_trap(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<wasmtime::Trap>(),
+        Some(wasmtime::Trap::UnreachableCodeReached)
+    )
+}
+
+/// Post SYS_EXIT on a worker's channel and wait (bounded) for the pump to
+/// complete it. The pump routes this to kernel_thread_exit and drops the channel.
+fn post_thread_exit(guest_mem: &SharedMemory, channel_offset: usize) {
+    let ch = channel_offset;
+    unsafe {
+        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &(Syscall::Exit as u32).to_le_bytes());
+        for i in 0..6 {
+            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+        }
+        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+    }
+    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if s != STATUS_PENDING || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
 }
 
 /// A live guest channel the pump services: its byte offset in guest memory and
@@ -948,6 +1183,8 @@ fn complete_channel(
 #[allow(clippy::too_many_arguments)]
 fn run_pump(
     kernel_store: &mut Store<()>,
+    engine: &Engine,
+    guest_module: &Module,
     guest_mem: &SharedMemory,
     kernel_mem: &SharedMemory,
     scratch_ptr: usize,
@@ -958,11 +1195,13 @@ fn run_pump(
     get_exit_status: &wasmtime::TypedFunc<u32, i32>,
     blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
+    thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
-    // Only the main channel today; thread channels join here in a later increment.
-    let channels = vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }];
+    let mut channels = vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }];
     let mut blocked: Vec<BlockedOp> = Vec::new();
+    // Index of the next thread slot to hand out from the reserved arena.
+    let mut next_thread_slot = 0usize;
     let hard_cap = Instant::now() + Duration::from_secs(30);
 
     loop {
@@ -1033,9 +1272,9 @@ fn run_pump(
             let (syscall_nr, mut args, is_record) = read_channel_request(guest_mem, ch.offset);
             trace.push(syscall_nr);
 
-            // Exit: the kernel commits the status then traps via kernel_exit's
-            // `unreachable`. On the MAIN channel that ends the run. (Thread-exit
-            // on a non-main channel is a later increment.)
+            // Process exit on the MAIN channel: the kernel commits the status
+            // then traps via kernel_exit's `unreachable`; read the status and
+            // end the run.
             if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
                 let _ = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
                 let _ = bind_and_dispatch(
@@ -1045,6 +1284,87 @@ fn run_pump(
                     .call(&mut *kernel_store, pid)
                     .unwrap_or(args[0] as i32 & 0xff);
                 return Ok(code);
+            }
+
+            // Worker-thread exit on a NON-main channel: route to
+            // kernel_thread_exit (which keeps the shared process — fds, pipes —
+            // alive), clear the child-tid futex word for any joiner, then
+            // complete and drop the channel so it is no longer polled. This must
+            // NOT go to the process-exit path, or it would tear the shared pipe
+            // out from under a still-blocked reader.
+            if !ch.is_main && syscall_nr == Syscall::Exit as u32 {
+                let ctid = thread_exit.call(&mut *kernel_store, (pid, ch.tid))?;
+                if ctid > 0 {
+                    unsafe { write_bytes(guest_mem, ctid as u32 as usize, &0i32.to_le_bytes()) };
+                    let _ = guest_mem.atomic_notify(ctid as u64, 1);
+                }
+                complete_channel(
+                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
+                )?;
+                channels.remove(ci);
+                continue; // the vec shifted; do not advance ci
+            }
+
+            // Thread creation on the MAIN channel: dispatch clone so the kernel
+            // allocates the child tid, carve a slot from the reserved arena,
+            // launch the worker OS thread, register its channel, and return the
+            // tid to the caller.
+            if ch.is_main && syscall_nr == SYS_CLONE {
+                let fn_ptr = unsafe { read_u32(guest_mem, ch.offset + DATA_OFFSET) };
+                let arg = unsafe { read_u32(guest_mem, ch.offset + DATA_OFFSET + 4) };
+                let stack_ptr = args[1] as u32;
+                let tls_ptr = args[3] as u32;
+
+                let mut clone_args = args;
+                let _ = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
+                bind_and_dispatch(
+                    kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
+                )?;
+                let (tid, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+                if tid < 0 {
+                    complete_channel(
+                        guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, errno,
+                    )?;
+                    ci += 1;
+                    continue;
+                }
+                if next_thread_slot >= RESERVED_THREAD_SLOTS {
+                    anyhow::bail!("out of reserved thread slots ({RESERVED_THREAD_SLOTS})");
+                }
+                let slot_page = layout.first_thread_slot_page + next_thread_slot * PAGES_PER_THREAD_SLOT;
+                next_thread_slot += 1;
+                let thread_channel_offset = (slot_page + THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
+                let tls_offset = (slot_page + THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
+                // Materialize + zero the whole slot (TLS, fork-save, channel).
+                grow_to_cover(guest_mem, (slot_page + PAGES_PER_THREAD_SLOT) * WASM_PAGE_SIZE)?;
+                unsafe {
+                    write_bytes(
+                        guest_mem,
+                        slot_page * WASM_PAGE_SIZE,
+                        &vec![0u8; PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE],
+                    );
+                }
+                spawn_worker_thread(
+                    engine,
+                    guest_module,
+                    guest_mem.clone(),
+                    thread_channel_offset,
+                    tls_offset,
+                    stack_ptr,
+                    tls_ptr,
+                    fn_ptr,
+                    arg,
+                );
+                channels.push(PumpChannel {
+                    offset: thread_channel_offset,
+                    tid: tid as u32,
+                    is_main: false,
+                });
+                complete_channel(
+                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, 0,
+                )?;
+                ci += 1;
+                continue;
             }
 
             let (ret, errno, staged) = dispatch_once(

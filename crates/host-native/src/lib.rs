@@ -535,6 +535,35 @@ mod tests {
         Ok(())
     }
 
+    /// Phase 4 (B.3), the payoff: a blocking read woken across threads. The main
+    /// thread blocks in read() on an empty pipe while a second (writer) thread
+    /// writes to it. This can only work if the pump services the writer's channel
+    /// while the reader is parked — the multi-channel event loop's reason to
+    /// exist. Exercises clone/thread-launch, per-thread channels, cross-thread
+    /// readiness wakeup, and thread-exit routing.
+    #[test]
+    fn smoke_blocking_read_woken_by_thread() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_thread.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"woken by thread\n",
+            "the blocked read must complete with the bytes the writer thread sent"
+        );
+        Ok(())
+    }
+
     /// Phase 4, epoll readiness. The browser/Node host is the one place epoll
     /// readiness is still reimplemented in TypeScript: epoll_pwait is converted
     /// to a host-built poll and never reaches the kernel's sys_epoll_pwait (a
