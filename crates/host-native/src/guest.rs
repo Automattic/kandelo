@@ -320,6 +320,12 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     let handle_channel =
         kernel.get_typed_func::<(i32, u32, u32, i64), i32>(&mut kernel_store, "kernel_handle_channel")?;
     let get_exit_status = kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_get_process_exit_status")?;
+    // The blocking-retry protocol: on EAGAIN the host asks for a retry token,
+    // re-dispatches under it, and releases it when the op completes.
+    let blocking_retry_token =
+        kernel.get_typed_func::<(u32, u32, u32), i64>(&mut kernel_store, "kernel_blocking_retry_token")?;
+    let blocking_retry_release =
+        kernel.get_typed_func::<(u32, u32, i64), i32>(&mut kernel_store, "kernel_blocking_retry_release")?;
 
     // --- Kernel-side process setup ------------------------------------------
     let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
@@ -384,6 +390,8 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
         &set_current_tid,
         &handle_channel,
         &get_exit_status,
+        &blocking_retry_token,
+        &blocking_retry_release,
         &mut syscall_trace,
     )?;
 
@@ -705,6 +713,8 @@ fn run_pump(
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     get_exit_status: &wasmtime::TypedFunc<u32, i32>,
+    blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
+    blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let status_off = layout.channel_offset + STATUS_OFFSET;
@@ -813,8 +823,44 @@ fn run_pump(
             }
             let rc = rc_result?;
 
-            let ret = unsafe { read_i64(kernel_mem, scratch_ptr + RETURN_OFFSET) };
-            let errno = unsafe { read_u32(kernel_mem, scratch_ptr + ERRNO_OFFSET) };
+            let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+
+            // Blocking-retry (Phase 4 wait capability): a blocking syscall that
+            // would block returns EAGAIN. The host owns the *waiting* — it asks
+            // the kernel for a retry token, re-dispatches under it until the op
+            // is ready or its timeout deadline forces a final non-blocking
+            // evaluation, then releases the token. The kernel still owns the
+            // readiness *decision* (it re-runs sys_poll/sys_read each dispatch).
+            let (ret, errno) = if ret == -1
+                && errno == libc_errno::EAGAIN as u32
+                && syscall_blocks_with_timeout(syscall_nr)
+            {
+                let token = blocking_retry_token.call(&mut *kernel_store, (pid, pid, syscall_nr))?;
+                if token < 0 {
+                    anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
+                }
+                // token == 0 means a host-only-snapshot syscall (poll) with no
+                // target to pin; re-dispatch under retry_token 0. token > 0 pins
+                // a stable target (an OFD) that must be released afterward.
+                let dispatch_token = token.max(0);
+                let result = blocking_wait(
+                    &mut *kernel_store,
+                    kernel_mem,
+                    scratch_ptr,
+                    pid,
+                    syscall_nr,
+                    &args,
+                    dispatch_token,
+                    set_current_tid,
+                    handle_channel,
+                )?;
+                if token > 0 {
+                    blocking_retry_release.call(&mut *kernel_store, (pid, pid, token))?;
+                }
+                result
+            } else {
+                (ret, errno)
+            };
 
             // Copy back any Out/InOut buffers into the guest.
             for s in &staged {
@@ -850,6 +896,96 @@ fn run_pump(
     };
 
     Ok(exit_code)
+}
+
+/// Read the `(RETURN, ERRNO)` pair the kernel wrote into the scratch header.
+fn read_ret_errno(mem: &SharedMemory, scratch_ptr: usize) -> (i64, u32) {
+    unsafe {
+        (
+            read_i64(mem, scratch_ptr + RETURN_OFFSET),
+            read_u32(mem, scratch_ptr + ERRNO_OFFSET),
+        )
+    }
+}
+
+/// Whether a blocking syscall's wait is bounded by a caller timeout the host can
+/// read from its args (and therefore can drive to completion with no external
+/// readiness source). This first Phase 4 increment handles `poll`; readiness-
+/// driven waits (read/accept woken by another task) come next.
+fn syscall_blocks_with_timeout(syscall_nr: u32) -> bool {
+    syscall_nr == Syscall::Poll as u32
+}
+
+/// The wall-clock deadline for a timeout-bounded blocking syscall, or `None` for
+/// an infinite wait. `poll`'s timeout is arg2 in milliseconds; a negative value
+/// means block forever.
+fn blocking_deadline(syscall_nr: u32, args: &[i64; 6]) -> Option<Instant> {
+    if syscall_nr == Syscall::Poll as u32 {
+        let timeout_ms = args[2] as i32;
+        if timeout_ms < 0 {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(timeout_ms as u64))
+        }
+    } else {
+        None
+    }
+}
+
+/// Rewrite the syscall's timeout arg in the kernel scratch to zero so a final
+/// re-dispatch is a non-blocking evaluation: the kernel returns the timed-out
+/// result (0, revents cleared) instead of EAGAIN. `sys_poll` does not track
+/// elapsed time — the host owns the deadline — so this is how the timeout ends.
+fn force_zero_timeout(mem: &SharedMemory, scratch_ptr: usize, syscall_nr: u32) {
+    if syscall_nr == Syscall::Poll as u32 {
+        unsafe {
+            write_bytes(mem, scratch_ptr + ARGS_OFFSET + 2 * ARG_SIZE, &0i64.to_le_bytes());
+        }
+    }
+}
+
+/// Drive the host wait/retry loop for a blocking RAW syscall that returned
+/// EAGAIN, re-dispatching under the retry token until the op becomes ready or
+/// its deadline forces a final non-blocking evaluation. Returns the final
+/// `(ret, errno)` and leaves the final result in the scratch for copy-back.
+#[allow(clippy::too_many_arguments)]
+fn blocking_wait(
+    store: &mut Store<()>,
+    kernel_mem: &SharedMemory,
+    scratch_ptr: usize,
+    pid: u32,
+    syscall_nr: u32,
+    args: &[i64; 6],
+    dispatch_token: i64,
+    set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
+    handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
+) -> anyhow::Result<(i64, u32)> {
+    let deadline = blocking_deadline(syscall_nr, args);
+    // A safety cap so a protocol bug fails as a bounded error, not a hang.
+    let hard_cap = Instant::now() + Duration::from_secs(30);
+    loop {
+        if Instant::now() >= hard_cap {
+            anyhow::bail!("blocking_wait for syscall {syscall_nr} exceeded 30s");
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            force_zero_timeout(kernel_mem, scratch_ptr, syscall_nr);
+            set_current_tid.call(&mut *store, (pid, pid))?;
+            handle_channel
+                .call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, dispatch_token))?;
+            return Ok(read_ret_errno(kernel_mem, scratch_ptr));
+        }
+        // No readiness wake source on the pure-timeout path; re-check on a short
+        // interval. Readiness-driven waits will instead drain kernel wake events.
+        std::thread::sleep(Duration::from_millis(2));
+        // Each dispatch consumes the tid binding, so re-bind before re-dispatch.
+        set_current_tid.call(&mut *store, (pid, pid))?;
+        handle_channel
+            .call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, dispatch_token))?;
+        let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+        if !(ret == -1 && errno == libc_errno::EAGAIN as u32) {
+            return Ok((ret, errno));
+        }
+    }
 }
 
 /// Stage a RAW syscall's `In`/`InOut` pointer buffers into the kernel scratch
@@ -932,5 +1068,6 @@ mod libc_errno {
     pub const ENOENT: i32 = 2;
     pub const EIO: i32 = 5;
     pub const EBADF: i32 = 9;
+    pub const EAGAIN: i32 = 11;
     pub const EINVAL: i32 = 22;
 }

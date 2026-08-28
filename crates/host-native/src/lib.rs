@@ -222,6 +222,7 @@ pub fn kernel_wasm_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use wasm_posix_shared::Syscall;
 
     /// Return the kernel path, or `None` (with a clear skip message) if it has
@@ -462,6 +463,45 @@ mod tests {
             outcome.syscall_trace.contains(&(Syscall::Open as u32)),
             "expected an open syscall in the trace: {:?}",
             outcome.syscall_trace
+        );
+        Ok(())
+    }
+
+    /// Phase 4, increment 1: the native host's blocking wait capability. A
+    /// blocking syscall (poll with a timeout, no fds) returns EAGAIN; the host
+    /// must own the *waiting* — get a retry token, re-dispatch under it, and on
+    /// the deadline force a non-blocking evaluation so the kernel returns 0
+    /// (timed out). poll(NULL, 0, N) is the smallest such op: no readiness
+    /// sources, no cross-process concurrency, pure timeout path. Proves the
+    /// kernel's retry-token protocol drives a blocking wait on a non-JS engine.
+    #[test]
+    fn smoke_blocking_poll_timeout() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_poll.wasm");
+
+        let start = Instant::now();
+        let outcome = run_trivial_guest(&path, guest)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"poll timed out\n",
+            "poll must return 0 after timing out, not EAGAIN"
+        );
+        // The guest asked for a 60ms timeout; the host actually waited (rather
+        // than returning immediately), so real time must have elapsed. Loose
+        // lower bound to stay robust on a busy CI host.
+        assert!(
+            elapsed >= Duration::from_millis(30),
+            "expected the poll timeout to actually wait; elapsed {elapsed:?}"
         );
         Ok(())
     }
