@@ -134,6 +134,13 @@ fi
 # below records exactly which names were dropped so that stays visible
 # rather than silently absorbed.
 RUNTIME_TERMINFO_DIR="$WORK_DIR/terminfo-runtime"
+# Keep every entry's FIRST CHARACTER lower-case and case-unique. The literal
+# layout normalization below buckets each entry into a single-character leaf
+# directory ("$first_char"); on a case-insensitive build host (default macOS)
+# two names whose first characters differ only by case (e.g. "Eterm" and
+# "eterm-color") would fold into one physical bucket dir and mis-place entries.
+# terminfo.src does contain capitalized names (Eterm, MtxOrb, …); if one is
+# ever added here, the assertion after the compile step will fail loudly.
 CURATED_TERMINFO_NAMES=(
     xterm-256color xterm xterm-color xterm-16color
     vt100 vt102 vt220 vt52
@@ -142,6 +149,21 @@ CURATED_TERMINFO_NAMES=(
     rxvt-unicode-256color rxvt vt320
     putty konsole-256color st-256color alacritty xterm-kitty
 )
+# Fail loudly if a curated name has a non-lower-case first character, which the
+# single-character-bucket normalization cannot represent safely on a
+# case-insensitive build host (see the layout note above).
+for _ti_name in "${CURATED_TERMINFO_NAMES[@]}"; do
+    _ti_first="${_ti_name:0:1}"
+    case "$_ti_first" in
+        [a-z0-9]) ;;
+        *)
+            echo "ERROR: curated terminfo name '$_ti_name' has a non-lowercase" \
+                "first character; the literal-layout bucketing is unsafe on" \
+                "case-insensitive build hosts. Rework the normalization first." >&2
+            exit 1
+            ;;
+    esac
+done
 if [ ! -f "$RUNTIME_TERMINFO_DIR/x/xterm-256color" ]; then
     echo "==> Compiling the shared runtime terminfo database..."
     rm -rf "$RUNTIME_TERMINFO_DIR"
