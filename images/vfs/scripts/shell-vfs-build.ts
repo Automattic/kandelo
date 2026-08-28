@@ -30,7 +30,9 @@ import {
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
+  displacePosixUtilsLiteManApplet,
   registerDeclaredShellLazyArchive,
+  registerManShellProfile,
   registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
@@ -467,6 +469,10 @@ export function populateShellEnvironment(
   registerPythonShellProfile(fs);
   populateNodeArchive(fs, resolveArtifact);
   populatePerlArchive(fs, resolveArtifact);
+  populateManArchive(fs, resolveArtifact);
+  registerManShellProfile(fs);
+  populateCoreutilsDocsArchive(fs, resolveArtifact);
+  populateLsofDocsArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -638,6 +644,12 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/nethack", "/bin/nethack");
 
   symlink(fs, "/usr/bin/lsof", "/bin/lsof");
+
+  // posix-utils-lite's raw `man` applet already ships /bin/man as a symlink
+  // to /usr/bin/man (see displacePosixUtilsLiteManApplet). This alias is a
+  // no-op there (symlink() swallows EEXIST) and is load-bearing for the
+  // from-scratch composition path, where no applet has claimed /bin/man yet.
+  symlink(fs, "/usr/bin/man", "/bin/man");
 }
 
 function populateBaseExtendedBinaries(
@@ -811,6 +823,42 @@ function populatePerlArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[5],
+    resolveArtifact,
+  );
+}
+
+function populateManArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man on a
+  // baseProvided rootfs; clear it first so mandoc's formatting `man` wins.
+  displacePosixUtilsLiteManApplet(fs);
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[6],
+    resolveArtifact,
+  );
+}
+
+function populateCoreutilsDocsArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[7],
+    resolveArtifact,
+  );
+}
+
+function populateLsofDocsArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[8],
     resolveArtifact,
   );
 }

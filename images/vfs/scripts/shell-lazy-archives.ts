@@ -75,6 +75,30 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredMember: "bin/perl",
   },
+  {
+    id: "man",
+    dependency: "mandoc-browser-bundle",
+    resolverPath: "programs/wasm32/man.zip",
+    archiveUrl: "man.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/mandoc",
+  },
+  {
+    id: "coreutils-docs",
+    dependency: "coreutils-docs",
+    resolverPath: "programs/wasm32/coreutils-docs.zip",
+    archiveUrl: "coreutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/ls.1",
+  },
+  {
+    id: "lsof-docs",
+    dependency: "lsof-docs",
+    resolverPath: "programs/wasm32/lsof-docs.zip",
+    archiveUrl: "lsof-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man8/lsof.8",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
 // The python lazy-archive mounts a statically-linked CPython at /usr/bin with
@@ -96,6 +120,40 @@ export function registerPythonShellProfile(fs: MemoryFileSystem): void {
       "export PYTHONHOME=/usr\n",
     0o644,
   );
+}
+
+// mandoc's `man` front-end pipes to a pager when stdout is a terminal, which
+// would fork a pager the shell demos do not ship. Pin MANPAGER=cat so pages
+// render inline. /etc/man.conf gives the manpath root the docs archives fill.
+export function registerManShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/man.sh",
+    "# mandoc: render inline (no pager fork) and search /usr/share/man.\n" +
+      "export MANPAGER=cat\n" +
+      "export MANPATH=/usr/share/man\n",
+    0o644,
+  );
+}
+
+/**
+ * posix-utils-lite installs a raw `man` applet at /usr/bin/man in the base
+ * rootfs (cats the raw troff source with no formatting). The mandoc
+ * lazy-archive's `bin/man` member mounts a formatting `man` front-end at the
+ * exact same path, so registering the archive over an existing applet would
+ * throw EEXIST. Clear the applet's entry first so the archive's own symlink
+ * can claim /usr/bin/man — mandoc must win. /bin/man is an existing symlink
+ * to /usr/bin/man (not a separate inode), so it needs no separate removal:
+ * it keeps resolving to whatever now lives at /usr/bin/man.
+ */
+export function displacePosixUtilsLiteManApplet(fs: MemoryFileSystem): void {
+  try {
+    fs.lstat("/usr/bin/man");
+  } catch {
+    return;
+  }
+  fs.unlink("/usr/bin/man");
 }
 
 export interface DeclaredShellLazyArchive {

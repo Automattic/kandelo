@@ -31,6 +31,9 @@ depends_on = [
   "python-browser-bundle@3.13.3",
   "node-browser-bundle@0.1.0",
   "perl-browser-bundle@5.40.3",
+  "mandoc-browser-bundle@1.14.6",
+  "coreutils-docs@9.6",
+  "lsof-docs@0.1.0",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact
