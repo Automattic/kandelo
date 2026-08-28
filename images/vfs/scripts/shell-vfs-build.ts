@@ -31,6 +31,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   registerDeclaredShellLazyArchive,
+  registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "./shell-lazy-archives";
 import {
@@ -461,6 +462,11 @@ export function populateShellEnvironment(
   }
   populateVimArchive(fs, resolveArtifact);
   populateNetHackArchive(fs, resolveArtifact);
+  populateRubyArchive(fs, resolveArtifact);
+  populatePythonArchive(fs, resolveArtifact);
+  registerPythonShellProfile(fs);
+  populateNodeArchive(fs, resolveArtifact);
+  populatePerlArchive(fs, resolveArtifact);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
@@ -761,6 +767,50 @@ function populateNetHackArchive(
   registerDeclaredShellLazyArchive(
     fs,
     SHELL_LAZY_ARCHIVE_SPECS[1],
+    resolveArtifact,
+  );
+}
+
+function populateRubyArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[2],
+    resolveArtifact,
+  );
+}
+
+function populatePythonArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[3],
+    resolveArtifact,
+  );
+}
+
+function populateNodeArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[4],
+    resolveArtifact,
+  );
+}
+
+function populatePerlArchive(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  registerDeclaredShellLazyArchive(
+    fs,
+    SHELL_LAZY_ARCHIVE_SPECS[5],
     resolveArtifact,
   );
 }

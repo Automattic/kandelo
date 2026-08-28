@@ -1,0 +1,28 @@
+# Browser lazy-archive bundle for Node.js. Reshapes the node package's
+# node.wasm plus npm (carried as this package's [source], the way node-vfs
+# does) into a single root-relative zip (bin/node + bin/npm + bin/npx +
+# local/lib/npm/…) that the shell overlay mounts at /usr/. The node package
+# itself is untouched.
+kind = "program"
+name = "node-browser-bundle"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = ["node@0.1.0"]
+
+# npm 10.9.2 — its dist is staged into the archive and reshaped for SpiderMonkey.
+[source]
+url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
+sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+provider = "archive"
+
+[license]
+spdx = "MIT AND Artistic-2.0"
+url = "https://github.com/nodejs/node/blob/main/LICENSE"
+
+[build]
+script_path = "packages/registry/node-browser-bundle/build-node-browser-bundle.sh"
+
+[[outputs]]
+name = "node"
+wasm = "node.zip"
+fork_instrumentation = "disabled"

@@ -22,7 +22,11 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
     validateVfsAssetGroupRelativePath(path);
     return `assets/programs/wasm32/${path}`;
   }
-  if (reference === "vim.zip" || reference === "nethack.zip") {
+  if (
+    reference === "vim.zip" || reference === "nethack.zip" ||
+    reference === "ruby.zip" || reference === "python.zip" ||
+    reference === "node.zip" || reference === "perl.zip"
+  ) {
     return `assets/programs/wasm32/${reference}`;
   }
   throw new Error("Image-owned lazy runtime reference is invalid");

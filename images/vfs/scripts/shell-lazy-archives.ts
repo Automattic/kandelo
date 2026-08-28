@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
+  ensureDirRecursive,
+  writeVfsFile,
+} from "../../../host/src/vfs/image-helpers";
+import {
   extractZipEntry,
   parseZipCentralDirectory,
   type ZipEntry,
@@ -14,12 +18,12 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 const textEncoder = new TextEncoder();
 
 export interface ShellLazyArchiveSpec {
-  id: "vim" | "nethack";
-  dependency: "vim-browser-bundle" | "nethack-browser-bundle";
-  resolverPath: "programs/wasm32/vim.zip" | "programs/wasm32/nethack.zip";
-  archiveUrl: "vim.zip" | "nethack.zip";
+  id: string;
+  dependency: string;
+  resolverPath: string;
+  archiveUrl: string;
   mountPrefix: "/usr/";
-  requiredExecutable: "bin/vim" | "bin/nethack";
+  requiredExecutable: string;
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
@@ -39,7 +43,60 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredExecutable: "bin/nethack",
   },
+  {
+    id: "ruby",
+    dependency: "ruby-browser-bundle",
+    resolverPath: "programs/wasm32/ruby.zip",
+    archiveUrl: "ruby.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/ruby",
+  },
+  {
+    id: "python",
+    dependency: "python-browser-bundle",
+    resolverPath: "programs/wasm32/python.zip",
+    archiveUrl: "python.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/python3",
+  },
+  {
+    id: "node",
+    dependency: "node-browser-bundle",
+    resolverPath: "programs/wasm32/node.zip",
+    archiveUrl: "node.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/node",
+  },
+  {
+    id: "perl",
+    dependency: "perl-browser-bundle",
+    resolverPath: "programs/wasm32/perl.zip",
+    archiveUrl: "perl.zip",
+    mountPrefix: "/usr/",
+    requiredExecutable: "bin/perl",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
+
+// The python lazy-archive mounts a statically-linked CPython at /usr/bin with
+// its standard library at /usr/lib/python3.13. A static build ships no
+// platform-dependent (lib-dynload) modules, so CPython's exec_prefix probe
+// fails and prints "Could not find platform dependent libraries <exec_prefix>"
+// to stderr on every launch (the pure-Python stdlib still self-locates, so the
+// REPL otherwise works). Pinning PYTHONHOME=/usr makes exec_prefix explicit —
+// the interpreter stops probing and the REPL starts cleanly. This mirrors the
+// dedicated python VFS product, which sets the same value in its boot env.
+// Sourced by /etc/profile for interactive login shells.
+export function registerPythonShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/python.sh",
+    "# Static CPython ships no lib-dynload; pin the prefix so exec_prefix\n" +
+      "# resolves without probing and the REPL starts without a warning.\n" +
+      "export PYTHONHOME=/usr\n",
+    0o644,
+  );
+}
 
 export interface DeclaredShellLazyArchive {
   spec: ShellLazyArchiveSpec;

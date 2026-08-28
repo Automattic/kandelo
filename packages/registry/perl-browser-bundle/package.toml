@@ -1,0 +1,26 @@
+# Browser lazy-archive bundle for Perl. Reshapes the perl package's perl.wasm +
+# perl-runtime.zip (the complete built standard library) into a single
+# root-relative zip (bin/perl + lib/perl5/5.40.3/…) that the shell overlay
+# mounts at /usr/. The perl package itself is untouched.
+kind = "program"
+name = "perl-browser-bundle"
+version = "5.40.3"
+kernel_abi = 7
+depends_on = ["perl@5.40.3"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+url = "https://dev.perl.org/licenses/"
+
+[build]
+script_path = "packages/registry/perl-browser-bundle/build-perl-browser-bundle.sh"
+
+[[outputs]]
+name = "perl"
+wasm = "perl.zip"
+fork_instrumentation = "disabled"

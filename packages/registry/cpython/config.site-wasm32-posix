@@ -28,7 +28,11 @@ ac_cv_func_tmpnam_r=${ac_cv_func_tmpnam_r=no}
 
 # CPython treats a successful unresolved-symbol link as proof that these
 # optional external-library modules are buildable. Formula/package metadata
-# declares zlib only, so keep the undeclared native-library extensions absent.
+# declares zlib, readline, and ncurses; keep the remaining undeclared
+# native-library extensions absent. readline is left uncached here (and
+# driven instead by --with-readline plus the resolved readline/ncurses
+# prefixes in build-cpython.sh) so CPython's normal module-detection macro
+# decides its state from those inputs, matching zlib's absence from this list.
 py_cv_module__ssl=${py_cv_module__ssl=n/a}
 py_cv_module__hashlib=${py_cv_module__hashlib=n/a}
 py_cv_module__decimal=${py_cv_module__decimal=n/a}
@@ -37,7 +41,6 @@ py_cv_module__ctypes_test=${py_cv_module__ctypes_test=n/a}
 py_cv_module__bz2=${py_cv_module__bz2=n/a}
 py_cv_module__lzma=${py_cv_module__lzma=n/a}
 py_cv_module__sqlite3=${py_cv_module__sqlite3=n/a}
-py_cv_module_readline=${py_cv_module_readline=n/a}
 py_cv_module__tkinter=${py_cv_module__tkinter=n/a}
 py_cv_module__dbm=${py_cv_module__dbm=n/a}
 py_cv_module__gdbm=${py_cv_module__gdbm=n/a}

@@ -27,6 +27,10 @@ depends_on = [
   "sqlite-cli@3.49.1",
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
+  "ruby-browser-bundle@4.0.5",
+  "python-browser-bundle@3.13.3",
+  "node-browser-bundle@0.1.0",
+  "perl-browser-bundle@5.40.3",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

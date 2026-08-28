@@ -2,7 +2,7 @@ kind = "program"
 name = "cpython"
 version = "3.13.3"
 kernel_abi = 41
-depends_on = ["zlib@1.3.1"]
+depends_on = ["zlib@1.3.1", "readline@8.2", "ncurses@6.5"]
 
 [source]
 url = "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"

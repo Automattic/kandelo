@@ -48,6 +48,10 @@ name = "cpython"
 class = "user-software"
 
 [[packages]]
+name = "python-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "curl"
 class = "user-software"
 
@@ -208,6 +212,10 @@ name = "node"
 class = "user-software"
 
 [[packages]]
+name = "node-browser-bundle"
+class = "browser-product"
+
+[[packages]]
 name = "node-vfs"
 class = "browser-product"
 
@@ -218,6 +226,10 @@ class = "platform"
 [[packages]]
 name = "perl"
 class = "user-software"
+
+[[packages]]
+name = "perl-browser-bundle"
+class = "browser-product"
 
 [[packages]]
 name = "php"
@@ -238,6 +250,10 @@ class = "platform"
 [[packages]]
 name = "ruby"
 class = "user-software"
+
+[[packages]]
+name = "ruby-browser-bundle"
+class = "browser-product"
 
 [[packages]]
 name = "sdl-dsp-test"

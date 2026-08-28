@@ -98,6 +98,36 @@ if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
 fi
 echo "==> zlib at $ZLIB_PREFIX"
 
+READLINE_PREFIX="${WASM_POSIX_DEP_READLINE_DIR:-}"
+if [ -z "$READLINE_PREFIX" ]; then
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    echo "==> Resolving readline through the package resolver..."
+    READLINE_PREFIX="$(
+        cd "$REPO_ROOT"
+        cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve readline
+    )"
+fi
+if [ ! -f "$READLINE_PREFIX/lib/libreadline.a" ]; then
+    echo "ERROR: readline dependency is missing lib/libreadline.a: $READLINE_PREFIX" >&2
+    exit 1
+fi
+echo "==> readline at $READLINE_PREFIX"
+
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    echo "==> Resolving ncurses through the package resolver..."
+    NCURSES_PREFIX="$(
+        cd "$REPO_ROOT"
+        cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses
+    )"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
+    echo "ERROR: ncurses dependency is missing lib/libtinfow.a: $NCURSES_PREFIX" >&2
+    exit 1
+fi
+echo "==> ncurses at $NCURSES_PREFIX"
+
 if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$PYTHON_VERSION" ]; then
     echo "==> CPython source version changed; discarding stale caller-owned builds..."
     rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$CROSS_BUILD_DIR" "$RUNTIME_STAGE"
@@ -178,6 +208,8 @@ if [ ! -f "$CROSS_BUILD_DIR/Makefile" ]; then
         NM=wasm32posix-nm \
         STRIP=wasm32posix-strip \
         PKG_CONFIG=wasm32posix-pkg-config \
+        LIBREADLINE_CFLAGS="-I$READLINE_PREFIX/include" \
+        LIBREADLINE_LIBS="-L$READLINE_PREFIX/lib -L$NCURSES_PREFIX/lib -lreadline -lhistory -ltinfow" \
         py_cv_module__ssl=n/a \
         py_cv_module__hashlib=n/a \
         py_cv_module__decimal=n/a \
@@ -186,7 +218,6 @@ if [ ! -f "$CROSS_BUILD_DIR/Makefile" ]; then
         py_cv_module__bz2=n/a \
         py_cv_module__lzma=n/a \
         py_cv_module__sqlite3=n/a \
-        py_cv_module_readline=n/a \
         py_cv_module__tkinter=n/a \
         py_cv_module__dbm=n/a \
         py_cv_module__gdbm=n/a \
@@ -199,10 +230,11 @@ if [ ! -f "$CROSS_BUILD_DIR/Makefile" ]; then
             --disable-shared \
             --without-mimalloc \
             --with-suffix=.wasm \
+            --with-readline=readline \
             --prefix="$GUEST_PREFIX" \
             CFLAGS="-O2 -gline-tables-only -fdebug-compilation-dir=$STABLE_SOURCE $PREFIX_MAPS -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
-            CPPFLAGS="-I$ZLIB_PREFIX/include" \
-            LDFLAGS="-L$ZLIB_PREFIX/lib"
+            CPPFLAGS="-I$ZLIB_PREFIX/include -I$READLINE_PREFIX/include" \
+            LDFLAGS="-L$ZLIB_PREFIX/lib -L$READLINE_PREFIX/lib -L$NCURSES_PREFIX/lib"
     )
 fi
 

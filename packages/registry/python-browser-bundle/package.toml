@@ -1,0 +1,26 @@
+# Browser lazy-archive bundle for CPython. Reshapes the cpython package's
+# python.wasm + python-runtime.zip into a single root-relative zip
+# (bin/python3 + bin/python + lib/python3.13/…) that the shell overlay
+# mounts at /usr/. The cpython package itself is untouched.
+kind = "program"
+name = "python-browser-bundle"
+version = "3.13.3"
+kernel_abi = 41
+depends_on = ["cpython@3.13.3"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Python-2.0"
+url = "https://docs.python.org/3/license.html"
+
+[build]
+script_path = "packages/registry/python-browser-bundle/build-python-browser-bundle.sh"
+
+[[outputs]]
+name = "python"
+wasm = "python.zip"
+fork_instrumentation = "disabled"

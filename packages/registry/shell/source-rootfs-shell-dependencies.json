@@ -29,6 +29,26 @@
       "name": "nethack-browser-bundle",
       "version": "3.6.7",
       "role": "lazy-archive"
+    },
+    {
+      "name": "ruby-browser-bundle",
+      "version": "4.0.5",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "python-browser-bundle",
+      "version": "3.13.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "node-browser-bundle",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "perl-browser-bundle",
+      "version": "5.40.3",
+      "role": "lazy-archive"
     }
   ]
 }

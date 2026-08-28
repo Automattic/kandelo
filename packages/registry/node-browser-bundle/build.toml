@@ -1,0 +1,11 @@
+script_path = "packages/registry/node-browser-bundle/build-node-browser-bundle.sh"
+inputs = [
+  "packages/registry/node-browser-bundle/build-node-browser-bundle.sh",
+  "images/vfs/scripts/build-node-zip.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/lib/init/spidermonkey-npm-runtime.ts",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "4ba37eb0769bac8f448d711943d6454b62eb6933"
+revision    = 2

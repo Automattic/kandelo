@@ -8,6 +8,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   registerDeclaredShellLazyArchive,
+  registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -53,7 +54,16 @@ export function populateSourceRootfsShellOverlay(
     ["/usr/bin/vim", "/usr/bin/vi"],
     ["/usr/bin/vim", "/bin/vi"],
     ["/usr/bin/nethack", "/bin/nethack"],
+    ["/usr/bin/ruby", "/bin/ruby"],
+    ["/usr/bin/python3", "/bin/python3"],
+    ["/usr/bin/python3", "/bin/python"],
+    ["/usr/bin/node", "/bin/node"],
+    ["/usr/bin/npm", "/bin/npm"],
+    ["/usr/bin/npx", "/bin/npx"],
+    ["/usr/bin/perl", "/bin/perl"],
   ] as const) {
     symlink(fs, target, alias);
   }
+
+  registerPythonShellProfile(fs);
 }
