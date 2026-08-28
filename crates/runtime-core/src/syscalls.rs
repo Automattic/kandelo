@@ -7260,6 +7260,16 @@ fn fifo_path_stat_raw(
         Some(pipe_idx) => pipe_idx,
         None => return Ok(None),
     };
+    // A tmpfs fifo has no host marker file to lstat; the pipe holds its
+    // authoritative metadata (set at mkfifo, updated by chmod/chown/utimensat).
+    if crate::tmpfs::claims_path(resolved) {
+        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or(Errno::EIO)?;
+        let mut st = pipe.fifo_metadata().ok_or(Errno::EIO)?;
+        st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
+        st.st_size = 0;
+        st.st_nlink = pipe.fifo_name_count();
+        return Ok(Some(st));
+    }
     let mut st = if follow {
         fs_stat(host, resolved)?
     } else {
@@ -7508,6 +7518,44 @@ fn make_fifo(
     if resolved.stat.is_some() {
         return Err(Errno::EEXIST);
     }
+    // In-kernel tmpfs owns the scratch mounts: the fifo has no host marker file
+    // (there is no host mount to hold it after cutover). Its node metadata and
+    // pipe are built directly and owned by the fifo/pipe table, keyed by path —
+    // the same authority that already serves lstat/open for host fifos.
+    if crate::tmpfs::claims_path(&resolved.path) {
+        check_parent_writable(proc, host, &resolved.path)?;
+        let effective_mode = mode & !proc.umask;
+        let (now_sec, now_nsec) = {
+            let (s, n) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+            (
+                u64::try_from(s).map_err(|_| Errno::EINVAL)?,
+                u32::try_from(n).map_err(|_| Errno::EINVAL)?,
+            )
+        };
+        let metadata = WasmStat {
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: wasm_posix_shared::mode::S_IFIFO | (effective_mode & 0o7777),
+            st_nlink: 1,
+            st_uid: proc.effective_uid(),
+            st_gid: proc.effective_gid(),
+            st_size: 0,
+            st_atime_sec: now_sec,
+            st_atime_nsec: now_nsec,
+            st_mtime_sec: now_sec,
+            st_mtime_nsec: now_nsec,
+            st_ctime_sec: now_sec,
+            st_ctime_nsec: now_nsec,
+            _pad: 0,
+        };
+        let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
+        let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+        if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
+            unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
+            return Err(Errno::EEXIST);
+        }
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_parent_writable(proc, host, &resolved.path)?;
 
@@ -7569,7 +7617,11 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
     let result = (|| {
         fifo_path_stat_raw(host, resolved, false)?.ok_or(Errno::EIO)?;
         let (ctime_sec, ctime_nsec) = realtime_timestamp(host)?;
-        unlink_host_entry(host, resolved)?;
+        // A tmpfs fifo has no host marker file to remove; its node is entirely
+        // the fifo/pipe table entry dropped below.
+        if !crate::tmpfs::claims_path(resolved) {
+            unlink_host_entry(host, resolved)?;
+        }
 
         let removed = unsafe { crate::fifo::global_fifo_table() }.remove(resolved);
         if removed != Some(pipe_idx) {
@@ -7645,11 +7697,14 @@ fn register_fifo_hardlink(
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
-    // In-kernel tmpfs owns the scratch mounts. A bound AF_UNIX socket node also
-    // has a path-keyed registry entry; drop it (waking any parked datagram
-    // senders) before removing the tmpfs node. (FIFO names on tmpfs are not yet
-    // routed here; they are added with that feature.)
+    // In-kernel tmpfs owns the scratch mounts. A tmpfs fifo lives in the
+    // fifo/pipe table (not the tmpfs inode store), so drop it there first. A
+    // bound AF_UNIX socket node also has a path-keyed registry entry; drop it
+    // (waking any parked datagram senders) before removing the tmpfs node.
     if crate::tmpfs::claims_path(&resolved) {
+        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+            return result;
+        }
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
@@ -18025,6 +18080,38 @@ mod tests {
         assert!(
             !unsafe { crate::unix_socket::global_unix_socket_registry() }
                 .contains(b"/var/run/wire.sock")
+        );
+    }
+
+    /// `mkfifo` on a scratch-mount path builds the fifo node in the kernel
+    /// (no host marker file); lstat sees S_IFIFO, and unlink removes it.
+    #[test]
+    fn tmpfs_fifo_create_stat_unlink_in_kernel() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        sys_mkfifo(&mut proc, &mut host, b"/var/run/wire.fifo", 0o644).unwrap();
+        let st = sys_lstat(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFIFO);
+        assert_eq!(st.st_mode & 0o777, 0o644);
+
+        // Re-create is EEXIST; the host was never asked to make a marker file.
+        assert_eq!(
+            sys_mkfifo(&mut proc, &mut host, b"/var/run/wire.fifo", 0o644).unwrap_err(),
+            Errno::EEXIST
+        );
+        assert!(
+            !host.handle_paths.values().any(|p| p.starts_with(b"/var/run")),
+            "host was asked to create a scratch fifo marker: {:?}",
+            host.handle_paths,
+        );
+
+        // Unlink removes the kernel fifo node.
+        sys_unlink(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap_err(),
+            Errno::ENOENT
         );
     }
 
