@@ -4694,14 +4694,17 @@ mod tests {
         );
 
         // A leaf nothing else depends on (directly or via a product) removes
-        // only itself. `ruby` is not in any package's `depends_on`, any
-        // product's `package_dependencies`/`root_mirror_packages`, or any
-        // product manifest's composition — verified against the checked-in
-        // registry and `local-supported.toml` when this test was written.
-        let leaf_only = clean_removal_set(&graph, &PlanNodeV1::package("ruby", "wasm32"));
+        // only itself. Read the leaf out of the graph instead of naming one:
+        // a named package stops being a leaf as soon as an image embeds it.
+        let leaf = graph
+            .packages
+            .iter()
+            .map(|package| PlanNodeV1::package(&package.name, "wasm32"))
+            .find(|node| !graph.dependencies.values().any(|deps| deps.contains(node)))
+            .expect("the checked-in graph has a package nothing else depends on");
         assert_eq!(
-            leaf_only,
-            BTreeSet::from([PlanNodeV1::package("ruby", "wasm32")])
+            clean_removal_set(&graph, &leaf),
+            BTreeSet::from([leaf.clone()])
         );
     }
 
