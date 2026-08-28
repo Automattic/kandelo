@@ -34,7 +34,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use wasm_posix_shared::mode::{S_IFDIR, S_IFMT, S_IFREG};
+use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 
@@ -49,6 +49,16 @@ const O_DIRECTORY: u32 = 0o200000;
 /// Directory entry type codes as reported through getdents64 `d_type`.
 const DT_DIR: u32 = 4;
 const DT_REG: u32 = 8;
+const DT_LNK: u32 = 10;
+
+/// Dirent `d_type` for an inode.
+fn dirent_type(inode: &Inode) -> u8 {
+    match inode.kind {
+        InodeKind::Dir(_) => DT_DIR as u8,
+        InodeKind::Symlink(_) => DT_LNK as u8,
+        InodeKind::Regular(_) => DT_REG as u8,
+    }
+}
 
 /// Disjoint negative-handle bases. Kept far from the small pipe/device/procfs
 /// sentinels and from `SYNTHETIC_REGULAR_HANDLE_BASE` (1e9).
@@ -83,6 +93,8 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
 enum InodeKind {
     Dir(BTreeMap<Vec<u8>, u32>),
     Regular(Vec<u8>),
+    /// Symbolic link holding its target path bytes.
+    Symlink(Vec<u8>),
 }
 
 struct Inode {
@@ -106,10 +118,12 @@ impl Inode {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
             InodeKind::Regular(_) => S_IFREG,
+            InodeKind::Symlink(_) => S_IFLNK,
         };
         let size = match &self.kind {
             InodeKind::Dir(entries) => entries.len() as u64,
             InodeKind::Regular(data) => data.len() as u64,
+            InodeKind::Symlink(target) => target.len() as u64,
         };
         WasmStat {
             st_dev: self.st_dev,
@@ -236,7 +250,7 @@ impl TmpfsState {
                 InodeKind::Dir(entries) => {
                     cur = *entries.get(*comp).ok_or(Errno::ENOENT)?;
                 }
-                InodeKind::Regular(_) => return Err(Errno::ENOTDIR),
+                _ => return Err(Errno::ENOTDIR),
             }
         }
         Ok(cur)
@@ -259,7 +273,7 @@ impl TmpfsState {
         let parent_inode = self.get(parent).ok_or(Errno::ENOENT)?;
         let target = match &parent_inode.kind {
             InodeKind::Dir(entries) => entries.get(last).copied(),
-            InodeKind::Regular(_) => return Err(Errno::ENOTDIR),
+            _ => return Err(Errno::ENOTDIR),
         };
         Ok((parent, Some(last), target))
     }
@@ -527,7 +541,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
             InodeKind::Regular(data) => Ok(data.len() as i64),
-            InodeKind::Dir(_) => Err(Errno::EISDIR),
+            _ => Err(Errno::EISDIR),
         }
     })
 }
@@ -550,7 +564,7 @@ pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
                 data.resize(new_len, 0);
                 Ok(())
             }
-            InodeKind::Dir(_) => Err(Errno::EISDIR),
+            _ => Err(Errno::EISDIR),
         }
     })
 }
@@ -666,7 +680,7 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
                     return Err(Errno::ENOTEMPTY);
                 }
             }
-            InodeKind::Regular(_) => return Err(Errno::ENOTDIR),
+            _ => return Err(Errno::ENOTDIR),
         }
         if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) {
             entries.remove(last);
@@ -719,12 +733,11 @@ pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
                 let mut out: Vec<(Vec<u8>, u64, u32)> = Vec::with_capacity(map.len());
                 for (name, &child_idx) in map.iter() {
                     let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
-                    let d_type = if child.is_dir() { DT_DIR } else { DT_REG };
-                    out.push((name.clone(), child.ino, d_type));
+                    out.push((name.clone(), child.ino, dirent_type(child) as u32));
                 }
                 out
             }
-            InodeKind::Regular(_) => return Err(Errno::ENOTDIR),
+            _ => return Err(Errno::ENOTDIR),
         };
         let iter = DirIter { entries, cursor: 0 };
         let slot_idx = if let Some(i) = state.free_dir_iters.pop() {
@@ -764,6 +777,64 @@ pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usi
     })
 }
 
+/// Create a symbolic link at a tmpfs path pointing at `target`.
+pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let (mount_idx, rel) = match_mount(linkpath).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    if comps.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    if target.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    TMPFS.with(|state| {
+        let (parent, last, existing) = state.resolve(mount_idx, &comps)?;
+        if existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode {
+            kind: InodeKind::Symlink(target.to_vec()),
+            mode: 0o777,
+            uid,
+            gid,
+            nlink: 1,
+            open_count: 0,
+            st_dev,
+            ino,
+        });
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        Ok(())
+    })
+}
+
+/// Read the target of a tmpfs symlink into `buf`, returning the number of bytes
+/// copied (truncated to the buffer, matching readlink(2)). The final component
+/// is not followed; parents are already resolved by the caller.
+pub fn readlink(path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    TMPFS.with(|state| {
+        let root = state.mount_root(mount_idx);
+        let idx = state.walk(root, &comps)?;
+        match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
+            InodeKind::Symlink(target) => {
+                let n = target.len().min(buf.len());
+                buf[..n].copy_from_slice(&target[..n]);
+                Ok(n)
+            }
+            _ => Err(Errno::EINVAL),
+        }
+    })
+}
+
 /// Sentinel host handle marking an open tmpfs *directory* descriptor. Distinct
 /// from the procfs (-150) and devfs (-160) directory sentinels. A tmpfs
 /// directory OFD carries this in both `host_handle` and `dir_host_handle`;
@@ -796,8 +867,7 @@ pub fn getdents64(path: &[u8], buf: &mut [u8], offset: i64) -> Result<(usize, i6
         let mut out: Vec<(Vec<u8>, u8, u64)> = Vec::with_capacity(map.len());
         for (name, &child_idx) in map.iter() {
             let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
-            let d_type = if child.is_dir() { DT_DIR as u8 } else { DT_REG as u8 };
-            out.push((name.clone(), d_type, child.ino));
+            out.push((name.clone(), dirent_type(child), child.ino));
         }
         Ok((dir_ino, out))
     })?;
@@ -886,6 +956,24 @@ mod tests {
         assert_eq!(read_all(h), &[b'a', b'b', b'c', 0, 0]);
         assert_eq!(fstat(h).unwrap().st_size, 5);
         release_handle(h);
+    }
+
+    #[test]
+    fn symlink_create_and_readlink() {
+        symlink(b"/tmp/target", b"/tmp/mylink", 0, 0).unwrap();
+        let st = lstat(b"/tmp/mylink").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFLNK);
+        assert_eq!(st.st_size, 11); // len("/tmp/target")
+        let mut buf = [0u8; 64];
+        let n = readlink(b"/tmp/mylink", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/tmp/target");
+        // readlink on a non-symlink is EINVAL; on a missing name is ENOENT.
+        let f = open(b"/tmp/notlink", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(f);
+        assert_eq!(readlink(b"/tmp/notlink", &mut buf).unwrap_err(), Errno::EINVAL);
+        assert_eq!(readlink(b"/tmp/nolink_x", &mut buf).unwrap_err(), Errno::ENOENT);
+        // O_EXCL semantics: a symlink name already taken cannot be recreated.
+        assert_eq!(symlink(b"x", b"/tmp/mylink", 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
     #[test]

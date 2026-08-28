@@ -150,9 +150,16 @@ tmpfs dir stat), the close "nothing to clean up" branch, and the negative-handle
 directory-backing validity check. `ftruncate`/`truncate`/`fallocate` also done
 (increment 1c).
 
-**Still deferred before the real-host cutover:** symlinks (`symlink`/`readlink`
-+ cross-mount resolution); `rename`/`link`/`chmod`/`chown`/`access`/`utimensat`/
-`statfs` on tmpfs; AF_UNIX socket and FIFO names created under a scratch prefix
+**Symlinks (done):** `InodeKind::Symlink` holds the target bytes;
+`tmpfs::symlink`/`readlink` plus arms in `sys_symlink`/`sys_symlinkat`,
+`sys_readlink`/`sys_readlinkat`, and — critically — `namespace_readlink_raw`, so
+the kernel path resolver follows tmpfs symlinks (including relative targets that
+resolve back into the same mount). lstat reports `S_IFLNK`; getdents reports
+`DT_LNK`.
+
+**Still deferred before the real-host cutover:**
+`rename`/`link`/`chmod`/`chown`/`access`/`utimensat`/`statfs` on tmpfs; AF_UNIX
+socket and FIFO names created under a scratch prefix
 (still host-backed → would split-brain); per-inode permission enforcement
 against the caller's credentials; `st_dev`-based EXDEV on cross-authority
 rename/link. Until the full set lands, running a real host against a
