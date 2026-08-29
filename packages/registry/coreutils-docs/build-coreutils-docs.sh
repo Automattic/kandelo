@@ -31,9 +31,21 @@ CAP="$WORK/help-capture"; rm -rf "$CAP"
 # content-hashed path that overflows sun_path).
 TSX_TMP="$(mktemp -d /tmp/kandelo-coreutils-docs.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
+# generate-coreutils-man.ts boots a real Kandelo kernel to run the wasm binary.
+# Package-build recipes run under a scrubbed source-only resolver environment
+# whose projection root is intentionally unavailable, so pass the kernel we
+# declared as a build dependency (WASM_POSIX_DEP_KERNEL_DIR) explicitly. When
+# the recipe is run outside the dependency-injecting engine, fall back to the
+# resolver by leaving the argument empty.
+KERNEL_ARG=""
+if [ -n "${WASM_POSIX_DEP_KERNEL_DIR:-}" ] && \
+   [ -f "$WASM_POSIX_DEP_KERNEL_DIR/kandelo-kernel.wasm" ]; then
+    KERNEL_ARG="$WASM_POSIX_DEP_KERNEL_DIR/kandelo-kernel.wasm"
+fi
 # Capture --help/--version from the real wasm binary running inside Kandelo.
 TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" "$COREUTILS_WASM" "$CAP"
+    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" \
+    "$COREUTILS_WASM" "$CAP" $KERNEL_ARG
 
 STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/share/man/man1"
 WRAP="$WORK/wrap"; rm -rf "$WRAP"; mkdir -p "$WRAP"
