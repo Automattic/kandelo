@@ -1697,12 +1697,22 @@ async function handleVfork(
       workspaceAddress,
       PAGES_PER_THREAD * WASM_PAGE_SIZE,
     );
-    kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-      borrowedAddressSpace: true,
-    });
+    // Fork-child registration is a void ingress: it must observe an empty
+    // deferred FIFO. Under a php-fpm-style fork burst with the in-kernel tmpfs
+    // serving scratch, sibling syscall-channel ingress piles into that FIFO
+    // and the drain is starved by continuously-pending fork transaction-starts,
+    // so a single synchronous attempt loses the microtask race and the launch
+    // is rolled back. Retry on a later host turn — matching exec, vfork start,
+    // and signal launch continuations — so the bounded burst drains and the
+    // registration lands instead of failing the guest's fork.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+        borrowedAddressSpace: true,
+      }),
+    );
     registered = true;
     kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
@@ -2062,11 +2072,20 @@ async function handleOrdinaryFork(
       childChannelOffset,
       CH_TOTAL_SIZE,
     ).fill(0);
-    kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-      ptrWidth,
-      maxAddr: childLayout.maxAddr,
-      mmapBase: childLayout.mmapBase,
-    });
+    // Retry on reentrant contention: under a php-fpm-style fork burst with the
+    // in-kernel tmpfs serving scratch, sibling syscall-channel ingress fills the
+    // deferred FIFO and the drain is starved by continuously-pending fork
+    // transaction-starts, so a single synchronous registration loses the
+    // microtask race and the launch is rolled back. Yielding to a later host
+    // turn — as the sibling `shouldLaunchPendingChild` call above already does —
+    // lets the bounded burst drain so the registration lands.
+    await retryKernelEntryResult(() =>
+      kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+        ptrWidth,
+        maxAddr: childLayout.maxAddr,
+        mmapBase: childLayout.mmapBase,
+      }),
+    );
     registered = true;
     kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
