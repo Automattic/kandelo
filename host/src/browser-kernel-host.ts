@@ -581,8 +581,15 @@ export class BrowserKernel {
         throw error;
       }
     }
-    // Create the kernel worker
-    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    // Create the kernel worker. From here on, init failures go through
+    // destroy(), which releases the OPFS proxies and locks; a failure to
+    // construct the worker at all must release them here.
+    try {
+      this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    } catch (error) {
+      this.teardownOpfsMounts();
+      throw error;
+    }
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
