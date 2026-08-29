@@ -256,11 +256,14 @@ that exact claim, and the report states what ran on which host.
 
 Recorded here as the future-work doc for this effort:
 
-1. **`whatis` / `apropos` / `man -k` keyword search.** Requires each
-   `-docs` bundle to carry a `makewhatis`-generated `mandoc.db` index,
-   plus a strategy for merging indexes across independently-mounted
-   lazy-archives and managing the combined manpath database. Its own
-   subproject.
+1. **`whatis` / `apropos` / `man -k` keyword search.** — DONE. Rather
+   than a per-bundle index merged at runtime, a single `mandoc-db`
+   package runs the host `makewhatis` over every shipped `-docs`
+   archive at build time and emits one combined `mandoc.db`, staged
+   eagerly into the shell image at `/usr/share/man/mandoc.db`. The
+   `dba` index format is architecture-portable, so the host-built
+   index is read directly by the guest `wasm32` mandoc; the guest
+   never runs `makewhatis`. See the "whatis/apropos" PR.
 2. **Run `help2man` fully inside Kandelo.** Maximal dogfooding: execute
    the Perl `help2man` itself inside the Kandelo instance via the perl
    lazy-archive, removing the host-side formatting step entirely. Adds a
@@ -270,4 +273,19 @@ Recorded here as the future-work doc for this effort:
 3. **Generalize `-docs` bundles** to the rest of the registry packages
    that carry (or can faithfully generate) man pages, following the
    `lsof-docs` (direct capture) and `coreutils-docs` (runtime-driven)
-   templates.
+   templates. — In progress: grep, sed, gawk, findutils, tar, gzip,
+   diffutils, less.
+4. **Full terminfo database as a lazy archive.** — DEFERRED. The shell
+   already ships a curated `/usr/share/terminfo` (≈`ncurses-base`) that
+   covers the terminals a browser or SSH client actually presents:
+   `xterm`, `xterm-256color`, `screen`/`screen-256color`,
+   `tmux-256color`, `vt100`, `linux`, `dumb`, and friends. Streaming
+   the full ncurses terminfo database (thousands of entries for
+   hardware terminals from the 1980s — `adm3a`, `wy60`, printer
+   entries, …) as an on-demand lazy archive for an exotic `$TERM`
+   would add a package plus another lazy-archive mount for a case that
+   effectively never occurs in this deployment. Revisit only if a real
+   guest surfaces a `$TERM` the curated set does not resolve; until
+   then the curated set is the honest, complete boundary and a missing
+   exotic entry should fail loudly (ncurses' own "unknown terminal"
+   error) rather than motivate speculative infrastructure.
