@@ -121,4 +121,61 @@ describe("live replica join", () => {
       }
     },
   );
+
+  it(
+    "joins through one capture that hands back the state and starts the log",
+    { timeout: 300_000 },
+    async () => {
+      const primaryOut = collectStdout();
+      const primary = new NodeKernelHost({
+        rootfsImage: "default",
+        onStdout: primaryOut.onStdout,
+      });
+      await primary.init();
+      const replicaOut = collectStdout();
+      let replica: NodeKernelHost | null = null;
+      const queue = createReplicationLogQueue();
+      const writer = new ReplicationLogQueueWriter(queue);
+      try {
+        // One operation, not two. That the recorder starts while the machine
+        // is still parked is `migration/checkpoint.test.ts`; what this covers
+        // is that a replica can be built out of what the single call returns.
+        const joined = await primary.captureAndStreamReplicationLog(
+          { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 },
+          (entries) => writer.push(entries),
+        );
+        expect(joined.capture.status).toBe("captured");
+        if (joined.capture.status !== "captured") return;
+
+        replica = new NodeKernelHost({
+          rootfsImage: "default",
+          restoreCheckpoint: joined.capture.checkpoint,
+          onStdout: replicaOut.onStdout,
+        });
+        await replica.init();
+        await replica.startReplicationReplay([], queue);
+
+        const replicaExit = replica
+          .spawnFromVfs("/bin/sh", GUEST)
+          .then(({ exit }) => exit);
+        await runGuest(primary);
+
+        expect(
+          await Promise.race([
+            replicaExit,
+            pause(FOLLOW_LIMIT_MS).then(() => "still waiting" as const),
+          ]),
+        ).toBe(0);
+        expect(printedSeconds(replicaOut.read()))
+          .toEqual(printedSeconds(primaryOut.read()));
+
+        await joined.stop();
+        writer.end();
+      } finally {
+        writer.end();
+        await replica?.destroy();
+        await primary.destroy();
+      }
+    },
+  );
 });

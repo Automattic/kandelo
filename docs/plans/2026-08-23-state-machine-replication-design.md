@@ -258,6 +258,28 @@ recorded anything, does not finish, and then completes and prints the primary's
 seconds once the primary runs. `host/test/replication/log-queue.test.ts` holds
 the ring's own claims, with the reader on a real second thread.
 
+### How a replica joins a machine that is already running
+
+**Decided on 2026-08-29: by checkpoint, not by boot.** A replica adopts the
+primary's `MachineCheckpoint` over the migration transport that already
+carries one, then follows the log from there. Boot-and-replay stays the answer
+for a modeset guest that has taken GL ownership, whose pixels a checkpoint
+cannot read, and that case remains a reported gap rather than a second path.
+
+Joining this way needs the state and the log to meet at one instant. A caller
+that captured and then started recording would leave every decision the machine
+made between the read and the resume in neither: not in the state the replica
+adopts, and not in the log it replays. On a machine with a guest running, that
+is not a narrow window.
+
+So the two are one operation. `CheckpointFreezeOptions.onRead` runs inside the
+freeze, after `readMachine` and before anything resumes, and
+`captureAndStreamReplicationLog` on both hosts is what a caller uses. A capture
+that cannot start the log fails as a capture: handing back a checkpoint whose
+log never started would give a replica a state to adopt and no decisions to
+follow it with. Covered by `host/test/migration/checkpoint.test.ts`, which
+asserts the hook sees a parked machine with dispatch still held.
+
 Nothing drains the recorder, and that is now deliberate rather than deferred.
 A replica joins at boot, so the entries from sequence 0 are the ones it needs
 most. The recorder growing without bound at the roughly 184 entries per second

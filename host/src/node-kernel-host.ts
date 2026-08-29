@@ -887,6 +887,47 @@ export class NodeKernelHost {
    *
    * Returns a function that stops the recording.
    */
+  /**
+   * Read this machine and start publishing its decisions from that state.
+   *
+   * This is how a replica joins a machine that is already running: it restores
+   * the checkpoint and replays the log from its first entry. The two meet at
+   * one instant because the recorder starts inside the freeze, while every
+   * process is parked. A caller that captured and then called
+   * `streamReplicationLog` would lose the decisions the machine made as it
+   * resumed, and its replica would follow a log that begins somewhere its
+   * state does not.
+   *
+   * Returns the checkpoint result and a function that stops the recording.
+   * Nothing is being recorded when the capture did not succeed.
+   */
+  async captureAndStreamReplicationLog(
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+    onEntries: (entries: readonly ReplicationLogEntry[]) => void,
+  ): Promise<{ capture: CheckpointFreezeResult; stop: () => Promise<void> }> {
+    this.replicationListeners.add(onEntries);
+    const requestId = this._nextRequestId++;
+    const capture = await this.request(requestId, {
+      type: "capture_checkpoint",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+      includeBytes: true,
+      beginReplicationStream: true,
+    }) as CheckpointFreezeResult;
+    if (capture.status !== "captured") {
+      this.replicationListeners.delete(onEntries);
+      return { capture, stop: async () => {} };
+    }
+    return {
+      capture,
+      stop: async () => {
+        await this.stopReplicationRecording();
+        this.replicationListeners.delete(onEntries);
+      },
+    };
+  }
+
   async streamReplicationLog(
     onEntries: (entries: readonly ReplicationLogEntry[]) => void,
   ): Promise<() => Promise<void>> {

@@ -7,11 +7,13 @@
  * is what stops one host from batching, waiting, or ending differently from
  * the other.
  */
+import type { TimeProvider } from "../vfs/types.js";
 import {
   ReplicationLogRecorder,
   type ReplicationLogEntry,
   type ReplicationLogExtender,
 } from "./log.js";
+import { RecordingTimeProvider } from "./clock.js";
 import { ReplicationLogQueueReader } from "./log-queue.js";
 
 /**
@@ -26,7 +28,7 @@ import { ReplicationLogQueueReader } from "./log-queue.js";
  * the clock many times inside one syscall burst, and each `postMessage` is a
  * structured clone on a path the guest is waiting on.
  */
-export function createStreamingRecorder(
+function createStreamingRecorder(
   publish: (entries: readonly ReplicationLogEntry[]) => void,
 ): ReplicationLogRecorder {
   const recorder = new ReplicationLogRecorder(0, { retain: false });
@@ -40,6 +42,23 @@ export function createStreamingRecorder(
       publish(sending);
     });
   });
+  return recorder;
+}
+
+/**
+ * Put the machine's guest clock on a streaming recorder, and hand it back.
+ *
+ * A machine starts streaming from two places — a caller asking it to, and a
+ * checkpoint capture starting the log at the state it just read — and Node and
+ * the browser have to do it identically in both.
+ */
+export function beginReplicationStream(
+  io: { setTimeProvider(provider: TimeProvider): void },
+  clock: TimeProvider,
+  publish: (entries: readonly ReplicationLogEntry[]) => void,
+): ReplicationLogRecorder {
+  const recorder = createStreamingRecorder(publish);
+  io.setTimeProvider(new RecordingTimeProvider(clock, recorder));
   return recorder;
 }
 

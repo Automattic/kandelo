@@ -392,6 +392,15 @@ export interface CaptureCheckpointRequestMessage {
   unwindTimeoutMs: number;
   vforkTimeoutMs: number;
   includeBytes?: true;
+  /**
+   * Begin streaming the decision log from the state this capture reads.
+   *
+   * This is how a replica joins a running machine: it restores the checkpoint
+   * and replays from the log's first entry, so the two have to meet at one
+   * instant. The recorder starts while the machine is still parked, which no
+   * caller on the main thread can arrange for itself.
+   */
+  beginReplicationStream?: true;
 }
 
 /** Enable / disable the syscall trace ring buffer. Off by default — flip

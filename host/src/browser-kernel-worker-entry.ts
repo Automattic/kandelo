@@ -46,6 +46,7 @@ import { BrowserTimeProvider } from "./vfs/time";
 import {
   ReplicationLogReader,
   ReplicationLogRecorder,
+  type ReplicationLogEntry,
   type ReplicationPushedDecision,
 } from "./replication/log";
 import {
@@ -53,8 +54,8 @@ import {
   ReplayingTimeProvider,
 } from "./replication/clock";
 import {
+  beginReplicationStream,
   createQueueExtender,
-  createStreamingRecorder,
 } from "./replication/worker";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
@@ -865,6 +866,27 @@ function isMissingPathError(err: unknown): boolean {
 
 function respond(requestId: number, result: unknown) {
   post({ type: "response", requestId, result });
+}
+
+function publishLog(entries: readonly ReplicationLogEntry[]): void {
+  post({ type: "replication_recorded", entries });
+}
+
+/**
+ * Start the decision log at the state a checkpoint just read.
+ *
+ * Runs inside the freeze, so it refuses rather than responding: a capture that
+ * cannot start the log must fail as a capture, not resume a machine whose
+ * replica would then be following a log that begins somewhere else.
+ */
+function beginStreamAtCapture(): void {
+  if (!io || !baseTimeProvider) {
+    throw new Error(
+      "replication needs an initialized machine: this one has no swappable "
+        + "guest clock yet",
+    );
+  }
+  replicationRecorder = beginReplicationStream(io, baseTimeProvider, publishLog);
 }
 
 /**
@@ -5191,10 +5213,14 @@ sw.onmessage = (e: MessageEvent) => {
     }
     case "capture_checkpoint": {
       const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const onRead = msg.beginReplicationStream
+        ? beginStreamAtCapture
+        : undefined;
       if (msg.includeBytes) {
         void captureMachineCheckpoint(checkpointMachine, {
           unwindTimeoutMs,
           vforkTimeoutMs,
+          onRead,
         }).then(
           (result) => post(
             { type: "response", requestId, result },
@@ -5209,6 +5235,7 @@ sw.onmessage = (e: MessageEvent) => {
       void captureMachineCheckpointSummary(checkpointMachine, {
         unwindTimeoutMs,
         vforkTimeoutMs,
+        onRead,
       }).then(
         (result) => respond(requestId, result),
         (err) => respondError(requestId, (err as Error)?.message ?? String(err)),
@@ -5230,10 +5257,11 @@ sw.onmessage = (e: MessageEvent) => {
     }
     case "replication_record_start": {
       respondToReplication(msg.requestId, (target, clock) => {
-        replicationRecorder = msg.stream
-          ? createStreamingRecorder((entries) =>
-            post({ type: "replication_recorded", entries }))
-          : new ReplicationLogRecorder();
+        if (msg.stream) {
+          replicationRecorder = beginReplicationStream(target, clock, publishLog);
+          return;
+        }
+        replicationRecorder = new ReplicationLogRecorder();
         target.setTimeProvider(
           new RecordingTimeProvider(clock, replicationRecorder),
         );

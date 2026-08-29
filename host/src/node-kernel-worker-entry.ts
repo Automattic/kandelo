@@ -49,14 +49,15 @@ import {
 import {
   ReplicationLogReader,
   ReplicationLogRecorder,
+  type ReplicationLogEntry,
 } from "./replication/log";
 import {
   RecordingTimeProvider,
   ReplayingTimeProvider,
 } from "./replication/clock";
 import {
+  beginReplicationStream,
   createQueueExtender,
-  createStreamingRecorder,
 } from "./replication/worker";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
@@ -805,6 +806,31 @@ function finalizeUnexpectedWorkerError(
 
 function post(msg: KernelToMainMessage, transfer?: ArrayBuffer[]) {
   port.postMessage(msg, transfer ?? []);
+}
+
+function publishLog(entries: readonly ReplicationLogEntry[]): void {
+  post({ type: "replication_recorded", entries });
+}
+
+/**
+ * Start the decision log at the state a checkpoint just read.
+ *
+ * Runs inside the freeze, so it refuses rather than responding: a capture that
+ * cannot start the log must fail as a capture, not resume a machine whose
+ * replica would then be following a log that begins somewhere else.
+ */
+function beginStreamAtCapture(): void {
+  if (!replicationIO || !baseTimeProvider) {
+    throw new Error(
+      "replication needs a machine booted from a rootfs image: this one has "
+        + "no swappable guest clock",
+    );
+  }
+  replicationRecorder = beginReplicationStream(
+    replicationIO,
+    baseTimeProvider,
+    publishLog,
+  );
 }
 
 /**
@@ -4631,10 +4657,14 @@ port.on("message", (msg: MainToKernelMessage) => {
         result: undefined,
         error: (err as Error)?.message ?? String(err),
       });
+      const onRead = msg.beginReplicationStream
+        ? beginStreamAtCapture
+        : undefined;
       if (msg.includeBytes) {
         void captureMachineCheckpoint(checkpointMachine, {
           unwindTimeoutMs,
           vforkTimeoutMs,
+          onRead,
         }).then(
           (result) => post(
             { type: "response", requestId, result },
@@ -4649,6 +4679,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       void captureMachineCheckpointSummary(checkpointMachine, {
         unwindTimeoutMs,
         vforkTimeoutMs,
+        onRead,
       }).then(
         (result) => post({ type: "response", requestId, result }),
         postError,
@@ -4662,10 +4693,11 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "replication_record_start": {
       respondToReplication(msg.requestId, (io, clock) => {
-        replicationRecorder = msg.stream
-          ? createStreamingRecorder((entries) =>
-            post({ type: "replication_recorded", entries }))
-          : new ReplicationLogRecorder();
+        if (msg.stream) {
+          replicationRecorder = beginReplicationStream(io, clock, publishLog);
+          return;
+        }
+        replicationRecorder = new ReplicationLogRecorder();
         io.setTimeProvider(new RecordingTimeProvider(clock, replicationRecorder));
       });
       break;
