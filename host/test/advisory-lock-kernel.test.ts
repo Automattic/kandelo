@@ -39,6 +39,11 @@ import {
   CH_SYSCALL,
   FCNTL_FLOCK_BYTES,
 } from "../src/generated/abi";
+// Cutover default is tmpfs-on; this suite drives host-owned files through
+// NodePlatformIO on scratch paths (the WASM_POSIX_TMPFS=0 host-FS path),
+// so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const O_RDWR = 2;
 const O_CREAT = 0o100;

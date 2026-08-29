@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { NodePlatformIO } from "../src/platform/node";
 import { runCentralizedProgram } from "./centralized-test-helper";
+// Cutover default is tmpfs-on; this suite drives host-owned files through
+// NodePlatformIO on scratch paths (the WASM_POSIX_TMPFS=0 host-FS path),
+// so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const program = join(repoRoot, "examples/syscall_cp_offset_test.wasm");

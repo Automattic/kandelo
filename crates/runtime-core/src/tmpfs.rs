@@ -1094,7 +1094,7 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 }
 
 /// chown a tmpfs path. A field of `u32::MAX` (-1) is left unchanged.
-pub fn chown(path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -1103,6 +1103,19 @@ pub fn chown(path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
         }
         if gid != u32::MAX {
             inode.gid = gid;
+        }
+        // POSIX: a chown by a process without appropriate privileges clears the
+        // set-user-ID bit, and the set-group-ID bit when the file is group-
+        // executable. This mirrors the host chown path (the OS clears them),
+        // so a set-ID binary cannot survive a change of owner.
+        if clear_setid {
+            const S_ISUID: u32 = 0o4000;
+            const S_ISGID: u32 = 0o2000;
+            const S_IXGRP: u32 = 0o0010;
+            inode.mode &= !S_ISUID;
+            if inode.mode & S_IXGRP != 0 {
+                inode.mode &= !S_ISGID;
+            }
         }
         inode.touch_changed();
         Ok(())
@@ -1121,7 +1134,7 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 }
 
 /// fchown an open tmpfs file handle. A field of `u32::MAX` (-1) is unchanged.
-pub fn fchown(handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
+pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -1130,6 +1143,17 @@ pub fn fchown(handle: i64, uid: u32, gid: u32) -> Result<(), Errno> {
         }
         if gid != u32::MAX {
             inode.gid = gid;
+        }
+        // Mirror `chown`: an unprivileged owner change clears set-user-ID and
+        // the set-group-ID bit on a group-executable file (host chown parity).
+        if clear_setid {
+            const S_ISUID: u32 = 0o4000;
+            const S_ISGID: u32 = 0o2000;
+            const S_IXGRP: u32 = 0o0010;
+            inode.mode &= !S_ISUID;
+            if inode.mode & S_IXGRP != 0 {
+                inode.mode &= !S_ISGID;
+            }
         }
         inode.touch_changed();
         Ok(())
@@ -1473,19 +1497,34 @@ mod tests {
         let h = open(b"/tmp/meta", O_CREAT | O_RDWR, 0o644, 7, 7).unwrap();
         chmod(b"/tmp/meta", 0o600).unwrap();
         assert_eq!(lstat(b"/tmp/meta").unwrap().st_mode & 0o777, 0o600);
-        chown(b"/tmp/meta", 1000, 1001).unwrap();
+        chown(b"/tmp/meta", 1000, 1001, false).unwrap();
         let st = lstat(b"/tmp/meta").unwrap();
         assert_eq!((st.st_uid, st.st_gid), (1000, 1001));
         // u32::MAX leaves a field unchanged.
-        chown(b"/tmp/meta", u32::MAX, 2002).unwrap();
+        chown(b"/tmp/meta", u32::MAX, 2002, false).unwrap();
         let st = lstat(b"/tmp/meta").unwrap();
         assert_eq!((st.st_uid, st.st_gid), (1000, 2002));
         // fchmod/fchown via the open handle.
         fchmod(h, 0o640).unwrap();
-        fchown(h, 3003, u32::MAX).unwrap();
+        fchown(h, 3003, u32::MAX, false).unwrap();
         let st = fstat(h).unwrap();
         assert_eq!(st.st_mode & 0o777, 0o640);
         assert_eq!((st.st_uid, st.st_gid), (3003, 2002));
+        release_handle(h);
+    }
+
+    #[test]
+    fn chown_clears_setid_for_unprivileged_caller() {
+        let h = open(b"/tmp/setid", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        chmod(b"/tmp/setid", 0o6755).unwrap();
+        assert_eq!(lstat(b"/tmp/setid").unwrap().st_mode & 0o7777, 0o6755);
+        // Privileged (root-equivalent) chown preserves the set-ID bits.
+        chown(b"/tmp/setid", 1000, 1000, false).unwrap();
+        assert_eq!(lstat(b"/tmp/setid").unwrap().st_mode & 0o7777, 0o6755);
+        // Unprivileged chown clears set-user-ID and (since group-executable)
+        // set-group-ID, matching the host chown path.
+        chown(b"/tmp/setid", 1000, 1001, true).unwrap();
+        assert_eq!(lstat(b"/tmp/setid").unwrap().st_mode & 0o7777, 0o0755);
         release_handle(h);
     }
 
