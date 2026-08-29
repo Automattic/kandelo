@@ -1,0 +1,29 @@
+kind = "program"
+name = "lsof-docs"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = []
+
+# lsof-docs ships an authored man(8) page for the in-tree lsof
+# (examples/lsof.c). Kandelo's lsof is not upstream lsof, so there is no
+# upstream page to vendor; the man source is authored in this package
+# directory and versioned alongside the kernel, so the source URL names the
+# authoritative project repo and the all-zero SHA-256 is the explicit
+# in-repository-source sentinel (the source is on disk in the checked-out
+# repo, not fetched through the normal source resolver).
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/lsof-docs/build-lsof-docs.sh"
+
+[[outputs]]
+name = "lsof-docs"
+wasm = "lsof-docs.zip"
+fork_instrumentation = "disabled"

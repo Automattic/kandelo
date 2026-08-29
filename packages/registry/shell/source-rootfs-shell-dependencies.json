@@ -50,6 +50,21 @@
       "name": "perl-browser-bundle",
       "version": "5.40.3",
       "role": "lazy-archive"
+    },
+    {
+      "name": "mandoc-browser-bundle",
+      "version": "1.14.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "coreutils-docs",
+      "version": "9.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "lsof-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
     }
   ]
 }

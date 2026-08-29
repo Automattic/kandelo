@@ -250,7 +250,7 @@ function fixturePaths(root: string) {
     writeFileSync(
       join(dependencyRoots.get(spec.dependency)!, spec.archiveUrl),
       zipSync({
-        [spec.requiredExecutable]: new TextEncoder().encode(
+        [spec.requiredMember]: new TextEncoder().encode(
           `${spec.id} executable`,
         ),
       }),

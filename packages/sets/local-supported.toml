@@ -44,6 +44,10 @@ name = "coreutils"
 class = "user-software"
 
 [[packages]]
+name = "coreutils-docs"
+class = "browser-product"
+
+[[packages]]
 name = "cpython"
 class = "user-software"
 
@@ -148,12 +152,24 @@ name = "lsof"
 class = "user-software"
 
 [[packages]]
+name = "lsof-docs"
+class = "browser-product"
+
+[[packages]]
 name = "m4"
 class = "user-software"
 
 [[packages]]
 name = "make"
 class = "user-software"
+
+[[packages]]
+name = "mandoc"
+class = "user-software"
+
+[[packages]]
+name = "mandoc-browser-bundle"
+class = "browser-product"
 
 [[packages]]
 name = "mariadb"

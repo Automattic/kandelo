@@ -145,7 +145,7 @@ function archiveFor(
   files: Record<string, Uint8Array> = {},
 ): Uint8Array {
   return zipSync({
-    [spec.requiredExecutable]: new TextEncoder().encode(
+    [spec.requiredMember]: new TextEncoder().encode(
       `${spec.id} executable`,
     ),
     [`share/${spec.id}/runtime.dat`]: new TextEncoder().encode(
@@ -509,11 +509,11 @@ describe("declared shell lazy-archive inputs", () => {
         sha256: createHash("sha256").update(expected).digest("hex"),
       });
       expect(archive.entries.map((entry) => entry.fileName)).toContain(
-        spec.requiredExecutable,
+        spec.requiredMember,
       );
       expect(archive.symlinkTargets).toEqual(new Map());
       expect(
-        fs.stat(`${spec.mountPrefix}${spec.requiredExecutable}`).size,
+        fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
       ).toBe(`${spec.id} executable`.length);
       expect(fs.exportLazyArchiveEntries()).toEqual([
         expect.objectContaining({
@@ -523,6 +523,50 @@ describe("declared shell lazy-archive inputs", () => {
       ]);
     },
   );
+
+  it("indexes a docs archive whose requiredMember is a man page with no executable", () => {
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find((candidate) =>
+      candidate.id === "lsof-docs"
+    )!;
+    const bytes = zipSync({
+      [spec.requiredMember]: new TextEncoder().encode(".TH LSOF 8\n"),
+    });
+    const path = writeArchive(spec.archiveUrl, bytes);
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+
+    const archive = registerDeclaredShellLazyArchive(fs, spec, () => path);
+
+    expect(archive.entries.map((entry) => entry.fileName)).toEqual([
+      spec.requiredMember,
+    ]);
+    expect(archive.symlinkTargets).toEqual(new Map());
+    expect(
+      fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
+    ).toBeGreaterThan(0);
+    expect(
+      fs
+        .exportLazyArchiveEntries()
+        .filter((entry) => entry.url === spec.archiveUrl),
+    ).toHaveLength(1);
+  });
+
+  it("fails when a docs archive is missing its declared requiredMember man page", () => {
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find((candidate) =>
+      candidate.id === "lsof-docs"
+    )!;
+    const bytes = zipSync({
+      "share/man/man8/other.8": new TextEncoder().encode(".TH OTHER 8\n"),
+    });
+    const path = writeArchive(spec.archiveUrl, bytes);
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+
+    expect(() =>
+      registerDeclaredShellLazyArchive(fs, spec, () => path)
+    ).toThrow(
+      /lsof-docs output .* must contain exactly one regular member share\/man\/man8\/lsof\.8; found 0/,
+    );
+    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+  });
 
   it("propagates a missing declared dependency output instead of falling back", () => {
     const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
@@ -546,7 +590,7 @@ describe("declared shell lazy-archive inputs", () => {
     expect(() =>
       registerDeclaredShellLazyArchive(fs, vim, () => wrongPath),
     ).toThrow(
-      /vim-browser-bundle output .* must contain exactly one regular executable bin\/vim; found 0/,
+      /vim-browser-bundle output .* must contain exactly one regular member bin\/vim; found 0/,
     );
     expect(() => fs.stat("/usr/bin/vim")).toThrow();
     expect(fs.exportLazyArchiveEntries()).toEqual([]);

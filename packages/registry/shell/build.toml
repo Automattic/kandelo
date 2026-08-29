@@ -37,7 +37,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 31
+revision    = 32
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

@@ -161,6 +161,12 @@
             # dies later with "makeinfo: command not found" on every
             # `*.info` rule.
             pkgs.texinfo
+            # help2man generates man(1) pages from a program's --help/
+            # --version output. coreutils-docs runs it against a host-side
+            # replay wrapper that echoes text captured from the real
+            # coreutils.wasm running inside Kandelo — help2man only
+            # reformats already-faithful text into troff.
+            pkgs.help2man
             # Mozilla CA bundle — Nix's curl is built against
             # cacert and looks up its bundle via SSL_CERT_FILE /
             # NIX_SSL_CERT_FILE / GIT_SSL_CAINFO. Pure-shell

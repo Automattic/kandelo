@@ -1,0 +1,31 @@
+kind = "program"
+name = "coreutils-docs"
+version = "9.6"
+kernel_abi = 7
+depends_on = ["coreutils@9.6"]
+
+# coreutils-docs has no upstream man pages to vendor: GNU coreutils
+# generates its own man pages from `--help`/`--version` output via
+# help2man, and the docs build recipe lives in this repo rather than
+# upstream. The build script boots a real Kandelo kernel, runs the actual
+# coreutils.wasm binary for each tool's --help/--version, and only then
+# formats that captured (100% real-binary) text with host help2man. So the
+# source URL names the authoritative project repo and the all-zero
+# SHA-256 is the explicit in-repository-source sentinel (there is nothing
+# to fetch through the normal archive/source resolver).
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/coreutils.git/tree/COPYING?h=v9.6"
+
+[build]
+script_path = "packages/registry/coreutils-docs/build-coreutils-docs.sh"
+
+[[outputs]]
+name = "coreutils-docs"
+wasm = "coreutils-docs.zip"
+fork_instrumentation = "disabled"

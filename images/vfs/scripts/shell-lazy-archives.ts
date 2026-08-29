@@ -25,7 +25,7 @@ export interface ShellLazyArchiveSpec {
   resolverPath: string;
   archiveUrl: string;
   mountPrefix: "/usr/";
-  requiredExecutable: string;
+  requiredMember: string;
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
@@ -35,7 +35,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/vim.zip",
     archiveUrl: "vim.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/vim",
+    requiredMember: "bin/vim",
   },
   {
     id: "nethack",
@@ -43,7 +43,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/nethack.zip",
     archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/nethack",
+    requiredMember: "bin/nethack",
   },
   {
     id: "ruby",
@@ -51,7 +51,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/ruby.zip",
     archiveUrl: "ruby.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/ruby",
+    requiredMember: "bin/ruby",
   },
   {
     id: "python",
@@ -59,7 +59,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/python.zip",
     archiveUrl: "python.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/python3",
+    requiredMember: "bin/python3",
   },
   {
     id: "node",
@@ -67,7 +67,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/node.zip",
     archiveUrl: "node.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/node",
+    requiredMember: "bin/node",
   },
   {
     id: "perl",
@@ -75,7 +75,31 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     resolverPath: "programs/wasm32/perl.zip",
     archiveUrl: "perl.zip",
     mountPrefix: "/usr/",
-    requiredExecutable: "bin/perl",
+    requiredMember: "bin/perl",
+  },
+  {
+    id: "man",
+    dependency: "mandoc-browser-bundle",
+    resolverPath: "programs/wasm32/man.zip",
+    archiveUrl: "man.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/mandoc",
+  },
+  {
+    id: "coreutils-docs",
+    dependency: "coreutils-docs",
+    resolverPath: "programs/wasm32/coreutils-docs.zip",
+    archiveUrl: "coreutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/ls.1",
+  },
+  {
+    id: "lsof-docs",
+    dependency: "lsof-docs",
+    resolverPath: "programs/wasm32/lsof-docs.zip",
+    archiveUrl: "lsof-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man8/lsof.8",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
@@ -98,6 +122,47 @@ export function registerPythonShellProfile(fs: MemoryFileSystem): void {
       "export PYTHONHOME=/usr\n",
     0o644,
   );
+}
+
+// mandoc's `man` front-end pipes to a pager when stdout is a terminal. Page
+// through `less -R` (raw mode so mandoc's bold/overstrike and any SGR escape
+// sequences render correctly instead of printing as literal escapes); less
+// is a shipped shell lazy-archive dependency and lazy-loads on first use,
+// same as coreutils' cat. /etc/man.conf gives the manpath root the docs
+// archives fill.
+export function registerManShellProfile(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/man.sh",
+    "# mandoc: page formatted output through less (raw mode so mandoc's\n" +
+      "# bold/overstrike and any SGR escape sequences render correctly\n" +
+      "# instead of printing as literal escapes); less is a shell\n" +
+      "# lazy-archive dependency and lazy-loads on first use, just like\n" +
+      "# coreutils' cat. Search /usr/share/man for man pages.\n" +
+      "export MANPAGER='less -R'\n" +
+      "export MANPATH=/usr/share/man\n",
+    0o644,
+  );
+}
+
+/**
+ * posix-utils-lite installs a raw `man` applet at /usr/bin/man in the base
+ * rootfs (cats the raw troff source with no formatting). The mandoc
+ * lazy-archive's `bin/man` member mounts a formatting `man` front-end at the
+ * exact same path, so registering the archive over an existing applet would
+ * throw EEXIST. Clear the applet's entry first so the archive's own symlink
+ * can claim /usr/bin/man — mandoc must win. /bin/man is an existing symlink
+ * to /usr/bin/man (not a separate inode), so it needs no separate removal:
+ * it keeps resolving to whatever now lives at /usr/bin/man.
+ */
+export function displacePosixUtilsLiteManApplet(fs: MemoryFileSystem): void {
+  try {
+    fs.lstat("/usr/bin/man");
+  } catch {
+    return;
+  }
+  fs.unlink("/usr/bin/man");
 }
 
 export interface DeclaredShellLazyArchive {
@@ -179,16 +244,16 @@ export function loadDeclaredShellLazyArchive(
     );
   }
 
-  const executableEntries = entries.filter(
+  const requiredMemberEntries = entries.filter(
     (entry) =>
-      entry.fileName === spec.requiredExecutable &&
+      entry.fileName === spec.requiredMember &&
       !entry.isDirectory &&
       !entry.isSymlink,
   );
-  if (executableEntries.length !== 1) {
+  if (requiredMemberEntries.length !== 1) {
     throw new Error(
       `${spec.dependency} output ${sourcePath} must contain exactly one ` +
-      `regular executable ${spec.requiredExecutable}; found ${executableEntries.length}`,
+      `regular member ${spec.requiredMember}; found ${requiredMemberEntries.length}`,
     );
   }
 
