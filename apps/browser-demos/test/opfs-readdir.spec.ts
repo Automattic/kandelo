@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OPFS_CHANNEL_SIZE } from "../../../host/src/vfs/opfs-channel";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const proxyWorkerPath = resolve(__dirname, "../../../host/src/vfs/opfs-worker.ts");
@@ -22,8 +23,8 @@ test("OPFS readdir returns entry names from the shared channel", async ({
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
   const result = await page.evaluate(
-    async ({ proxyWorkerUrl, clientWorkerUrl }) => {
-      const buffer = new SharedArrayBuffer(4 * 1024 * 1024);
+    async ({ proxyWorkerUrl, clientWorkerUrl, channelSize }) => {
+      const buffer = new SharedArrayBuffer(channelSize);
       const proxy = new Worker(proxyWorkerUrl, { type: "module" });
       const client = new Worker(clientWorkerUrl, { type: "module" });
       const receive = <T>(worker: Worker, expectedType: string): Promise<T> =>
@@ -66,7 +67,7 @@ test("OPFS readdir returns entry names from the shared channel", async ({
         proxy.terminate();
       }
     },
-    { proxyWorkerUrl, clientWorkerUrl },
+    { proxyWorkerUrl, clientWorkerUrl, channelSize: OPFS_CHANNEL_SIZE },
   );
 
   // Entry names arrive through a SharedArrayBuffer-backed channel. The
