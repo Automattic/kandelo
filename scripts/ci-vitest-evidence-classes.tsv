@@ -414,6 +414,7 @@ tests/package-system/binary-dev-access.test.ts	prepared-product
 tests/package-system/browser-binary-dependencies.test.ts	prepared-product
 tests/package-system/build-input-crate-closure.test.ts	source-only
 tests/package-system/build-input-import-closure.test.ts	prepared-product
+tests/package-system/configure-prefix-paths.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product

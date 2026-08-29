@@ -79,6 +79,12 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
     # glib's pc files reference -lffi / -lz by bare name; the build's
     # own executables (timescale, gdk-pixbuf-csource) need the search
     # paths.
+    #
+    # --localedir is set even though --disable-nls installs no catalogue:
+    # GNOME_LOCALEDIR is compiled in regardless, and left to autoconf it
+    # derives from --prefix, which is the resolver's per-invocation
+    # staging directory — a host path deleted at publication, and
+    # different between two builds of this recipe.
     CFLAGS="-O2" \
     LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib" \
     PKG_CONFIG_PATH="$PC_PATH" \
@@ -96,6 +102,7 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
         --enable-introspection=no \
         --disable-gtk-doc \
         --disable-nls \
+        --localedir=/usr/share/locale \
         CC=wasm32posix-cc \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib

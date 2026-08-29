@@ -9,11 +9,17 @@
 # gperf nor python runs at build time.
 #
 # Runtime paths are baked at configure time: fonts under
-# /usr/share/fonts, config under /etc/fonts, caches under
-# /tmp/fontconfig (the only world-writable dir on this kernel — /var
-# is a root-owned scratch mount). Consumers stage fonts.conf + a font
-# into the VFS; without a cache fontconfig scans directories lazily,
-# which is fine for the handful of staged fonts.
+# /usr/share/fonts, config under /etc/fonts, templates under
+# /usr/share/fontconfig/conf.avail, caches under /tmp/fontconfig (the
+# only world-writable dir on this kernel — /var is a root-owned scratch
+# mount). Consumers stage fonts.conf + a font into the VFS; without a
+# cache fontconfig scans directories lazily, which is fine for the
+# handful of staged fonts.
+#
+# Every one of those must be given explicitly. Any left to autoconf
+# derives from --prefix, which is the resolver's per-invocation staging
+# directory: the compiled-in string then names a host path that is
+# deleted at publication and differs between two builds of this recipe.
 
 set -euo pipefail
 
@@ -69,7 +75,11 @@ echo "==> Configuring fontconfig for wasm32 (freetype at $FREETYPE_PREFIX, libxm
     # neither); fstatfs is off because fcstat's f_type branch is gated on
     # __linux__, which this toolchain does not define — remote-fs and
     # broken-mtime detection are meaningless on this kernel's VFS anyway.
-    CFLAGS="-O2" \
+    # The build is out-of-tree against an absolute srcdir, so `assert` in
+    # fcmatch.c, fcserialize.c and fcweight.c expands __FILE__ to the
+    # resolver's per-invocation work directory. -ffile-prefix-map makes
+    # the recorded path relative.
+    CFLAGS="-O2 -ffile-prefix-map=$SRC_DIR=." \
     ac_cv_func_random_r=no \
     ac_cv_func_initstate_r=no \
     ac_cv_func_getprogname=no \
@@ -88,6 +98,7 @@ echo "==> Configuring fontconfig for wasm32 (freetype at $FREETYPE_PREFIX, libxm
         --with-cache-dir=/tmp/fontconfig \
         --with-baseconfigdir=/etc/fonts \
         --with-configdir=/etc/fonts/conf.d \
+        --with-templatedir=/usr/share/fontconfig/conf.avail \
         CC=wasm32posix-cc \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
