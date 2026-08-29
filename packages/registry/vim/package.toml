@@ -2,7 +2,12 @@ kind = "program"
 name = "vim"
 version = "9.1.0900"
 kernel_abi = 7
-depends_on = []
+# ncurses: real terminfo/termcap implementation (libncursesw.a/libtinfow.a).
+# Vim links -lncursesw -ltinfow and includes <termcap.h> from this prefix.
+# Declaring it lets the resolver pre-seed WASM_POSIX_DEP_NCURSES_DIR for
+# sealed source-only builds instead of the script reaching back to cargo
+# mid-build. See build-vim.sh.
+depends_on = ["ncurses@6.5"]
 
 [source]
 url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"
