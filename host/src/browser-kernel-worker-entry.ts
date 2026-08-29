@@ -987,6 +987,16 @@ async function createFreshProcessMemory(
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  // In-kernel tmpfs (Phase 5): publish the host's setting into the worker gate
+  // before mounts resolve or the kernel instantiates. The browser has no
+  // `process.env` and the main thread's `globalThis.__WASM_POSIX_TMPFS__` does
+  // not cross the Worker edge, so the setting arrives via the init config. This
+  // gates both the resolver (dropping host scratch mounts) and the boot-time
+  // `kernel_set_tmpfs_enabled` call through the shared `kernelTmpfsScratchEnabled`.
+  if (msg.config.tmpfsScratchEnabled !== undefined) {
+    (globalThis as { __WASM_POSIX_TMPFS__?: boolean }).__WASM_POSIX_TMPFS__ =
+      msg.config.tmpfsScratchEnabled;
+  }
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {

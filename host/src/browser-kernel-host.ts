@@ -125,6 +125,13 @@ export interface BrowserKernelOptions {
   corsProxy?: BrowserCorsProxyConfig;
   /** Override the packaged PCM AudioWorklet asset URL. */
   audioWorkletUrl?: string | URL;
+  /**
+   * In-kernel tmpfs (Phase 5): hand the scratch prefixes (`/tmp`, `/var/*`,
+   * `/root`, `/srv`, `/home/maker`) to the Rust kernel and drop the host scratch
+   * mounts. Carried to the worker gate the same way the Node host reads
+   * `WASM_POSIX_TMPFS`. Undefined leaves the worker default.
+   */
+  tmpfsScratchEnabled?: boolean;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -494,6 +501,7 @@ export class BrowserKernel {
             syscallLogPtrWidth: this.options.syscallLogPtrWidth,
             dnsAliases: this.options.dnsAliases,
             corsProxy: this.options.corsProxy,
+            tmpfsScratchEnabled: this.options.tmpfsScratchEnabled,
           },
         };
         const transfer: Transferable[] = [transferBuf];
