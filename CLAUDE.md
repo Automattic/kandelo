@@ -272,6 +272,22 @@ commands should run from repo-declared tools, not undeclared host state. Use
 `scripts/dev-shell.sh` for build and verification claims; direnv is acceptable
 as a local interactive convenience, but it is not the verification contract.
 
+Building artifacts is expected work, not scope creep. This project builds
+everything locally: no CI status check pre-materializes the sysroots, kernel
+wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
+fetched binaries, and a fresh checkout or `git worktree` inherits none of
+them. When a goal — running a suite, reproducing a failure, validating before
+a merge — needs an artifact that is missing, build it and continue. A missing
+artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` /
+`fetch-binaries.sh` step away (under `scripts/dev-shell.sh`), not a "cannot
+proceed" boundary and not a reason to hand the task back. Distinguish this
+from a genuine platform defect: a missing artifact you can produce is
+provisioning; an artifact that fails to build, or an ABI-mismatched one that
+must be rebuilt through the normal path, is the truthful failure the
+platform-values contract tells you to surface. Report what you built to reach
+a claim, then make the claim. See `docs/agent-guidance/validation.md` for the
+fresh-worktree provisioning steps.
+
 CI runs only reviewed code. Every third-party action in `.github/` is pinned to
 a full 40-character commit SHA with the version in a trailing comment
 (`uses: actions/checkout@9c091bb… # v7.0.0`). Never introduce or restore a tag
