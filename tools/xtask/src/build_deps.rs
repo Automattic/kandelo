@@ -14329,6 +14329,17 @@ fn wasm_artifact_policy_failures_for(
     // binary, and the resolver then caches it under the current ABI's key —
     // where the host rejects it at exec. Side modules are checked further
     // down, against the same identity helper.
+    // An artifact that must export __abi_version must export the *current*
+    // one when the marker is extractable. Presence alone lets a stale marker
+    // through: a package whose build tree relinks nothing after an ABI bump
+    // re-collects the previous binary, and the resolver then caches it under
+    // the current ABI's key -- where the host rejects it at exec.
+    //
+    // Only `Present(mismatch)` is failed here, not Missing/Invalid/Err. Unlike
+    // side modules (checked below), executable __abi_version markers are not
+    // guaranteed to be a constant thunk `artifact_identity` can extract, so a
+    // legitimate executable can classify as Missing/Invalid; genuine absence
+    // of the export is already reported by the required-exports check above.
     if required_exports.contains(&"__abi_version") && facts.dylink_section_count == 0 {
         use fork_instrument::contract_inventory::ArtifactAbiVersion;
 

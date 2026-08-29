@@ -4694,13 +4694,18 @@ mod tests {
         );
 
         // A leaf nothing else depends on (directly or via a product) removes
-        // only itself. Read the leaf out of the graph instead of naming one:
-        // a named package stops being a leaf as soon as an image embeds it.
+        // only itself. Read the leaf out of the graph's real node set instead
+        // of naming one: a named package stops being a leaf as soon as an image
+        // embeds it. Iterating the actual package nodes (rather than
+        // reconstructing them from names under a hardcoded arch) keeps the
+        // candidate honest for any planned target, so the leaf we assert on is
+        // one the graph truly contains.
         let leaf = graph
-            .packages
-            .iter()
-            .map(|package| PlanNodeV1::package(&package.name, "wasm32"))
+            .dependencies
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Package { .. }))
             .find(|node| !graph.dependencies.values().any(|deps| deps.contains(node)))
+            .cloned()
             .expect("the checked-in graph has a package nothing else depends on");
         assert_eq!(
             clean_removal_set(&graph, &leaf),
