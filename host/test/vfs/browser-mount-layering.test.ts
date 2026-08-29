@@ -22,6 +22,11 @@ import {
   resolveForBrowser,
 } from "../../src/vfs/default-mounts";
 import type { MountConfig } from "../../src/vfs/types";
+// Cutover default is tmpfs-on (kernel owns scratch); this suite exercises the
+// host-owned scratch-mount machinery directly (the WASM_POSIX_TMPFS=0
+// kill-switch / non-scratch path), so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;

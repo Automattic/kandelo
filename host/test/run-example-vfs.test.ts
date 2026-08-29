@@ -14,6 +14,12 @@ import {
   buildRunExampleGuestEnvironment,
   resolveRunExampleFilesystem,
 } from "../../examples/run-example-vfs";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
+// Cutover default is tmpfs-on (kernel owns scratch); this suite exercises the
+// host-owned scratch-mount machinery directly (the WASM_POSIX_TMPFS=0
+// kill-switch / non-scratch path), so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 describe("run-example isolated filesystem", () => {
   it("preserves the legacy raw-host mode unless isolation is explicit", () => {
@@ -53,12 +59,18 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_CWD: "basic",
         KANDELO_RUNNER_GUEST_PROGRAM: "basic/stdio/fopen",
       }, "/ignored")).toEqual({
-        guestCwd: "/tmp/kandelo-run/basic",
-        guestProgram: "/tmp/kandelo-run/basic/stdio/fopen",
+        guestCwd: "/run/kandelo-run/basic",
+        guestProgram: "/run/kandelo-run/basic/stdio/fopen",
         isolated: true,
         rootfsImage: "default",
+        // The isolated fixture is seeded under `/run` (a host-backed mount the
+        // in-kernel tmpfs never claims), so it stays visible across the cutover.
+        rootfsMountSpec: [
+          ...DEFAULT_MOUNT_SPEC,
+          { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+        ],
         sessionSeedTrees: [{
-          destinationPath: "/tmp/kandelo-run",
+          destinationPath: "/run/kandelo-run",
           sourcePath: realpathSync(sourceRoot),
         }],
       });
