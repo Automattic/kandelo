@@ -221,7 +221,14 @@ const MountsTab: React.FC<TabPropsBase> = ({ draft, setDraft }) => {
               />
               <select
                 value={m.source}
-                onChange={(e) => update(i, { source: e.target.value as MountSource })}
+                onChange={(e) => {
+                  const source = e.target.value as MountSource;
+                  // A persistent workspace is never ephemeral; keeping the
+                  // seeded scratch flag would mislabel the mount.
+                  update(i, source === "opfs"
+                    ? { source, ephemeral: undefined }
+                    : { source });
+                }}
               >
                 {MOUNT_SOURCES.map((s) => (
                   <option key={s} value={s}>{s}</option>

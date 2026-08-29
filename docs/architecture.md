@@ -1694,7 +1694,7 @@ root ownership, inode mode, and the mount flag are authoritative. A custom
 image's guest root can therefore install, replace, or create set-ID programs
 without acquiring any host privilege.
 
-`FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
+`FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Three backends are in use today:
 
 Guest-visible VFS numbers come from `crates/shared` and are recorded under
 `vfs_metadata` in `abi/snapshot.json`. The generated
@@ -1712,6 +1712,7 @@ copies at their explicit entry-point and vendor boundaries.
   inode tokens and preserves open-file identity through supported moves and
   unlink. Browsers without `FileSystemHandle.isSameEntry()` cannot prove this
   identity and report the unsupported boundary instead of substituting a path.
+  A boot reaches it through the `opfs` mount source described below.
 
 ### Default mount layout
 
@@ -1755,6 +1756,51 @@ choice, not a trust classification for the image. Custom mount specifications
 may make the same choice. The browser and Node hosts apply the same rules.
 
 The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+
+### Browser-storage mounts (`opfs` source)
+
+A boot may request additional mounts beyond the canonical layout.
+`MountSpec.source` is `image | scratch | opfs`. An `opfs` entry names an
+origin-scoped workspace in `opfsName`, validated against
+`OPFS_WORKSPACE_NAME_PATTERN` (path-safe ASCII, no leading dot, at most 64
+characters); `/` can never be an `opfs` mount. In the browser,
+`resolveForBrowser` binds each such mount to an `OpfsFileSystem` over the
+proxy-channel SAB supplied in `BrowserResolverOptions.opfsChannels`. An entry
+without an initialized channel throws instead of falling back to memory, so an
+unbacked workspace can never present itself as persistent storage. On Node,
+`resolveForNode` resolves the same source to a `HostFileSystem` under
+`NodeResolverOptions.opfsWorkspaceRoot/<opfsName>` and fails loudly when that
+root is absent, because materializing a persistent workspace inside the
+ephemeral session directory would misrepresent durability. The Node kernel
+worker entry does not yet accept extra mounts or a workspace root through its
+host API, so the Node peer stops at the resolver today.
+
+The browser main thread owns the proxy lifecycle. `BrowserKernel.boot` and
+`initFromImage` accept `opfsMounts: [{ path, name }]`. For each workspace the
+main thread takes the exclusive Web Lock `kandelo-opfs-workspace:<name>`,
+spawns one `OpfsProxyWorker` scoped to `kandelo-opfs/<name>/` under the origin
+root, and completes its ready/error handshake before the kernel worker boots.
+A workspace already held by another tab or kernel fails the boot rather than
+admitting a second writer. Workers and locks are released on destroy,
+including on boots that fail before the kernel worker exists.
+
+The kernel worker extends `DEFAULT_MOUNT_SPEC` with the requested entries and
+resolves them through the same verified resolver. `ensureMountPointDirectories`
+creates each mount point directory in the mount that owns its parent path,
+walking the owner chain so every mount in between has its directory in the
+filesystem beneath it. A workspace nested under another mount (for example
+`/home/maker/.fdoom.tar` under the `/home/maker` scratch mount) therefore
+appears in `readdir` of its parent, the way Linux lists a mounted-over
+directory, while longest-prefix routing still hands the subtree to the
+workspace backend. Boot-supplied workspaces are mounted `nosuid`, like every
+writable scratch mount, so a set-ID file stored in a workspace never grants
+credentials on exec.
+
+The entry path from the UI is a boot descriptor mount
+`{ path, source: "opfs", name }`. In `web-libs/kandelo-session`,
+`validateBootDescriptor` rejects a missing or malformed workspace name and
+`opfsMountsFromDescriptor` projects the surviving mounts into the kernel boot
+call.
 
 ### rootfs image as the source of truth
 

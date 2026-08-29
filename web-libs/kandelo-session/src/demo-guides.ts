@@ -52,6 +52,8 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
   switch (profileId) {
     case "shell":
       return shellGuide();
+    case "shell-persist":
+      return persistentShellGuide();
     case "node":
       return nodeGuide();
     case "nginx":
@@ -71,6 +73,7 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
 export function builtinDemoPresentation(profileId: string): DemoPresentation | null {
   switch (profileId) {
     case "shell":
+    case "shell-persist":
     case "node":
       return genericDemoPresentation("terminal");
     case "nginx":
@@ -81,6 +84,7 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
     case "lamp":
       return genericDemoPresentation("web");
     case "doom":
+    case "doom-persist":
       return {
         ...genericDemoPresentation("framebuffer"),
         autoCommand: DOOM_COMMAND,
@@ -94,7 +98,7 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
 }
 
 export function builtinDemoAssets(profileId: string): DemoAssetConfig[] {
-  if (profileId !== "doom") return [];
+  if (profileId !== "doom" && profileId !== "doom-persist") return [];
   return [
     {
       path: "/doom1.wad",
@@ -131,6 +135,43 @@ export function shellGuide(): DemoGuideConfig {
         ["hello", "Hello"],
         ["files", "Files"],
         ["type-ls", "Type input"],
+      ]),
+    },
+  );
+}
+
+const persistentShellScript = `echo "--- /persist is browser-backed storage (OPFS) ---"
+date "+booted %Y-%m-%d %H:%M:%S" >> /persist/notes.txt
+echo "notes so far:"
+cat /persist/notes.txt
+echo "--- /tmp is in-memory scratch and resets every boot ---"
+df -k /persist /tmp`;
+
+export function persistentShellGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "Persistent shell demo",
+    "Files under /persist live in this browser profile's origin storage (OPFS), not in the machine image or kernel memory. They survive reboots and page reloads on this device, subject to the browser's storage quota and eviction. They are not part of share links, and one tab at a time can mount the workspace: a second tab refuses to boot it.",
+    [
+      actionGroup("Persistence", [
+        action("write-note", "Write a note", "Append a timestamped line to /persist/notes.txt and print the file.", "terminal.run", `date "+written %Y-%m-%d %H:%M:%S" >> /persist/notes.txt && cat /persist/notes.txt`),
+        action("read-notes", "Read notes", "Reload the page, boot this machine again, and every earlier note is still here.", "terminal.run", `cat /persist/notes.txt`),
+      ]),
+      actionGroup("Compare", [
+        action("ephemeral", "Ephemeral /tmp", "The same write to /tmp disappears on the next boot.", "terminal.run", `echo "gone after reboot" > /tmp/note.txt && cat /tmp/note.txt`),
+        action("quota", "Real quota", "df reports the browser's storage quota for /persist and the small in-memory ceiling for /tmp.", "terminal.run", `df -k /persist /tmp`),
+      ]),
+    ],
+    {
+      title: "Persistence script",
+      language: "sh",
+      initialText: persistentShellScript,
+    },
+    {
+      title: "Companion HTML",
+      srcDoc: companionHtml("Persistent shell companion", [
+        ["write-note", "Write note"],
+        ["read-notes", "Read notes"],
+        ["quota", "Quota"],
       ]),
     },
   );

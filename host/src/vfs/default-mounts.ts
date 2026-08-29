@@ -13,10 +13,18 @@
 import type { MountConfig } from "./types";
 import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
+import { OpfsFileSystem } from "./opfs";
 import { restoreVerifiedVfsImage } from "./load-image";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+
+/**
+ * Origin-scoped OPFS workspace names: path-safe ASCII, no leading dot, so a
+ * workspace directory can never alias OPFS internals such as the hidden
+ * unlink-orphan directory.
+ */
+export const OPFS_WORKSPACE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
@@ -24,8 +32,13 @@ export interface MountSpec {
   /**
    * `image`   — asynchronously restore and authenticate the supplied image.
    * `scratch` — empty writable backend (host dir on Node, memfs in browser).
+   * `opfs`    — browser-storage-backed workspace (OPFS in the browser, a
+   *             persistent host directory on Node). File data lives in the
+   *             backing store, not in kernel memory.
    */
-  source: "image" | "scratch";
+  source: "image" | "scratch" | "opfs";
+  /** Workspace name for `opfs` mounts. Must match {@link OPFS_WORKSPACE_NAME_PATTERN}. */
+  opfsName?: string;
   /** Advisory mount intent; the ordinary image-backed root remains writable. */
   readonly?: boolean;
   /** Ignore set-ID mode bits. Omission preserves normal set-ID semantics. */
@@ -186,6 +199,64 @@ export function ensureMountParentDirectories(
   }
 }
 
+/**
+ * Create each mount point directory, plus any missing parents below its
+ * owning mount, inside the mount that owns the parent path.
+ *
+ * POSIX mounts cover an existing directory of the parent filesystem, and
+ * `readdir` of the parent lists that directory. When a mount point is nested
+ * under another mount (an opfs workspace under the `/home/maker` scratch
+ * mount, say), creating the directory in the root image would satisfy path
+ * walks but leave the parent's listing without it. The owner is resolved by
+ * longest mount prefix, the same rule `VirtualPlatformIO` routes by, and the
+ * owner's own mount point is ensured first, so every mount in the chain has
+ * its directory in the filesystem beneath it.
+ */
+export function ensureMountPointDirectories(
+  mounts: readonly MountConfig[],
+  mountPoints: readonly string[],
+): void {
+  const table = mounts
+    .map((m) => ({ prefix: normalizeMountPoint(m.mountPoint), backend: m.backend }))
+    .sort((a, b) => b.prefix.length - a.prefix.length);
+  const done = new Set<string>();
+
+  const ensure = (normalized: string): void => {
+    if (normalized === "/" || done.has(normalized)) return;
+    done.add(normalized);
+    const owner = table.find(
+      (m) =>
+        m.prefix !== normalized
+        && (m.prefix === "/" || normalized.startsWith(`${m.prefix}/`)),
+    );
+    if (owner === undefined) return;
+    // The owner is itself a mount point that must exist beneath it.
+    ensure(owner.prefix);
+
+    const relative = owner.prefix === "/"
+      ? normalized
+      : normalized.slice(owner.prefix.length);
+    let current = "";
+    for (const segment of relative.split("/").filter(Boolean)) {
+      current += `/${segment}`;
+      try {
+        const st = owner.backend.stat(current);
+        if (!isDirectoryMode(st.mode)) break;
+      } catch {
+        owner.backend.mkdir(current, 0o755);
+      }
+    }
+  };
+
+  for (const mountPoint of mountPoints) {
+    const normalized = normalizeMountPoint(mountPoint);
+    if (!normalized.startsWith("/")) continue;
+    const segments = normalized.split("/").filter(Boolean);
+    if (segments.some((segment) => segment === "." || segment === "..")) continue;
+    ensure(normalized);
+  }
+}
+
 export function validateSpec(spec: MountSpec[]): void {
   const seen = new Set<string>();
   for (const m of spec) {
@@ -208,6 +279,19 @@ export function validateSpec(spec: MountSpec[]): void {
       throw new Error(`MountSpec: duplicate mount path: ${m.path}`);
     }
     seen.add(m.path);
+    if (m.source === "opfs") {
+      if (m.path === "/") {
+        throw new Error(`MountSpec: opfs mounts cannot replace the root image mount`);
+      }
+      if (m.opfsName === undefined || !OPFS_WORKSPACE_NAME_PATTERN.test(m.opfsName)) {
+        throw new Error(
+          `MountSpec: opfs mount ${m.path} requires a path-safe workspace name ` +
+          `(got ${JSON.stringify(m.opfsName)})`,
+        );
+      }
+    } else if (m.opfsName !== undefined) {
+      throw new Error(`MountSpec: opfsName is only valid on opfs mounts: ${m.path}`);
+    }
   }
 }
 
@@ -250,6 +334,14 @@ export async function restoreVerifiedImageMounts(
 export interface BrowserResolverOptions {
   /** Mount path → initial SAB size in bytes. Overrides the default. */
   scratchSabBytes?: Record<string, number>;
+  /**
+   * Mount path → OPFS proxy channel SAB for `opfs` mounts. The caller must
+   * have initialized the matching `OpfsProxyWorker` for the mount's
+   * workspace before boot; the resolver only binds the synchronous backend
+   * to the channel. A spec `opfs` entry without a channel fails loudly —
+   * an unbacked mount must not silently degrade to memory.
+   */
+  opfsChannels?: Record<string, SharedArrayBuffer>;
 }
 
 /**
@@ -285,6 +377,20 @@ async function resolveValidatedForBrowser(
       out.push({
         mountPoint: m.path,
         backend,
+        readonly: m.readonly,
+        nosuid: m.nosuid,
+      });
+    } else if (m.source === "opfs") {
+      const channelSab = options.opfsChannels?.[m.path];
+      if (channelSab === undefined) {
+        throw new Error(
+          `opfs mount ${m.path} has no initialized proxy channel; ` +
+          `refusing to mount an unbacked workspace`,
+        );
+      }
+      out.push({
+        mountPoint: m.path,
+        backend: OpfsFileSystem.create(channelSab),
         readonly: m.readonly,
         nosuid: m.nosuid,
       });

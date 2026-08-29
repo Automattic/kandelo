@@ -750,7 +750,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
-| **OPFS filesystem backend** | VFS | Origin Private File System for browser persistence across page loads. WordPress needs this for wp-content, uploads, database. | Medium |
+| **OPFS filesystem backend** | VFS | **Partial.** Origin Private File System for browser persistence across page loads. Mountable through the normal mount path via the `opfs` mount source: a browser boot mounts a named origin-scoped workspace, one kernel at a time per workspace (exclusive Web Lock). The Node peer resolves the same source in `resolveForNode`, but the Node kernel worker entry does not yet accept extra mounts. Remaining gaps: `link`/`symlink`/`readlink` are `ENOTSUP`; `chmod`/`chown`/`utimensat` are no-ops, with modes synthesized as `0777`/`0666` owned by uid/gid 0 and timestamps reported as the time of the call; readdir inode numbers are 0. Chromium and Firefox pass the mount persistence spec; WebKit rejects the boot with an explicit proxy-init error. WordPress wp-content, uploads, and database on such a mount are not yet validated. | Medium |
 | **PHP compiled with clang → wasm32 + this musl sysroot** | toolchain | Replace Emscripten compilation with direct clang targeting. Requires new minimal PHP SAPI replacing Emscripten's `EM_JS`/`EM_ASYNC_JS` integration. | Very Hard |
 | **Emscripten SAPI replacement** | toolchain | PHP-WASM uses a ~2000-line custom C SAPI (`php_wasm.c`) tightly coupled to Emscripten. Would need a new SAPI using this kernel's syscall interface. | Very Hard |
 
