@@ -101,6 +101,75 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
+  // Per-tool -docs bundles generalized from the coreutils-docs template: each
+  // ships man pages generated from the real wasm binary's captured
+  // --help/--version (see scripts/manpage-docs-lib.sh). Their pages are
+  // indexed into the eager mandoc.db (mandoc-db package), so whatis/apropos
+  // resolve them immediately; opening a page lazily mounts the owning archive.
+  {
+    id: "grep-docs",
+    dependency: "grep-docs",
+    resolverPath: "programs/wasm32/grep-docs.zip",
+    archiveUrl: "grep-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/grep.1",
+  },
+  {
+    id: "sed-docs",
+    dependency: "sed-docs",
+    resolverPath: "programs/wasm32/sed-docs.zip",
+    archiveUrl: "sed-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/sed.1",
+  },
+  {
+    id: "gawk-docs",
+    dependency: "gawk-docs",
+    resolverPath: "programs/wasm32/gawk-docs.zip",
+    archiveUrl: "gawk-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/gawk.1",
+  },
+  {
+    id: "findutils-docs",
+    dependency: "findutils-docs",
+    resolverPath: "programs/wasm32/findutils-docs.zip",
+    archiveUrl: "findutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/find.1",
+  },
+  {
+    id: "tar-docs",
+    dependency: "tar-docs",
+    resolverPath: "programs/wasm32/tar-docs.zip",
+    archiveUrl: "tar-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/tar.1",
+  },
+  {
+    id: "gzip-docs",
+    dependency: "gzip-docs",
+    resolverPath: "programs/wasm32/gzip-docs.zip",
+    archiveUrl: "gzip-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/gzip.1",
+  },
+  {
+    id: "diffutils-docs",
+    dependency: "diffutils-docs",
+    resolverPath: "programs/wasm32/diffutils-docs.zip",
+    archiveUrl: "diffutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/diff.1",
+  },
+  {
+    id: "less-docs",
+    dependency: "less-docs",
+    resolverPath: "programs/wasm32/less-docs.zip",
+    archiveUrl: "less-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/less.1",
+  },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
 // The python lazy-archive mounts a statically-linked CPython at /usr/bin with

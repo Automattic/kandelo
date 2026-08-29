@@ -19,10 +19,22 @@ kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK="$KANDELO_PACKAGE_WORK_DIR"
 
 # --- The -docs archives whose pages this indexes (from depends_on) ---
-DOCS_DIRS=(
-  "${WASM_POSIX_DEP_COREUTILS_DOCS_DIR:?coreutils-docs dependency dir required}"
-  "${WASM_POSIX_DEP_LSOF_DOCS_DIR:?lsof-docs dependency dir required}"
-)
+# Discovered from the resolver-provided environment: every declared
+# dependency named "<x>-docs" exports WASM_POSIX_DEP_<X>_DOCS_DIR. Scanning
+# for them means adding a new -docs bundle to the combined index is a
+# depends_on edit only — no change to this array. Sorted for a deterministic
+# index-assembly order.
+DOCS_DIRS=()
+while IFS='=' read -r _name _value; do
+    case "$_name" in
+        WASM_POSIX_DEP_*_DOCS_DIR)
+            [ -n "$_value" ] && DOCS_DIRS+=("$_value") ;;
+    esac
+done < <(env | LC_ALL=C sort)
+[ "${#DOCS_DIRS[@]}" -gt 0 ] || {
+    echo "mandoc-db: no -docs dependency dirs (WASM_POSIX_DEP_*_DOCS_DIR) in environment" >&2
+    exit 2
+}
 
 # --- Host-build mandoc (for makewhatis) from the pinned source ---
 MANDOC_VER="${WASM_POSIX_DEP_VERSION:-1.14.6}"

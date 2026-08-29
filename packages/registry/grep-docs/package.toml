@@ -1,0 +1,30 @@
+kind = "program"
+name = "grep-docs"
+version = "3.11"
+kernel_abi = 7
+depends_on = ["grep@3.11"]
+
+# The grep(1) man page BODY (SYNOPSIS/DESCRIPTION/OPTIONS) is the real
+# grep.wasm binary's --help/--version output, captured by booting a Kandelo
+# kernel and running grep inside it; help2man only reformats it. The one-line
+# NAME description is grep's canonical upstream man-page NAME. There is no
+# upstream source tarball to vendor — the recipe and NAME table are authored
+# in this repository and the binary comes from depends_on = grep@3.11 — so the
+# source URL names the project repo and the all-zero SHA-256 is the explicit
+# in-repository-source sentinel.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
+
+[build]
+script_path = "packages/registry/grep-docs/build-grep-docs.sh"
+
+[[outputs]]
+name = "grep-docs"
+wasm = "grep-docs.zip"
+fork_instrumentation = "disabled"

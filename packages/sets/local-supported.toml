@@ -68,6 +68,10 @@ name = "diffutils"
 class = "user-software"
 
 [[packages]]
+name = "diffutils-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dinit"
 class = "user-software"
 
@@ -84,8 +88,16 @@ name = "findutils"
 class = "user-software"
 
 [[packages]]
+name = "findutils-docs"
+class = "browser-product"
+
+[[packages]]
 name = "gawk"
 class = "user-software"
+
+[[packages]]
+name = "gawk-docs"
+class = "browser-product"
 
 [[packages]]
 name = "git"
@@ -96,8 +108,16 @@ name = "grep"
 class = "user-software"
 
 [[packages]]
+name = "grep-docs"
+class = "browser-product"
+
+[[packages]]
 name = "gzip"
 class = "user-software"
+
+[[packages]]
+name = "gzip-docs"
+class = "browser-product"
 
 [[packages]]
 name = "icu"
@@ -118,6 +138,10 @@ class = "browser-product"
 [[packages]]
 name = "less"
 class = "user-software"
+
+[[packages]]
+name = "less-docs"
+class = "browser-product"
 
 [[packages]]
 name = "libcurl"
@@ -296,6 +320,10 @@ name = "sed"
 class = "user-software"
 
 [[packages]]
+name = "sed-docs"
+class = "browser-product"
+
+[[packages]]
 name = "shell"
 class = "browser-product"
 
@@ -326,6 +354,10 @@ class = "platform"
 [[packages]]
 name = "tar"
 class = "user-software"
+
+[[packages]]
+name = "tar-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tcl"

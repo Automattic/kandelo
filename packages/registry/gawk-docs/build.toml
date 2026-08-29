@@ -1,0 +1,11 @@
+script_path = "packages/registry/gawk-docs/build-gawk-docs.sh"
+inputs = [
+  "packages/registry/gawk-docs/build-gawk-docs.sh",
+  "images/vfs/scripts/generate-help-capture.ts",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/manpage-docs-lib.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
