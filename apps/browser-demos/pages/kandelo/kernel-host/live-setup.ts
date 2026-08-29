@@ -480,6 +480,22 @@ const BROWSER_CORS_PROXY = resolveBrowserCorsProxyConfig({
   baseUrl: import.meta.env.BASE_URL,
   pageUrl: window.location.href,
 });
+/**
+ * In-kernel tmpfs (Phase 5) override from the page URL: `?tmpfs=1` hands the
+ * scratch prefixes to the Rust kernel (host scratch mounts dropped), `?tmpfs=0`
+ * forces the host-owned mounts. Absent leaves the platform default. This is the
+ * browser counterpart to the Node host's `WASM_POSIX_TMPFS`; it flows through
+ * `BrowserKernel` → the worker init config → the worker's `kernelTmpfsScratchEnabled`
+ * gate. The eventual cutover makes tmpfs the default and this becomes a kill-switch.
+ */
+function resolveTmpfsScratchOverride(): boolean | undefined {
+  const raw = new URLSearchParams(window.location.search).get("tmpfs");
+  if (raw === null) return undefined;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  return undefined;
+}
+const TMPFS_SCRATCH_OVERRIDE = resolveTmpfsScratchOverride();
 const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
   SW_SCOPE,
   sessionStorage,
@@ -1295,6 +1311,9 @@ async function bootProfile(
       // transports. The live shell must explicitly give its kernel the same
       // deployment proxy or release-hosted lazy bottles bypass it under COEP.
       corsProxy: BROWSER_CORS_PROXY,
+      ...(TMPFS_SCRATCH_OVERRIDE === undefined
+        ? {}
+        : { tmpfsScratchEnabled: TMPFS_SCRATCH_OVERRIDE }),
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages:
         profile.init?.maxMemoryPages ?? profile.maxMemoryPages,
