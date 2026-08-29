@@ -43,7 +43,6 @@ depends_on = [
   "gzip-docs@1.13",
   "diffutils-docs@3.10",
   "less-docs@668",
-  "mandoc-db@1.14.6",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

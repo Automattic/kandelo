@@ -682,7 +682,7 @@ export async function buildSourceRootfsShellImage(
   requireMaterializedBashIdentity(fs, sourceBash, bash);
   requirePreservedLazyState(unrelatedLazyBefore, fs, "Bash materialization");
 
-  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact);
+  await populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact);
   requirePreservedLazyState(
     unrelatedLazyBefore,
     fs,

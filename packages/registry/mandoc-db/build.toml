@@ -1,9 +1,0 @@
-script_path = "packages/registry/mandoc-db/build-mandoc-db.sh"
-inputs = [
-  "packages/registry/mandoc-db/build-mandoc-db.sh",
-  "images/vfs/scripts/create-deterministic-zip.sh",
-  "scripts/package-build-roots.sh",
-]
-repo_url    = "https://github.com/Automattic/kandelo.git"
-commit      = "UNPUBLISHED"
-revision    = 2

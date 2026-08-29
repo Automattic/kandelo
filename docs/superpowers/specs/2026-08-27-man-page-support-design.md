@@ -256,14 +256,19 @@ that exact claim, and the report states what ran on which host.
 
 Recorded here as the future-work doc for this effort:
 
-1. **`whatis` / `apropos` / `man -k` keyword search.** — DONE. Rather
-   than a per-bundle index merged at runtime, a single `mandoc-db`
-   package runs the host `makewhatis` over every shipped `-docs`
-   archive at build time and emits one combined `mandoc.db`, staged
-   eagerly into the shell image at `/usr/share/man/mandoc.db`. The
-   `dba` index format is architecture-portable, so the host-built
-   index is read directly by the guest `wasm32` mandoc; the guest
-   never runs `makewhatis`. See the "whatis/apropos" PR.
+1. **`whatis` / `apropos` / `man -k` keyword search.** — DONE. The
+   image composer generates a `mandoc.db` index at build time by running
+   the guest `makewhatis` (the shipped `mandoc.wasm`, dispatched by
+   argv[0]) inside a Kandelo instance over the man pages the image ships,
+   then stages the result eagerly at `/usr/share/man/mandoc.db`. The
+   index is generated **per image** from exactly the `-docs` bundles that
+   image registers — not by a global index package coupled to every
+   `-docs` bundle — so an image with a subset of tools gets an index of
+   exactly those pages, with no phantom entries. Because the guest tool
+   writes the database, its on-disk `dba` format always matches the guest
+   mandoc that reads it (verified byte-identical to a host `makewhatis`
+   over the same pages). See `images/vfs/scripts/generate-mandoc-db.ts`
+   and `materializeMandocDatabase`.
 2. **Run `help2man` fully inside Kandelo.** Maximal dogfooding: execute
    the Perl `help2man` itself inside the Kandelo instance via the perl
    lazy-archive, removing the host-side formatting step entirely. Adds a

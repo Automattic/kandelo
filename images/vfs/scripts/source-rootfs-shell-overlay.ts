@@ -8,7 +8,8 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
-  populateMandocDatabase,
+  materializeMandocDatabase,
+  MANDOC_INDEXED_DOCS_SPECS,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerManShellProfile,
@@ -23,10 +24,10 @@ export const PACKAGE_ROOTFS_SHELL_COMPOSITION = {
 } as const;
 
 /** Add the package-owned interactive toolset to an imported rootfs image. */
-export function populateSourceRootfsShellOverlay(
+export async function populateSourceRootfsShellOverlay(
   fs: MemoryFileSystem,
   resolveArtifact: ShellLazyArchiveResolver,
-): void {
+): Promise<void> {
   populateShellRuntimeLayout(fs);
 
   // WHY: every ncurses/termcap-linked guest program resolves $TERM against
@@ -35,8 +36,9 @@ export function populateSourceRootfsShellOverlay(
   populateTerminfoDatabase(fs, resolveArtifact);
 
   // WHY: man/apropos/whatis/man -k consult /usr/share/man/mandoc.db on every
-  // run, so the combined index must be present from boot too.
-  populateMandocDatabase(fs, resolveArtifact);
+  // run, so the index must be present from boot too. It is generated here from
+  // exactly the -docs bundles this image registers (see materializeMandocDatabase).
+  await materializeMandocDatabase(fs, resolveArtifact, MANDOC_INDEXED_DOCS_SPECS);
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {

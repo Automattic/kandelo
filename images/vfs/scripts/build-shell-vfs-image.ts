@@ -37,7 +37,7 @@ async function main() {
   );
 
   console.log("Populating shell environment...");
-  populateShellEnvironment(fs, { eagerBinaries: false, baseProvided: true });
+  await populateShellEnvironment(fs, { eagerBinaries: false, baseProvided: true });
 
   console.log("Populating Doom runtime...");
   populateDoomRuntime(fs);

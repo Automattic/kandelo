@@ -12,6 +12,12 @@ import {
   parseZipCentralDirectory,
   type ZipEntry,
 } from "../../../host/src/vfs/zip";
+import {
+  generateMandocDb,
+  mandocWasmFromManArchive,
+  manPagesFromDocsArchive,
+  type ManPageInput,
+} from "./generate-mandoc-db";
 
 const symlinkTargetDecoder = new TextDecoder("utf-8", {
   fatal: true,
@@ -104,8 +110,9 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
   // Per-tool -docs bundles generalized from the coreutils-docs template: each
   // ships man pages generated from the real wasm binary's captured
   // --help/--version (see scripts/manpage-docs-lib.sh). Their pages are
-  // indexed into the eager mandoc.db (mandoc-db package), so whatis/apropos
-  // resolve them immediately; opening a page lazily mounts the owning archive.
+  // indexed into the eager mandoc.db this image generates over exactly these
+  // bundles (see materializeMandocDatabase), so whatis/apropos resolve them
+  // immediately; opening a page lazily mounts the owning archive.
   {
     id: "grep-docs",
     dependency: "grep-docs",
@@ -439,70 +446,66 @@ export function populateTerminfoDatabase(
   }
 }
 
-// ── Shared mandoc.db manual index ──────────────────────────────────
+// ── Per-image mandoc.db manual index ───────────────────────────────
 //
-// Like the terminfo database, the combined mandoc.db (a name/keyword index
-// over every shipped -docs man page) is materialized eagerly at /usr/share/man
-// rather than fetched lazily: mandoc's `man <name>`, apropos, whatis, and
-// man -k consult it on every run, and without it mandoc prints an "outdated
-// mandoc.db, run makewhatis" note and falls back to a slower filesystem scan.
-// The mandoc-db package builds it with a host makewhatis (see
-// packages/registry/mandoc-db/build-mandoc-db.sh); the composer only unpacks
-// the exact declared bytes.
+// Like the terminfo database, the mandoc.db name/keyword index is materialized
+// eagerly at /usr/share/man/mandoc.db: mandoc's `man <name>`, apropos, whatis,
+// and man -k consult it on every run, and without it mandoc prints an
+// "outdated mandoc.db, run makewhatis" note and falls back to a slower scan.
+//
+// Unlike a fetched-lazy archive — and unlike a single global index package —
+// the database is generated PER IMAGE from exactly the -docs bundles that
+// image registers, by running the guest makewhatis (the shipped mandoc.wasm)
+// inside a Kandelo instance at build time. An image that ships a subset of
+// tools therefore gets an index of exactly those pages, with no phantom
+// entries and no coupling to a global bundle set; the guest tool writes the
+// database, so its on-disk format always matches the guest mandoc that reads
+// it. See images/vfs/scripts/generate-mandoc-db.ts.
 
-export const MANDOC_DB_RUNTIME_FILE = {
-  dependency: "mandoc-db",
-  resolverPath: "programs/wasm32/mandoc-db.zip",
-  /** Zip members are rooted at share/man/..., mounted under /usr/. */
-  mountPrefix: "/usr/",
-  requiredEntry: "share/man/mandoc.db",
-} as const;
+/** The -docs bundles (a subset of the lazy archives) fed to the index. */
+export const MANDOC_INDEXED_DOCS_SPECS = SHELL_LAZY_ARCHIVE_SPECS.filter(
+  (spec) => spec.id.endsWith("-docs"),
+);
+
+function manArchiveSpec(): ShellLazyArchiveSpec {
+  const spec = SHELL_LAZY_ARCHIVE_SPECS.find((entry) => entry.id === "man");
+  if (!spec) {
+    throw new Error("mandoc.db generation requires the 'man' lazy archive");
+  }
+  return spec;
+}
 
 /**
- * Eagerly materialize the package-owned combined mandoc.db into the image at
- * /usr/share/man/mandoc.db. The archive is the mandoc-db package's output; the
- * composer must never rebuild it — it only unpacks the exact declared bytes.
+ * Generate and eagerly materialize a mandoc.db over the given -docs bundles
+ * into the image at /usr/share/man/mandoc.db. `docsSpecs` must be exactly the
+ * -docs archives this image registers, so the index and the mounted pages
+ * never disagree. An empty set stages no database (an image with no man pages
+ * honestly has no index).
  */
-export function populateMandocDatabase(
+export async function materializeMandocDatabase(
   fs: MemoryFileSystem,
   resolveArtifact: ShellLazyArchiveResolver,
-): void {
-  const sourcePath = resolveArtifact(
-    MANDOC_DB_RUNTIME_FILE.resolverPath,
-    MANDOC_DB_RUNTIME_FILE.dependency,
-  );
-  const bytes = new Uint8Array(readFileSync(sourcePath));
-  let entries: ZipEntry[];
-  try {
-    entries = parseZipCentralDirectory(bytes);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`mandoc-db output ${sourcePath} is not a valid ZIP: ${message}`);
-  }
+  docsSpecs: readonly ShellLazyArchiveSpec[],
+): Promise<void> {
+  if (docsSpecs.length === 0) return;
 
-  const requiredEntries = entries.filter(
-    (entry) =>
-      entry.fileName === MANDOC_DB_RUNTIME_FILE.requiredEntry &&
-      !entry.isDirectory &&
-      !entry.isSymlink,
-  );
-  if (requiredEntries.length !== 1) {
-    throw new Error(
-      `mandoc-db output ${sourcePath} must contain exactly one regular ` +
-        `${MANDOC_DB_RUNTIME_FILE.requiredEntry}; found ${requiredEntries.length}`,
+  const pages: ManPageInput[] = [];
+  for (const spec of docsSpecs) {
+    const zipPath = resolveArtifact(spec.resolverPath, spec.dependency);
+    pages.push(
+      ...manPagesFromDocsArchive(new Uint8Array(readFileSync(zipPath))),
     );
   }
+  if (pages.length === 0) return;
 
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    if (entry.isSymlink) {
-      throw new Error(
-        `mandoc-db output ${sourcePath} has an unexpected symlink entry ${entry.fileName}`,
-      );
-    }
-    const destPath = `${MANDOC_DB_RUNTIME_FILE.mountPrefix}${entry.fileName}`;
-    ensureDirRecursive(fs, dirname(destPath));
-    const data = extractZipEntry(bytes, entry);
-    writeVfsBinary(fs, destPath, data, (entry.mode & 0o777) || 0o644);
-  }
+  const manSpec = manArchiveSpec();
+  const mandocWasm = mandocWasmFromManArchive(
+    new Uint8Array(
+      readFileSync(resolveArtifact(manSpec.resolverPath, manSpec.dependency)),
+    ),
+  );
+
+  const db = await generateMandocDb(pages, mandocWasm);
+  ensureDirRecursive(fs, "/usr/share/man");
+  writeVfsBinary(fs, "/usr/share/man/mandoc.db", db, 0o644);
 }

@@ -33,8 +33,8 @@ expect_failure() {
     }
 }
 
-grep -Eq '^revision[[:space:]]*=[[:space:]]*34$' "$BUILD_TOML" ||
-    fail "canonical source shell revision must be 34"
+grep -Eq '^revision[[:space:]]*=[[:space:]]*35$' "$BUILD_TOML" ||
+    fail "canonical source shell revision must be 35"
 grep -Eq '^commit[[:space:]]*=[[:space:]]*"UNPUBLISHED"$' "$BUILD_TOML" ||
     fail "canonical source shell must await publication"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"pending"$' \
@@ -48,6 +48,7 @@ for canonical_input in \
     images/vfs/scripts/build-source-rootfs-shell-image.ts \
     images/vfs/scripts/source-rootfs-shell-overlay.ts \
     images/vfs/scripts/shell-lazy-archives.ts \
+    images/vfs/scripts/generate-mandoc-db.ts \
     images/vfs/scripts/vfs-image-helpers.ts \
     images/vfs/lib/init/shell-binaries.ts \
     host/src/binary-resolver.ts \
@@ -79,8 +80,8 @@ grep -Eq '\bcurl\b|\bwget\b' "$SHELL_BUILDER" &&
 mapfile -t declared_dependencies < <(
     node "$CONTRACT_READER" --print-resolver-owned "$CONTRACT" "$PACKAGE_TOML"
 )
-[ "${#declared_dependencies[@]}" -eq 34 ] ||
-    fail "canonical contract must expose 34 lazy resolver dependencies"
+[ "${#declared_dependencies[@]}" -eq 33 ] ||
+    fail "canonical contract must expose 33 lazy resolver dependencies"
 [ "$(grep -Fc '[[outputs]]' "$PACKAGE_TOML")" -eq 1 ] ||
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
