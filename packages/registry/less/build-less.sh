@@ -7,9 +7,16 @@ set -euo pipefail
 # Output: packages/registry/less/bin/less.wasm
 #
 # less requires termcap functions (tgetent, tgetstr, etc.) which musl
-# doesn't provide. We build a minimal stub library (termcap-stub.c) that
-# returns "not found" — less then falls back to hardcoded ANSI sequences.
-# We also provide a minimal termcap.h header.
+# doesn't provide. Previously this built a stub libtermcap.a whose
+# tgetent() always returned "not found" — that made every terminal look
+# like a dumb teletype, so less could never do real full-screen paging
+# (it always printed "WARNING: terminal is not fully functional").
+#
+# Instead, we link against ncurses's real termcap implementation
+# (libtinfow.a, aka libtinfo.a), which vim already links and which has
+# xterm-256color/xterm/vt100/dumb terminal entries compiled in via
+# MKfallback.sh — no runtime /usr/share/terminfo needed. See
+# packages/registry/vim/build-vim.sh for the same resolve pattern.
 
 LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,16 +38,26 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Build termcap stub library ---
-TERMCAP_DIR="$SCRIPT_DIR/libtermcap"
-if [ ! -f "$TERMCAP_DIR/libtermcap.a" ]; then
-    echo "==> Building termcap stub library..."
-    mkdir -p "$TERMCAP_DIR/include"
-    cp "$SCRIPT_DIR/termcap.h" "$TERMCAP_DIR/include/termcap.h"
-    wasm32posix-cc -I"$TERMCAP_DIR/include" -c "$SCRIPT_DIR/termcap-stub.c" -o "$TERMCAP_DIR/termcap-stub.o"
-    wasm32posix-ar rcs "$TERMCAP_DIR/libtermcap.a" "$TERMCAP_DIR/termcap-stub.o"
-    rm "$TERMCAP_DIR/termcap-stub.o"
-    echo "==> termcap stub library built"
+# --- Resolve ncurses via the dep cache ---
+# An env-var short-circuit lets a caller (e.g. another resolver run,
+# or a wrapper script) pass the prefix in directly and skip the cargo
+# invocation. Otherwise we ask the resolver to build-or-hit the cache.
+# Matches packages/registry/vim/build-vim.sh:57-71.
+NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
+if [ -z "$NCURSES_PREFIX" ]; then
+    echo "==> Resolving ncurses via cargo xtask build-deps..."
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
+fi
+if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
+    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libtinfow.a missing" >&2
+    exit 1
+fi
+echo "==> ncurses at $NCURSES_PREFIX"
+
+NCURSES_CPPFLAGS="-I$NCURSES_PREFIX/include"
+if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
 fi
 
 # --- Download less source ---
@@ -96,23 +113,15 @@ if [ ! -f Makefile ]; then
     export ac_cv_sizeof_int=4
     export ac_cv_sizeof_size_t=4
 
-    # Tell configure our termcap.h exists and -ltermcap works.
-    # Disable all other terminal library checks.
-    export ac_cv_header_termcap_h=yes
-    export ac_cv_lib_ncurses_initscr=no
-    export ac_cv_lib_ncursesw_initscr=no
-    export ac_cv_lib_tinfo_tgetent=no
-    export ac_cv_lib_tinfow_tgetent=no
-    export ac_cv_lib_xcurses_initscr=no
-    export ac_cv_lib_curses_initscr=no
-    export ac_cv_lib_curses_tgetent=no
-    export ac_cv_lib_termlib_tgetent=no
-    export ac_cv_lib_termcap_tgetent=yes
-
-    # Include path for termcap.h, library path for libtermcap.a
-    export CFLAGS="-I${TERMCAP_DIR}/include"
-    export LDFLAGS="-L${TERMCAP_DIR}"
-    export LIBS="-ltermcap"
+    # Point configure at ncurses's real termcap implementation. Unlike
+    # the old stub, we let configure's AC_CHECK_LIB tests actually
+    # link against the ncurses libraries (a real cross-link, not an
+    # executed probe) so it picks a genuine TERMLIBS. -ltinfow in
+    # LDFLAGS guarantees tgetent/tgetstr/tgetnum/tgetflag/tputs/tgoto
+    # resolve at the final link no matter which curses lib configure
+    # settles on.
+    export CPPFLAGS="$NCURSES_CPPFLAGS"
+    export LDFLAGS="-L$NCURSES_PREFIX/lib -ltinfow"
 
     wasm32posix-configure \
         --with-regex=posix \

@@ -7,6 +7,7 @@ import {
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
 import {
+  populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
@@ -24,6 +25,11 @@ export function populateSourceRootfsShellOverlay(
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   populateShellRuntimeLayout(fs);
+
+  // WHY: every ncurses/termcap-linked guest program resolves $TERM against
+  // /usr/share/terminfo on every run, so the shared database must be present
+  // from boot rather than fetched lazily like the archives below.
+  populateTerminfoDatabase(fs, resolveArtifact);
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {

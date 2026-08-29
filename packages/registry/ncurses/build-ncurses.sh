@@ -16,13 +16,21 @@
 # falls back to the in-tree `ncurses-install/` layout.
 #
 # Produces libncursesw.a and libtinfow.a with compiled-in fallback
-# terminal entries (xterm-256color, xterm, vt100, dumb), plus the
-# standard ncurses terminal utilities as wasm program outputs. Consumers
-# don't need a runtime terminfo database for the common demo terminals —
-# ncurses resolves these names against the linked-in table.
+# terminal entries (xterm-256color, xterm, vt100, dumb) as a safety-net
+# floor, plus the standard ncurses terminal utilities as wasm program
+# outputs. ncurses is built --with-default-terminfo-dir=/usr/share/terminfo
+# and --with-terminfo-dirs=/usr/share/terminfo, so every ncurses/termcap-
+# linked guest program already searches that path at runtime; this script
+# also compiles a curated, GENEROUS terminfo database (roughly the
+# ncurses-base terminal set — not just the 4-entry fallback floor) and
+# publishes it as the `terminfo.zip` runtime-file artifact declared in
+# package.toml. The image builder stages that zip's contents at
+# /usr/share/terminfo so every guest program gets correct behavior for
+# $TERM values beyond the compiled-in floor.
 #
 # Host `tic` and `infocmp` are needed during the build to regenerate
-# `fallback.c` from `terminfo.src`. They live under
+# `fallback.c` from `terminfo.src`, and to compile the runtime terminfo
+# database from the same `terminfo.src`. They live under
 # `$SCRIPT_DIR/ncurses-host-build/` and are not cached by the
 # resolver (they're host binaries, not wasm artifacts).
 
@@ -80,6 +88,18 @@ if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     (
         cd "$HOST_BUILD_DIR"
+        # cf_cv_mixedcase=yes is a best-effort hint: ncurses picks its terminfo
+        # leaf naming (literal first character vs. a 2-hex-digit code) based on
+        # whether the filesystem preserves mixed-case names. The guest ncurses
+        # (cross-compiled below, cf_cv_mixedcase=yes for any non-Windows/Cygwin/
+        # Darwin target) always reads literal leaves (share/terminfo/x/xterm-
+        # 256color), so we want the host tic to emit the same. This pin nudges it
+        # there, but it is NOT reliably honored — on a case-insensitive volume
+        # (default macOS) the host tic can still write hashed leaves (78/...).
+        # The runtime-database compile below therefore does NOT trust this pin:
+        # it normalizes tic's output to the literal layout explicitly, which is
+        # what actually makes the shipped database byte-for-byte host-independent.
+        cf_cv_mixedcase=yes \
         "$SRC_DIR/configure" \
             --without-cxx \
             --without-cxx-binding \
@@ -105,6 +125,93 @@ if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     mkdir -p "$TERMINFO_DIR"
     TERMINFO="$TERMINFO_DIR" "$HOST_TIC" -x -e xterm-256color,xterm,vt100,dumb \
         "$SRC_DIR/misc/terminfo.src" 2>&1 | tail -5 || true
+fi
+
+# --- Compile the shared runtime terminfo database (shipped to guests) ---
+# A GENEROUS curated set — roughly the Debian ncurses-base terminal list —
+# compiled from this ncurses's own misc/terminfo.src using the host tic.
+# Any requested name tic cannot find is skipped with a warning; the report
+# below records exactly which names were dropped so that stays visible
+# rather than silently absorbed.
+RUNTIME_TERMINFO_DIR="$WORK_DIR/terminfo-runtime"
+# Keep every entry's FIRST CHARACTER lower-case and case-unique. The literal
+# layout normalization below buckets each entry into a single-character leaf
+# directory ("$first_char"); on a case-insensitive build host (default macOS)
+# two names whose first characters differ only by case (e.g. "Eterm" and
+# "eterm-color") would fold into one physical bucket dir and mis-place entries.
+# terminfo.src does contain capitalized names (Eterm, MtxOrb, …); if one is
+# ever added here, the assertion after the compile step will fail loudly.
+CURATED_TERMINFO_NAMES=(
+    xterm-256color xterm xterm-color xterm-16color
+    vt100 vt102 vt220 vt52
+    ansi linux dumb
+    screen screen-256color tmux tmux-256color
+    rxvt-unicode-256color rxvt vt320
+    putty konsole-256color st-256color alacritty xterm-kitty
+)
+# Fail loudly if a curated name has a non-lower-case first character, which the
+# single-character-bucket normalization cannot represent safely on a
+# case-insensitive build host (see the layout note above).
+for _ti_name in "${CURATED_TERMINFO_NAMES[@]}"; do
+    _ti_first="${_ti_name:0:1}"
+    case "$_ti_first" in
+        [a-z0-9]) ;;
+        *)
+            echo "ERROR: curated terminfo name '$_ti_name' has a non-lowercase" \
+                "first character; the literal-layout bucketing is unsafe on" \
+                "case-insensitive build hosts. Rework the normalization first." >&2
+            exit 1
+            ;;
+    esac
+done
+if [ ! -f "$RUNTIME_TERMINFO_DIR/x/xterm-256color" ]; then
+    echo "==> Compiling the shared runtime terminfo database..."
+    rm -rf "$RUNTIME_TERMINFO_DIR"
+    mkdir -p "$RUNTIME_TERMINFO_DIR"
+    curated_csv="$(IFS=,; echo "${CURATED_TERMINFO_NAMES[*]}")"
+    TERMINFO="$RUNTIME_TERMINFO_DIR" "$HOST_TIC" -x -e "$curated_csv" \
+        "$SRC_DIR/misc/terminfo.src" || true
+
+    # Normalize to literal single-character leaf directories, deterministically.
+    # tic's on-disk layout depends on the BUILD HOST filesystem's case
+    # sensitivity: on a case-insensitive volume (default macOS) it writes hashed
+    # two-hex-digit leaves (share/terminfo/78/xterm-256color); on a
+    # case-sensitive one it writes literal leaves (share/terminfo/x/xterm-256color).
+    # cf_cv_mixedcase on the host tic build does not reliably override this. The
+    # guest ncurses is built cf_cv_mixedcase=yes and always reads literal leaves,
+    # so rebuild the tree in that layout regardless of what the host produced.
+    # cp -L dereferences tic's alias links into regular files, so the shipped db
+    # is byte-identical across build hosts.
+    NORMALIZED_TERMINFO_DIR="$WORK_DIR/terminfo-normalized"
+    rm -rf "$NORMALIZED_TERMINFO_DIR"
+    mkdir -p "$NORMALIZED_TERMINFO_DIR"
+    while IFS= read -r terminfo_entry; do
+        entry_base="$(basename "$terminfo_entry")"
+        entry_first="${entry_base:0:1}"
+        mkdir -p "$NORMALIZED_TERMINFO_DIR/$entry_first"
+        cp -L "$terminfo_entry" "$NORMALIZED_TERMINFO_DIR/$entry_first/$entry_base"
+    done < <(find "$RUNTIME_TERMINFO_DIR" \( -type f -o -type l \) | LC_ALL=C sort)
+    rm -rf "$RUNTIME_TERMINFO_DIR"
+    mv "$NORMALIZED_TERMINFO_DIR" "$RUNTIME_TERMINFO_DIR"
+
+    dropped_terminfo_names=()
+    for name in "${CURATED_TERMINFO_NAMES[@]}"; do
+        first_char="${name:0:1}"
+        if [ ! -f "$RUNTIME_TERMINFO_DIR/$first_char/$name" ]; then
+            dropped_terminfo_names+=("$name")
+        fi
+    done
+    compiled_terminfo_count="$(find "$RUNTIME_TERMINFO_DIR" -type f | wc -l | tr -d ' ')"
+    echo "==> Shared terminfo database: $compiled_terminfo_count entries compiled" \
+        "(requested ${#CURATED_TERMINFO_NAMES[@]})"
+    if [ "${#dropped_terminfo_names[@]}" -gt 0 ]; then
+        echo "    dropped (absent from this ncurses's misc/terminfo.src):" \
+            "${dropped_terminfo_names[*]}" >&2
+    fi
+    if [ "$compiled_terminfo_count" -eq 0 ]; then
+        echo "ERROR: shared terminfo database compiled zero entries" >&2
+        exit 1
+    fi
 fi
 
 # --- Cross-compile ncurses for wasm32 ---
@@ -241,6 +348,24 @@ echo "==> Installing to $INSTALL_DIR..."
     done
 )
 
+# --- Package the shared runtime terminfo database as a runtime-file artifact ---
+# Rooted at share/terminfo/... so consumers mount its contents at
+# /usr/share/terminfo, matching --with-default-terminfo-dir above.
+echo "==> Packaging the shared terminfo database..."
+TERMINFO_RUNTIME_STAGE="$WORK_DIR/terminfo-runtime-stage"
+rm -rf "$TERMINFO_RUNTIME_STAGE"
+mkdir -p "$TERMINFO_RUNTIME_STAGE/share/terminfo"
+cp -R "$RUNTIME_TERMINFO_DIR/." "$TERMINFO_RUNTIME_STAGE/share/terminfo/"
+TERMINFO_RUNTIME_ZIP="$WORK_DIR/terminfo.zip"
+rm -f "$TERMINFO_RUNTIME_ZIP"
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$TERMINFO_RUNTIME_STAGE" "$TERMINFO_RUNTIME_ZIP"
+echo "==> terminfo.zip: $(find "$TERMINFO_RUNTIME_STAGE" -type f | wc -l | tr -d ' ') files," \
+    "$(wc -c <"$TERMINFO_RUNTIME_ZIP" | tr -d ' ') bytes"
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+install_local_runtime_file ncurses "$TERMINFO_RUNTIME_ZIP" terminfo.zip
+
 source_program_for() {
     case "$1" in
         reset) echo "tset" ;;
@@ -275,7 +400,6 @@ for program in "${NCURSES_PROGRAMS[@]}"; do
     cp "$source_path" "$BIN_DIR/$program.wasm"
 done
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
 for program in "${NCURSES_PROGRAMS[@]}"; do
     install_local_binary ncurses "$BIN_DIR/$program.wasm"
 done
