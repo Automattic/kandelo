@@ -13,6 +13,11 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { isWithinRealDirectory } from "../../examples/run-example-paths";
 import { resolveRunExampleBuiltinPrograms } from "../../examples/run-example-builtins";
+// Cutover default is tmpfs-on (kernel owns scratch); this suite exercises the
+// host-owned scratch-mount machinery directly (the WASM_POSIX_TMPFS=0
+// kill-switch / non-scratch path), so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");

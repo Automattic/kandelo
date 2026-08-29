@@ -24,6 +24,12 @@ import {
   type MountSpec,
 } from "../../src/vfs/default-mounts";
 import { KERNEL_TMPFS_OWNED_PREFIXES } from "../../src/vfs/kernel-tmpfs-gate";
+
+// Cutover default is tmpfs-on (kernel owns scratch). Most of this suite asserts
+// the host-owned scratch-mount machinery (resolver backends, seed trees), i.e.
+// the WASM_POSIX_TMPFS=0 kill-switch path, so pin the gate off here. The
+// `filterMountSpecForKernelTmpfs` block below manages the env per-test itself.
+process.env.WASM_POSIX_TMPFS = "0";
 import {
   resolveForNode,
   resolveForNodeKernelSession,
@@ -874,12 +880,15 @@ describe("filterMountSpecForKernelTmpfs (Phase 5 cutover)", () => {
     { path: "/run", source: "scratch" }, // host-owned; tmpfs never claims it
   ];
 
-  it("is a no-op while the gate is off (bring-up default)", () => {
+  it("drops the tmpfs-owned scratch mounts by default (cutover default)", () => {
+    // With no explicit override the platform default is tmpfs-on, so the
+    // resolver drops the kernel-served prefixes and keeps `/` and `/run`.
     delete process.env.WASM_POSIX_TMPFS;
-    expect(filterMountSpecForKernelTmpfs(spec)).toEqual(spec);
+    expect(filterMountSpecForKernelTmpfs(spec).map((m) => m.path))
+      .toEqual(["/", "/run"]);
   });
 
-  it("keeps the spec when explicitly disabled", () => {
+  it("keeps the spec when explicitly disabled (kill-switch)", () => {
     process.env.WASM_POSIX_TMPFS = "0";
     expect(filterMountSpecForKernelTmpfs(spec)).toEqual(spec);
   });

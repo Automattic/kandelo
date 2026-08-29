@@ -14,12 +14,10 @@
  * construction; this gate only governs the host-side mount materialisation and
  * the boot-time enable call, which are per-host.
  *
- * Default is OFF during bring-up: the host keeps owning scratch mounts until the
- * cutover is validated (WordPress Chromium boot + host Vitest + native cargo
- * test). Enable for validation with `WASM_POSIX_TMPFS=1` (Node) or
- * `globalThis.__WASM_POSIX_TMPFS__ = true` (browser); the kill-switch values
- * (`WASM_POSIX_TMPFS=0` / `__WASM_POSIX_TMPFS__ = false`) force it off even after
- * the default flips.
+ * Default is ON (the cutover): the kernel owns the scratch mounts and the host
+ * drops them. Opt back out with the kill-switch `WASM_POSIX_TMPFS=0` (Node) or
+ * `globalThis.__WASM_POSIX_TMPFS__ = false` (browser) — e.g. host tests that
+ * exercise the host-owned scratch-mount machinery directly.
  */
 /**
  * Scratch prefixes the in-kernel tmpfs claims. MUST stay in exact sync with the
@@ -56,6 +54,9 @@ export function kernelTmpfsScratchEnabled(): boolean {
       .__WASM_POSIX_TMPFS__;
     if (flag !== undefined) return flag === true;
   }
-  // Bring-up default: host still owns scratch mounts. Flip to `true` at cutover.
-  return false;
+  // Cutover default: the in-kernel tmpfs owns the scratch mounts. The host keeps
+  // serving `/` and any non-scratch mount. Opt back out with `WASM_POSIX_TMPFS=0`
+  // (Node) or `globalThis.__WASM_POSIX_TMPFS__ = false` (browser) — e.g. host
+  // tests that exercise the host-owned scratch-mount machinery directly.
+  return true;
 }

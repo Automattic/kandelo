@@ -24,6 +24,11 @@ import { NodeTimeProvider } from "../src/vfs/time";
 import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
 import { resolveForNode } from "../src/vfs/default-mounts-node";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+// Cutover default is tmpfs-on (kernel owns scratch); this suite exercises the
+// host-owned scratch-mount machinery directly (the WASM_POSIX_TMPFS=0
+// kill-switch / non-scratch path), so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const O_RDWR = 0o2;
 const O_CREAT = 0o100;

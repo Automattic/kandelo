@@ -111,6 +111,24 @@ a pure prefix predicate (used by unit tests); the syscall dispatch gates on
 `claims_path`; handle-op arms need no flag (a tmpfs handle only exists when
 enabled). The Phase 5 wiring test flips the flag on (via an RAII guard).
 
+**Increment 1d — cutover (done).** The host-side gate
+`host/src/vfs/kernel-tmpfs-gate.ts::kernelTmpfsScratchEnabled` now defaults ON
+(kill-switch `WASM_POSIX_TMPFS=0` / `__WASM_POSIX_TMPFS__ = false`). It governs
+both halves together: the Node and browser resolvers drop the tmpfs-owned scratch
+mounts (`filterMountSpecForKernelTmpfs`), and the worker calls
+`kernel_set_tmpfs_enabled` at boot (`maybeEnableKernelTmpfs`). The browser worker
+receives the setting through the init config (`InitMessage.config.tmpfsScratchEnabled`
+→ worker `globalThis`), exposed to demos as a `?tmpfs=1|0` page-URL override,
+since the browser has no `process.env`. Host tests that exercise the host-owned
+scratch-mount machinery directly (resolver backends, session seed trees) pin
+`WASM_POSIX_TMPFS=0`. The libc conformance fixture was relocated `/tmp/kandelo-run`
+→ `/run/kandelo-run` (a mount tmpfs never claims) so it survives the cutover.
+Validation: Node libc functional 62/63 identical off/on (spawn passes), regression
+zero-regression; WordPress on Node boots 4/4 with the MariaDB stack; WordPress in
+Chromium boots and connects to MariaDB over the tmpfs unix socket; fork-child
+registration retries on reentrant contention (a latent race the synchronous tmpfs
+completions exposed under php-fpm fork bursts).
+
 The interception lives in the **runtime-core syscall path** (not the `WasmHostIO`
 adapter) so it is unit-testable with a recording mock host — the mock-host test
 is the completeness guarantee: any missed interception site surfaces as a

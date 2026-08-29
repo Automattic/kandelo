@@ -1096,10 +1096,9 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 /**
  * In-kernel tmpfs (Phase 5): the scratch mounts (`/tmp`, `/var/*`, `/root`,
  * `/srv`, ...) are served by the Rust kernel instead of a host-side memory FS.
- * Gated during bring-up so the default remains host-owned scratch mounts;
- * enabled via `WASM_POSIX_TMPFS=1` (Node, for conformance validation) or
- * `globalThis.__WASM_POSIX_TMPFS__ = true` (browser). This is the validation
- * toggle; the eventual cutover makes it the default and drops the host mounts.
+ * On by default (the cutover); opt back out with the kill-switch
+ * `WASM_POSIX_TMPFS=0` (Node) or `globalThis.__WASM_POSIX_TMPFS__ = false`
+ * (browser).
  *
  * The gate lives in `kernelTmpfsScratchEnabled` — a single source of truth
  * shared with the mount resolvers, which drop the host-side scratch backends
