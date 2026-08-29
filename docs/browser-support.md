@@ -227,6 +227,9 @@ pipe pair.
   shared surfaces, per-handle rights, serialized presentation, and
   multi-writer/compositor ownership remain follow-up work.
 
+### KMS (`/dev/dri/card0`)
+- EGL/GLES clients render through the host WebGL2-backed GLES bridge. The bridge reports an ES2-style context to native loaders, but advertises the WebGL2-backed GLES2 extension gates it implements, including full NPOT textures, RGBA8 render targets, MIN/MAX blend equations, RED/RG textures, float/half-float textures, depth/packed depth-stencil textures, and standard derivatives. Optional float render/filter/blend capabilities are enabled only when the browser exposes the matching WebGL extension.
+
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
 - **Pointer Lock recommended.** The DOOM demo calls `canvas.requestPointerLock()` on first click so the browser delivers unbounded relative motion (`MouseEvent.movementX/Y`). Without pointer lock, `clientX/Y` deltas clamp at the canvas edges and feel sluggish for first-person controls. Press `Esc` to release the lock.
