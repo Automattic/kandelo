@@ -1,0 +1,30 @@
+kind = "program"
+name = "findutils-docs"
+version = "4.10.0"
+kernel_abi = 7
+depends_on = ["findutils@4.10.0"]
+
+# The man page BODY is the real findutils wasm binary's --help/--version output,
+# captured by booting a Kandelo kernel and running each tool inside it;
+# help2man only reformats it. The one-line NAME descriptions are the tools'
+# canonical upstream man-page NAMEs. There is no upstream source tarball to
+# vendor — the recipe and NAME table are authored in this repository and the
+# binaries come from depends_on = findutils@4.10.0 — so the source URL names
+# the project repo and the all-zero SHA-256 is the in-repository-source
+# sentinel.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING?h=v4.10.0"
+
+[build]
+script_path = "packages/registry/findutils-docs/build-findutils-docs.sh"
+
+[[outputs]]
+name = "findutils-docs"
+wasm = "findutils-docs.zip"
+fork_instrumentation = "disabled"

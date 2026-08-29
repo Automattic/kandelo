@@ -35,6 +35,14 @@ depends_on = [
   "mandoc-browser-bundle@1.14.6",
   "coreutils-docs@9.6",
   "lsof-docs@0.1.0",
+  "grep-docs@3.11",
+  "sed-docs@4.9",
+  "gawk-docs@5.3.0",
+  "findutils-docs@4.10.0",
+  "tar-docs@1.35",
+  "gzip-docs@1.13",
+  "diffutils-docs@3.10",
+  "less-docs@668",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

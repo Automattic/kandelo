@@ -12,6 +12,12 @@ import {
   parseZipCentralDirectory,
   type ZipEntry,
 } from "../../../host/src/vfs/zip";
+import {
+  generateMandocDb,
+  mandocWasmFromManArchive,
+  manPagesFromDocsArchive,
+  type ManPageInput,
+} from "./generate-mandoc-db";
 
 const symlinkTargetDecoder = new TextDecoder("utf-8", {
   fatal: true,
@@ -100,6 +106,76 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     archiveUrl: "lsof-docs.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
+  },
+  // Per-tool -docs bundles generalized from the coreutils-docs template: each
+  // ships man pages generated from the real wasm binary's captured
+  // --help/--version (see scripts/manpage-docs-lib.sh). Their pages are
+  // indexed into the eager mandoc.db this image generates over exactly these
+  // bundles (see materializeMandocDatabase), so whatis/apropos resolve them
+  // immediately; opening a page lazily mounts the owning archive.
+  {
+    id: "grep-docs",
+    dependency: "grep-docs",
+    resolverPath: "programs/wasm32/grep-docs.zip",
+    archiveUrl: "grep-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/grep.1",
+  },
+  {
+    id: "sed-docs",
+    dependency: "sed-docs",
+    resolverPath: "programs/wasm32/sed-docs.zip",
+    archiveUrl: "sed-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/sed.1",
+  },
+  {
+    id: "gawk-docs",
+    dependency: "gawk-docs",
+    resolverPath: "programs/wasm32/gawk-docs.zip",
+    archiveUrl: "gawk-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/gawk.1",
+  },
+  {
+    id: "findutils-docs",
+    dependency: "findutils-docs",
+    resolverPath: "programs/wasm32/findutils-docs.zip",
+    archiveUrl: "findutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/find.1",
+  },
+  {
+    id: "tar-docs",
+    dependency: "tar-docs",
+    resolverPath: "programs/wasm32/tar-docs.zip",
+    archiveUrl: "tar-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/tar.1",
+  },
+  {
+    id: "gzip-docs",
+    dependency: "gzip-docs",
+    resolverPath: "programs/wasm32/gzip-docs.zip",
+    archiveUrl: "gzip-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/gzip.1",
+  },
+  {
+    id: "diffutils-docs",
+    dependency: "diffutils-docs",
+    resolverPath: "programs/wasm32/diffutils-docs.zip",
+    archiveUrl: "diffutils-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/diff.1",
+  },
+  {
+    id: "less-docs",
+    dependency: "less-docs",
+    resolverPath: "programs/wasm32/less-docs.zip",
+    archiveUrl: "less-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/less.1",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 
@@ -368,4 +444,68 @@ export function populateTerminfoDatabase(
     const data = extractZipEntry(bytes, entry);
     writeVfsBinary(fs, destPath, data, (entry.mode & 0o777) || 0o644);
   }
+}
+
+// ── Per-image mandoc.db manual index ───────────────────────────────
+//
+// Like the terminfo database, the mandoc.db name/keyword index is materialized
+// eagerly at /usr/share/man/mandoc.db: mandoc's `man <name>`, apropos, whatis,
+// and man -k consult it on every run, and without it mandoc prints an
+// "outdated mandoc.db, run makewhatis" note and falls back to a slower scan.
+//
+// Unlike a fetched-lazy archive — and unlike a single global index package —
+// the database is generated PER IMAGE from exactly the -docs bundles that
+// image registers, by running the guest makewhatis (the shipped mandoc.wasm)
+// inside a Kandelo instance at build time. An image that ships a subset of
+// tools therefore gets an index of exactly those pages, with no phantom
+// entries and no coupling to a global bundle set; the guest tool writes the
+// database, so its on-disk format always matches the guest mandoc that reads
+// it. See images/vfs/scripts/generate-mandoc-db.ts.
+
+/** The -docs bundles (a subset of the lazy archives) fed to the index. */
+export const MANDOC_INDEXED_DOCS_SPECS = SHELL_LAZY_ARCHIVE_SPECS.filter(
+  (spec) => spec.id.endsWith("-docs"),
+);
+
+function manArchiveSpec(): ShellLazyArchiveSpec {
+  const spec = SHELL_LAZY_ARCHIVE_SPECS.find((entry) => entry.id === "man");
+  if (!spec) {
+    throw new Error("mandoc.db generation requires the 'man' lazy archive");
+  }
+  return spec;
+}
+
+/**
+ * Generate and eagerly materialize a mandoc.db over the given -docs bundles
+ * into the image at /usr/share/man/mandoc.db. `docsSpecs` must be exactly the
+ * -docs archives this image registers, so the index and the mounted pages
+ * never disagree. An empty set stages no database (an image with no man pages
+ * honestly has no index).
+ */
+export async function materializeMandocDatabase(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+  docsSpecs: readonly ShellLazyArchiveSpec[],
+): Promise<void> {
+  if (docsSpecs.length === 0) return;
+
+  const pages: ManPageInput[] = [];
+  for (const spec of docsSpecs) {
+    const zipPath = resolveArtifact(spec.resolverPath, spec.dependency);
+    pages.push(
+      ...manPagesFromDocsArchive(new Uint8Array(readFileSync(zipPath))),
+    );
+  }
+  if (pages.length === 0) return;
+
+  const manSpec = manArchiveSpec();
+  const mandocWasm = mandocWasmFromManArchive(
+    new Uint8Array(
+      readFileSync(resolveArtifact(manSpec.resolverPath, manSpec.dependency)),
+    ),
+  );
+
+  const db = await generateMandocDb(pages, mandocWasm);
+  ensureDirRecursive(fs, "/usr/share/man");
+  writeVfsBinary(fs, "/usr/share/man/mandoc.db", db, 0o644);
 }

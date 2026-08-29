@@ -34,7 +34,19 @@ const sourceOnlyProgramsDir = join(
   "local-binaries/source-only-v1/programs/wasm32",
 );
 const shellImagePath = join(sourceOnlyProgramsDir, "shell.vfs.zst");
-const ARCHIVE_NAMES = ["man.zip", "coreutils-docs.zip", "lsof-docs.zip"] as const;
+const ARCHIVE_NAMES = [
+  "man.zip",
+  "coreutils-docs.zip",
+  "lsof-docs.zip",
+  "grep-docs.zip",
+  "sed-docs.zip",
+  "gawk-docs.zip",
+  "findutils-docs.zip",
+  "tar-docs.zip",
+  "gzip-docs.zip",
+  "diffutils-docs.zip",
+  "less-docs.zip",
+] as const;
 const archivePaths = ARCHIVE_NAMES.map((name) =>
   join(sourceOnlyProgramsDir, name)
 );
@@ -109,6 +121,114 @@ describe.skipIf(!available)(
       expect(rendered).not.toContain(".TH");
       expect(rendered).not.toContain(".SH");
     }, 60_000);
+
+    // The pre-built, combined mandoc.db shipped by the `mandoc-db` package
+    // (staged eagerly at /usr/share/man/mandoc.db) means mandoc's `man`
+    // front-end no longer warns that the database is missing or stale. That
+    // warning ("outdated mandoc.db lacks ls(1) entry") was the visible symptom
+    // of an image with man pages but no index. Its absence proves the eager db
+    // matches the lazily-mounted pages.
+    it("resolves man ls without an outdated-mandoc.db warning", async () => {
+      const { stderr, exitCode } = await runManCommand("man ls");
+      expect(exitCode, `man ls stderr:\n${stderr}`).toBe(0);
+      expect(stderr).not.toMatch(/outdated mandoc\.db/);
+      expect(stderr).not.toMatch(/lacks .*entry/);
+    }, 60_000);
+  },
+);
+
+// The `mandoc-db` package builds one combined whatis/apropos index over every
+// shipped -docs archive with the host `makewhatis`, then stages it eagerly so
+// name-lookup (`whatis`) and keyword-search (`apropos` / `man -k`) work the
+// moment the shell boots — without ever running `makewhatis` inside the guest.
+// These front-ends read /usr/share/man/mandoc.db directly; the pages
+// themselves stay lazily mounted from coreutils-docs.zip / lsof-docs.zip.
+describe.skipIf(!available)(
+  "whatis / apropos read the combined mandoc.db (Node-host, offline)",
+  () => {
+    it("whatis reports the exact coreutils ls(1) NAME line", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("whatis ls");
+      expect(exitCode, `whatis ls stderr:\n${stderr}`).toBe(0);
+      // mandoc whatis prints "ls (1) - list directory contents".
+      expect(stdout).toMatch(/ls\s*\(1\)\s*-\s*list directory contents/);
+    }, 60_000);
+
+    it("apropos finds ls by keyword out of the shared index", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("apropos ls");
+      expect(exitCode, `apropos ls stderr:\n${stderr}`).toBe(0);
+      expect(stdout).toMatch(/ls\s*\(1\)\s*-\s*list directory contents/);
+    }, 60_000);
+
+    it("man -k searches the same index as apropos", async () => {
+      const { stdout, stderr, exitCode } =
+        await runManCommand("man -k lsof");
+      expect(exitCode, `man -k lsof stderr:\n${stderr}`).toBe(0);
+      // lsof(8) is indexed from lsof-docs.zip, proving the db spans every
+      // -docs archive, not just coreutils.
+      expect(stdout).toMatch(/lsof\s*\(8\)\s*-\s*.*list open files/);
+    }, 60_000);
+  },
+);
+
+// The generalized per-tool -docs bundles (grep-docs, sed-docs, gawk-docs,
+// findutils-docs, tar-docs, gzip-docs, diffutils-docs, less-docs) each ship a
+// man page whose BODY is the real wasm binary's captured --help/--version and
+// whose NAME is pinned to the tool's canonical upstream description. Every one
+// is folded into the same combined mandoc.db, so `man <tool>` renders and
+// `whatis`/`apropos` resolve across all of them — proving the index spans the
+// whole registry, not just coreutils + lsof.
+describe.skipIf(!available)(
+  "generalized per-tool -docs bundles (Node-host, offline)",
+  () => {
+    it("renders grep(1) from the grep-docs bundle", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("man grep");
+      expect(exitCode, `man grep stderr:\n${stderr}`).toBe(0);
+      const rendered = stripOverstrike(stdout);
+      expect(rendered).toMatch(/\bNAME\b/);
+      expect(rendered).toContain("print lines that match patterns");
+      // Body text captured from the real grep.wasm --help.
+      expect(rendered).toMatch(/Search for PATTERNS in each FILE/);
+      expect(rendered).not.toContain(".SH");
+    }, 60_000);
+
+    it("renders tar(1) from the tar-docs bundle", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("man tar");
+      expect(exitCode, `man tar stderr:\n${stderr}`).toBe(0);
+      const rendered = stripOverstrike(stdout);
+      expect(rendered).toMatch(/\bNAME\b/);
+      expect(rendered).toContain("an archiving utility");
+    }, 60_000);
+
+    it("whatis reports the pinned gawk(1) NAME, not \"Awk\"", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("whatis gawk");
+      expect(exitCode, `whatis gawk stderr:\n${stderr}`).toBe(0);
+      // The [NAME] include pins the page key to "gawk" even though gawk
+      // --version reports "GNU Awk"; without it `whatis gawk` would miss.
+      expect(stdout).toMatch(
+        /gawk\s*\(1\)\s*-\s*pattern scanning and processing language/,
+      );
+    }, 60_000);
+
+    it("apropos spans the new bundles (sed, find, diff)", async () => {
+      const sed = await runManCommand("whatis sed");
+      expect(sed.exitCode, `whatis sed stderr:\n${sed.stderr}`).toBe(0);
+      expect(sed.stdout).toMatch(
+        /sed\s*\(1\)\s*-\s*stream editor for filtering and transforming text/,
+      );
+
+      const find = await runManCommand("whatis find");
+      expect(find.exitCode, `whatis find stderr:\n${find.stderr}`).toBe(0);
+      expect(find.stdout).toMatch(
+        /find\s*\(1\)\s*-\s*search for files in a directory hierarchy/,
+      );
+
+      // diff comes from the multi-tool diffutils-docs bundle.
+      const diff = await runManCommand("whatis diff");
+      expect(diff.exitCode, `whatis diff stderr:\n${diff.stderr}`).toBe(0);
+      expect(diff.stdout).toMatch(
+        /diff\s*\(1\)\s*-\s*compare files line by line/,
+      );
+    }, 90_000);
   },
 );
 

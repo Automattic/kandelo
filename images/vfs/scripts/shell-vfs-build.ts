@@ -31,6 +31,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  materializeMandocDatabase,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerManShellProfile,
@@ -437,10 +438,10 @@ export interface ShellVfsOptions {
  * targets are stored as path strings, but it's clearest to keep
  * "archive registers stub" → "symlink aliases stub" sequencing.
  */
-export function populateShellEnvironment(
+export async function populateShellEnvironment(
   fs: MemoryFileSystem,
   opts: ShellVfsOptions,
-): void {
+): Promise<void> {
   const resolveArtifact = opts.resolveArtifact ?? resolveVfsArtifact;
   const strictArtifactResolution = opts.resolveArtifact !== undefined;
   if (opts.baseProvided) {
@@ -465,6 +466,14 @@ export function populateShellEnvironment(
   // /usr/share/terminfo on every run, so the shared database must be present
   // regardless of whether the base rootfs already carries it.
   populateTerminfoDatabase(fs, resolveArtifact);
+  // WHY: man/apropos/whatis/man -k consult /usr/share/man/mandoc.db on every
+  // run, so the index must be present regardless of the base rootfs. Generated
+  // from exactly the -docs bundles this environment registers below
+  // (coreutils-docs, lsof-docs) so it never claims pages the image lacks.
+  const indexedDocsSpecs = SHELL_LAZY_ARCHIVE_SPECS.filter(
+    (spec) => spec.id === "coreutils-docs" || spec.id === "lsof-docs",
+  );
+  await materializeMandocDatabase(fs, resolveArtifact, indexedDocsSpecs);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }

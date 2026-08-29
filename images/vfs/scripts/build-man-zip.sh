@@ -25,7 +25,10 @@ echo "==> Staging man.zip tree..."
 # The interpreter as bin/mandoc (no .wasm extension).
 cp "$MANDOC_DIR/mandoc.wasm" "$STAGING/bin/mandoc"
 chmod 755 "$STAGING/bin/mandoc"
-ln -s mandoc "$STAGING/bin/man"
+# man/apropos/whatis/makewhatis are all mandoc, dispatched by argv[0].
+for alias in man apropos whatis makewhatis; do
+    ln -s mandoc "$STAGING/bin/$alias"
+done
 printf 'manpath /usr/share/man\n' > "$STAGING/etc/man.conf"
 
 # Exactly one regular executable named bin/mandoc is required by the loader.

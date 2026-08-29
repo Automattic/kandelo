@@ -256,11 +256,19 @@ that exact claim, and the report states what ran on which host.
 
 Recorded here as the future-work doc for this effort:
 
-1. **`whatis` / `apropos` / `man -k` keyword search.** Requires each
-   `-docs` bundle to carry a `makewhatis`-generated `mandoc.db` index,
-   plus a strategy for merging indexes across independently-mounted
-   lazy-archives and managing the combined manpath database. Its own
-   subproject.
+1. **`whatis` / `apropos` / `man -k` keyword search.** — DONE. The
+   image composer generates a `mandoc.db` index at build time by running
+   the guest `makewhatis` (the shipped `mandoc.wasm`, dispatched by
+   argv[0]) inside a Kandelo instance over the man pages the image ships,
+   then stages the result eagerly at `/usr/share/man/mandoc.db`. The
+   index is generated **per image** from exactly the `-docs` bundles that
+   image registers — not by a global index package coupled to every
+   `-docs` bundle — so an image with a subset of tools gets an index of
+   exactly those pages, with no phantom entries. Because the guest tool
+   writes the database, its on-disk `dba` format always matches the guest
+   mandoc that reads it (verified byte-identical to a host `makewhatis`
+   over the same pages). See `images/vfs/scripts/generate-mandoc-db.ts`
+   and `materializeMandocDatabase`.
 2. **Run `help2man` fully inside Kandelo.** Maximal dogfooding: execute
    the Perl `help2man` itself inside the Kandelo instance via the perl
    lazy-archive, removing the host-side formatting step entirely. Adds a
@@ -270,4 +278,19 @@ Recorded here as the future-work doc for this effort:
 3. **Generalize `-docs` bundles** to the rest of the registry packages
    that carry (or can faithfully generate) man pages, following the
    `lsof-docs` (direct capture) and `coreutils-docs` (runtime-driven)
-   templates.
+   templates. — In progress: grep, sed, gawk, findutils, tar, gzip,
+   diffutils, less.
+4. **Full terminfo database as a lazy archive.** — DEFERRED. The shell
+   already ships a curated `/usr/share/terminfo` (≈`ncurses-base`) that
+   covers the terminals a browser or SSH client actually presents:
+   `xterm`, `xterm-256color`, `screen`/`screen-256color`,
+   `tmux-256color`, `vt100`, `linux`, `dumb`, and friends. Streaming
+   the full ncurses terminfo database (thousands of entries for
+   hardware terminals from the 1980s — `adm3a`, `wy60`, printer
+   entries, …) as an on-demand lazy archive for an exotic `$TERM`
+   would add a package plus another lazy-archive mount for a case that
+   effectively never occurs in this deployment. Revisit only if a real
+   guest surfaces a `$TERM` the curated set does not resolve; until
+   then the curated set is the honest, complete boundary and a missing
+   exotic entry should fail loudly (ncurses' own "unknown terminal"
+   error) rather than motivate speculative infrastructure.

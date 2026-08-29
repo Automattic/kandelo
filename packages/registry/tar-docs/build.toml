@@ -1,0 +1,11 @@
+script_path = "packages/registry/tar-docs/build-tar-docs.sh"
+inputs = [
+  "packages/registry/tar-docs/build-tar-docs.sh",
+  "images/vfs/scripts/generate-help-capture.ts",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/manpage-docs-lib.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
