@@ -7752,7 +7752,18 @@ pub fn sys_rename(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
-        return crate::tmpfs::rename(&old, &new);
+        // A tmpfs fifo lives in the fifo/pipe table keyed by path (alongside its
+        // Special inode), and an AF_UNIX socket in the unix-socket registry.
+        // Advance a displaced fifo's cached ctime and rekey both registries
+        // across the move, exactly as the host path does below.
+        let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
+        crate::tmpfs::rename(&old, &new)?;
+        rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.rename_path(&old, &new) {
+            crate::wakeup::push_datagram_writable();
+        }
+        return Ok(());
     }
     ensure_host_mutable_namespace_path(&old)?;
     ensure_host_mutable_namespace_path(&new)?;
@@ -7955,7 +7966,7 @@ pub fn sys_chown(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved, uid, gid, proc.effective_uid() != 0);
+        return crate::tmpfs::chown(&resolved, uid, gid, true);
     }
     host.host_chown(&resolved, uid, gid)
 }
@@ -7977,7 +7988,7 @@ pub fn sys_lchown(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved.path, uid, gid, proc.effective_uid() != 0);
+        return crate::tmpfs::chown(&resolved.path, uid, gid, true);
     }
     host.host_lchown(&resolved.path, uid, gid)
 }
@@ -9507,6 +9518,38 @@ pub fn sys_utimensat(
             if let Some(live_path) =
                 unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
             {
+                if crate::tmpfs::claims_path(&live_path) {
+                    // A tmpfs fifo's times live on its Special(S_IFIFO) inode,
+                    // not a host marker; update the inode directly (host_utimensat
+                    // would ENOENT on the absent host path after the cutover).
+                    let (now_sec, now_nsec) = {
+                        let (s, n) = host
+                            .host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+                        (
+                            u64::try_from(s).map_err(|_| Errno::EINVAL)?,
+                            u32::try_from(n).map_err(|_| Errno::EINVAL)?,
+                        )
+                    };
+                    let resolve = |req_sec: i64, req_nsec: i64, cur_sec: u64, cur_nsec: u32|
+                     -> Result<(u64, u32), Errno> {
+                        match req_nsec {
+                            UTIME_OMIT => Ok((cur_sec, cur_nsec)),
+                            UTIME_NOW => Ok((now_sec, now_nsec)),
+                            0..=999_999_999 => Ok((
+                                u64::try_from(req_sec).map_err(|_| Errno::EINVAL)?,
+                                req_nsec as u32,
+                            )),
+                            _ => Err(Errno::EINVAL),
+                        }
+                    };
+                    let (a_sec, a_nsec) =
+                        resolve(atime_sec, atime_nsec, st.st_atime_sec, st.st_atime_nsec)?;
+                    let (m_sec, m_nsec) =
+                        resolve(mtime_sec, mtime_nsec, st.st_mtime_sec, st.st_mtime_nsec)?;
+                    return crate::tmpfs::utimensat(
+                        &live_path, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
+                    );
+                }
                 host.host_utimensat(&live_path, atime_sec, atime_nsec, mtime_sec, mtime_nsec)?;
                 let refreshed = fs_stat(host, &live_path)?;
                 return update_fifo_metadata(pipe_idx, |metadata| {
@@ -14708,7 +14751,18 @@ pub fn sys_renameat(
         if old_tmpfs != new_tmpfs {
             return Err(Errno::EXDEV);
         }
-        return crate::tmpfs::rename(&old_resolved, &new_resolved);
+        // Keep the fifo/pipe table and unix-socket registry coherent across the
+        // move (see sys_rename): advance a displaced fifo's cached ctime, rekey
+        // both registries.
+        let displaced_ctime =
+            refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
+        crate::tmpfs::rename(&old_resolved, &new_resolved)?;
+        rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.rename_path(&old_resolved, &new_resolved) {
+            crate::wakeup::push_datagram_writable();
+        }
+        return Ok(());
     }
     ensure_host_mutable_namespace_path(&old_resolved)?;
     ensure_host_mutable_namespace_path(&new_resolved)?;
@@ -16656,13 +16710,13 @@ pub fn sys_fchown(
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
                 tmpfs_stamp_now(host)?;
-                return crate::tmpfs::fchown(ofd.host_handle, uid, gid, proc.effective_uid() != 0);
+                return crate::tmpfs::fchown(ofd.host_handle, uid, gid, true);
             }
             if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
                 let st = crate::tmpfs::lstat(&ofd.path)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
                 tmpfs_stamp_now(host)?;
-                return crate::tmpfs::chown(&ofd.path, uid, gid, proc.effective_uid() != 0);
+                return crate::tmpfs::chown(&ofd.path, uid, gid, true);
             }
             let st = host.host_fstat(ofd.host_handle)?;
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
@@ -16858,7 +16912,7 @@ pub fn sys_fchownat(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved.path, uid, gid, proc.effective_uid() != 0);
+        return crate::tmpfs::chown(&resolved.path, uid, gid, true);
     }
     if nofollow {
         host.host_lchown(&resolved.path, uid, gid)

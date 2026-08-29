@@ -173,6 +173,19 @@ impl Inode {
         self.ctime_nsec = nsec;
     }
 
+    /// Clear the set-user-ID bit, and the set-group-ID bit on a group-executable
+    /// file, on a content-modifying operation (write/truncate) — the POSIX
+    /// "a successful write clears set-user-ID" rule, matching the host path.
+    fn clear_setid_on_modify(&mut self) {
+        const S_ISUID: u32 = 0o4000;
+        const S_ISGID: u32 = 0o2000;
+        const S_IXGRP: u32 = 0o0010;
+        self.mode &= !S_ISUID;
+        if self.mode & S_IXGRP != 0 {
+            self.mode &= !S_ISGID;
+        }
+    }
+
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
@@ -550,10 +563,16 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && !inode.is_dir() && flags & O_ACCMODE != O_RDONLY {
-                    if let Some(InodeKind::Regular(data)) =
-                        state.get_mut(existing).map(|i| &mut i.kind)
-                    {
-                        data.clear();
+                    if let Some(node) = state.get_mut(existing) {
+                        if let InodeKind::Regular(data) = &mut node.kind {
+                            // O_TRUNC on an already-empty file is a no-op and
+                            // preserves set-ID bits; a real shrink clears them.
+                            let shrank = !data.is_empty();
+                            data.clear();
+                            if shrank {
+                                node.clear_setid_on_modify();
+                            }
+                        }
                     }
                 }
                 existing
@@ -635,6 +654,10 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
             }
             data[start..end].copy_from_slice(buf);
         }
+        // A zero-length write is not a modification and preserves set-ID bits.
+        if !buf.is_empty() {
+            inode.clear_setid_on_modify();
+        }
         inode.touch_modified();
         Ok(buf.len())
     })
@@ -665,9 +688,17 @@ pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        match &mut inode.kind {
-            InodeKind::Regular(data) => data.resize(new_len, 0),
+        let changed = match &mut inode.kind {
+            InodeKind::Regular(data) => {
+                let old_len = data.len();
+                data.resize(new_len, 0);
+                old_len != new_len
+            }
             _ => return Err(Errno::EISDIR),
+        };
+        // A truncate to the current size is a no-op and preserves set-ID bits.
+        if changed {
+            inode.clear_setid_on_modify();
         }
         inode.touch_modified();
         Ok(())
@@ -1525,6 +1556,25 @@ mod tests {
         // set-group-ID, matching the host chown path.
         chown(b"/tmp/setid", 1000, 1001, true).unwrap();
         assert_eq!(lstat(b"/tmp/setid").unwrap().st_mode & 0o7777, 0o0755);
+        release_handle(h);
+    }
+
+    #[test]
+    fn write_and_truncate_clear_setid_only_on_real_modification() {
+        let h = open(b"/tmp/wsetid", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        // A zero-length write preserves the set-ID bits (no modification).
+        chmod(b"/tmp/wsetid", 0o6755).unwrap();
+        write(h, 0, b"").unwrap();
+        assert_eq!(lstat(b"/tmp/wsetid").unwrap().st_mode & 0o7777, 0o6755);
+        // A real write clears set-user-ID + (group-exec) set-group-ID.
+        write(h, 0, b"data").unwrap();
+        assert_eq!(lstat(b"/tmp/wsetid").unwrap().st_mode & 0o7777, 0o0755);
+        // A truncate to the current size preserves; a real shrink clears.
+        chmod(b"/tmp/wsetid", 0o6755).unwrap();
+        truncate_handle(h, 4).unwrap();
+        assert_eq!(lstat(b"/tmp/wsetid").unwrap().st_mode & 0o7777, 0o6755);
+        truncate_handle(h, 0).unwrap();
+        assert_eq!(lstat(b"/tmp/wsetid").unwrap().st_mode & 0o7777, 0o0755);
         release_handle(h);
     }
 
