@@ -46,13 +46,16 @@ import { BrowserTimeProvider } from "./vfs/time";
 import {
   ReplicationLogReader,
   ReplicationLogRecorder,
-  type ReplicationLogEntry,
   type ReplicationPushedDecision,
 } from "./replication/log";
 import {
   RecordingTimeProvider,
   ReplayingTimeProvider,
 } from "./replication/clock";
+import {
+  createQueueExtender,
+  createStreamingRecorder,
+} from "./replication/worker";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -182,9 +185,7 @@ let baseTimeProvider: BrowserTimeProvider | null = null;
 /** The decision log this machine is taking, or null when it is taking none. */
 let replicationRecorder: ReplicationLogRecorder | null = null;
 /** The decision log this machine is following, or null when it leads. */
-let replicationReplay:
-  | { reader: ReplicationLogReader; entries: readonly ReplicationLogEntry[] }
-  | null = null;
+let replicationReplay: { reader: ReplicationLogReader } | null = null;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -5229,7 +5230,10 @@ sw.onmessage = (e: MessageEvent) => {
     }
     case "replication_record_start": {
       respondToReplication(msg.requestId, (target, clock) => {
-        replicationRecorder = new ReplicationLogRecorder();
+        replicationRecorder = msg.stream
+          ? createStreamingRecorder((entries) =>
+            post({ type: "replication_recorded", entries }))
+          : new ReplicationLogRecorder();
         target.setTimeProvider(
           new RecordingTimeProvider(clock, replicationRecorder),
         );
@@ -5248,8 +5252,9 @@ sw.onmessage = (e: MessageEvent) => {
         const reader = new ReplicationLogReader(
           msg.entries,
           applyPushedDecision,
+          createQueueExtender(msg.queue),
         );
-        replicationReplay = { reader, entries: msg.entries };
+        replicationReplay = { reader };
         target.setTimeProvider(new ReplayingTimeProvider(clock, reader));
       });
       break;
@@ -5260,7 +5265,7 @@ sw.onmessage = (e: MessageEvent) => {
       if (io && baseTimeProvider) io.setTimeProvider(baseTimeProvider);
       respond(msg.requestId, {
         consumed: replay?.reader.consumed ?? 0,
-        total: replay?.entries.length ?? 0,
+        total: replay?.reader.known ?? 0,
       });
       break;
     }

@@ -345,12 +345,31 @@ export interface DrainSyscallTraceMessage {
 export interface ReplicationRecordStartMessage {
   type: "replication_record_start";
   requestId: number;
+  /**
+   * Publish each decision as it is made, and keep none.
+   *
+   * A live replica joins at boot and needs the log from sequence 0, so
+   * somebody must hold all of it. Streaming moves that holder to the main
+   * thread, where the wire is, rather than keeping a second copy here.
+   */
+  stream?: boolean;
 }
 
-/** Stop recording and take the log. Response carries ReplicationLogEntry[]. */
+/**
+ * Stop recording and take the log.
+ *
+ * Response carries the entries this recorder retained, which is none of them
+ * when it was started with `stream`.
+ */
 export interface ReplicationRecordStopMessage {
   type: "replication_record_stop";
   requestId: number;
+}
+
+/** Decisions a streaming recorder made, in the order it made them. */
+export interface ReplicationRecordedMessage {
+  type: "replication_recorded";
+  entries: readonly ReplicationLogEntry[];
 }
 
 /**
@@ -364,6 +383,15 @@ export interface ReplicationReplayStartMessage {
   type: "replication_replay_start";
   requestId: number;
   entries: readonly ReplicationLogEntry[];
+  /**
+   * Where the primary's later decisions arrive, for a replica following a
+   * machine that is still running.
+   *
+   * A guest clock read reaches this worker synchronously, so a replica that
+   * has caught up cannot await one and cannot receive a `message`. It blocks
+   * on this shared ring instead. See `host/src/replication/log-queue.ts`.
+   */
+  queue?: SharedArrayBuffer;
 }
 
 /**
@@ -378,7 +406,13 @@ export interface ReplicationReplayStopMessage {
   requestId: number;
 }
 
-/** What a replica took from the log it was replaying. */
+/**
+ * What a replica took from the log it was replaying.
+ *
+ * `total` is what the replica had been given, which for a live replay is what
+ * the primary had recorded by the time it stopped rather than the whole of a
+ * finished recording.
+ */
 export interface ReplicationReplayProgress {
   readonly consumed: number;
   readonly total: number;
@@ -540,4 +574,5 @@ export type KernelToMainMessage =
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage
-  | LazyDownloadMessage;
+  | LazyDownloadMessage
+  | ReplicationRecordedMessage;

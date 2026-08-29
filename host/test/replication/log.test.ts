@@ -231,3 +231,57 @@ describe("replication log pushed decisions", () => {
     );
   });
 });
+
+describe("replication log reader, following a primary that is still running", () => {
+  it("waits for the next decision instead of reading past the log", () => {
+    const arriving: ReplicationLogEntry[] = [
+      { seq: 0, decision: reading(1, 7, 0) },
+      { seq: 1, decision: pointer(3, 4, 1) },
+      { seq: 2, decision: reading(1, 7, 900) },
+    ];
+    const applied: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(
+      [],
+      (decision) => void applied.push(decision),
+      () => arriving.shift() ?? null,
+    );
+
+    // A live replica is given an empty log and grows it as the primary
+    // records. Neither reading below was in the log when the guest asked.
+    expect(reader.takeClock(1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1)).toEqual(reading(1, 7, 900));
+    expect(applied).toEqual([pointer(3, 4, 1)]);
+    expect(reader.known).toBe(3);
+    expect(reader.consumed).toBe(3);
+  });
+
+  it("stops the replay when the primary stopped recording", () => {
+    const reader = new ReplicationLogReader([], () => {}, () => null);
+
+    // Reaching the end of a recording that ended is the end of the replay.
+    // Reading this host's clock instead would make it a different machine.
+    expect(() => reader.takeClock(1)).toThrow(
+      "replication log diverged at 0: the replica read clock 1 after the "
+        + "primary stopped recording",
+    );
+  });
+
+  it("refuses a decision that does not continue the sequence", () => {
+    const arriving: ReplicationLogEntry[] = [
+      { seq: 0, decision: reading(1, 7, 0) },
+      { seq: 2, decision: reading(1, 7, 100) },
+    ];
+    const reader = new ReplicationLogReader(
+      [],
+      undefined,
+      () => arriving.shift() ?? null,
+    );
+
+    expect(reader.takeClock(1)).toEqual(reading(1, 7, 0));
+    // Seq 1 never arrives. Serving what follows it would advance the replica
+    // past a decision the primary made.
+    expect(() => reader.takeClock(1)).toThrow(
+      "replication log diverged at 2: the log jumped to 2 where 1 was next",
+    );
+  });
+});

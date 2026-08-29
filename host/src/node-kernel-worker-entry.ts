@@ -49,12 +49,15 @@ import {
 import {
   ReplicationLogReader,
   ReplicationLogRecorder,
-  type ReplicationLogEntry,
 } from "./replication/log";
 import {
   RecordingTimeProvider,
   ReplayingTimeProvider,
 } from "./replication/clock";
+import {
+  createQueueExtender,
+  createStreamingRecorder,
+} from "./replication/worker";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -238,9 +241,7 @@ let rootfsMemfs: MemoryFileSystem | null = null;
 let baseTimeProvider: NodeTimeProvider | null = null;
 let replicationIO: VirtualPlatformIO | null = null;
 let replicationRecorder: ReplicationLogRecorder | null = null;
-let replicationReplay:
-  | { reader: ReplicationLogReader; entries: readonly ReplicationLogEntry[] }
-  | null = null;
+let replicationReplay: { reader: ReplicationLogReader } | null = null;
 /** Every mount a checkpoint asks, in mount-spec order with `/` first. */
 let checkpointMounts: { mountPoint: string; backend: FileSystemBackend }[] = [];
 let initReady = false;
@@ -4661,7 +4662,10 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "replication_record_start": {
       respondToReplication(msg.requestId, (io, clock) => {
-        replicationRecorder = new ReplicationLogRecorder();
+        replicationRecorder = msg.stream
+          ? createStreamingRecorder((entries) =>
+            post({ type: "replication_recorded", entries }))
+          : new ReplicationLogRecorder();
         io.setTimeProvider(new RecordingTimeProvider(clock, replicationRecorder));
       });
       break;
@@ -4681,8 +4685,12 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "replication_replay_start": {
       respondToReplication(msg.requestId, (io, clock) => {
-        const reader = new ReplicationLogReader(msg.entries);
-        replicationReplay = { reader, entries: msg.entries };
+        const reader = new ReplicationLogReader(
+          msg.entries,
+          undefined,
+          createQueueExtender(msg.queue),
+        );
+        replicationReplay = { reader };
         io.setTimeProvider(new ReplayingTimeProvider(clock, reader));
       });
       break;
@@ -4698,7 +4706,7 @@ port.on("message", (msg: MainToKernelMessage) => {
         requestId: msg.requestId,
         result: {
           consumed: replay?.reader.consumed ?? 0,
-          total: replay?.entries.length ?? 0,
+          total: replay?.reader.known ?? 0,
         },
       });
       break;

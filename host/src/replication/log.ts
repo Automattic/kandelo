@@ -114,23 +114,31 @@ export class ReplicationDivergence extends Error {
  *
  * A recorder starts at the sequence number its checkpoint was taken at, so a
  * replica that joins from that checkpoint reads on from the same position.
+ *
+ * A recorder retains what it records, because a replica joins at boot and
+ * needs the log from sequence 0. That makes the log grow for as long as the
+ * machine runs, so exactly one holder should keep it: a recorder whose entries
+ * are being published as they are made is built with `retain: false`, and the
+ * publisher is then the only copy.
  */
 export class ReplicationLogRecorder {
   readonly #entries: ReplicationLogEntry[] = [];
   readonly #listeners = new Set<(entry: ReplicationLogEntry) => void>();
+  readonly #retain: boolean;
   #nextSeq: number;
 
-  constructor(firstSeq = 0) {
+  constructor(firstSeq = 0, options: { retain?: boolean } = {}) {
     if (!Number.isSafeInteger(firstSeq) || firstSeq < 0) {
       throw new Error("a replication log starts at a non-negative sequence");
     }
     this.#nextSeq = firstSeq;
+    this.#retain = options.retain ?? true;
   }
 
   record(decision: ReplicationDecision): ReplicationLogEntry {
     const entry: ReplicationLogEntry = { seq: this.#nextSeq, decision };
     this.#nextSeq += 1;
-    this.#entries.push(entry);
+    if (this.#retain) this.#entries.push(entry);
     for (const listener of [...this.#listeners]) listener(entry);
     return entry;
   }
@@ -151,10 +159,24 @@ export class ReplicationLogRecorder {
     return this.#nextSeq;
   }
 
+  /** What this recorder kept. Empty when it was built not to retain. */
   get entries(): readonly ReplicationLogEntry[] {
     return this.#entries;
   }
 }
+
+/**
+ * Wait for the primary to record more, and say whether it did.
+ *
+ * A replica that runs the machine faster than the primary reaches the end of
+ * the log it has been sent, and neither reading its own clock nor reusing the
+ * last one keeps it the same machine. A live replay installs this hook so the
+ * guest's clock read stops there until the next decision arrives.
+ *
+ * Returns `null` when the recording ended and nothing will follow, which is
+ * the end of the replay rather than a defect.
+ */
+export type ReplicationLogExtender = () => ReplicationLogEntry | null;
 
 /**
  * Serve recorded decisions back, in order, and refuse anything else.
@@ -165,16 +187,30 @@ export class ReplicationLogRecorder {
  * letting the two machines drift apart unnoticed.
  */
 export class ReplicationLogReader {
-  readonly #entries: readonly ReplicationLogEntry[];
+  readonly #entries: ReplicationLogEntry[];
   readonly #applyPushed?: (decision: ReplicationPushedDecision) => void;
+  readonly #extend?: ReplicationLogExtender;
   #index = 0;
+  #ended = false;
 
   constructor(
     entries: readonly ReplicationLogEntry[],
     applyPushed?: (decision: ReplicationPushedDecision) => void,
+    extend?: ReplicationLogExtender,
   ) {
-    this.#entries = entries;
+    this.#entries = [...entries];
     this.#applyPushed = applyPushed;
+    this.#extend = extend;
+  }
+
+  /**
+   * How many entries this reader holds.
+   *
+   * A live replay is given an empty log and grows it as the primary records,
+   * so this is what `consumed` is a position within.
+   */
+  get known(): number {
+    return this.#entries.length;
   }
 
   /**
@@ -207,15 +243,14 @@ export class ReplicationLogReader {
   }
 
   takeClock(clockId: number): ReplicationClockReading {
-    // What the primary delivered before this reading must reach the guest
-    // before the reading does, or the replica applies it against a later
-    // state than the primary did.
-    this.#drainPushed();
-    const entry = this.#entries[this.#index];
+    const entry = this.#awaitEntry();
     if (entry === undefined) {
       throw new ReplicationDivergence(
         this.nextSeq,
-        `the replica read clock ${clockId} past the end of the log`,
+        this.#ended
+          ? `the replica read clock ${clockId} after the primary stopped `
+            + `recording`
+          : `the replica read clock ${clockId} past the end of the log`,
       );
     }
     if (entry.decision.kind !== "clock") {
@@ -234,6 +269,49 @@ export class ReplicationLogReader {
     }
     this.#index += 1;
     return entry.decision;
+  }
+
+  /**
+   * The entry the guest's next request must answer to, waiting for it if the
+   * replica has caught up with the primary.
+   *
+   * What the primary delivered before that entry reaches the guest first, on
+   * every pass, or the replica applies it against a later state than the
+   * primary did. Returns undefined when the log holds no more and none is
+   * coming.
+   */
+  #awaitEntry(): ReplicationLogEntry | undefined {
+    for (;;) {
+      this.#drainPushed();
+      const entry = this.#entries[this.#index];
+      if (entry !== undefined) return entry;
+      if (this.#extend === undefined || this.#ended) return undefined;
+      const arrived = this.#extend();
+      if (arrived === null) {
+        this.#ended = true;
+        return undefined;
+      }
+      this.#append(arrived);
+    }
+  }
+
+  /**
+   * Take one more entry the primary recorded.
+   *
+   * The wire that carried it already refuses a hole. Checking again here is
+   * what makes the reader's own position trustworthy: it consumes by index,
+   * so an entry appended out of sequence would be served as though the
+   * primary had made it in that order.
+   */
+  #append(entry: ReplicationLogEntry): void {
+    const last = this.#entries[this.#entries.length - 1];
+    if (last !== undefined && entry.seq !== last.seq + 1) {
+      throw new ReplicationDivergence(
+        entry.seq,
+        `the log jumped to ${entry.seq} where ${last.seq + 1} was next`,
+      );
+    }
+    this.#entries.push(entry);
   }
 
   /**

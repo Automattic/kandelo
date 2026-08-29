@@ -187,6 +187,7 @@ recover from divergence even before it is good at avoiding it.
 | State transfer | `migration/checkpoint.ts`, `restore.ts` | Unchanged; becomes replica join and resync |
 | Wire | `migration/channel-chunked.ts` | Unchanged; carries the log |
 | Log transport | `replication/log-local.ts` | Publishes and receives the log |
+| Log into a replica | `replication/log-queue.ts` | Shared ring a parked replica waits on |
 | Link | `apps/browser-demos/lib/peer-link.ts` | Moves to `web-libs/kandelo-session` |
 | Screen | `migration/mirror-local.ts` | Fallback mode only |
 | Ownership | `migration/transport-local.ts` | Becomes primary election |
@@ -207,6 +208,55 @@ No app code drives either end yet. `apps/browser-demos` opens the channel and
 reads nothing from it, so a connection today carries an idle data channel. The
 consumer is the replica-join flow, which the GL decision above unblocks; until
 that lands, the wire is exercised only by `host/test/replication/log-local.test.ts`.
+
+### What a replica does when it drains the log
+
+**Decided and built on 2026-08-29.** A live replica runs the machine at its own
+speed, so it reaches the end of what the primary has recorded whenever it gets
+ahead. It stops there and waits.
+
+Waiting is not free to arrange. The guest read that drains the log is
+`clock_gettime`, which reaches `ReplayingTimeProvider` synchronously inside the
+kernel worker: there is no point in that path at which a promise can be awaited
+or a `message` event delivered. So the entries cannot arrive by `postMessage` —
+a worker parked in `Atomics.wait` does not run its message handler — and they
+travel through shared memory instead.
+
+`host/src/replication/log-queue.ts` is that ring. The thread holding the wire
+writes framed entries into a `SharedArrayBuffer` and never blocks, because in
+both hosts that thread is the main one. The kernel worker blocks on
+`Atomics.wait` until an entry is readable, which is the same primitive
+`fork-replay-gate.ts` and `checkpoint-freeze-gate.ts` use for the same reason.
+Nothing is dropped: entries a full ring cannot take stay with the writer until
+the reader makes room, so congestion costs delay and never a decision.
+
+Three consequences worth naming.
+
+**A parked replica serves nothing.** While the kernel worker waits, it answers
+no host request either — a spawn, a checkpoint, an `enumProcs`. That is correct
+rather than incidental: the machine has not advanced, so there is nothing new
+to answer with. It does mean a primary that stops recording without saying so
+leaves a replica that looks hung, which is why `end()` on the writer is part of
+the protocol and not a courtesy.
+
+**The primary keeps no log.** `ReplicationLogRecorder` retains what it records,
+because a replica joins at boot and needs sequence 0. A recorder built with
+`retain: false` — which `streamReplicationLog` on both hosts does — keeps
+nothing and hands each decision to the main thread as it is made, so the
+publisher is the single holder of a log that grows for as long as the machine
+runs.
+
+**The end of the log is not divergence.** A replica that reaches the end of a
+recording that has ended has finished its replay. It still refuses to read its
+own clock there, and says which of the two happened:
+`ReplicationLogReader.takeClock` names either "past the end of the log" or
+"after the primary stopped recording".
+
+Measured by `host/test/replication/live-join.test.ts`: a replica restored from
+the primary's checkpoint is asked to run the guest before the primary has
+recorded anything, does not finish, and then completes and prints the primary's
+seconds once the primary runs. `host/test/replication/log-queue.test.ts` holds
+the ring's own claims, with the reader on a real second thread.
 
 Nothing drains the recorder, and that is now deliberate rather than deferred.
 A replica joins at boot, so the entries from sequence 0 are the ones it needs

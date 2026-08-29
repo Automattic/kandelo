@@ -270,6 +270,9 @@ export class BrowserKernel {
   private pendingPtyOutputChunks = 0;
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private replicationListeners = new Set<
+    (entries: readonly ReplicationLogEntry[]) => void
+  >();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
 
@@ -875,21 +878,57 @@ export class BrowserKernel {
   }
 
   /**
+   * Publish this machine's decisions to `onEntries` as it makes them.
+   *
+   * This is what a machine being replicated live does instead of
+   * `startReplicationRecording`. The listener becomes the log's only holder:
+   * the kernel worker keeps nothing, because a replica joins at boot and needs
+   * every entry from sequence 0, and one growing copy of that is enough.
+   *
+   * Returns a function that stops the recording.
+   */
+  async streamReplicationLog(
+    onEntries: (entries: readonly ReplicationLogEntry[]) => void,
+  ): Promise<() => Promise<void>> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, {
+      type: "replication_record_start",
+      requestId,
+      stream: true,
+    });
+    this.replicationListeners.add(onEntries);
+    return async () => {
+      // Dropped after the stop, not before it. The worker publishes every
+      // batch it recorded ahead of the stop response, and a listener removed
+      // first would miss the last of them.
+      await this.stopReplicationRecording();
+      this.replicationListeners.delete(onEntries);
+    };
+  }
+
+  /**
    * Serve this machine's decisions from `entries` instead of from this host.
    *
    * Call it after `init` and before the replayed guest runs. A replay that
-   * reaches past the end of the log, or reads a clock the recording does not
-   * hold there, throws `ReplicationDivergence` at the guest's clock read
-   * rather than inventing a value.
+   * reads a clock the recording does not hold at that position throws
+   * `ReplicationDivergence` at the guest's clock read rather than inventing a
+   * value.
+   *
+   * `queue` follows a primary that is still running: the replica blocks there
+   * when it catches up, instead of reaching past the end of the log. Without
+   * it the log is taken as complete, and reaching its end is the end of the
+   * replay.
    */
   async startReplicationReplay(
     entries: readonly ReplicationLogEntry[],
+    queue?: SharedArrayBuffer,
   ): Promise<void> {
     const requestId = this.nextRequestId++;
     await this.request(requestId, {
       type: "replication_replay_start",
       requestId,
       entries,
+      queue,
     });
   }
 
@@ -1754,6 +1793,11 @@ export class BrowserKernel {
         break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
+        break;
+      case "replication_recorded":
+        for (const listener of [...this.replicationListeners]) {
+          listener(msg.entries);
+        }
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
