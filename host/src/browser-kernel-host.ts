@@ -492,12 +492,22 @@ export class BrowserKernel {
     mounts: readonly BrowserKernelOpfsMount[],
   ): Promise<OpfsMountInit[]> {
     const inits: OpfsMountInit[] = [];
+    // Validate the whole request before taking any lock or starting any
+    // worker: a duplicate that the kernel worker would reject later must
+    // not leave locks and proxies alive until destroy().
     const seenNames = new Set<string>();
+    const seenPaths = new Set<string>();
     for (const mount of mounts) {
       if (seenNames.has(mount.name)) {
         throw new Error(`duplicate OPFS workspace name: ${mount.name}`);
       }
+      if (seenPaths.has(mount.path)) {
+        throw new Error(`duplicate OPFS mount path: ${mount.path}`);
+      }
       seenNames.add(mount.name);
+      seenPaths.add(mount.path);
+    }
+    for (const mount of mounts) {
       const releaseLock = await this.acquireOpfsWorkspaceLock(mount.name);
       let worker: Worker;
       try {

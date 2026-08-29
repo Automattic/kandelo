@@ -315,6 +315,21 @@ describe("ensureMountPointDirectories", () => {
     expect(() => root.stat("/srv/data")).toThrow();
   });
 
+  it("fails loudly when a path component is not a directory", () => {
+    const root = smallFs();
+    root.mkdir("/home", 0o755);
+    const blocker = root.open("/home/maker", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    root.close(blocker);
+    const mounts: MountConfig[] = [
+      { mountPoint: "/", backend: root },
+      { mountPoint: "/home/maker/.fdoom.tar", backend: smallFs() },
+    ];
+
+    expect(() =>
+      ensureMountPointDirectories(mounts, ["/home/maker/.fdoom.tar"]),
+    ).toThrow(/\/home\/maker in mount \/ exists and is not a directory/);
+  });
+
   it("is idempotent and leaves an existing directory alone", () => {
     const root = smallFs();
     root.mkdir("/persist", 0o700);

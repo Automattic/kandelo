@@ -191,6 +191,22 @@ test.describe("opfs mount source", () => {
     expect(result.secondError).toContain("already mounted");
   });
 
+  test("duplicate mount paths are rejected before any workspace lock is taken", async ({
+    page,
+  }) => {
+    await gotoRunner(page);
+    const result = await page.evaluate(
+      async ({ moduleUrl, name }) => {
+        const { probeDuplicateMountPath } = await import(moduleUrl);
+        return probeDuplicateMountPath(name);
+      },
+      { moduleUrl: lockProbeModuleUrl, name: `${workspace}-dup` },
+    );
+    expect(result.duplicateError).toContain("duplicate OPFS mount path");
+    expect(result.lockHeldAfterFailure).toBe(false);
+    expect(result.retryBooted).toBe(true);
+  });
+
   test.afterAll(async ({ browser }) => {
     // Remove this run's workspaces so repeated runs do not accumulate
     // origin storage. Scoped strictly to the names this spec created.
@@ -208,7 +224,13 @@ test.describe("opfs mount source", () => {
         for (const name of names) {
           await container.removeEntry(name, { recursive: true }).catch(() => {});
         }
-      }, [workspace, `${workspace}-lock`, `${workspace}-nested`]);
+      }, [
+        workspace,
+        `${workspace}-lock`,
+        `${workspace}-nested`,
+        `${workspace}-dup-a`,
+        `${workspace}-dup-b`,
+      ]);
     } finally {
       await page.close();
     }

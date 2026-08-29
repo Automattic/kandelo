@@ -51,3 +51,52 @@ export async function probeWorkspaceLockConflict(
   }
   return { firstBooted, secondError };
 }
+
+/**
+ * Probe for request validation ahead of lock acquisition: two entries that
+ * share a mount path must be rejected before any workspace lock is taken or
+ * any proxy worker is started, so a retry with one of those workspaces boots.
+ */
+export async function probeDuplicateMountPath(
+  workspace: string,
+): Promise<{ duplicateError: string; lockHeldAfterFailure: boolean; retryBooted: boolean }> {
+  const kernelWasm = await fetch(kernelWasmUrl).then((r) => r.arrayBuffer());
+  const first = `${workspace}-a`;
+  const second = `${workspace}-b`;
+  let duplicateError = "";
+  const rejected = new BrowserKernel({ kernelOwnedFs: true });
+  try {
+    await rejected.initFromImage({
+      kernelWasm,
+      vfsImage: await buildMinimalImage(),
+      opfsMounts: [
+        { path: "/persist", name: first },
+        { path: "/persist", name: second },
+      ],
+    });
+  } catch (error) {
+    duplicateError = error instanceof Error ? error.message : String(error);
+  } finally {
+    await rejected.destroy();
+  }
+
+  const held = await navigator.locks.query();
+  const lockHeldAfterFailure = (held.held ?? []).some((lock) =>
+    lock.name === `kandelo-opfs-workspace:${first}`
+    || lock.name === `kandelo-opfs-workspace:${second}`
+  );
+
+  let retryBooted = false;
+  const retry = new BrowserKernel({ kernelOwnedFs: true });
+  try {
+    await retry.initFromImage({
+      kernelWasm,
+      vfsImage: await buildMinimalImage(),
+      opfsMounts: [{ path: "/persist", name: first }],
+    });
+    retryBooted = true;
+  } finally {
+    await retry.destroy();
+  }
+  return { duplicateError, lockHeldAfterFailure, retryBooted };
+}

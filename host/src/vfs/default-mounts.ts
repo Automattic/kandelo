@@ -239,11 +239,20 @@ export function ensureMountPointDirectories(
     let current = "";
     for (const segment of relative.split("/").filter(Boolean)) {
       current += `/${segment}`;
+      let existing: number | null = null;
       try {
-        const st = owner.backend.stat(current);
-        if (!isDirectoryMode(st.mode)) break;
+        existing = owner.backend.stat(current).mode;
       } catch {
         owner.backend.mkdir(current, 0o755);
+      }
+      if (existing !== null && !isDirectoryMode(existing)) {
+        // A file where a directory must be cannot host a mount point;
+        // skipping the rest of the path would leave the mount unreachable
+        // while the boot reports success.
+        throw new Error(
+          `mount point ${normalized}: ${current} in mount ${owner.prefix} `
+          + "exists and is not a directory",
+        );
       }
     }
   };
