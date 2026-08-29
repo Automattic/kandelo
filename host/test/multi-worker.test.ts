@@ -54,6 +54,11 @@ import {
   emptyProcessTimerCleanup,
   installKernelWorkerTestScratch,
 } from "./kernel-worker-test-scratch";
+// Cutover default is tmpfs-on; this suite drives host-owned files through
+// NodePlatformIO on scratch paths (the WASM_POSIX_TMPFS=0 host-FS path),
+// so pin the gate off for it.
+process.env.WASM_POSIX_TMPFS = "0";
+
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =

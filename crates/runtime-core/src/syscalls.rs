@@ -7260,14 +7260,13 @@ fn fifo_path_stat_raw(
         Some(pipe_idx) => pipe_idx,
         None => return Ok(None),
     };
-    // A tmpfs fifo has no host marker file to lstat; the pipe holds its
-    // authoritative metadata (set at mkfifo, updated by chmod/chown/utimensat).
+    // A tmpfs fifo is backed by a `Special(S_IFIFO)` inode that owns its
+    // metadata (mode/uid/gid/times, kept current by chmod/chown/utimensat);
+    // read it back rather than the pipe's creation-time snapshot.
     if crate::tmpfs::claims_path(resolved) {
-        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or(Errno::EIO)?;
-        let mut st = pipe.fifo_metadata().ok_or(Errno::EIO)?;
+        let mut st = crate::tmpfs::lstat(resolved)?;
         st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
         st.st_size = 0;
-        st.st_nlink = pipe.fifo_name_count();
         return Ok(Some(st));
     }
     let mut st = if follow {
@@ -7519,39 +7518,29 @@ fn make_fifo(
         return Err(Errno::EEXIST);
     }
     // In-kernel tmpfs owns the scratch mounts: the fifo has no host marker file
-    // (there is no host mount to hold it after cutover). Its node metadata and
-    // pipe are built directly and owned by the fifo/pipe table, keyed by path —
-    // the same authority that already serves lstat/open for host fifos.
+    // (there is no host mount to hold it after cutover). A tmpfs `Special(S_IFIFO)`
+    // inode owns the fifo's metadata — so chmod/chown/utimensat/stat route through
+    // the ordinary tmpfs path like any inode — while the fifo/pipe table holds the
+    // rendezvous pipe keyed by path. This mirrors the AF_UNIX socket node path.
     if crate::tmpfs::claims_path(&resolved.path) {
         check_parent_writable(proc, host, &resolved.path)?;
+        tmpfs_stamp_now(host)?;
         let effective_mode = mode & !proc.umask;
-        let (now_sec, now_nsec) = {
-            let (s, n) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
-            (
-                u64::try_from(s).map_err(|_| Errno::EINVAL)?,
-                u32::try_from(n).map_err(|_| Errno::EINVAL)?,
-            )
-        };
-        let metadata = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: wasm_posix_shared::mode::S_IFIFO | (effective_mode & 0o7777),
-            st_nlink: 1,
-            st_uid: proc.effective_uid(),
-            st_gid: proc.effective_gid(),
-            st_size: 0,
-            st_atime_sec: now_sec,
-            st_atime_nsec: now_nsec,
-            st_mtime_sec: now_sec,
-            st_mtime_nsec: now_nsec,
-            st_ctime_sec: now_sec,
-            st_ctime_nsec: now_nsec,
-            _pad: 0,
-        };
+        crate::tmpfs::mknod_special(
+            &resolved.path,
+            effective_mode & 0o7777,
+            proc.effective_uid(),
+            proc.effective_gid(),
+            wasm_posix_shared::mode::S_IFIFO,
+        )?;
+        // The pipe's stored metadata is a creation-time snapshot only; the inode
+        // above is the authority that `fifo_path_stat_raw` reads back.
+        let metadata = crate::tmpfs::lstat(&resolved.path)?;
         let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
         let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
         if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
             unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
+            let _ = crate::tmpfs::unlink(&resolved.path);
             return Err(Errno::EEXIST);
         }
         return Ok(());
@@ -7617,9 +7606,11 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
     let result = (|| {
         fifo_path_stat_raw(host, resolved, false)?.ok_or(Errno::EIO)?;
         let (ctime_sec, ctime_nsec) = realtime_timestamp(host)?;
-        // A tmpfs fifo has no host marker file to remove; its node is entirely
-        // the fifo/pipe table entry dropped below.
-        if !crate::tmpfs::claims_path(resolved) {
+        // A tmpfs fifo has no host marker file; drop its `Special(S_IFIFO)`
+        // inode. A host fifo removes its marker file instead.
+        if crate::tmpfs::claims_path(resolved) {
+            crate::tmpfs::unlink(resolved)?;
+        } else {
             unlink_host_entry(host, resolved)?;
         }
 
@@ -7964,7 +7955,7 @@ pub fn sys_chown(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved, uid, gid);
+        return crate::tmpfs::chown(&resolved, uid, gid, proc.effective_uid() != 0);
     }
     host.host_chown(&resolved, uid, gid)
 }
@@ -7986,7 +7977,7 @@ pub fn sys_lchown(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved.path, uid, gid);
+        return crate::tmpfs::chown(&resolved.path, uid, gid, proc.effective_uid() != 0);
     }
     host.host_lchown(&resolved.path, uid, gid)
 }
@@ -16665,13 +16656,13 @@ pub fn sys_fchown(
                 let st = crate::tmpfs::fstat(ofd.host_handle)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
                 tmpfs_stamp_now(host)?;
-                return crate::tmpfs::fchown(ofd.host_handle, uid, gid);
+                return crate::tmpfs::fchown(ofd.host_handle, uid, gid, proc.effective_uid() != 0);
             }
             if ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
                 let st = crate::tmpfs::lstat(&ofd.path)?;
                 let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
                 tmpfs_stamp_now(host)?;
-                return crate::tmpfs::chown(&ofd.path, uid, gid);
+                return crate::tmpfs::chown(&ofd.path, uid, gid, proc.effective_uid() != 0);
             }
             let st = host.host_fstat(ofd.host_handle)?;
             let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
@@ -16867,7 +16858,7 @@ pub fn sys_fchownat(
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     if crate::tmpfs::claims_path(&resolved.path) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::chown(&resolved.path, uid, gid);
+        return crate::tmpfs::chown(&resolved.path, uid, gid, proc.effective_uid() != 0);
     }
     if nofollow {
         host.host_lchown(&resolved.path, uid, gid)
