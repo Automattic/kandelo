@@ -29,6 +29,7 @@ import { runCentralizedProgram } from "../../../host/test/centralized-test-helpe
 // are intentionally present in the source list and are collapsed by the
 // `Set` at load time.
 const TOOLS = [
+  "arch",
   "base32", "base64", "basename", "basenc", "cat", "cksum", "comm", "cp",
   "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname", "du",
   "echo", "env", "expand", "expr", "factor", "false", "fmt", "fold",

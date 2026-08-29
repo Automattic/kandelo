@@ -4,19 +4,18 @@ version = "9.6"
 kernel_abi = 7
 depends_on = ["coreutils@9.6"]
 
-# coreutils-docs has no upstream man pages to vendor: GNU coreutils
-# generates its own man pages from `--help`/`--version` output via
-# help2man, and the docs build recipe lives in this repo rather than
-# upstream. The build script boots a real Kandelo kernel, runs the actual
-# coreutils.wasm binary for each tool's --help/--version, and only then
-# formats that captured (100% real-binary) text with host help2man. So the
-# source URL names the authoritative project repo and the all-zero
-# SHA-256 is the explicit in-repository-source sentinel (there is nothing
-# to fetch through the normal archive/source resolver).
+# The man pages are DERIVED from coreutils two faithful ways: the page BODY
+# (SYNOPSIS/DESCRIPTION/OPTIONS) is the real coreutils.wasm binary's
+# --help/--version output, captured by booting a Kandelo kernel and running
+# each tool inside it; and the NAME/SEE-ALSO lines come from coreutils' own
+# man/*.x include files (the same ones GNU's man pages use). help2man only
+# reformats — it never fabricates content. So the package source is the
+# sha-pinned coreutils tarball (staged by the resolver), which the recipe
+# reads man/*.x from; depends_on = coreutils@9.6 provides the binary.
 [source]
-url = "https://github.com/Automattic/kandelo"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-provider = "repository"
+url = "https://ftpmirror.gnu.org/coreutils/coreutils-9.6.tar.xz"
+sha256 = "7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283"
+provider = "archive"
 
 [license]
 spdx = "GPL-3.0-or-later"
