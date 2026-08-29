@@ -31,10 +31,12 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerManShellProfile,
   registerPythonShellProfile,
   SHELL_LAZY_ARCHIVE_SPECS,
+  type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
 import {
   saveImage,
@@ -459,6 +461,10 @@ export function populateShellEnvironment(
     if (opts.eagerBinaries) populateBaseExtendedBinaries(fs, resolveArtifact);
     populateMagic(fs, resolveArtifact, strictArtifactResolution);
   }
+  // WHY: every ncurses/termcap-linked guest program resolves $TERM against
+  // /usr/share/terminfo on every run, so the shared database must be present
+  // regardless of whether the base rootfs already carries it.
+  populateTerminfoDatabase(fs, resolveArtifact);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }

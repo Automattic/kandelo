@@ -66,7 +66,7 @@ interface SourceRootfsShellDependencyContract {
   dependencies: Array<{
     name: string;
     version: string;
-    role: "base-image" | "eager-program" | "lazy-file" | "lazy-archive";
+    role: "base-image" | "eager-program" | "eager-file" | "lazy-file" | "lazy-archive";
   }>;
 }
 
@@ -91,7 +91,10 @@ function readSourceRootfsShellResolverDependencies(
   }
   const contract = value as SourceRootfsShellDependencyContract;
   const dependencies = contract.dependencies
-    .filter(({ role }) => role === "lazy-file" || role === "lazy-archive")
+    .filter(
+      ({ role }) =>
+        role === "lazy-file" || role === "lazy-archive" || role === "eager-file",
+    )
     .map(({ name }) => name);
   if (
     dependencies.length === 0 ||

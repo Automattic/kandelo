@@ -5,6 +5,7 @@
     { "name": "bash", "version": "5.2.37", "role": "eager-program" },
     { "name": "fbdoom", "version": "0.1.0", "role": "eager-program" },
     { "name": "modeset", "version": "0.1.0", "role": "eager-program" },
+    { "name": "ncurses", "version": "6.5", "role": "eager-file" },
     { "name": "less", "version": "668", "role": "lazy-file" },
     { "name": "tar", "version": "1.35", "role": "lazy-file" },
     { "name": "curl", "version": "8.11.1", "role": "lazy-file" },

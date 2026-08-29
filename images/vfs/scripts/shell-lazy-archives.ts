@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
+  writeVfsBinary,
   writeVfsFile,
 } from "../../../host/src/vfs/image-helpers";
 import {
@@ -293,4 +295,77 @@ export function registerDeclaredShellLazyArchive(
     },
   );
   return archive;
+}
+
+// ── Shared runtime terminfo database ───────────────────────────────
+//
+// Unlike the archives above, the terminfo database is not fetched lazily on
+// first use: every ncurses/termcap-linked guest program (less, vim, ...)
+// resolves $TERM against /usr/share/terminfo on every run (ncurses is built
+// --with-default-terminfo-dir=/usr/share/terminfo), so it must be present
+// from boot. It is also small, so materializing it eagerly at build time —
+// rather than through the lazy-archive/deferred-tree machinery above — is
+// the simplest honest fit.
+
+export const NCURSES_TERMINFO_RUNTIME_FILE = {
+  dependency: "ncurses",
+  resolverPath: "programs/ncurses/terminfo.zip",
+  /** Zip members are rooted at share/terminfo/..., mounted under /usr/. */
+  mountPrefix: "/usr/",
+  requiredEntry: "share/terminfo/x/xterm-256color",
+} as const;
+
+/**
+ * Eagerly materialize the package-owned ncurses terminfo database into the
+ * image at /usr/share/terminfo. The archive is ncurses's `[[runtime_files]]
+ * terminfo.zip` artifact (see packages/registry/ncurses/build-ncurses.sh); the
+ * shell composer must never recompile or curate it — it only unpacks the
+ * exact declared bytes.
+ */
+export function populateTerminfoDatabase(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const sourcePath = resolveArtifact(
+    NCURSES_TERMINFO_RUNTIME_FILE.resolverPath,
+    NCURSES_TERMINFO_RUNTIME_FILE.dependency,
+  );
+  const bytes = new Uint8Array(readFileSync(sourcePath));
+  let entries: ZipEntry[];
+  try {
+    entries = parseZipCentralDirectory(bytes);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `ncurses terminfo output ${sourcePath} is not a valid ZIP: ${message}`,
+    );
+  }
+
+  const requiredEntries = entries.filter(
+    (entry) =>
+      entry.fileName === NCURSES_TERMINFO_RUNTIME_FILE.requiredEntry &&
+      !entry.isDirectory &&
+      !entry.isSymlink,
+  );
+  if (requiredEntries.length !== 1) {
+    throw new Error(
+      `ncurses terminfo output ${sourcePath} must contain exactly one ` +
+        `regular ${NCURSES_TERMINFO_RUNTIME_FILE.requiredEntry}; ` +
+        `found ${requiredEntries.length}`,
+    );
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory) continue;
+    if (entry.isSymlink) {
+      throw new Error(
+        `ncurses terminfo output ${sourcePath} has an unexpected symlink ` +
+          `entry ${entry.fileName}`,
+      );
+    }
+    const destPath = `${NCURSES_TERMINFO_RUNTIME_FILE.mountPrefix}${entry.fileName}`;
+    ensureDirRecursive(fs, dirname(destPath));
+    const data = extractZipEntry(bytes, entry);
+    writeVfsBinary(fs, destPath, data, (entry.mode & 0o777) || 0o644);
+  }
 }

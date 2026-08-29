@@ -10,6 +10,7 @@ depends_on = [
   "bash@5.2.37",
   "fbdoom@0.1.0",
   "modeset@0.1.0",
+  "ncurses@6.5",
   "less@668",
   "tar@1.35",
   "curl@8.11.1",
