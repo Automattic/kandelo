@@ -25,6 +25,21 @@ COREUTILS_WASM="$COREUTILS_DIR/coreutils.wasm"
 [ -f "$COREUTILS_WASM" ] || { echo "coreutils.wasm not found under $COREUTILS_DIR" >&2; exit 2; }
 command -v help2man >/dev/null || { echo "help2man not on PATH (add pkgs.help2man to flake.nix)" >&2; exit 2; }
 
+# Stage the sha-pinned coreutils source for its man/*.x NAME/SEE-ALSO include
+# files (upstream's own one-line descriptions — the same ones GNU's man pages
+# use). This is the package's declared [source]; the resolver pre-stages it in
+# WASM_POSIX_DEP_SOURCE_DIR. The page BODY still comes only from the real
+# binary's captured --help/--version below.
+CU_SRC="$WORK/coreutils-src"
+CU_VER="${WASM_POSIX_DEP_VERSION:-9.6}"
+CU_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/coreutils/coreutils-${CU_VER}.tar.xz}"
+CU_SHA="${WASM_POSIX_DEP_SOURCE_SHA256:-7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283}"
+CU_VERIFIED="${WASM_POSIX_DEP_SOURCE_DIR:-}"
+rm -rf "$CU_SRC"
+kandelo_package_stage_verified_source coreutils-docs "$CU_SRC" \
+    "$CU_VERIFIED" "$CU_URL" "$CU_SHA" "$WORK"
+XDIR="$CU_SRC/man"
+
 CAP="$WORK/help-capture"; rm -rf "$CAP"
 # Point TMPDIR at a short /tmp scratch dir so tsx's IPC socket path stays
 # under the macOS unix-socket limit (the resolver's own work dir is a long,
@@ -51,8 +66,15 @@ case "\$1" in
 esac
 EOF
     chmod +x "$WRAP/$tool"
-    help2man --no-info --source="GNU coreutils 9.6 (Kandelo)" \
-        --name="$tool" "$WRAP/$tool" > "$STAGE/share/man/man1/$tool.1" \
+    # Prefer coreutils' own man/<tool>.x include (real "[NAME] tool \- desc"
+    # + [SEE ALSO]); fall back to a bare --name only if upstream ships no .x.
+    if [ -f "$XDIR/$tool.x" ]; then
+        name_args=(--include "$XDIR/$tool.x")
+    else
+        name_args=(--name "$tool")
+    fi
+    help2man --no-info --source="GNU coreutils $CU_VER (Kandelo)" \
+        "${name_args[@]}" "$WRAP/$tool" > "$STAGE/share/man/man1/$tool.1" \
         || { echo "help2man failed for $tool" >&2; rm -f "$STAGE/share/man/man1/$tool.1"; }
 done
 [ -f "$STAGE/share/man/man1/ls.1" ] || { echo "ls.1 not generated" >&2; exit 2; }

@@ -4,9 +4,10 @@ set -euo pipefail
 # Build Vim 9.1 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
-# Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
-# shared library cache (or builds it on miss). See
-# docs/package-management.md.
+# ncurses is a declared dependency: the resolver pre-seeds
+# WASM_POSIX_DEP_NCURSES_DIR. Outside a sealed resolver run, the script
+# falls back to `cargo xtask build-deps resolve ncurses` (build-or-hit the
+# shared cache). See docs/package-management.md.
 # Applies fork instrumentation so fork+exec works (:!command, filters).
 # wasm-fork-instrument auto-discovers fork paths via call-graph
 # analysis — no onlylist is needed.
@@ -60,6 +61,13 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # invocation. Otherwise we ask the resolver to build-or-hit the cache.
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
+    # A sealed source-only build must be fully pre-seeded by the resolver;
+    # never reach back into the resolver/network mid-build. Fail loudly
+    # instead of silently invoking cargo. (Matches nano/fbdoom/perl/... .)
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        echo "ERROR: vim SourceOnly requires resolver-provided ncurses" >&2
+        exit 2
+    fi
     echo "==> Resolving ncurses via cargo xtask build-deps..."
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"

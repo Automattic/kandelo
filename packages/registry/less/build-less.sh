@@ -45,6 +45,13 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 # Matches packages/registry/vim/build-vim.sh:57-71.
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
+    # A sealed source-only build must be fully pre-seeded by the resolver;
+    # never reach back into the resolver/network mid-build. Fail loudly
+    # instead of silently invoking cargo. (Matches nano/fbdoom/perl/... .)
+    if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
+        echo "ERROR: less SourceOnly requires resolver-provided ncurses" >&2
+        exit 2
+    fi
     echo "==> Resolving ncurses via cargo xtask build-deps..."
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
