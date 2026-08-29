@@ -31,6 +31,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  populateMandocDatabase,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerManShellProfile,
@@ -465,6 +466,9 @@ export function populateShellEnvironment(
   // /usr/share/terminfo on every run, so the shared database must be present
   // regardless of whether the base rootfs already carries it.
   populateTerminfoDatabase(fs, resolveArtifact);
+  // WHY: man/apropos/whatis/man -k consult /usr/share/man/mandoc.db on every
+  // run, so the combined index must be present regardless of the base rootfs.
+  populateMandocDatabase(fs, resolveArtifact);
   if (opts.baseProvided && !opts.eagerBinaries) {
     populateLazyBinaries(fs, resolveArtifact, { skipExisting: true });
   }

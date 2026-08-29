@@ -65,6 +65,11 @@
       "name": "lsof-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
+    },
+    {
+      "name": "mandoc-db",
+      "version": "1.14.6",
+      "role": "eager-file"
     }
   ]
 }

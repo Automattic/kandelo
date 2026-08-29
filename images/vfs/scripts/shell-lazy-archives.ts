@@ -369,3 +369,71 @@ export function populateTerminfoDatabase(
     writeVfsBinary(fs, destPath, data, (entry.mode & 0o777) || 0o644);
   }
 }
+
+// ── Shared mandoc.db manual index ──────────────────────────────────
+//
+// Like the terminfo database, the combined mandoc.db (a name/keyword index
+// over every shipped -docs man page) is materialized eagerly at /usr/share/man
+// rather than fetched lazily: mandoc's `man <name>`, apropos, whatis, and
+// man -k consult it on every run, and without it mandoc prints an "outdated
+// mandoc.db, run makewhatis" note and falls back to a slower filesystem scan.
+// The mandoc-db package builds it with a host makewhatis (see
+// packages/registry/mandoc-db/build-mandoc-db.sh); the composer only unpacks
+// the exact declared bytes.
+
+export const MANDOC_DB_RUNTIME_FILE = {
+  dependency: "mandoc-db",
+  resolverPath: "programs/wasm32/mandoc-db.zip",
+  /** Zip members are rooted at share/man/..., mounted under /usr/. */
+  mountPrefix: "/usr/",
+  requiredEntry: "share/man/mandoc.db",
+} as const;
+
+/**
+ * Eagerly materialize the package-owned combined mandoc.db into the image at
+ * /usr/share/man/mandoc.db. The archive is the mandoc-db package's output; the
+ * composer must never rebuild it — it only unpacks the exact declared bytes.
+ */
+export function populateMandocDatabase(
+  fs: MemoryFileSystem,
+  resolveArtifact: ShellLazyArchiveResolver,
+): void {
+  const sourcePath = resolveArtifact(
+    MANDOC_DB_RUNTIME_FILE.resolverPath,
+    MANDOC_DB_RUNTIME_FILE.dependency,
+  );
+  const bytes = new Uint8Array(readFileSync(sourcePath));
+  let entries: ZipEntry[];
+  try {
+    entries = parseZipCentralDirectory(bytes);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`mandoc-db output ${sourcePath} is not a valid ZIP: ${message}`);
+  }
+
+  const requiredEntries = entries.filter(
+    (entry) =>
+      entry.fileName === MANDOC_DB_RUNTIME_FILE.requiredEntry &&
+      !entry.isDirectory &&
+      !entry.isSymlink,
+  );
+  if (requiredEntries.length !== 1) {
+    throw new Error(
+      `mandoc-db output ${sourcePath} must contain exactly one regular ` +
+        `${MANDOC_DB_RUNTIME_FILE.requiredEntry}; found ${requiredEntries.length}`,
+    );
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory) continue;
+    if (entry.isSymlink) {
+      throw new Error(
+        `mandoc-db output ${sourcePath} has an unexpected symlink entry ${entry.fileName}`,
+      );
+    }
+    const destPath = `${MANDOC_DB_RUNTIME_FILE.mountPrefix}${entry.fileName}`;
+    ensureDirRecursive(fs, dirname(destPath));
+    const data = extractZipEntry(bytes, entry);
+    writeVfsBinary(fs, destPath, data, (entry.mode & 0o777) || 0o644);
+  }
+}

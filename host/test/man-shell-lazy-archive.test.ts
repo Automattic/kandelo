@@ -109,6 +109,52 @@ describe.skipIf(!available)(
       expect(rendered).not.toContain(".TH");
       expect(rendered).not.toContain(".SH");
     }, 60_000);
+
+    // The pre-built, combined mandoc.db shipped by the `mandoc-db` package
+    // (staged eagerly at /usr/share/man/mandoc.db) means mandoc's `man`
+    // front-end no longer warns that the database is missing or stale. That
+    // warning ("outdated mandoc.db lacks ls(1) entry") was the visible symptom
+    // of an image with man pages but no index. Its absence proves the eager db
+    // matches the lazily-mounted pages.
+    it("resolves man ls without an outdated-mandoc.db warning", async () => {
+      const { stderr, exitCode } = await runManCommand("man ls");
+      expect(exitCode, `man ls stderr:\n${stderr}`).toBe(0);
+      expect(stderr).not.toMatch(/outdated mandoc\.db/);
+      expect(stderr).not.toMatch(/lacks .*entry/);
+    }, 60_000);
+  },
+);
+
+// The `mandoc-db` package builds one combined whatis/apropos index over every
+// shipped -docs archive with the host `makewhatis`, then stages it eagerly so
+// name-lookup (`whatis`) and keyword-search (`apropos` / `man -k`) work the
+// moment the shell boots — without ever running `makewhatis` inside the guest.
+// These front-ends read /usr/share/man/mandoc.db directly; the pages
+// themselves stay lazily mounted from coreutils-docs.zip / lsof-docs.zip.
+describe.skipIf(!available)(
+  "whatis / apropos read the combined mandoc.db (Node-host, offline)",
+  () => {
+    it("whatis reports the exact coreutils ls(1) NAME line", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("whatis ls");
+      expect(exitCode, `whatis ls stderr:\n${stderr}`).toBe(0);
+      // mandoc whatis prints "ls (1) - list directory contents".
+      expect(stdout).toMatch(/ls\s*\(1\)\s*-\s*list directory contents/);
+    }, 60_000);
+
+    it("apropos finds ls by keyword out of the shared index", async () => {
+      const { stdout, stderr, exitCode } = await runManCommand("apropos ls");
+      expect(exitCode, `apropos ls stderr:\n${stderr}`).toBe(0);
+      expect(stdout).toMatch(/ls\s*\(1\)\s*-\s*list directory contents/);
+    }, 60_000);
+
+    it("man -k searches the same index as apropos", async () => {
+      const { stdout, stderr, exitCode } =
+        await runManCommand("man -k lsof");
+      expect(exitCode, `man -k lsof stderr:\n${stderr}`).toBe(0);
+      // lsof(8) is indexed from lsof-docs.zip, proving the db spans every
+      // -docs archive, not just coreutils.
+      expect(stdout).toMatch(/lsof\s*\(8\)\s*-\s*.*list open files/);
+    }, 60_000);
   },
 );
 

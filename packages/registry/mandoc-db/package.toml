@@ -1,0 +1,30 @@
+kind = "program"
+name = "mandoc-db"
+version = "1.14.6"
+kernel_abi = 7
+depends_on = ["coreutils-docs@9.6", "lsof-docs@0.1.0"]
+
+# The combined mandoc.db name/keyword index over every shipped -docs man
+# page, so man's name lookup, apropos, whatis, and man -k work at runtime
+# (and mandoc's "outdated mandoc.db, run makewhatis" note is gone). Built by
+# a HOST mandoc's makewhatis from this pinned source; mandoc's dba db format
+# is architecture-portable, so the host-built db is read by the guest wasm32
+# mandoc (verified). The package [source] is the same mandoc snapshot the
+# guest `mandoc` package uses, guaranteeing an identical db format;
+# depends_on names the -docs archives whose pages are indexed.
+[source]
+url = "https://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz"
+sha256 = "8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://mandoc.bsd.lv/"
+
+[build]
+script_path = "packages/registry/mandoc-db/build-mandoc-db.sh"
+
+[[outputs]]
+name = "mandoc-db"
+wasm = "mandoc-db.zip"
+fork_instrumentation = "disabled"

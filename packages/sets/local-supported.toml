@@ -172,6 +172,10 @@ name = "mandoc-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "mandoc-db"
+class = "browser-product"
+
+[[packages]]
 name = "mariadb"
 class = "user-software"
 

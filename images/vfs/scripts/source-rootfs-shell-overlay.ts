@@ -8,6 +8,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  populateMandocDatabase,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerManShellProfile,
@@ -32,6 +33,10 @@ export function populateSourceRootfsShellOverlay(
   // /usr/share/terminfo on every run, so the shared database must be present
   // from boot rather than fetched lazily like the archives below.
   populateTerminfoDatabase(fs, resolveArtifact);
+
+  // WHY: man/apropos/whatis/man -k consult /usr/share/man/mandoc.db on every
+  // run, so the combined index must be present from boot too.
+  populateMandocDatabase(fs, resolveArtifact);
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {
