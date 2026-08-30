@@ -1,0 +1,285 @@
+--- a/atk/atkgobjectaccessible.c
++++ b/atk/atkgobjectaccessible.c
+@@ -34,11 +34,19 @@
+  * not derived from GtkWidget. One example of its use is in providing
+  * an accessible object for GnomeCanvasItem in the GAIL library.
+  */
+-static void       atk_gobject_accessible_class_init       (AtkGObjectAccessibleClass   *klass);
++static void       atk_gobject_accessible_class_init       (AtkGObjectAccessibleClass   *klass, gpointer class_data);
+ static void       atk_real_gobject_accessible_initialize  (AtkObject         *atk_obj,
+                                                            gpointer          data);
+-static void       atk_gobject_accessible_object_gone_cb   (gpointer          data);
++static void       atk_gobject_accessible_object_gone_cb   (gpointer          data,
++                                                            GObject          *where_the_object_was);
+ 
++static void
++atk_gobject_accessible_unref_weak_notify (gpointer data,
++                                          GObject *where_the_object_was)
++{
++  g_object_unref (data);
++}
++
+ static GQuark quark_accessible_object = 0;
+ static GQuark quark_object = 0;
+ static gpointer parent_class = NULL;
+@@ -106,7 +114,7 @@
+            * The AtkObject which was created was not a AtkGObjectAccessible
+            */
+           g_object_weak_ref (obj,
+-                             (GWeakNotify) g_object_unref,
++                             atk_gobject_accessible_unref_weak_notify,
+                              accessible); 
+           if (!quark_accessible_object)
+             quark_accessible_object = g_quark_from_static_string ("accessible-object");
+@@ -150,7 +158,8 @@
+ }
+ 
+ static void
+-atk_gobject_accessible_object_gone_cb (gpointer  data)
++atk_gobject_accessible_object_gone_cb (gpointer  data,
++                                       GObject  *where_the_object_was)
+ {
+   GObject *object;
+ 
+@@ -186,7 +195,7 @@
+ }
+ 
+ static void
+-atk_gobject_accessible_class_init (AtkGObjectAccessibleClass *klass)
++atk_gobject_accessible_class_init (AtkGObjectAccessibleClass *klass, gpointer class_data)
+ { 
+   AtkObjectClass *class;
+   GObjectClass *object_class;
+--- a/atk/atkhyperlink.c
++++ b/atk/atkhyperlink.c
+@@ -53,7 +53,7 @@
+   PROP_LAST
+ };
+ 
+-static void atk_hyperlink_class_init (AtkHyperlinkClass *klass);
++static void atk_hyperlink_class_init (AtkHyperlinkClass *klass, gpointer class_data);
+ static void atk_hyperlink_init       (AtkHyperlink      *link,
+                                       AtkHyperlinkClass *klass);
+ 
+@@ -90,9 +90,9 @@
+ 
+       static const GInterfaceInfo action_info =
+       {
+-        (GInterfaceInitFunc) atk_hyperlink_action_iface_init,
++        g_wasm_iface_init_thunk,
+         (GInterfaceFinalizeFunc) NULL,
+-        NULL
++        (gpointer) (void (*)(void)) atk_hyperlink_action_iface_init
+       };
+ 
+       type = g_type_register_static (G_TYPE_OBJECT, "AtkHyperlink", &typeInfo, 0) ;
+@@ -102,7 +102,7 @@
+ }
+ 
+ static void
+-atk_hyperlink_class_init (AtkHyperlinkClass *klass)
++atk_hyperlink_class_init (AtkHyperlinkClass *klass, gpointer class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+ 
+--- a/atk/atkmisc.c
++++ b/atk/atkmisc.c
+@@ -30,7 +30,7 @@
+  * all his related methods are deprecated since 2.12.
+  */
+ 
+-static void atk_misc_class_init (AtkMiscClass *klass);
++static void atk_misc_class_init (AtkMiscClass *klass, gpointer class_data);
+ 
+ GType
+ atk_misc_get_type (void)
+@@ -57,7 +57,7 @@
+ }
+ 
+ static void
+-atk_misc_class_init (AtkMiscClass *klass)
++atk_misc_class_init (AtkMiscClass *klass, gpointer class_data)
+ {
+   klass->threads_enter = NULL;
+   klass->threads_leave = NULL;
+--- a/atk/atknoopobject.c
++++ b/atk/atknoopobject.c
+@@ -35,7 +35,7 @@
+  */
+ 
+ 
+-static void atk_no_op_object_class_init (AtkNoOpObjectClass *klass);
++static void atk_no_op_object_class_init (AtkNoOpObjectClass *klass, gpointer class_data);
+ 
+ static gpointer parent_class = NULL;
+ 
+@@ -176,7 +176,7 @@
+ }
+ 
+ static void
+-atk_no_op_object_class_init (AtkNoOpObjectClass *klass)
++atk_no_op_object_class_init (AtkNoOpObjectClass *klass, gpointer class_data)
+ {
+   parent_class = g_type_class_peek_parent (klass);
+ }
+--- a/atk/atknoopobjectfactory.c
++++ b/atk/atknoopobjectfactory.c
+@@ -33,7 +33,8 @@
+  * specified to create an accessible object of a particular type.
+  */
+ static void atk_no_op_object_factory_class_init (
+-                              AtkNoOpObjectFactoryClass        *klass);
++                              AtkNoOpObjectFactoryClass        *klass,
++                              gpointer                          class_data);
+ 
+ static AtkObject* atk_no_op_object_factory_create_accessible (
+                               GObject                          *obj);
+@@ -70,7 +71,7 @@
+ }
+ 
+ static void 
+-atk_no_op_object_factory_class_init (AtkNoOpObjectFactoryClass *klass)
++atk_no_op_object_factory_class_init (AtkNoOpObjectFactoryClass *klass, gpointer class_data)
+ {
+   AtkObjectFactoryClass *class = ATK_OBJECT_FACTORY_CLASS (klass);
+ 
+--- a/atk/atkobject.c
++++ b/atk/atkobject.c
+@@ -221,7 +221,7 @@
+ 
+ static gint AtkObject_private_offset;
+ 
+-static void            atk_object_class_init        (AtkObjectClass  *klass);
++static void            atk_object_class_init        (AtkObjectClass  *klass, gpointer class_data);
+ static void            atk_object_init              (AtkObject       *accessible,
+                                                      AtkObjectClass  *klass);
+ static AtkRelationSet* atk_object_real_ref_relation_set 
+@@ -342,7 +342,7 @@
+ }
+ 
+ static void
+-atk_object_class_init (AtkObjectClass *klass)
++atk_object_class_init (AtkObjectClass *klass, gpointer class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+ 
+--- a/atk/atkobjectfactory.c
++++ b/atk/atkobjectfactory.c
+@@ -35,7 +35,7 @@
+  * particular GType.
+  */
+ 
+-static void atk_object_factory_class_init   (AtkObjectFactoryClass        *klass);
++static void atk_object_factory_class_init   (AtkObjectFactoryClass        *klass, gpointer class_data);
+ 
+ static gpointer    parent_class = NULL;
+ 
+@@ -65,7 +65,7 @@
+ }
+ 
+ static void 
+-atk_object_factory_class_init (AtkObjectFactoryClass *klass)
++atk_object_factory_class_init (AtkObjectFactoryClass *klass, gpointer class_data)
+ {
+   parent_class = g_type_class_peek_parent (klass);
+ 
+--- a/atk/atkregistry.c
++++ b/atk/atkregistry.c
+@@ -42,7 +42,7 @@
+ static void              atk_registry_init           (AtkRegistry      *instance,
+                                                       AtkRegistryClass *klass);
+ static void              atk_registry_finalize       (GObject          *instance);
+-static void              atk_registry_class_init     (AtkRegistryClass *klass);
++static void              atk_registry_class_init     (AtkRegistryClass *klass, gpointer class_data);
+ static AtkRegistry*      atk_registry_new            (void);
+ 
+ static gpointer parent_class = NULL;
+@@ -75,7 +75,7 @@
+ }
+ 
+ static void
+-atk_registry_class_init (AtkRegistryClass *klass)
++atk_registry_class_init (AtkRegistryClass *klass, gpointer class_data)
+ {
+   GObjectClass *object_class = (GObjectClass *) klass;
+ 
+--- a/atk/atkrelation.c
++++ b/atk/atkrelation.c
+@@ -46,7 +46,7 @@
+ 
+ static gpointer parent_class = NULL;
+   
+-static void atk_relation_class_init   (AtkRelationClass *klass);
++static void atk_relation_class_init   (AtkRelationClass *klass, gpointer class_data);
+ static void atk_relation_finalize     (GObject          *object);
+ static void atk_relation_set_property (GObject          *object,
+                                        guint            prop_id,
+@@ -85,7 +85,7 @@
+ }
+ 
+ static void
+-atk_relation_class_init (AtkRelationClass *klass)
++atk_relation_class_init (AtkRelationClass *klass, gpointer class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+ 
+--- a/atk/atkrelationset.c
++++ b/atk/atkrelationset.c
+@@ -41,7 +41,7 @@
+ 
+ static gpointer parent_class = NULL;
+ 
+-static void atk_relation_set_class_init (AtkRelationSetClass  *klass);
++static void atk_relation_set_class_init (AtkRelationSetClass  *klass, gpointer class_data);
+ static void atk_relation_set_finalize   (GObject              *object);
+ 
+ GType
+@@ -69,7 +69,7 @@
+ }
+ 
+ static void
+-atk_relation_set_class_init (AtkRelationSetClass *klass)
++atk_relation_set_class_init (AtkRelationSetClass *klass, gpointer class_data)
+ {
+   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+ 
+--- a/atk/atkstateset.c
++++ b/atk/atkstateset.c
+@@ -45,7 +45,7 @@
+ 
+ typedef struct _AtkRealStateSet      AtkRealStateSet;
+ 
+-static void            atk_state_set_class_init       (AtkStateSetClass  *klass);
++static void            atk_state_set_class_init       (AtkStateSetClass  *klass, gpointer class_data);
+ 
+ GType
+ atk_state_set_get_type (void)
+@@ -72,7 +72,7 @@
+ }
+ 
+ static void
+-atk_state_set_class_init (AtkStateSetClass *klass)
++atk_state_set_class_init (AtkStateSetClass *klass, gpointer class_data)
+ {
+ }
+ 
+--- a/atk/atkutil.c
++++ b/atk/atkutil.c
+@@ -33,7 +33,7 @@
+  * and toolkit version.
+  */
+ 
+-static void atk_util_class_init (AtkUtilClass *klass);
++static void atk_util_class_init (AtkUtilClass *klass, gpointer class_data);
+ 
+ static AtkObject *previous_focus_object = NULL;
+ 
+@@ -585,7 +585,7 @@
+ }
+ 
+ static void
+-atk_util_class_init (AtkUtilClass *klass)
++atk_util_class_init (AtkUtilClass *klass, gpointer class_data)
+ {
+   klass->add_global_event_listener = atk_util_real_add_global_event_listener;
+   klass->remove_global_event_listener = atk_util_real_remove_global_event_listener;

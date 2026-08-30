@@ -15,15 +15,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libdrm.XXXXXX")"
-trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/libdrm-work" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 
 LIBDRM_VERSION="${WASM_POSIX_DEP_VERSION:-2.4.120}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://dri.freedesktop.org/libdrm/libdrm-${LIBDRM_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdefb327a}"
+VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -42,18 +45,18 @@ for tool in "$CC" "$AR" curl tar shasum python3; do
     }
 done
 
-TARBALL="$WORK_DIR/libdrm.tar.xz"
 SRC_DIR="$WORK_DIR/source"
 BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/libdrm -fdebug-prefix-map=$WORK_DIR=/usr/src/libdrm -fmacro-prefix-map=$WORK_DIR=/usr/src/libdrm"
 
-echo "==> Downloading libdrm $LIBDRM_VERSION..."
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$INSTALL_DIR/lib" \
+# The resolver acquires and verifies the archive before this script runs, so
+# stage its tree rather than fetch the tarball a second time.
+echo "==> Staging verified libdrm $LIBDRM_VERSION source..."
+rm -rf "$SRC_DIR"
+kandelo_package_stage_verified_source libdrm "$SRC_DIR" \
+    "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" \
          "$INSTALL_DIR/include/drm" "$INSTALL_DIR/include/libdrm"
-tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
 # Stage the KMS-side sources into a flat build dir — only the four
 # files SDL2's KMSDRM backend pulls in transitively, plus the UAPI

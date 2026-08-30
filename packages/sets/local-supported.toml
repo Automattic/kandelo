@@ -2,7 +2,6 @@ schema = 1
 policy = "source-only-v1"
 dependency_only = [
   "pcre2-source",
-  "wayland-protocols",
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = []
@@ -32,8 +31,20 @@ name = "browser-redis"
 reason = "dormant product"
 
 [[packages]]
+name = "atk"
+class = "platform"
+
+[[packages]]
+name = "atkmm"
+class = "platform"
+
+[[packages]]
 name = "bash"
 class = "user-software"
+
+[[packages]]
+name = "basu"
+class = "platform"
 
 [[packages]]
 name = "bc"
@@ -42,6 +53,14 @@ class = "user-software"
 [[packages]]
 name = "bzip2"
 class = "user-software"
+
+[[packages]]
+name = "cairo"
+class = "platform"
+
+[[packages]]
+name = "cairomm"
+class = "platform"
 
 [[packages]]
 name = "coreutils"
@@ -68,6 +87,10 @@ name = "dash"
 class = "user-software"
 
 [[packages]]
+name = "dbus"
+class = "user-software"
+
+[[packages]]
 name = "diffutils"
 class = "user-software"
 
@@ -80,8 +103,16 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
+name = "expat"
+class = "platform"
+
+[[packages]]
 name = "fbdoom"
 class = "user-software"
+
+[[packages]]
+name = "fcft"
+class = "platform"
 
 [[packages]]
 name = "file"
@@ -92,23 +123,75 @@ name = "findutils"
 class = "user-software"
 
 [[packages]]
+name = "fmt"
+class = "platform"
+
+[[packages]]
+name = "fontconfig"
+class = "platform"
+
+[[packages]]
+name = "foot"
+class = "user-software"
+
+[[packages]]
+name = "freetype"
+class = "platform"
+
+[[packages]]
+name = "fribidi"
+class = "platform"
+
+[[packages]]
 name = "gawk"
 class = "user-software"
+
+[[packages]]
+name = "gdk-pixbuf"
+class = "platform"
 
 [[packages]]
 name = "git"
 class = "user-software"
 
 [[packages]]
+name = "glib"
+class = "platform"
+
+[[packages]]
+name = "glibmm"
+class = "platform"
+
+[[packages]]
 name = "grep"
 class = "user-software"
+
+[[packages]]
+name = "gtk-layer-shell"
+class = "platform"
+
+[[packages]]
+name = "gtk3"
+class = "platform"
+
+[[packages]]
+name = "gtkmm3"
+class = "platform"
 
 [[packages]]
 name = "gzip"
 class = "user-software"
 
 [[packages]]
+name = "harfbuzz"
+class = "platform"
+
+[[packages]]
 name = "icu"
+class = "platform"
+
+[[packages]]
+name = "jsoncpp"
 class = "platform"
 
 [[packages]]
@@ -140,6 +223,10 @@ name = "libdrm"
 class = "platform"
 
 [[packages]]
+name = "libepoxy"
+class = "platform"
+
+[[packages]]
 name = "libevdev"
 class = "platform"
 
@@ -160,6 +247,10 @@ name = "libpng"
 class = "platform"
 
 [[packages]]
+name = "libsigcxx"
+class = "platform"
+
+[[packages]]
 name = "libudev"
 class = "platform"
 
@@ -169,6 +260,10 @@ class = "platform"
 
 [[packages]]
 name = "libxkbcommon"
+class = "platform"
+
+[[packages]]
+name = "libxkbregistry"
 class = "platform"
 
 [[packages]]
@@ -197,6 +292,10 @@ class = "user-software"
 
 [[packages]]
 name = "make"
+class = "user-software"
+
+[[packages]]
+name = "mako"
 class = "user-software"
 
 [[packages]]
@@ -280,6 +379,18 @@ name = "openssl"
 class = "platform"
 
 [[packages]]
+name = "pango"
+class = "platform"
+
+[[packages]]
+name = "pangomm"
+class = "platform"
+
+[[packages]]
+name = "pcre2"
+class = "platform"
+
+[[packages]]
 name = "perl"
 class = "user-software"
 
@@ -290,6 +401,10 @@ class = "browser-product"
 [[packages]]
 name = "php"
 class = "user-software"
+
+[[packages]]
+name = "pixman"
+class = "platform"
 
 [[packages]]
 name = "posix-utils-lite"
@@ -340,6 +455,10 @@ name = "shell"
 class = "browser-product"
 
 [[packages]]
+name = "spdlog"
+class = "platform"
+
+[[packages]]
 name = "spidermonkey"
 class = "user-software"
 
@@ -372,11 +491,19 @@ name = "tcl"
 class = "user-software"
 
 [[packages]]
+name = "tllist"
+class = "platform"
+
+[[packages]]
 name = "unzip"
 class = "user-software"
 
 [[packages]]
 name = "userspace"
+class = "platform"
+
+[[packages]]
+name = "utf8proc"
 class = "platform"
 
 [[packages]]
@@ -388,7 +515,19 @@ name = "vim-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "waybar"
+class = "user-software"
+
+[[packages]]
+name = "wayland-protocols"
+class = "platform"
+
+[[packages]]
 name = "wget"
+class = "user-software"
+
+[[packages]]
+name = "wldesktop"
 class = "user-software"
 
 [[packages]]

@@ -1,0 +1,11 @@
+script_path = "packages/registry/jsoncpp/build-jsoncpp.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "cf81d0f7c"
+revision    = 1
+
+# The fetched `jsoncpp-src/` tree is gitignored; the resolver hashes
+# these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/jsoncpp/build-jsoncpp.sh",
+  "scripts/package-build-roots.sh",
+]

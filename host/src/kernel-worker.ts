@@ -1649,6 +1649,8 @@ interface ChannelInfo {
   readinessDeadline?: number;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
+  /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
+  pollSigmaskSwapped?: boolean;
 }
 
 /**
@@ -2863,6 +2865,17 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.disable(gl.CULL_FACE);
   gl.disable(gl.RASTERIZER_DISCARD);
   gl.colorMask(true, true, true, true);
+  // A leftover row length, skip count or bound PIXEL_UNPACK_BUFFER makes
+  // every scanout upload GL_INVALID_OPERATION with no JS exception — the
+  // pump reports presents onto a black canvas. A leftover flip or
+  // premultiply uploads cleanly and corrupts the image instead.
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
@@ -3442,6 +3455,14 @@ export class CentralizedKernelWorker {
    *  host without an OffscreenCanvas polyfill) so the pump doesn't retry
    *  `getContext` at 60 Hz. */
   private kmsGlPresenters = new Map<number, KmsGlPresenter | null>();
+  /** Canvases whose WebGL context-loss listeners are installed. A lost
+   *  context silently no-ops every GL call, so without these hooks the
+   *  pump keeps "presenting" frozen pixels while the kernel-side flip
+   *  counters advance. Loss stands the presenter down (`null` cache);
+   *  `preventDefault()` opts into restoration, and restore drops the
+   *  cache so the next tick rebuilds program, texture and a full
+   *  repaint via the fresh presenter's never-presented sentinels. */
+  private kmsContextLossHooked = new WeakSet<OffscreenCanvas>();
   /** Embedder-reported display size (device pixels) per CRTC, fed by
    *  `setKmsDisplaySize`. The webgl2-scanout presenter sizes the canvas
    *  drawing buffer to this and lets the GPU scale the framebuffer
@@ -3449,6 +3470,10 @@ export class CentralizedKernelWorker {
    *  the canvas tracks the framebuffer size. */
   private kmsDisplaySizes = new Map<number, { width: number; height: number }>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
+  /** `KmsRegistry.flipCount()` at the last vblank tick. The pump wakes
+   *  blocked retries only when this moved — an unconditional 60 Hz wake
+   *  would retry every parked poll/select in the system each tick. */
+  private vblankFlipCount = 0;
   /** Construction-time schedulers include the browser worker's installed
    * polyfill but cannot be replaced by a later guest/host callback. */
   readonly #schedulerReceiver: typeof globalThis;
@@ -3501,6 +3526,10 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      firstKmsCanvasCrtc: () => {
+        for (const id of this.kmsCanvases.keys()) return id;
+        return undefined;
+      },
       markKmsCanvasGlOwned: (crtcId: number) => {
         // A program GL context now owns the canvas (fires only after the
         // context actually exists). If the pump's webgl2-scanout
@@ -6567,6 +6596,15 @@ export class CentralizedKernelWorker {
     // ABI padding. Reading either as size_t would treat unrelated padding as
     // the high half of a count and reject or mis-size a valid message.
     const iovecCount = view.getUint32(layout.iovecCountOffset, true);
+    // Linux rejects msg_iovlen above IOV_MAX with EMSGSIZE — net/socket.c's
+    // __copy_msghdr serves both sendmsg and recvmsg — while readv/writev
+    // keep POSIX's EINVAL for the same overflow.
+    if (iovecCount > POSIX_IOV_MAX) {
+      throw new KernelScratchError(
+        `msg_iovlen must be at most ${POSIX_IOV_MAX}`,
+        EMSGSIZE,
+      );
+    }
     const rawControlPointer = pointerWidth === 8
       ? view.getBigUint64(layout.controlOffset, true)
       : view.getUint32(layout.controlOffset, true);
@@ -13991,7 +14029,7 @@ export class CentralizedKernelWorker {
     // future SIGCONT. Retire one-shot timeout/deadline state now so no second
     // completion can race the parked one.
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
 
     // Drain PTY output buffers before notifying the process — slave writes
     // produce data in the PTY output_buf that needs to reach the host (xterm.js).
@@ -15131,7 +15169,7 @@ export class CentralizedKernelWorker {
       return;
     }
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
     const prepared: PreparedChannelCompletion = {
       kind: "raw",
       outputWrites: [],
@@ -15970,9 +16008,26 @@ export class CentralizedKernelWorker {
   }
 
   /** Clear readiness deadline and any still-parked retry for a completed call. */
-  private clearReadinessWait(channel: ChannelInfo): void {
+  private clearReadinessWait(
+    channel: ChannelInfo,
+    entry?: KernelWorkerEntryContext,
+  ): void {
     channel.readinessDeadline = undefined;
     channel.readinessFinalCheck = undefined;
+
+    if (channel.pollSigmaskSwapped) {
+      channel.pollSigmaskSwapped = undefined;
+      // Guarded kernel-side: a no-op when a signal became deliverable under
+      // the temporary mask — kernel_dequeue_signal owns the restore then.
+      // The entry keeps the call inside the active gate scope: the bare
+      // instance would open a NEW entry, which throws mid-retry
+      // (KernelReentrantEntryError while a syscall retry is active).
+      const restoreMask = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
+        .kernel_restore_poll_sigmask as
+        | ((pid: number, tid: number) => number)
+        | undefined;
+      restoreMask?.(channel.pid, this.guestTidForChannel(channel));
+    }
 
     const pollEntry = this.pendingPollRetries.get(channel);
     if (pollEntry) {
@@ -19430,12 +19485,31 @@ export class CentralizedKernelWorker {
               EINVAL,
             );
           }
-          this.checkedProcessRange(
+          const maskPointer = this.checkedProcessRange(
             channel,
             rawMaskPointer,
             SIGNAL_MASK_BYTES,
             "epoll_pwait signal mask",
-          );
+          ).pointer;
+          // epoll_pwait's atomic mask swap. The host runs this wait as
+          // timeout=0 poll retries, so the kernel cannot scope the mask to
+          // one blocking syscall — swap it through the sigsuspend
+          // saved-mask slot (idempotent across retry re-entries) and keep
+          // it swapped while parked, so a signal arriving mid-wait (foot's
+          // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
+          // wakes the retry. kernel_dequeue_signal restores the saved mask
+          // after delivering the signal that ended the wait;
+          // clearReadinessWait restores it on every other completion.
+          const swapMask = this.#kernelInstanceForEntry(entry).exports
+            .kernel_swap_poll_sigmask as
+            | ((pid: number, tid: number, mask: bigint) => number)
+            | undefined;
+          if (swapMask) {
+            const mask = new DataView(channel.memory.buffer)
+              .getBigUint64(maskPointer, true);
+            swapMask(channel.pid, this.guestTidForChannel(channel), mask);
+            channel.pollSigmaskSwapped = true;
+          }
         }
       }
       eventsPtr = this.checkedProcessRange(
@@ -19445,6 +19519,7 @@ export class CentralizedKernelWorker {
         "epoll output events",
       ).pointer;
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
@@ -25117,6 +25192,11 @@ export class CentralizedKernelWorker {
   }
 
   #validateKernelSignalTargetTid(targetTid: number): number {
+    // -ESRCH is part of the export's contract: the process exited between
+    // the signal queue and this interrupt attempt (e.g. a killactive close
+    // racing the client teardown). Nothing is left to wake — map it to
+    // "no target". Any other negative value is protocol corruption.
+    if (targetTid === -ESRCH) return 0;
     if (!Number.isSafeInteger(targetTid) || targetTid < 0) {
       this.#failBlockingRetryProtocol(
         `kernel returned invalid signal target TID ${targetTid}`,
@@ -25169,6 +25249,9 @@ export class CentralizedKernelWorker {
       );
     }
     const result = threadHasDeliverable(pid, tid);
+    // -ESRCH: the process (or that thread) is already gone — nothing is
+    // deliverable. Part of the export's contract, not corruption.
+    if (result === -ESRCH) return false;
     if (result !== 0 && result !== 1) {
       this.#failBlockingRetryProtocol(
         `kernel returned invalid deliverable-signal state ${result}`,
@@ -26714,9 +26797,15 @@ export class CentralizedKernelWorker {
     }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
-      // so there is no persistent host capability to retain. They need a
-      // kernel-owned mapping bridge; MAP_PRIVATE keeps its fd-pread path.
-      return { kind: "error", errno: ENOTSUP };
+      // so there is no persistent host capability to retain for writeback.
+      // Take the same populate-only fallback as MAP_SHARED on non-regular
+      // files: pread fills the pages at map time and writes stay local.
+      // libwayland-cursor's theme pool is the load-bearing consumer — its
+      // memfd pool must map, and nothing ever reads the pool back (the
+      // compositor accepts and ignores wl_pointer.set_cursor). Live
+      // coherence needs a kernel-owned mapping bridge that does not exist
+      // yet.
+      return { kind: "unsupported" };
     }
     const accessResult = this.getFdAccessModeForSharedMapping(
       channel,
@@ -33694,6 +33783,10 @@ export class CentralizedKernelWorker {
       // host without WebGL2 (Node) degrades to stats-only instead of
       // failing the attach.
       this.kmsContextMode.set(crtc_id, mode);
+      // Arm loss/restore now — a GL claim can precede the first tick.
+      if (typeof canvas.addEventListener === "function") {
+        this.hookKmsContextLoss(canvas);
+      }
     }
   }
 
@@ -33771,8 +33864,16 @@ export class CentralizedKernelWorker {
         // instead of letting them spin on the generic safety-net retry —
         // without this hook the C-side frame loop is capped well below the
         // 60 Hz tick unless something else (mouse input, etc.) triggers a
-        // wake. Coalesced and no-op when no retries are pending.
-        this.scheduleWakeBlockedRetries(entry);
+        // wake. Gated on flip activity: the worker is single-threaded, so
+        // a flip queued before this tick's kernel_vblank moved the host
+        // latch counter, and a tick with no new latch retired nothing —
+        // waking then would retry every parked poll/select in the system
+        // at 60 Hz for no reason.
+        const flips = this.#kernel.kms.flipCount();
+        if (flips !== this.vblankFlipCount) {
+          this.vblankFlipCount = flips;
+          this.scheduleWakeBlockedRetries(entry);
+        }
 
         // Snapshot webgl2-scanout presenter inputs while entry authority is
         // live. The detached canvas phase below runs the GL upload + draw
@@ -34002,6 +34103,15 @@ export class CentralizedKernelWorker {
     const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
     if (!presenter) return false;
     const { gl, tex } = presenter;
+    if (gl.isContextLost()) {
+      console.warn(
+        `kms: webgl2 context lost on crtc ${crtc_id}; presenter stands down until restore`,
+      );
+      this.kmsGlPresenters.set(crtc_id, null);
+      const stats = this.kmsStatsViews.get(crtc_id);
+      if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      return false;
+    }
     // Drawing buffer tracks the display size when the embedder reports
     // one (setKmsDisplaySize), else the framebuffer size. Rendering at
     // display resolution means the page compositor maps the canvas 1:1
@@ -34080,6 +34190,40 @@ export class CentralizedKernelWorker {
     return true;
   }
 
+  /** Arm loss/restore listeners on a scanout canvas. Installed at attach
+   *  time, NOT first presenter build: a program GL session can claim the
+   *  canvas before the pump ever builds a presenter (the GPU compositor
+   *  boots straight into `markKmsCanvasGlOwned`), and a loss that fires
+   *  before the listener exists is never cancelled — the browser then
+   *  never restores the context and every later rebuild finds it dead.
+   *  Loss stands the presenter down; `preventDefault()` opts into
+   *  restoration; restore drops the cache so the next tick rebuilds. */
+  private hookKmsContextLoss(canvas: OffscreenCanvas): void {
+    if (this.kmsContextLossHooked.has(canvas)) return;
+    this.kmsContextLossHooked.add(canvas);
+    canvas.addEventListener("webglcontextlost", (event: Event) => {
+      event.preventDefault();
+      for (const [id, c] of this.kmsCanvases) {
+        if (c !== canvas) continue;
+        console.warn(
+          `kms: webgl2 context lost on crtc ${id}; presenter stands down until restore`,
+        );
+        this.kmsGlPresenters.set(id, null);
+        const stats = this.kmsStatsViews.get(id);
+        if (stats && stats.length > 7) Atomics.store(stats, 7, 0);
+      }
+    });
+    canvas.addEventListener("webglcontextrestored", () => {
+      for (const [id, c] of this.kmsCanvases) {
+        if (c !== canvas) continue;
+        console.warn(
+          `kms: webgl2 context restored on crtc ${id}; rebuilding the presenter`,
+        );
+        this.kmsGlPresenters.delete(id);
+      }
+    });
+  }
+
   /** Lazily acquire the WebGL2 presenter for a `webgl2-scanout` CRTC.
    *  A failed acquisition (no WebGL2 on this host, context refused) is
    *  cached as `null` so the pump doesn't retry getContext at 60 Hz —
@@ -34090,6 +34234,7 @@ export class CentralizedKernelWorker {
     if (cached !== undefined) return cached;
     let presenter: KmsGlPresenter | null = null;
     try {
+      this.hookKmsContextLoss(canvas);
       const gl = canvas.getContext("webgl2", {
         antialias: false,
         premultipliedAlpha: false,

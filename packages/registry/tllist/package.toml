@@ -1,0 +1,27 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Header-only typed linked list; fcft and foot include it at compile
+# time. No archive is produced — the single header is the output.
+name = "tllist"
+version = "1.1.0"
+kernel_abi = 17
+depends_on = []
+
+[source]
+url = "https://codeberg.org/dnkl/tllist/releases/download/1.1.0/tllist-1.1.0.tar.gz"
+sha256 = "a1f0ce0dc4fcb4ce59c37202a1d914c853a8bd2d7c5d57d623b15a8dd9778767"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://codeberg.org/dnkl/tllist/src/tag/1.1.0/LICENSE"
+
+[build]
+script_path = "packages/registry/tllist/build-tllist.sh"
+
+[outputs]
+headers = ["include/tllist.h"]
+pkgconfig = ["lib/pkgconfig/tllist.pc"]

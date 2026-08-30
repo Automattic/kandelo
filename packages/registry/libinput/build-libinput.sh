@@ -72,7 +72,17 @@ fi
 # changes and the cache key varies per build.
 BUILD_DIR="$SCRIPT_DIR/libinput-build"
 GEN_DIR="$BUILD_DIR/gen"
-rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: libinput resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$GEN_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 SRC="$SRC_DIR/src"

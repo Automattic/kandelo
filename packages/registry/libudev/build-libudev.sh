@@ -39,7 +39,16 @@ if ! command -v wasm32posix-ar &>/dev/null; then
     exit 1
 fi
 
-rm -rf "$INSTALL_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: libudev resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 OBJ="$(mktemp -d)/libudev_shim.o"

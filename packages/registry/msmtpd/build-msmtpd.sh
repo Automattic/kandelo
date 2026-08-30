@@ -15,7 +15,11 @@ SRC_DIR="$SCRIPT_DIR/msmtp-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 OUT="$BIN_DIR/msmtpd.wasm"
 
-if [ -f "$OUT" ]; then
+# Only a direct invocation may reuse the artifact. Under the resolver the
+# cache key is the sole authority on skipping a rebuild, and a leftover
+# artifact predates the current sysroot: reusing it republishes an older
+# ABI under a fresh cache key, which the VFS image build then rejects.
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -f "$OUT" ]; then
     echo "==> Reusing existing msmtpd artifact in $BIN_DIR (skip rebuild)."
     source "$REPO_ROOT/scripts/install-local-binary.sh"
     install_local_binary msmtpd "$OUT"

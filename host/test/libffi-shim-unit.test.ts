@@ -1,21 +1,17 @@
 /*
- * Native unit test for the Wayland-scoped libffi shim
- * (packages/registry/libffi/). The shim's whole job is `ffi_call`
- * dispatching a decoded Wayland message to an N-ary function via an
- * i32-arity `call_indirect` trampoline; test/ffi_shim_test.c drives
- * `ffi_prep_cif` + `ffi_call` across every arity 0..22 and asserts each
- * 32-bit argument word lands in the right parameter slot.
- *
- * We compile the shim + driver for the HOST and run them here — no
- * wasm/kernel needed. Proving arity + argument marshalling on the host
- * proves `wl_closure_invoke` will dispatch correctly on wasm32, where
- * the same function-pointer calls lower to `call_indirect`. This is the
- * PR1 de-risk that gates investing in the libwayland port.
+ * Native regression test for the Wayland dispatch path of the full
+ * libffi port (packages/registry/libffi/): test/ffi_shim_test.c drives
+ * `ffi_prep_cif` + `ffi_call` across every arity 0..22 of the shape
+ * `wl_closure_invoke` uses (all-i32 arguments, void return) and asserts
+ * each 32-bit argument word lands in the right parameter slot. This was
+ * the PR1 de-risk gate for the libwayland port and must stay green
+ * through the PR20 full-port rewrite; the PR20 matrix itself lives in
+ * host/test/libffi-full-unit.test.ts.
  */
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
@@ -39,22 +35,33 @@ function findCompiler(): string | null {
   return null;
 }
 
-describe("libffi Wayland shim — arity call_indirect trampoline (native unit test)", () => {
+describe("libffi Wayland dispatch — arity call_indirect (native unit test)", () => {
   it("dispatches every arity 0..22 with correct argument marshalling", () => {
     const cc = findCompiler();
     expect(cc, "no host C compiler (cc/clang/gcc) found").not.toBeNull();
 
-    const inc = join(LIBFFI_DIR, "include");
-    const shimC = join(LIBFFI_DIR, "src/ffi_shim.c");
+    const coreC = join(LIBFFI_DIR, "src/ffi_core.c");
     const testC = join(LIBFFI_DIR, "test/ffi_shim_test.c");
-    expect(existsSync(shimC) && existsSync(testC)).toBe(true);
+    expect(existsSync(coreC) && existsSync(testC)).toBe(true);
 
     const work = mkdtempSync(join(tmpdir(), "libffi-shim-"));
     const bin = join(work, "ffi_shim_test");
     try {
+      execFileSync("bash", [join(LIBFFI_DIR, "gen-dispatch.sh"), work], {
+        stdio: "pipe",
+      });
+      const generated = readdirSync(work)
+        .filter((f) => f.endsWith(".c"))
+        .map((f) => join(work, f));
       execFileSync(
         cc!,
-        ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", `-I${inc}`, shimC, testC, "-o", bin],
+        [
+          "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1",
+          `-I${join(LIBFFI_DIR, "include")}`,
+          `-I${join(LIBFFI_DIR, "src")}`,
+          coreC, ...generated, testC,
+          "-o", bin,
+        ],
         { stdio: "pipe" },
       );
       const out = execFileSync(bin, { encoding: "utf8" });
@@ -62,5 +69,5 @@ describe("libffi Wayland shim — arity call_indirect trampoline (native unit te
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 });

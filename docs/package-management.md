@@ -1200,6 +1200,11 @@ Key contracts illustrated:
 - **Light presence-check on the unpacked tree.** `[ -f
 CMakeLists.txt ]` catches a partial extract or the wrong tarball
   layout before cmake emits a more confusing error.
+- **A source-kind entry does not exclude a library-kind one for the
+  same upstream.** `packages/registry/pcre2/` builds the same 10.44
+  tarball into a cached `libpcre2-8.a` for glib's GRegex. The two
+  entries are independent: `pcre2-source` stages the tree MariaDB
+  configures itself, `pcre2` publishes an archive.
 
 ### 4. Caveats / known footguns
 

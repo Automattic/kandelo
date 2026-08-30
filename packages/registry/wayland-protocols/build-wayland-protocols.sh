@@ -2,24 +2,22 @@
 #
 # Stage the vendored Wayland protocol XML into the dep cache.
 #
-# wayland-protocols is a `kind = "source"` package (see package.toml).
+# wayland-protocols is a `kind = "library"` package (see package.toml).
 # There is no tarball to fetch: the protocol XML is vendored in-tree
 # under `xml/`. This script just copies it into the resolver's
 # `$WASM_POSIX_DEP_OUT_DIR` so consumers that list `wayland-protocols`
 # in `depends_on` find it at
-# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/`.
+# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
 #
 # Consumers generate C glue from these files with the host
 # `wayland-scanner` (provided via flake.nix), e.g.:
 #
 #     wayland-scanner client-header \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/xdg-shell.xml" \
+#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
 #         xdg-shell-client-protocol.h
 #     wayland-scanner private-code  \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_SRC_DIR/xml/xdg-shell.xml" \
+#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
 #         xdg-shell-protocol.c
-#
-# See docs/package-management.md ("Source-kind manifests").
 
 set -euo pipefail
 
@@ -32,7 +30,16 @@ if [ ! -f "$SRC_XML/wayland.xml" ] || [ ! -f "$SRC_XML/xdg-shell.xml" ]; then
     exit 1
 fi
 
-rm -rf "$INSTALL_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: wayland-protocols resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$INSTALL_DIR/xml"
 cp "$SRC_XML"/*.xml "$INSTALL_DIR/xml/"
 

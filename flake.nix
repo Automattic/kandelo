@@ -125,6 +125,8 @@
             #            mkconfig, cpython itself, file's
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
+            #   gperf  — fontconfig's fcobjshash.h (the release tarball
+            #            ships only the .gperf input, not the output)
             #   xz/bzip2 — extracting .tar.xz/.tar.bz2 tarballs and linking
             #            xtask's source extraction helpers.
             #   patch  — applying *.patch files (mariadb, ruby)
@@ -137,6 +139,7 @@
             pkgs.ruby
             pkgs.flex
             pkgs.bison
+            pkgs.gperf
             pkgs.xz
             pkgs.bzip2
             pkgs.gnupatch
@@ -215,6 +218,22 @@
             # paths only, so installing libncurses-dev on the host
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
+            # xorg util-macros — m4 macros (XORG_MACROS_VERSION) that
+            # libepoxy's configure.ac pulls in; its GitHub release
+            # tarball ships no pre-generated configure, so
+            # build-libepoxy.sh runs autoreconf and aclocal needs the
+            # macro definitions. Host-side m4 only, no X libraries.
+            pkgs.xorg.utilmacros
+            # Host glib dev tools — glib-compile-resources and
+            # glib-compile-schemas are compiled C programs (not
+            # scripts), so the wasm32 glib port cannot provide them.
+            # gdk-pixbuf and GTK3 builds invoke them at build time to
+            # bundle GResource data and compile GSettings schemas. The
+            # python tools (glib-mkenums, glib-genmarshal) come from
+            # the target glib install's bin/ via pkg-config variables,
+            # not from here. The GVDB formats both tools emit are
+            # stable across glib versions.
+            pkgs.glib.dev
             # sqlite3 CLI — host-side test helper. The WordPress
             # site-editor test (`packages/registry/wordpress/test/wordpress-
             # site-editor.test.ts`) polls the WP install's SQLite DB
@@ -232,9 +251,23 @@
             # host prefixes.
             pkgs.xcbuild
         ];
+
+        # macOS 15.5 SDK. SpiderMonkey 140's configure rejects an older
+        # one — `ERROR: SDK version "14.4" is too old. Please upgrade to
+        # at least 15.5.` — and 14.4 is what the nixpkgs darwin stdenv
+        # supplies by default. It belongs in `buildInputs`, not in
+        # `devShellPackages`: the SDK setup hook only rewrites SDKROOT and
+        # DEVELOPER_DIR from there, and the package ships no bin/ for
+        # KANDELO_DEV_SHELL_TOOL_PATH. Darwin only — it does not evaluate
+        # on Linux, where the Mozilla SDK check never runs.
+        darwinSdkPackages =
+          pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+            pkgs.apple-sdk_15
+          ];
       in {
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
+          buildInputs = darwinSdkPackages;
 
           shellHook = ''
             # On Darwin, nix develop can leave user profile and ambient

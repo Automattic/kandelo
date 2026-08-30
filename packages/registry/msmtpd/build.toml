@@ -1,5 +1,6 @@
 script_path = "packages/registry/msmtpd/build-msmtpd.sh"
 inputs = [
+  "packages/registry/msmtpd/build-msmtpd.sh",
   "scripts/run-wasm-fork-instrument.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"

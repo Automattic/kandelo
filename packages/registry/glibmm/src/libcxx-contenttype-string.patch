@@ -1,0 +1,24 @@
+libc++ 18+ removed the non-standard char_traits<unsigned char>, so
+std::basic_string<guchar> no longer instantiates. This overload is
+orphaned — contenttype.h declares only the guchar* and std::string
+forms (a std::string definition already follows below) — drop it.
+--- a/gio/giomm/contenttype.cc
++++ b/gio/giomm/contenttype.cc
+@@ -85,17 +85,6 @@
+ 
+ Glib::ustring
+ content_type_guess(
+-  const std::string& filename, const std::basic_string<guchar>& data, bool& result_uncertain)
+-{
+-  gboolean c_result_uncertain = FALSE;
+-  const gchar* c_filename = filename.empty() ? nullptr : filename.c_str();
+-  gchar* cresult = g_content_type_guess(c_filename, data.c_str(), data.size(), &c_result_uncertain);
+-  result_uncertain = c_result_uncertain;
+-  return Glib::convert_return_gchar_ptr_to_ustring(cresult);
+-}
+-
+-Glib::ustring
+-content_type_guess(
+   const std::string& filename, const guchar* data, gsize data_size, bool& result_uncertain)
+ {
+   gboolean c_result_uncertain = FALSE;

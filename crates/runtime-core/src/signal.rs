@@ -366,6 +366,7 @@ pub enum SignalMaskWaitKind {
     Pselect,
     Sigsuspend,
     Pause,
+    EpollPwait,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

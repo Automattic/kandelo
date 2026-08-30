@@ -39,6 +39,58 @@ describe("ABI version marker", () => {
     );
   }
 
+  /**
+   * Declared page minimum of the module's memory import. The linker derives it
+   * from `-Wl,-z,stack-size`, so reading it here keeps the stub memory below
+   * correct without re-tuning this test whenever that flag moves.
+   */
+  function memoryImportPages(bytes: Uint8Array): number {
+    let at = 8;
+    const uleb = (): number => {
+      let value = 0;
+      let shift = 0;
+      for (;;) {
+        const byte = bytes[at++]!;
+        value |= (byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) return value;
+        shift += 7;
+      }
+    };
+    const skipRefType = (): void => {
+      const head = bytes[at++]!;
+      if (head === 0x63 || head === 0x64) uleb();
+    };
+    const skipLimits = (): void => {
+      const flags = uleb();
+      uleb();
+      if ((flags & 1) !== 0) uleb();
+    };
+    while (at < bytes.length) {
+      const sectionId = bytes[at++]!;
+      const sectionSize = uleb();
+      const sectionEnd = at + sectionSize;
+      if (sectionId !== 2) {
+        at = sectionEnd;
+        continue;
+      }
+      for (let remaining = uleb(); remaining > 0; remaining--) {
+        at += uleb();
+        at += uleb();
+        const kind = bytes[at++]!;
+        if (kind === 0x02) {
+          uleb();
+          return uleb();
+        }
+        if (kind === 0x00) uleb();
+        else if (kind === 0x01) { skipRefType(); skipLimits(); }
+        else if (kind === 0x03) { skipRefType(); at++; }
+        else { at++; uleb(); }
+      }
+      at = sectionEnd;
+    }
+    throw new Error("module declares no memory import");
+  }
+
   async function instantiateKernelOnly(
     bytes: Uint8Array,
   ): Promise<WebAssembly.Instance> {
@@ -128,9 +180,10 @@ describe("ABI version marker", () => {
     const kernelVer = (kernel.exports.__abi_version as () => number)();
 
     // User programs import kernel channel functions + memory. Provide
-    // minimal stubs.
+    // minimal stubs. The page minimum follows the program's linker-derived
+    // stack size, so read it from the artifact instead of pinning it here.
     const memory = new WebAssembly.Memory({
-      initial: 17,
+      initial: memoryImportPages(userProg),
       maximum: 16384,
       shared: true,
     });
