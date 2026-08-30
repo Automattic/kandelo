@@ -41,6 +41,11 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { kernelRootfsEnabled } from "./vfs/kernel-rootfs-gate";
+import {
+  emitRootfsManifest,
+  createRootfsBlobProvider,
+} from "./vfs/rootfs-manifest";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -1277,6 +1282,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   kernelWorker.setNetworkListenObserver((pid, fd, port) => {
     post({ type: "listen_tcp", pid, fd, port });
   });
+
+  // Phase 5 Increment 2 (rootfs gate, default off): hand the `/` image tree to
+  // the in-kernel rootfs overlay and install the byte provider before init
+  // applies them. The `/` MemoryFileSystem is reachable only here in the entry.
+  if (kernelRootfsEnabled() && memfs) {
+    const { buffer, blobPaths } = emitRootfsManifest(memfs, (p) => p);
+    kernelWorker.configureRootfsOverlay(
+      buffer,
+      createRootfsBlobProvider(memfs, blobPaths),
+    );
+  }
 
   await kernelWorker.init(msg.kernelWasmBytes);
 

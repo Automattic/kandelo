@@ -3003,7 +3003,7 @@
     {
       "kind": "func",
       "name": "kernel_set_rootfs_now",
-      "signature": "(i64,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

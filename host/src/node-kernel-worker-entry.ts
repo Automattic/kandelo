@@ -54,6 +54,11 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { kernelRootfsEnabled } from "./vfs/kernel-rootfs-gate";
+import {
+  emitRootfsManifest,
+  createRootfsBlobProvider,
+} from "./vfs/rootfs-manifest";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -1218,6 +1223,17 @@ async function handleInit(msg: InitMessage) {
       });
     },
   });
+
+  // Phase 5 Increment 2 (rootfs gate, default off): hand the `/` image tree to
+  // the in-kernel rootfs overlay and install the byte provider before init
+  // applies them. The `/` MemoryFileSystem is reachable only here in the entry.
+  if (kernelRootfsEnabled() && rootfsMemfs) {
+    const { buffer, blobPaths } = emitRootfsManifest(rootfsMemfs, (p) => p);
+    kernelWorker.configureRootfsOverlay(
+      buffer,
+      createRootfsBlobProvider(rootfsMemfs, blobPaths),
+    );
+  }
 
   await kernelWorker.init(msg.kernelWasmBytes);
 
