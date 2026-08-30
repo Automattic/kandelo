@@ -242,7 +242,59 @@ impl<'a> Sffs<'a> {
         buf.truncate(n);
         Ok(buf)
     }
+
+    /// Resolves an absolute path to an inode number, starting from
+    /// `ROOT_INO`. Intermediate components must be directories (`ENOTDIR`
+    /// otherwise). Symlinks are always followed for intermediate
+    /// components; the final component is followed only if `follow_final`
+    /// is set (the `stat` vs `lstat` distinction). Symlink targets are
+    /// spliced into the front of the remaining component queue; an
+    /// absolute target restarts resolution at the root. Resolution is
+    /// capped at `MAX_SYMLINK_HOPS` hops (`ELOOP`).
+    ///
+    /// NOTE on `..`: this minimal version treats `..` as a no-op (correct
+    /// for root; nested `..` needs a parent stack). The base `/` images the
+    /// overlay loads are canonical and the kernel's own resolver already
+    /// handles `..` before this layer is consulted (later wiring), so full
+    /// `..` support is deferred; add a parent-stack only if a fixture
+    /// proves it necessary.
+    pub fn resolve(&self, path: &[u8], follow_final: bool) -> Result<u32, Errno> {
+        // Build the component queue (absolute paths only; leading '/' required).
+        if path.first() != Some(&b'/') { return Err(Errno::EINVAL); }
+        let mut comps: alloc::collections::VecDeque<Vec<u8>> = path
+            .split(|&c| c == b'/').filter(|c| !c.is_empty())
+            .map(|c| c.to_vec()).collect();
+        let mut cur = ROOT_INO;
+        let mut hops = 0u32;
+        while let Some(comp) = comps.pop_front() {
+            let is_final = comps.is_empty();
+            let st = self.stat_ino(cur)?;
+            if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }
+            if comp.as_slice() == b"." { continue; }
+            if comp.as_slice() == b".." { continue; } // root's .. is root; nested handled below
+            let child = self.lookup(cur, &comp)?;
+            let cst = self.stat_ino(child)?;
+            let is_link = file_type(cst.mode) == 0xa000;
+            if is_link && (!is_final || follow_final) {
+                hops += 1;
+                if hops > MAX_SYMLINK_HOPS { return Err(Errno::ELOOP); }
+                let target = self.read_link(child)?;
+                let absolute = target.first() == Some(&b'/');
+                let spliced: alloc::collections::VecDeque<Vec<u8>> = target
+                    .split(|&c| c == b'/').filter(|c| !c.is_empty())
+                    .map(|c| c.to_vec()).collect();
+                if absolute { cur = ROOT_INO; }
+                // Prepend spliced target components before the remaining ones.
+                for c in spliced.into_iter().rev() { comps.push_front(c); }
+                continue;
+            }
+            cur = child;
+        }
+        Ok(cur)
+    }
 }
+
+const MAX_SYMLINK_HOPS: u32 = 8;
 
 const DIRENT_HEADER: usize = 8;
 
@@ -347,5 +399,27 @@ mod tests {
         // non-symlink => EINVAL
         let file = fs.lookup(ROOT_INO, b"hello.txt").unwrap();
         assert!(fs.read_link(file).is_err());
+    }
+
+    #[test]
+    fn resolve_paths_and_symlink() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        // exact content read through a resolved path
+        let ino = fs.resolve(b"/hello.txt", true).unwrap();
+        let mut buf = [0u8; 32];
+        let n = fs.read_at(ino, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello sffs\n");
+        // nested
+        assert!(fs.resolve(b"/dir/nested.txt", true).is_ok());
+        // symlink: follow vs no-follow
+        let via_link = fs.resolve(b"/link", true).unwrap();       // -> hello.txt
+        let direct = fs.resolve(b"/hello.txt", true).unwrap();
+        assert_eq!(via_link, direct);
+        let link_itself = fs.resolve(b"/link", false).unwrap();   // the symlink inode
+        assert_eq!(fs.stat_ino(link_itself).unwrap().mode & 0xf000, 0xa000);
+        // ENOTDIR: descend through a file
+        assert!(fs.resolve(b"/hello.txt/x", true).is_err());
+        // ENOENT
+        assert!(fs.resolve(b"/nope", true).is_err());
     }
 }
