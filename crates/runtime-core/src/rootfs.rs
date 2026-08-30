@@ -173,6 +173,13 @@ impl Inode {
         self.ctime_nsec = nsec;
     }
 
+    /// Stamp ctime only (a metadata mutation: chmod, chown, link).
+    fn touch_changed(&mut self) {
+        let (sec, nsec) = now();
+        self.ctime_sec = sec;
+        self.ctime_nsec = nsec;
+    }
+
     /// Clear set-user-ID, and set-group-ID on a group-executable file, on a
     /// content-modifying operation — the POSIX "a successful write clears
     /// set-user-ID" rule, matching the host path and tmpfs.
@@ -323,6 +330,36 @@ impl RootfsState {
             self.free_inodes.push(idx);
         }
     }
+
+    /// Recompute a directory's link count from scratch: 2 (self + `.`) plus one
+    /// per child subdirectory (each child dir's `..`). Robust against any move,
+    /// replace, or removal.
+    fn recompute_dir_nlink(&mut self, dir_idx: u32) {
+        let child_dirs = match self.get(dir_idx) {
+            Some(inode) => match &inode.kind {
+                InodeKind::Dir(entries) => entries
+                    .values()
+                    .filter(|&&child| self.get(child).is_some_and(|i| i.is_dir()))
+                    .count(),
+                _ => return,
+            },
+            None => return,
+        };
+        if let Some(inode) = self.get_mut(dir_idx) {
+            inode.nlink = 2 + child_dirs as u32;
+        }
+    }
+}
+
+/// Walk to a rootfs inode index for a metadata update. The final component is
+/// not followed (the kernel already resolved symlinks per the syscall's FOLLOW
+/// policy before calling), so lchown-style callers land on the link itself.
+fn walk_to_inode(path: &[u8]) -> Result<u32, Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        state.walk(root, &comps)
+    })
 }
 
 struct RootfsGlobal {
@@ -1064,6 +1101,340 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
     })
 }
 
+/// mkdir a rootfs directory.
+pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
+    let comps = split_components(path);
+    if comps.is_empty() {
+        return Err(Errno::EEXIST); // the root already exists
+    }
+    ROOTFS.with(|state| {
+        let (parent, last, target) = state.resolve(&comps)?;
+        if target.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Dir(BTreeMap::new()),
+            mode & 0o7777,
+            uid,
+            gid,
+            2,
+            ino,
+        ));
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        // A new subdirectory bumps the parent's link count (its `..`).
+        if let Some(parent_inode) = state.get_mut(parent) {
+            parent_inode.nlink += 1;
+        }
+        Ok(())
+    })
+}
+
+/// Remove an empty rootfs directory.
+pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
+    let comps = split_components(path);
+    if comps.is_empty() {
+        return Err(Errno::EBUSY); // cannot remove the root
+    }
+    ROOTFS.with(|state| {
+        let (parent, last, target) = state.resolve(&comps)?;
+        let target = target.ok_or(Errno::ENOENT)?;
+        let last = last.ok_or(Errno::ENOENT)?;
+        match &state.get(target).ok_or(Errno::ENOENT)?.kind {
+            InodeKind::Dir(entries) => {
+                if !entries.is_empty() {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) {
+            entries.remove(last);
+        }
+        if let Some(parent_inode) = state.get_mut(parent) {
+            parent_inode.nlink = parent_inode.nlink.saturating_sub(1);
+        }
+        if let Some(inode) = state.get_mut(target) {
+            inode.nlink = 0;
+        }
+        state.maybe_free(target);
+        Ok(())
+    })
+}
+
+/// Unlink a rootfs non-directory name.
+pub fn unlink(path: &[u8]) -> Result<(), Errno> {
+    let comps = split_components(path);
+    if comps.is_empty() {
+        return Err(Errno::EISDIR);
+    }
+    ROOTFS.with(|state| {
+        let (parent, last, target) = state.resolve(&comps)?;
+        let target = target.ok_or(Errno::ENOENT)?;
+        let last = last.ok_or(Errno::ENOENT)?;
+        if state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
+            return Err(Errno::EISDIR);
+        }
+        if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) {
+            entries.remove(last);
+        }
+        if let Some(inode) = state.get_mut(target) {
+            inode.nlink = inode.nlink.saturating_sub(1);
+        }
+        state.maybe_free(target);
+        Ok(())
+    })
+}
+
+/// Rename `old` to `new` within the rootfs. Both paths must be rootfs paths (the
+/// syscall layer maps a rootfs/tmpfs or cross-authority rename to EXDEV before
+/// reaching here). POSIX replace semantics: an existing destination of a
+/// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
+/// and a non-empty destination directory yields ENOTEMPTY.
+pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    // A directory cannot be moved into its own subtree.
+    if new.len() > old.len() && new.starts_with(old) && new[old.len()] == b'/' {
+        return Err(Errno::EINVAL);
+    }
+    let old_comps = split_components(old);
+    let new_comps = split_components(new);
+    if old_comps.is_empty() || new_comps.is_empty() {
+        return Err(Errno::EBUSY); // cannot rename the root
+    }
+    ROOTFS.with(|state| {
+        let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
+        let old_target = old_target.ok_or(Errno::ENOENT)?;
+        let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
+        let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
+        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
+
+        // Renaming a name to itself (same inode) is a no-op.
+        if new_existing == Some(old_target) {
+            return Ok(());
+        }
+
+        let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
+
+        if let Some(existing) = new_existing {
+            let new_is_dir = state.get(existing).ok_or(Errno::ENOENT)?.is_dir();
+            if old_is_dir && !new_is_dir {
+                return Err(Errno::ENOTDIR);
+            }
+            if !old_is_dir && new_is_dir {
+                return Err(Errno::EISDIR);
+            }
+            if new_is_dir {
+                let empty = matches!(
+                    &state.get(existing).ok_or(Errno::ENOENT)?.kind,
+                    InodeKind::Dir(entries) if entries.is_empty()
+                );
+                if !empty {
+                    return Err(Errno::ENOTEMPTY);
+                }
+            }
+            // Detach and free the replaced destination.
+            if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) {
+                entries.remove(&new_name);
+            }
+            if let Some(inode) = state.get_mut(existing) {
+                inode.nlink = 0;
+            }
+            state.maybe_free(existing);
+        }
+
+        // Detach the source name and reattach under the destination name.
+        if let Some(InodeKind::Dir(entries)) = state.get_mut(old_parent).map(|i| &mut i.kind) {
+            entries.remove(&old_name);
+        }
+        match state.get_mut(new_parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(new_name, old_target);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+
+        state.recompute_dir_nlink(old_parent);
+        if new_parent != old_parent {
+            state.recompute_dir_nlink(new_parent);
+        }
+        Ok(())
+    })
+}
+
+/// Create a hard link `new` to the existing file `old` within the rootfs. Hard
+/// links to directories are EPERM; an existing destination is EEXIST. `old` is
+/// not dereferenced (the kernel already applied the syscall's follow policy).
+pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let old_comps = split_components(old);
+    let new_comps = split_components(new);
+    if new_comps.is_empty() {
+        return Err(Errno::EEXIST); // cannot link over the root
+    }
+    ROOTFS.with(|state| {
+        let old_idx = {
+            let root = state.mount_root();
+            state.walk(root, &old_comps)?
+        };
+        if state.get(old_idx).ok_or(Errno::ENOENT)?.is_dir() {
+            return Err(Errno::EPERM); // no hard links to directories
+        }
+        let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
+        if new_existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
+        match state.get_mut(new_parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(new_name, old_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        if let Some(inode) = state.get_mut(old_idx) {
+            inode.nlink += 1;
+            inode.touch_changed();
+        }
+        Ok(())
+    })
+}
+
+/// chmod a rootfs path (permission bits only).
+pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
+        Ok(())
+    })
+}
+
+/// chown a rootfs path. A field of `u32::MAX` (-1) is left unchanged. When
+/// `clear_setid` is set, set-user-ID (and set-group-ID on a group-executable
+/// file) is cleared, matching the host chown path.
+pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        if clear_setid {
+            const S_ISUID: u32 = 0o4000;
+            const S_ISGID: u32 = 0o2000;
+            const S_IXGRP: u32 = 0o0010;
+            inode.mode &= !S_ISUID;
+            if inode.mode & S_IXGRP != 0 {
+                inode.mode &= !S_ISGID;
+            }
+        }
+        inode.touch_changed();
+        Ok(())
+    })
+}
+
+/// fchmod an open rootfs file handle.
+pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
+        Ok(())
+    })
+}
+
+/// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
+pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        if clear_setid {
+            const S_ISUID: u32 = 0o4000;
+            const S_ISGID: u32 = 0o2000;
+            const S_IXGRP: u32 = 0o0010;
+            inode.mode &= !S_ISUID;
+            if inode.mode & S_IXGRP != 0 {
+                inode.mode &= !S_ISGID;
+            }
+        }
+        inode.touch_changed();
+        Ok(())
+    })
+}
+
+/// Set a rootfs inode's timestamps to already-resolved values (the caller has
+/// applied UTIME_NOW/UTIME_OMIT).
+pub fn utimensat(
+    path: &[u8],
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
+    let idx = walk_to_inode(path)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.atime_sec = atime_sec;
+        inode.atime_nsec = atime_nsec;
+        inode.mtime_sec = mtime_sec;
+        inode.mtime_nsec = mtime_nsec;
+        inode.ctime_sec = ctime_sec;
+        inode.ctime_nsec = ctime_nsec;
+        Ok(())
+    })
+}
+
+/// Create a symbolic link at a rootfs path pointing at `target`.
+pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let comps = split_components(linkpath);
+    if comps.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    if target.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    ROOTFS.with(|state| {
+        let (parent, last, existing) = state.resolve(&comps)?;
+        if existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Symlink(target.to_vec()),
+            0o777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        Ok(())
+    })
+}
+
 /// statfs for the rootfs overlay: a memory-backed filesystem (its mutable layer
 /// grows within kernel Wasm memory). The exact magic/flags are reconciled with
 /// the host image backend at cutover (Increment 2e).
@@ -1363,6 +1734,119 @@ mod tests {
         let _g = TestGuard::acquire();
         build_sample_tree();
         assert_eq!(open(b"/usr/bin/nope", 1, 0, 0, 0).unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn mkdir_rmdir_lifecycle() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        mkdir(b"/usr/lib", 0o755, 0, 0).unwrap();
+        assert!(is_dir(b"/usr/lib"));
+        assert_eq!(mkdir(b"/usr/lib", 0o755, 0, 0).unwrap_err(), Errno::EEXIST);
+        // The parent's link count reflects each subdir's `..`.
+        let usr = lstat(b"/usr").unwrap();
+        assert_eq!(usr.st_nlink, 4); // 2 (self + `.`) + 2 subdirs (bin, lib)
+        rmdir(b"/usr/lib").unwrap();
+        assert_eq!(lstat(b"/usr/lib").unwrap_err(), Errno::ENOENT);
+        assert_eq!(rmdir(b"/usr/bin").unwrap_err(), Errno::ENOTEMPTY);
+        assert_eq!(rmdir(b"/").unwrap_err(), Errno::EBUSY);
+    }
+
+    #[test]
+    fn unlink_base_and_created_files() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // Unlink a base file: the entry disappears (bytes stay in the host).
+        unlink(b"/usr/bin/hello").unwrap();
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+        assert_eq!(unlink(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+        // Unlinking a directory is EISDIR (use rmdir).
+        assert_eq!(unlink(b"/usr/bin").unwrap_err(), Errno::EISDIR);
+    }
+
+    #[test]
+    fn unlink_while_open_defers_free() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        let h = open(b"/usr/bin/hello", O_RDONLY, 0, 0, 0).unwrap();
+        unlink(b"/usr/bin/hello").unwrap();
+        // Name is gone, but the open handle still reads (unlink-while-open).
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+        let mut buf = [0u8; 5];
+        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap(), 5);
+        assert_eq!(&buf, b"hello");
+        assert!(release_handle(h)); // frees now
+        assert!(!handle_is_live(h));
+    }
+
+    #[test]
+    fn rename_moves_and_replaces() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // Move a file to a new name in another dir.
+        mkdir(b"/opt", 0o755, 0, 0).unwrap();
+        rename(b"/usr/bin/hello", b"/opt/hello").unwrap();
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+        assert_eq!(lstat(b"/opt/hello").unwrap().st_size, 11);
+        // Replace an existing regular destination atomically.
+        insert_base_file(b"/opt/other", 44, 3, 0o644, 0, 0, 20).unwrap();
+        rename(b"/opt/hello", b"/opt/other").unwrap();
+        assert_eq!(lstat(b"/opt/other").unwrap().st_size, 11);
+        // Directory-into-own-subtree is EINVAL.
+        assert_eq!(rename(b"/opt", b"/opt/sub").unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn hard_link_shares_inode() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        link(b"/usr/bin/hello", b"/usr/bin/hello2").unwrap();
+        let a = lstat(b"/usr/bin/hello").unwrap();
+        let b = lstat(b"/usr/bin/hello2").unwrap();
+        assert_eq!(a.st_ino, b.st_ino);
+        assert_eq!(a.st_nlink, 2);
+        // Removing one name leaves the other.
+        unlink(b"/usr/bin/hello").unwrap();
+        assert_eq!(lstat(b"/usr/bin/hello2").unwrap().st_nlink, 1);
+        // No hard links to directories.
+        assert_eq!(link(b"/usr/bin", b"/bin2").unwrap_err(), Errno::EPERM);
+    }
+
+    #[test]
+    fn chmod_chown_and_symlink_creation() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        chmod(b"/usr/bin/hello", 0o600).unwrap();
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o600);
+        chown(b"/usr/bin/hello", 5, 6, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (5, 6));
+        // -1 leaves a field unchanged.
+        chown(b"/usr/bin/hello", u32::MAX, 9, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (5, 9));
+        // chown clears set-uid when asked.
+        chmod(b"/usr/bin/hello", 0o4755).unwrap();
+        chown(b"/usr/bin/hello", 1, 1, true).unwrap();
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o0755);
+
+        symlink(b"../lib/x", b"/usr/bin/newlink", 0, 0).unwrap();
+        let mut buf = [0u8; 32];
+        let n = readlink(b"/usr/bin/newlink", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"../lib/x");
+        assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
+    }
+
+    #[test]
+    fn utimensat_sets_times() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        utimensat(b"/usr/bin/hello", 100, 1, 200, 2, 300, 3).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_atime_sec, st.st_atime_nsec), (100, 1));
+        assert_eq!((st.st_mtime_sec, st.st_mtime_nsec), (200, 2));
+        assert_eq!((st.st_ctime_sec, st.st_ctime_nsec), (300, 3));
     }
 
     #[test]
