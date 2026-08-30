@@ -224,10 +224,27 @@ export function emitRootfsManifest(
 
 const EMPTY = new Uint8Array(0);
 
+const EAGAIN = -11;
+const EIO = -5;
+
+/**
+ * Map a backend exception to a negative errno for the blob provider. A lazy
+ * (not-yet-materialized) base file makes the backend's `open`/`read` throw an
+ * error tagged `code === "EAGAIN"` (see `MemoryFileSystem.guardSynchronousLazyAccess`,
+ * which also kicks off the async fetch). We propagate that as EAGAIN so the
+ * kernel parks the read and retries — the same park/retry the host-served path
+ * uses — instead of surfacing a spurious EIO. Every other failure is EIO.
+ */
+function blobErrno(error: unknown): number {
+  return (error as { code?: unknown })?.code === "EAGAIN" ? EAGAIN : EIO;
+}
+
 /**
  * Build the byte provider installed via `WasmPosixKernel.setRootfsBlobProvider`.
  * It resolves a `blob_id` (inode number) to the backend path and reads the bytes
- * with a positioned read. Returns bytes read (0 at EOF) or a negative errno.
+ * with a positioned read. Returns bytes read (0 at EOF), or a negative errno —
+ * `-EAGAIN` when the leaf is lazy and still materializing (the kernel parks and
+ * retries), `-EIO` on a real failure.
  *
  * Opens per call for now; an fd cache keyed by blob id is a deliberate later
  * optimization (called out, not silently adopted) once the read hot path is
@@ -244,17 +261,18 @@ export function createRootfsBlobProvider(
     }
     let handle: number;
     try {
+      // A lazy leaf throws EAGAIN here (open kicks off materialization).
       handle = backend.open(path, O_RDONLY, 0);
-    } catch {
-      return -5; // EIO
+    } catch (error) {
+      return blobErrno(error);
     }
     if (handle < 0) {
       return handle;
     }
     try {
       return backend.read(handle, dest, Number(offset), dest.length);
-    } catch {
-      return -5; // EIO
+    } catch (error) {
+      return blobErrno(error);
     } finally {
       try {
         backend.close(handle);

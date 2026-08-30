@@ -275,6 +275,65 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       rmSync(temp, { recursive: true, force: true });
     }
   });
+
+  // Phase 5 Increment 3a: with the in-kernel rootfs overlay owning `/`, a read of
+  // a lazy (not-yet-materialized) base file must park and retry until the host
+  // materializes it — not fail with a spurious EIO. This exercises the whole
+  // chain: overlay-owned `/` -> blob_read -> provider -> backend.open throws
+  // EAGAIN (kicking off the async fetch) -> provider returns -EAGAIN -> kernel
+  // parks the read -> host default poll-retry re-drives it -> materialized bytes.
+  // Without the provider's EAGAIN propagation this fails (the first blob_read
+  // returns EIO and the read never retries), so it pins the fix.
+  it("materializes a lazy base file read through the kernel rootfs overlay", async () => {
+    const prevFlag = process.env.WASM_POSIX_ROOTFS;
+    process.env.WASM_POSIX_ROOTFS = "1"; // worker_thread inherits process.env
+    const probeBytes = new Uint8Array(readFileSync(mountProbe));
+    const payload = new TextEncoder().encode("lazy-node-data"); // 14 bytes
+    const dataArchive = zipSync({ "etc/lazy-runtime-data": payload });
+
+    // Serve the archive from a local file:// URL the Node lazy transport can read.
+    const temp = mkdtempSync(join(tmpdir(), "kandelo-lazy-rootfs-"));
+    const dataArchivePath = join(temp, "data.zip");
+    writeFileSync(dataArchivePath, dataArchive);
+
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    fs.registerLazyArchiveFromEntries(
+      pathToFileURL(dataArchivePath).href,
+      parseZipCentralDirectory(dataArchive),
+      "/",
+      undefined,
+      integrity(dataArchive),
+    );
+    const image = await fs.saveImage();
+
+    let stdout = "";
+    let stderr = "";
+    const host = new NodeKernelHost({
+      rootfsImage: image,
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+      },
+      onStderr: (_pid, bytes) => {
+        stderr += new TextDecoder().decode(bytes);
+      },
+    });
+
+    try {
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      expect(await host.spawn(arrayBuffer(probeBytes), [
+        "mount_probe_test",
+        "rootfs",
+        "/etc/lazy-runtime-data",
+      ])).toBe(0);
+      expect(stdout).toContain(`ROOTFS size=${payload.byteLength}`);
+      expect(stderr).toBe("");
+    } finally {
+      await host.destroy().catch(() => {});
+      rmSync(temp, { recursive: true, force: true });
+      if (prevFlag === undefined) delete process.env.WASM_POSIX_ROOTFS;
+      else process.env.WASM_POSIX_ROOTFS = prevFlag;
+    }
+  });
 });
 
 interface TarSpec {
