@@ -219,6 +219,7 @@ unsafe extern "C" {
         out_ptr: *mut u8,
         out_len: usize,
     ) -> i32;
+    fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
@@ -376,6 +377,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
@@ -399,6 +401,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -422,6 +425,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -1034,6 +1038,16 @@ impl HostIO for WasmHostIO {
                 out.len(),
             )
         }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {
@@ -10353,6 +10367,34 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
+    // Handle struct ucred { pid_t pid; uid_t uid; gid_t gid; } (SO_PEERCRED).
+    // 12 bytes, three little-endian u32s. libwayland's wl_client_create fails
+    // outright if this errors, so every accepted Wayland client depends on it.
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
+        let result = match syscalls::sys_getsockopt_peercred(proc, fd) {
+            Ok((pid, uid, gid)) => {
+                let mut tmp = [0u8; 12];
+                tmp[0..4].copy_from_slice(&pid.to_le_bytes());
+                tmp[4..8].copy_from_slice(&uid.to_le_bytes());
+                tmp[8..12].copy_from_slice(&gid.to_le_bytes());
+                match write_getsockopt_bytes(
+                    optval_ptr,
+                    optval_capacity,
+                    optlen_ptr,
+                    optlen_capacity,
+                    &tmp,
+                ) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+        return result;
+    }
+
     // Handle string-valued SO_BINDTODEVICE.
     if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
         let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
@@ -13863,7 +13905,15 @@ pub extern "C" fn kernel_drain_wakeup_events(
 /// observe the new sequence on the next syscall round-trip.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    crate::dri::vblank_tick()
+    let seq = crate::dri::vblank_tick();
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) =
+        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+            Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
+            Err(_) => (0u32, 0u32),
+        };
+    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
+    seq
 }
 
 /// Fan one translated DOM input event out to every open OFD bound to

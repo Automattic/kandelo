@@ -254,10 +254,10 @@ pub mod rt_sigqueueinfo {
 
 /// Native musl `struct kstat` used by stat/fstat/lstat/fstatat syscalls.
 ///
-/// This is deliberately separate from the kernel's 88-byte [`crate::WasmStat`]
-/// host-import record. The guest record includes the otherwise-zero rdev,
-/// block-size, and block-count fields, and every byte is initialized before
-/// the host copies it back to process memory.
+/// This is deliberately separate from the kernel's 96-byte [`crate::WasmStat`]
+/// host-import record. The guest record carries WasmStat's rdev and appends
+/// the otherwise-zero block-size and block-count fields; every byte is
+/// initialized before the host copies it back to process memory.
 pub mod stat {
     pub const SIZE: u32 = 112;
     pub const DEV_OFFSET: u32 = 0;

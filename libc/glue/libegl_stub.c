@@ -148,7 +148,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
                                   EGLNativeWindowType win,
                                   const EGLint *attrib_list) {
-    (void)config; (void)win; (void)attrib_list;
+    (void)config; (void)win;
     if (dpy != EGL_DPY_HANDLE || g_fd < 0) {
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
@@ -159,6 +159,18 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {0,0,0,0},
     };
+    /* Native window handles are opaque here (there is no real winsys), so
+     * an explicit EGL_WIDTH/EGL_HEIGHT attrib pair is the only way a
+     * caller can size the drawing buffer. The host resizes the backing
+     * canvas to a non-zero request — a KMS compositor passes its mode
+     * dims since it creates the surface before its first ADDFB (the
+     * point where the host could otherwise infer a size). */
+    if (attrib_list) {
+        for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
+            if (a[0] == EGL_WIDTH)  surf.width  = (uint32_t)a[1];
+            if (a[0] == EGL_HEIGHT) surf.height = (uint32_t)a[1];
+        }
+    }
     if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
@@ -305,6 +317,68 @@ EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
      * caller fails fast. */
     g_last_error = EGL_BAD_CONFIG;
     return EGL_NO_SURFACE;
+}
+
+/* ----- WPK dmabuf-import extension ------------------------------- */
+
+/* Kandelo's stand-in for EGL_EXT_image_dma_buf_import +
+ * glEGLImageTargetTexture2DOES: import a prime fd on the EGL session's
+ * renderD128 fd, then bind the bo as a texture in the current context.
+ * Consumers (wlcompositor's GPU compositing path) declare these extern —
+ * they resolve from libEGL.a at link time.
+ *
+ * The DRM ioctl numbers/structs below mirror Linux UAPI (and
+ * wasm_posix_shared::dri) — libEGL must not depend on libdrm headers. */
+
+#define WPK_DRM_IOCTL_GEM_CLOSE            0x40086409u
+#define WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE   0xc00c642eu
+#define WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE 0xc01064e1u
+
+struct wpk_drm_prime_handle { uint32_t handle; uint32_t flags; int32_t fd; };
+struct wpk_drm_gem_close    { uint32_t handle; uint32_t pad; };
+struct wpk_drm_bind_foreign_texture {
+    uint32_t bo_handle;
+    uint32_t gl_target;
+    uint32_t ctx_id;
+    uint32_t gl_texture_id;   /* out */
+};
+
+/* Import `prime_fd`'s bo as a GEM handle on the EGL device fd. Returns
+ * the handle, or 0 on failure. The caller owns the handle and releases
+ * it with wpkEglCloseBoHandle. */
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || prime_fd < 0) return 0;
+    struct wpk_drm_prime_handle req = { .handle = 0, .flags = 0, .fd = prime_fd };
+    if (ioctl(g_fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) return 0;
+    return req.handle;
+}
+
+/* (Re)bind an imported bo as a GL_TEXTURE_2D texture in the current
+ * context, uploading the bo's pixels host-side (no cmdbuf marshalling).
+ * Re-call after the producer commits to refresh the texture — the
+ * returned id is stable per bo. Returns 0 on failure (no GL backing on
+ * this host, unknown handle) — callers degrade to their CPU path. */
+unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
+                             unsigned gl_target) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || !g_context_made) return 0;
+    /* Flush queued GL ops first so host-side texture uploads and cmdbuf
+     * draws execute in program order. */
+    _wpk_gl_flush();
+    struct wpk_drm_bind_foreign_texture req = {
+        .bo_handle = bo_handle,
+        .gl_target = gl_target,
+        .ctx_id = 1,            /* single-context v1, matches GLIO_CREATE_CONTEXT */
+        .gl_texture_id = 0,
+    };
+    if (ioctl(g_fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;
+    return req.gl_texture_id;
+}
+
+/* Release a handle from wpkEglImportDmabufHandle. */
+void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
+    if (dpy != EGL_DPY_HANDLE || g_fd < 0) return;
+    struct wpk_drm_gem_close req = { .handle = bo_handle, .pad = 0 };
+    ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
 }
 
 /* eglGetProcAddress: SDL2's LOAD_FUNC_EGLEXT routes extension lookups

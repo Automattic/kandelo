@@ -1,6 +1,10 @@
 schema = 1
 policy = "source-only-v1"
-dependency_only = ["pcre2-source", "wordpress-sqlite-integration-source"]
+dependency_only = [
+  "pcre2-source",
+  "wayland-protocols",
+  "wordpress-sqlite-integration-source",
+]
 registry_non_roots = []
 
 [[dormant_products]]
@@ -136,11 +140,35 @@ name = "libdrm"
 class = "platform"
 
 [[packages]]
+name = "libevdev"
+class = "platform"
+
+[[packages]]
+name = "libffi"
+class = "platform"
+
+[[packages]]
 name = "libiconv"
 class = "platform"
 
 [[packages]]
+name = "libinput"
+class = "platform"
+
+[[packages]]
 name = "libpng"
+class = "platform"
+
+[[packages]]
+name = "libudev"
+class = "platform"
+
+[[packages]]
+name = "libwayland"
+class = "platform"
+
+[[packages]]
+name = "libxkbcommon"
 class = "platform"
 
 [[packages]]
@@ -194,6 +222,10 @@ class = "user-software"
 [[packages]]
 name = "msmtpd"
 class = "user-software"
+
+[[packages]]
+name = "mtdev"
+class = "platform"
 
 [[packages]]
 name = "nano"
