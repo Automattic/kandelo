@@ -55,6 +55,7 @@ const PTRS_PER_BLOCK: u32 = 1024;
 const INO_DIRECT: usize = 48;
 const INO_INDIRECT: usize = 88;
 const INO_DOUBLE_INDIRECT: usize = 92;
+const INLINE_SYMLINK_SIZE: u64 = 40;
 
 pub struct SffsStat {
     pub ino: u32,
@@ -222,6 +223,25 @@ impl<'a> Sffs<'a> {
         }
         Err(Errno::ENOENT)
     }
+
+    /// Reads a symlink's target. Short targets (`size <= 40`) are stored
+    /// inline in the inode's direct-pointer area (no data block allocated);
+    /// longer targets are stored as regular file data via `read_at`.
+    pub fn read_link(&self, ino: u32) -> Result<Vec<u8>, Errno> {
+        let st = self.stat_ino(ino)?;
+        if file_type(st.mode) != 0xa000 { return Err(Errno::EINVAL); }
+        let size = st.size;
+        if size <= INLINE_SYMLINK_SIZE {
+            let o = self.inode_offset(ino) + INO_DIRECT;
+            let end = o.checked_add(size as usize).ok_or(Errno::EIO)?;
+            if end > self.bytes.len() { return Err(Errno::EIO); }
+            return Ok(self.bytes[o..end].to_vec());
+        }
+        let mut buf = alloc::vec![0u8; size as usize];
+        let n = self.read_at(ino, 0, &mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
 }
 
 const DIRENT_HEADER: usize = 8;
@@ -316,5 +336,16 @@ mod tests {
         assert_eq!(fs.stat_ino(dir).unwrap().mode & 0xf000, 0x4000);
         assert!(fs.lookup(dir, b"nested.txt").is_ok());
         assert!(fs.lookup(ROOT_INO, b"nope").is_err());
+    }
+
+    #[test]
+    fn read_link_inline_target() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let link = fs.lookup(ROOT_INO, b"link").unwrap();
+        assert_eq!(fs.stat_ino(link).unwrap().mode & 0xf000, 0xa000);
+        assert_eq!(fs.read_link(link).unwrap(), b"hello.txt");
+        // non-symlink => EINVAL
+        let file = fs.lookup(ROOT_INO, b"hello.txt").unwrap();
+        assert!(fs.read_link(file).is_err());
     }
 }
