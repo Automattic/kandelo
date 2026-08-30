@@ -126,7 +126,6 @@ impl<'a> Sffs<'a> {
     /// Resolve a file block number to a physical block number.
     /// Direct blocks 0..9, single-indirect 10..1033, double-indirect 1034+.
     /// ptr 0 = sparse hole; returns 0. Otherwise returns the block number.
-    #[allow(dead_code)] // Consumed by read_at in the next task.
     fn block_map(&self, ino: u32, file_block: u32) -> Result<u32, Errno> {
         let o = self.inode_offset(ino);
         if file_block < DIRECT_BLOCKS {
@@ -145,6 +144,33 @@ impl<'a> Sffs<'a> {
             return self.block_ptr_in(l1, fb % PTRS_PER_BLOCK);
         }
         Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
+    }
+
+    /// Positioned read: fills `dst` from file data starting at `offset`,
+    /// clamped to the file size. Sparse holes (physical block 0) read as
+    /// zeros. Returns the number of bytes read (0 at or after EOF).
+    pub fn read_at(&self, ino: u32, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        let size = self.stat_ino(ino)?.size;
+        if offset >= size { return Ok(0); }
+        let mut remaining = core::cmp::min(dst.len() as u64, size - offset) as usize;
+        let mut pos = offset;
+        let mut out = 0usize;
+        while remaining > 0 {
+            let file_block = (pos / BLOCK_SIZE as u64) as u32;
+            let block_off = (pos % BLOCK_SIZE as u64) as usize;
+            let chunk = core::cmp::min(BLOCK_SIZE - block_off, remaining);
+            let phys = self.block_map(ino, file_block)?;
+            if phys == 0 {
+                for b in &mut dst[out..out + chunk] { *b = 0; } // sparse hole
+            } else {
+                let src = phys as usize * BLOCK_SIZE + block_off;
+                let end = src.checked_add(chunk).ok_or(Errno::EIO)?;
+                if end > self.bytes.len() { return Err(Errno::EIO); }
+                dst[out..out + chunk].copy_from_slice(&self.bytes[src..end]);
+            }
+            out += chunk; pos += chunk as u64; remaining -= chunk;
+        }
+        Ok(out)
     }
 }
 
@@ -198,5 +224,17 @@ mod tests {
         assert_eq!(fs.block_map(ROOT_INO, 5).unwrap(), 0, "unallocated direct block is a hole");
         // A file block beyond the double-indirect range is EINVAL, not a hole.
         assert!(fs.block_map(ROOT_INO, 2_000_000).is_err(), "beyond max file blocks -> EINVAL");
+    }
+
+    #[test]
+    fn read_at_reads_root_dir_bytes_nonzero() {
+        // Directory data is readable via read_at too; assert we get bytes.
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let size = fs.stat_ino(ROOT_INO).unwrap().size;
+        let mut buf = [0u8; 64];
+        let n = fs.read_at(ROOT_INO, 0, &mut buf).unwrap();
+        assert!(n > 0 && (n as u64) <= size);
+        // beyond EOF returns 0
+        assert_eq!(fs.read_at(ROOT_INO, size + 10, &mut buf).unwrap(), 0);
     }
 }
