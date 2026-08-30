@@ -26,10 +26,14 @@
 static int connect_kwlctl(void) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return -1; }
+    /* KWLCTL_SOCKET points the CLI at another control socket — the smoke
+     * tests use it against the compositor's Hyprland-IPC pair. */
+    const char *path = getenv("KWLCTL_SOCKET");
+    if (!path) path = KWLCTL_SOCKET_PATH;
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, KWLCTL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
     /* The compositor may still be coming up; retry briefly like a wl client. */
     for (int i = 0; i < 200; i++) {
         if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) return fd;

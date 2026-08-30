@@ -161,4 +161,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "omarchy",
+    title: "Omarchy desktop",
+    summary: "The Omarchy desktop on Kandelo: the tiling compositor with the shell Omarchy is made of. Unmodified Waybar — the real GTK3 status bar, on wlr-layer-shell, its hyprland modules reading the compositor's Hyprland IPC sockets — reserves the top strip (workspaces, focused window, clock) and the windows tile beneath it. CTRL+Space opens klauncher, a keyboard-exclusive overlay launcher reading /usr/share/kandelo/apps; type to filter and Enter to launch. CTRL+SHIFT+Space cycles six themes (Tokyo Night, Catppuccin, Gruvbox, Nord, Everforest, Rosé Pine), each with its own Omarchy background image, recolouring the borders, gaps, wallpaper, bar and launcher live from one palette file. CTRL+Return spawns a terminal, CTRL+K a clock, CTRL+P a paint canvas, CTRL+W closes, CTRL+1..9 switch workspaces — every bind mirrored on SUPER for real Hyprland.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#7aa2f7",
+    glyph: "O",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];

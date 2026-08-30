@@ -108,7 +108,11 @@ int main(int argc, char **argv) {
     pid_t pid = forkpty(&master, NULL, NULL, &ws);
     if (pid < 0) { perror("forkpty"); return 1; }
     if (pid == 0) {
-        /* Child: exec argv[ai..], defaulting to an interactive dash. */
+        /* Child: exec argv[ai..], defaulting to an interactive dash. The
+         * inherited TERM describes the launcher's terminal, not this one:
+         * curses apps (vim, nethack, nano) must see the type this terminal
+         * actually implements. */
+        setenv("TERM", "vt100", 1);
         if (ai < argc) {
             execvp(argv[ai], &argv[ai]);
         } else {
@@ -177,11 +181,18 @@ int main(int argc, char **argv) {
                     };
                     ioctl(master, TIOCSWINSZ, &nws);
                     if (pid > 0) kill(pid, SIGWINCH);
-                    vt100_render(term, s, font, 0, 0);
-                    kwl_window_commit(win);
-                    printf("WLTERM_RESIZE cols=%d rows=%d\n", cols, rows);
-                    fflush(stdout);
                 }
+                /* Commit even when the grid kept its size: the resize
+                 * rebuilt both buffers, so the compositor holds no buffer
+                 * for this surface until the next commit — a tile that
+                 * shifts by less than a cell (a theme's gap change) would
+                 * otherwise leave the window invisible until the shell
+                 * prints again. */
+                vt100_mark_dirty_all(term);
+                vt100_render(term, s, font, 0, 0);
+                kwl_window_commit(win);
+                printf("WLTERM_RESIZE cols=%d rows=%d\n", cols, rows);
+                fflush(stdout);
             }
         }
 

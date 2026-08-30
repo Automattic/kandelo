@@ -358,8 +358,12 @@ host/test/wlcompositor-decoration-smoke.test.ts	prepared-product
 host/test/wlcompositor-dmabuf-smoke.test.ts	prepared-product
 host/test/wlcompositor-keybind-smoke.test.ts	prepared-product
 host/test/wlcompositor-kwlctl-smoke.test.ts	prepared-product
+host/test/wlcompositor-layer-shell-smoke.test.ts	prepared-product
+host/test/wlcompositor-output-scale-smoke.test.ts	prepared-product
+host/test/wlcompositor-protocols-smoke.test.ts	prepared-product
 host/test/wlcompositor-resize-smoke.test.ts	prepared-product
 host/test/wlcompositor-smoke.test.ts	prepared-product
+host/test/wlcompositor-theme-smoke.test.ts	prepared-product
 host/test/wlcompositor-tiling-smoke.test.ts	prepared-product
 host/test/wldesktop-liveness-smoke.test.ts	prepared-product
 host/test/wldesktop-smoke.test.ts	prepared-product

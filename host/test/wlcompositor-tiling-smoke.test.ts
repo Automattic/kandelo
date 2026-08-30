@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
 const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const hasBinaries = !!compositorBin && !!clientBin;
 

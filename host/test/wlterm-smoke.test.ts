@@ -31,8 +31,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
-const wltermBin = tryResolveBinary("programs/wlterm.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const wltermBin = tryResolveBinary("programs/wldesktop/wlterm.wasm");
 const dashBin = tryResolveBinary("programs/dash.wasm");
 const hasBinaries = !!compositorBin && !!wltermBin && !!dashBin && existsSync(dashBin!);
 

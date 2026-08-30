@@ -63,6 +63,26 @@ describe("wpkdraw — CPU raster into a wrapped heap buffer", () => {
         expect(parseInt(disc![1], 16) >>> 0).toBe(0xff0000ff);
         expect(Number(disc![2])).toBeGreaterThan(0);
 
+        // Scale 2: a logical coordinate lands at twice the device one, so
+        // the logical rect (10,10)-(30,30) fills device (20,20)-(60,60)
+        // exactly — lit at its far corner, black one pixel past it. An
+        // off-by-one in the multiply or the clip shows up here.
+        const scaled = out.value.match(
+          /SCALED_RECT in=0x([0-9a-f]{8}) edge=0x([0-9a-f]{8}) out=0x([0-9a-f]{8})/);
+        expect(scaled, out.value).not.toBeNull();
+        expect(parseInt(scaled![1], 16) >>> 0).toBe(0xffff0000);
+        expect(parseInt(scaled![2], 16) >>> 0).toBe(0xffff0000);
+        expect(parseInt(scaled![3], 16) >>> 0).toBe(0xff000000);
+
+        // Metrics stay LOGICAL, so an app's layout is unchanged by the
+        // scale — the glyphs are rasterized bigger, not the boxes.
+        const scaledWidth = out.value.match(/SCALED_TEXT_WIDTH s=OK w=(\d+)/);
+        expect(scaledWidth, out.value).not.toBeNull();
+        expect(Number(scaledWidth![1])).toBe(Number(width![1]));
+        const scaledAscent = out.value.match(/SCALED_ASCENT px=(\d+)/);
+        expect(scaledAscent, out.value).not.toBeNull();
+        expect(Number(scaledAscent![1])).toBeGreaterThan(0);
+
         expect(out.value).toContain("WPKDRAW_SMOKE_OK");
       } finally {
         await host.destroy().catch(() => {});

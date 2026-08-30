@@ -758,6 +758,12 @@ export interface KernelCallbacks {
    */
   getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
   /**
+   * Return any one registered KMS scanout crtc id, or undefined if
+   * none. Used by callers that just need a default canvas binding
+   * without iterating the full registry.
+   */
+  firstKmsCanvasCrtc?: () => number | undefined;
+  /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
    * for canvases now painted directly by WebGL2. Idempotent.
@@ -2148,7 +2154,18 @@ export class WasmPosixKernel {
             // is about to call eglCreateContext would silently no-op
             // every shader compile/link/draw because `b.canvas` stays
             // null and `b.gl` is never built.
-            const crtc = this.kms.masterCrtcForPid(pid);
+            // Fall back to `firstKmsCanvasCrtc` when no FB is bound yet:
+            // SDL2's KMSDRM backend and wlcompositor's boot-time GLES
+            // probe call `eglCreateContext` BEFORE their first
+            // `drmModeAddFB`/`drmModeSetCrtc`, so `masterCrtcForPid`
+            // returns null at this point. The embedder has already
+            // registered exactly one scanout canvas; we attach to it
+            // unconditionally as long as this pid actually holds DRM
+            // master (no canvas hand-off to non-master programs).
+            let crtc = this.kms.masterCrtcForPid(pid);
+            if (crtc == null && this.kms.isMasterPid(pid)) {
+              crtc = this.callbacks.firstKmsCanvasCrtc?.() ?? null;
+            }
             if (crtc != null) {
               const canvas = this.callbacks.getKmsCanvas?.(crtc);
               if (canvas) {
@@ -2185,6 +2202,16 @@ export class WasmPosixKernel {
             ctx.getExtension("EXT_color_buffer_float");
             ctx.getExtension("OES_texture_float_linear");
             ctx.getExtension("EXT_float_blend");
+            // Seed the shadow viewport with the actual WebGL2 default
+            // (the canvas drawing-buffer dimensions). Without this seed,
+            // `defaultShadow()`'s `[0,0,0,0]` propagates through
+            // `GlMuxer.switchTo` on first frame and clobbers WebGL2's
+            // implicit default viewport — programs that never call
+            // `glViewport` (SDL2's KMSDRM/OpenGLES backend leaves it
+            // implicit; modeset.c sets it explicitly so the bug stays
+            // hidden there) then draw into a 0×0 region and produce a
+            // blank canvas even though every other op succeeds.
+            b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
           }
           b.gl = ctx;
           // Only hand the CRTC canvas over (pump presenter stands down,
@@ -2349,7 +2376,15 @@ export class WasmPosixKernel {
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
         },
-        host_gl_present: (pid: number): void => {
+        host_gl_present: (pid: number): number => {
+          // A lost WebGL context silently no-ops every GL call, so a
+          // present into it would report success while the canvas stays
+          // frozen. EIO here fails the guest's `eglSwapBuffers`, which is
+          // its cue to degrade to CPU compositing and hand the canvas
+          // back to the vblank pump (`eglTerminate` →
+          // `markKmsCanvasGlReleased`).
+          const b = this.gl.get(pid);
+          if (b?.gl?.isContextLost()) return -5; // EIO
           // A GPU-tier producer renders into an offscreen bo FBO on the
           // shared context, so `eglSwapBuffers` must fence the queued GL
           // work: `flush()` guarantees the producer's draws are submitted
@@ -2357,8 +2392,8 @@ export class WasmPosixKernel {
           // through the one shared context then gives render-before-sample
           // for free — no explicit sync object in v1). Canvas-backed
           // sessions present via RAF and need no fence here.
-          const b = this.gl.get(pid);
           if (b?.renderTargetFbo) b.gl?.flush();
+          return 0;
         },
         host_gl_query: (
           pid: number, op: number,

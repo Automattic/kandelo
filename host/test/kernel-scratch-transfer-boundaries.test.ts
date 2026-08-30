@@ -2718,10 +2718,12 @@ describe("kernel scratch transfer capacity regressions", () => {
       invokeIovecMethod(harness, method, [7, msgPtr, 0, 0, 0, 0]);
 
       expect(harness.handleChannel).not.toHaveBeenCalled();
+      // Linux's __copy_msghdr rejects the array with EMSGSIZE; only the
+      // readv/writev family keeps POSIX's EINVAL.
       expect(harness.completeChannelRaw).toHaveBeenCalledWith(
         harness.channel,
         -1,
-        EINVAL,
+        EMSGSIZE,
       );
       expectScratchTailUntouched(harness);
     },

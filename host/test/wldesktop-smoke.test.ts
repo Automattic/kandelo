@@ -45,9 +45,9 @@ import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const compositorBin = tryResolveBinary("programs/wlcompositor.wasm");
-const clockBin = tryResolveBinary("programs/wlclock.wasm");
-const paintBin = tryResolveBinary("programs/wlpaint.wasm");
+const compositorBin = tryResolveBinary("programs/wldesktop/wlcompositor.wasm");
+const clockBin = tryResolveBinary("programs/wldesktop/wlclock.wasm");
+const paintBin = tryResolveBinary("programs/wldesktop/wlpaint.wasm");
 const hasBinaries = !!compositorBin && !!clockBin && !!paintBin;
 
 const CANVAS_W = 1920;

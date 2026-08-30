@@ -155,9 +155,21 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
     wpk_rect(s, 0, TOOLBAR_H, s->w, area_h, CANVAS_BG);
     int cw = s->w < canvas_w ? s->w : canvas_w;
     int ch = area_h < canvas_h ? area_h : canvas_h;
-    for (int y = 0; y < ch; y++)
-        memcpy(s->pixels + (size_t)(y + TOOLBAR_H) * (s->stride / 4),
-               canvas + (size_t)y * canvas_w, (size_t)cw * 4);
+    /* The canvas holds one entry per LOGICAL pixel, while s->pixels is the
+     * device-resolution buffer and s->stride counts device rows. Expand each
+     * entry into a scale x scale block: using a logical row index as a device
+     * row would start the blit at TOOLBAR_H instead of TOOLBAR_H * scale and
+     * paint canvas over the bottom of the toolbar. */
+    int row = s->stride / 4;
+    for (int y = 0; y < ch; y++) {
+        const uint32_t *src = canvas + (size_t)y * canvas_w;
+        for (int sy = 0; sy < s->scale; sy++) {
+            uint32_t *dst =
+                s->pixels + (size_t)((TOOLBAR_H + y) * s->scale + sy) * row;
+            for (int x = 0; x < cw; x++)
+                for (int sx = 0; sx < s->scale; sx++) *dst++ = src[x];
+        }
+    }
 }
 
 int main(void) {

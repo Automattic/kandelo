@@ -408,6 +408,14 @@ WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
 return pointer_width == 4u ? 16u :
 pointer_width == 8u ? 16u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc01064e0u:
+return pointer_width == 4u ? 16u :
+pointer_width == 8u ? 16u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc01064e1u:
+return pointer_width == 4u ? 16u :
+pointer_width == 8u ? 16u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0xc01464a6u:
 return pointer_width == 4u ? 20u :
 pointer_width == 8u ? 20u :

@@ -10,8 +10,9 @@
  *   3. allocate a renderD128 dumb-bo, paint it solid red, and hand its
  *      prime-fd to wl_shm as the pool — the shared-buffer path that lets
  *      the compositor read the client's pixels (plan §8.1 gbm_bo_import).
- *   4. attach + commit + request a frame callback; when the callback
- *      fires, the compositor has flipped our pixels onto card0.
+ *   4. attach + commit + request a frame callback and a wp_presentation
+ *      feedback; when they fire, the compositor has flipped our pixels
+ *      onto card0 and reported the flip's CLOCK_MONOTONIC timestamp.
  *   5. compile the wl_keyboard keymap fd (proving the compositor's
  *      libxkbcommon keymap path) and receive a host-injected key + a
  *      pointer button, forwarded by the compositor from libinput.
@@ -34,6 +35,12 @@
 #include <wayland-client-protocol.h>
 #include "xdg-shell-client-protocol.h"
 #include "xdg-decoration-v1-client-protocol.h"
+#include "presentation-time-client-protocol.h"
+#include "xdg-output-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+
+#include <xkbcommon/xkbcommon.h>
 
 #include <gbm.h>
 
@@ -49,6 +56,10 @@ struct client {
     struct wl_seat *seat;
     struct wl_output *output;
     struct zxdg_decoration_manager_v1 *decor_mgr;
+    struct wp_presentation *presentation;
+    struct zxdg_output_manager_v1 *xdg_output_mgr;
+    struct wp_viewporter *viewporter;
+    struct wp_fractional_scale_manager_v1 *fractional_scale_mgr;
 
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -56,12 +67,79 @@ struct client {
 
     int configured;     /* got + acked the initial xdg configure */
     int frame_done;     /* compositor flipped our buffer */
+    int presented;      /* wp_presentation_feedback resolved (either event) */
     int got_keymap;     /* wl_keyboard.keymap arrived + parsed */
     int got_key;        /* wl_keyboard.key arrived */
     uint32_t key_code, key_state;
     int got_button;     /* wl_pointer.button arrived */
     uint32_t btn_code, btn_state;
     int closed;         /* compositor sent xdg_toplevel.close (killactive) */
+    int32_t output_scale;   /* wl_output.scale */
+    int32_t entered_scale;  /* the scale of the output wl_surface.enter named,
+                             * 0 until the enter arrives */
+};
+
+/* ---- wp_presentation --------------------------------------------------- */
+
+static void presentation_clock_id(void *data, struct wp_presentation *p,
+                                  uint32_t clk_id) {
+    printf("PRESENTATION_CLOCK id=%u\n", clk_id);
+    fflush(stdout);
+}
+static const struct wp_presentation_listener presentation_listener = {
+    .clock_id = presentation_clock_id,
+};
+
+/* ---- wl_output v4 ------------------------------------------------------ */
+
+static void output_geometry(void *data, struct wl_output *o, int32_t x,
+                            int32_t y, int32_t phys_w, int32_t phys_h,
+                            int32_t subpixel, const char *make,
+                            const char *model, int32_t transform) {}
+static void output_mode(void *data, struct wl_output *o, uint32_t flags,
+                        int32_t w, int32_t h, int32_t refresh) {
+    printf("OUTPUT_MODE w=%d h=%d\n", w, h);
+    fflush(stdout);
+}
+static void output_done(void *data, struct wl_output *o) {}
+static void output_scale(void *data, struct wl_output *o, int32_t factor) {
+    struct client *c = data;
+    c->output_scale = factor;
+    printf("OUTPUT_SCALE factor=%d\n", factor);
+    fflush(stdout);
+}
+static void output_name(void *data, struct wl_output *o, const char *name) {
+    printf("OUTPUT_NAME %s\n", name);
+    fflush(stdout);
+}
+static void output_description(void *data, struct wl_output *o,
+                               const char *description) {}
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode,
+    .done = output_done,
+    .scale = output_scale,
+    .name = output_name,
+    .description = output_description,
+};
+
+/* ---- wl_surface -------------------------------------------------------- */
+
+/* The output a surface sits on, and with it the scale to render at. A client
+ * that reads its scale here (mako does) must have the event before it draws
+ * its first frame, so the compositor sends it when the surface takes a role. */
+static void surface_enter(void *data, struct wl_surface *s,
+                          struct wl_output *o) {
+    struct client *c = data;
+    c->entered_scale = c->output_scale;
+    printf("SURFACE_ENTER scale=%d\n", c->entered_scale);
+    fflush(stdout);
+}
+static void surface_leave(void *data, struct wl_surface *s,
+                          struct wl_output *o) {}
+static const struct wl_surface_listener surface_listener = {
+    .enter = surface_enter,
+    .leave = surface_leave,
 };
 
 /* ---- registry ---------------------------------------------------------- */
@@ -78,12 +156,97 @@ static void registry_global(void *data, struct wl_registry *reg, uint32_t name,
         c->wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
     else if (strcmp(iface, "wl_seat") == 0)
         c->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
-    else if (strcmp(iface, "wl_output") == 0)
-        c->output = wl_registry_bind(reg, name, &wl_output_interface, 2);
+    else if (strcmp(iface, "wl_output") == 0) {
+        c->output = wl_registry_bind(reg, name, &wl_output_interface,
+                                     version < 4 ? version : 4);
+        wl_output_add_listener(c->output, &output_listener, c);
+    }
     else if (strcmp(iface, "zxdg_decoration_manager_v1") == 0)
         c->decor_mgr = wl_registry_bind(
             reg, name, &zxdg_decoration_manager_v1_interface, 1);
+    else if (strcmp(iface, "wp_presentation") == 0) {
+        c->presentation =
+            wl_registry_bind(reg, name, &wp_presentation_interface, 1);
+        /* clock_id arrives on the bind roundtrip — listen from the start. */
+        wp_presentation_add_listener(c->presentation, &presentation_listener,
+                                     c);
+    } else if (strcmp(iface, "zxdg_output_manager_v1") == 0)
+        c->xdg_output_mgr = wl_registry_bind(
+            reg, name, &zxdg_output_manager_v1_interface,
+            version < 3 ? version : 3);
+    else if (strcmp(iface, "wp_viewporter") == 0)
+        c->viewporter =
+            wl_registry_bind(reg, name, &wp_viewporter_interface, 1);
+    else if (strcmp(iface, "wp_fractional_scale_manager_v1") == 0)
+        c->fractional_scale_mgr = wl_registry_bind(
+            reg, name, &wp_fractional_scale_manager_v1_interface, 1);
 }
+
+/* ---- xdg-output / fractional-scale ------------------------------------- */
+
+static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xo,
+                                        int32_t x, int32_t y) {
+    printf("XDG_OUTPUT_POS x=%d y=%d\n", x, y);
+    fflush(stdout);
+}
+static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xo,
+                                    int32_t w, int32_t h) {
+    printf("XDG_OUTPUT_SIZE w=%d h=%d\n", w, h);
+    fflush(stdout);
+}
+static void xdg_output_done(void *data, struct zxdg_output_v1 *xo) {}
+static void xdg_output_name(void *data, struct zxdg_output_v1 *xo,
+                            const char *name) {
+    printf("XDG_OUTPUT_NAME %s\n", name);
+    fflush(stdout);
+}
+static void xdg_output_description(void *data, struct zxdg_output_v1 *xo,
+                                   const char *description) {}
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+    .logical_position = xdg_output_logical_position,
+    .logical_size = xdg_output_logical_size,
+    .done = xdg_output_done,
+    .name = xdg_output_name,
+    .description = xdg_output_description,
+};
+
+static void fractional_scale_preferred(void *data,
+                                       struct wp_fractional_scale_v1 *fs,
+                                       uint32_t scale) {
+    printf("FRACTIONAL_SCALE scale=%u\n", scale);
+    fflush(stdout);
+}
+static const struct wp_fractional_scale_v1_listener fractional_scale_listener = {
+    .preferred_scale = fractional_scale_preferred,
+};
+
+static void feedback_sync_output(void *data,
+                                 struct wp_presentation_feedback *fb,
+                                 struct wl_output *output) {}
+static void feedback_presented(void *data, struct wp_presentation_feedback *fb,
+                               uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec,
+                               uint32_t refresh, uint32_t seq_hi,
+                               uint32_t seq_lo, uint32_t flags) {
+    struct client *c = data;
+    c->presented = 1;
+    printf("PRESENTED sec=%u nsec=%u refresh=%u seq=%u flags=0x%x\n",
+           sec_lo, nsec, refresh, seq_lo, flags);
+    fflush(stdout);
+    wp_presentation_feedback_destroy(fb);
+}
+static void feedback_discarded(void *data,
+                               struct wp_presentation_feedback *fb) {
+    struct client *c = data;
+    c->presented = 1;
+    printf("PRESENTATION_DISCARDED\n");
+    fflush(stdout);
+    wp_presentation_feedback_destroy(fb);
+}
+static const struct wp_presentation_feedback_listener feedback_listener = {
+    .sync_output = feedback_sync_output,
+    .presented = feedback_presented,
+    .discarded = feedback_discarded,
+};
 
 /* ---- xdg-decoration ---------------------------------------------------- */
 
@@ -151,12 +314,36 @@ static void kbd_keymap(void *data, struct wl_keyboard *k, uint32_t format,
     struct client *c = data;
     /* Read-only map of the keymap the compositor built via libxkbcommon.
      * The bytes are the file's contents (no cross-process sharing needed);
-     * we assert it is a real xkb keymap. */
+     * we compile it exactly as a real client would and probe keys a
+     * terminal needs beyond the letters (F1, Delete). */
     char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (map != MAP_FAILED) {
         if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 &&
-            strncmp(map, "xkb_keymap", 10) == 0)
-            c->got_keymap = 1;
+            strncmp(map, "xkb_keymap", 10) == 0) {
+            struct xkb_context *ctx =
+                xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);
+            /* The compositor's map is NUL-terminated (size = strlen + 1),
+             * which is what from_string expects. */
+            struct xkb_keymap *km = ctx
+                ? xkb_keymap_new_from_string(ctx, map,
+                                             XKB_KEYMAP_FORMAT_TEXT_V1,
+                                             XKB_KEYMAP_COMPILE_NO_FLAGS)
+                : NULL;
+            if (km) {
+                /* evdev KEY_F1 (59) + 8, KEY_DELETE (111) + 8. */
+                const xkb_keysym_t *syms;
+                int f1 = xkb_keymap_key_get_syms_by_level(km, 67, 0, 0,
+                                                          &syms) == 1 &&
+                         syms[0] == XKB_KEY_F1;
+                int del = xkb_keymap_key_get_syms_by_level(km, 119, 0, 0,
+                                                           &syms) == 1 &&
+                          syms[0] == XKB_KEY_Delete;
+                c->got_keymap = f1 && del;
+                printf("KEYMAP_SYMS f1=%d delete=%d\n", f1, del);
+                xkb_keymap_unref(km);
+            }
+            if (ctx) xkb_context_unref(ctx);
+        }
         munmap(map, size);
     }
     close(fd);
@@ -310,11 +497,14 @@ int main(void) {
 
     /* Toplevel. */
     c.surface = wl_compositor_create_surface(c.compositor);
+    wl_surface_add_listener(c.surface, &surface_listener, &c);
     c.xdg_surface = xdg_wm_base_get_xdg_surface(c.wm_base, c.surface);
     xdg_surface_add_listener(c.xdg_surface, &xdg_surface_listener, &c);
     c.toplevel = xdg_surface_get_toplevel(c.xdg_surface);
     xdg_toplevel_add_listener(c.toplevel, &toplevel_listener, &c);
     xdg_toplevel_set_title(c.toplevel, "wlclient-test");
+    /* The app_id is what names this client in the compositor's markers. */
+    xdg_toplevel_set_app_id(c.toplevel, "wlclient-test");
 
     /* Optional: request server-side decorations (PR14e). The compositor forces
      * SERVER_SIDE for tiling, which the client honors by drawing no titlebar. */
@@ -325,6 +515,30 @@ int main(void) {
         zxdg_toplevel_decoration_v1_add_listener(deco, &decor_listener, &c);
         zxdg_toplevel_decoration_v1_set_mode(
             deco, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+
+    /* Optional (PR24): exercise the logical-output + crop/scale globals. The
+     * xdg_output burst and the preferred scale arrive on the roundtrip; the
+     * viewport doubles the mapped size, which the compositor's VIEWPORT
+     * marker reports at commit. */
+    if (getenv("WLC_PROTOS")) {
+        if (!c.xdg_output_mgr || !c.viewporter || !c.fractional_scale_mgr) {
+            fprintf(stderr, "missing protocol globals: xdg_out=%p vp=%p frac=%p\n",
+                    (void *)c.xdg_output_mgr, (void *)c.viewporter,
+                    (void *)c.fractional_scale_mgr);
+            return 1;
+        }
+        struct zxdg_output_v1 *xo =
+            zxdg_output_manager_v1_get_xdg_output(c.xdg_output_mgr, c.output);
+        zxdg_output_v1_add_listener(xo, &xdg_output_listener, &c);
+        struct wp_fractional_scale_v1 *fs =
+            wp_fractional_scale_manager_v1_get_fractional_scale(
+                c.fractional_scale_mgr, c.surface);
+        wp_fractional_scale_v1_add_listener(fs, &fractional_scale_listener, &c);
+        struct wp_viewport *vp =
+            wp_viewporter_get_viewport(c.viewporter, c.surface);
+        wp_viewport_set_destination(vp, WIN_W * 2, WIN_H * 2);
+        wl_display_roundtrip(display);
     }
 
     wl_surface_commit(c.surface);
@@ -339,13 +553,38 @@ int main(void) {
     if (!buffer) return 1;
 
     wl_surface_attach(c.surface, buffer, 0, 0);
-    wl_surface_damage(c.surface, 0, 0, WIN_W, WIN_H);
+    /* Optional: declare the buffer as scale-N pixels, so the same WIN_W x WIN_H
+     * bytes cover a window N times smaller. WIN_W and WIN_H are even, which
+     * scale 2 requires. */
+    int buf_scale = 1;
+    const char *want_buf_scale = getenv("WLC_BUFSCALE");
+    /* Or take it from wl_surface.enter, the way mako does. The enter has to
+     * have arrived by now: this is the first frame, and one frame is all a
+     * toast lives for — render it at the wrong scale and it is soft for good. */
+    if (getenv("WLC_ENTERSCALE")) {
+        if (!c.entered_scale) {
+            fprintf(stderr, "no wl_surface.enter before the first frame\n");
+            return 1;
+        }
+        buf_scale = c.entered_scale;
+        wl_surface_set_buffer_scale(c.surface, buf_scale);
+    } else if (want_buf_scale) {
+        buf_scale = atoi(want_buf_scale);
+        wl_surface_set_buffer_scale(c.surface, buf_scale);
+    }
+    wl_surface_damage(c.surface, 0, 0, WIN_W / buf_scale, WIN_H / buf_scale);
     struct wl_callback *frame = wl_surface_frame(c.surface);
     wl_callback_add_listener(frame, &frame_listener, &c);
+    if (c.presentation) {
+        struct wp_presentation_feedback *fb =
+            wp_presentation_feedback(c.presentation, c.surface);
+        wp_presentation_feedback_add_listener(fb, &feedback_listener, &c);
+    }
     wl_surface_commit(c.surface);
 
-    /* The frame callback fires once the compositor has flipped our pixels. */
-    while (!c.frame_done)
+    /* The frame callback fires once the compositor has flipped our pixels;
+     * the presentation feedback resolves on the same flip. */
+    while (!c.frame_done || (c.presentation && !c.presented))
         if (wl_display_dispatch(display) < 0) { fprintf(stderr, "dispatch\n"); return 1; }
     printf("CLIENT_MAPPED\n");
     printf("CLIENT_READY\n");   /* signal to the test to inject input */

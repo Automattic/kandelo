@@ -29,6 +29,34 @@ function makeFakeCanvas(): OffscreenCanvas {
   } as unknown as OffscreenCanvas;
 }
 
+/** A canvas that records its listeners so a test can fire the WebGL
+ *  context-loss pair. `fire` reports whether the handler cancelled the
+ *  event — only a cancelled loss opts into restoration. */
+function makeListeningCanvas(): {
+  canvas: OffscreenCanvas;
+  fire: (type: string) => boolean;
+} {
+  const listeners = new Map<string, (event: Event) => void>();
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => null,
+    addEventListener: (type: string, fn: (event: Event) => void) => {
+      listeners.set(type, fn);
+    },
+  } as unknown as OffscreenCanvas;
+  return {
+    canvas,
+    fire: (type: string) => {
+      let cancelled = false;
+      listeners.get(type)?.({
+        preventDefault: () => { cancelled = true; },
+      } as Event);
+      return cancelled;
+    },
+  };
+}
+
 type TestKernel = ReturnType<typeof createCentralizedKernelWorkerTestDouble>;
 
 function makeKernel(
@@ -165,6 +193,49 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(Atomics.load(view, 0)).toBe(0);
     expect(Atomics.load(view, 2)).toBe(0);
     expect(Atomics.load(view, 3)).toBe(0);
+  });
+
+  it("tickVblank wakes blocked retries only on a tick that latched a flip", () => {
+    const kernel = makeKernel();
+    let flips = 0;
+    (kernel.kms as unknown as { flipCount: () => number }).flipCount = () => flips;
+    const wake = vi.fn();
+    kernel.testAuthority.configureScratchBoundaryHooksForTest({
+      scheduleWakeBlockedRetries: wake,
+    });
+    kernel.attachKmsStats(0, new SharedArrayBuffer(5 * 4));
+
+    vi.advanceTimersByTime(17);
+    expect(wake).not.toHaveBeenCalled();
+
+    flips = 1;
+    vi.advanceTimersByTime(17);
+    expect(wake).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(17 * 4);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("a webgl2-scanout attach stands the presenter down on loss and rebuilds on restore", () => {
+    const kernel = makeKernel();
+    const statsSab = new SharedArrayBuffer(8 * 4);
+    const view = new Int32Array(statsSab);
+    const { canvas, fire } = makeListeningCanvas();
+    kernel.attachKmsCanvas(1, canvas, statsSab, { mode: "webgl2-scanout" });
+
+    const presenters = (kernel as unknown as {
+      kmsGlPresenters: Map<number, unknown>;
+    }).kmsGlPresenters;
+    presenters.set(1, { gl: {}, tex: {} });
+    Atomics.store(view, 7, 1);
+
+    expect(fire("webglcontextlost"), "an uncancelled loss is never restored")
+      .toBe(true);
+    expect(presenters.get(1)).toBeNull();
+    expect(Atomics.load(view, 7)).toBe(0);
+
+    fire("webglcontextrestored");
+    expect(presenters.has(1)).toBe(false);
   });
 
   it("attachKmsStats leaves slots 5/6 untouched when the SAB is too small", () => {
