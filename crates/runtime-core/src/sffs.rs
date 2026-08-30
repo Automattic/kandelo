@@ -77,7 +77,10 @@ pub fn file_type(mode: u32) -> u32 {
 pub struct Sffs<'a> {
     bytes: &'a [u8],
     pub(crate) inode_table_start: u32,
+    total_inodes: u32,
 }
+
+const SB_TOTAL_INODES: usize = 16;
 
 impl<'a> Sffs<'a> {
     pub fn mount(bytes: &'a [u8]) -> Result<Sffs<'a>, Errno> {
@@ -85,16 +88,31 @@ impl<'a> Sffs<'a> {
         if r32(bytes, 4) != Some(SFFS_VERSION) { return Err(Errno::EINVAL); }
         if r32(bytes, 8) != Some(BLOCK_SIZE as u32) { return Err(Errno::EINVAL); }
         let inode_table_start = r32(bytes, SB_INODE_TABLE_START).ok_or(Errno::EINVAL)?;
-        Ok(Sffs { bytes, inode_table_start })
+        let total_inodes = r32(bytes, SB_TOTAL_INODES).ok_or(Errno::EINVAL)?;
+        // The inode table spans `total_inodes.div_ceil(32)` blocks starting at
+        // `inode_table_start`; require the whole region to fit in the buffer
+        // so every accepted `ino < total_inodes` yields an in-bounds
+        // `inode_offset` without further per-call bounds checking.
+        let table_blocks = (total_inodes as u64).div_ceil(INODES_PER_BLOCK as u64);
+        let table_end = (inode_table_start as u64 + table_blocks)
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or(Errno::EINVAL)?;
+        if table_end > bytes.len() as u64 { return Err(Errno::EINVAL); }
+        Ok(Sffs { bytes, inode_table_start, total_inodes })
     }
 
+    /// Invariant relied on by callers: `ino` has already been checked by
+    /// `stat_ino` against `0 < ino < total_inodes`, and `mount` validated
+    /// that the whole inode-table region (through `total_inodes`) fits in
+    /// `bytes`. So the offset computed here is provably in-bounds and needs
+    /// no further self-check.
     fn inode_offset(&self, ino: u32) -> usize {
         let block = self.inode_table_start + ino / INODES_PER_BLOCK;
         block as usize * BLOCK_SIZE + (ino % INODES_PER_BLOCK) as usize * INODE_SIZE
     }
 
     pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
-        if ino == 0 { return Err(Errno::ENOENT); }
+        if ino == 0 || ino >= self.total_inodes { return Err(Errno::ENOENT); }
         let o = self.inode_offset(ino);
         let mode = r32(self.bytes, o + INO_MODE).ok_or(Errno::EIO)?;
         let nlink = r32(self.bytes, o + INO_LINK_COUNT).ok_or(Errno::EIO)?;
@@ -121,7 +139,11 @@ impl<'a> Sffs<'a> {
         if block == 0 {
             return Ok(0); // missing indirect block => sparse hole
         }
-        let off = block as usize * BLOCK_SIZE + index as usize * 4;
+        // Computed in u64 to avoid wrapping a 32-bit `usize` on wasm32 for a
+        // huge (corrupt) `block`, which could otherwise alias a small
+        // in-bounds offset and pass `r32`'s length check on the wrong bytes.
+        let off = block as u64 * BLOCK_SIZE as u64 + index as u64 * 4;
+        let off = usize::try_from(off).map_err(|_| Errno::EIO)?;
         r32(self.bytes, off).ok_or(Errno::EIO)
     }
 
@@ -165,7 +187,10 @@ impl<'a> Sffs<'a> {
             if phys == 0 {
                 for b in &mut dst[out..out + chunk] { *b = 0; } // sparse hole
             } else {
-                let src = phys as usize * BLOCK_SIZE + block_off;
+                // Computed in u64 to avoid wrapping a 32-bit `usize` on
+                // wasm32 for a huge (corrupt) `phys`.
+                let src_u64 = phys as u64 * BLOCK_SIZE as u64 + block_off as u64;
+                let src = usize::try_from(src_u64).map_err(|_| Errno::EIO)?;
                 let end = src.checked_add(chunk).ok_or(Errno::EIO)?;
                 if end > self.bytes.len() { return Err(Errno::EIO); }
                 dst[out..out + chunk].copy_from_slice(&self.bytes[src..end]);
@@ -237,6 +262,9 @@ impl<'a> Sffs<'a> {
             if end > self.bytes.len() { return Err(Errno::EIO); }
             return Ok(self.bytes[o..end].to_vec());
         }
+        // A symlink target cannot exceed the whole image; caps `size` before
+        // it drives an allocation.
+        if size > self.bytes.len() as u64 { return Err(Errno::EIO); }
         let mut buf = alloc::vec![0u8; size as usize];
         let n = self.read_at(ino, 0, &mut buf)?;
         buf.truncate(n);
@@ -421,6 +449,39 @@ mod tests {
         assert!(fs.resolve(b"/hello.txt/x", true).is_err());
         // ENOENT
         assert!(fs.resolve(b"/nope", true).is_err());
+    }
+
+    #[test]
+    fn mount_rejects_oversized_inode_table() {
+        // SFFS superblock TOTAL_INODES is at SFFS-offset 16; the VFSI header
+        // adds 16 bytes, so the field lives at absolute `.vfs` offset 32.
+        let mut img = TINY_VFS.to_vec();
+        img[32..36].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert!(Sffs::mount(unwrap_vfsi(&img).unwrap()).is_err());
+    }
+
+    #[test]
+    fn stat_ino_rejects_out_of_range_ino() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        assert!(fs.stat_ino(u32::MAX).is_err());
+        assert!(fs.stat_ino(0).is_err());
+    }
+
+    #[test]
+    fn read_link_rejects_oversized_symlink() {
+        // Locate /link's inode, then patch its INO_SIZE field (an
+        // in-inode-table absolute offset we can compute via the crate-private
+        // `inode_offset`) to a value larger than the whole image, and assert
+        // `read_link` fails rather than allocating/reading garbage.
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let link = fs.lookup(ROOT_INO, b"link").unwrap();
+        let size_off = fs.inode_offset(link) + INO_SIZE;
+        drop(fs);
+        let mut img = TINY_VFS.to_vec();
+        let abs = VFSI_HEADER + size_off;
+        img[abs..abs + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let fs2 = Sffs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
+        assert!(fs2.read_link(link).is_err());
     }
 
     #[test]
