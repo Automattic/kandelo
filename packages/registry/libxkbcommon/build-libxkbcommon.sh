@@ -117,5 +117,24 @@ do
     cp "$SRC_DIR/include/xkbcommon/$h" "$INSTALL_DIR/include/xkbcommon/$h"
 done
 
+# --- pkg-config .pc file (step 12b) ------------------------------------
+# SDL2's Wayland backend gate requires `xkbcommon >= 0.5.0` via pkg-config
+# (configure.ac CheckWayland). The wasm32posix-pkg-config wrapper reads
+# this through PKG_CONFIG_PATH (kandelo cache paths pass its filter).
+echo "==> Writing xkbcommon.pc..."
+PC_DIR="$INSTALL_DIR/lib/pkgconfig"
+mkdir -p "$PC_DIR"
+cat > "$PC_DIR/xkbcommon.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: xkbcommon
+Description: XKB API common to servers and clients
+Version: $XKB_VERSION
+Libs: -L\${libdir} -lxkbcommon
+Cflags: -I\${includedir}
+EOF
+
 echo "==> libxkbcommon $XKB_VERSION installed at $INSTALL_DIR"
 echo "    lib/libxkbcommon.a ($(wc -c < "$INSTALL_DIR/lib/libxkbcommon.a") bytes)"
