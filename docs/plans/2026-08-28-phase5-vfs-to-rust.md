@@ -579,3 +579,168 @@ with the base-byte closure `|id,off,b| host.blob_read(id,b,off)` (see
 - **Stage 6 — flip default-on.** Set `kernelRootfsEnabled()` default true; drop
   the host `/` image mount as authority globally; re-validate a representative
   subset default-on.
+
+---
+
+# Increment 3b: parser migration → Rust (kernel owns deferred-lazy expansion)
+
+## First-step trace (2026-08-30, corrected)
+
+Grounding, because two premises in earlier notes were wrong. Traced
+`man-shell-lazy-archive.test.ts` under `WASM_POSIX_ROOTFS=1` with the **current
+(S1) kernel** (see the tracing gotcha below):
+
+- **`/usr/bin/man` IS in the overlay boot manifest** — as a *symlink* → `mandoc`
+  (6 B, ino 86); `/usr/bin/mandoc` as a regular file (1 397 299 B, ino 9038).
+  `createLazyStub` (`sharedfs-vendor.ts`) makes a lazy member a real
+  `S_IFREG`/`S_IFLNK` node with its *real* size at boot; only reading its *bytes*
+  triggers `guardSynchronousLazyAccess` → EAGAIN. So the overlay already knows all
+  `man.zip` member **metadata** at boot; only the **bytes** are deferred. (The
+  prior "man not in the 7601 manifest" claim was measured on a stale pre-S1
+  kernel.)
+- **Under S1, the overlay owns the man exec end-to-end.** `open_prepared_exec_
+  target` resolves `man`→`mandoc` via the overlay, `claims_path=true` → rootfs arm
+  → `blob_read(ino 9038)` serves the executable in 64 KiB chunks. Zero `host_open`
+  for mandoc. Man-page data (`ls.1`) is likewise overlay-served.
+- **The one residual host coupling** is **lazy-archive expansion**: the host
+  preflight `launchPreparedExecTarget.materializePath` → `this.io.preparePath`
+  expands `man.zip` into the host `MemoryFileSystem` (`rootfsMemfs`), and the blob
+  provider reads bytes *from* `rootfsMemfs`. Dropping the `/` mount (S4) breaks
+  `preparePath` (the router loses `/`) → the archive never expands.
+- **The load-bearing gap:** `exec_target::read` (`exec_target.rs`) propagates the
+  byte-read errno with `?` and has **no EAGAIN park/retry** (unlike guest
+  `sys_read`, which the kernel-worker generic blocking-retry parks). So the exec
+  byte-load cannot block-and-materialize a lazy member; today it only works
+  because `preparePath` **pre**-materializes via the `/` mount. This is the exact
+  S4 blocker.
+
+### Tracing gotcha (must-read for anyone tracing kernel behavior)
+
+`tryResolveBinary("kernel.wasm")` resolves the **`local-binaries/source-only-v1`**
+tier *first* (`host/src/binary-resolver.ts` `binaryCandidateTiers()`), so Node/
+Vitest loads `local-binaries/source-only-v1/kernel.wasm`, **not**
+`local-binaries/kernel.wasm`. To trace the current kernel you must rebuild
+(`cargo build --release -p kandelo -Z build-std=core,alloc`) and stage into
+`local-binaries/source-only-v1/kernel.wasm` (or run `./run.sh local-build`).
+Staging only `local-binaries/kernel.wasm` silently runs a stale kernel.
+
+## Target end-state (option A — chosen)
+
+The overlay owns `/` **including deferred-lazy archive expansion**, so the host
+`/` mount can be dropped (S4) and the gate flipped default-on (S6) for *every*
+image, not just eager ones. Move the ~17.5 k lines of pure *filesystem-structure*
+logic in `host/src/vfs/*` (SFFS tree read, tar/zip decode, lazy-/deferred-tree
+descriptors, materialization recipes, seal verification, overlay/hardlink graph)
+into `runtime-core` (Rust). The host `MemoryFileSystem`/`sharedfs-vendor.ts`
+*structure* parser leaves the byte path.
+
+**zstd stays host-side (decision X, 2026-08-30).** zstd/gzip decompression is a
+*transport codec*, not filesystem authority — the host already decompresses VFS
+images with `fzstd` (browser, pure-JS) / `node:zlib` (Node) and the on-disk
+images are zstd level 19. The workspace's only Rust zstd (`zstd-sys`) is C-based
+and unusable in the sandboxed no_std kernel wasm; a kernel-side decoder would
+mean vendoring a large **must-fuzz** pure-Rust decoder (`ruzstd`) whose level-19
+multi-MB decode would stall the single kernel worker. So the host transport hands
+the kernel **already-decompressed** structural bytes; the kernel owns only the
+filesystem *structure*. Kernel-side zstd is Future Work (Y), paired with the
+decode-worker offload.
+
+**What stays host-side is a genuine platform floor, not laziness:** the sandboxed
+kernel wasm cannot `fetch()`, open OPFS sync-access handles, or read Node `fs`.
+So the host is reduced to a **raw-byte + transport-codec transport** — given an
+archive/leaf identity it fetches/reads the bytes and applies transport
+decompression (zstd/gzip), then returns the *decompressed structural bytes*; it
+no longer interprets the filesystem structure. The kernel parses that structure
+and expands it into its own overlay inode tree (`rootfs::insert_base_*` already
+exists).
+
+Rejected alternative **B** (kernel reads the eager SFFS tree zero-copy from the
+SharedArrayBuffer) couples the kernel to SFFS-as-*storage* for an unmeasured perf
+win; deferred to Future Work.
+
+## Blocking model (option 1 — chosen)
+
+Reuse the **existing EAGAIN generic blocking-retry** that Increment 3a already
+proved end-to-end for guest reads (no new ABI, no new wake type): a byte request
+that needs an async host fetch returns EAGAIN; the kernel parks and poll-retries
+via `blocked_retry.rs`. The one addition 3b requires is giving the **exec
+byte-load** the async re-entry it lacks: the host-side `readPreparedExecTarget`
+loop must treat EAGAIN from `execTargetRead` as "park and retry" rather than a
+hard failure, so a lazy program materializes on the exec path the same way a
+guest `read` does. This closes the S4 exec blocker without a new completion
+channel.
+
+Both push and pull models share one true deadlock rule and 3b must honor it:
+**never synchronously block the single centralized kernel worker
+(`Atomics.wait`) on a host async op whose progress needs that worker's own event
+loop.** The EAGAIN-*unwind* discipline (return, unwind, host fetches on its
+context, re-enter) is what avoids it.
+
+## Increment slicing (green-per-commit where feasible)
+
+1. In-kernel **SFFS image reader** (`runtime-core`): parse the *decompressed*
+   SFFS image bytes → base tree, unit-tested against fixtures. SFFS is the
+   public-domain reference `sharedfs-vendor.ts` implements — relicense-clear.
+2. In-kernel **zip** decoder (stored + deflate members; `man.zip` is the driving
+   case), unit-tested against fixtures.
+3. In-kernel **tar** decoder + the deferred-/lazy-tree descriptor parse,
+   unit-tested (source archives are tar).
+4. **Raw-byte transport host op**: given an archive/leaf identity, return its
+   *decompressed* bytes (host applies zstd/gzip via `fzstd`/`node:zlib`); async →
+   EAGAIN park (reuse/extend `blob_read`; identity via the existing
+   `blob_id`/manifest scheme extended to archives). Additive ABI.
+5. **Wire overlay lazy expansion**: on access to a lazy member, the kernel
+   requests the archive's decompressed bytes (park/retry), parses the structure
+   in-kernel, and inserts the members into the overlay tree via
+   `rootfs::insert_base_*`.
+6. **exec-target async re-entry**: `readPreparedExecTarget` handles EAGAIN
+   (option-1 park). Validates lazy-program exec through the overlay with the `/`
+   mount **dropped**.
+7. **Cutover**: S4 (drop `/` mount, both hosts, gated) → S5 opt-in validation →
+   S6 default-on. Reuse the tmpfs `filterMountSpec`-style gating.
+
+## Validation contract
+
+`cargo test -p kandelo-runtime-core` per increment (decoder fuzz/property tests
+for the untrusted archive parsers — same hard requirement as the transport
+decoder); recording-host completeness (zero host FS/parse op for `/`); then
+WordPress-Chromium boot + libc/sortix/nginx conformance + host Vitest with the
+overlay **default-on** as the oracle, on **both** Node and browser. No "parsers
+in Rust works" claim without the evidence for that exact claim. Per the
+performance contract, measure decode cost (both hosts) before claiming the
+migration is perf-neutral.
+
+## Future work (deferred, benchmark-gated — do NOT build in 3b)
+
+- **(2) `WAKE_BLOB_READY` push/edge-triggered completion channel.** Replace
+  option-1 poll-retry with a host-signaled completion (new op class in
+  `blocked_retry.rs` + new wake type) so the kernel is re-entered exactly when
+  bytes are ready, with no poll-interval latency. **Deferred because** for
+  archive materialization the host *fetch* dominates latency and lazy archives
+  materialize **wholesale** (a process parks ~once per archive), so the ~10 ms
+  poll granularity is noise; push buys a marginal latency win at the cost of a
+  new ABI wake type **and** a lost-wakeup correctness burden (completion signaled
+  before the kernel finishes parking → a hang, not a deadlock; solvable with the
+  token+readiness-flag machinery, but real surface). **Trigger only if** a
+  benchmark shows option-1 poll latency materially affects a real workload.
+  (Open question preserved deliberately: is push ever worth it here? Current
+  belief: no.)
+- **(B) Zero-copy SFFS-from-SAB read.** Kernel reads the eager base tree directly
+  from the SharedArrayBuffer instead of via the byte transport, removing per-op
+  copies for eager base files. Couples the kernel to SFFS-as-storage; add only if
+  a benchmark shows the copy cost matters.
+- **(Y) zstd decode in the kernel.** Move zstd/gzip decompression off the host
+  transport and into `runtime-core` (vendor a pure-Rust no_std decoder such as
+  `ruzstd`; the workspace's existing `zstd-sys` is C-based and unusable in-kernel)
+  so the transport becomes byte-only. Deferred because zstd is a transport codec,
+  not filesystem authority, and a level-19 multi-MB decode is a large, must-fuzz
+  codec. If pursued, pair it with the decode-worker offload below so the decode
+  never blocks the syscall engine.
+- **Heavy-decode worker offload.** Multi-MB tar/zip decode (and zstd, if (Y)
+  lands) runs on the *single* centralized kernel worker and stalls every
+  process's syscalls for its duration. The kernel could direct the host to run
+  decode on a host-mediated helper worker (bytes via shared memory, completion
+  signaled back) — boundary-clean, because worker placement is already a host
+  capability the kernel directs for `pthread_create`/process creation; the kernel
+  does no I/O itself. Add only if decode-on-the-kernel-worker shows as a
+  measurable syscall stall.
