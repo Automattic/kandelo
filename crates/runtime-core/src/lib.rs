@@ -40,6 +40,7 @@ pub mod process_wire;
 pub mod procfs;
 pub mod pshared;
 pub mod pty;
+pub mod rootfs;
 pub mod scratch_alloc;
 pub mod signal;
 pub mod socket;

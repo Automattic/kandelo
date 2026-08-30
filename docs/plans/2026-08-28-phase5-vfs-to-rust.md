@@ -283,3 +283,107 @@ via `WASM_POSIX_RESOLUTION_POLICY=source-only-v1
 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT=<repo>/local-binaries/source-only-v1`, plus
 native `cargo test -p kandelo-runtime-core`. No "VFS works" claim without the
 evidence for that exact claim.
+
+---
+
+# Increment 2: image-backed rootfs `/` → Rust overlay tree
+
+## Motivation (round trips)
+
+Every `/` path operation today crosses the wasm→JS boundary on the kernel
+worker: `namespace_lstat_raw` falls through to `host.host_lstat`
+(syscalls.rs:2136 → 3336), `open` calls `host.host_open` (syscalls.rs:3226) +
+`host.host_fstat`, reads call `host.host_pread` (syscalls.rs:4862), and
+getdents calls `host.host_opendir`/`host.host_readdir` (syscalls.rs:8541,8605).
+Each crossing marshals args, runs JS (`VirtualPlatformIO.resolve` longest-prefix
++ `MemoryFileSystem`/SFFS traversal), and copies results back. Path resolution
+does one `lstat` per component, so metadata-heavy work (exec, `stat` storms,
+`readdir`) pays this per component. These are not cross-*thread* round trips
+(FS imports run synchronously on the kernel worker), but they are per-op
+boundary crossings + JS execution that in-kernel Rust eliminates.
+
+## Architecture: an overlay, not a read-only tree
+
+`/` is a **writable** mount (default-mounts.ts:53). So the Rust rootfs is an
+overlay:
+
+- **Immutable base layer** — the tree structure (dirs, symlinks, regular-file
+  metadata) owned in Rust, populated at boot from a host-supplied *manifest*.
+  Regular files carry a `blob_id` + `size`; their bytes are fetched on demand
+  via the new `blob_read` host op (the host stays the byte store: SFFS data
+  blocks + the existing lazy transports). Base bytes are never mutated.
+- **Mutable overlay layer** — Rust-owned, exactly the tmpfs model: files
+  created under `/`, and base files that have been written (copy-on-write:
+  first write materializes the blob into a Rust `Vec<u8>`, then the inode
+  behaves like a tmpfs regular file).
+- **Whiteouts** — deleting a base entry records a whiteout so the base entry
+  is hidden without mutating the base; creating a new entry at a whited-out
+  path clears the whiteout.
+
+This is a strict generalization of `tmpfs.rs` (which is the overlay's mutable
+layer with no base). `rootfs.rs` reuses the same inode-slab / handle-range /
+UnsafeCell+spinlock / timestamp patterns.
+
+## Handle ranges (disjoint bands, 1e9 wide)
+
+synthetic-regular `(-2e9,-1e9]`, tmpfs-file `(-3e9,-2e9]`, tmpfs-dir
+`(-4e9,-3e9]` (now **bounded** — was unbounded below), rootfs-file
+`(-5e9,-4e9]`, rootfs-dir `(-6e9,-5e9]`. Bounding `is_tmpfs_dir_handle`
+mirrors the synthetic-regular bounding from Increment 1b.
+
+## Host manifest handoff
+
+The host walks the eager SFFS tree once at boot and emits a flat entry table
+(modeled on the top-level `MANIFEST` grammar + the lazy-metadata entry table):
+`path → {type, mode, uid, gid, size, ino, blob_id}` for base entries, plus
+symlink targets. `blob_id` identifies a byte leaf the host can serve via
+`blob_read`/`blob_stat`. Delivered through a new kernel entry (mirroring
+`kernel_set_tmpfs_enabled`) so both hosts feed it identically. Until wired, the
+Rust tree is built directly by unit tests.
+
+## New host ops (ABI)
+
+- `blob_stat(blob_id) -> {size, ...}` — replaces the metadata role of
+  `host_lstat`/`host_fstat` for base regular files.
+- `blob_read(blob_id, buf, offset, len) -> n` — replaces `host_pread`
+  (syscalls.rs:4862, 5608) for base regular files.
+
+Added symmetrically in `crates/kernel/src/wasm_api.rs` (extern block + impl),
+`crates/runtime-core/src/process.rs` (`HostIO` trait, default `Err(ENOSYS)`),
+and the TS worker import table (`host/src/kernel.ts`). Host imports are the
+kernel↔host adapter contract (not enumerated in `abi/snapshot.json`, which
+tracks the guest ABI); the tmpfs increment added `kernel_set_tmpfs_enabled`
+additively with a snapshot regen and no `ABI_VERSION` bump. Increment 2 follows
+the same rule unless a guest-observable change appears. The blocking-open-on-
+unmaterialized-lazy-leaf async path (`WAKE_BLOB_READY`) stays deferred to
+Increment 3.
+
+## Sub-increments
+
+- **2a (dormant store, read-only base):** `rootfs.rs` overlay data model +
+  base-tree builder API + read-path ops (lstat/stat/readlink/open/read-via-
+  blob-callback/opendir/readdir/getdents64/statfs/is_dir + handle
+  refcounting), unit-tested, dormant behind `set_enabled` (default off).
+  Bound `is_tmpfs_dir_handle`. No ABI change, no syscall wiring, no host
+  change — behavior identical. (mirrors tmpfs 1a.)
+- **2b (mutable overlay):** COW-on-write, create/O_CREAT, mkdir/rmdir,
+  unlink+whiteout, rename (base↔overlay), chmod/chown/truncate/utimensat,
+  symlink/link, per-inode perm enforcement + `st_dev`/EXDEV. Unit-tested,
+  still dormant.
+- **2c (ABI + manifest):** add `blob_read`/`blob_stat` host ops (three-file
+  symmetric) + the boot manifest handoff + host manifest emitter; recording-
+  host test asserts no `host_*` FS op for `/` when enabled.
+- **2d (syscall wiring, dormant):** route the `/` arms in
+  `namespace_lstat_raw`/`fs_lstat`/`fs_stat`/`namespace_readlink_raw`/open/
+  read/getdents to the rootfs overlay, gated by `claims_path` (enabled AND
+  under `/` AND not a scratch prefix). Full runtime-core suite green.
+- **2e (cutover):** host gate drops the `/` image backend from
+  `VirtualPlatformIO` (host serves only `blob_read`/`blob_stat`); enable at
+  boot. Validate WordPress Chromium boot + host Vitest + native cargo test +
+  libc/sortix conformance with rootfs-in-Rust as the oracle.
+
+## Validation contract per sub-increment
+
+Same as Increment 1: `cargo test -p kandelo-runtime-core` per slice; a guest
+exercise + WordPress Chromium boot + host Vitest at wiring/cutover; no "rootfs
+in Rust works" claim without evidence for that exact claim.
