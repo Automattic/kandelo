@@ -2811,6 +2811,17 @@ export class CentralizedKernelWorker {
   #kernelInstance: WebAssembly.Instance | null = null;
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
+  /**
+   * Rootfs overlay boot state (Phase 5 Increment 2). The worker entry (which
+   * holds the `/` image `MemoryFileSystem`) builds the manifest + byte provider
+   * and hands them here before `init()`; `#maybeLoadKernelRootfs` applies them
+   * once the kernel instance exists. Null until configured / when the rootfs
+   * gate is off.
+   */
+  #rootfsManifest: Uint8Array | null = null;
+  #rootfsBlobProvider:
+    | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
+    | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5047,6 +5058,82 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Hand the rootfs overlay its boot manifest and byte provider (Phase 5
+   * Increment 2). Called by the worker entry — which holds the `/` image
+   * `MemoryFileSystem` — before {@link init}. `#maybeLoadKernelRootfs` applies
+   * them once the kernel instance exists. A no-op path when the rootfs gate is
+   * off (the entry simply never calls this).
+   */
+  configureRootfsOverlay(
+    manifest: Uint8Array,
+    blobProvider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
+  ): void {
+    this.#rootfsManifest = manifest;
+    this.#rootfsBlobProvider = blobProvider;
+  }
+
+  /**
+   * If a rootfs overlay manifest was configured, hand the tree to the kernel and
+   * install the byte provider before any guest filesystem op runs: publish the
+   * wall clock (so base entries are not epoch-stamped), copy the manifest into
+   * kernel memory and load it, wire the provider, then enable rootfs authority.
+   * Any failure leaves rootfs disabled (the host keeps serving `/`), which is the
+   * safe fallback.
+   */
+  #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
+    const manifest = this.#rootfsManifest;
+    const provider = this.#rootfsBlobProvider;
+    if (manifest === null || provider === null) return;
+    const memory = this.#kernelMemory;
+    if (memory === null) return;
+
+    const setNow = instance.exports.kernel_set_rootfs_now as
+      | ((secLo: number, secHi: number, nsec: number) => number)
+      | undefined;
+    const alloc = instance.exports.kernel_alloc_scratch as
+      | ((size: number) => KernelPointer)
+      | undefined;
+    const load = instance.exports.kernel_rootfs_load_manifest as
+      | ((ptr: KernelPointer, len: number) => number)
+      | undefined;
+    const enable = instance.exports.kernel_set_rootfs_enabled as
+      | ((enabled: number) => number)
+      | undefined;
+    if (
+      typeof setNow !== "function" ||
+      typeof alloc !== "function" ||
+      typeof load !== "function" ||
+      typeof enable !== "function"
+    ) {
+      // Kernel predates the rootfs overlay exports; keep host-served `/`.
+      return;
+    }
+
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    setNow(
+      nowSec >>> 0,
+      Math.floor(nowSec / 0x1_0000_0000),
+      (nowMs % 1000) * 1_000_000,
+    );
+
+    const ptr = alloc(manifest.byteLength);
+    const ptrValue = Number(ptr);
+    if (ptrValue === 0) {
+      // Allocation failed; do not enable a rootfs with no tree.
+      return;
+    }
+    new Uint8Array(memory.buffer, ptrValue, manifest.byteLength).set(manifest);
+    const loaded = load(ptr, manifest.byteLength);
+    if (loaded < 0) {
+      // Malformed manifest; leave `/` host-served rather than a partial tree.
+      return;
+    }
+    this.#kernel.setRootfsBlobProvider(provider);
+    enable(1);
+  }
+
+  /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
    */
@@ -5109,8 +5196,10 @@ export class CentralizedKernelWorker {
         validateKernelHostAdapterManifest(instance, this.#kernelMemory!);
 
         // Phase 5 bring-up: optionally hand scratch-mount ownership to the
-        // in-kernel tmpfs before any guest filesystem op runs.
+        // in-kernel tmpfs, and the `/` tree to the in-kernel rootfs overlay,
+        // before any guest filesystem op runs.
         maybeEnableKernelTmpfs(instance);
+        this.#maybeLoadKernelRootfs(instance);
 
         // Allocate scratch from the kernel heap. Host-side memory.grow() would
         // create pages unknown to dlmalloc and let later Rust allocations

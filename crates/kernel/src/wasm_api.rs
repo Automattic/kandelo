@@ -1495,8 +1495,13 @@ pub extern "C" fn kernel_set_rootfs_enabled(enabled: i32) -> i32 {
 /// mutations and onto base entries loaded from the manifest. The host calls this
 /// once at boot before loading the manifest (so base entries are not epoch-
 /// stamped), and the syscall layer refreshes it before each mutating rootfs op.
+///
+/// `sec` is split into two 32-bit words (like the `host_pread` offset) so no
+/// 64-bit value crosses the JS boundary — the host convention never passes i64
+/// parameters to kernel exports.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_rootfs_now(sec: u64, nsec: u32) -> i32 {
+pub extern "C" fn kernel_set_rootfs_now(sec_lo: u32, sec_hi: u32, nsec: u32) -> i32 {
+    let sec = ((sec_hi as u64) << 32) | (sec_lo as u64);
     crate::rootfs::set_now(sec, nsec);
     0
 }
