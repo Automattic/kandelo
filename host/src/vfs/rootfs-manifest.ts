@@ -24,7 +24,7 @@
 import type { FileSystemBackend } from "./types";
 
 export const RTFS_MAGIC = 0x5346_5452; // "RTFS" little-endian
-export const RTFS_VERSION = 1;
+export const RTFS_VERSION = 2;
 
 const S_IFMT = 0xf000;
 const S_IFDIR = 0x4000;
@@ -147,9 +147,17 @@ export function emitRootfsManifest(
     ino: number | bigint,
     blobId: number | bigint,
     size: number,
+    mtimeMs: number,
     target: Uint8Array,
   ): void => {
     const pathBytes = encoder.encode(absPath);
+    // Preserve the image's real mtime (split into whole seconds + nanoseconds)
+    // so the overlay reports accurate file times after cutover.
+    const mtimeSec = Math.floor(mtimeMs / 1000);
+    const mtimeNsec = Math.max(
+      0,
+      Math.min(999_999_999, Math.round((mtimeMs - mtimeSec * 1000) * 1_000_000)),
+    );
     w.u8(kind);
     w.u32(mode & 0o7777);
     w.u32(uid >>> 0);
@@ -157,6 +165,8 @@ export function emitRootfsManifest(
     w.u64(BigInt(ino));
     w.u64(BigInt(blobId));
     w.u64(BigInt(size));
+    w.u64(BigInt(mtimeSec));
+    w.u32(mtimeNsec);
     w.u32(pathBytes.length);
     w.bytes(pathBytes);
     w.u32(target.length);
@@ -169,7 +179,7 @@ export function emitRootfsManifest(
   if ((rootStat.mode & S_IFMT) !== S_IFDIR) {
     throw new Error("rootfs manifest: `/` is not a directory in the image backend");
   }
-  emit(KIND_DIR, "/", rootStat.mode, rootStat.uid, rootStat.gid, rootStat.ino, 0, 0, EMPTY);
+  emit(KIND_DIR, "/", rootStat.mode, rootStat.uid, rootStat.gid, rootStat.ino, 0, 0, rootStat.mtimeMs, EMPTY);
 
   const walk = (absDir: string): void => {
     const handle = backend.opendir(toBackendPath(absDir));
@@ -191,14 +201,14 @@ export function emitRootfsManifest(
       const st = backend.lstat(toBackendPath(abs));
       const type = st.mode & S_IFMT;
       if (type === S_IFDIR) {
-        emit(KIND_DIR, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, EMPTY);
+        emit(KIND_DIR, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, st.mtimeMs, EMPTY);
         walk(abs);
       } else if (type === S_IFREG) {
-        emit(KIND_FILE, abs, st.mode, st.uid, st.gid, st.ino, st.ino, st.size, EMPTY);
+        emit(KIND_FILE, abs, st.mode, st.uid, st.gid, st.ino, st.ino, st.size, st.mtimeMs, EMPTY);
         blobPaths.set(Number(st.ino), toBackendPath(abs));
       } else if (type === S_IFLNK) {
         const target = encoder.encode(backend.readlink(toBackendPath(abs)));
-        emit(KIND_SYMLINK, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, target);
+        emit(KIND_SYMLINK, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, st.mtimeMs, target);
       } else {
         // Sockets/FIFOs/device nodes have no place in a `/` image; a real one
         // is a build defect, not something to silently absorb.
