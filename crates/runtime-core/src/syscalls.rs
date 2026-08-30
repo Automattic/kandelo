@@ -18450,6 +18450,102 @@ mod tests {
         );
     }
 
+    /// Restore the rootfs enable flag and clear the store on drop (serial suite;
+    /// panic-safe), so this test's activation never leaks into other tests.
+    struct RootfsEnableGuard(bool);
+    impl Drop for RootfsEnableGuard {
+        fn drop(&mut self) {
+            crate::rootfs::set_enabled(self.0);
+            crate::rootfs::reset();
+        }
+    }
+
+    /// When the in-kernel rootfs overlay owns `/`, every `/` operation is served
+    /// from Rust: metadata, directory listing, and overlay-file content entirely
+    /// in-kernel, and a base file's bytes cross to the host ONLY through
+    /// `blob_read`. This drives the real syscall path with a recording host and
+    /// asserts the completeness guarantee — a missed dispatch site would surface
+    /// as a `/` path reaching `host_lstat` (recorded in `lstat_paths`) or a stat
+    /// carrying the host's `st_dev` (0) instead of the rootfs dev.
+    #[test]
+    fn rootfs_overlay_serves_root_entirely_in_kernel() {
+        const ROOTFS_DEV: u64 = 0x7300_0000;
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+
+        // A tiny base tree: `/`, `/bin`, and a base file whose bytes live in the
+        // host byte store (served via blob_read), keyed by blob id 7.
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
+        crate::rootfs::insert_base_file(b"/bin/hello", 7, 11, 0o755, 0, 0, 3).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.base_blobs.insert(7, b"hello world".to_vec());
+        let mut buf = [0u8; 16];
+
+        // Read a base file: metadata in-kernel, bytes via blob_read only.
+        let fd = sys_open(&mut proc, &mut host, b"/bin/hello", O_RDONLY, 0).unwrap();
+        let st = sys_fstat(&proc, &mut host, fd).unwrap();
+        assert_eq!(st.st_dev, ROOTFS_DEV);
+        assert_eq!(st.st_size, 11);
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello world");
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        // lstat of a `/` path is served by rootfs (distinctive st_dev).
+        assert_eq!(sys_lstat(&mut proc, &mut host, b"/bin/hello").unwrap().st_dev, ROOTFS_DEV);
+
+        // Create a new file under `/`, write and read it back (overlay bytes, no
+        // blob_read), then stat it — all in-kernel.
+        let cfd = sys_open(&mut proc, &mut host, b"/bin/new", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, cfd, b"fresh").unwrap(), 5);
+        sys_lseek(&mut proc, &mut host, cfd, 0, SEEK_SET).unwrap();
+        let n = sys_read(&mut proc, &mut host, cfd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"fresh");
+        sys_close(&mut proc, &mut host, cfd).unwrap();
+        assert_eq!(sys_lstat(&mut proc, &mut host, b"/bin/new").unwrap().st_dev, ROOTFS_DEV);
+
+        // Copy-on-write: writing a base file materializes it (blob_read supplies
+        // the original bytes for the copy), then reads come from the overlay.
+        let wfd = sys_open(&mut proc, &mut host, b"/bin/hello", O_RDWR, 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, wfd, b"H").unwrap(), 1);
+        sys_lseek(&mut proc, &mut host, wfd, 0, SEEK_SET).unwrap();
+        let n = sys_read(&mut proc, &mut host, wfd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"Hello world");
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+
+        // Directory ops, metadata, symlink, rename, unlink — all rootfs.
+        sys_mkdir(&mut proc, &mut host, b"/etc", 0o755).unwrap();
+        assert_eq!(sys_lstat(&mut proc, &mut host, b"/etc").unwrap().st_dev, ROOTFS_DEV);
+        sys_chmod(&mut proc, &mut host, b"/bin/new", 0o600).unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/bin/new").unwrap().st_mode & 0o7777,
+            0o600
+        );
+        sys_symlink(&mut proc, &mut host, b"hello", b"/bin/hi").unwrap();
+        let mut lbuf = [0u8; 32];
+        let ln = sys_readlink(&mut proc, &mut host, b"/bin/hi", &mut lbuf).unwrap();
+        assert_eq!(&lbuf[..ln], b"hello");
+        sys_rename(&mut proc, &mut host, b"/bin/new", b"/bin/renamed").unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/bin/renamed").unwrap().st_dev,
+            ROOTFS_DEV
+        );
+        sys_unlink(&mut proc, &mut host, b"/bin/renamed").unwrap();
+
+        // statfs of a `/` path reports the rootfs (memory-backed) filesystem.
+        assert_eq!(sys_statfs(&mut proc, &mut host, b"/bin").unwrap().f_type, 0x858458f6);
+
+        // Completeness guarantee: no `/` path ever reached the host's lstat (a
+        // missed dispatch site would have consulted the host for a `/` path).
+        assert!(
+            host.lstat_paths.iter().all(|p| p.first() != Some(&b'/')),
+            "a `/` path leaked to host_lstat: {:?}",
+            host.lstat_paths,
+        );
+    }
+
     /// `open` on a tmpfs path enforces the same search/access/parent-write
     /// permission checks as the host path (via `check_open_permissions`).
     #[test]
@@ -18981,6 +19077,9 @@ mod tests {
         pread_reported: Option<usize>,
         pwrite_reported: Option<usize>,
         prepared_exec_bytes: Option<Vec<u8>>,
+        /// Rootfs overlay content byte-leaves keyed by blob id, served by
+        /// `blob_read` (the one host op a rootfs base file legitimately uses).
+        base_blobs: std::collections::HashMap<u64, Vec<u8>>,
     }
 
     impl MockHostIO {
@@ -19063,6 +19162,7 @@ mod tests {
                 pread_reported: None,
                 pwrite_reported: None,
                 prepared_exec_bytes: None,
+                base_blobs: std::collections::HashMap::new(),
             }
         }
 
@@ -19350,6 +19450,17 @@ mod tests {
                 st_ctime_nsec: 0,
                 _pad: 0,
             })
+        }
+
+        fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+            let data = self.base_blobs.get(&blob_id).ok_or(Errno::EIO)?;
+            let start = offset as usize;
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let n = core::cmp::min(buf.len(), data.len() - start);
+            buf[..n].copy_from_slice(&data[start..start + n]);
+            Ok(n)
         }
 
         fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
