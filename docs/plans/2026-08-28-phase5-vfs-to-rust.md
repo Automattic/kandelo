@@ -387,3 +387,51 @@ Increment 3.
 Same as Increment 1: `cargo test -p kandelo-runtime-core` per slice; a guest
 exercise + WordPress Chromium boot + host Vitest at wiring/cutover; no "rootfs
 in Rust works" claim without evidence for that exact claim.
+
+## Decision record: the `blob_id` identity scheme (Increment 2c)
+
+`blob_read(blob_id, offset, buf)` is how the kernel fetches a base file's bytes.
+`blob_id` is a `u64` the kernel stores in each `BaseRegular` inode and echoes
+back to the host, which resolves it to bytes. What identity should it name?
+
+**Constraints.** (1) `u64`, host-resolvable — cannot carry a path. (2) Per-boot
+stable only — the manifest is regenerated each boot, so no persistence/hashing
+is needed. (3) Must survive kernel-side path changes — after an overlay
+rename/COW the kernel path diverges from the host's, so `blob_id` must be a
+stable *file* identity, not the current path. (4) **Durable, heterogeneous
+seam** — the byte-leaf provider is *not* transitional. Increment 3 can read the
+eager SFFS tree from a shared buffer in-kernel, but OPFS (sync-access handle),
+fetch/CORS, and lazy-archive leaves are host-owned sources the kernel cannot
+read from a shared buffer, so the provider stays the permanent boundary for
+them. `blob_id` must therefore address *heterogeneous backends* uniformly.
+
+**API finding.** `SharedFileSystem` (`host/src/vfs/sharedfs-vendor.ts`) has no
+public read-by-inode: `inodeReadData(ino, …)` is private; the only public read
+is fd-based (`readAt(fd, buffer, offset)`, fd from `open(path)`). So an inode
+number grants no direct byte access — every scheme needs a host-side map.
+
+**Options considered.**
+- **A — SFFS inode number as a direct address.** Rejected: names only SFFS
+  files (meaningless for OPFS/fetch/lazy leaves, violating constraint 4), and
+  with no public read-by-inode it grants no shortcut anyway.
+- **B — opaque host-assigned token, mapped host-side to a backend source.**
+  Backend-agnostic (SFFS/OPFS/fetch/lazy uniform), kernel treats it as opaque.
+  Needs a host `token → source` map (small: one entry per base file).
+- **C — hashed/interned path.** Rejected: reintroduces path-as-identity (the
+  thing we are removing) and adds collision risk for no benefit.
+
+**Chosen: B, with the token = the file's inode number.** The kernel treats
+`blob_id` as opaque (it is already stored separately from the stat ino in
+`BaseRegular`, so the two can diverge later with no wire change). The emitter
+sets `blob_id` = the inode number — SFFS ino for eager files, a synthetic ino
+(allocated above the SFFS max) for non-SFFS leaves in Increment 3. Rationale:
+reuses the ino the manifest already carries (no extra concept for eager files),
+makes **hard links share one leaf** automatically (two names, one ino, one
+`blob_id`), and keeps a single `ino → backend source` map that is uniform
+across every backend. The host provider (`setRootfsBlobProvider`) resolves
+`blob_id` through that map against the demoted `/` byte store (the
+`MemoryFileSystem` kept alive purely as a byte provider after cutover drops it
+as the mount authority) — and, in Increment 3, against the OPFS/fetch/lazy
+transports. Bytes are read via the existing fd-based `readAt` (open-by-path
+behind the map; an fd cache is a later optimization, noted not silently
+adopted).
