@@ -3903,6 +3903,17 @@ async function handleExportRootfsImage(
     respondError(msg.requestId, "rootfs export requires an initialized kernel");
     return;
   }
+  if (kernelRootfsEnabled()) {
+    // The kernel overlay owns `/`, so `memfs` is the frozen base image;
+    // serializing it would export a stale snapshot. A faithful overlay snapshot
+    // (enumerate the kernel tree, read each file, rebuild the image) is a TODO.
+    // Fail loudly rather than lie; no caller exercises export today.
+    respondError(
+      msg.requestId,
+      "rootfs image export is not yet supported under the in-kernel overlay",
+    );
+    return;
+  }
   try {
     const image = await rootfsSnapshotGate.runSnapshot(async () => {
       if (
