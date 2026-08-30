@@ -7458,6 +7458,12 @@ fn fifo_path_stat_raw(
         st.st_size = 0;
         return Ok(Some(st));
     }
+    if crate::rootfs::claims_path(resolved) {
+        let mut st = crate::rootfs::lstat(resolved)?;
+        st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
+        st.st_size = 0;
+        return Ok(Some(st));
+    }
     let mut st = if follow {
         fs_stat(host, resolved)?
     } else {
@@ -7747,6 +7753,30 @@ fn make_fifo(
         }
         return Ok(());
     }
+    // In-kernel rootfs overlay owns `/`: same fifo model as tmpfs (a
+    // `Special(S_IFIFO)` inode owns the metadata; the pipe/fifo table holds the
+    // rendezvous pipe keyed by path; no host marker file).
+    if crate::rootfs::claims_path(&resolved.path) {
+        check_parent_writable(proc, host, &resolved.path)?;
+        tmpfs_stamp_now(host)?;
+        let effective_mode = mode & !proc.umask;
+        crate::rootfs::mknod_special(
+            &resolved.path,
+            effective_mode & 0o7777,
+            proc.effective_uid(),
+            proc.effective_gid(),
+            wasm_posix_shared::mode::S_IFIFO,
+        )?;
+        let metadata = crate::rootfs::lstat(&resolved.path)?;
+        let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
+        let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+        if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
+            unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
+            let _ = crate::rootfs::unlink(&resolved.path);
+            return Err(Errno::EEXIST);
+        }
+        return Ok(());
+    }
     ensure_host_mutable_namespace_path(&resolved.path)?;
     check_parent_writable(proc, host, &resolved.path)?;
 
@@ -7812,6 +7842,8 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
         // inode. A host fifo removes its marker file instead.
         if crate::tmpfs::claims_path(resolved) {
             crate::tmpfs::unlink(resolved)?;
+        } else if crate::rootfs::claims_path(resolved) {
+            crate::rootfs::unlink(resolved)?;
         } else {
             unlink_host_entry(host, resolved)?;
         }
@@ -7904,10 +7936,13 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
         }
         return crate::tmpfs::unlink(&resolved);
     }
-    // In-kernel rootfs overlay owns `/`. It has no fifo/socket Special nodes yet
-    // (deferred; see the plan), but a bound AF_UNIX socket may still carry a
-    // path-keyed registry entry to drop before removing the tree entry.
+    // In-kernel rootfs overlay owns `/`: same fifo/socket handling as tmpfs — a
+    // fifo lives in the fifo/pipe table, a bound AF_UNIX socket in the registry;
+    // drop those before removing the tree entry.
     if crate::rootfs::claims_path(&resolved) {
+        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+            return result;
+        }
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
@@ -9800,10 +9835,12 @@ pub fn sys_utimensat(
             if let Some(live_path) =
                 unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
             {
-                if crate::tmpfs::claims_path(&live_path) {
-                    // A tmpfs fifo's times live on its Special(S_IFIFO) inode,
-                    // not a host marker; update the inode directly (host_utimensat
-                    // would ENOENT on the absent host path after the cutover).
+                if crate::tmpfs::claims_path(&live_path)
+                    || crate::rootfs::claims_path(&live_path)
+                {
+                    // A tmpfs/rootfs fifo's times live on its Special(S_IFIFO)
+                    // inode, not a host marker; update the inode directly
+                    // (host_utimensat would ENOENT on the absent host path).
                     let (now_sec, now_nsec) = {
                         let (s, n) = host
                             .host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
@@ -9828,6 +9865,11 @@ pub fn sys_utimensat(
                         resolve(atime_sec, atime_nsec, st.st_atime_sec, st.st_atime_nsec)?;
                     let (m_sec, m_nsec) =
                         resolve(mtime_sec, mtime_nsec, st.st_mtime_sec, st.st_mtime_nsec)?;
+                    if crate::rootfs::claims_path(&live_path) {
+                        return crate::rootfs::utimensat(
+                            &live_path, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
+                        );
+                    }
                     return crate::tmpfs::utimensat(
                         &live_path, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
                     );
@@ -13008,6 +13050,20 @@ pub fn sys_bind(
                         Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                         Err(e) => return Err(e),
                     }
+                } else if crate::rootfs::claims_path(&resolved) {
+                    // In-kernel rootfs overlay owns the node (same model as tmpfs).
+                    tmpfs_stamp_now(host)?;
+                    match crate::rootfs::mknod_special(
+                        &resolved,
+                        socket_mode,
+                        proc.effective_uid(),
+                        proc.effective_gid(),
+                        wasm_posix_shared::mode::S_IFSOCK,
+                    ) {
+                        Ok(()) => {}
+                        Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, socket_mode)
                     {
@@ -13028,6 +13084,8 @@ pub fn sys_bind(
                 if !abstract_unix {
                     if crate::tmpfs::claims_path(&resolved) {
                         let _ = crate::tmpfs::unlink(&resolved);
+                    } else if crate::rootfs::claims_path(&resolved) {
+                        let _ = crate::rootfs::unlink(&resolved);
                     } else {
                         let _ = host.host_unlink(&resolved);
                     }

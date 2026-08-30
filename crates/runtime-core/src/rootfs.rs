@@ -36,7 +36,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
+use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::WasmStatfs;
@@ -50,9 +50,11 @@ const O_TRUNC: u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
 
 /// Directory entry type codes as reported through getdents64 `d_type`.
+const DT_FIFO: u32 = 1;
 const DT_DIR: u32 = 4;
 const DT_REG: u32 = 8;
 const DT_LNK: u32 = 10;
+const DT_SOCK: u32 = 12;
 
 /// Dirent `d_type` for an inode.
 fn dirent_type(inode: &Inode) -> u8 {
@@ -60,6 +62,13 @@ fn dirent_type(inode: &Inode) -> u8 {
         InodeKind::Dir(_) => DT_DIR as u8,
         InodeKind::Symlink(_) => DT_LNK as u8,
         InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => DT_REG as u8,
+        InodeKind::Special(type_bits) => {
+            if type_bits & S_IFMT == S_IFSOCK {
+                DT_SOCK as u8
+            } else {
+                DT_FIFO as u8
+            }
+        }
     }
 }
 
@@ -89,6 +98,10 @@ enum InodeKind {
     Regular(Vec<u8>),
     /// Symbolic link holding its target path bytes.
     Symlink(Vec<u8>),
+    /// A metadata-only special file (AF_UNIX socket or FIFO). The `S_IF*` type
+    /// bits are stored; the communication endpoint lives in the socket registry
+    /// or fifo table, keyed by path — mirrors the tmpfs `Special` node.
+    Special(u32),
 }
 
 struct Inode {
@@ -135,12 +148,14 @@ impl Inode {
             InodeKind::Dir(_) => S_IFDIR,
             InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => S_IFREG,
             InodeKind::Symlink(_) => S_IFLNK,
+            InodeKind::Special(type_bits) => type_bits,
         };
         let size = match &self.kind {
             InodeKind::Dir(entries) => entries.len() as u64,
             InodeKind::BaseRegular { size, .. } => *size,
             InodeKind::Regular(data) => data.len() as u64,
             InodeKind::Symlink(target) => target.len() as u64,
+            InodeKind::Special(_) => 0,
         };
         WasmStat {
             st_dev: ROOTFS_DEV,
@@ -839,6 +854,11 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     // here means O_NOFOLLOW on the final component.
                     return Err(Errno::ELOOP);
                 }
+                if matches!(inode.kind, InodeKind::Special(_)) {
+                    // A socket/FIFO node cannot be opened as a regular file; the
+                    // fifo path is handled before rootfs::open is reached.
+                    return Err(Errno::ENXIO);
+                }
                 if inode.is_dir() {
                     return Err(Errno::EISDIR);
                 }
@@ -914,6 +934,7 @@ where
             InodeKind::Regular(_) => Ok(None),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
+            InodeKind::Special(_) => Err(Errno::EINVAL),
         },
         None => Err(Errno::EBADF),
     })?;
@@ -1052,6 +1073,7 @@ where
             InodeKind::BaseRegular { blob_id, size } => Ok(Plan::Base(*blob_id, *size)),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
+            InodeKind::Special(_) => Err(Errno::EINVAL),
         }
     })?;
     match plan {
@@ -1581,6 +1603,46 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
     })
 }
 
+/// Create a metadata-only special node (AF_UNIX socket or FIFO) at a rootfs
+/// path. `type_bits` selects S_IFSOCK or S_IFIFO. EEXIST if the name is taken.
+/// The communication endpoint (registry entry / fifo pipe) is owned elsewhere,
+/// keyed by path; this only creates the filesystem node. Mirrors tmpfs.
+pub fn mknod_special(
+    path: &[u8],
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    type_bits: u32,
+) -> Result<(), Errno> {
+    let comps = split_components(path);
+    if comps.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    ROOTFS.with(|state| {
+        let (parent, last, existing) = state.resolve(&comps)?;
+        if existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Special(type_bits & S_IFMT),
+            mode & 0o7777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        Ok(())
+    })
+}
+
 /// statfs for the rootfs overlay: a memory-backed filesystem (its mutable layer
 /// grows within kernel Wasm memory). The exact magic/flags are reconciled with
 /// the host image backend at cutover (Increment 2e).
@@ -2074,6 +2136,39 @@ mod tests {
         enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
         // second entry missing entirely -> short read
         assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn special_socket_and_fifo_nodes() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/run", 0o755, 0, 0, 2).unwrap();
+        mknod_special(b"/run/s.sock", 0o755, 7, 8, S_IFSOCK).unwrap();
+        mknod_special(b"/run/f.fifo", 0o644, 0, 0, wasm_posix_shared::mode::S_IFIFO).unwrap();
+
+        let s = lstat(b"/run/s.sock").unwrap();
+        assert_eq!(s.st_mode & S_IFMT, S_IFSOCK);
+        assert_eq!((s.st_uid, s.st_gid), (7, 8));
+        assert_eq!(s.st_size, 0);
+        let f = lstat(b"/run/f.fifo").unwrap();
+        assert_eq!(f.st_mode & S_IFMT, wasm_posix_shared::mode::S_IFIFO);
+
+        // A special node cannot be opened as a regular file.
+        assert_eq!(open(b"/run/s.sock", O_RDONLY, 0, 0, 0).unwrap_err(), Errno::ENXIO);
+        // Duplicate mknod is EEXIST.
+        assert_eq!(
+            mknod_special(b"/run/s.sock", 0o755, 0, 0, S_IFSOCK).unwrap_err(),
+            Errno::EEXIST
+        );
+
+        // getdents lists both nodes.
+        let mut buf = [0u8; 512];
+        let (n, _c, _d) = getdents64(b"/run", &mut buf, 0, &[]).unwrap();
+        assert!(buf[..n].windows(6).any(|w| w == b"s.sock"));
+        assert!(buf[..n].windows(6).any(|w| w == b"f.fifo"));
+
+        unlink(b"/run/s.sock").unwrap();
+        assert_eq!(lstat(b"/run/s.sock").unwrap_err(), Errno::ENOENT);
     }
 
     #[test]
