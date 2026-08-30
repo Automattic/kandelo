@@ -155,6 +155,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_read_proc_maps",
   "kernel_recv",
   "kernel_rootfs_read_file",
+  "kernel_rootfs_stat_mode",
   "kernel_rootfs_write_file",
   "kernel_select",
   "kernel_send",
@@ -229,6 +230,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_handle_channel":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
+    case "kernel_rootfs_stat_mode":
     case "kernel_truncate":
     case "kernel_uname":
       return REQUIRED_POINTER_0;
@@ -336,6 +338,7 @@ function isKernelScratchExportName(
     case "kernel_read_proc_maps":
     case "kernel_recv":
     case "kernel_rootfs_read_file":
+    case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_write_file":
     case "kernel_select":
     case "kernel_send":

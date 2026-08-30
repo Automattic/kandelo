@@ -2902,6 +2902,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_stat_mode",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_write_file",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },

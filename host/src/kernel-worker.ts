@@ -5313,6 +5313,56 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Return the mode bits (type + permissions) of the rootfs entry at `path`
+   * through the overlay (2e cutover), for `read_vfs_file`'s includeMode variant.
+   * Throws `KernelScratchError` (POSIX errno) on failure.
+   */
+  rootfsStatMode(path: string): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs stat path too long", ENAMETOOLONG);
+    }
+    let mode = 0;
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs stat mode", (entry) => {
+      if (
+        typeof entry.instance.exports.kernel_rootfs_stat_mode !== "function"
+      ) {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      if (pathLen > region.capacity) {
+        failErrno = ENAMETOOLONG;
+        return undefined;
+      }
+      const result = region.withLease((lease) => {
+        lease.copyFrom(encodedPath, 0, 0, pathLen);
+        const pathPtr = lease.exportPointer(0, pathLen);
+        return this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_rootfs_stat_mode",
+          [pathPtr, pathLen],
+        );
+      });
+      if (!Number.isSafeInteger(result) || result < 0) {
+        failErrno =
+          Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+      } else {
+        mode = result;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs stat failed", failErrno);
+    }
+    return mode;
+  }
+
+  /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
    */

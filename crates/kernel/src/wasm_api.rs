@@ -1588,6 +1588,20 @@ pub extern "C" fn kernel_rootfs_write_file(
     }
 }
 
+/// Return the mode bits (type + permissions, `st_mode & 0xffff`) of the rootfs
+/// entry named by `path_ptr..path_len`, or a negative errno. Host-facing so the
+/// `read_vfs_file` includeMode variant reports the authoritative overlay mode
+/// after the 2e cutover rather than a stale base-image mode. No symlink follow
+/// (the includeMode consumers stage plain regular files).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_stat_mode(path_ptr: *const u8, path_len: u32) -> i32 {
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    match crate::rootfs::lstat(path) {
+        Ok(stat) => (stat.st_mode & 0xffff) as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
