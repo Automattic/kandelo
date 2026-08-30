@@ -1168,9 +1168,20 @@ pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usi
 /// and hand it to the shared virtual-dirent formatter (which injects `.`/`..`
 /// and honors the cookie/short-buffer protocol). Returns
 /// `(bytes_written, new_cookie, exhausted)`.
-pub fn getdents64(path: &[u8], buf: &mut [u8], offset: i64) -> Result<(usize, i64, bool), Errno> {
+/// getdents64 for a rootfs directory. `extra` entries `(name, d_type, ino)` are
+/// appended after the tree's own children (deduplicated by name) — the caller
+/// uses this to inject the kernel's synthetic mount points (`/dev`, `/proc`) into
+/// the `/` listing, which are not part of the image tree. The combined list flows
+/// through the shared dirent formatter, so the cookie/short-buffer protocol
+/// covers the injected entries uniformly.
+pub fn getdents64(
+    path: &[u8],
+    buf: &mut [u8],
+    offset: i64,
+    extra: &[(&[u8], u8, u64)],
+) -> Result<(usize, i64, bool), Errno> {
     let comps = split_components(path);
-    let (dir_ino, entries) = ROOTFS.with(|state| {
+    let (dir_ino, mut entries) = ROOTFS.with(|state| {
         let root = state.mount_root();
         let idx = state.walk(root, &comps)?;
         let dir = state.get(idx).ok_or(Errno::ENOENT)?;
@@ -1185,6 +1196,11 @@ pub fn getdents64(path: &[u8], buf: &mut [u8], offset: i64) -> Result<(usize, i6
         }
         Ok((dir_ino, out))
     })?;
+    for &(name, d_type, ino) in extra {
+        if !entries.iter().any(|(n, _, _)| n.as_slice() == name) {
+            entries.push((name.to_vec(), d_type, ino));
+        }
+    }
     crate::procfs::write_virtual_dirents64(buf, offset, dir_ino, dir_ino, &entries)
 }
 
@@ -2059,13 +2075,35 @@ mod tests {
         let _g = TestGuard::acquire();
         build_sample_tree();
         let mut buf = [0u8; 512];
-        let (written, _cookie, _done) = getdents64(b"/usr/bin", &mut buf, 0).unwrap();
+        let (written, _cookie, _done) = getdents64(b"/usr/bin", &mut buf, 0, &[]).unwrap();
         assert!(written > 0);
         // The formatter injects "." and ".."; the raw buffer should contain the
         // child names too.
         let hay = &buf[..written];
         assert!(hay.windows(5).any(|w| w == b"hello"));
         assert!(hay.windows(2).any(|w| w == b"hi"));
+    }
+
+    #[test]
+    fn getdents64_injects_and_dedups_root_virtuals() {
+        let _g = TestGuard::acquire();
+        // A root with a real `bin` dir but no `dev`/`proc` (those are synthetic
+        // kernel mounts, injected via `extra`), plus a name that collides with an
+        // injected virtual to exercise dedup.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
+        insert_base_dir(b"/dev", 0o755, 0, 0, 3).unwrap(); // already present
+        let extra: &[(&[u8], u8, u64)] = &[(b"dev", 4, 2), (b"proc", 4, 2)];
+        let mut buf = [0u8; 512];
+        let (written, _c, _d) = getdents64(b"/", &mut buf, 0, extra).unwrap();
+        let hay = &buf[..written];
+        assert!(hay.windows(3).any(|w| w == b"bin"));
+        assert!(hay.windows(4).any(|w| w == b"proc")); // injected
+        // `dev` present exactly once (the base entry; the injected one is deduped).
+        let dev_hits = (0..hay.len().saturating_sub(2))
+            .filter(|&i| &hay[i..i + 3] == b"dev")
+            .count();
+        assert_eq!(dev_hits, 1, "dev should appear once, not duplicated");
     }
 
     #[test]

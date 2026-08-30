@@ -8742,8 +8742,16 @@ pub fn sys_getdents64(
             .get(ofd_idx)
             .ok_or(Errno::EBADF)?
             .dir_entry_offset;
+        // The `/` image tree has no `/dev` or `/proc` — those are synthetic
+        // kernel mounts. Inject them into the root listing exactly as the
+        // host-served path does (ROOT_VIRTUAL_DIRENTS), so `ls /` matches.
+        let root_virtuals: Vec<(&[u8], u8, u64)> = if path.as_slice() == b"/" {
+            ROOT_VIRTUAL_DIRENTS.iter().map(|&n| (n, 4u8, 2u64)).collect()
+        } else {
+            Vec::new()
+        };
         let (bytes, new_offset, exhausted) =
-            crate::rootfs::getdents64(&path, buf, entry_offset)?;
+            crate::rootfs::getdents64(&path, buf, entry_offset, &root_virtuals)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
             ofd.set_directory_offset(new_offset);
