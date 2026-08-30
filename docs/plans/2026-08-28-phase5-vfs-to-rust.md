@@ -435,3 +435,24 @@ as the mount authority) — and, in Increment 3, against the OPFS/fetch/lazy
 transports. Bytes are read via the existing fd-based `readAt` (open-by-path
 behind the map; an fd cache is a later optimization, noted not silently
 adopted).
+
+## Cutover sequencing decision (2026-08-30): default-on deferred to Increment 3
+
+The rootfs overlay is feature-complete and validated for **eager** `/` images
+(WordPress/lamp/nginx/mariadb): content, dirs, symlinks, hard links, sockets,
+FIFOs, copy-on-write, and metadata (incl. real mtimes) are served in-kernel and
+match the host backend. It is opt-in behind `WASM_POSIX_ROOTFS`.
+
+Flipping the gate default-on globally is **deferred to after Increment 3**,
+because the shell demo image streams **lazy archives** into `/usr/...` on first
+use (interpreters, vim, clang; `shell-lazy-archives.ts`). Materializing a lazy
+leaf is an async fetch, and the overlay's `blob_read` is synchronous — the async
+path (`WAKE_BLOB_READY`) is Increment 3. Cutting over default-on now would break
+the shell image's lazy content. Eager images could cut over today, but the gate
+is global; a clean phase boundary is to land the overlay + wiring + eager
+validation in Increment 2 (opt-in) and flip default-on once Increment 3 adds
+lazy-leaf materialization so it is safe for every image.
+
+So Increment 2's endpoint is: overlay complete + wired into all `/` syscalls +
+eager-`/` validated (opt-in). Increment 2e (host drops the `/` image mount as
+authority + default-on flip) moves to the end of Increment 3.
