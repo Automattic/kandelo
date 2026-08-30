@@ -5134,6 +5134,185 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Read the entire rootfs file at `path` through the in-kernel overlay (2e
+   * cutover). After the host `/` mount is dropped this is how the host reads
+   * authoritative `/` bytes: copy-on-written bytes come straight from the
+   * overlay, an unmodified base file's bytes via the installed blob provider.
+   * Runs in one kernel entry, reading region-sized chunks. Throws
+   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
+   * if a kernel entry is already active (the RPC caller retries).
+   */
+  rootfsReadFile(path: string): Uint8Array {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs read path too long", ENAMETOOLONG);
+    }
+    let output = new Uint8Array(0);
+    // A routine errno (ENOENT/EISDIR) must NOT throw inside the ingress — a
+    // throw there is treated as a fatal kernel fault. Capture it and raise it
+    // after the entry returns.
+    let failErrno = 0;
+    this.#runImmediateKernelEntry(
+      "kernel rootfs read file",
+      (entry) => {
+        if (
+          typeof entry.instance.exports.kernel_rootfs_read_file !== "function"
+        ) {
+          failErrno = ENOSYS;
+          return undefined;
+        }
+        const region = this.#requireMainScratchRegion();
+        const chunkCap = region.capacity - pathLen;
+        if (chunkCap <= 0) {
+          failErrno = ENAMETOOLONG;
+          return undefined;
+        }
+        const chunks: Uint8Array[] = [];
+        let fileOffset = 0;
+        for (;;) {
+          const res: { errno: number; bytes: Uint8Array | null } =
+            region.withLease((lease) => {
+              lease.copyFrom(encodedPath, 0, 0, pathLen);
+              const pathPtr = lease.exportPointer(0, pathLen);
+              const bufPtr = lease.exportPointer(pathLen, chunkCap);
+              const result = this.#invokeEntryScratchExport(
+                entry,
+                lease,
+                "kernel_rootfs_read_file",
+                [
+                  pathPtr,
+                  pathLen,
+                  fileOffset >>> 0,
+                  Math.floor(fileOffset / 0x1_0000_0000),
+                  bufPtr,
+                  chunkCap,
+                ],
+              );
+              if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+              if (result < 0) return { errno: -result, bytes: null };
+              return {
+                errno: 0,
+                bytes: result === 0 ? null : lease.copyOut(pathLen, result),
+              };
+            });
+          if (res.errno !== 0) {
+            failErrno = res.errno;
+            break;
+          }
+          if (res.bytes === null) break;
+          chunks.push(res.bytes);
+          fileOffset += res.bytes.byteLength;
+          // rootfs read returns min(request, bytes-remaining); a short read is
+          // therefore EOF, so a further crossing is unnecessary.
+          if (res.bytes.byteLength < chunkCap) break;
+        }
+        if (failErrno === 0) {
+          let total = 0;
+          for (const c of chunks) total += c.byteLength;
+          const merged = new Uint8Array(total);
+          let at = 0;
+          for (const c of chunks) {
+            merged.set(c, at);
+            at += c.byteLength;
+          }
+          output = merged;
+        }
+        return undefined;
+      },
+    );
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs read failed", failErrno);
+    }
+    return output;
+  }
+
+  /**
+   * Write `data` to the rootfs file at `path` through the in-kernel overlay (2e
+   * cutover), creating or replacing it so the write is visible to live guests.
+   * "Replace whole file" semantics: the first crossing truncates and sets
+   * `mode`; the remainder are positioned continuations. Runs in one kernel entry.
+   * Throws `KernelScratchError` (POSIX errno) on failure, or
+   * `KernelReentrantEntryError` if a kernel entry is already active.
+   */
+  rootfsWriteFile(path: string, data: Uint8Array, mode: number): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs write path too long", ENAMETOOLONG);
+    }
+    // A routine errno must NOT throw inside the ingress (that is a fatal kernel
+    // fault); capture it and raise it after the entry returns.
+    let failErrno = 0;
+    this.#runImmediateKernelEntry(
+      "kernel rootfs write file",
+      (entry) => {
+        if (
+          typeof entry.instance.exports.kernel_rootfs_write_file !== "function"
+        ) {
+          failErrno = ENOSYS;
+          return undefined;
+        }
+        const region = this.#requireMainScratchRegion();
+        const chunkCap = region.capacity - pathLen;
+        if (chunkCap <= 0) {
+          failErrno = ENAMETOOLONG;
+          return undefined;
+        }
+        let dataOffset = 0;
+        let first = true;
+        // A single crossing even for empty data: the truncating first write
+        // creates/empties the file.
+        for (;;) {
+          const chunkLen = Math.min(chunkCap, data.byteLength - dataOffset);
+          const errno: number = region.withLease((lease) => {
+            lease.copyFrom(encodedPath, 0, 0, pathLen);
+            if (chunkLen > 0) {
+              // dest = after the path in scratch; source = into `data` at the
+              // current file offset.
+              lease.copyFrom(data, pathLen, dataOffset, chunkLen);
+            }
+            const pathPtr = lease.exportPointer(0, pathLen);
+            const bufPtr = lease.exportPointer(pathLen, chunkLen);
+            const result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_rootfs_write_file",
+              [
+                pathPtr,
+                pathLen,
+                dataOffset >>> 0,
+                Math.floor(dataOffset / 0x1_0000_0000),
+                bufPtr,
+                chunkLen,
+                mode & 0o7777,
+                first ? 1 : 0,
+              ],
+            );
+            if (!Number.isSafeInteger(result)) return EIO;
+            if (result < 0) return -result;
+            if (result !== chunkLen) return EIO; // short write
+            return 0;
+          });
+          if (errno !== 0) {
+            failErrno = errno;
+            break;
+          }
+          dataOffset += chunkLen;
+          first = false;
+          if (dataOffset >= data.byteLength) break;
+        }
+        return undefined;
+      },
+    );
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs write failed", failErrno);
+    }
+  }
+
+  /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
    */

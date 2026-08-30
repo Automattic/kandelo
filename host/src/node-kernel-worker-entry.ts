@@ -3666,6 +3666,27 @@ async function handleExportRootfsImage(
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
+  if (kernelRootfsEnabled()) {
+    // The kernel overlay owns `/`; read authoritative bytes from it (including
+    // guest copy-on-writes) rather than the demoted base-image MemoryFileSystem.
+    try {
+      const data = kernelWorker.rootfsReadFile(msg.path);
+      respondTransferredBytes(msg.requestId, data);
+    } catch (error) {
+      const errno = (error as { errno?: number }).errno;
+      // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
+      // file -> null, matching the host-served path's contract.
+      if (errno === 2 || errno === 20 || errno === 21) {
+        respond(msg.requestId, null);
+      } else {
+        respondError(
+          msg.requestId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    return;
+  }
   const io = vfsExecIO;
   if (!io) {
     respond(msg.requestId, null);
@@ -3700,6 +3721,29 @@ async function handleReadVfsFile(
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
+  if (kernelRootfsEnabled()) {
+    // The kernel overlay owns `/`; write into it so the file is visible to live
+    // guests, instead of the demoted base-image MemoryFileSystem the guest no
+    // longer reads.
+    let releaseMutation: (() => void) | undefined;
+    try {
+      releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
+      kernelWorker.rootfsWriteFile(
+        msg.path,
+        msg.data,
+        msg.mode & FILE_MODES.S_MODE_BITS,
+      );
+      respond(msg.requestId, true);
+    } catch (error) {
+      respondError(
+        msg.requestId,
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      releaseMutation?.();
+    }
+    return;
+  }
   const io = vfsExecIO;
   if (!io) {
     respondError(msg.requestId, "VFS is not initialized");

@@ -334,6 +334,51 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       else process.env.WASM_POSIX_ROOTFS = prevFlag;
     }
   });
+
+  // Phase 5 Increment 2e-S3: with the overlay owning `/`, host-side reads and
+  // writes of `/` must route THROUGH the overlay (the authority), not the
+  // demoted base-image MemoryFileSystem. The decisive proof is cross-authority:
+  // a file the host writes must be visible to a live guest, and read back
+  // through the overlay round-trips.
+  it("routes host read/write of `/` through the overlay, visible to guests", async () => {
+    const prevFlag = process.env.WASM_POSIX_ROOTFS;
+    process.env.WASM_POSIX_ROOTFS = "1"; // worker_thread inherits process.env
+    const probeBytes = new Uint8Array(readFileSync(mountProbe));
+    // A minimal eager `/` image (just the root dir); the file under test does
+    // not exist in it, so a guest seeing it proves the host write reached the
+    // authoritative overlay.
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    const image = await fs.saveImage();
+
+    let stdout = "";
+    const host = new NodeKernelHost({
+      rootfsImage: image,
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+      },
+    });
+
+    try {
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      const payload = new TextEncoder().encode("host-written-body");
+      await host.writeFileToVfs("/host-written", payload, 0o644);
+      // Host read-back through the overlay round-trips the exact bytes.
+      const readBack = await host.readFileFromVfs("/host-written");
+      expect(readBack).not.toBeNull();
+      expect(new TextDecoder().decode(readBack!)).toBe("host-written-body");
+      // A guest reads the same path and sees the host's write via the overlay.
+      expect(await host.spawn(arrayBuffer(probeBytes), [
+        "mount_probe_test",
+        "rootfs",
+        "/host-written",
+      ])).toBe(0);
+      expect(stdout).toContain(`ROOTFS size=${payload.byteLength}`);
+    } finally {
+      await host.destroy().catch(() => {});
+      if (prevFlag === undefined) delete process.env.WASM_POSIX_ROOTFS;
+      else process.env.WASM_POSIX_ROOTFS = prevFlag;
+    }
+  });
 });
 
 interface TarSpec {
