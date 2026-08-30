@@ -2,6 +2,7 @@
 //! VFSI container. Ported from host/src/vfs/sharedfs-vendor.ts. no_std + alloc.
 //! Consumes DECOMPRESSED bytes (zstd is a host-side transport codec).
 
+use alloc::vec::Vec;
 use wasm_posix_shared::Errno; // same import syscalls.rs uses
 
 const VFSI_MAGIC: u32 = 0x5646_5349; // "VFSI" LE
@@ -172,6 +173,52 @@ impl<'a> Sffs<'a> {
         }
         Ok(out)
     }
+
+    /// List directory entries. Walks dirent records across the directory's
+    /// data one block at a time (via `read_at` into a block-sized buffer so
+    /// records never straddle a block boundary). Skips free slots (`ino==0`)
+    /// but still advances by `rec_len`; includes `.`/`..` (callers filter).
+    /// On a corrupt record, stops scanning the rest of that block.
+    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<SffsDirent>, Errno> {
+        let st = self.stat_ino(dir_ino)?;
+        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }
+        let size = st.size;
+        let mut out = Vec::new();
+        let mut block_start = 0u64;
+        let mut block = [0u8; BLOCK_SIZE];
+        while block_start < size {
+            let this = core::cmp::min(BLOCK_SIZE as u64, size - block_start) as usize;
+            let n = self.read_at(dir_ino, block_start, &mut block[..this])?;
+            if n == 0 { break; }
+            let mut off = 0usize;
+            while off + DIRENT_HEADER <= n {
+                let ino = u32::from_le_bytes([block[off], block[off + 1], block[off + 2], block[off + 3]]);
+                let rec_len = u16::from_le_bytes([block[off + 4], block[off + 5]]) as usize;
+                let name_len = u16::from_le_bytes([block[off + 6], block[off + 7]]) as usize;
+                // isValidDirEntry: rec_len>=8 && %4==0 && off+rec_len<=blockEnd && name_len<=rec_len-8
+                if rec_len < DIRENT_HEADER || rec_len % 4 != 0
+                    || off + rec_len > n || name_len > rec_len - DIRENT_HEADER {
+                    break; // corrupt: stop scanning this block
+                }
+                if ino != 0 {
+                    out.push(SffsDirent {
+                        ino,
+                        name: block[off + DIRENT_HEADER..off + DIRENT_HEADER + name_len].to_vec(),
+                    });
+                }
+                off += rec_len;
+            }
+            block_start += BLOCK_SIZE as u64;
+        }
+        Ok(out)
+    }
+}
+
+const DIRENT_HEADER: usize = 8;
+
+pub struct SffsDirent {
+    pub ino: u32,
+    pub name: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -236,5 +283,19 @@ mod tests {
         assert!(n > 0 && (n as u64) <= size);
         // beyond EOF returns 0
         assert_eq!(fs.read_at(ROOT_INO, size + 10, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_dir_lists_root_entries() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let names: alloc::vec::Vec<alloc::vec::Vec<u8>> =
+            fs.read_dir(ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();
+        for want in [b"hello.txt".as_slice(), b"dir", b"link", b"big.txt"] {
+            assert!(names.iter().any(|n| n.as_slice() == want), "missing {:?}", want);
+        }
+        // ENOTDIR on a non-directory: hello.txt's inode
+        let file_ino = fs.read_dir(ROOT_INO).unwrap().into_iter()
+            .find(|e| e.name == b"hello.txt").unwrap().ino;
+        assert!(fs.read_dir(file_ino).is_err());
     }
 }
