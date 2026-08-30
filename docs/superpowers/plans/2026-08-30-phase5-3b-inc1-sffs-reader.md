@@ -387,13 +387,20 @@ fn block_map_direct_and_indirect() {
 ```
 NOTE: this test calls `lookup` (Task 8). If implementing strictly in order, temporarily hard-resolve `big.txt`'s ino by scanning the root dir, or reorder so Task 8 precedes Task 5. Simplest: move this test's body to after Task 8 lands, and in Task 5 test `block_map` against the root directory inode's block 0 (`fs.block_map(ROOT_INO, 0).unwrap() != 0`), which needs no lookup.
 
-Revised Task-5 test (no lookup dependency):
+Revised Task-5 test (no lookup dependency). NOTE: a beyond-max file_block must be
+`is_err()` (EINVAL), not `.unwrap() == 0` — `block_map` returns `Err(EINVAL)` past
+the addressable range (10 + 1024 + 1024*1024 = 1,049,610 blocks), so unwrapping a
+beyond-max block panics. Use an in-range unallocated block for the hole assertion:
 ```rust
 #[test]
-fn block_map_root_dir_block0_is_allocated() {
+fn block_map_direct_hole_and_beyond_max() {
     let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+    // Root dir's first data block is allocated (non-zero physical block).
     assert!(fs.block_map(ROOT_INO, 0).unwrap() != 0, "root dir data block 0");
-    assert_eq!(fs.block_map(ROOT_INO, 5_000_000).unwrap(), 0, "far block is a hole");
+    // An unallocated direct block within range reads as a sparse hole (0).
+    assert_eq!(fs.block_map(ROOT_INO, 5).unwrap(), 0, "unallocated direct block is a hole");
+    // A file block beyond the double-indirect range is EINVAL, not a hole.
+    assert!(fs.block_map(ROOT_INO, 2_000_000).is_err(), "beyond max file blocks -> EINVAL");
 }
 ```
 

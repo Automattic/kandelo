@@ -155,3 +155,6 @@ packages/registry/*/package.pr.toml
 # replacement across cooperating xtask processes. It is intentionally retained
 # so waiters never split onto different lock inodes.
 .*.kandelo-index.lock
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+/.superpowers/
