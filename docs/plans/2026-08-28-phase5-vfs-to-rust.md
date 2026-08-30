@@ -456,3 +456,54 @@ lazy-leaf materialization so it is safe for every image.
 So Increment 2's endpoint is: overlay complete + wired into all `/` syscalls +
 eager-`/` validated (opt-in). Increment 2e (host drops the `/` image mount as
 authority + default-on flip) moves to the end of Increment 3.
+
+### Increment 3a update (2026-08-30): lazy materialization needs no WAKE_BLOB_READY
+
+The deferral above assumed the async lazy path required a new kernel wake type
+(`WAKE_BLOB_READY`) and an ABI bump. That turned out to be unnecessary. The host
+already models a lazy access as EAGAIN-driven retry: `MemoryFileSystem.open`/
+`read` on an unmaterialized leaf kicks off the async fetch and throws a
+`code === "EAGAIN"` error (`guardSynchronousLazyAccess`). The kernel's generic
+blocking-retry machinery already parks *any* read that returns EAGAIN and
+re-drives it on a short poll (`handleBlockingRetry`'s default fallback), with a
+host-captured retry disposition that tolerates a non-socket, blocking
+regular-file fd. So the overlay's byte provider only needed to **propagate
+EAGAIN instead of collapsing it to EIO**.
+
+`createRootfsBlobProvider` now maps a `code === "EAGAIN"` backend exception to
+`-EAGAIN` (kernel parks + retries) and every other failure to `-EIO`. No kernel,
+ABI, or wake-type change. The two lazy-consumption paths under an overlay-owned
+`/` are now both handled:
+
+- **exec-by-path** of a lazy program: already materialized host-side via
+  `resolveExec` -> `readExecFromVfs` -> `readPreparedPlatformFile`, independent
+  of the overlay's `blob_read`. No change needed.
+- **read()** of a lazy base file: overlay `blob_read` -> provider -> EAGAIN park
+  / poll-retry -> materialized bytes. Fixed + validated (commit `VFS: Block+retry
+  lazy base-file reads in rootfs overlay (Inc 3a)`).
+
+Validated end-to-end on the Node host with the real kernel + overlay enabled: a
+probe reads a lazy zip-backed base file through overlay-owned `/`, blocks, the
+host materializes, and the read returns the bytes. A discriminating run with the
+pre-fix provider (EIO) makes the same probe fail, proving the overlay path and
+the fix are genuinely exercised.
+
+**Sequencing consequence:** the cutover's stated safety precondition ("lazy-leaf
+materialization so it is safe for every image") is met by 3a alone. The parser
+migration (3b: SFFS read + zstd + tar/zip -> Rust) is a separable architectural
+cleanup that does *not* gate cutover safety. The default-on flip (2e) can
+therefore be sequenced independently of 3b. Not doing so unilaterally — see the
+open sequencing question at the end of this doc.
+
+### Open sequencing question (2026-08-30)
+
+With 3a done, two orderings are viable and the choice is a judgment call:
+
+1. **Cutover next (2e), then 3b.** Flip default-on now (after live shell-demo +
+   WordPress-Chromium + libc/sortix validation), making the Rust overlay the
+   real `/` authority for every image. Higher immediate value (overlay is
+   production-real; directly serves the "hands-on app on the Rust VFS" goal) but
+   higher risk (touches conformance + browser). Defers the large 3b effort.
+2. **3b next (parsers -> Rust), then cutover.** Follow the literal plan ordering.
+   Large, lower-risk-per-step, but keeps the overlay opt-in far longer and sinks
+   substantial effort before the overlay is ever the default authority.
