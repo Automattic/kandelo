@@ -379,6 +379,45 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
       else process.env.WASM_POSIX_ROOTFS = prevFlag;
     }
   });
+
+  // Phase 5 Increment 2e-S1: exec-target reads program bytes through the overlay.
+  // The decisive proof is an executable that exists ONLY in the overlay (planted
+  // via the host write RPC), absent from the base image: `host_open` on its path
+  // would ENOENT, so a successful exec-resolve proves exec-target opened + read
+  // it from the overlay, not the host `/` mount.
+  it("execs an overlay-only `/` binary the base image lacks", async () => {
+    const prevFlag = process.env.WASM_POSIX_ROOTFS;
+    process.env.WASM_POSIX_ROOTFS = "1";
+    const probeBytes = new Uint8Array(readFileSync(mountProbe));
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    const image = await fs.saveImage();
+
+    let stdout = "";
+    const host = new NodeKernelHost({
+      rootfsImage: image,
+      onStdout: (_pid, bytes) => {
+        stdout += new TextDecoder().decode(bytes);
+      },
+    });
+
+    try {
+      await host.init(arrayBuffer(new Uint8Array(readFileSync(kernel))));
+      // Plant a real executable under `/` that the base image does not contain.
+      await host.writeFileToVfs("/planted", probeBytes, 0o755);
+      // Exec-resolve it by path from the overlay and run it (it reads itself).
+      const { exit } = await host.spawnFromVfs("/planted", [
+        "planted",
+        "rootfs",
+        "/planted",
+      ]);
+      expect(await exit).toBe(0);
+      expect(stdout).toContain(`ROOTFS size=${probeBytes.byteLength}`);
+    } finally {
+      await host.destroy().catch(() => {});
+      if (prevFlag === undefined) delete process.env.WASM_POSIX_ROOTFS;
+      else process.env.WASM_POSIX_ROOTFS = prevFlag;
+    }
+  });
 });
 
 interface TarSpec {

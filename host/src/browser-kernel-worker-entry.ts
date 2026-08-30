@@ -4433,16 +4433,36 @@ function readFileFromFs(path: string): ArrayBuffer | null {
 }
 
 async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  try {
-    const { data } = await readPreparedPlatformFile(io, path);
-    return data.buffer.slice(
-      data.byteOffset,
-      data.byteOffset + data.byteLength,
-    ) as ArrayBuffer;
-  } catch (error) {
-    if (isMissingPathError(error)) return null;
-    throw error;
+  if (io) {
+    try {
+      // The base-image mount resolves symlinks and materializes lazy programs,
+      // so base and lazy executables load here even under the overlay.
+      const { data } = await readPreparedPlatformFile(io, path);
+      return data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength,
+      ) as ArrayBuffer;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      // Missing from the base image; fall through to the overlay for a file
+      // that exists only there (e.g. a guest-written `/` executable).
+    }
   }
+  if (kernelRootfsEnabled()) {
+    try {
+      const data = kernelWorker.rootfsReadFile(path);
+      return data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength,
+      ) as ArrayBuffer;
+    } catch (error) {
+      const errno = (error as { errno?: number }).errno;
+      // ENOENT (2), ENOTDIR (20), EISDIR (21): not a readable regular file.
+      if (errno === 2 || errno === 20 || errno === 21) return null;
+      throw error;
+    }
+  }
+  return null;
 }
 
 // ── Message dispatch ──
