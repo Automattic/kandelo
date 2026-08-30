@@ -138,6 +138,78 @@ macro_rules! pointer {
     };
 }
 
+/// How a request family derives the byte count it marshals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoctlFamilySize {
+    /// Every member marshals the same structure, so the caller's encoded
+    /// size must match exactly.
+    Fixed(u32),
+    /// The caller chooses the length and encodes it in the request. Bounded
+    /// so a malformed request cannot stage an oversized scratch buffer.
+    CallerEncoded { max: u32 },
+}
+
+/// A contiguous `nr` range that shares one marshalling contract.
+///
+/// `EVIOCGNAME(len)` and `EVIOCGBIT(ev, len)` let the caller pick the buffer
+/// length, so every length is a distinct request number; `EVIOCGABS(axis)`
+/// keeps one structure across 64 axes. Neither shape fits a table keyed by
+/// exact request number, so they resolve through `IOCTL_REQUEST_FAMILIES`
+/// after `IOCTL_REQUEST_CONTRACTS` misses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoctlRequestFamily {
+    pub dir: u32,
+    pub magic: u32,
+    pub nr_first: u32,
+    pub nr_last: u32,
+    pub direction: IoctlDirection,
+    pub size: IoctlFamilySize,
+}
+
+/// Largest buffer a caller-encoded request may stage.
+///
+/// `EVIOCGNAME` returns a device name and `EVIOCGBIT` a capability bitmap;
+/// the widest bitmap Kandelo advertises is `EV_KEY`, which needs
+/// `KEY_CNT / 8` bytes. 256 covers both with headroom.
+pub const EVIOC_MAX_CALLER_LENGTH: u32 = 256;
+
+/// Pointer ioctls whose request number varies by length or by axis.
+///
+/// Ordering is not load-bearing here — lookup is a linear scan over a short
+/// table, and the ranges are disjoint.
+pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGNAME_NR,
+        nr_last: crate::input::EVIOCGNAME_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGBIT_NR_BASE,
+        nr_last: crate::input::EVIOCGBIT_NR_BASE + 31,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGABS_NR_BASE,
+        nr_last: crate::input::EVIOCGABS_NR_BASE + 63,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::Fixed(
+            core::mem::size_of::<crate::input::WpkInputAbsinfo>() as u32,
+        ),
+    },
+];
+
 /// Ioctls that may reach the Rust kernel dispatcher.
 ///
 /// Keep entries sorted by unsigned request number. Network-interface ioctls
@@ -192,10 +264,12 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     no_arg!(crate::dri::DRM_IOCTL_SET_MASTER),
     no_arg!(crate::dri::DRM_IOCTL_DROP_MASTER),
     pointer!(SIOCATMARK, Out, 4),
+    scalar_i32!(crate::input::EVIOCGRAB),
     pointer!(crate::oss::SNDCTL_DSP_SETBLKSIZE, In, 4),
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),
     pointer!(crate::dri::DRM_IOCTL_GEM_CLOSE, In, 8),
+    pointer!(crate::input::EVIOCGVERSION, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_RATE, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_BITS, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_CHANNELS, Out, 4),
@@ -205,6 +279,11 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_GETTRIGGER, Out, 4),
     pointer!(crate::oss::SNDCTL_DSP_GETODELAY, Out, 4),
     pointer!(TIOCGPTN, Out, 4),
+    pointer!(
+        crate::input::EVIOCGID,
+        Out,
+        core::mem::size_of::<crate::input::WpkInputId>() as u32
+    ),
     pointer!(crate::oss::SNDCTL_DSP_MAPINBUF, Out, 8),
     pointer!(crate::oss::SNDCTL_DSP_MAPOUTBUF, Out, 8),
     pointer!(crate::oss::SNDCTL_DSP_GETIPTR, Out, 12),
@@ -239,11 +318,50 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB2, InOut, 104),
 ];
 
-pub fn request_contract(request: u32) -> Option<&'static IoctlRequestContract> {
-    IOCTL_REQUEST_CONTRACTS
-        .binary_search_by_key(&request, |entry| entry.request)
-        .ok()
-        .map(|index| &IOCTL_REQUEST_CONTRACTS[index])
+pub fn request_contract(request: u32) -> Option<IoctlRequestContract> {
+    if let Ok(index) =
+        IOCTL_REQUEST_CONTRACTS.binary_search_by_key(&request, |entry| entry.request)
+    {
+        return Some(IOCTL_REQUEST_CONTRACTS[index]);
+    }
+    family_request_contract(request)
+}
+
+/// Resolve a request that varies by caller-chosen length or by axis.
+///
+/// Returns `None` for a member whose encoded size the family does not allow,
+/// so a malformed request stays unknown rather than staging a wrong buffer.
+pub fn family_request_contract(request: u32) -> Option<IoctlRequestContract> {
+    let dir = (request >> 30) & 0x3;
+    let encoded_size = (request >> 16) & 0x3fff;
+    let magic = (request >> 8) & 0xff;
+    let nr = request & 0xff;
+
+    let family = IOCTL_REQUEST_FAMILIES.iter().find(|family| {
+        family.dir == dir
+            && family.magic == magic
+            && family.nr_first <= nr
+            && nr <= family.nr_last
+    })?;
+
+    let size = match family.size {
+        IoctlFamilySize::Fixed(fixed) if encoded_size == fixed => fixed,
+        IoctlFamilySize::Fixed(_) => return None,
+        IoctlFamilySize::CallerEncoded { max }
+            if encoded_size >= 1 && encoded_size <= max =>
+        {
+            encoded_size
+        }
+        IoctlFamilySize::CallerEncoded { .. } => return None,
+    };
+
+    Some(IoctlRequestContract {
+        request,
+        arg_kind: IoctlArgKind::Pointer,
+        direction: family.direction,
+        wasm32_size: Some(size),
+        wasm64_size: Some(size),
+    })
 }
 
 #[cfg(test)]
@@ -273,5 +391,95 @@ mod tests {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
         assert_eq!(query.size_for_pointer_width(8), None);
+    }
+
+    /// Builds the same encoding the musl `_IOC` macros produce.
+    const fn evioc(dir: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | ((b'E' as u32) << 8) | nr
+    }
+
+    #[test]
+    fn fixed_evdev_requests_resolve_through_the_sorted_table() {
+        let version = request_contract(crate::input::EVIOCGVERSION).unwrap();
+        assert_eq!(version.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(version.size_for_pointer_width(4), Some(4));
+
+        let id = request_contract(crate::input::EVIOCGID).unwrap();
+        assert_eq!(id.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(id.size_for_pointer_width(4), Some(8));
+
+        let grab = request_contract(crate::input::EVIOCGRAB).unwrap();
+        assert_eq!(grab.arg_kind, IoctlArgKind::ScalarI32);
+    }
+
+    #[test]
+    fn evioc_gabs_resolves_every_axis_at_the_absinfo_size() {
+        for axis in 0..64 {
+            let request = evioc(2, crate::input::EVIOCGABS_NR_BASE + axis, 24);
+            let contract = request_contract(request).unwrap();
+            assert_eq!(contract.arg_kind, IoctlArgKind::Pointer);
+            assert_eq!(contract.size_for_pointer_width(4), Some(24));
+            assert_eq!(contract.size_for_pointer_width(8), Some(24));
+        }
+    }
+
+    #[test]
+    fn evioc_gabs_rejects_a_size_other_than_absinfo() {
+        let request = evioc(2, crate::input::EVIOCGABS_NR_BASE, 16);
+        assert_eq!(request_contract(request), None);
+    }
+
+    #[test]
+    fn caller_encoded_evdev_requests_carry_the_callers_length() {
+        for size in [1, 32, EVIOC_MAX_CALLER_LENGTH] {
+            let name = evioc(2, crate::input::EVIOCGNAME_NR, size);
+            assert_eq!(
+                request_contract(name).unwrap().size_for_pointer_width(4),
+                Some(size),
+            );
+
+            let bit = evioc(2, crate::input::EVIOCGBIT_NR_BASE + 1, size);
+            assert_eq!(
+                request_contract(bit).unwrap().size_for_pointer_width(4),
+                Some(size),
+            );
+        }
+    }
+
+    #[test]
+    fn caller_encoded_evdev_requests_reject_zero_and_oversized_lengths() {
+        for nr in [
+            crate::input::EVIOCGNAME_NR,
+            crate::input::EVIOCGBIT_NR_BASE,
+        ] {
+            assert_eq!(request_contract(evioc(2, nr, 0)), None);
+            assert_eq!(
+                request_contract(evioc(2, nr, EVIOC_MAX_CALLER_LENGTH + 1)),
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn evdev_families_ignore_a_foreign_magic_or_write_direction() {
+        let foreign_magic =
+            (2 << 30) | (24 << 16) | ((b'D' as u32) << 8) | crate::input::EVIOCGABS_NR_BASE;
+        assert_eq!(request_contract(foreign_magic), None);
+        assert_eq!(
+            request_contract(evioc(1, crate::input::EVIOCGABS_NR_BASE, 24)),
+            None,
+        );
+    }
+
+    #[test]
+    fn family_ranges_do_not_overlap_the_sorted_table() {
+        for contract in IOCTL_REQUEST_CONTRACTS {
+            assert_eq!(
+                family_request_contract(contract.request),
+                None,
+                "request {:#x} resolves through both tables",
+                contract.request,
+            );
+        }
     }
 }

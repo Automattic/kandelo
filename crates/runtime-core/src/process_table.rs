@@ -1704,6 +1704,17 @@ impl ProcessTable {
     }
 }
 
+/// Run `f` over every live process. The audio period tick and the evdev
+/// fan-out both need to reach each process's OFD table from outside a
+/// syscall, where no `&mut Process` is in scope.
+pub fn with_processes<F>(f: F)
+where
+    F: FnOnce(alloc::collections::btree_map::ValuesMut<'_, u32, Process>),
+{
+    let table = unsafe { &mut *GLOBAL_PROCESS_TABLE.0.get() };
+    f(table.processes.values_mut());
+}
+
 #[cfg(test)]
 mod wait_tests {
     use super::*;

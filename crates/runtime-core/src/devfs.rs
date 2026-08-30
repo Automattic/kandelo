@@ -166,8 +166,11 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
-            // No /dev/input/eventN evdev nodes yet (mousedev surface only).
             entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
+            // /dev/input/event0 — keyboard evdev (plan 5).
+            // /dev/input/event1 — pointer evdev.
+            entries.push((b"event0".into(), DT_CHR, devfs_ino(b"/dev/input/event0")));
+            entries.push((b"event1".into(), DT_CHR, devfs_ino(b"/dev/input/event1")));
         }
         DevfsEntry::DriDir => {
             // /dev/dri/card0 — KMS / display side.
@@ -522,5 +525,21 @@ mod tests {
             devfs_getdents64(&proc, b"/dev", &mut empty, -1),
             Err(Errno::EINVAL)
         );
+    }
+
+    #[test]
+    fn event0_and_event1_listed_in_dev_input_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"event0"), "event0 missing: {:?}", names);
+        assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);
+        // event2 deliberately NOT synthesised.
+        assert!(!names.iter().any(|n| *n == b"event2"));
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"event0" || name.as_slice() == b"event1" {
+                assert_eq!(*dtype, DT_CHR);
+            }
+        }
     }
 }

@@ -39,8 +39,8 @@ import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
+import { resolveIoctlContract } from "./ioctl-contract";
 import {
-  IOCTL_REQUESTS,
   KERNEL_SCRATCH_FD_PAIR_BYTES,
   KERNEL_SCRATCH_SOCKLEN_BYTES,
   SELECT_FD_SET_BYTES,
@@ -3995,7 +3995,7 @@ export class WasmPosixKernel {
       bufLen: number,
       processPointerWidth: number,
     ) => number;
-    const contract = IOCTL_REQUESTS[request >>> 0];
+    const contract = resolveIoctlContract(request);
     const wasm32Size = contract?.wasm32Size;
     if (contract && wasm32Size === null) {
       throw new Error(
