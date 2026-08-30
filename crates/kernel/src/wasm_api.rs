@@ -1470,6 +1470,37 @@ pub extern "C" fn kernel_set_tmpfs_enabled(enabled: i32) -> i32 {
     crate::tmpfs::set_enabled(enabled != 0) as i32
 }
 
+/// Load the in-kernel rootfs overlay's base tree from a boot manifest buffer in
+/// kernel Wasm memory (Phase 5 Increment 2). The host walks the `/` image tree
+/// once and hands the whole thing over in a single crossing. Returns the number
+/// of entries loaded (>=0) or a negative errno. See `rootfs::load_manifest`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    match crate::rootfs::load_manifest(buf) {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
+/// host calls this at boot once it hands `/` ownership to the kernel and demotes
+/// its image backend to a byte-leaf provider. Returns the previous state (0/1).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_enabled(enabled: i32) -> i32 {
+    crate::rootfs::set_enabled(enabled != 0) as i32
+}
+
+/// Publish the wall-clock time the rootfs overlay stamps onto metadata
+/// mutations and onto base entries loaded from the manifest. The host calls this
+/// once at boot before loading the manifest (so base entries are not epoch-
+/// stamped), and the syscall layer refreshes it before each mutating rootfs op.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_now(sec: u64, nsec: u32) -> i32 {
+    crate::rootfs::set_now(sec, nsec);
+    0
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]

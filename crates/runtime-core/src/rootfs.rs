@@ -650,6 +650,110 @@ pub fn insert_base_symlink(
 }
 
 // ---------------------------------------------------------------------------
+// Boot manifest ingestion (Increment 2c).
+//
+// The host hands the kernel the whole `/` tree once at boot as a compact binary
+// buffer, which this module parses into the base layer. One host->kernel
+// crossing for the entire tree (not one call per entry). The wire format is a
+// purpose-built fixed-field record stream we own — deliberately NOT a
+// general-purpose archive parser (that is Increment 3). Little-endian.
+//
+//   header:  magic u32 = "RTFS" | version u32 = 1 | entry_count u32
+//   entry:   kind u8 (1=dir, 2=file, 3=symlink)
+//            mode u32 | uid u32 | gid u32 | ino u64 | blob_id u64 | size u64
+//            path_len u32 | path[path_len]
+//            target_len u32 | target[target_len]   (target_len=0 unless symlink)
+//
+// Every entry carries all fields (zero when not applicable) so the parser stays
+// uniform and bounds-checkable. Entries are parent-first (the host walks the
+// tree pre-order), so each insert's parent already exists.
+// ---------------------------------------------------------------------------
+
+/// Manifest header magic ("RTFS", little-endian).
+const MANIFEST_MAGIC: u32 = 0x5346_5452;
+const MANIFEST_VERSION: u32 = 1;
+/// Defensive cap on a single path/target length (bytes).
+const MANIFEST_NAME_MAX: usize = 65_536;
+
+fn rd_u8(buf: &[u8], pos: &mut usize) -> Result<u8, Errno> {
+    let v = *buf.get(*pos).ok_or(Errno::EINVAL)?;
+    *pos += 1;
+    Ok(v)
+}
+
+fn rd_u32(buf: &[u8], pos: &mut usize) -> Result<u32, Errno> {
+    let end = pos.checked_add(4).ok_or(Errno::EINVAL)?;
+    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
+    let mut b = [0u8; 4];
+    b.copy_from_slice(slice);
+    *pos = end;
+    Ok(u32::from_le_bytes(b))
+}
+
+fn rd_u64(buf: &[u8], pos: &mut usize) -> Result<u64, Errno> {
+    let end = pos.checked_add(8).ok_or(Errno::EINVAL)?;
+    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
+    let mut b = [0u8; 8];
+    b.copy_from_slice(slice);
+    *pos = end;
+    Ok(u64::from_le_bytes(b))
+}
+
+fn rd_bytes<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], Errno> {
+    if len > MANIFEST_NAME_MAX {
+        return Err(Errno::EINVAL);
+    }
+    let end = pos.checked_add(len).ok_or(Errno::EINVAL)?;
+    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
+    *pos = end;
+    Ok(slice)
+}
+
+/// Replace the base layer from a boot manifest buffer. Clears any prior state,
+/// then inserts every entry parent-first. Returns the number of entries loaded.
+/// A malformed buffer or a rejected insert yields `EINVAL` with the store reset
+/// to empty (a partial tree is never left behind).
+pub fn load_manifest(buf: &[u8]) -> Result<usize, Errno> {
+    reset();
+    let result = load_manifest_inner(buf);
+    if result.is_err() {
+        reset();
+    }
+    result
+}
+
+fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
+    let mut pos = 0usize;
+    if rd_u32(buf, &mut pos)? != MANIFEST_MAGIC {
+        return Err(Errno::EINVAL);
+    }
+    if rd_u32(buf, &mut pos)? != MANIFEST_VERSION {
+        return Err(Errno::EINVAL);
+    }
+    let count = rd_u32(buf, &mut pos)? as usize;
+    for _ in 0..count {
+        let kind = rd_u8(buf, &mut pos)?;
+        let mode = rd_u32(buf, &mut pos)?;
+        let uid = rd_u32(buf, &mut pos)?;
+        let gid = rd_u32(buf, &mut pos)?;
+        let ino = rd_u64(buf, &mut pos)?;
+        let blob_id = rd_u64(buf, &mut pos)?;
+        let size = rd_u64(buf, &mut pos)?;
+        let path_len = rd_u32(buf, &mut pos)? as usize;
+        let path = rd_bytes(buf, &mut pos, path_len)?.to_vec();
+        let target_len = rd_u32(buf, &mut pos)? as usize;
+        let target = rd_bytes(buf, &mut pos, target_len)?.to_vec();
+        match kind {
+            1 => insert_base_dir(&path, mode, uid, gid, ino)?,
+            2 => insert_base_file(&path, blob_id, size, mode, uid, gid, ino)?,
+            3 => insert_base_symlink(&path, &target, mode, uid, gid, ino)?,
+            _ => return Err(Errno::EINVAL),
+        }
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
 // Read-path operations (Increment 2a).
 // ---------------------------------------------------------------------------
 
@@ -1836,6 +1940,90 @@ mod tests {
         let n = readlink(b"/usr/bin/newlink", &mut buf).unwrap();
         assert_eq!(&buf[..n], b"../lib/x");
         assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
+    }
+
+    fn enc_entry(
+        out: &mut alloc::vec::Vec<u8>,
+        kind: u8,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        ino: u64,
+        blob_id: u64,
+        size: u64,
+        path: &[u8],
+        target: &[u8],
+    ) {
+        out.push(kind);
+        out.extend_from_slice(&mode.to_le_bytes());
+        out.extend_from_slice(&uid.to_le_bytes());
+        out.extend_from_slice(&gid.to_le_bytes());
+        out.extend_from_slice(&ino.to_le_bytes());
+        out.extend_from_slice(&blob_id.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        out.extend_from_slice(path);
+        out.extend_from_slice(&(target.len() as u32).to_le_bytes());
+        out.extend_from_slice(target);
+    }
+
+    #[test]
+    fn load_manifest_round_trips_a_tree() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+        m.extend_from_slice(&4u32.to_le_bytes()); // entry count
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, b"/", b"");
+        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, b"/usr", b"");
+        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 99, 12, b"/usr/greeting", b"");
+        enc_entry(&mut m, 3, 0o777, 0, 0, 4, 0, 0, b"/usr/link", b"greeting");
+
+        assert_eq!(load_manifest(&m).unwrap(), 4);
+
+        let d = lstat(b"/usr").unwrap();
+        assert_eq!(d.st_mode & S_IFMT, S_IFDIR);
+        let f = lstat(b"/usr/greeting").unwrap();
+        assert_eq!(f.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(f.st_size, 12);
+        assert_eq!(f.st_ino, 3);
+
+        // The base file reads its bytes through blob_id 99.
+        let mut blob = make_blob_reader(alloc::vec![(99u64, b"hello, world".to_vec())]);
+        let h = open(b"/usr/greeting", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 16];
+        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"hello, world");
+        release_handle(h);
+
+        let mut lbuf = [0u8; 32];
+        let ln = readlink(b"/usr/link", &mut lbuf).unwrap();
+        assert_eq!(&lbuf[..ln], b"greeting");
+    }
+
+    #[test]
+    fn load_manifest_rejects_bad_magic_and_leaves_empty() {
+        let _g = TestGuard::acquire();
+        build_sample_tree(); // pre-existing state that reset() must clear
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+        m.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
+        // Reset-on-failure: the store is empty, not the pre-existing tree.
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn load_manifest_rejects_truncated_buffer() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
+        m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 entries
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, b"/", b"");
+        // second entry missing entirely -> short read
+        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
     }
 
     #[test]
