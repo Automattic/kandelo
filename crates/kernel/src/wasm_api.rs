@@ -73,6 +73,17 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: i32,
     ) -> i32;
+    // Rootfs overlay content byte-leaf read (Phase 5 Increment 2). blob_id and
+    // offset are 64-bit values split into 32-bit words for the JS boundary,
+    // matching the host_pread offset convention.
+    fn host_blob_read(
+        blob_id_lo: u32,
+        blob_id_hi: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: u32,
+    ) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -344,6 +355,21 @@ impl HostIO for WasmHostIO {
         let (offset_lo, offset_hi) = split_i64_words(offset);
         let result =
             unsafe { host_pread(handle, buf.as_mut_ptr(), capacity, offset_lo, offset_hi) };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_blob_read(
+                blob_id as u32,
+                (blob_id >> 32) as u32,
+                buf.as_mut_ptr(),
+                capacity,
+                offset as u32,
+                (offset >> 32) as u32,
+            )
+        };
         checked_host_transfer_result(result, buf.len())
     }
 

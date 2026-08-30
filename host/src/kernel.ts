@@ -505,6 +505,13 @@ function signedI64FromWords(offsetLo: number, offsetHi: number): bigint {
     | intrinsicBigInt(offsetLo >>> 0);
 }
 
+/** Reconstruct an unsigned 64-bit value from two 32-bit words (both treated as
+ * unsigned). Used for rootfs `blob_id`/`offset`, which are never negative. */
+function u64FromWords(lo: number, hi: number): bigint {
+  return (intrinsicBigInt(hi >>> 0) << 32n)
+    | intrinsicBigInt(lo >>> 0);
+}
+
 interface IntrinsicBufferSourceSpan {
   buffer: ArrayBufferLike;
   byteOffset: number;
@@ -842,6 +849,17 @@ export class WasmPosixKernel {
   private signalWakeSab: SharedArrayBuffer | null = null;
   private programFuncTable: WebAssembly.Table | null = null;
   #kernelFuncTable: WebAssembly.Table | null = null;
+  /**
+   * Rootfs overlay content byte-leaf provider (Phase 5 Increment 2). The Rust
+   * kernel owns the `/` tree and asks the host only for a base file's immutable
+   * bytes, addressed by a manifest-assigned blob id. The provider fills `dest`
+   * from the leaf at `offset` and returns the count (or a negative errno). Wired
+   * by the worker from the boot manifest; until set, `host_blob_read` reports
+   * ENOSYS so the seam is truthfully unbacked.
+   */
+  #rootfsBlobProvider:
+    | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -932,6 +950,16 @@ export class WasmPosixKernel {
    */
   setProgramFuncTable(table: WebAssembly.Table): void {
     this.programFuncTable = table;
+  }
+
+  /**
+   * Install the rootfs overlay content byte-leaf provider (Phase 5 Increment 2).
+   * See {@link WasmPosixKernel.prototype} `#rootfsBlobProvider`.
+   */
+  setRootfsBlobProvider(
+    provider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
+  ): void {
+    this.#rootfsBlobProvider = provider;
   }
 
   constructor(
@@ -1552,6 +1580,28 @@ export class WasmPosixKernel {
               ),
               offsetLo,
               offsetHi,
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_blob_read: (
+          blobIdLo: number,
+          blobIdHi: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          try {
+            return this.#hostBlobRead(
+              u64FromWords(blobIdLo, blobIdHi),
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_blob_read destination",
+              ),
             );
           } catch {
             return -14; // EFAULT
@@ -2621,6 +2671,56 @@ export class WasmPosixKernel {
       destination,
       signedI64FromWords(offsetLo, offsetHi),
     );
+  }
+
+  /**
+   * host_blob_read(blob_id, buf_ptr, buf_len, offset) -> i32
+   *
+   * Serve a rootfs base file's immutable bytes from the installed blob provider.
+   * Bytes are staged outside kernel memory and published once (never lend a live
+   * view of Rust-owned memory to the provider), mirroring `#hostReadAt`. Reports
+   * ENOSYS when no provider is installed (the seam is truthfully unbacked until
+   * the boot manifest wires it).
+   */
+  #hostBlobRead(
+    blobId: bigint,
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#rootfsBlobProvider;
+    if (provider === undefined) {
+      return -38; // ENOSYS
+    }
+    const destinationCapacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(destinationCapacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(blobId, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
+      return -5; // EIO
+    }
+    if (result < 0) {
+      return result; // provider-reported negative errno
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(
+          destination,
+          subarrayUint8Array(staged, 0, result),
+        );
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
   }
 
   /**
