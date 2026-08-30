@@ -496,9 +496,19 @@ pub fn is_tmpfs_file_handle(handle: i64) -> bool {
 }
 
 /// Whether a host handle names an open tmpfs directory stream.
+///
+/// Bounded on both sides so the band `(-4e9, -3e9]` stays disjoint from the
+/// rootfs overlay handle bands below it (`rootfs.rs`: file `(-5e9, -4e9]`, dir
+/// `(-6e9, -5e9]`). The dir-iter index never approaches 1e9, so the 1e9-wide
+/// band is never exhausted. Mirrors the synthetic-regular bounding from
+/// Increment 1b.
 pub fn is_tmpfs_dir_handle(handle: i64) -> bool {
     handle <= -TMPFS_DIR_HANDLE_BASE
+        && handle > -(TMPFS_DIR_HANDLE_BASE + HANDLE_BAND_WIDTH)
 }
+
+/// Width of each disjoint negative-handle band (see `is_tmpfs_dir_handle`).
+pub(crate) const HANDLE_BAND_WIDTH: i64 = 1_000_000_000;
 
 fn file_handle_to_inode(handle: i64) -> Result<u32, Errno> {
     if !is_tmpfs_file_handle(handle) {
