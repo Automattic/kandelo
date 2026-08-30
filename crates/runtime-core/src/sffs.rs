@@ -49,6 +49,12 @@ const INO_UID: usize = 96;
 const INO_GID: usize = 100;
 const INO_GENERATION: usize = 104;
 
+const DIRECT_BLOCKS: u32 = 10;
+const PTRS_PER_BLOCK: u32 = 1024;
+const INO_DIRECT: usize = 48;
+const INO_INDIRECT: usize = 88;
+const INO_DOUBLE_INDIRECT: usize = 92;
+
 pub struct SffsStat {
     pub ino: u32,
     pub mode: u32,
@@ -104,6 +110,42 @@ impl<'a> Sffs<'a> {
             generation: r64(self.bytes, o + INO_GENERATION).ok_or(Errno::EIO)?,
         })
     }
+
+    /// Read a block pointer at `index` (a 4-byte slot) within block `block`.
+    /// A zero `block` means the parent indirect block is missing, i.e. a
+    /// sparse hole; self-guards by returning `Ok(0)` rather than relying on
+    /// callers to check first.
+    fn block_ptr_in(&self, block: u32, index: u32) -> Result<u32, Errno> {
+        if block == 0 {
+            return Ok(0); // missing indirect block => sparse hole
+        }
+        let off = block as usize * BLOCK_SIZE + index as usize * 4;
+        r32(self.bytes, off).ok_or(Errno::EIO)
+    }
+
+    /// Resolve a file block number to a physical block number.
+    /// Direct blocks 0..9, single-indirect 10..1033, double-indirect 1034+.
+    /// ptr 0 = sparse hole; returns 0. Otherwise returns the block number.
+    #[allow(dead_code)] // Consumed by read_at in the next task.
+    fn block_map(&self, ino: u32, file_block: u32) -> Result<u32, Errno> {
+        let o = self.inode_offset(ino);
+        if file_block < DIRECT_BLOCKS {
+            return r32(self.bytes, o + INO_DIRECT + file_block as usize * 4).ok_or(Errno::EIO);
+        }
+        let fb = file_block - DIRECT_BLOCKS;
+        if fb < PTRS_PER_BLOCK {
+            let ind = r32(self.bytes, o + INO_INDIRECT).ok_or(Errno::EIO)?;
+            return self.block_ptr_in(ind, fb);
+        }
+        let fb = fb - PTRS_PER_BLOCK;
+        let max = PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
+        if (fb as u64) < max {
+            let dind = r32(self.bytes, o + INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
+            let l1 = self.block_ptr_in(dind, fb / PTRS_PER_BLOCK)?;
+            return self.block_ptr_in(l1, fb % PTRS_PER_BLOCK);
+        }
+        Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
+    }
 }
 
 #[cfg(test)]
@@ -145,5 +187,16 @@ mod tests {
         let st = fs.stat_ino(ROOT_INO).unwrap();
         assert_eq!(st.mode & 0xf000, 0x4000, "root is S_IFDIR");
         assert!(st.nlink >= 2, "dir has >= 2 links (. and ..)");
+    }
+
+    #[test]
+    fn block_map_direct_hole_and_beyond_max() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        // Root dir's first data block is allocated (non-zero physical block).
+        assert!(fs.block_map(ROOT_INO, 0).unwrap() != 0, "root dir data block 0");
+        // An unallocated direct block within range reads as a sparse hole (0).
+        assert_eq!(fs.block_map(ROOT_INO, 5).unwrap(), 0, "unallocated direct block is a hole");
+        // A file block beyond the double-indirect range is EINVAL, not a hole.
+        assert!(fs.block_map(ROOT_INO, 2_000_000).is_err(), "beyond max file blocks -> EINVAL");
     }
 }
