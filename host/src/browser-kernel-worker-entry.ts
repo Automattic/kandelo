@@ -3755,6 +3755,32 @@ async function finishProcessExit(
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
+  if (kernelRootfsEnabled()) {
+    // The kernel overlay owns `/`; read authoritative bytes (incl. guest
+    // copy-on-writes) from it rather than the demoted base-image memfs.
+    try {
+      const data = kernelWorker.rootfsReadFile(msg.path);
+      if (msg.includeMode) {
+        const mode = kernelWorker.rootfsStatMode(msg.path);
+        respond(msg.requestId, {
+          data,
+          mode: mode & FILE_MODES.S_MODE_BITS,
+        });
+      } else {
+        respond(msg.requestId, data);
+      }
+    } catch (error) {
+      const errno = (error as { errno?: number }).errno;
+      // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
+      // file -> null, matching the host-served path's contract.
+      if (errno === 2 || errno === 20 || errno === 21) {
+        respond(msg.requestId, null);
+      } else {
+        respondError(msg.requestId, formatError(error));
+      }
+    }
+    return;
+  }
   if (!io) { respond(msg.requestId, null); return; }
   let releaseMutation: (() => void) | undefined;
   try {
@@ -3788,6 +3814,25 @@ async function handleReadVfsFile(
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
+  if (kernelRootfsEnabled()) {
+    // The kernel overlay owns `/`; write into it so the file is visible to live
+    // guests, not the demoted base-image memfs the guest no longer reads.
+    let releaseMutation: (() => void) | undefined;
+    try {
+      releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
+      kernelWorker.rootfsWriteFile(
+        msg.path,
+        msg.data,
+        msg.mode & FILE_MODES.S_MODE_BITS,
+      );
+      respond(msg.requestId, true);
+    } catch (err) {
+      respondError(msg.requestId, formatError(err));
+    } finally {
+      releaseMutation?.();
+    }
+    return;
+  }
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
   let fd: number | null = null;
