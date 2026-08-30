@@ -9,11 +9,13 @@
  */
 import type { TimeProvider } from "../vfs/types.js";
 import {
+  ReplicationLogReader,
   ReplicationLogRecorder,
   type ReplicationLogEntry,
   type ReplicationLogExtender,
+  type ReplicationPushedDecision,
 } from "./log.js";
-import { RecordingTimeProvider } from "./clock.js";
+import { RecordingTimeProvider, ReplayingTimeProvider } from "./clock.js";
 import { ReplicationLogQueueReader } from "./log-queue.js";
 
 /**
@@ -65,14 +67,72 @@ export function beginReplicationStream(
 /**
  * Follow a primary that is still running, blocking when the replica catches up.
  *
- * Returns undefined for a replay of a recording that is already complete: that
- * replica has the whole log in hand and reaching its end is the end of the
- * replay, not something to wait for.
+ * One queue reader behind both hands: the guest's clock read blocks on `take`,
+ * and the drain that runs between guest reads pulls with `takeReady`. They must
+ * share the reader because the ring has one read position — two readers would
+ * each take the other's frames. Both undefined for a replay of a recording that
+ * is already complete: that replica has the whole log in hand and reaching its
+ * end is the end of the replay, not something to wait for.
  */
-export function createQueueExtender(
+function createQueueExtenders(
   queue: SharedArrayBuffer | undefined,
-): ReplicationLogExtender | undefined {
-  if (queue === undefined) return undefined;
+): { extend?: ReplicationLogExtender; extendReady?: ReplicationLogExtender } {
+  if (queue === undefined) return {};
   const reader = new ReplicationLogQueueReader(queue);
-  return () => reader.take();
+  return {
+    extend: () => reader.take(),
+    extendReady: () => reader.takeReady(),
+  };
+}
+
+/**
+ * The log a replica is to run on, as one value both hosts' protocols carry.
+ *
+ * A replica is told to replay from two places — a caller asking it to, and an
+ * `init` that restores a checkpoint — and both places say the same two things,
+ * so they say them in the same shape.
+ */
+export interface ReplicationReplaySpec {
+  /** The decisions the primary had already recorded when the replica joined. */
+  readonly entries: readonly ReplicationLogEntry[];
+  /**
+   * Where the primary's later decisions arrive, for a replica following a
+   * machine that is still running.
+   *
+   * A guest clock read reaches the kernel worker synchronously, so a replica
+   * that has caught up cannot await one and cannot receive a `message`. It
+   * blocks on this shared ring instead. See `log-queue.ts`. Without it the log
+   * is taken as complete, and reaching its end is the end of the replay.
+   */
+  readonly queue?: SharedArrayBuffer;
+}
+
+/**
+ * Take the machine's decisions from a primary's log instead of from this host.
+ *
+ * A machine starts replaying from the two places {@link ReplicationReplaySpec}
+ * names, and Node and the browser have to do it identically in both, exactly as
+ * they do for `beginReplicationStream`.
+ *
+ * The `init` place is what lets a replica join a machine whose processes are
+ * already running. A restored process resumes inside `init`, so a replay
+ * installed after `init` returns is installed after that process has already
+ * read this computer's clock, and a replica whose first reading came from its
+ * own host is not the same machine.
+ */
+export function beginReplicationReplay(
+  io: { setTimeProvider(provider: TimeProvider): void },
+  clock: TimeProvider,
+  spec: ReplicationReplaySpec,
+  applyPushed?: (decision: ReplicationPushedDecision) => void,
+): ReplicationLogReader {
+  const { extend, extendReady } = createQueueExtenders(spec.queue);
+  const reader = new ReplicationLogReader(
+    spec.entries,
+    applyPushed,
+    extend,
+    extendReady,
+  );
+  io.setTimeProvider(new ReplayingTimeProvider(clock, reader));
+  return reader;
 }

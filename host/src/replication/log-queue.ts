@@ -216,6 +216,20 @@ export class ReplicationLogQueueReader {
     }
   }
 
+  /**
+   * Take one entry if the ring already holds one, and never wait.
+   *
+   * For the drain that runs when the guest is not reading the clock: a
+   * keystroke has no guest request behind it, so the kernel worker takes it
+   * from its own event loop, where blocking would stall the machine. `null`
+   * here means nothing is ready now, not that the recording ended — `take` is
+   * where the end is read.
+   */
+  takeReady(): ReplicationLogEntry | null {
+    if (Atomics.load(this.#header, AVAILABLE) < FRAME_HEADER_BYTES) return null;
+    return this.#read();
+  }
+
   #read(): ReplicationLogEntry {
     const length = new DataView(this.#copy(FRAME_HEADER_BYTES).buffer)
       .getUint32(0, true);

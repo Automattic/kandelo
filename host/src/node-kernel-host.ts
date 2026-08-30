@@ -30,6 +30,7 @@ import type {
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
 import type { ReplicationLogEntry } from "./replication/log";
+import type { ReplicationReplaySpec } from "./replication/worker";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   CheckpointCaptureResponse,
@@ -163,6 +164,15 @@ export interface NodeKernelHostOptions {
    * anything and refuses it loudly when it cannot be adopted.
    */
   restoreCheckpoint?: MachineCheckpoint;
+  /**
+   * Run this machine on a primary's decisions from its very first instruction.
+   *
+   * This is how a replica joins a machine that is already running: a restored
+   * process resumes inside `init`, so {@link NodeKernelHost.startReplicationReplay}
+   * would install the replay after that process had read this computer's clock.
+   * Mirrors `BrowserKernelOwnedImageInitOptions.replicationReplay`.
+   */
+  replicationReplay?: ReplicationReplaySpec;
   /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
@@ -435,6 +445,7 @@ export class NodeKernelHost {
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           restoreCheckpoint: this.options.restoreCheckpoint,
+          replicationReplay: this.options.replicationReplay,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
@@ -981,6 +992,18 @@ export class NodeKernelHost {
       requestId,
     });
     return result as ReplicationReplayProgress;
+  }
+
+  /**
+   * Tell a replaying machine the log grew, so it applies what needs no guest.
+   *
+   * A keystroke or a resize the primary recorded has no guest request to
+   * answer, and the queue is shared memory the kernel worker only reads when
+   * asked — a replica whose guest sits at a prompt would otherwise never see
+   * it. Call it after pushing entries into the replay's queue.
+   */
+  drainReplicationReplay(): void {
+    this.sendToWorker({ type: "replication_replay_drain" });
   }
 
   /**

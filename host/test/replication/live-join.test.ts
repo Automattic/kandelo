@@ -37,6 +37,37 @@ const PARKED_FOR_MS = 500;
 /** How long a replica may still need the primary before the test gives up. */
 const FOLLOW_LIMIT_MS = 60_000;
 
+/** How many times the guest of the third test reads the clock. */
+const LIVE_READS = 12;
+
+/**
+ * A guest that is still running when the machine is read.
+ *
+ * The inner loop is the shell's own arithmetic, so the guest spends its time
+ * between clock reads without forking. That keeps what the freeze parks — and
+ * what the replica therefore resumes — one process reading one clock, which is
+ * the property the log is being asked to preserve.
+ */
+const LIVE_GUEST = [
+  "sh",
+  "-c",
+  `i=0; while [ $i -lt ${LIVE_READS} ]; do date +%s; j=0; `
+  + `while [ $j -lt 2000 ]; do j=$((j+1)); done; i=$((i+1)); done`,
+];
+
+/** Wait until `ready` holds, or give up and say what was true instead. */
+async function until(
+  ready: () => boolean,
+  limitMs: number,
+  describe: () => string,
+): Promise<void> {
+  const deadline = Date.now() + limitMs;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting: ${describe()}`);
+    await pause(25);
+  }
+}
+
 describe("live replica join", () => {
   it(
     "waits for the primary's next decision rather than reading its own clock",
@@ -171,6 +202,97 @@ describe("live replica join", () => {
 
         await joined.stop();
         writer.end();
+      } finally {
+        writer.end();
+        await replica?.destroy();
+        await primary.destroy();
+      }
+    },
+  );
+
+  it(
+    "carries on a guest that was mid-loop when the machine was read",
+    { timeout: 300_000 },
+    async () => {
+      // The two tests above read an idle machine, so their replicas start with
+      // nothing running and exercise the API rather than the gap it closes.
+      // This one reads a machine with a guest between two clock reads. That
+      // guest resumes on the replica inside `init`, before any message the
+      // main thread could send afterwards, so it is the case that says whether
+      // a replica's first reading is the primary's or its own host's.
+      const primaryOut = collectStdout();
+      const primary = new NodeKernelHost({
+        rootfsImage: "default",
+        onStdout: primaryOut.onStdout,
+      });
+      await primary.init();
+      const replicaOut = collectStdout();
+      let replica: NodeKernelHost | null = null;
+      const queue = createReplicationLogQueue();
+      const writer = new ReplicationLogQueueWriter(queue);
+      try {
+        const guestExit = primary
+          .spawnFromVfs("/bin/sh", LIVE_GUEST)
+          .then(({ exit }) => exit);
+        await until(
+          () => printedSeconds(primaryOut.read()).length >= 2,
+          FOLLOW_LIMIT_MS,
+          () => `the guest printed ${primaryOut.read().trim().length} bytes`,
+        );
+
+        const joined = await primary.captureAndStreamReplicationLog(
+          { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 },
+          (entries) => writer.push(entries),
+        );
+        expect(joined.capture.status).toBe("captured");
+        if (joined.capture.status !== "captured") return;
+        // The point of the test: something was running when the read happened.
+        expect(joined.capture.checkpoint.processes.length).toBeGreaterThan(0);
+
+        replica = new NodeKernelHost({
+          rootfsImage: "default",
+          restoreCheckpoint: joined.capture.checkpoint,
+          // Not `startReplicationReplay`. The restored guest runs during
+          // `init`, so a replay installed after it returns is installed too
+          // late.
+          replicationReplay: { entries: [], queue },
+          onStdout: replicaOut.onStdout,
+        });
+        await replica.init();
+
+        expect(await guestExit).toBe(0);
+        // A guest's exit promise settles before the last of its output has
+        // reached this callback, so the transcript is waited for rather than
+        // read at the exit.
+        await until(
+          () => printedSeconds(primaryOut.read()).length === LIVE_READS,
+          FOLLOW_LIMIT_MS,
+          () => `the primary printed ${JSON.stringify(primaryOut.read())}`,
+        );
+        const printed = printedSeconds(primaryOut.read());
+        // The replica has no exit promise for a process it never spawned, so
+        // it is followed by what that process prints. It ends where the
+        // primary ended, because it is the same guest reading the same log.
+        await until(
+          () => replicaOut.read().trimEnd().endsWith(`${printed[printed.length - 1]}`),
+          FOLLOW_LIMIT_MS,
+          () => `the replica printed ${JSON.stringify(replicaOut.read())}`,
+        );
+
+        const replicated = printedSeconds(replicaOut.read());
+        expect(replicated.length).toBeGreaterThan(0);
+        expect(replicated.length).toBeLessThan(printed.length);
+        // Every reading the replica printed is the one the primary printed at
+        // that position. A replica reading its own clock would agree to the
+        // second on a fast machine and disagree the moment it did not, which
+        // is exactly the silent divergence the log exists to prevent — so the
+        // comparison is the whole tail, not the last line.
+        expect(replicated).toEqual(printed.slice(printed.length - replicated.length));
+
+        await joined.stop();
+        writer.end();
+        const progress = await replica.stopReplicationReplay();
+        expect(progress.consumed).toBeGreaterThan(0);
       } finally {
         writer.end();
         await replica?.destroy();

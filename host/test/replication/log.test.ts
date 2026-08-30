@@ -3,6 +3,8 @@ import {
   ReplicationDivergence,
   ReplicationLogReader,
   ReplicationLogRecorder,
+  ptsDeviceIndex,
+  ptsDevicePath,
   type ReplicationLogEntry,
   type ReplicationPushedDecision,
 } from "../../src/replication/log";
@@ -15,6 +17,9 @@ const input = (device: string, ...bytes: number[]) =>
 
 const pointer = (dx: number, dy: number, buttons: number) =>
   ({ kind: "pointer", dx, dy, buttons }) as const;
+
+const resize = (device: string, rows: number, cols: number) =>
+  ({ kind: "resize", device, rows, cols }) as const;
 
 describe("replication log recorder", () => {
   it("numbers decisions from the position it was given", () => {
@@ -194,6 +199,34 @@ describe("replication log pushed decisions", () => {
     ]);
   });
 
+  // The guest sitting at a prompt reads no clock, so nothing pulls a
+  // keystroke through its own reads. The drain takes what is already there —
+  // through the non-blocking hand — applies it, and leaves the next clock
+  // reading for the guest that will ask for it.
+  it("delivers input the primary sent while the replica read nothing", () => {
+    const arriving: ReplicationLogEntry[] = [
+      { seq: 0, decision: input("/dev/pts/0", 0x6c, 0x73) },
+      { seq: 1, decision: resize("/dev/pts/0", 39, 158) },
+      { seq: 2, decision: reading(1, 7, 0) },
+    ];
+    const applied: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(
+      [],
+      (decision) => applied.push(decision),
+      () => {
+        throw new Error("the drain must not block on the primary");
+      },
+      () => arriving.shift() ?? null,
+    );
+
+    reader.drainPushed();
+    expect(applied).toEqual([
+      input("/dev/pts/0", 0x6c, 0x73),
+      resize("/dev/pts/0", 39, 158),
+    ]);
+    expect(reader.takeClock(1)).toEqual(reading(1, 7, 0));
+  });
+
   it("refuses to pass over a device write when the replica installed no sink", () => {
     const recorder = new ReplicationLogRecorder(4);
     recorder.record(input("/dev/tty1", 0x41));
@@ -229,6 +262,26 @@ describe("replication log pushed decisions", () => {
       "replication log diverged at 3: the replica read clock 1 past the end "
         + "of the log",
     );
+  });
+});
+
+// The name a keystroke travels under. A host writes to a PTY by the index its
+// own tables hold, and both hosts have to agree on the device that index means
+// or a replica applies the primary's keystrokes to a different terminal.
+describe("replication log device names", () => {
+  it("names a PTY by the path its guest opens", () => {
+    expect(ptsDevicePath(0)).toBe("/dev/pts/0");
+    expect(ptsDeviceIndex("/dev/pts/0")).toBe(0);
+    expect(ptsDeviceIndex(ptsDevicePath(11))).toBe(11);
+  });
+
+  it("declines to read a PTY index out of a name that is not one", () => {
+    expect(ptsDeviceIndex("/dev/tty1")).toBeUndefined();
+    expect(ptsDeviceIndex("/dev/pts/")).toBeUndefined();
+    expect(ptsDeviceIndex("/dev/pts/ptmx")).toBeUndefined();
+    // A relative name is a different file. Reading an index out of it would
+    // send the primary's keystrokes to whatever PTY held that number here.
+    expect(ptsDeviceIndex("dev/pts/0")).toBeUndefined();
   });
 });
 

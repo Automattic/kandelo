@@ -12,6 +12,7 @@ import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
+import { useMachineReplication } from "./machine-replication";
 import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
 import { useTerminalPublisher } from "./shared-terminal";
@@ -103,7 +104,10 @@ export const App: React.FC = () => {
     peer.link,
     presenting === "framebuffer",
   );
-  const handover = useMachineHandover(host, peer.link);
+  // Replication first: a viewer running a replica is still a viewer, and the
+  // handover must not offer that replica as a second machine to take.
+  const replication = useMachineReplication(host, peer.link);
+  const handover = useMachineHandover(host, peer.link, replication.replicating);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
@@ -445,9 +449,14 @@ export const App: React.FC = () => {
             sharingTerminal={terminalSharing.sharing}
             sharingScreen={sharingScreen}
             handover={handover}
-            canTakeMachine={isEmpty && handover.peerHasMachine}
+            canTakeMachine={
+              (isEmpty || replication.replicating)
+              && !replication.joining
+              && handover.peerHasMachine
+            }
             hasMachine={!isEmpty}
             presenting={presenting}
+            replication={replication}
           />
         }
         themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
@@ -459,7 +468,13 @@ export const App: React.FC = () => {
         networkConnected={peer.link !== null}
         // Only in a pair. A computer on its own is neither, and one machine
         // with one person at it needs no word for that.
-        role={peer.link === null ? null : isEmpty ? "viewer" : "user"}
+        role={
+          peer.link === null
+            ? null
+            : isEmpty || replication.replicating
+              ? "viewer"
+              : "user"
+        }
         themeOpen={themeOpen}
         status={surface.status}
         machineTitle={isEmpty ? "Kandelo" : desc.title}

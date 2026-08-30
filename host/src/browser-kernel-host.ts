@@ -26,6 +26,7 @@ import type {
   VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { ReplicationLogEntry } from "./replication/log";
+import type { ReplicationReplaySpec } from "./replication/worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import {
   type BrowserCorsProxyConfig,
@@ -204,6 +205,15 @@ export interface BrowserKernelOwnedImageInitOptions {
    * `NodeKernelHostOptions.restoreCheckpoint`.
    */
   restoreCheckpoint?: MachineCheckpoint;
+  /**
+   * Run this machine on a primary's decisions from its very first instruction.
+   *
+   * This is how a replica joins a machine that is already running: a restored
+   * process resumes inside `init`, so {@link startReplicationReplay} would
+   * install the replay after that process had read this computer's clock.
+   * Mirrors `NodeKernelHostOptions.replicationReplay`.
+   */
+  replicationReplay?: ReplicationReplaySpec;
 }
 
 async function fetchDefaultBrowserKernelArtifact(
@@ -346,6 +356,7 @@ export class BrowserKernel {
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     restoreCheckpoint?: MachineCheckpoint;
+    replicationReplay?: ReplicationReplaySpec;
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -364,6 +375,7 @@ export class BrowserKernel {
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       restoreCheckpoint: options.restoreCheckpoint,
+      replicationReplay: options.replicationReplay,
       takeVfsImageOwnership: false,
     });
   }
@@ -393,6 +405,7 @@ export class BrowserKernel {
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       restoreCheckpoint: options.restoreCheckpoint,
+      replicationReplay: options.replicationReplay,
       takeVfsImageOwnership: true,
     });
   }
@@ -408,6 +421,7 @@ export class BrowserKernel {
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     restoreCheckpoint?: MachineCheckpoint;
+    replicationReplay?: ReplicationReplaySpec;
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
     if (
@@ -505,6 +519,7 @@ export class BrowserKernel {
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           restoreCheckpoint: opts.restoreCheckpoint,
+          replicationReplay: opts.replicationReplay,
           shmSab: this.shmSab,
           workerEntryUrl,
           config: {
@@ -981,6 +996,18 @@ export class BrowserKernel {
       requestId,
     });
     return result as ReplicationReplayProgress;
+  }
+
+  /**
+   * Tell a replaying machine the log grew, so it applies what needs no guest.
+   *
+   * A keystroke or a resize the primary recorded has no guest request to
+   * answer, and the queue is shared memory the kernel worker only reads when
+   * asked — a replica whose guest sits at a prompt would otherwise never see
+   * it. Call it after pushing entries into the replay's queue.
+   */
+  drainReplicationReplay(): void {
+    this.sendToKernel({ type: "replication_replay_drain" });
   }
 
   /**

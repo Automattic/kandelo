@@ -15,6 +15,7 @@ import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { MachineCheckpoint } from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
+import type { ReplicationReplaySpec } from "./replication/worker";
 import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
@@ -85,6 +86,17 @@ export interface InitMessage {
    * with.
    */
   restoreCheckpoint?: MachineCheckpoint;
+  /**
+   * Run this machine on a primary's decisions from its very first instruction.
+   *
+   * A replica joining a machine that is already running restores that
+   * machine's processes, and those processes resume inside this `init`. A
+   * `replication_replay_start` sent afterwards therefore arrives after they
+   * have read this computer's clock. Passing the replay here installs it
+   * between the machine's own setup and the first restored process, so the
+   * replica's first reading is the primary's.
+   */
+  replicationReplay?: ReplicationReplaySpec;
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
@@ -455,25 +467,17 @@ export interface ReplicationRecordedMessage {
 }
 
 /**
- * Serve the machine's decisions from `entries` instead of from this host.
+ * Serve the machine's decisions from a primary's log instead of from this host.
  *
- * Sent after `init` and before the replayed guest runs. A restore has already
- * happened by then, so one message covers both a fresh machine and a replica
- * that adopted a checkpoint.
+ * Sent after `init` and before the replayed guest runs, which covers a machine
+ * this host booted fresh. A replica that adopted a checkpoint cannot use it:
+ * its restored processes resume inside `init` and read the clock before this
+ * message could arrive, so it passes `replicationReplay` on {@link InitMessage}
+ * instead.
  */
-export interface ReplicationReplayStartMessage {
+export interface ReplicationReplayStartMessage extends ReplicationReplaySpec {
   type: "replication_replay_start";
   requestId: number;
-  entries: readonly ReplicationLogEntry[];
-  /**
-   * Where the primary's later decisions arrive, for a replica following a
-   * machine that is still running.
-   *
-   * A guest clock read reaches this worker synchronously, so a replica that
-   * has caught up cannot await one and cannot receive a `message`. It blocks
-   * on this shared ring instead. See `host/src/replication/log-queue.ts`.
-   */
-  queue?: SharedArrayBuffer;
 }
 
 /**
@@ -486,6 +490,18 @@ export interface ReplicationReplayStartMessage {
 export interface ReplicationReplayStopMessage {
   type: "replication_replay_stop";
   requestId: number;
+}
+
+/**
+ * Say the primary's log grew, so the replica applies what needs no guest.
+ *
+ * A keystroke or a resize has no guest request to answer: a guest that is not
+ * reading the clock would never pull it out of the queue, and the queue is
+ * shared memory the kernel worker only looks at when asked. Fire-and-forget —
+ * the entries themselves travel on the queue, not here.
+ */
+export interface ReplicationReplayDrainMessage {
+  type: "replication_replay_drain";
 }
 
 /**
@@ -588,6 +604,7 @@ export type MainToKernelMessage =
   | ReplicationRecordStopMessage
   | ReplicationReplayStartMessage
   | ReplicationReplayStopMessage
+  | ReplicationReplayDrainMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage

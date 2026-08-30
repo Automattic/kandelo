@@ -47,17 +47,17 @@ import {
   readPreparedPlatformFile,
 } from "./vfs";
 import {
-  ReplicationLogReader,
   ReplicationLogRecorder,
+  ptsDeviceIndex,
+  ptsDevicePath,
   type ReplicationLogEntry,
+  type ReplicationLogReader,
+  type ReplicationPushedDecision,
 } from "./replication/log";
+import { RecordingTimeProvider } from "./replication/clock";
 import {
-  RecordingTimeProvider,
-  ReplayingTimeProvider,
-} from "./replication/clock";
-import {
+  beginReplicationReplay,
   beginReplicationStream,
-  createQueueExtender,
 } from "./replication/worker";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
@@ -1510,6 +1510,26 @@ async function handleInit(msg: InitMessage) {
       ? undefined
       : { adoptKernelMemoryImage: msg.restoreCheckpoint.kernelMemory },
   );
+
+  // Before the first restored process, not after `init` answers. A restored
+  // process resumes below and reads the clock immediately; a replay installed
+  // once this function returns would have let it read this computer's.
+  if (msg.replicationReplay) {
+    if (!replicationIO || !baseTimeProvider) {
+      throw new Error(
+        "replaying a decision log needs a machine with a swappable guest "
+          + "clock: this one runs on a PlatformIO that has none",
+      );
+    }
+    replicationReplay = {
+      reader: beginReplicationReplay(
+        replicationIO,
+        baseTimeProvider,
+        msg.replicationReplay,
+        applyPushedDecision,
+      ),
+    };
+  }
 
   if (msg.restoreCheckpoint && restoredProgramModules) {
     kernelWorker.rebindRestoredHostHandles(
@@ -4287,12 +4307,62 @@ async function handleDestroy(msg: { requestId: number }) {
 function handlePtyWrite(pid: number, data: Uint8Array) {
   const ptyIdx = ptyByPid.get(pid);
   if (ptyIdx === undefined) return;
+  // Recorded before it is delivered, so the log holds it at the position the
+  // guest read it. A keystroke is a decision no replica can derive: without it
+  // the primary's shell runs a command the copy never sees, and the two are
+  // different machines from the next clock reading onwards.
+  replicationRecorder?.record({
+    kind: "input",
+    device: ptsDevicePath(ptyIdx),
+    bytes: data,
+  });
   kernelWorker.ptyMasterWrite(ptyIdx, data);
+}
+
+/**
+ * Deliver a decision the primary made without the guest asking for it.
+ *
+ * A device write replays into the same PTY master the primary wrote to: the
+ * index is kernel state, so the checkpoint restored it, and the guest reads
+ * the bytes where the primary's guest read them. A pointer movement replays as
+ * the delta the host handed the kernel, so the kernel builds the same PS/2
+ * frame; nothing on this host injects one yet, and applying it here is what
+ * lets a machine recorded in a browser be replayed by this one.
+ *
+ * A device this host has no way to write to throws rather than being dropped.
+ * A dropped decision is a replica that silently stopped being the same machine.
+ */
+function applyPushedDecision(decision: ReplicationPushedDecision): void {
+  if (decision.kind === "pointer") {
+    kernelWorker.injectMouseEvent(decision.dx, decision.dy, decision.buttons);
+    return;
+  }
+  const ptyIdx = ptsDeviceIndex(decision.device);
+  if (ptyIdx === undefined) {
+    throw new Error(
+      `the log carries ${decision.kind} for ${decision.device}, which this `
+        + `host cannot replay`,
+    );
+  }
+  if (decision.kind === "resize") {
+    kernelWorker.ptySetWinsize(ptyIdx, decision.rows, decision.cols);
+    return;
+  }
+  kernelWorker.ptyMasterWrite(ptyIdx, decision.bytes);
 }
 
 function handlePtyResize(pid: number, rows: number, cols: number) {
   const ptyIdx = ptyByPid.get(pid);
   if (ptyIdx === undefined) return;
+  // A resize is a decision like a keystroke: it delivers SIGWINCH and a new
+  // TIOCGWINSZ, so a program that redraws on it takes a turn a copy that
+  // never heard of it does not take.
+  replicationRecorder?.record({
+    kind: "resize",
+    device: ptsDevicePath(ptyIdx),
+    rows,
+    cols,
+  });
   kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
 }
 
@@ -4717,13 +4787,9 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "replication_replay_start": {
       respondToReplication(msg.requestId, (io, clock) => {
-        const reader = new ReplicationLogReader(
-          msg.entries,
-          undefined,
-          createQueueExtender(msg.queue),
-        );
-        replicationReplay = { reader };
-        io.setTimeProvider(new ReplayingTimeProvider(clock, reader));
+        replicationReplay = {
+          reader: beginReplicationReplay(io, clock, msg, applyPushedDecision),
+        };
       });
       break;
     }
@@ -4741,6 +4807,15 @@ port.on("message", (msg: MainToKernelMessage) => {
           total: replay?.reader.known ?? 0,
         },
       });
+      break;
+    }
+    case "replication_replay_drain": {
+      // The primary delivered something between two guest requests — a
+      // keystroke, a resize — and a guest that is not reading the clock would
+      // never pull it through. The main thread says entries arrived; this
+      // takes what is ready and applies it, and never blocks: waiting for the
+      // primary belongs to the guest's own clock reads.
+      replicationReplay?.reader.drainPushed();
       break;
     }
     case "drain_syscall_trace": {

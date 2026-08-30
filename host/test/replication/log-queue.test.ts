@@ -82,6 +82,24 @@ describe("replication log queue", () => {
     expect(reader.take()).toEqual(clockAt(2));
   });
 
+  // The drain that runs between guest requests must never park the kernel
+  // worker: waiting for the primary belongs to the guest's own clock reads.
+  it("hands over what is ready without waiting for more", () => {
+    const queue = createReplicationLogQueue(64 * 1024);
+    const writer = new ReplicationLogQueueWriter(queue);
+    const reader = new ReplicationLogQueueReader(queue);
+
+    expect(reader.takeReady()).toBeNull();
+    writer.push([clockAt(0), clockAt(1)]);
+    expect(reader.takeReady()).toEqual(clockAt(0));
+    expect(reader.takeReady()).toEqual(clockAt(1));
+    // An empty ring is "nothing now", even after the recording ended: the end
+    // belongs to take(), where a parked replica is waiting to hear it.
+    writer.end();
+    expect(reader.takeReady()).toBeNull();
+    expect(reader.take()).toBeNull();
+  });
+
   it("holds a replica that caught up until the primary records again", async () => {
     const queue = createReplicationLogQueue(64 * 1024);
     const writer = new ReplicationLogQueueWriter(queue);

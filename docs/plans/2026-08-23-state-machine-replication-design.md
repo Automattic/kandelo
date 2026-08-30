@@ -186,9 +186,10 @@ recover from divergence even before it is good at avoiding it.
 |---|---|---|
 | State transfer | `migration/checkpoint.ts`, `restore.ts` | Unchanged; becomes replica join and resync |
 | Wire | `migration/channel-chunked.ts` | Unchanged; carries the log |
-| Log transport | `replication/log-local.ts` | Publishes and receives the log |
+| Log transport | `replication/log-local.ts` | Carries the join and the log |
 | Log into a replica | `replication/log-queue.ts` | Shared ring a parked replica waits on |
 | Link | `apps/browser-demos/lib/peer-link.ts` | Moves to `web-libs/kandelo-session` |
+| Roles | `apps/browser-demos/pages/kandelo/app/machine-replication.ts` | User publishes, viewer replicates |
 | Screen | `migration/mirror-local.ts` | Fallback mode only |
 | Ownership | `migration/transport-local.ts` | Becomes primary election |
 | Dispatch order | host scheduling | Logical clock in the kernel worker |
@@ -204,10 +205,21 @@ boot-and-replay join needs. The peer link opens a fourth data channel,
 rather than the mirror's shallow ones: a mirror frame may be skipped, a
 decision may not.
 
-No app code drives either end yet. `apps/browser-demos` opens the channel and
-reads nothing from it, so a connection today carries an idle data channel. The
-consumer is the replica-join flow, which the GL decision above unblocks; until
-that lands, the wire is exercised only by `host/test/replication/log-local.test.ts`.
+Both ends are driven by `useMachineReplication`
+(`apps/browser-demos/pages/kandelo/app/machine-replication.ts`), which starts
+as soon as the peer link opens and needs nothing pressed: the computer holding
+a machine serves, the computer holding none joins. A viewer holds a machine
+while it replicates and is still the viewer — it announces `holding: false` on
+the handover channel, so take-over goes on meaning the user's machine, and a
+take-over swaps the two roles with replication starting again the other way
+round. `apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers
+both directions.
+
+A join that is refused is retried rather than reported as final. Most refusals
+name a condition that passes: a machine is read by freezing it, and a process
+that makes no syscall reaches no freeze hook, so a shell sitting at a prompt
+refuses to be read until something wakes it. The failure stays visible in the
+network popup while the viewer keeps asking.
 
 ### What a replica does when it drains the log
 
@@ -279,6 +291,58 @@ that cannot start the log fails as a capture: handing back a checkpoint whose
 log never started would give a replica a state to adopt and no decisions to
 follow it with. Covered by `host/test/migration/checkpoint.test.ts`, which
 asserts the hook sees a parked machine with dispatch still held.
+
+The replica's side of that instant is symmetric, and it is not
+`startReplicationReplay`. A restored process resumes inside `init` — the worker
+entries relaunch it before they answer — so a replay installed once `init`
+returns is installed after that process has already read this computer's clock.
+The replay therefore travels on the init message as `replicationReplay`
+(`ReplicationReplaySpec` in `host/src/replication/worker.ts`), and both worker
+entries install it between the machine's own setup and the first restored
+process. `startReplicationReplay` remains the way to put a machine this host
+booted fresh onto a log. `host/test/replication/live-join.test.ts` covers the
+difference with a guest captured mid-loop: without the init-time install, the
+replica's readings drift from the primary's within a second.
+
+A replica lasts exactly as long as the machine it copies, and letting go of it
+is part of the contract rather than cleanup. The user launches another demo,
+which destroys the machine the replica copies and boots a different one from
+sequence 0; the recording ends, and `LocalReplicationLog` says so. A replica
+kept past that point is worse than a stopped one: `ReplicationLogReader`
+throws `ReplicationDivergence` at the next guest clock read, `kernel.ts`'s
+`#hostClockGettime` turns any throw into `-EIO`, the guest dies, `init` starts
+a fresh one, and what is left is a second machine wearing the first one's name
+on a computer that calls itself the viewer. So `KernelHost.stopReplicatingMachine`
+drops the machine to `idle` with the replay, and the viewer is a viewer again —
+which is also what sends it to join whatever the other computer is running now.
+`host/test/replication/log-local.test.ts` covers the wire, and
+`apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers the
+product: a viewer running a replicated shell ends up running the fbDOOM the
+user launched next.
+
+Input follows the machine for the same reason. A keystroke on a replica is a
+decision its primary's log does not carry, so `LiveKernelHost` refuses local
+input while it holds one — PTY writes, PTY resizes, framebuffer input, and
+mouse events alike. A resize is refused because it is a decision too: it
+delivers `SIGWINCH` and a new `TIOCGWINSZ`, and a program that redraws on it
+takes a turn the primary's program never took. The viewer's screen stays live;
+the keyboard arrives with the take-over.
+
+The primary's side of the same rule is that its input is part of the log.
+Both kernel worker entries record a `pty_write` as an `input` decision and a
+`pty_resize` as a `resize` decision, named by the PTY's `/dev/pts/N` path
+(`ptsDevicePath` in `host/src/replication/log.ts`), and replay them into the
+same PTY master — the index is kernel state, so the checkpoint restored it.
+Without this the primary's shell runs commands its replica never sees, and
+what the viewer holds is a frozen transcript wearing a live machine's name.
+
+A pushed decision needs no guest request, so a replica whose guest sits at a
+prompt — reading no clock — would never pull it from the queue. The viewer's
+page therefore nudges after every batch it queues: `entries` →
+`KernelHost.drainReplicationReplay` → the kernel worker's
+`replication_replay_drain`, which takes what the ring already holds
+(`takeReady`, never blocking) and applies it. A guest that is parked inside a
+clock read needs no nudge; the blocking extender drains as entries arrive.
 
 Nothing drains the recorder, and that is now deliberate rather than deferred.
 A replica joins at boot, so the entries from sequence 0 are the ones it needs
