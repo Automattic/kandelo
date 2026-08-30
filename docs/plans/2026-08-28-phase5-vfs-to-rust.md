@@ -507,3 +507,75 @@ With 3a done, two orderings are viable and the choice is a judgment call:
 2. **3b next (parsers -> Rust), then cutover.** Follow the literal plan ordering.
    Large, lower-risk-per-step, but keeps the overlay opt-in far longer and sinks
    substantial effort before the overlay is ever the default authority.
+
+**Decision (2026-08-30): option 1 (cutover next), full-correct variant (A).**
+The host-side `/` operations must route through the overlay (not the frozen base
+image), so the cutover is correctness-complete rather than an illusion.
+
+### 2e cutover design (tree-grounded, 2026-08-30)
+
+Grounding note: an exploration agent initially mis-mapped this against the wrong
+worktrees (`medan`/`remove-homebrew`, `irvine`) and concluded "no overlay
+exists." That is false for this branch (`brandonpayton/epoll-kernel-route`,
+worktree `/Users/brandon/kandelo-epoll`): `crates/runtime-core/src/rootfs.rs`
+is the overlay and it is validated. The design below is grounded in THIS tree.
+
+What the host `/` mount still backs when the overlay owns `/` (guest syscalls are
+already 100% kernel-served via `rootfs::claims_path`):
+
+1. **exec byte-load.** `open_prepared_exec_target` (`syscalls.rs:2581`) resolves
+   the path in-kernel (`resolve_at_path`) but then opens the bytes via
+   `host.host_open` (`:2608`) and `exec_target::read` reads via
+   `host.host_pread` (`exec_target.rs:433`). It has NO rootfs arm, so it always
+   reads BASE bytes from the host `/` mount. Correct for base programs (why the
+   man-shell overlay-on test passes), but a guest-written `/` executable lives
+   only in the overlay -> `host_open` misses it. And rootfs OFDs are NEGATIVE
+   handles, so exec-target's `host_handle < 0` guards (`:348,400`) actively
+   reject them.
+2. **`read_vfs_file` / `write_vfs_file` RPCs** (worker-entry handlers) use the
+   host `VirtualPlatformIO`/memfs -> base bytes. Real consumers: PHPT test
+   runner, `kandelo-session LiveKernelHost.writeFile` (contract: write visible to
+   live guests), sqlite-test readback.
+3. **`export_rootfs_image`** walks `rootfsMemfs/memfs.saveImage()` -> base image,
+   missing guest overlay writes.
+
+Established in-kernel pattern to mirror (normal open/read path): rootfs OFDs store
+the negative rootfs handle in `ofd.host_handle`; every byte/stat site branches
+`if rootfs::is_rootfs_file_handle(host_handle) { rootfs::{read,size,fstat}(...) }`
+with the base-byte closure `|id,off,b| host.blob_read(id,b,off)` (see
+`syscalls.rs:4959,5208,5637,5746,6908`; `open_rootfs` at `:3416`). rootfs API:
+`open/read/size/fstat/is_rootfs_file_handle/add_ref_handle/release_handle`
+(`rootfs.rs`).
+
+**Staged plan (each stage builds kernel + validates; default-on flip is LAST):**
+
+- **Stage 1 — exec-target overlay-aware (kernel).** Add a rootfs arm to
+  `open_prepared_exec_target` (mirror `open_rootfs`: `rootfs::open` +
+  `rootfs::fstat`, OFD holds the rootfs handle) and to the exec-target
+  byte/stat sites in `exec_target.rs` (`retain_empty_path_target` `:351/353`,
+  `retained_host_handle` `:400`, `read` `:433`, the copy path `:525`; relax the
+  `host_handle < 0` guards to accept rootfs handles; `size` uses the cached stat).
+  Result: exec reads AUTHORITATIVE overlay bytes (base-via-blob and guest-written
+  COW). Validate: man-shell (base exec) still passes + a NEW test that a guest
+  writes an executable under `/` and execs it (overlay-only exec).
+- **Stage 2 — host-facing overlay exports (kernel).** `kernel_rootfs_read_file`,
+  `kernel_rootfs_write_file`, and enumerate/stat (`kernel_rootfs_readdir` +
+  stat) built on the overlay singleton (reach it like the rootfs-enable exports
+  do). Base-file reads re-enter the host blob provider (host->kernel->host,
+  synchronous, outside the overlay spinlock — same discipline as guest reads).
+- **Stage 3 — reroute host RPCs (both hosts).** When `kernelRootfsEnabled()`,
+  `handleReadVfsFile`/`handleWriteVfsFile`/`export_rootfs_image` use the Stage-2
+  exports instead of `vfsExecIO`/`memfs`. Node + browser symmetric.
+- **Stage 4 — drop the host `/` mount (both hosts, gated).** Once nothing
+  host-side reads `/` via the mount, exclude the `/` `MountConfig` from the
+  `VirtualPlatformIO` mounts array when the gate is on, while still restoring the
+  image into the `MemoryFileSystem` the blob provider holds (do NOT stop
+  restoring it). Mirror where possible the tmpfs `filterMountSpecForKernelTmpfs`
+  approach, but gate in the worker entries (the resolver must still return the
+  `/` memfs for the provider).
+- **Stage 5 — validate opt-in.** Shell demo (Node + browser), WordPress/PHP,
+  libc/sortix/nginx conformance, host Vitest — all with `WASM_POSIX_ROOTFS=1`,
+  compared against the overlay-off baseline.
+- **Stage 6 — flip default-on.** Set `kernelRootfsEnabled()` default true; drop
+  the host `/` image mount as authority globally; re-validate a representative
+  subset default-on.
