@@ -314,7 +314,8 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
     ) || (file_type == FileType::Regular
         && (crate::procfs::is_procfs_buf_handle(host_handle)
             || is_synthetic_regular_handle(host_handle)
-            || crate::tmpfs::is_tmpfs_file_handle(host_handle)))
+            || crate::tmpfs::is_tmpfs_file_handle(host_handle)
+            || crate::rootfs::is_rootfs_file_handle(host_handle)))
 }
 
 /// Whether an encoded handle currently names a live backing owned here.
@@ -347,6 +348,9 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
         }
         FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
             crate::tmpfs::handle_is_live(host_handle)
+        }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::handle_is_live(host_handle)
         }
         _ => false,
     }
@@ -509,6 +513,11 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
                 return Err(Errno::EBADF);
             }
         }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            if !crate::rootfs::add_ref_handle(host_handle) {
+                return Err(Errno::EBADF);
+            }
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -545,6 +554,9 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
         }
         FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
             crate::tmpfs::release_handle(host_handle)
+        }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::release_handle(host_handle)
         }
         _ => false,
     }
