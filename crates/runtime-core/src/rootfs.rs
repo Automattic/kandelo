@@ -44,6 +44,7 @@ use wasm_posix_shared::WasmStatfs;
 // Open-file creation flags we honor here (mirrors syscalls.rs / tmpfs.rs).
 const O_ACCMODE: u32 = 0o3;
 const O_RDONLY: u32 = 0o0;
+const O_WRONLY: u32 = 0o1;
 const O_CREAT: u32 = 0o100;
 const O_EXCL: u32 = 0o200;
 const O_TRUNC: u32 = 0o1000;
@@ -1100,6 +1101,62 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
             _ => Err(Errno::EISDIR),
         }
     })
+}
+
+/// Read up to `buf.len()` bytes at `offset` from the rootfs file named by
+/// `path` (open `O_RDONLY` + [`read`] + [`release_handle`]).
+///
+/// Host-facing convenience for the 2e cutover: after the host `/` mount is
+/// dropped, the host reads authoritative `/` bytes through the overlay with this
+/// instead of a stale base-image `MemoryFileSystem`. Copy-on-written bytes come
+/// straight from the overlay; an unmodified base file's bytes come from
+/// `blob_read` exactly as a guest read would fetch them.
+pub fn read_file_at<F>(
+    path: &[u8],
+    offset: i64,
+    buf: &mut [u8],
+    blob_read: F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    let handle = open(path, O_RDONLY, 0, 0, 0)?;
+    let result = read(handle, offset, buf, blob_read);
+    release_handle(handle);
+    result
+}
+
+/// Write `buf` at `offset` to the rootfs file named by `path`, creating it if
+/// absent. When `truncate` is set the file is first emptied and its mode set to
+/// `mode` ("replace this whole file" — the host `write_vfs_file` contract);
+/// otherwise an existing file's mode is preserved and the bytes land at
+/// `offset` (chunked continuation). An unmodified base file is copied into the
+/// overlay first (via `blob_read`) so a partial write keeps the untouched bytes.
+///
+/// Host-facing convenience for the 2e cutover so host-side `/` writes land in
+/// the authoritative overlay and are visible to live guests.
+pub fn write_file_at<F>(
+    path: &[u8],
+    offset: i64,
+    buf: &[u8],
+    mode: u32,
+    truncate: bool,
+    blob_read: F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    let flags = O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
+    let handle = open(path, flags, mode & 0o7777, 0, 0)?;
+    let result = write(handle, offset, buf, blob_read);
+    release_handle(handle);
+    // open(O_CREAT) preserves an existing file's mode, so a truncating replace
+    // sets it explicitly — create and replace then behave alike, matching the
+    // host write_vfs_file handler.
+    if truncate {
+        chmod(path, mode & 0o7777)?;
+    }
+    result
 }
 
 /// fstat an open rootfs file handle.
@@ -2268,5 +2325,63 @@ mod tests {
         assert!(!crate::tmpfs::is_tmpfs_dir_handle(rootfs_file));
         assert!(!crate::tmpfs::is_tmpfs_file_handle(rootfs_dir));
         assert!(!crate::tmpfs::is_tmpfs_dir_handle(rootfs_dir));
+    }
+
+    #[test]
+    fn read_file_at_reads_base_bytes_by_path() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        let mut buf = [0u8; 32];
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"hello world");
+        // Positioned read.
+        let n = read_file_at(b"/usr/bin/hello", 6, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"world");
+    }
+
+    #[test]
+    fn write_file_at_truncate_replaces_bytes_and_mode() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        let n = write_file_at(b"/usr/bin/hello", 0, b"NEW", 0o600, true, &mut blob).unwrap();
+        assert_eq!(n, 3);
+        let mut buf = [0u8; 32];
+        // A reader that panics proves the replaced file is served from the
+        // overlay, never re-fetched from the base blob.
+        let mut panic_blob = |_: u64, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
+            panic!("replaced file must be served from the overlay");
+        };
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut panic_blob).unwrap();
+        assert_eq!(&buf[..n], b"NEW");
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o600);
+    }
+
+    #[test]
+    fn write_file_at_partial_over_base_keeps_untouched_tail() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        // Non-truncating positioned write copies the base file into the overlay
+        // and overwrites only the tail, keeping the leading bytes intact.
+        let n = write_file_at(b"/usr/bin/hello", 6, b"WORLD", 0o644, false, &mut blob).unwrap();
+        assert_eq!(n, 5);
+        let mut buf = [0u8; 32];
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"hello WORLD");
+    }
+
+    #[test]
+    fn write_file_at_creates_absent_file() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![]);
+        let n = write_file_at(b"/usr/bin/fresh", 0, b"data", 0o644, true, &mut blob).unwrap();
+        assert_eq!(n, 4);
+        let mut buf = [0u8; 32];
+        let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"data");
+        assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
     }
 }

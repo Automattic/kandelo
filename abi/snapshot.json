@@ -2897,6 +2897,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_read_file",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_write_file",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rt_sigtimedwait",
       "signature": "(i32,i32,i32) -> (i32)"
     },

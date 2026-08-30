@@ -1506,6 +1506,88 @@ pub extern "C" fn kernel_set_rootfs_now(sec_lo: u32, sec_hi: u32, nsec: u32) -> 
     0
 }
 
+/// Read up to `buf_len` bytes at `offset` from the rootfs file named by the path
+/// bytes `path_ptr..path_len`, into kernel memory `buf_ptr..buf_len`. Host-facing
+/// so, after the 2e cutover drops the host `/` mount, the host reads authoritative
+/// `/` bytes through the overlay (copy-on-written bytes directly; an unmodified
+/// base file's bytes via the `blob_read` provider). `offset` is split into lo/hi
+/// words (host convention: no i64 crosses the boundary). Returns bytes read (>=0,
+/// 0 at EOF) or a negative errno. See `rootfs::read_file_at`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_read_file(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::read_file_at(path, offset, buf, |id, off, b| host.blob_read(id, b, off)) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Write `buf_len` bytes at `offset` from kernel memory `buf_ptr..buf_len` to the
+/// rootfs file named by `path_ptr..path_len`, creating it if absent. When
+/// `truncate` is nonzero the file is emptied first and its mode set to `mode`
+/// (the host "replace this whole file" contract); otherwise the bytes land at
+/// `offset` and an existing file's mode is preserved (chunked continuation).
+/// Host-facing so the host's `/` writes land in the authoritative overlay and are
+/// visible to live guests. Returns bytes written (>=0) or a negative errno. See
+/// `rootfs::write_file_at`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_write_file(
+    path_ptr: *const u8,
+    path_len: u32,
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+    mode: u32,
+    truncate: i32,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
+    let buf: &[u8] = if buf_len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::write_file_at(
+        path,
+        offset,
+        buf,
+        mode,
+        truncate != 0,
+        |id, off, b| host.blob_read(id, b, off),
+    ) {
+        Ok(written) => written as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
