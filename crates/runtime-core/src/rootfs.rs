@@ -658,9 +658,10 @@ pub fn insert_base_symlink(
 // purpose-built fixed-field record stream we own — deliberately NOT a
 // general-purpose archive parser (that is Increment 3). Little-endian.
 //
-//   header:  magic u32 = "RTFS" | version u32 = 1 | entry_count u32
+//   header:  magic u32 = "RTFS" | version u32 = 2 | entry_count u32
 //   entry:   kind u8 (1=dir, 2=file, 3=symlink)
 //            mode u32 | uid u32 | gid u32 | ino u64 | blob_id u64 | size u64
+//            mtime_sec u64 | mtime_nsec u32   (real per-file times from the image)
 //            path_len u32 | path[path_len]
 //            target_len u32 | target[target_len]   (target_len=0 unless symlink)
 //
@@ -671,7 +672,7 @@ pub fn insert_base_symlink(
 
 /// Manifest header magic ("RTFS", little-endian).
 const MANIFEST_MAGIC: u32 = 0x5346_5452;
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
 /// Defensive cap on a single path/target length (bytes).
 const MANIFEST_NAME_MAX: usize = 65_536;
 
@@ -739,6 +740,8 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
         let ino = rd_u64(buf, &mut pos)?;
         let blob_id = rd_u64(buf, &mut pos)?;
         let size = rd_u64(buf, &mut pos)?;
+        let mtime_sec = rd_u64(buf, &mut pos)?;
+        let mtime_nsec = rd_u32(buf, &mut pos)?;
         let path_len = rd_u32(buf, &mut pos)? as usize;
         let path = rd_bytes(buf, &mut pos, path_len)?.to_vec();
         let target_len = rd_u32(buf, &mut pos)? as usize;
@@ -749,8 +752,31 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
             3 => insert_base_symlink(&path, &target, mode, uid, gid, ino)?,
             _ => return Err(Errno::EINVAL),
         }
+        // Overwrite the create-time stamp with the image's real times so `ls -l`,
+        // `make`, and `find -mtime` see accurate file metadata after cutover.
+        set_base_times(&path, mtime_sec, mtime_nsec);
     }
     Ok(count)
+}
+
+/// Set a just-inserted base entry's atime/mtime/ctime to the image's real mtime.
+/// (The image carries one meaningful timestamp per entry; atime/ctime distinct
+/// from mtime are rarely load-bearing and are not preserved separately.)
+fn set_base_times(path: &[u8], mtime_sec: u64, mtime_nsec: u32) {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        if let Ok(idx) = state.walk(root, &comps) {
+            if let Some(inode) = state.get_mut(idx) {
+                inode.atime_sec = mtime_sec;
+                inode.atime_nsec = mtime_nsec;
+                inode.mtime_sec = mtime_sec;
+                inode.mtime_nsec = mtime_nsec;
+                inode.ctime_sec = mtime_sec;
+                inode.ctime_nsec = mtime_nsec;
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1958,6 +1984,7 @@ mod tests {
         assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enc_entry(
         out: &mut alloc::vec::Vec<u8>,
         kind: u8,
@@ -1967,6 +1994,8 @@ mod tests {
         ino: u64,
         blob_id: u64,
         size: u64,
+        mtime_sec: u64,
+        mtime_nsec: u32,
         path: &[u8],
         target: &[u8],
     ) {
@@ -1977,6 +2006,8 @@ mod tests {
         out.extend_from_slice(&ino.to_le_bytes());
         out.extend_from_slice(&blob_id.to_le_bytes());
         out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&mtime_sec.to_le_bytes());
+        out.extend_from_slice(&mtime_nsec.to_le_bytes());
         out.extend_from_slice(&(path.len() as u32).to_le_bytes());
         out.extend_from_slice(path);
         out.extend_from_slice(&(target.len() as u32).to_le_bytes());
@@ -1990,10 +2021,11 @@ mod tests {
         m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
         m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
         m.extend_from_slice(&4u32.to_le_bytes()); // entry count
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, b"/", b"");
-        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, b"/usr", b"");
-        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 99, 12, b"/usr/greeting", b"");
-        enc_entry(&mut m, 3, 0o777, 0, 0, 4, 0, 0, b"/usr/link", b"greeting");
+        // mtime 315532800 = 1980-01-01 (the image's real deterministic-build time).
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 315532800, 0, b"/", b"");
+        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 315532800, 0, b"/usr", b"");
+        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 99, 12, 315532800, 500, b"/usr/greeting", b"");
+        enc_entry(&mut m, 3, 0o777, 0, 0, 4, 0, 0, 315532800, 0, b"/usr/link", b"greeting");
 
         assert_eq!(load_manifest(&m).unwrap(), 4);
 
@@ -2003,6 +2035,8 @@ mod tests {
         assert_eq!(f.st_mode & S_IFMT, S_IFREG);
         assert_eq!(f.st_size, 12);
         assert_eq!(f.st_ino, 3);
+        // The image's real mtime is preserved (not the boot clock).
+        assert_eq!((f.st_mtime_sec, f.st_mtime_nsec), (315532800, 500));
 
         // The base file reads its bytes through blob_id 99.
         let mut blob = make_blob_reader(alloc::vec![(99u64, b"hello, world".to_vec())]);
@@ -2037,7 +2071,7 @@ mod tests {
         m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
         m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
         m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 entries
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, b"/", b"");
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
         // second entry missing entirely -> short read
         assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
     }

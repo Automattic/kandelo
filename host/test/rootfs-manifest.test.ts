@@ -47,7 +47,8 @@ function makeFakeBackend(tree: Record<string, FakeNode>): FileSystemBackend {
         gid: n.gid,
         size: n.data ? n.data.length : n.target ? n.target.length : 0,
         atimeMs: 0,
-        mtimeMs: 0,
+        // A distinct, verifiable mtime per inode (whole seconds; nsec 0).
+        mtimeMs: n.ino * 1000,
         ctimeMs: 0,
       };
     },
@@ -111,6 +112,8 @@ function decode(buf: Uint8Array): {
     ino: bigint;
     blobId: bigint;
     size: bigint;
+    mtimeSec: bigint;
+    mtimeNsec: number;
     path: string;
     target: string;
   }>;
@@ -146,9 +149,11 @@ function decode(buf: Uint8Array): {
     const ino = u64();
     const blobId = u64();
     const size = u64();
+    const mtimeSec = u64();
+    const mtimeNsec = u32();
     const path = str(u32());
     const target = str(u32());
-    entries.push({ kind, mode, uid, gid, ino, blobId, size, path, target });
+    entries.push({ kind, mode, uid, gid, ino, blobId, size, mtimeSec, mtimeNsec, path, target });
   }
   expect(p).toBe(buf.length); // no trailing bytes
   return { version, entries };
@@ -204,6 +209,9 @@ describe("rootfs manifest emitter", () => {
     expect(hello.blobId).toBe(4n); // blob_id = inode
     expect(hello.size).toBe(11n);
     expect(hello.mode).toBe(0o755);
+    // mtime preserved: fake backend returns ino*1000 ms => 4000 ms => 4 s.
+    expect(hello.mtimeSec).toBe(4n);
+    expect(hello.mtimeNsec).toBe(0);
 
     const link = entries.find((e) => e.path === "/usr/bin/hi")!;
     expect(link.kind).toBe(3); // symlink
