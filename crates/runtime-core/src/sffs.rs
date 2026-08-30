@@ -422,4 +422,30 @@ mod tests {
         // ENOENT
         assert!(fs.resolve(b"/nope", true).is_err());
     }
+
+    #[test]
+    fn real_rootfs_image_lists_root_and_reads_passwd() {
+        // std is available in tests. Locate the uncompressed real image; skip if absent.
+        let candidates = [
+            "../../local-binaries/source-only-v1/programs/wasm32/rootfs.vfs",
+            "../../host/wasm/rootfs.vfs",
+        ];
+        let path = candidates.iter().find(|p| std::path::Path::new(p).exists());
+        let Some(path) = path else { eprintln!("skip: no rootfs.vfs"); return; };
+        let image = std::fs::read(path).unwrap();
+        let fs = Sffs::mount(unwrap_vfsi(&image).unwrap()).unwrap();
+        // Root lists the usual FHS dirs.
+        let names: std::collections::BTreeSet<Vec<u8>> =
+            fs.read_dir(ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();
+        for want in [b"etc".as_slice(), b"usr", b"bin"] {
+            assert!(names.iter().any(|n| n.as_slice() == want), "root missing {:?}", want);
+        }
+        // /etc/passwd resolves and reads non-empty (exercises deeper paths + reads).
+        let ino = fs.resolve(b"/etc/passwd", true).unwrap();
+        let size = fs.stat_ino(ino).unwrap().size as usize;
+        let mut buf = vec![0u8; size];
+        let n = fs.read_at(ino, 0, &mut buf).unwrap();
+        assert_eq!(n, size);
+        assert!(buf.windows(5).any(|w| w == b"root:"), "passwd should contain root:");
+    }
 }
