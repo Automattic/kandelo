@@ -15,13 +15,14 @@
 //!   (Increment 2b.)
 //! - **whiteouts** hiding deleted base entries. (Increment 2b.)
 //!
-//! This first slice (Increment 2a) implements the read-only base layer only:
-//! the data model, a base-tree builder, and the read-path operations
-//! (lstat/readlink/open-rdonly/read/opendir/readdir/getdents64/statfs). It is
-//! **dormant by default** (`set_enabled`, default off) and not yet wired into
-//! syscall dispatch, so behavior is unchanged until the cutover increment. The
-//! mutable overlay (COW/create/unlink/rename/chmod/…) lands in Increment 2b.
-//! See `docs/plans/2026-08-28-phase5-vfs-to-rust.md`.
+//! Increment 2a added the read-only base layer (data model, base-tree builder,
+//! and read-path ops). Increment 2b-i adds the file-mutation core: an
+//! overlay `Regular` inode kind, copy-on-write of a base file on first write,
+//! `O_CREAT`/`O_TRUNC`, `write`, and `truncate`. Directory/metadata mutation
+//! (mkdir/rmdir/unlink/rename/chmod/chown/utimensat/symlink/link) lands in
+//! Increment 2b-ii. The store is **dormant by default** (`set_enabled`, default
+//! off) and not yet wired into syscall dispatch, so behavior is unchanged until
+//! the cutover increment. See `docs/plans/2026-08-28-phase5-vfs-to-rust.md`.
 //!
 //! # Handle encoding
 //! Disjoint negative-handle bands, 1e9 wide, below the tmpfs bands:
@@ -43,6 +44,9 @@ use wasm_posix_shared::WasmStatfs;
 // Open-file creation flags we honor here (mirrors syscalls.rs / tmpfs.rs).
 const O_ACCMODE: u32 = 0o3;
 const O_RDONLY: u32 = 0o0;
+const O_CREAT: u32 = 0o100;
+const O_EXCL: u32 = 0o200;
+const O_TRUNC: u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
 
 /// Directory entry type codes as reported through getdents64 `d_type`.
@@ -55,7 +59,7 @@ fn dirent_type(inode: &Inode) -> u8 {
     match inode.kind {
         InodeKind::Dir(_) => DT_DIR as u8,
         InodeKind::Symlink(_) => DT_LNK as u8,
-        InodeKind::BaseRegular { .. } => DT_REG as u8,
+        InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => DT_REG as u8,
     }
 }
 
@@ -80,6 +84,9 @@ enum InodeKind {
     /// A base regular file: bytes live in the host byte store, addressed by
     /// `blob_id`; `size` is authoritative metadata from the manifest.
     BaseRegular { blob_id: u64, size: u64 },
+    /// A Rust-owned mutable regular file: either created under `/` at runtime or
+    /// a base file copied-on-write on first write. Bytes live in kernel memory.
+    Regular(Vec<u8>),
     /// Symbolic link holding its target path bytes.
     Symlink(Vec<u8>),
 }
@@ -126,12 +133,13 @@ impl Inode {
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
-            InodeKind::BaseRegular { .. } => S_IFREG,
+            InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => S_IFREG,
             InodeKind::Symlink(_) => S_IFLNK,
         };
         let size = match &self.kind {
             InodeKind::Dir(entries) => entries.len() as u64,
             InodeKind::BaseRegular { size, .. } => *size,
+            InodeKind::Regular(data) => data.len() as u64,
             InodeKind::Symlink(target) => target.len() as u64,
         };
         WasmStat {
@@ -154,6 +162,28 @@ impl Inode {
 
     fn is_dir(&self) -> bool {
         matches!(self.kind, InodeKind::Dir(_))
+    }
+
+    /// Stamp mtime and ctime (a content mutation: write, truncate).
+    fn touch_modified(&mut self) {
+        let (sec, nsec) = now();
+        self.mtime_sec = sec;
+        self.mtime_nsec = nsec;
+        self.ctime_sec = sec;
+        self.ctime_nsec = nsec;
+    }
+
+    /// Clear set-user-ID, and set-group-ID on a group-executable file, on a
+    /// content-modifying operation — the POSIX "a successful write clears
+    /// set-user-ID" rule, matching the host path and tmpfs.
+    fn clear_setid_on_modify(&mut self) {
+        const S_ISUID: u32 = 0o4000;
+        const S_ISGID: u32 = 0o2000;
+        const S_IXGRP: u32 = 0o0010;
+        self.mode &= !S_ISUID;
+        if self.mode & S_IXGRP != 0 {
+            self.mode &= !S_ISGID;
+        }
     }
 }
 
@@ -191,6 +221,14 @@ impl RootfsState {
         if seen >= self.next_ino {
             self.next_ino = seen + 1;
         }
+    }
+
+    /// Allocate a fresh inode number for an overlay-created file (base inos come
+    /// from the manifest; `bump_next_ino` keeps this ahead of them).
+    fn alloc_ino(&mut self) -> u64 {
+        let ino = self.next_ino;
+        self.next_ino += 1;
+        ino
     }
 
     fn insert_inode(&mut self, inode: Inode) -> u32 {
@@ -248,6 +286,42 @@ impl RootfsState {
             }
         }
         Ok(cur)
+    }
+
+    /// Resolve a path to (parent_dir_idx, final_component, target_if_present).
+    /// The root itself is returned as `(root, None, Some(root))`. Mirrors the
+    /// tmpfs resolver.
+    fn resolve<'a>(
+        &mut self,
+        rel: &'a [&'a [u8]],
+    ) -> Result<(u32, Option<&'a [u8]>, Option<u32>), Errno> {
+        let root = self.mount_root();
+        if rel.is_empty() {
+            return Ok((root, None, Some(root)));
+        }
+        let (parent_comps, last) = rel.split_at(rel.len() - 1);
+        let parent = self.walk(root, parent_comps)?;
+        let last = last[0];
+        let parent_inode = self.get(parent).ok_or(Errno::ENOENT)?;
+        let target = match &parent_inode.kind {
+            InodeKind::Dir(entries) => entries.get(last).copied(),
+            _ => return Err(Errno::ENOTDIR),
+        };
+        Ok((parent, Some(last), target))
+    }
+
+    /// Free an inode if it has no remaining names and no open descriptions
+    /// (POSIX unlink-while-open). Base and overlay inodes alike: a base file's
+    /// bytes live in the host, so dropping the inode just forgets the mapping.
+    fn maybe_free(&mut self, idx: u32) {
+        let drop_it = self
+            .get(idx)
+            .map(|inode| inode.nlink == 0 && inode.open_count == 0)
+            .unwrap_or(false);
+        if drop_it {
+            self.inodes[idx as usize] = None;
+            self.free_inodes.push(idx);
+        }
     }
 }
 
@@ -577,32 +651,203 @@ pub fn is_dir(path: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-/// Open a rootfs regular file. Increment 2a is read-only: only `O_RDONLY` opens
-/// of base regular files are supported; any write intent returns `EROFS` until
-/// the mutable overlay (Increment 2b) lands. Directories go through `opendir`.
-pub fn open(path: &[u8], flags: u32, _mode: u32, _uid: u32, _gid: u32) -> Result<i64, Errno> {
+/// Open (optionally creating/truncating) a rootfs regular file. Returns the
+/// encoded host handle; `open_count` is incremented here and released via
+/// [`release_handle`]. Copy-on-write of a base file's *bytes* is deferred to the
+/// first [`write`]; `O_TRUNC` needs no base bytes (it discards them), so it
+/// converts a base file to an empty overlay file directly. Directories go
+/// through [`opendir`].
+pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let comps = split_components(path);
     ROOTFS.with(|state| {
-        let root = state.mount_root();
-        let idx = state.walk(root, &comps)?;
-        let inode = state.get(idx).ok_or(Errno::ENOENT)?;
-        if inode.is_dir() {
+        let (parent, last, target) = state.resolve(&comps)?;
+        let inode_idx = match target {
+            Some(existing) => {
+                if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
+                    return Err(Errno::EEXIST);
+                }
+                let inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                if matches!(inode.kind, InodeKind::Symlink(_)) {
+                    // The caller resolves symlinks before open; a symlink reaching
+                    // here means O_NOFOLLOW on the final component.
+                    return Err(Errno::ELOOP);
+                }
+                if inode.is_dir() {
+                    return Err(Errno::EISDIR);
+                }
+                if flags & O_DIRECTORY != 0 {
+                    return Err(Errno::ENOTDIR);
+                }
+                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+                    if let Some(node) = state.get_mut(existing) {
+                        let shrank = match &node.kind {
+                            InodeKind::Regular(d) => !d.is_empty(),
+                            InodeKind::BaseRegular { size, .. } => *size > 0,
+                            _ => false,
+                        };
+                        node.kind = InodeKind::Regular(Vec::new());
+                        if shrank {
+                            node.clear_setid_on_modify();
+                        }
+                        node.touch_modified();
+                    }
+                }
+                existing
+            }
+            None => {
+                if flags & O_CREAT == 0 {
+                    return Err(Errno::ENOENT);
+                }
+                if flags & O_DIRECTORY != 0 {
+                    return Err(Errno::ENOTDIR);
+                }
+                let last = last.ok_or(Errno::ENOENT)?;
+                let ino = state.alloc_ino();
+                let new_idx = state.insert_inode(Inode::new(
+                    InodeKind::Regular(Vec::new()),
+                    mode & 0o7777,
+                    uid,
+                    gid,
+                    1,
+                    ino,
+                ));
+                match state.get_mut(parent).map(|i| &mut i.kind) {
+                    Some(InodeKind::Dir(entries)) => {
+                        entries.insert(last.to_vec(), new_idx);
+                    }
+                    _ => {
+                        state.inodes[new_idx as usize] = None;
+                        state.free_inodes.push(new_idx);
+                        return Err(Errno::ENOTDIR);
+                    }
+                }
+                new_idx
+            }
+        };
+        // A directory opened without opendir is rejected so callers never treat a
+        // dir handle as a file.
+        if state.get(inode_idx).ok_or(Errno::ENOENT)?.is_dir() {
             return Err(Errno::EISDIR);
         }
-        if flags & O_DIRECTORY != 0 {
-            return Err(Errno::ENOTDIR);
+        state.get_mut(inode_idx).ok_or(Errno::ENOENT)?.open_count += 1;
+        Ok(inode_to_file_handle(inode_idx))
+    })
+}
+
+/// Materialize a base file's bytes into a Rust-owned overlay buffer (copy-on-
+/// write) if it has not been materialized yet. The host byte read runs outside
+/// the store lock. A no-op for an already-overlay (`Regular`) file.
+fn ensure_materialized<F>(idx: u32, blob_read: &mut F) -> Result<(), Errno>
+where
+    F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    let base = ROOTFS.with(|state| match state.get(idx) {
+        Some(inode) => match &inode.kind {
+            InodeKind::BaseRegular { blob_id, size } => Ok(Some((*blob_id, *size))),
+            InodeKind::Regular(_) => Ok(None),
+            InodeKind::Dir(_) => Err(Errno::EISDIR),
+            InodeKind::Symlink(_) => Err(Errno::EINVAL),
+        },
+        None => Err(Errno::EBADF),
+    })?;
+    let Some((blob_id, size)) = base else {
+        return Ok(());
+    };
+    let mut data = alloc::vec![0u8; size as usize];
+    let mut filled = 0usize;
+    while filled < data.len() {
+        let n = blob_read(blob_id, filled as u64, &mut data[filled..])?;
+        if n == 0 {
+            break; // short read: trust the manifest size but never spin
         }
-        if matches!(inode.kind, InodeKind::Symlink(_)) {
-            // The caller resolves symlinks before open; a symlink reaching here
-            // with O_NOFOLLOW semantics is not a regular file.
-            return Err(Errno::ELOOP);
+        filled += n;
+    }
+    data.truncate(filled);
+    ROOTFS.with(|state| {
+        if let Some(inode) = state.get_mut(idx) {
+            // Re-check: only convert if still a base file (no reentrancy in the
+            // single-threaded kernel, but keep the store the source of truth).
+            if matches!(inode.kind, InodeKind::BaseRegular { .. }) {
+                inode.kind = InodeKind::Regular(data);
+            }
         }
-        if flags & O_ACCMODE != O_RDONLY {
-            // Mutable overlay (COW): Increment 2b.
-            return Err(Errno::EROFS);
+    });
+    Ok(())
+}
+
+/// Write `buf` at `offset`, copying a base file into the overlay first, then
+/// growing (zero-filling any gap) as needed.
+pub fn write<F>(handle: i64, offset: i64, buf: &[u8], mut blob_read: F) -> Result<usize, Errno>
+where
+    F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    let idx = file_handle_to_inode(handle)?;
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    ensure_materialized(idx, &mut blob_read)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        {
+            let InodeKind::Regular(data) = &mut inode.kind else {
+                return Err(Errno::EISDIR);
+            };
+            let start = offset as usize;
+            let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            if end > data.len() {
+                data.resize(end, 0);
+            }
+            data[start..end].copy_from_slice(buf);
         }
-        state.get_mut(idx).ok_or(Errno::ENOENT)?.open_count += 1;
-        Ok(inode_to_file_handle(idx))
+        if !buf.is_empty() {
+            inode.clear_setid_on_modify();
+        }
+        inode.touch_modified();
+        Ok(buf.len())
+    })
+}
+
+/// Truncate an open rootfs regular file to `length`, zero-filling any growth.
+/// Truncating to 0 needs no base bytes; a non-zero truncate copies the base file
+/// into the overlay first. The caller enforces access mode and RLIMIT_FSIZE.
+pub fn truncate_handle<F>(handle: i64, length: i64, mut blob_read: F) -> Result<(), Errno>
+where
+    F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    let idx = file_handle_to_inode(handle)?;
+    let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
+    if new_len == 0 {
+        return ROOTFS.with(|state| {
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            let shrank = match &inode.kind {
+                InodeKind::Regular(d) => !d.is_empty(),
+                InodeKind::BaseRegular { size, .. } => *size > 0,
+                _ => return Err(Errno::EISDIR),
+            };
+            inode.kind = InodeKind::Regular(Vec::new());
+            if shrank {
+                inode.clear_setid_on_modify();
+            }
+            inode.touch_modified();
+            Ok(())
+        });
+    }
+    ensure_materialized(idx, &mut blob_read)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        let changed = match &mut inode.kind {
+            InodeKind::Regular(data) => {
+                let old_len = data.len();
+                data.resize(new_len, 0);
+                old_len != new_len
+            }
+            _ => return Err(Errno::EISDIR),
+        };
+        if changed {
+            inode.clear_setid_on_modify();
+        }
+        inode.touch_modified();
+        Ok(())
     })
 }
 
@@ -619,20 +864,40 @@ where
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    let (blob_id, size) = ROOTFS.with(|state| {
+    // An overlay (Regular) file is copied under the lock; a base file yields its
+    // (blob_id, size) so the host byte read runs after the lock is released.
+    enum Plan {
+        Done(usize),
+        Base(u64, u64),
+    }
+    let plan = ROOTFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
-            InodeKind::BaseRegular { blob_id, size } => Ok((*blob_id, *size)),
+            InodeKind::Regular(data) => {
+                let start = offset as usize;
+                if start >= data.len() {
+                    return Ok(Plan::Done(0));
+                }
+                let n = core::cmp::min(buf.len(), data.len() - start);
+                buf[..n].copy_from_slice(&data[start..start + n]);
+                Ok(Plan::Done(n))
+            }
+            InodeKind::BaseRegular { blob_id, size } => Ok(Plan::Base(*blob_id, *size)),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
         }
     })?;
-    let start = offset as u64;
-    if start >= size {
-        return Ok(0);
+    match plan {
+        Plan::Done(n) => Ok(n),
+        Plan::Base(blob_id, size) => {
+            let start = offset as u64;
+            if start >= size {
+                return Ok(0);
+            }
+            let n = core::cmp::min(buf.len() as u64, size - start) as usize;
+            blob_read(blob_id, start, &mut buf[..n])
+        }
     }
-    let n = core::cmp::min(buf.len() as u64, size - start) as usize;
-    blob_read(blob_id, start, &mut buf[..n])
 }
 
 /// Current size of an open rootfs file (for `SEEK_END`).
@@ -642,6 +907,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
             InodeKind::BaseRegular { size, .. } => Ok(*size as i64),
+            InodeKind::Regular(data) => Ok(data.len() as i64),
             _ => Err(Errno::EISDIR),
         }
     })
@@ -669,9 +935,9 @@ pub fn add_ref_handle(handle: i64) -> bool {
     })
 }
 
-/// Drop one owning reference (close/exec-cloexec). Returns `true` when this drop
-/// released the final open reference. Base inodes are never freed (they belong to
-/// the immutable base); overlay/COW inode freeing arrives in Increment 2b.
+/// Drop one owning reference (close/exec-cloexec). Frees the inode if it was the
+/// last reference and the file had already been unlinked (POSIX unlink-while-
+/// open). Returns `true` when this drop released the final open reference.
 pub fn release_handle(handle: i64) -> bool {
     let Ok(idx) = file_handle_to_inode(handle) else {
         return false;
@@ -681,7 +947,9 @@ pub fn release_handle(handle: i64) -> bool {
             return false;
         };
         inode.open_count = inode.open_count.saturating_sub(1);
-        inode.open_count == 0
+        let was_last = inode.open_count == 0;
+        state.maybe_free(idx);
+        was_last
     })
 }
 
@@ -977,12 +1245,124 @@ mod tests {
     }
 
     #[test]
-    fn open_directory_is_eisdir_and_write_is_erofs() {
+    fn open_directory_is_eisdir() {
         let _g = TestGuard::acquire();
         build_sample_tree();
         assert_eq!(open(b"/usr/bin", O_RDONLY, 0, 0, 0).unwrap_err(), Errno::EISDIR);
-        // O_WRONLY == 1: write intent is EROFS until the mutable overlay (2b).
-        assert_eq!(open(b"/usr/bin/hello", 1, 0, 0, 0).unwrap_err(), Errno::EROFS);
+    }
+
+    #[test]
+    fn cow_write_materializes_base_then_overwrites() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        // O_RDWR == 2.
+        let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
+        // Overwrite "world" -> "there".
+        assert_eq!(write(h, 6, b"there", &mut blob).unwrap(), 5);
+        // A reader that panics proves post-COW reads never touch the host.
+        let mut panic_blob = |_: u64, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
+            panic!("post-COW read must be served from the overlay");
+        };
+        let mut buf = [0u8; 16];
+        let n = read(h, 0, &mut buf, &mut panic_blob).unwrap();
+        assert_eq!(&buf[..n], b"hello there");
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_size, 11);
+        assert!(release_handle(h));
+    }
+
+    #[test]
+    fn cow_write_past_eof_zero_fills() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
+        assert_eq!(write(h, 13, b"X", &mut blob).unwrap(), 1);
+        let mut buf = [0u8; 32];
+        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(n, 14);
+        assert_eq!(&buf[..11], b"hello world");
+        assert_eq!(&buf[11..13], &[0u8, 0u8]); // zero-fill gap
+        assert_eq!(buf[13], b'X');
+        assert!(release_handle(h));
+    }
+
+    #[test]
+    fn write_clears_setuid_bit() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/suid", 7, 3, 0o4755, 0, 0, 2).unwrap();
+        let mut blob = make_blob_reader(alloc::vec![(7u64, b"abc".to_vec())]);
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o4755);
+        let h = open(b"/suid", 2, 0, 0, 0).unwrap();
+        write(h, 0, b"Z", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
+        release_handle(h);
+    }
+
+    #[test]
+    fn otrunc_discards_base_without_reading_blob() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // O_WRONLY|O_TRUNC == 1|0o1000; blob reader must not be called.
+        let mut panic_blob = |_: u64, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
+            panic!("O_TRUNC must not read base bytes");
+        };
+        let h = open(b"/usr/bin/hello", 1 | O_TRUNC, 0, 0, 0).unwrap();
+        assert_eq!(size(h).unwrap(), 0);
+        assert_eq!(write(h, 0, b"new", &mut panic_blob).unwrap(), 3);
+        let mut buf = [0u8; 8];
+        assert_eq!(read(h, 0, &mut buf, &mut panic_blob).unwrap(), 3);
+        assert_eq!(&buf[..3], b"new");
+        release_handle(h);
+    }
+
+    #[test]
+    fn create_new_file_under_dir() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![]);
+        // O_CREAT|O_WRONLY == 0o100|1.
+        let h = open(b"/usr/bin/fresh", O_CREAT | 1, 0o644, 7, 8).unwrap();
+        assert_eq!(write(h, 0, b"data", &mut blob).unwrap(), 4);
+        release_handle(h);
+        let st = lstat(b"/usr/bin/fresh").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(st.st_mode & 0o7777, 0o644);
+        assert_eq!(st.st_uid, 7);
+        assert_eq!(st.st_gid, 8);
+        assert_eq!(st.st_size, 4);
+        // O_CREAT|O_EXCL on the now-existing file fails.
+        assert_eq!(
+            open(b"/usr/bin/fresh", O_CREAT | O_EXCL | 1, 0o644, 0, 0).unwrap_err(),
+            Errno::EEXIST
+        );
+    }
+
+    #[test]
+    fn truncate_grow_and_shrink() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
+        let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
+        // Shrink to 5.
+        truncate_handle(h, 5, &mut blob).unwrap();
+        assert_eq!(size(h).unwrap(), 5);
+        // Grow to 8 (zero-filled).
+        truncate_handle(h, 8, &mut blob).unwrap();
+        let mut buf = [0u8; 16];
+        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(&buf[..5], b"hello");
+        assert_eq!(&buf[5..8], &[0u8, 0u8, 0u8]);
+        release_handle(h);
+    }
+
+    #[test]
+    fn create_missing_without_ocreat_is_enoent() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        assert_eq!(open(b"/usr/bin/nope", 1, 0, 0, 0).unwrap_err(), Errno::ENOENT);
     }
 
     #[test]
