@@ -246,6 +246,60 @@ describe("rootfs manifest emitter", () => {
     expect(provider(999n, 0n, dest)).toBe(-2);
   });
 
+  it("provider maps a lazy leaf's EAGAIN to -EAGAIN and other faults to -EIO", () => {
+    // A lazy (unmaterialized) leaf makes MemoryFileSystem.open/read throw an
+    // Error tagged code === "EAGAIN" (guardSynchronousLazyAccess). The provider
+    // must propagate that as -11 so the kernel parks + retries, and keep -5 for
+    // real faults.
+    const eagain = () => {
+      const e = new Error("EAGAIN: lazy backing is being prepared") as Error & {
+        code: string;
+      };
+      e.code = "EAGAIN";
+      throw e;
+    };
+    const lazyBackend = {
+      open: eagain,
+      read: () => 0,
+      close: () => 0,
+    } as unknown as FileSystemBackend;
+    const lazyProvider = createRootfsBlobProvider(
+      lazyBackend,
+      new Map([[4, "/usr/bin/vim"]]),
+    );
+    expect(lazyProvider(4n, 0n, new Uint8Array(8))).toBe(-11); // EAGAIN
+
+    // EAGAIN can also surface at read time (open succeeded, backing raced).
+    const lazyAtRead = {
+      open: () => 7,
+      read: eagain,
+      close: () => 0,
+    } as unknown as FileSystemBackend;
+    expect(
+      createRootfsBlobProvider(lazyAtRead, new Map([[4, "/usr/bin/vim"]]))(
+        4n,
+        0n,
+        new Uint8Array(8),
+      ),
+    ).toBe(-11);
+
+    // A non-EAGAIN failure is a real fault -> EIO, not a spurious retry.
+    const brokenBackend = {
+      open: () => {
+        throw new Error("EIO disk gone");
+      },
+      read: () => 0,
+      close: () => 0,
+    } as unknown as FileSystemBackend;
+    expect(
+      createRootfsBlobProvider(brokenBackend, new Map([[4, "/x"]]))(
+        4n,
+        0n,
+        new Uint8Array(8),
+      ),
+    ).toBe(-5); // EIO
+  });
+
   it("surfaces (does not hide) a non-portable node in a `/` image", () => {
     const withSock: Record<string, FakeNode> = {
       "/": { ino: 1, mode: S_IFDIR | 0o755, uid: 0, gid: 0, children: ["s"] },
