@@ -147,10 +147,21 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       prevCanvasX = canvasX;
       prevCanvasY = canvasY;
     };
+    // Absolute-position pointer feed for evdev consumers (SDL2's
+    // KMSDRM backend reads `/dev/input/event1`, which the PS/2
+    // `sendMouseEvent` path above does NOT reach). `toCanvasCoords`
+    // already maps the OS pointer into framebuffer pixels (0..canvas
+    // .width), exactly the range SDL expects after we set the kernel's
+    // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
+    // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
+    const sendAbs = (canvasX: number, canvasY: number) => {
+      handleRef.current?.sendPointerAbs(canvasX, canvasY, buttons);
+    };
     const onPointerEnter = (e: PointerEvent) => {
       if (e.pointerType === "touch") return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
     const onPointerLeave = (e: PointerEvent) => {
       if (e.pointerType === "touch") return;
@@ -161,6 +172,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === "touch") {
@@ -181,7 +193,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
         handlePointerAt(c.x, c.y);
       }
       buttons |= bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
     };
     const onPointerUp = (e: PointerEvent) => {
       if (e.pointerType === "touch") {
@@ -194,7 +208,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       if (bit === 0) return;
       e.preventDefault();
       buttons &= ~bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
     };
     const onPointerCancel = (e: PointerEvent) => {
       if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;

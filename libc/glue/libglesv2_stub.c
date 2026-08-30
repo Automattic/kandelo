@@ -345,15 +345,47 @@ void glActiveTexture(GLenum unit) {
     EMIT_END()
 }
 
-/* Pavel's pipeline only allocates render-target textures (data == NULL):
- * the fragment shaders write each texture's contents. The upload path
- * (data != NULL) needs per-(format,type) byte-size logic; extend when a
- * demo actually needs to upload pixel data from C. */
+/* Bytes-per-pixel for the GL (format,type) pairs we know how to
+ * marshal. Returns 0 for unknown combos so glTexImage2D / glTexSubImage2D
+ * drops the upload rather than emit a garbled record. Extend when a
+ * demo needs a new combo. */
+static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
+    if (type == GL_UNSIGNED_BYTE) {
+        switch (format) {
+            case GL_ALPHA:           return 1;
+            case GL_LUMINANCE:       return 1;
+            case GL_LUMINANCE_ALPHA: return 2;
+            case GL_RGB:             return 3;
+            case GL_RGBA:            return 4;
+            default: break;
+        }
+    } else if (type == GL_UNSIGNED_SHORT_5_6_5
+            || type == GL_UNSIGNED_SHORT_4_4_4_4
+            || type == GL_UNSIGNED_SHORT_5_5_5_1) {
+        return 2;
+    }
+    return 0;
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    if (data != NULL) return;
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36)
+    uint32_t dlen = 0;
+    if (data != NULL && width > 0 && height > 0) {
+        uint32_t bpp = bytes_per_pixel(format, type);
+        if (bpp > 0) {
+            dlen = (uint32_t) width * (uint32_t) height * bpp;
+        }
+    }
+    /* The TLV payload-length field is u16, so the largest single-call
+     * upload that fits is 0xFFFF - 36 (header fields) ≈ 65499 bytes.
+     * The caller is responsible for sizing textures to fit; this guard
+     * just prevents the encoder from writing a truncated record. */
+    if (dlen > 0xFFFFu - 36u) {
+        dlen = 0;
+        data = NULL;
+    }
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
     w_i32(&_c, internalFormat);
@@ -362,7 +394,11 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     w_i32(&_c, border);
     w_u32(&_c, (uint32_t)format);
     w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, 0u);   /* dataLen */
+    w_u32(&_c, dlen);
+    if (dlen > 0 && data != NULL) {
+        memcpy(_c, data, dlen);
+        _c += dlen;
+    }
     EMIT_END()
 }
 
@@ -371,6 +407,21 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)pname);
     w_i32(&_c, param);
+    EMIT_END()
+}
+
+void glPixelStorei(GLenum pname, GLint param) {
+    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    w_u32(&_c, (uint32_t)pname);
+    w_i32(&_c, param);
+    EMIT_END()
+}
+
+void glDeleteBuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_BUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
     EMIT_END()
 }
 

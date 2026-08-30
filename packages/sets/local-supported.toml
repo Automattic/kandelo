@@ -76,10 +76,6 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
-name = "evdev-demo"
-class = "user-software"
-
-[[packages]]
 name = "fbdoom"
 class = "user-software"
 
@@ -133,6 +129,10 @@ class = "platform"
 
 [[packages]]
 name = "libcxx"
+class = "platform"
+
+[[packages]]
+name = "libdrm"
 class = "platform"
 
 [[packages]]
@@ -286,6 +286,10 @@ class = "test-support"
 [[packages]]
 name = "sdl2"
 class = "platform"
+
+[[packages]]
+name = "sdl2-demo"
+class = "user-software"
 
 [[packages]]
 name = "sdl2-mixer-playwave"

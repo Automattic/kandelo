@@ -2577,8 +2577,11 @@ the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
-`scripts/build-musl.sh` installs the headers and builds `sysroot/lib/libdrm.a`,
-`libgbm.a`, `libEGL.a`, and `libGLESv2.a`, plus matching pkg-config files.
+`scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
+into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and
+`libGLESv2.a` from `libc/glue/`, plus matching pkg-config files. `libdrm` is
+upstream 2.4.120, KMS subset only — the kernel implements enough of the
+`DRM_IOCTL_MODE_*` surface for unmodified upstream sources to drive it.
 Packages that depend on these APIs link through `wasm32posix-pkg-config` and
 declare their resulting program artifacts as packages. The `modeset` demo is
 one such package: its VFS image installs `/usr/local/bin/modeset`, and
