@@ -212,6 +212,16 @@ impl<'a> Sffs<'a> {
         }
         Ok(out)
     }
+
+    /// Resolves `name` to a child ino within `dir_ino` via a linear scan of
+    /// `read_dir`. The vendor's `DirIndex` cache is an in-process
+    /// optimization with no on-disk form, so a linear scan is correct here.
+    pub fn lookup(&self, dir_ino: u32, name: &[u8]) -> Result<u32, Errno> {
+        for e in self.read_dir(dir_ino)? {
+            if e.name == name { return Ok(e.ino); }
+        }
+        Err(Errno::ENOENT)
+    }
 }
 
 const DIRENT_HEADER: usize = 8;
@@ -297,5 +307,14 @@ mod tests {
         let file_ino = fs.read_dir(ROOT_INO).unwrap().into_iter()
             .find(|e| e.name == b"hello.txt").unwrap().ino;
         assert!(fs.read_dir(file_ino).is_err());
+    }
+
+    #[test]
+    fn lookup_finds_children_and_misses() {
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let dir = fs.lookup(ROOT_INO, b"dir").unwrap();
+        assert_eq!(fs.stat_ino(dir).unwrap().mode & 0xf000, 0x4000);
+        assert!(fs.lookup(dir, b"nested.txt").is_ok());
+        assert!(fs.lookup(ROOT_INO, b"nope").is_err());
     }
 }
