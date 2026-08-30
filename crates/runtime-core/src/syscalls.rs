@@ -2599,6 +2599,13 @@ pub fn open_prepared_exec_target(
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     check_search_path(proc, host, &resolved)?;
 
+    if crate::rootfs::claims_path(&resolved) {
+        // The overlay owns `/`: prepare the target from it (bytes served by the
+        // blob provider / overlay copy-on-writes) instead of a host file. This
+        // also loads guest-written `/` executables, which the host mount lacks.
+        return open_prepared_exec_target_rootfs(proc, &resolved, flags);
+    }
+
     let open_flags = O_RDONLY
         | if flags & AT_SYMLINK_NOFOLLOW != 0 {
             O_NOFOLLOW
@@ -2645,6 +2652,69 @@ pub fn open_prepared_exec_target(
         stat,
         statfs,
         diagnostic_path: resolved,
+    })
+}
+
+/// Prepare an exec target that resolves into the in-kernel rootfs overlay.
+/// Mirrors [`open_rootfs`] for the byte source and [`open_prepared_exec_target`]
+/// for the exec contract: the overlay serves the bytes (base files via the blob
+/// provider, copy-on-writes directly), so a program that exists only in the
+/// overlay (e.g. a guest-compiled `/root/a.out`) prepares correctly.
+///
+/// The overlay mount is treated as `nosuid` for exec: set-ID is not elevated
+/// through an overlay binary until the overlay's per-inode permission
+/// enforcement lands, so this cannot become a privilege-escalation path.
+fn open_prepared_exec_target_rootfs(
+    proc: &mut Process,
+    resolved: &[u8],
+    flags: u32,
+) -> Result<PreparedExecOpen, Errno> {
+    let open_flags = O_RDONLY
+        | if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            O_NOFOLLOW
+        } else {
+            0
+        };
+    let host_handle = crate::rootfs::open(
+        resolved,
+        open_flags,
+        0,
+        proc.effective_uid(),
+        proc.effective_gid(),
+    )?;
+    let stat = match crate::rootfs::fstat(host_handle) {
+        Ok(stat) => stat,
+        Err(error) => {
+            crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+            return Err(error);
+        }
+    };
+    if stat.st_mode & S_IFMT != S_IFREG {
+        crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+        return Err(Errno::EACCES);
+    }
+    if let Err(error) = check_access(proc, &stat, X_OK) {
+        crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
+        return Err(error);
+    }
+    let mut statfs = crate::rootfs::statfs(resolved)?;
+    statfs.f_flags |= wasm_posix_shared::statfs_flags::ST_NOSUID;
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    let ofd_index =
+        proc.ofd_table
+            .create(FileType::Regular, O_RDONLY, host_handle, resolved.to_vec());
+    let ofd = proc.ofd_table.get_mut(ofd_index).ok_or(Errno::EIO)?;
+    ofd.file_id = file_id;
+    Ok(PreparedExecOpen {
+        ofd_ref: OpenFileDescRef(ofd_index),
+        ofd_id: ofd.ofd_id,
+        file_id,
+        stat,
+        statfs,
+        diagnostic_path: resolved.to_vec(),
     })
 }
 

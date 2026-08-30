@@ -832,15 +832,30 @@ function isMissingPathError(error: unknown): boolean {
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   const io = vfsExecIO;
-  if (!io) return null;
-  try {
-    const { data, stat } = await readPreparedPlatformFile(io, path);
-    if ((stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) return null;
-    return bufferToArrayBuffer(data);
-  } catch (error) {
-    if (isMissingPathError(error)) return null;
-    throw error;
+  if (io) {
+    try {
+      // The base-image mount resolves symlinks and materializes lazy programs,
+      // so base and lazy executables load here even under the overlay.
+      const { data, stat } = await readPreparedPlatformFile(io, path);
+      if ((stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) return null;
+      return bufferToArrayBuffer(data);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      // Missing from the base image; fall through to the overlay for a file
+      // that exists only there (e.g. a guest-written `/` executable).
+    }
   }
+  if (kernelRootfsEnabled()) {
+    try {
+      return bufferToArrayBuffer(kernelWorker.rootfsReadFile(path));
+    } catch (error) {
+      const errno = (error as { errno?: number }).errno;
+      // ENOENT (2), ENOTDIR (20), EISDIR (21): not a readable regular file.
+      if (errno === 2 || errno === 20 || errno === 21) return null;
+      throw error;
+    }
+  }
+  return null;
 }
 
 async function resolveExec(path: string): Promise<ArrayBuffer | null> {
