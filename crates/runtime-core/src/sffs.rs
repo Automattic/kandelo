@@ -34,6 +34,28 @@ pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
     Ok(&image[VFSI_HEADER..end])
 }
 
+const SFFS_MAGIC: u32 = 0x5346_4653; // "SFFS"
+const SFFS_VERSION: u32 = 1;
+pub(crate) const BLOCK_SIZE: usize = 4096;
+const SB_INODE_TABLE_START: usize = 36;
+
+pub struct Sffs<'a> {
+    // Unused until later tasks read file/inode data through this handle.
+    #[allow(dead_code)]
+    bytes: &'a [u8],
+    pub(crate) inode_table_start: u32,
+}
+
+impl<'a> Sffs<'a> {
+    pub fn mount(bytes: &'a [u8]) -> Result<Sffs<'a>, Errno> {
+        if r32(bytes, 0) != Some(SFFS_MAGIC) { return Err(Errno::EINVAL); }
+        if r32(bytes, 4) != Some(SFFS_VERSION) { return Err(Errno::EINVAL); }
+        if r32(bytes, 8) != Some(BLOCK_SIZE as u32) { return Err(Errno::EINVAL); }
+        let inode_table_start = r32(bytes, SB_INODE_TABLE_START).ok_or(Errno::EINVAL)?;
+        Ok(Sffs { bytes, inode_table_start })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,5 +73,19 @@ mod tests {
         let mut bad = TINY_VFS.to_vec();
         bad[0] ^= 0xff;
         assert!(unwrap_vfsi(&bad).is_err());
+    }
+
+    #[test]
+    fn mount_validates_superblock() {
+        let sffs = unwrap_vfsi(TINY_VFS).unwrap();
+        let fs = Sffs::mount(sffs).expect("mount");
+        assert!(fs.inode_table_start >= 1);
+    }
+
+    #[test]
+    fn mount_rejects_wrong_block_size() {
+        let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        bad[8] = 0; bad[9] = 0; bad[10] = 0; bad[11] = 0; // BLOCK_SIZE=0
+        assert!(Sffs::mount(&bad).is_err());
     }
 }
