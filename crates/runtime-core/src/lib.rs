@@ -41,6 +41,7 @@ pub mod pshared;
 pub mod pty;
 pub mod rootfs;
 pub mod scratch_alloc;
+pub mod sffs;
 pub mod signal;
 pub mod socket;
 pub mod socket_wire;
