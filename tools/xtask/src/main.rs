@@ -48,6 +48,7 @@ use std::rc::Rc;
 mod vfs_products;
 mod archive_extract_member;
 mod build_deps;
+mod build_stamp;
 mod bundle_program;
 mod cargo_closure;
 mod dump_abi;
