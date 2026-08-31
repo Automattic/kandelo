@@ -47,6 +47,7 @@ import {
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
+import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -3965,17 +3966,6 @@ async function handleExportRootfsImage(
     respondError(msg.requestId, "rootfs export requires an initialized kernel");
     return;
   }
-  if (kernelRootfsEnabled()) {
-    // The kernel overlay owns `/`, so `memfs` is the frozen base image;
-    // serializing it would export a stale snapshot. A faithful overlay snapshot
-    // (enumerate the kernel tree, read each file, rebuild the image) is a TODO.
-    // Fail loudly rather than lie; no caller exercises export today.
-    respondError(
-      msg.requestId,
-      "rootfs image export is not yet supported under the in-kernel overlay",
-    );
-    return;
-  }
   try {
     const image = await rootfsSnapshotGate.runSnapshot(async () => {
       if (
@@ -3986,6 +3976,18 @@ async function handleExportRootfsImage(
         throw new Error(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
+      }
+      if (kernelRootfsEnabled()) {
+        // The kernel overlay owns `/`; `memfs` is only the frozen base image.
+        // Rebuild a faithful image by reconciling that base with the overlay's
+        // authoritative tree (copy-on-writes, runtime creates/deletes, metadata)
+        // rather than serializing the stale base directly.
+        const { image: overlayImage } = await exportRootfsImageFromOverlay({
+          baseImage: await memfs!.saveImage(),
+          overlayTree: kernelWorker.rootfsExportTree(),
+          readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
+        });
+        return overlayImage;
       }
       return memfs.saveImage();
     });

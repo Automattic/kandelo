@@ -2278,6 +2278,175 @@ pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tree export (Phase 5 cutover): serialize the overlay-owned `/` tree so the
+// host can rebuild a faithful VFS image from the *authoritative* overlay state
+// instead of the frozen base image. See `handleExportRootfsImage` in the host
+// worker entries and `host/src/vfs/rootfs-overlay-export.ts` for the matching
+// reconciler.
+//
+// Wire format (little-endian) — the host reconciler must mirror it:
+//   header: magic u32 = "RXPT" | version u32 = 1 | entry_count u32
+//   entry:  kind u8 | mode u32 (0o7777 perm bits) | uid u32 | gid u32
+//           mtime_sec u64 | mtime_nsec u32 | size u64
+//           path_len u32 | path[path_len]   (absolute, "/" first)
+//           target_len u32 | target[target_len]   (symlink target; else empty)
+// Entries are emitted pre-order (parent before child) in the directory's
+// BTreeMap order, so the layout is deterministic across chunked reads.
+//
+// File *bytes* are intentionally absent: the host reads copy-on-written bytes
+// back through `kernel_rootfs_read_file`, and keeps base-file/lazy bytes from
+// the frozen base image untouched (so a not-yet-materialized lazy file stays
+// lazy in the exported image rather than being force-fetched).
+// ---------------------------------------------------------------------------
+
+pub const EXPORT_MAGIC: u32 = 0x5450_5852; // "RXPT" little-endian
+pub const EXPORT_VERSION: u32 = 1;
+/// A directory node.
+pub const EXPORT_KIND_DIR: u8 = 1;
+/// A base regular file (bytes live in the frozen base image; unchanged).
+pub const EXPORT_KIND_BASE_REGULAR: u8 = 2;
+/// A copy-on-written or runtime-created regular file (bytes owned by the
+/// overlay; the host reads them via `kernel_rootfs_read_file`).
+pub const EXPORT_KIND_COW_REGULAR: u8 = 3;
+/// A symbolic link (target bytes follow in the record's `target` field).
+pub const EXPORT_KIND_SYMLINK: u8 = 4;
+/// A metadata-only special node (socket/FIFO). Not representable in a `/`
+/// image; the host records it as skipped rather than fabricating bytes.
+pub const EXPORT_KIND_SPECIAL: u8 = 5;
+/// A lazy-archive member not yet materialized (bytes stay in the base image's
+/// lazy archive; the host preserves the linkage rather than fetching).
+pub const EXPORT_KIND_LAZY_MEMBER: u8 = 6;
+
+fn export_emit(out: &mut Vec<u8>, inode: &Inode, abs_path: &[u8]) {
+    let (kind, target): (u8, &[u8]) = match &inode.kind {
+        InodeKind::Dir(_) => (EXPORT_KIND_DIR, b""),
+        InodeKind::BaseRegular { .. } => (EXPORT_KIND_BASE_REGULAR, b""),
+        InodeKind::Regular(_) => (EXPORT_KIND_COW_REGULAR, b""),
+        InodeKind::Symlink(t) => (EXPORT_KIND_SYMLINK, t.as_slice()),
+        InodeKind::Special(_) => (EXPORT_KIND_SPECIAL, b""),
+        InodeKind::LazyMember { .. } => (EXPORT_KIND_LAZY_MEMBER, b""),
+    };
+    let size = inode.stat().st_size;
+    out.push(kind);
+    out.extend_from_slice(&(inode.mode & 0o7777).to_le_bytes());
+    out.extend_from_slice(&inode.uid.to_le_bytes());
+    out.extend_from_slice(&inode.gid.to_le_bytes());
+    out.extend_from_slice(&inode.mtime_sec.to_le_bytes());
+    out.extend_from_slice(&inode.mtime_nsec.to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&(abs_path.len() as u32).to_le_bytes());
+    out.extend_from_slice(abs_path);
+    out.extend_from_slice(&(target.len() as u32).to_le_bytes());
+    out.extend_from_slice(target);
+}
+
+fn export_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<u8>, count: &mut u32) {
+    let Some(inode) = state.get(idx) else {
+        return;
+    };
+    export_emit(out, inode, abs_path);
+    *count += 1;
+    if let InodeKind::Dir(entries) = &inode.kind {
+        for (name, &child) in entries.iter() {
+            let mut child_path = Vec::with_capacity(abs_path.len() + 1 + name.len());
+            if abs_path == b"/" {
+                child_path.push(b'/');
+            } else {
+                child_path.extend_from_slice(abs_path);
+                child_path.push(b'/');
+            }
+            child_path.extend_from_slice(name);
+            export_walk(state, child, &child_path, out, count);
+        }
+    }
+}
+
+/// Serialize the entire overlay-owned `/` tree into an RXPT metadata buffer (see
+/// the format doc above). Only inodes the overlay actually owns are present:
+/// foreign mounts and tmpfs scratch keep their bytes in their own subsystems and
+/// are never inserted here, so a raw pre-order walk already excludes them while
+/// preserving mount-point directories (e.g. an empty `/dev`) exactly as the base
+/// image carried them.
+pub fn export_tree() -> Vec<u8> {
+    ROOTFS.with(|state| {
+        let mut out = Vec::new();
+        out.extend_from_slice(&EXPORT_MAGIC.to_le_bytes());
+        out.extend_from_slice(&EXPORT_VERSION.to_le_bytes());
+        let count_pos = out.len();
+        out.extend_from_slice(&0u32.to_le_bytes()); // entry_count placeholder
+        let mut count = 0u32;
+        if let Some(root) = state.root {
+            export_walk(state, root, b"/", &mut out, &mut count);
+        }
+        out[count_pos..count_pos + 4].copy_from_slice(&count.to_le_bytes());
+        out
+    })
+}
+
+/// Chunk cache for [`export_tree_read`]: the host reads the (possibly large)
+/// export buffer in scratch-region-sized chunks, so we serialize once on the
+/// `offset == 0` chunk and serve the rest from this cache. Export runs only
+/// against a quiescent overlay (the host closes the snapshot gate), so the
+/// snapshot cannot change between chunks. Freed once the tail chunk is served.
+struct ExportCache {
+    locked: AtomicBool,
+    buf: UnsafeCell<Vec<u8>>,
+}
+
+impl ExportCache {
+    const fn new() -> Self {
+        ExportCache {
+            locked: AtomicBool::new(false),
+            buf: UnsafeCell::new(Vec::new()),
+        }
+    }
+
+    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let _unlock = UnlockOnDrop(&self.locked);
+        // SAFETY: same invariant as RootfsGlobal — the spinlock is the sole gate
+        // and no reference escapes the closure.
+        let slot = unsafe { &mut *self.buf.get() };
+        f(slot)
+    }
+}
+
+// SAFETY: identical invariant to RootfsGlobal / ForeignMounts.
+unsafe impl Sync for ExportCache {}
+
+static EXPORT_CACHE: ExportCache = ExportCache::new();
+
+/// Copy up to `out.len()` bytes of the overlay tree export at byte `offset` into
+/// `out`, returning the number of bytes copied (0 at end of the buffer). The
+/// `offset == 0` call (re)builds the snapshot; later calls serve from the cache.
+/// The cache is freed once a read reaches (or passes) the end of the buffer.
+pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let offset = offset as usize;
+    EXPORT_CACHE.with(|cache| {
+        if offset == 0 {
+            *cache = export_tree();
+        }
+        if offset >= cache.len() {
+            cache.clear();
+            cache.shrink_to_fit();
+            return Ok(0);
+        }
+        let n = core::cmp::min(out.len(), cache.len() - offset);
+        out[..n].copy_from_slice(&cache[offset..offset + n]);
+        Ok(n)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3211,6 +3380,104 @@ mod tests {
         let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
         assert_eq!(&buf[..n], b"data");
         assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
+    }
+
+    /// Minimal RXPT record: (kind, mode, uid, gid, mtime_sec, size, path, target).
+    #[allow(clippy::type_complexity)]
+    fn parse_export(buf: &[u8]) -> Vec<(u8, u32, u32, u32, u64, u64, Vec<u8>, Vec<u8>)> {
+        let mut pos = 0usize;
+        let rd_u32 = |b: &[u8], p: &mut usize| {
+            let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        let rd_u64 = |b: &[u8], p: &mut usize| {
+            let v = u64::from_le_bytes(b[*p..*p + 8].try_into().unwrap());
+            *p += 8;
+            v
+        };
+        assert_eq!(rd_u32(buf, &mut pos), EXPORT_MAGIC);
+        assert_eq!(rd_u32(buf, &mut pos), EXPORT_VERSION);
+        let count = rd_u32(buf, &mut pos);
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let kind = buf[pos];
+            pos += 1;
+            let mode = rd_u32(buf, &mut pos);
+            let uid = rd_u32(buf, &mut pos);
+            let gid = rd_u32(buf, &mut pos);
+            let mtime_sec = rd_u64(buf, &mut pos);
+            let _mtime_nsec = rd_u32(buf, &mut pos);
+            let size = rd_u64(buf, &mut pos);
+            let path_len = rd_u32(buf, &mut pos) as usize;
+            let path = buf[pos..pos + path_len].to_vec();
+            pos += path_len;
+            let target_len = rd_u32(buf, &mut pos) as usize;
+            let target = buf[pos..pos + target_len].to_vec();
+            pos += target_len;
+            out.push((kind, mode, uid, gid, mtime_sec, size, path, target));
+        }
+        assert_eq!(pos, buf.len(), "export buffer had trailing bytes");
+        out
+    }
+
+    #[test]
+    fn export_tree_serializes_overlay_tree_preorder() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // Copy-on-write `/usr/bin/hello` so it reports as a COW file, not base.
+        let (mut blob, _) =
+            make_byte_source(alloc::vec![(42u64, b"hello world".to_vec())], alloc::vec::Vec::new());
+        write_file_at(b"/usr/bin/hello", 0, b"NEW", 0o600, true, &mut blob).unwrap();
+
+        let buf = export_tree();
+        let records = parse_export(&buf);
+        let paths: Vec<&[u8]> = records.iter().map(|r| r.6.as_slice()).collect();
+        assert_eq!(
+            paths,
+            alloc::vec![
+                &b"/"[..],
+                &b"/etc-issue-blob-empty"[..],
+                &b"/usr"[..],
+                &b"/usr/bin"[..],
+                &b"/usr/bin/hello"[..],
+                &b"/usr/bin/hi"[..],
+            ]
+        );
+        // Kinds: root+usr+bin dirs, one base file, the COW file, the symlink.
+        assert_eq!(records[0].0, EXPORT_KIND_DIR); // /
+        assert_eq!(records[1].0, EXPORT_KIND_BASE_REGULAR); // /etc-issue-blob-empty
+        assert_eq!(records[2].0, EXPORT_KIND_DIR); // /usr
+        assert_eq!(records[3].0, EXPORT_KIND_DIR); // /usr/bin
+        assert_eq!(records[4].0, EXPORT_KIND_COW_REGULAR); // /usr/bin/hello (COW)
+        assert_eq!(records[5].0, EXPORT_KIND_SYMLINK); // /usr/bin/hi
+        // COW file carries the overlay-authoritative mode (0o600) and size (3).
+        assert_eq!(records[4].1, 0o600);
+        assert_eq!(records[4].5, 3);
+        // Symlink carries its target bytes.
+        assert_eq!(records[5].7, b"hello");
+        // mtime preserved (TestGuard pins now to 1000s).
+        assert_eq!(records[0].4, 1000);
+    }
+
+    #[test]
+    fn export_tree_read_chunks_match_whole_buffer() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let whole = export_tree();
+        // Read the same bytes back in tiny chunks through the cached reader.
+        let mut reassembled = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let mut chunk = [0u8; 7];
+            let n = export_tree_read(offset, &mut chunk).unwrap();
+            if n == 0 {
+                break;
+            }
+            reassembled.extend_from_slice(&chunk[..n]);
+            offset += n as i64;
+        }
+        assert_eq!(reassembled, whole);
     }
 
     #[test]

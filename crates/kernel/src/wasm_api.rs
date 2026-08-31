@@ -1668,6 +1668,39 @@ pub extern "C" fn kernel_rootfs_stat_mode(path_ptr: *const u8, path_len: u32) ->
     }
 }
 
+/// Copy up to `buf_len` bytes of the overlay tree export (RXPT metadata buffer,
+/// see `rootfs::export_tree`) at byte `offset` into kernel memory
+/// `buf_ptr..buf_len`. Returns bytes copied (>=0, 0 at end of buffer) or a
+/// negative errno. Host-facing so the Phase 5 cutover can rebuild a faithful `/`
+/// image from the authoritative overlay tree instead of the frozen base image.
+/// The host reads the buffer in scratch-region-sized chunks; the kernel
+/// serializes once on the `offset == 0` chunk (the overlay is quiescent during
+/// export) and serves the rest from a cache.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_tree(
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    match crate::rootfs::export_tree_read(offset, buf) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
