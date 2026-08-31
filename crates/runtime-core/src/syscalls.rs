@@ -17055,7 +17055,20 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
-        FileType::Regular | FileType::Directory => host.host_fsync(ofd.host_handle),
+        FileType::Regular | FileType::Directory => {
+            // A synthetic in-kernel handle (tmpfs scratch mount or the rootfs
+            // overlay/COW file) has no durable host backing, so fsync/fdatasync
+            // is correctly a no-op success — mirroring the host memfs backend
+            // (where fsync is already a no-op) and matching the read/write/lseek
+            // short-circuit convention. Reaching host_fsync with a sentinel
+            // handle would hit the host with a bad fd and fail spuriously.
+            if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle)
+                || crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+            {
+                return Ok(());
+            }
+            host.host_fsync(ofd.host_handle)
+        }
         _ => Err(Errno::EINVAL),
     }
 }
@@ -32175,6 +32188,51 @@ mod tests {
         let (r, _w) = sys_pipe(&mut proc).unwrap();
         let result = sys_fsync(&mut proc, &mut host, r);
         assert_eq!(result, Err(Errno::EINVAL));
+    }
+
+    /// fsync/fdatasync on an in-kernel tmpfs file handle succeed as a no-op and
+    /// never reach the host (a sentinel handle would fail there with a bad fd).
+    #[test]
+    fn test_fsync_tmpfs_handle_is_noop() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/srv/f", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert!(crate::tmpfs::is_tmpfs_file_handle(
+            proc.ofd_table
+                .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap()
+                .host_handle
+        ));
+        assert!(sys_fsync(&mut proc, &mut host, fd).is_ok());
+        assert!(sys_fdatasync(&mut proc, &mut host, fd).is_ok());
+        assert!(host.fsync_calls.is_empty(), "tmpfs fsync leaked to host");
+    }
+
+    /// fsync/fdatasync on an in-kernel rootfs overlay file handle succeed as a
+    /// no-op and never reach the host. This is the MariaDB SIGABRT path: an
+    /// overlay COW file's fdatasync must not fail (gap G4).
+    #[test]
+    fn test_fsync_rootfs_overlay_handle_is_noop() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // Create + write an overlay file (Regular COW node, rootfs sentinel handle).
+        let fd = sys_open(&mut proc, &mut host, b"/data/log", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"redo").unwrap(), 4);
+        assert!(crate::rootfs::is_rootfs_file_handle(
+            proc.ofd_table
+                .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap()
+                .host_handle
+        ));
+        assert!(sys_fsync(&mut proc, &mut host, fd).is_ok());
+        assert!(sys_fdatasync(&mut proc, &mut host, fd).is_ok());
+        assert!(host.fsync_calls.is_empty(), "rootfs fsync leaked to host");
     }
 
     #[test]
