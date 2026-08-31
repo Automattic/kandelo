@@ -243,10 +243,27 @@ struct RootfsState {
     /// manifest. Starts high to avoid colliding with typical manifest inos.
     next_ino: u64,
     /// Lazy-archive registry populated from a v3 manifest's trailing archive
-    /// table: `archive_id -> archive_size`. Consumed by the byte-serving path
+    /// table: `archive_id -> ArchiveEntry`. Consumed by the byte-serving path
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
-    archives: BTreeMap<u32, u64>,
+    archives: BTreeMap<u32, ArchiveEntry>,
+}
+
+/// Registry entry for one lazy archive: manifest-authoritative `size`, plus a
+/// fetch/decode cache populated lazily on first touch of any member.
+///
+/// `size` comes from the v3 manifest's trailing archive table and is always
+/// present. `raw`, `directory`, and `members` start empty and are filled in by
+/// the byte-serving path (Increment 3b-wiring.2 Task 2): `raw` holds the whole
+/// fetched archive blob (fetched once, on first touch of any member of this
+/// archive), `directory` holds the parsed central directory, and `members`
+/// caches each member's inflated bytes on first read of that member.
+#[allow(dead_code)] // raw/directory/members consumed in 3b-wiring.2 Task 2
+struct ArchiveEntry {
+    size: u64,
+    raw: Option<Vec<u8>>,
+    directory: Option<Vec<crate::zip::ZipEntry>>,
+    members: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl RootfsState {
@@ -752,7 +769,7 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
 /// trailing archive table, or `None` if no such archive was registered.
 /// Consumed by the byte-serving path (Increment 3b-wiring.2, `fetch_archive`).
 pub fn archive_size(archive_id: u32) -> Option<u64> {
-    ROOTFS.with(|state| state.archives.get(&archive_id).copied())
+    ROOTFS.with(|state| state.archives.get(&archive_id).map(|entry| entry.size))
 }
 
 // ---------------------------------------------------------------------------
@@ -890,7 +907,15 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
             let archive_id = rd_u32(buf, &mut pos)?;
             let archive_size = rd_u64(buf, &mut pos)?;
             ROOTFS.with(|state| {
-                state.archives.insert(archive_id, archive_size);
+                state.archives.insert(
+                    archive_id,
+                    ArchiveEntry {
+                        size: archive_size,
+                        raw: None,
+                        directory: None,
+                        members: BTreeMap::new(),
+                    },
+                );
             });
         }
     }
