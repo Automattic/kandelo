@@ -5301,6 +5301,85 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Serialize the entire overlay-owned `/` tree (Phase 5 cutover export) as an
+   * RXPT metadata buffer through the in-kernel overlay. Runs in one kernel entry,
+   * reading region-sized chunks; the kernel serializes once (the overlay is
+   * quiescent during export) and serves the rest from a cache. Throws
+   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
+   * if a kernel entry is already active (the RPC caller retries). See
+   * `host/src/vfs/rootfs-overlay-export.ts` for the buffer's reconciler.
+   */
+  rootfsExportTree(): Uint8Array {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let output = new Uint8Array(0);
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs export tree", (entry) => {
+      if (
+        typeof entry.instance.exports.kernel_rootfs_export_tree !== "function"
+      ) {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      const chunkCap = region.capacity;
+      if (chunkCap <= 0) {
+        failErrno = EIO;
+        return undefined;
+      }
+      const chunks: Uint8Array[] = [];
+      let offset = 0;
+      for (;;) {
+        const res: { errno: number; bytes: Uint8Array | null } =
+          region.withLease((lease) => {
+            const bufPtr = lease.exportPointer(0, chunkCap);
+            const result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_rootfs_export_tree",
+              [
+                offset >>> 0,
+                Math.floor(offset / 0x1_0000_0000),
+                bufPtr,
+                chunkCap,
+              ],
+            );
+            if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+            if (result < 0) return { errno: -result, bytes: null };
+            return {
+              errno: 0,
+              bytes: result === 0 ? null : lease.copyOut(0, result),
+            };
+          });
+        if (res.errno !== 0) {
+          failErrno = res.errno;
+          break;
+        }
+        if (res.bytes === null) break;
+        chunks.push(res.bytes);
+        offset += res.bytes.byteLength;
+        // A short read (min(request, remaining)) means end of buffer.
+        if (res.bytes.byteLength < chunkCap) break;
+      }
+      if (failErrno === 0) {
+        let total = 0;
+        for (const c of chunks) total += c.byteLength;
+        const merged = new Uint8Array(total);
+        let at = 0;
+        for (const c of chunks) {
+          merged.set(c, at);
+          at += c.byteLength;
+        }
+        output = merged;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs export tree failed", failErrno);
+    }
+    return output;
+  }
+
+  /**
    * Write `data` to the rootfs file at `path` through the in-kernel overlay (2e
    * cutover), creating or replacing it so the write is visible to live guests.
    * "Replace whole file" semantics: the first crossing truncates and sets

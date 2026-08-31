@@ -60,6 +60,7 @@ import {
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
+import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -3821,24 +3822,24 @@ async function handleExportRootfsImage(
     respondError(msg.requestId, "rootfs export requires an initialized kernel");
     return;
   }
-  if (kernelRootfsEnabled()) {
-    // The kernel overlay owns `/`, so `rootfsMemfs` is the frozen base image;
-    // serializing it would export a stale snapshot (an illusion). A faithful
-    // overlay snapshot — enumerate the kernel tree, read each file, rebuild the
-    // image — is a TODO. Until it lands, fail loudly rather than lie. No caller
-    // exercises export today.
-    respondError(
-      msg.requestId,
-      "rootfs image export is not yet supported under the in-kernel overlay",
-    );
-    return;
-  }
   try {
     const image = await rootfsSnapshotGate.runSnapshot(async () => {
       if (processes.size !== 0 || processTeardowns.size !== 0) {
         throw new Error(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
+      }
+      if (kernelRootfsEnabled()) {
+        // The kernel overlay owns `/`; `rootfsMemfs` is only the frozen base
+        // image. Rebuild a faithful image by reconciling that base with the
+        // overlay's authoritative tree (copy-on-writes, runtime creates/deletes,
+        // metadata) rather than serializing the stale base directly.
+        const { image: overlayImage } = await exportRootfsImageFromOverlay({
+          baseImage: await rootfsMemfs!.saveImage(),
+          overlayTree: kernelWorker.rootfsExportTree(),
+          readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
+        });
+        return overlayImage;
       }
       return rootfsMemfs!.saveImage();
     });
