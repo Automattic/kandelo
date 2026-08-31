@@ -147,6 +147,11 @@ let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
+/** Canonical mount points of the sibling filesystems still mounted under `/`
+ *  after the host `/` mount is dropped (e.g. `/dev/shm`, session-seed trees,
+ *  extra host mounts). Handed to the in-kernel rootfs overlay so it does not
+ *  greedily claim these sibling paths. Mirrors the Node worker entry. */
+let rootfsForeignPrefixes: string[] = [];
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -1113,6 +1118,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const guestMounts = kernelRootfsEnabled()
     ? mounts.filter((m) => m.mountPoint !== "/")
     : mounts;
+  // The mounts that survive dropping `/` are exactly the sibling filesystems the
+  // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
+  // session-seed trees, and extra host mounts keep resolving through their own
+  // backend rather than being shadowed by the sole `/` authority. (tmpfs scratch
+  // mounts are excluded by the kernel independently.) Mirrors the Node entry.
+  rootfsForeignPrefixes = kernelRootfsEnabled()
+    ? guestMounts.map((m) => m.mountPoint)
+    : [];
   io = new VirtualPlatformIO(guestMounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
@@ -1338,6 +1351,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       buffer,
       createRootfsBlobProvider(memfs, blobPaths),
       archiveProvider,
+      rootfsForeignPrefixes,
     );
   }
 
@@ -4542,16 +4556,27 @@ async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
 }
 
 async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  // When the overlay owns `/`, it is the sole authority for exec bytes ahead
-  // of the `/` mount removal (w5 Task 2) — read through it directly instead
-  // of the host mount, with async EAGAIN retry so a lazy archive fetch can
-  // complete.
+  // When the overlay owns `/`, it is the authority for `/`-tree exec bytes
+  // ahead of the `/` mount removal (w5 Task 2) — read through it directly
+  // instead of the host `/` mount, with async EAGAIN retry so a lazy archive
+  // fetch can complete. Mirrors the Node entry's `readExecFromVfs`.
   if (kernelRootfsEnabled()) {
-    return readExecFromOverlay(path);
+    const fromOverlay = await readExecFromOverlay(path);
+    if (fromOverlay) return fromOverlay;
+    // The overlay is the sole `/` authority, but sibling foreign mounts that
+    // remain in the guest mount table (e.g. session-seed trees, extra host
+    // mounts) still serve their own exec bytes. The overlay correctly disowns
+    // those paths (see `rootfs::owns_path` foreign-mount registry), so a null
+    // overlay read must fall through to the guest mount table rather than
+    // fail — otherwise `spawnFromVfs` of a program that only lives under a
+    // foreign mount would ENOENT. This does NOT reintroduce the `/`
+    // double-fetch w5 removed: `/` is unmounted, so only genuine sibling
+    // mounts resolve here.
   }
   if (io) {
     try {
-      // The base-image mount resolves symlinks and materializes lazy programs.
+      // The base-image / foreign mount resolves symlinks and materializes lazy
+      // programs.
       const { data } = await readPreparedPlatformFile(io, path);
       return data.buffer.slice(
         data.byteOffset,
@@ -4559,8 +4584,7 @@ async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
       ) as ArrayBuffer;
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
-      // Missing from the base image; nothing else to fall through to when
-      // the overlay is disabled.
+      // Missing from the mount table; nothing else to fall through to.
     }
   }
   return null;

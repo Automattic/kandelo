@@ -2826,6 +2826,16 @@ export class CentralizedKernelWorker {
   #rootfsArchiveProvider:
     | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
     | null = null;
+  /**
+   * Canonical mount points of the sibling filesystems still mounted under `/`
+   * after the worker entry drops the host `/` mount (for example `/dev/shm`
+   * shmfs, `/run/kandelo-run` session-seed host mounts, extra `HostFileSystem`
+   * mounts). Handed in via {@link configureRootfsOverlay} before `init()`;
+   * `#maybeLoadKernelRootfs` registers them so the in-kernel overlay does NOT
+   * claim these paths and they keep falling through to the host mount. Empty
+   * when the rootfs gate is off or nothing else is mounted.
+   */
+  #rootfsForeignPrefixes: string[] = [];
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5069,10 +5079,12 @@ export class CentralizedKernelWorker {
       offset: bigint,
       dest: Uint8Array,
     ) => number,
+    foreignMountPrefixes?: string[],
   ): void {
     this.#rootfsManifest = manifest;
     this.#rootfsBlobProvider = blobProvider;
     this.#rootfsArchiveProvider = archiveProvider ?? null;
+    this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
   }
 
   /**
@@ -5135,6 +5147,27 @@ export class CentralizedKernelWorker {
     this.#kernel.setRootfsBlobProvider(provider);
     if (this.#rootfsArchiveProvider) {
       this.#kernel.setRootfsArchiveProvider(this.#rootfsArchiveProvider);
+    }
+    // Tell the overlay which sibling mounts still live under `/` so it does not
+    // greedily claim their paths (which would shadow `/dev/shm` shmfs,
+    // `/run/kandelo-run` session-seed host mounts, and extra HostFileSystem
+    // mounts once the overlay is the sole `/` authority). Must run before
+    // enable(1). A kernel that predates the export simply keeps the old greedy
+    // behavior — visible as the real regression it is, not silently patched.
+    const setForeign = instance.exports.kernel_rootfs_set_foreign_prefixes as
+      | ((ptr: KernelPointer, len: number) => number)
+      | undefined;
+    if (typeof setForeign === "function" && this.#rootfsForeignPrefixes.length > 0) {
+      // NUL-separated canonical mount points; the kernel trims and de-dupes.
+      const encoded = new TextEncoder().encode(
+        this.#rootfsForeignPrefixes.join("\0"),
+      );
+      const fptr = alloc(encoded.byteLength);
+      const fptrValue = Number(fptr);
+      if (fptrValue !== 0) {
+        new Uint8Array(memory.buffer, fptrValue, encoded.byteLength).set(encoded);
+        setForeign(fptr, encoded.byteLength);
+      }
     }
     enable(1);
   }

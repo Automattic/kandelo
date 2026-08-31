@@ -211,6 +211,12 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  *  — so the rootfs overlay wiring in `handleInit` can reuse the SAME
  *  transport for `host_fetch_archive` (Phase 5 3b-wiring.3). */
 let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
+/** Canonical mount points of the sibling filesystems still mounted under `/`
+ *  after the host `/` mount is dropped (e.g. `/dev/shm`, `/run/kandelo-run`
+ *  session-seed trees, extra host mounts). Captured in `buildVirtualPlatformIO`
+ *  and handed to the in-kernel rootfs overlay in `handleInit` so it does not
+ *  greedily claim these sibling paths. */
+let rootfsForeignPrefixes: string[] = [];
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -902,24 +908,34 @@ async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
 }
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
-  // When the overlay owns `/`, it is the sole authority for exec bytes ahead
-  // of the `/` mount removal (w5 Task 2) — read through it directly instead
-  // of the host mount, with async EAGAIN retry so a lazy archive fetch can
-  // complete.
+  // When the overlay owns `/`, it is the authority for `/`-tree exec bytes
+  // ahead of the `/` mount removal (w5 Task 2) — read through it directly
+  // instead of the host `/` mount, with async EAGAIN retry so a lazy archive
+  // fetch can complete.
   if (kernelRootfsEnabled()) {
-    return readExecFromOverlay(path);
+    const fromOverlay = await readExecFromOverlay(path);
+    if (fromOverlay) return fromOverlay;
+    // The overlay is the sole `/` authority, but sibling foreign mounts that
+    // remain in the guest mount table (e.g. `/run/kandelo-run` session-seed
+    // trees, extra host mounts) still serve their own exec bytes. The overlay
+    // correctly disowns those paths (see `rootfs::owns_path` foreign-mount
+    // registry), so a null overlay read must fall through to the guest mount
+    // table rather than fail — otherwise `spawnFromVfs` of a program that only
+    // lives under a foreign mount would ENOENT. This does NOT reintroduce the
+    // `/` double-fetch w5 removed: `/` is unmounted, so only genuine sibling
+    // mounts resolve here.
   }
   const io = vfsExecIO;
   if (io) {
     try {
-      // The base-image mount resolves symlinks and materializes lazy programs.
+      // The base-image / foreign mount resolves symlinks and materializes lazy
+      // programs.
       const { data, stat } = await readPreparedPlatformFile(io, path);
       if ((stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) return null;
       return bufferToArrayBuffer(data);
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
-      // Missing from the base image; nothing else to fall through to when
-      // the overlay is disabled.
+      // Missing from the mount table; nothing else to fall through to.
     }
   }
   return null;
@@ -1099,6 +1115,14 @@ async function buildVirtualPlatformIO(
   const guestMounts = kernelRootfsEnabled()
     ? mounts.filter((m) => m.mountPoint !== "/")
     : mounts;
+  // The mounts that survive dropping `/` are exactly the sibling filesystems the
+  // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
+  // `/run/kandelo-run` session-seed trees, and extra host mounts keep resolving
+  // through their own backend rather than being shadowed by the sole `/`
+  // authority. (tmpfs scratch mounts are excluded by the kernel independently.)
+  rootfsForeignPrefixes = kernelRootfsEnabled()
+    ? guestMounts.map((m) => m.mountPoint)
+    : [];
   return new VirtualPlatformIO(guestMounts, new NodeTimeProvider());
 }
 
@@ -1359,6 +1383,7 @@ async function handleInit(msg: InitMessage) {
       buffer,
       createRootfsBlobProvider(rootfsMemfs, blobPaths),
       archiveProvider,
+      rootfsForeignPrefixes,
     );
   }
 
