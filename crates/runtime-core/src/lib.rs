@@ -52,6 +52,7 @@ pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
 pub mod wakeup;
+pub mod zip;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
 // name for the Rust-first design; `HostIO` is kept as the primary name to
