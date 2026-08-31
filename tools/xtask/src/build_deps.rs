@@ -20661,6 +20661,38 @@ revision = {revision}
         fs::canonicalize(p).unwrap()
     }
 
+    /// Recursively copy `src` into `dst`, skipping `target/`, `.git/`, and
+    /// `local-binaries/` at any depth. Those directories can be enormous
+    /// (build output, submodule history, fetched binaries) and are never
+    /// read by `cargo metadata` or by build-input hashing, so copying them
+    /// would make repo-cloning tests pathologically slow for no benefit.
+    /// Symlinks are skipped rather than followed: nothing this helper's
+    /// callers hash needs to resolve through one, and following symlinks
+    /// blindly risks escaping the copy or looping.
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let name = entry.file_name();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if matches!(
+                    name.to_str(),
+                    Some("target") | Some(".git") | Some("local-binaries")
+                ) {
+                    continue;
+                }
+                copy_dir_recursive(&entry.path(), &dst.join(&name))?;
+            } else {
+                fs::copy(entry.path(), dst.join(&name))?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn relative_registry_roots_anchor_at_the_kandelo_repository() {
         let repo = Path::new("/kandelo/source");
@@ -30649,6 +30681,53 @@ libs = ["lib/libF3b.a"]
             labels.iter().any(|l| *l == "cargo:kandelo::crates/runtime-core"),
             "expected runtime-core input, got {labels:?}"
         );
+    }
+
+    #[test]
+    fn kernel_key_changes_when_cargo_config_changes() {
+        // Regression test for the reported bug: the kernel's cache key did
+        // not fold `.cargo/config.toml`, so editing kernel codegen/link
+        // flags there (e.g. rustflags) left a stale kernel cached under an
+        // unchanged key. Copy the real repo into a temp dir, compute the
+        // kernel's cache key, mutate `.cargo/config.toml`, recompute, and
+        // assert the key moved. All build-input resolution (including
+        // `cargo:<crate>` expansion) is anchored at the process-wide
+        // `repo_root()`, not at the manifest's own directory, so the repo
+        // root override is installed to point at the temp copy for the
+        // duration of both computations.
+        let src = crate::repo_root();
+        let tmp = tempdir("kernel-cargo-config");
+        copy_dir_recursive(&src, &tmp).expect("copy repo");
+        let _repo_root = crate::install_repo_root_override(tmp.clone()).unwrap();
+
+        let reg = Registry {
+            roots: vec![tmp.join("packages/registry")],
+        };
+        let kernel = reg.load("kernel").expect("kernel");
+
+        let before = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key before");
+
+        // Append a harmless comment to .cargo/config.toml (codegen input).
+        let cfg = tmp.join(".cargo/config.toml");
+        let mut contents = std::fs::read_to_string(&cfg).unwrap();
+        contents.push_str("\n# staleness-regression-probe\n");
+        std::fs::write(&cfg, contents).unwrap();
+
+        let after = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key after");
+
+        assert_ne!(before, after, ".cargo/config.toml must be a kernel cache input");
     }
 
     #[cfg(unix)]
