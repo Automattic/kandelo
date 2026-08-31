@@ -887,7 +887,23 @@ async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
   const start = Date.now();
   for (;;) {
     try {
-      return bufferToArrayBuffer(kernelWorker.rootfsReadFile(path));
+      // `rootfsReadFile` is an immediate, result-bearing kernel entry. The
+      // guest-initiated spawn resolver (`onResolveSpawn` ->
+      // `resolveExecutableForLaunch` -> `resolveExec` -> here) runs from inside
+      // the SYS_SPAWN protocol transaction-start (kernel-worker.ts
+      // `#handleSpawn` -> `deferProtocolTransactionStart`), whose synchronous
+      // prefix reaches this read while `#runningProtocolTransactionStart` is
+      // still set. The entry gate then rejects the read with
+      // `KernelReentrantEntryError` BEFORE touching any kernel state
+      // (kernel-entry-gate.ts `runImmediateVoidIngress`), so retrying it on a
+      // later host turn is safe and idempotent — the sanctioned handling for
+      // spawn/exec/fork/clone continuations (see kernel-entry-retry.ts). Once
+      // the transaction-start operation returns and the gate is idle, the read
+      // completes. Host-initiated exec (`handleSpawn`/`spawnFromVfs`) reaches
+      // this with an idle gate, so it resolves on the first attempt.
+      return bufferToArrayBuffer(
+        await retryKernelEntryResult(() => kernelWorker.rootfsReadFile(path)),
+      );
     } catch (error) {
       const errno = (error as { errno?: number }).errno;
       if (
