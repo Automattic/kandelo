@@ -28,6 +28,12 @@ const ZIP64_SENTINEL: u32 = 0xFFFF_FFFF;
 const METHOD_STORE: u16 = 0;
 const METHOD_DEFLATE: u16 = 8;
 
+/// Local file header signature ("PK\x03\x04" LE).
+const LOCAL_FILE_HEADER_SIG: u32 = 0x0403_4b50;
+/// Fixed-size portion of a local file header, before the variable-length
+/// name/extra fields.
+const LOCAL_HEADER_FIXED_SIZE: usize = 30;
+
 /// A single member parsed from a ZIP central directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZipEntry {
@@ -157,6 +163,70 @@ pub fn read_central_directory(data: &[u8]) -> Result<alloc::vec::Vec<ZipEntry>, 
     Ok(entries)
 }
 
+/// Compute the `[start, end)` byte range of a member's compressed data
+/// within `data`, by reading the member's local file header (not the
+/// central directory's variable-length fields, which can differ from the
+/// local header's).
+///
+/// Re-validates the local header's method and filename against the central
+/// directory entry, mirroring `zipCompressedData` in `host/src/vfs/zip.ts`.
+fn member_data_range(data: &[u8], e: &ZipEntry) -> Result<(usize, usize), Errno> {
+    let local_offset = usize::try_from(e.local_offset).map_err(|_| Errno::EINVAL)?;
+
+    if r32(data, local_offset) != Some(LOCAL_FILE_HEADER_SIG) {
+        return Err(Errno::EINVAL);
+    }
+
+    let local_method = r16(data, local_offset + 8).ok_or(Errno::EINVAL)?;
+    let local_name_len = r16(data, local_offset + 26).ok_or(Errno::EINVAL)? as usize;
+    let local_extra_len = r16(data, local_offset + 28).ok_or(Errno::EINVAL)? as usize;
+
+    let name_start = local_offset
+        .checked_add(LOCAL_HEADER_FIXED_SIZE)
+        .ok_or(Errno::EINVAL)?;
+    let name_end = name_start.checked_add(local_name_len).ok_or(Errno::EINVAL)?;
+    if name_end > data.len() {
+        return Err(Errno::EINVAL);
+    }
+
+    let start = name_end.checked_add(local_extra_len).ok_or(Errno::EINVAL)?;
+    let compressed_size = usize::try_from(e.compressed_size).map_err(|_| Errno::EINVAL)?;
+    let end = start.checked_add(compressed_size).ok_or(Errno::EINVAL)?;
+    if end > data.len() {
+        return Err(Errno::EINVAL);
+    }
+
+    if local_method != e.method || &data[name_start..name_end] != e.name.as_slice() {
+        return Err(Errno::EINVAL);
+    }
+
+    Ok((start, end))
+}
+
+/// Extract and (for stored members) copy out a single member's decompressed
+/// bytes.
+///
+/// Mirrors `extractZipEntry`/`extractZipEntryBounded` in
+/// `host/src/vfs/zip.ts`. Method 0 (stored) copies the raw compressed range
+/// verbatim. Method 8 (deflate) is not yet implemented (Task 5).
+pub fn extract(data: &[u8], e: &ZipEntry) -> Result<alloc::vec::Vec<u8>, Errno> {
+    let (start, end) = member_data_range(data, e)?;
+
+    match e.method {
+        METHOD_STORE => {
+            if e.compressed_size != e.uncompressed_size {
+                return Err(Errno::EINVAL);
+            }
+            Ok(data[start..end].to_vec())
+        }
+        METHOD_DEFLATE => {
+            // TODO(Task 5): deflate decompression via miniz_oxide.
+            Err(Errno::EIO)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +297,15 @@ mod tests {
         assert_eq!(link.uncompressed_size, 7);
         // 0120777 (symlink, rwxrwxrwx) packed into the high 16 bits.
         assert_eq!((link.external_attrs >> 16) & 0xffff, 0o120777);
+    }
+
+    #[test]
+    fn extract_returns_stored_member_bytes() {
+        let entries = read_central_directory(TINY_ZIP)
+            .expect("tiny.zip central directory should parse");
+        let small = find_entry(&entries, "etc/small.txt");
+
+        let data = extract(TINY_ZIP, small).expect("stored member should extract");
+        assert_eq!(data, b"hello\n".to_vec());
     }
 }
