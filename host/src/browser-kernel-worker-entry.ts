@@ -236,6 +236,7 @@ const checkpointMachine: CheckpointMachine = {
     buffers: kernelWorker.bos.snapshot(),
   }),
   glOwnedCrtcs: () => kernelWorker.glOwnedCrtcs(),
+  glContexts: () => kernelWorker.captureGlContextsForCheckpoint(),
   framebuffers: () =>
     kernelWorker.framebuffers.list().map((binding) => ({
       pid: binding.pid,

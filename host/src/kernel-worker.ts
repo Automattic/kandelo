@@ -32,6 +32,10 @@ import {
   type KernelPointer,
 } from "./kernel";
 import {
+  captureGlContext,
+  type CheckpointGlContext,
+} from "./webgl/snapshot";
+import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
   isKernelExportFailure,
@@ -34228,6 +34232,25 @@ export class CentralizedKernelWorker {
    *  the machine has not reached. */
   glOwnedCrtcs(): number[] {
     return [...this.kmsGlOwned];
+  }
+
+  /** Every GL binding's context state, for a checkpoint to carry.
+   *
+   *  Read under the freeze, like `kmsState`. The registry does not know
+   *  which CRTC a canvas scans out, so the CRTC is matched here by canvas
+   *  identity — the same association `host_gl_create_context` used when it
+   *  marked the canvas GL-owned. */
+  captureGlContextsForCheckpoint(): CheckpointGlContext[] {
+    return this.gl.list().map((binding) => {
+      let crtcId: number | null = null;
+      for (const [crtc, canvas] of this.kmsCanvases) {
+        if (canvas === binding.canvas) {
+          crtcId = crtc;
+          break;
+        }
+      }
+      return captureGlContext(binding, crtcId);
+    });
   }
 
   /** Record that a live WebGL2 context now paints the CRTC's canvas.
