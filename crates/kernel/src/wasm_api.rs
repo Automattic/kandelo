@@ -84,6 +84,17 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: u32,
     ) -> i32;
+    // Whole-archive raw-byte transport for a `LazyMember`'s backing archive
+    // (Phase 5 Increment 3b-wiring.2). Mirrors `host_blob_read`; `archive_id`
+    // is already a 32-bit manifest id (no lo/hi split), only `offset` splits
+    // into 32-bit words for the JS boundary.
+    fn host_fetch_archive(
+        archive_id: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: u32,
+    ) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -364,6 +375,20 @@ impl HostIO for WasmHostIO {
             host_blob_read(
                 blob_id as u32,
                 (blob_id >> 32) as u32,
+                buf.as_mut_ptr(),
+                capacity,
+                offset as u32,
+                (offset >> 32) as u32,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn fetch_archive(&mut self, archive_id: u32, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_fetch_archive(
+                archive_id,
                 buf.as_mut_ptr(),
                 capacity,
                 offset as u32,
@@ -1536,7 +1561,12 @@ pub extern "C" fn kernel_rootfs_read_file(
     };
     let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
     let mut host = WasmHostIO;
-    match crate::rootfs::read_file_at(path, offset, buf, |id, off, b| host.blob_read(id, b, off)) {
+    match crate::rootfs::read_file_at(path, offset, buf, |req, b| match req {
+        crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+            host.fetch_archive(archive_id, b, offset)
+        }
+    }) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
     }
@@ -1581,7 +1611,12 @@ pub extern "C" fn kernel_rootfs_write_file(
         buf,
         mode,
         truncate != 0,
-        |id, off, b| host.blob_read(id, b, off),
+        |req, b| match req {
+            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                host.fetch_archive(archive_id, b, offset)
+            }
+        },
     ) {
         Ok(written) => written as i32,
         Err(error) => -(error as i32),

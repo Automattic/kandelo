@@ -5029,8 +5029,13 @@ pub fn sys_read(
             if crate::rootfs::is_rootfs_file_handle(host_handle) {
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
-                let n = crate::rootfs::read(host_handle, current_offset, buf, |id, off, b| {
-                    host.blob_read(id, b, off)
+                let n = crate::rootfs::read(host_handle, current_offset, buf, |req, b| match req {
+                    crate::rootfs::ByteReq::Base { blob_id, offset } => {
+                        host.blob_read(blob_id, b, offset)
+                    }
+                    crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                        host.fetch_archive(archive_id, b, offset)
+                    }
                 })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
@@ -5287,9 +5292,15 @@ pub fn sys_write(
                 let writable_len = write_plan.length;
                 checked_offset_advance(start, writable_len)?;
                 tmpfs_stamp_now(host)?;
-                let n = crate::rootfs::write(host_handle, start, &buf[..writable_len], |id, off, b| {
-                    host.blob_read(id, b, off)
-                })?;
+                let n =
+                    crate::rootfs::write(host_handle, start, &buf[..writable_len], |req, b| match req {
+                        crate::rootfs::ByteReq::Base { blob_id, offset } => {
+                            host.blob_read(blob_id, b, offset)
+                        }
+                        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                            host.fetch_archive(archive_id, b, offset)
+                        }
+                    })?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -5814,8 +5825,11 @@ pub fn sys_pread(
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via blob_read.
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
-        return crate::rootfs::read(host_handle, offset, buf, |id, off, b| {
-            host.blob_read(id, b, off)
+        return crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
+            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                host.fetch_archive(archive_id, b, offset)
+            }
         });
     }
 
@@ -6262,8 +6276,11 @@ pub fn sys_pwrite(
     // (rootfs::write reads base bytes via blob_read for the copy).
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
-        return crate::rootfs::write(host_handle, offset, &buf[..writable_len], |id, off, b| {
-            host.blob_read(id, b, off)
+        return crate::rootfs::write(host_handle, offset, &buf[..writable_len], |req, b| match req {
+            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                host.fetch_archive(archive_id, b, offset)
+            }
         });
     }
 
@@ -16960,8 +16977,11 @@ pub fn sys_ftruncate(
             return Err(Errno::EFBIG);
         }
         tmpfs_stamp_now(host)?;
-        return crate::rootfs::truncate_handle(host_handle, length, |id, off, b| {
-            host.blob_read(id, b, off)
+        return crate::rootfs::truncate_handle(host_handle, length, |req, b| match req {
+            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                host.fetch_archive(archive_id, b, offset)
+            }
         });
     }
 
