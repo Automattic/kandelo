@@ -682,7 +682,17 @@ context, re-enter) is what avoids it.
    SFFS image bytes → base tree, unit-tested against fixtures. SFFS is the
    public-domain reference `sharedfs-vendor.ts` implements — relicense-clear.
 2. In-kernel **zip** decoder (stored + deflate members; `man.zip` is the driving
-   case), unit-tested against fixtures.
+   case), unit-tested against fixtures. **Decision (2026-08-30, Arch 1):** the
+   kernel parses the zip structure AND inflates DEFLATE members in-kernel via the
+   `miniz_oxide` crate (pure-Rust `no_std`, `with-alloc`; verified to build in the
+   kernel release/wasm32 target). This differs from zstd (decision X, host-side)
+   because zstd's only Rust impl is C-based `zstd-sys` (unusable in the no_std
+   sandbox), whereas DEFLATE has a mature pure-Rust no_std decoder, and per-member
+   compression means a zip cannot be de-wrapped host-side the way an outer
+   gzip/zstd wrapper can. Lazy archives are zip-dominant (man/node/python/ruby/
+   perl/vim/nethack/*-docs), so this is the cutover-critical decoder. Ports the
+   hand-rolled host reader `host/src/vfs/zip.ts` + `package-deferred-tree.ts`
+   `deriveEntry`. Plan: `docs/superpowers/plans/2026-08-30-phase5-3b-inc2-zip-reader.md`.
 3. In-kernel **tar** decoder + the deferred-/lazy-tree descriptor parse,
    unit-tested (source archives are tar).
 4. **Raw-byte transport host op**: given an archive/leaf identity, return its
