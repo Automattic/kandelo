@@ -244,6 +244,84 @@ pub fn extract(data: &[u8], e: &ZipEntry) -> Result<alloc::vec::Vec<u8>, Errno> 
     }
 }
 
+/// Mode bits shared with `host/src/generated/abi.ts` `FILE_MODES`.
+const S_IFMT: u32 = 0o170000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFREG: u32 = 0o100000;
+const S_IFLNK: u32 = 0o120000;
+
+/// A classified ZIP member: the VFS node kind it derives, plus a portable
+/// mode that is normalized away from producer- and host-specific bits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZipNode {
+    Dir { mode: u32 },
+    Symlink { target: alloc::vec::Vec<u8>, mode: u32 },
+    Regular { bytes: alloc::vec::Vec<u8>, mode: u32 },
+}
+
+/// Classify a central directory entry into a VFS node kind and derive its
+/// path and portable mode.
+///
+/// Mirrors `deriveEntry` in `host/src/vfs/package-deferred-tree.ts`:
+/// - a directory is identified by `name` ending in `/`; the ZIP's own
+///   Unix file-type bits (when present) must agree, or the entry is
+///   rejected rather than silently reclassified.
+/// - `file_type` is read from the high 16 bits of `external_attrs` only
+///   when `creator_os == 3` (Unix); other creators carry no reliable file
+///   type, so `file_type` is treated as unknown (0) for them.
+/// - only `file_type` values of 0 (unknown), `S_IFREG`, `S_IFDIR`, or
+///   `S_IFLNK` are accepted; anything else is a platform-visible EINVAL,
+///   not a silently-dropped entry.
+/// - directories and symlinks get fixed portable modes (0o755, 0o777);
+///   regular files keep the producer's executable bit but otherwise
+///   normalize to 0o755/0o644, since producer umasks and host-specific
+///   permission bits are not part of the package contract.
+/// - a directory's path is returned with its trailing `/` stripped,
+///   matching the host's `sourcePath`/`vfsPath` derivation.
+pub fn derive_entry(data: &[u8], e: &ZipEntry) -> Result<(alloc::vec::Vec<u8>, ZipNode), Errno> {
+    use alloc::string::String;
+
+    let is_dir = e.name.ends_with(b"/");
+    let st_mode = if e.creator_os == 3 { (e.external_attrs >> 16) & 0xffff } else { 0 };
+    let file_type = st_mode & S_IFMT;
+
+    if file_type != 0 && file_type != S_IFREG && file_type != S_IFDIR && file_type != S_IFLNK {
+        return Err(Errno::EINVAL);
+    }
+
+    if is_dir {
+        if (file_type != 0 && file_type != S_IFDIR) || e.uncompressed_size != 0 {
+            return Err(Errno::EINVAL);
+        }
+        // Validate the local header (e.g. a bad local_offset) before
+        // discarding the empty result, mirroring `deriveEntry`'s
+        // `extractZipEntryBounded(archiveBytes, entry, 0)` call.
+        member_data_range(data, e)?;
+        let path = e.name[..e.name.len() - 1].to_vec();
+        return Ok((path, ZipNode::Dir { mode: 0o755 }));
+    }
+
+    if file_type == S_IFLNK {
+        let target = extract(data, e)?;
+        if target.is_empty() || target.contains(&0) {
+            return Err(Errno::EINVAL);
+        }
+        let target_str = core::str::from_utf8(&target).map_err(|_| Errno::EINVAL)?;
+        if String::from(target_str).into_bytes() != target {
+            return Err(Errno::EINVAL);
+        }
+        return Ok((e.name.clone(), ZipNode::Symlink { target, mode: 0o777 }));
+    }
+
+    if file_type != 0 && file_type != S_IFREG {
+        return Err(Errno::EINVAL);
+    }
+
+    let bytes = extract(data, e)?;
+    let mode = if st_mode & 0o111 != 0 { 0o755 } else { 0o644 };
+    Ok((e.name.clone(), ZipNode::Regular { bytes, mode }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +413,44 @@ mod tests {
         let data = extract(TINY_ZIP, big).expect("deflated member should extract");
         assert_eq!(data.len(), 4096);
         assert!(data.iter().all(|&b| b == b'a'));
+    }
+
+    #[test]
+    fn derive_entry_classifies_tiny_zip_members() {
+        let entries = read_central_directory(TINY_ZIP)
+            .expect("tiny.zip central directory should parse");
+
+        let dir = find_entry(&entries, "bin/");
+        let (path, node) = derive_entry(TINY_ZIP, dir).expect("directory should classify");
+        assert_eq!(path, b"bin".to_vec());
+        assert_eq!(node, ZipNode::Dir { mode: 0o755 });
+
+        let link = find_entry(&entries, "bin/link");
+        let (path, node) = derive_entry(TINY_ZIP, link).expect("symlink should classify");
+        assert_eq!(path, b"bin/link".to_vec());
+        assert_eq!(
+            node,
+            ZipNode::Symlink { target: b"big.txt".to_vec(), mode: 0o777 }
+        );
+
+        let big = find_entry(&entries, "bin/big.txt");
+        let (path, node) = derive_entry(TINY_ZIP, big).expect("executable file should classify");
+        assert_eq!(path, b"bin/big.txt".to_vec());
+        match node {
+            ZipNode::Regular { bytes, mode } => {
+                assert_eq!(bytes.len(), 4096);
+                assert!(bytes.iter().all(|&b| b == b'a'));
+                assert_eq!(mode, 0o755);
+            }
+            other => panic!("expected Regular, got {other:?}"),
+        }
+
+        let small = find_entry(&entries, "etc/small.txt");
+        let (path, node) = derive_entry(TINY_ZIP, small).expect("plain file should classify");
+        assert_eq!(path, b"etc/small.txt".to_vec());
+        assert_eq!(
+            node,
+            ZipNode::Regular { bytes: b"hello\n".to_vec(), mode: 0o644 }
+        );
     }
 }
