@@ -1313,6 +1313,7 @@ dependencies = [
 name = "runtime-core"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "spin",
  "wasm-posix-shared",
 ]
