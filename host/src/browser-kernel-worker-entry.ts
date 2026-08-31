@@ -1549,6 +1549,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     kernelWorker.rebindRestoredHostHandles(
       msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
     );
+    // Before the first restored process resumes: its next GL submit must
+    // find a binding, or a machine that was healthy when captured fails
+    // with EIO. The context itself waits for the embedder's canvas.
+    kernelWorker.restoreGlContextsFromCheckpoint(
+      msg.restoreCheckpoint.gl,
+      (line) => {
+        reportHostDiagnostic(
+          { pid: 0, source: "checkpoint restore", message: line },
+          "warn",
+        );
+      },
+    );
     for (const bucket of msg.restoreCheckpoint.processes) {
       const programModule = restoredProgramModules.get(bucket.pid);
       if (!programModule) {
