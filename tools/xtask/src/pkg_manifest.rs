@@ -1095,6 +1095,12 @@ fn validate_extract_exclude_members(members: &[String]) -> Result<(), String> {
 }
 
 fn validate_build_input_path(path: &str) -> Result<(), String> {
+    if let Some(name) = path.strip_prefix(crate::cargo_closure::CARGO_INPUT_PREFIX) {
+        if name.trim().is_empty() {
+            return Err(format!("build.toml input `{path}` has an empty crate name"));
+        }
+        return Ok(());
+    }
     let p = Path::new(path);
     if path.is_empty() {
         return Err("build.toml inputs entries must not be empty".to_string());

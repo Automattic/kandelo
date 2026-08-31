@@ -7473,6 +7473,30 @@ fn build_input_digests_from_repo(
                 ));
             }
         }
+        if let Some(crate_name) = input.strip_prefix(crate::cargo_closure::CARGO_INPUT_PREFIX) {
+            let crate_name = crate_name.trim();
+            if crate_name.is_empty() {
+                return Err(format!(
+                    "{}: build.toml input `{input}` has an empty crate name",
+                    target.spec()
+                ));
+            }
+            for rel in crate::cargo_closure::cargo_closure_paths(main_repo_root, crate_name)? {
+                let path = resolve_build_input_path_from_repo(target, registry, &rel, main_repo_root)?;
+                let digest = if validate_declared_source_inputs {
+                    let authority_root =
+                        repository_source_authority_root(&path, registry, main_repo_root)?;
+                    strict_source_build_input_digest(&authority_root, &path)?
+                } else {
+                    hash_build_input(&path)?
+                };
+                out.push(BuildInputDigest {
+                    label: format!("{input}::{rel}"),
+                    digest,
+                });
+            }
+            continue;
+        }
         let path = resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
         let digest = if validate_declared_source_inputs {
             let authority_root = repository_source_authority_root(&path, registry, main_repo_root)?;
@@ -30585,6 +30609,46 @@ libs = ["lib/libF3b.a"]
         std::fs::write(root.join("outside.txt"), "outside\n").unwrap();
         let symlink_input = identity().unwrap_err();
         assert!(symlink_input.contains("symlink"), "{symlink_input}");
+    }
+
+    #[test]
+    fn cargo_input_tag_expands_and_includes_cargo_config() {
+        // A synthetic fixture package (unrelated to the kernel) declares
+        // `inputs = ["cargo:kandelo"]`. `kandelo` (crates/kernel) is a real
+        // workspace crate, so `cargo_closure_paths` resolves it against the
+        // real repo regardless of which package declares the tag. This
+        // keeps Task 2 independently testable ahead of Task 3, which
+        // migrates the kernel's own build.toml to this same tag.
+        let repo_root = crate::repo_root();
+        let fixture_root = std::fs::canonicalize(tempdir("cargo-input-tag-fixture")).unwrap();
+        write(&fixture_root, "cargoInputFixture", "1.0.0", &[]);
+        std::fs::write(
+            fixture_root.join("cargoInputFixture/build.toml"),
+            "script_path = \"build.sh\"\ninputs = [\"cargo:kandelo\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![fixture_root.clone()],
+        };
+        let manifest = registry.load("cargoInputFixture").unwrap();
+        let digests = build_input_digests_from_repo(
+            &manifest,
+            &registry,
+            &repo_root,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .expect("input digests");
+        let labels: Vec<&str> = digests.iter().map(|d| d.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("cargo:kandelo::") && l.ends_with(".cargo/config.toml")),
+            "expected an expanded .cargo/config.toml input, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| *l == "cargo:kandelo::crates/runtime-core"),
+            "expected runtime-core input, got {labels:?}"
+        );
     }
 
     #[cfg(unix)]
