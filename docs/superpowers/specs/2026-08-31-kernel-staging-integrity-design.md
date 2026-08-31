@@ -93,6 +93,10 @@ The concrete failures, all confirmed by tracing the pipeline:
 - **A guest can never silently run against a mismatched ABI contract.**
   Any structural ABI change that leaves a guest un-rebuilt is rejected
   loud at exec, even when the ABI version number coincides.
+- **The committed ABI snapshot cannot be locally stale.** A committed
+  `abi/snapshot.json` that has drifted from its authoritative sources
+  fails loud in the local pre-test gate, not only in CI, so the value
+  guest keys read is proven fresh before any suite runs.
 - **Preserve the invalidation boundary:** guests rebuild / are rejected
   **only** when the ABI structure or version changes (i.e. when
   `abi/snapshot.json` or `ABI_VERSION` moves), never when a kernel
@@ -239,6 +243,31 @@ guard. `wasm-fork-instrument` already has one
 cargo-derived so it cannot silently omit inputs. No new mechanism —
 just soundness.
 
+**B3 — Committed ABI snapshot drift (local loud check, no overwrite).**
+The committed `abi/snapshot.json` feeds every guest's cache key (via the
+abi-contract digest), so a snapshot that has drifted from its
+authoritative sources would let guests read a stale contract and skip a
+rebuild they should do. CI already catches this
+(`scripts/check-abi-version.sh` → `dump-abi --check`), but only in CI.
+Pull the same **check** — regenerate the snapshot *in memory* and
+compare, **never overwrite the tracked file** — into the local pre-test
+freshness gate alongside B1, so a stale committed snapshot fails loud
+locally with a "run `bash scripts/check-abi-version.sh update` and
+commit the result" message before any suite runs.
+
+This deliberately does **not** auto-regenerate-and-commit the snapshot
+at build time: overwriting it would kill the review forcing-function
+(an incompatible ABI change must surface as a human-reviewed diff + a
+conscious `ABI_VERSION` bump/additive decision), mutate tracked source
+as a build side effect, force a kernel build before every build, and
+couple guest keys to `dump-abi` runtime determinism. A loud *check*
+gives the same freshness guarantee with none of those costs.
+
+Cost: `dump-abi --check` builds the kernel to read its exports; this is
+a bounded no-op `cargo build` when the kernel is already built, and the
+check is gated to run only when `crates/shared` or the kernel sources
+changed since the snapshot, keeping the true no-op path clean.
+
 ### Part C — Guest↔kernel: enforce the ABI *contract digest* at exec
 
 Close the "numbers coincidentally match" hole in the exec-time program
@@ -311,10 +340,15 @@ regenerating the snapshot fails the build.
 
 Guest safety across a bump is now triply enforced: the build fails if
 the snapshot isn't regenerated; guests rebuild via the contract-digest
-key; and any un-rebuilt guest is rejected loud at exec (Part C). The
-**only** residual is the Non-goals case — a semantic change touching no
-declared surface — for which the defense is procedural: bump the version
-for any semantic change.
+key; and any un-rebuilt guest is rejected loud at exec (Part C).
+
+The local dirty-tree window — sources edited but `snapshot.json` not yet
+regenerated, so guest keys read a stale committed snapshot — is closed
+by B3's local drift check: the pre-test gate fails loud until you run
+`check-abi-version.sh update`, instead of quietly building guests
+against yesterday's contract. The **only** residual is the Non-goals
+case — a semantic change touching no declared surface — for which the
+defense is procedural: bump the version for any semantic change.
 
 ## Data flow (after)
 
@@ -344,6 +378,9 @@ run against kernel
   treat as a miss and rebuild.
 - A `build.toml` builds a workspace crate but lacks a `cargo:` tag →
   loud config-drift build error.
+- B3 committed `abi/snapshot.json` drifted from sources → loud stale
+  error in the local pre-test gate + "run check-abi-version.sh update";
+  the tracked file is never overwritten by the check.
 - C guest contract-digest ≠ kernel's → loud exec rejection; absent stamp
   → warn (legacy) during the warn-then-enforce rollout.
 - D missing authoritative artifact at a consumer → loud "not found"
@@ -361,6 +398,10 @@ run against kernel
   `crates/kernel` `.rs` file changes the key while `abi/snapshot.json` is
   untouched, and a guest program's key is **unchanged** (boundary
   preserved).
+- **Snapshot drift (Part B3):** a deliberately-stale committed
+  `abi/snapshot.json` fails the local pre-test gate; a fresh one passes;
+  the check never modifies the tracked file; the gate is skipped when
+  neither `crates/shared` nor the kernel changed since the snapshot.
 - **Guest exec (Part C):** a guest stamped with an old contract-digest is
   rejected loud against a kernel with a new digest even when ABI numbers
   match; a matching digest is accepted; an unstamped legacy guest warns
