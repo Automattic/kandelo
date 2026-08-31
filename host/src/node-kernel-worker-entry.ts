@@ -59,6 +59,7 @@ import {
   emitRootfsManifest,
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
+import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -204,6 +205,12 @@ let execPrograms: Record<string, string> = {};
 let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
+/** The exact fetcher installed on `rootfsMemfs` via `setLazyFetcher`
+ *  (closed-asset bundle, closed-asset-source, or the dev fallback below).
+ *  Captured here — rather than only as a local in `buildVirtualPlatformIO`
+ *  — so the rootfs overlay wiring in `handleInit` can reuse the SAME
+ *  transport for `host_fetch_archive` (Phase 5 3b-wiring.3). */
+let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -1016,6 +1023,7 @@ async function buildVirtualPlatformIO(
         });
       };
     rootfsMemfs.setLazyFetcher(lazyFetcher);
+    rootfsLazyFetcher = lazyFetcher;
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
@@ -1034,6 +1042,7 @@ function cleanupSessionDir(): void {
   sessionDir = null;
   vfsExecIO = null;
   rootfsMemfs = null;
+  rootfsLazyFetcher = undefined;
 }
 
 async function handleInit(msg: InitMessage) {
@@ -1243,10 +1252,39 @@ async function handleInit(msg: InitMessage) {
   // the in-kernel rootfs overlay and install the byte provider before init
   // applies them. The `/` MemoryFileSystem is reachable only here in the entry.
   if (kernelRootfsEnabled() && rootfsMemfs) {
-    const { buffer, blobPaths } = emitRootfsManifest(rootfsMemfs, (p) => p);
+    // Phase 5 Increment 3b-wiring.3: also bridge System A's lazy-archive
+    // export (`rootfsMemfs.exportLazyArchiveEntries()`) into the overlay's
+    // `KIND_LAZY_FILE` linkage + `host_fetch_archive` provider.
+    // `buildRootfsLazyWiring` needs a `(url) => Promise<Uint8Array>` fetcher,
+    // but the fetcher captured from `setLazyFetcher` in
+    // `buildVirtualPlatformIO` (`rootfsLazyFetcher`, a `LazyFetch`) returns a
+    // `Response` — adapt it here rather than change `setLazyFetcher`'s
+    // contract. If no fetcher was installed (no rootfs image / no lazy
+    // groups), fail loudly instead of guessing a transport: with zero lazy
+    // groups `lazyInput` is empty and the provider is never called; with
+    // lazy groups but no transport, a lazy read genuinely cannot succeed and
+    // the provider should report that truthfully (EIO) rather than hang.
+    const installedLazyFetcher = rootfsLazyFetcher;
+    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
+      installedLazyFetcher
+        ? async (url) =>
+          new Uint8Array(await (await installedLazyFetcher(url)).arrayBuffer())
+        : async () => {
+          throw new Error("no lazy transport configured");
+        };
+    const { lazyInput, archiveProvider } = buildRootfsLazyWiring(
+      rootfsMemfs.exportLazyArchiveEntries(),
+      lazyArchiveFetcher,
+    );
+    const { buffer, blobPaths } = emitRootfsManifest(
+      rootfsMemfs,
+      (p) => p,
+      lazyInput,
+    );
     kernelWorker.configureRootfsOverlay(
       buffer,
       createRootfsBlobProvider(rootfsMemfs, blobPaths),
+      archiveProvider,
     );
   }
 
