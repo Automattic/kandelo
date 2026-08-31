@@ -560,4 +560,53 @@ mod tests {
 
         assert_eq!(read_central_directory(&corrupted), Err(Errno::EINVAL));
     }
+
+    // -- Real-archive integration -------------------------------------
+    //
+    // Cross-checks the reader against the real `man.zip` package archive
+    // (an Info-ZIP archive containing a >1 MiB DEFLATE member), when it is
+    // present in the local build-output tree. `std` is available here
+    // because this test module only ever compiles for the host test
+    // target, never for the `no_std` wasm32/wasm64 targets. Skips cleanly
+    // (rather than failing) when the archive hasn't been produced by a
+    // local package build.
+
+    #[test]
+    fn real_man_zip_cross_checks_members() {
+        let path = "../../local-binaries/source-only-v1/programs/wasm32/man.zip";
+        let true = std::path::Path::new(path).exists() else {
+            println!("skipping real_man_zip_cross_checks_members: {path} not found");
+            return;
+        };
+
+        let data = std::fs::read(path).expect("man.zip should be readable");
+        let entries =
+            read_central_directory(&data).expect("man.zip central directory should parse");
+
+        let man = find_entry(&entries, "bin/man");
+        let (path_out, node) = derive_entry(&data, man).expect("bin/man should classify");
+        assert_eq!(path_out, b"bin/man".to_vec());
+        match node {
+            ZipNode::Symlink { target, .. } => assert_eq!(target, b"mandoc".to_vec()),
+            other => panic!("expected Symlink for bin/man, got {other:?}"),
+        }
+
+        let mandoc = find_entry(&entries, "bin/mandoc");
+        assert_eq!(mandoc.method, METHOD_DEFLATE, "bin/mandoc should be a deflate member");
+        let (path_out, node) = derive_entry(&data, mandoc).expect("bin/mandoc should classify");
+        assert_eq!(path_out, b"bin/mandoc".to_vec());
+        match node {
+            ZipNode::Regular { bytes, .. } => assert_eq!(bytes.len(), 1_397_299),
+            other => panic!("expected Regular for bin/mandoc, got {other:?}"),
+        }
+
+        let man_conf = find_entry(&entries, "etc/man.conf");
+        assert_eq!(man_conf.method, METHOD_STORE, "etc/man.conf should be a stored member");
+        let (path_out, node) = derive_entry(&data, man_conf).expect("etc/man.conf should classify");
+        assert_eq!(path_out, b"etc/man.conf".to_vec());
+        match node {
+            ZipNode::Regular { bytes, .. } => assert_eq!(bytes.len(), 23),
+            other => panic!("expected Regular for etc/man.conf, got {other:?}"),
+        }
+    }
 }
