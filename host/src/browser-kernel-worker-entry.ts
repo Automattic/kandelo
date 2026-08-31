@@ -4465,23 +4465,49 @@ function readFileFromFs(path: string): ArrayBuffer | null {
   }
 }
 
-async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  if (io) {
-    try {
-      // The base-image mount resolves symlinks and materializes lazy programs,
-      // so base and lazy executables load here even under the overlay.
-      const { data } = await readPreparedPlatformFile(io, path);
-      return data.buffer.slice(
-        data.byteOffset,
-        data.byteOffset + data.byteLength,
-      ) as ArrayBuffer;
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      // Missing from the base image; fall through to the overlay for a file
-      // that exists only there (e.g. a guest-written `/` executable).
-    }
+// EAGAIN retry shape for host-initiated exec-byte reads through the in-kernel
+// rootfs overlay (`kernelWorker.rootfsReadFile`, kernel-worker.ts:5151).
+// Mirrors the node entry's `readExecFromOverlay` (see
+// host/src/node-kernel-worker-entry.ts) and host/src/exec-target.ts's
+// `readPreparedExecTarget` EAGAIN retry: a lazy-archive member not yet
+// fetched (rootfs-lazy-archives.ts) surfaces as EAGAIN from the kernel; the
+// fetch runs on this same worker's event loop, so a `setTimeout`-backed (not
+// microtask) delay is required between retries so it can complete.
+const EXEC_OVERLAY_EAGAIN_ERRNO = 11;
+const EXEC_OVERLAY_ENOENT_ERRNO = 2;
+const EXEC_OVERLAY_ENOTDIR_ERRNO = 20;
+const EXEC_OVERLAY_EISDIR_ERRNO = 21;
+const EXEC_OVERLAY_ETIMEDOUT_ERRNO = 110;
+const EXEC_OVERLAY_RETRY_DELAY_MS = 10;
+// Defensive backstop only — normal operation always resolves via bytes or a
+// terminal errno well before this. It exists so a hypothetical stuck fetch
+// fails with a truthful timeout instead of hanging exec forever.
+const EXEC_OVERLAY_RETRY_MAX_WAIT_MS = 30_000;
+
+function execOverlayRetryDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class ExecOverlayReadTimeoutError extends Error {
+  readonly errno = EXEC_OVERLAY_ETIMEDOUT_ERRNO;
+  constructor(path: string, waitedMs: number) {
+    super(
+      `rootfs overlay exec read of ${path} timed out after ${waitedMs}ms ` +
+        "waiting for a lazy archive fetch to complete",
+    );
+    this.name = "ExecOverlayReadTimeoutError";
   }
-  if (kernelRootfsEnabled()) {
+}
+
+// Read a file's bytes for host-initiated exec THROUGH the in-kernel rootfs
+// overlay instead of the host `/` mount. Used when `kernelRootfsEnabled()`
+// so the overlay is the sole source of exec bytes ahead of the `/` mount
+// removal (w5 Task 2). ENOENT/ENOTDIR/EISDIR mean "not a readable regular
+// file here" -> null, so callers fall through to the same resolution the
+// pre-overlay path used. Any other errno is a truthful failure.
+async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
+  const start = Date.now();
+  for (;;) {
     try {
       const data = kernelWorker.rootfsReadFile(path);
       return data.buffer.slice(
@@ -4490,9 +4516,43 @@ async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
       ) as ArrayBuffer;
     } catch (error) {
       const errno = (error as { errno?: number }).errno;
-      // ENOENT (2), ENOTDIR (20), EISDIR (21): not a readable regular file.
-      if (errno === 2 || errno === 20 || errno === 21) return null;
-      throw error;
+      if (
+        errno === EXEC_OVERLAY_ENOENT_ERRNO ||
+        errno === EXEC_OVERLAY_ENOTDIR_ERRNO ||
+        errno === EXEC_OVERLAY_EISDIR_ERRNO
+      ) {
+        return null;
+      }
+      if (errno !== EXEC_OVERLAY_EAGAIN_ERRNO) throw error;
+      const waited = Date.now() - start;
+      if (waited >= EXEC_OVERLAY_RETRY_MAX_WAIT_MS) {
+        throw new ExecOverlayReadTimeoutError(path, waited);
+      }
+      await execOverlayRetryDelay(EXEC_OVERLAY_RETRY_DELAY_MS);
+    }
+  }
+}
+
+async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
+  // When the overlay owns `/`, it is the sole authority for exec bytes ahead
+  // of the `/` mount removal (w5 Task 2) — read through it directly instead
+  // of the host mount, with async EAGAIN retry so a lazy archive fetch can
+  // complete.
+  if (kernelRootfsEnabled()) {
+    return readExecFromOverlay(path);
+  }
+  if (io) {
+    try {
+      // The base-image mount resolves symlinks and materializes lazy programs.
+      const { data } = await readPreparedPlatformFile(io, path);
+      return data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength,
+      ) as ArrayBuffer;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      // Missing from the base image; nothing else to fall through to when
+      // the overlay is disabled.
     }
   }
   return null;
