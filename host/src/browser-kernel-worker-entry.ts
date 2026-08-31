@@ -46,6 +46,7 @@ import {
   emitRootfsManifest,
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
+import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -1074,13 +1075,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
     memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
   }
+  // Captured for the rootfs overlay's archive provider below (Phase 5
+  // 3b-wiring.3): the SAME fetcher object installed on memfs, so the
+  // in-kernel LazyMember path fetches raw archives over the identical
+  // transport (closed-asset bundle or CORS proxy) as System A's first-touch
+  // materialization.
+  let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
   if (msg.closedLazyAssets !== undefined) {
-    memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
+    rootfsLazyFetcher = createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets);
+    memfs.setLazyFetcher(rootfsLazyFetcher);
   } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
-    memfs.setLazyFetcher(corsProxyLazyFetcher);
+    rootfsLazyFetcher = corsProxyLazyFetcher;
+    memfs.setLazyFetcher(rootfsLazyFetcher);
   }
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
@@ -1287,10 +1296,34 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // the in-kernel rootfs overlay and install the byte provider before init
   // applies them. The `/` MemoryFileSystem is reachable only here in the entry.
   if (kernelRootfsEnabled() && memfs) {
-    const { buffer, blobPaths } = emitRootfsManifest(memfs, (p) => p);
+    // Phase 5 Increment 3b-wiring.3: also bridge System A's lazy-archive
+    // export (`memfs.exportLazyArchiveEntries()`) into the overlay's
+    // `KIND_LAZY_FILE` linkage + `host_fetch_archive` provider.
+    // `buildRootfsLazyWiring` needs a `(url) => Promise<Uint8Array>` fetcher,
+    // but the fetcher installed via `setLazyFetcher` above (`LazyFetch`)
+    // returns a `Response` — adapt it here rather than change
+    // `setLazyFetcher`'s contract. If neither branch above installed a
+    // fetcher, fail loudly instead of guessing a transport: with zero lazy
+    // groups `lazyInput` is empty and the provider is never called; with
+    // lazy groups but no transport, a lazy read genuinely cannot succeed and
+    // the provider should report that truthfully (EIO) rather than hang.
+    const installedLazyFetcher = rootfsLazyFetcher;
+    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
+      installedLazyFetcher
+        ? async (url) =>
+          new Uint8Array(await (await installedLazyFetcher(url)).arrayBuffer())
+        : async () => {
+          throw new Error("no lazy transport configured");
+        };
+    const { lazyInput, archiveProvider } = buildRootfsLazyWiring(
+      memfs.exportLazyArchiveEntries(),
+      lazyArchiveFetcher,
+    );
+    const { buffer, blobPaths } = emitRootfsManifest(memfs, (p) => p, lazyInput);
     kernelWorker.configureRootfsOverlay(
       buffer,
       createRootfsBlobProvider(memfs, blobPaths),
+      archiveProvider,
     );
   }
 
