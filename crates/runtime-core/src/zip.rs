@@ -1,7 +1,7 @@
 //! Read-only ZIP archive reader. Ported from host/src/vfs/zip.ts.
-//! no_std + alloc. Parses ZIP central-directory metadata without
-//! decompressing the whole archive; entry decompression (Task 5) will use
-//! `miniz_oxide` for DEFLATE.
+//! no_std + alloc. Parses ZIP central-directory metadata and extracts
+//! member bytes; DEFLATE members (method 8) are raw-inflated via
+//! `miniz_oxide`.
 
 use wasm_posix_shared::Errno;
 
@@ -208,7 +208,8 @@ fn member_data_range(data: &[u8], e: &ZipEntry) -> Result<(usize, usize), Errno>
 ///
 /// Mirrors `extractZipEntry`/`extractZipEntryBounded` in
 /// `host/src/vfs/zip.ts`. Method 0 (stored) copies the raw compressed range
-/// verbatim. Method 8 (deflate) is not yet implemented (Task 5).
+/// verbatim. Method 8 (deflate) raw-inflates via `miniz_oxide` and requires
+/// the decompressed length to match the declared `uncompressed_size`.
 pub fn extract(data: &[u8], e: &ZipEntry) -> Result<alloc::vec::Vec<u8>, Errno> {
     let (start, end) = member_data_range(data, e)?;
 
@@ -220,8 +221,24 @@ pub fn extract(data: &[u8], e: &ZipEntry) -> Result<alloc::vec::Vec<u8>, Errno> 
             Ok(data[start..end].to_vec())
         }
         METHOD_DEFLATE => {
-            // TODO(Task 5): deflate decompression via miniz_oxide.
-            Err(Errno::EIO)
+            let expected = usize::try_from(e.uncompressed_size).map_err(|_| Errno::EIO)?;
+            // ZIP method 8 is raw DEFLATE (no zlib/gzip wrapper).
+            // `decompress_to_vec_with_limit` calls the inflate core with
+            // flags = 0 (no `TINFL_FLAG_PARSE_ZLIB_HEADER`), i.e. it parses
+            // raw deflate, matching fflate's `inflateSync` used by
+            // `extractZipEntryBounded` (host/src/vfs/zip.ts:224-267). The
+            // `_zlib` variants would instead expect a zlib header and must
+            // not be used here. The `max_size` bound mirrors the bounded JS
+            // path's rejection of output beyond the declared size.
+            let out = miniz_oxide::inflate::decompress_to_vec_with_limit(
+                &data[start..end],
+                expected,
+            )
+            .map_err(|_| Errno::EIO)?;
+            if out.len() != expected {
+                return Err(Errno::EIO);
+            }
+            Ok(out)
         }
         _ => Err(Errno::EINVAL),
     }
@@ -307,5 +324,16 @@ mod tests {
 
         let data = extract(TINY_ZIP, small).expect("stored member should extract");
         assert_eq!(data, b"hello\n".to_vec());
+    }
+
+    #[test]
+    fn extract_returns_deflated_member_bytes() {
+        let entries = read_central_directory(TINY_ZIP)
+            .expect("tiny.zip central directory should parse");
+        let big = find_entry(&entries, "bin/big.txt");
+
+        let data = extract(TINY_ZIP, big).expect("deflated member should extract");
+        assert_eq!(data.len(), 4096);
+        assert!(data.iter().all(|&b| b == b'a'));
     }
 }
