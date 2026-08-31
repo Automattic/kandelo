@@ -2816,6 +2816,16 @@ export class CentralizedKernelWorker {
   #rootfsBlobProvider:
     | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
     | null = null;
+  /**
+   * Rootfs raw-archive byte-store provider (Phase 5 Increment 3b). Mirrors
+   * `#rootfsBlobProvider`: the worker entry hands this in via
+   * {@link configureRootfsOverlay} before `init()`; `#maybeLoadKernelRootfs`
+   * installs it on the kernel once the manifest has loaded. Null when no
+   * lazy-archive provider was supplied (the default, unaffected path).
+   */
+  #rootfsArchiveProvider:
+    | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
+    | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5054,9 +5064,15 @@ export class CentralizedKernelWorker {
   configureRootfsOverlay(
     manifest: Uint8Array,
     blobProvider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
+    archiveProvider?: (
+      archiveId: number,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number,
   ): void {
     this.#rootfsManifest = manifest;
     this.#rootfsBlobProvider = blobProvider;
+    this.#rootfsArchiveProvider = archiveProvider ?? null;
   }
 
   /**
@@ -5117,6 +5133,9 @@ export class CentralizedKernelWorker {
       return;
     }
     this.#kernel.setRootfsBlobProvider(provider);
+    if (this.#rootfsArchiveProvider) {
+      this.#kernel.setRootfsArchiveProvider(this.#rootfsArchiveProvider);
+    }
     enable(1);
   }
 
