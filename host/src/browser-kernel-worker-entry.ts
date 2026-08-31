@@ -1099,7 +1099,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
-  io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
+  // Phase 5 Increment 3b-wiring.5: when the in-kernel rootfs overlay is the
+  // sole `/` authority, drop the host `/` mount from the guest-facing
+  // VirtualPlatformIO. Guest syscalls already route non-tmpfs `/` paths
+  // through the overlay (`rootfs::claims_path`), and host-initiated exec-byte
+  // reads were redirected through the overlay in w5 Task 1
+  // (`readExecFromOverlay`), so nothing still depends on `/` being mounted
+  // here. Leaving it mounted caused a double-fetch of lazy archives (this
+  // host mount plus the overlay's own lazy wiring both fetching). `memfs`
+  // was already captured from `rootMount` above, so the backing
+  // MemoryFileSystem stays alive as the `blob_read` byte store and lazy-group
+  // source even though it is no longer mounted.
+  const guestMounts = kernelRootfsEnabled()
+    ? mounts.filter((m) => m.mountPoint !== "/")
+    : mounts;
+  io = new VirtualPlatformIO(guestMounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
   // their compiled-in OpenSSL; the backend terminates TLS locally, makes
