@@ -62,7 +62,9 @@ fn dirent_type(inode: &Inode) -> u8 {
     match inode.kind {
         InodeKind::Dir(_) => DT_DIR as u8,
         InodeKind::Symlink(_) => DT_LNK as u8,
-        InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => DT_REG as u8,
+        InodeKind::BaseRegular { .. } | InodeKind::Regular(_) | InodeKind::LazyMember { .. } => {
+            DT_REG as u8
+        }
         InodeKind::Special(type_bits) => {
             if type_bits & S_IFMT == S_IFSOCK {
                 DT_SOCK as u8
@@ -103,6 +105,17 @@ enum InodeKind {
     /// bits are stored; the communication endpoint lives in the socket registry
     /// or fifo table, keyed by path — mirrors the tmpfs `Special` node.
     Special(u32),
+    /// A lazy-archive placeholder (RTFS v3, manifest `KIND_LAZY_FILE`): metadata
+    /// (`size`, mode, etc.) is authoritative from the manifest like
+    /// `BaseRegular`, but the bytes live in a not-yet-fetched archive
+    /// (`archive_id`) at `source_path` within it. Materializing the bytes is
+    /// Increment 3b-wiring.2 (`fetch_archive`); this increment only places the
+    /// node and serves its metadata.
+    LazyMember {
+        archive_id: u32,
+        source_path: Vec<u8>,
+        size: u64,
+    },
 }
 
 struct Inode {
@@ -147,7 +160,9 @@ impl Inode {
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
-            InodeKind::BaseRegular { .. } | InodeKind::Regular(_) => S_IFREG,
+            InodeKind::BaseRegular { .. } | InodeKind::Regular(_) | InodeKind::LazyMember { .. } => {
+                S_IFREG
+            }
             InodeKind::Symlink(_) => S_IFLNK,
             InodeKind::Special(type_bits) => type_bits,
         };
@@ -157,6 +172,7 @@ impl Inode {
             InodeKind::Regular(data) => data.len() as u64,
             InodeKind::Symlink(target) => target.len() as u64,
             InodeKind::Special(_) => 0,
+            InodeKind::LazyMember { size, .. } => *size,
         };
         WasmStat {
             st_dev: ROOTFS_DEV,
@@ -226,6 +242,11 @@ struct RootfsState {
     /// Inode numbers for overlay-created inodes; base inos come from the
     /// manifest. Starts high to avoid colliding with typical manifest inos.
     next_ino: u64,
+    /// Lazy-archive registry populated from a v3 manifest's trailing archive
+    /// table: `archive_id -> archive_size`. Consumed by the byte-serving path
+    /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
+    /// rest of the store, so a failed manifest load never leaves stale entries.
+    archives: BTreeMap<u32, u64>,
 }
 
 impl RootfsState {
@@ -237,6 +258,7 @@ impl RootfsState {
             dir_iters: Vec::new(),
             free_dir_iters: Vec::new(),
             next_ino: 1,
+            archives: BTreeMap::new(),
         }
     }
 
@@ -665,6 +687,74 @@ pub fn insert_base_symlink(
     })
 }
 
+/// Insert a lazy-archive placeholder file (RTFS v3 `KIND_LAZY_FILE`): `size` is
+/// authoritative metadata from the manifest (like [`insert_base_file`]'s
+/// `size`), while the bytes live at `source_path` within archive `archive_id`,
+/// not yet fetched. Placed exactly like a base file; reading its bytes is
+/// Increment 3b-wiring.2.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_lazy_file(
+    path: &[u8],
+    archive_id: u32,
+    source_path: &[u8],
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ino: u64,
+) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.bump_next_ino(ino);
+        let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
+        let child = state.insert_inode(Inode::new(
+            InodeKind::LazyMember {
+                archive_id,
+                source_path: source_path.to_vec(),
+                size,
+            },
+            mode & 0o7777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
+        if let Err(e) = link_into_parent(state, &comps, last, child) {
+            state.inodes[child as usize] = None;
+            state.free_inodes.push(child);
+            return Err(e);
+        }
+        Ok(())
+    })
+}
+
+/// The `(archive_id, source_path)` of a lazy-file placeholder at `path`. Used
+/// by the byte-serving path (Increment 3b-wiring.2) to resolve which archive
+/// to fetch and which member within it to extract; exposed now as an accessor
+/// for the loader's own tests.
+pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
+            InodeKind::LazyMember {
+                archive_id,
+                source_path,
+                ..
+            } => Ok((*archive_id, source_path.clone())),
+            _ => Err(Errno::EINVAL),
+        }
+    })
+}
+
+/// The size (in bytes) of archive `archive_id` as recorded in a v3 manifest's
+/// trailing archive table, or `None` if no such archive was registered.
+/// Consumed by the byte-serving path (Increment 3b-wiring.2, `fetch_archive`).
+pub fn archive_size(archive_id: u32) -> Option<u64> {
+    ROOTFS.with(|state| state.archives.get(&archive_id).copied())
+}
+
 // ---------------------------------------------------------------------------
 // Boot manifest ingestion (Increment 2c).
 //
@@ -674,21 +764,36 @@ pub fn insert_base_symlink(
 // purpose-built fixed-field record stream we own — deliberately NOT a
 // general-purpose archive parser (that is Increment 3). Little-endian.
 //
-//   header:  magic u32 = "RTFS" | version u32 = 2 | entry_count u32
-//   entry:   kind u8 (1=dir, 2=file, 3=symlink)
+//   header:  magic u32 = "RTFS" | version u32 = 2 or 3 | entry_count u32
+//   entry:   kind u8 (1=dir, 2=file, 3=symlink, 4=lazy file [v3 only])
 //            mode u32 | uid u32 | gid u32 | ino u64 | blob_id u64 | size u64
 //            mtime_sec u64 | mtime_nsec u32   (real per-file times from the image)
 //            path_len u32 | path[path_len]
 //            target_len u32 | target[target_len]   (target_len=0 unless symlink)
+//            -- kind=4 (lazy file) only, appended after target --
+//            archive_id u32 | source_path_len u32 | source_path[source_path_len]
 //
 // Every entry carries all fields (zero when not applicable) so the parser stays
 // uniform and bounds-checkable. Entries are parent-first (the host walks the
 // tree pre-order), so each insert's parent already exists.
+//
+// v3 adds one trailing section after the entry stream, present iff version>=3
+// (Increment 3b-wiring.1 — RTFS v3, lazy archives):
+//
+//   archive_table: archive_count u32
+//   archive:       archive_id u32 | archive_size u64
+//
+// The archive table records the total byte size of each lazy archive referenced
+// by a kind=4 entry's `archive_id`; fetching and extracting those bytes is
+// Increment 3b-wiring.2 (`fetch_archive`). This increment only parses and
+// stores the table.
 // ---------------------------------------------------------------------------
 
 /// Manifest header magic ("RTFS", little-endian).
 const MANIFEST_MAGIC: u32 = 0x5346_5452;
 const MANIFEST_VERSION: u32 = 2;
+/// RTFS v3: adds `KIND_LAZY_FILE` (4) entries and a trailing archive table.
+const MANIFEST_VERSION_V3: u32 = 3;
 /// Defensive cap on a single path/target length (bytes).
 const MANIFEST_NAME_MAX: usize = 65_536;
 
@@ -744,7 +849,8 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
     if rd_u32(buf, &mut pos)? != MANIFEST_MAGIC {
         return Err(Errno::EINVAL);
     }
-    if rd_u32(buf, &mut pos)? != MANIFEST_VERSION {
+    let version = rd_u32(buf, &mut pos)?;
+    if version != MANIFEST_VERSION && version != MANIFEST_VERSION_V3 {
         return Err(Errno::EINVAL);
     }
     let count = rd_u32(buf, &mut pos)? as usize;
@@ -766,11 +872,27 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
             1 => insert_base_dir(&path, mode, uid, gid, ino)?,
             2 => insert_base_file(&path, blob_id, size, mode, uid, gid, ino)?,
             3 => insert_base_symlink(&path, &target, mode, uid, gid, ino)?,
+            4 => {
+                let archive_id = rd_u32(buf, &mut pos)?;
+                let source_path_len = rd_u32(buf, &mut pos)? as usize;
+                let source_path = rd_bytes(buf, &mut pos, source_path_len)?.to_vec();
+                insert_lazy_file(&path, archive_id, &source_path, size, mode, uid, gid, ino)?
+            }
             _ => return Err(Errno::EINVAL),
         }
         // Overwrite the create-time stamp with the image's real times so `ls -l`,
         // `make`, and `find -mtime` see accurate file metadata after cutover.
         set_base_times(&path, mtime_sec, mtime_nsec);
+    }
+    if version >= MANIFEST_VERSION_V3 {
+        let archive_count = rd_u32(buf, &mut pos)? as usize;
+        for _ in 0..archive_count {
+            let archive_id = rd_u32(buf, &mut pos)?;
+            let archive_size = rd_u64(buf, &mut pos)?;
+            ROOTFS.with(|state| {
+                state.archives.insert(archive_id, archive_size);
+            });
+        }
     }
     Ok(count)
 }
@@ -867,6 +989,16 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+                    if matches!(inode.kind, InodeKind::LazyMember { .. }) {
+                        // Truncating a lazy-archive placeholder would silently
+                        // discard its (archive_id, source_path, size) and hand
+                        // back an empty writable file instead of the real
+                        // content. Byte-serving/materialization is
+                        // TODO(3b-wiring.2): materialize via fetch_archive, so
+                        // this stays a truthful ENOSYS rather than a silent
+                        // conversion.
+                        return Err(Errno::ENOSYS);
+                    }
                     if let Some(node) = state.get_mut(existing) {
                         let shrank = match &node.kind {
                             InodeKind::Regular(d) => !d.is_empty(),
@@ -936,6 +1068,8 @@ where
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
             InodeKind::Special(_) => Err(Errno::EINVAL),
+            // TODO(3b-wiring.2): materialize via fetch_archive
+            InodeKind::LazyMember { .. } => Err(Errno::ENOSYS),
         },
         None => Err(Errno::EBADF),
     })?;
@@ -1011,6 +1145,12 @@ where
             let shrank = match &inode.kind {
                 InodeKind::Regular(d) => !d.is_empty(),
                 InodeKind::BaseRegular { size, .. } => *size > 0,
+                // Dir/Symlink/Special/LazyMember all fall through to EISDIR
+                // here. That's defensively safe (no corruption) but not the
+                // most accurate errno for a LazyMember; TODO(3b-wiring.2):
+                // give this an accurate errno (likely ENOSYS, mirroring
+                // ensure_materialized/read/open's O_TRUNC guard) once
+                // materialization/write support for lazy members lands.
                 _ => return Err(Errno::EISDIR),
             };
             inode.kind = InodeKind::Regular(Vec::new());
@@ -1075,6 +1215,8 @@ where
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
             InodeKind::Special(_) => Err(Errno::EINVAL),
+            // TODO(3b-wiring.2): materialize via fetch_archive
+            InodeKind::LazyMember { .. } => Err(Errno::ENOSYS),
         }
     })?;
     match plan {
@@ -1098,6 +1240,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
         match &inode.kind {
             InodeKind::BaseRegular { size, .. } => Ok(*size as i64),
             InodeKind::Regular(data) => Ok(data.len() as i64),
+            InodeKind::LazyMember { size, .. } => Ok(*size as i64),
             _ => Err(Errno::EISDIR),
         }
     })
@@ -2192,6 +2335,128 @@ mod tests {
         m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 entries
         enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
         // second entry missing entirely -> short read
+        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
+    }
+
+    #[test]
+    fn load_manifest_v3_parses_lazy_file_and_archive_table() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
+        m.extend_from_slice(&4u32.to_le_bytes()); // entry count
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 0, 0, b"/a", b"");
+        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 55, 6, 0, 0, b"/a/f", b"");
+        // Lazy file /a/g: kind=4, size=999 from the manifest, target empty; the
+        // archive_id + source_path fields are appended right after `target`.
+        enc_entry(&mut m, 4, 0o644, 0, 0, 4, 0, 999, 0, 0, b"/a/g", b"");
+        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
+        m.extend_from_slice(&5u32.to_le_bytes()); // source_path_len
+        m.extend_from_slice(b"bin/g"); // source_path
+        // Trailing archive table (v3 only): count=1, archive_id=7 size=1234.
+        m.extend_from_slice(&1u32.to_le_bytes());
+        m.extend_from_slice(&7u32.to_le_bytes());
+        m.extend_from_slice(&1234u64.to_le_bytes());
+
+        assert_eq!(load_manifest(&m).unwrap(), 4);
+
+        // The lazy file is placed under its parent with the manifest's metadata.
+        let g = lstat(b"/a/g").unwrap();
+        assert_eq!(g.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(g.st_mode & 0o7777, 0o644);
+        assert_eq!(g.st_size, 999);
+        assert_eq!(g.st_ino, 4);
+
+        // (archive_id, source_path) round-trips via the test accessor.
+        let (archive_id, source_path) = lazy_member_source(b"/a/g").unwrap();
+        assert_eq!(archive_id, 7);
+        assert_eq!(source_path, b"bin/g".to_vec());
+        assert_eq!(archive_size(7), Some(1234));
+        assert_eq!(archive_size(99), None);
+
+        // Byte-serving is not implemented yet: read is a truthful ENOSYS, not a
+        // hidden success or silent zero-fill.
+        let h = open(b"/a/g", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 8];
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap_err(), Errno::ENOSYS);
+        release_handle(h);
+    }
+
+    #[test]
+    fn open_o_trunc_on_lazy_member_is_enosys_not_silent_conversion() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
+        m.extend_from_slice(&2u32.to_le_bytes());
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        enc_entry(&mut m, 4, 0o644, 0, 0, 2, 0, 999, 0, 0, b"/g", b"");
+        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
+        m.extend_from_slice(&5u32.to_le_bytes()); // source_path_len
+        m.extend_from_slice(b"bin/g"); // source_path
+        m.extend_from_slice(&1u32.to_le_bytes()); // archive table: 1 entry
+        m.extend_from_slice(&7u32.to_le_bytes());
+        m.extend_from_slice(&1234u64.to_le_bytes());
+        assert_eq!(load_manifest(&m).unwrap(), 2);
+
+        // Opening the lazy-archive placeholder with O_TRUNC for write must not
+        // silently convert it into an empty writable file (which would drop
+        // its archive_id/source_path/size and hand back fabricated success).
+        assert_eq!(
+            open(b"/g", O_WRONLY | O_TRUNC, 0, 0, 0).unwrap_err(),
+            Errno::ENOSYS
+        );
+
+        // The node is still a LazyMember afterward: metadata and the
+        // (archive_id, source_path) mapping are unchanged.
+        let st = lstat(b"/g").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(st.st_size, 999);
+        let (archive_id, source_path) = lazy_member_source(b"/g").unwrap();
+        assert_eq!(archive_id, 7);
+        assert_eq!(source_path, b"bin/g".to_vec());
+    }
+
+    #[test]
+    fn load_manifest_v2_manifest_still_loads() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes()); // version 2, no archive table
+        m.extend_from_slice(&1u32.to_le_bytes());
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        assert_eq!(load_manifest(&m).unwrap(), 1);
+        assert!(is_dir(b"/"));
+    }
+
+    #[test]
+    fn load_manifest_v3_rejects_truncated_archive_table() {
+        let _g = TestGuard::acquire();
+        build_sample_tree(); // pre-existing state that reset() must clear
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
+        m.extend_from_slice(&1u32.to_le_bytes());
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 archive entries
+        m.extend_from_slice(&7u32.to_le_bytes());
+        m.extend_from_slice(&1234u64.to_le_bytes());
+        // second archive entry missing -> short read
+        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
+        // Reset-on-failure covers the archive registry too.
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
+        assert_eq!(archive_size(7), None);
+    }
+
+    #[test]
+    fn load_manifest_rejects_unknown_version() {
+        let _g = TestGuard::acquire();
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&4u32.to_le_bytes()); // no such version yet
+        m.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
     }
 
