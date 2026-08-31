@@ -258,7 +258,6 @@ struct RootfsState {
 /// fetched archive blob (fetched once, on first touch of any member of this
 /// archive), `directory` holds the parsed central directory, and `members`
 /// caches each member's inflated bytes on first read of that member.
-#[allow(dead_code)] // raw/directory/members consumed in 3b-wiring.2 Task 2
 struct ArchiveEntry {
     size: u64,
     raw: Option<Vec<u8>>,
@@ -1079,61 +1078,213 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
     })
 }
 
-/// Materialize a base file's bytes into a Rust-owned overlay buffer (copy-on-
-/// write) if it has not been materialized yet. The host byte read runs outside
-/// the store lock. A no-op for an already-overlay (`Regular`) file.
-fn ensure_materialized<F>(idx: u32, blob_read: &mut F) -> Result<(), Errno>
+/// Fetch, decode, and cache one member's inflated bytes from a lazy archive
+/// (RTFS v3 `KIND_LAZY_FILE`). Model B: the host is a raw-byte transport
+/// (`fetch_archive(archive_id, offset, buf)`); the kernel decodes.
+///
+/// Per-archive fetch, per-member lazy inflate, both cached: on first touch of
+/// ANY member of `archive_id`, the whole archive (`archive_size` bytes) is
+/// fetched once and its central directory parsed, and both are cached on the
+/// registry entry so a later touch of a *different* member of the same
+/// archive skips the fetch and reuses the parsed directory. Each member's
+/// inflated bytes are decoded once, on first read of THAT member, and cached
+/// in `members` so repeat reads of it never re-inflate. (Archive-cache
+/// eviction is out of scope here; future work.)
+///
+/// Lock discipline mirrors [`ensure_materialized`]: the whole-archive fetch
+/// and the zip parse/inflate are heavy and (for fetch) re-enter the host, so
+/// they run OUTSIDE the `ROOTFS.with` store lock. Each step captures what it
+/// needs under the lock, works outside, then re-acquires to store, re-
+/// checking so a value already cached by the time we store is never
+/// clobbered.
+///
+/// Returns `Err(ENOENT)` if `archive_id` is not registered, or if
+/// `source_path` names no member of the archive. A `fetch_archive` error (in
+/// particular `EAGAIN`) propagates as-is; the partially filled local buffer is
+/// simply dropped without ever reaching the store, so `raw` stays `None` and
+/// the next call restarts the whole fetch from scratch — an idempotent
+/// restart, matching the 3a poll-retry model. Nothing is ever cached from a
+/// failed or partial fetch.
+fn ensure_archive_member<G>(
+    archive_id: u32,
+    source_path: &[u8],
+    fetch_archive: &mut G,
+) -> Result<Vec<u8>, Errno>
+where
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
+{
+    enum Plan {
+        /// Already inflated and cached: return this clone directly.
+        Member(Vec<u8>),
+        /// Not yet inflated; `raw_present` says whether the whole-archive
+        /// fetch has already happened for a previous member.
+        NeedRaw { size: u64, raw_present: bool },
+    }
+    let plan = ROOTFS.with(|state| {
+        let entry = state.archives.get(&archive_id).ok_or(Errno::ENOENT)?;
+        if let Some(bytes) = entry.members.get(source_path) {
+            return Ok(Plan::Member(bytes.clone()));
+        }
+        Ok(Plan::NeedRaw {
+            size: entry.size,
+            raw_present: entry.raw.is_some(),
+        })
+    })?;
+    let (size, raw_present) = match plan {
+        Plan::Member(bytes) => return Ok(bytes),
+        Plan::NeedRaw { size, raw_present } => (size, raw_present),
+    };
+
+    if !raw_present {
+        let mut data = alloc::vec![0u8; size as usize];
+        let mut filled = 0usize;
+        while filled < data.len() {
+            let n = fetch_archive(archive_id, filled as u64, &mut data[filled..])?;
+            if n == 0 {
+                break; // short read: trust the manifest size but never spin
+            }
+            filled += n;
+        }
+        data.truncate(filled);
+        ROOTFS.with(|state| {
+            if let Some(entry) = state.archives.get_mut(&archive_id) {
+                // Re-check: another touch of this archive may have already
+                // stored `raw` (no reentrancy in the single-threaded kernel,
+                // but keep the store the source of truth).
+                if entry.raw.is_none() {
+                    entry.raw = Some(data);
+                }
+            }
+        });
+    }
+
+    // Clone the now-cached raw archive bytes out to decode outside the lock.
+    let raw = ROOTFS
+        .with(|state| state.archives.get(&archive_id).and_then(|e| e.raw.clone()))
+        .ok_or(Errno::ENOENT)?;
+
+    let cached_directory =
+        ROOTFS.with(|state| state.archives.get(&archive_id).and_then(|e| e.directory.clone()));
+    let directory = match cached_directory {
+        Some(d) => d,
+        None => {
+            let parsed = crate::zip::read_central_directory(&raw)?;
+            ROOTFS.with(|state| {
+                if let Some(entry) = state.archives.get_mut(&archive_id) {
+                    if entry.directory.is_none() {
+                        entry.directory = Some(parsed.clone());
+                    }
+                }
+            });
+            parsed
+        }
+    };
+
+    let zip_entry = directory
+        .iter()
+        .find(|e| e.name == source_path)
+        .ok_or(Errno::ENOENT)?;
+    let bytes = crate::zip::extract(&raw, zip_entry)?;
+
+    ROOTFS.with(|state| {
+        if let Some(entry) = state.archives.get_mut(&archive_id) {
+            entry
+                .members
+                .entry(source_path.to_vec())
+                .or_insert_with(|| bytes.clone());
+        }
+    });
+
+    Ok(bytes)
+}
+
+/// Materialize a base file's or lazy-archive member's bytes into a Rust-owned
+/// overlay buffer (copy-on-write) if it has not been materialized yet. The
+/// host byte read (or archive fetch + decode) runs outside the store lock. A
+/// no-op for an already-overlay (`Regular`) file.
+fn ensure_materialized<F, G>(idx: u32, blob_read: &mut F, fetch_archive: &mut G) -> Result<(), Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
+    enum Base {
+        None,
+        BaseRegular(u64, u64),
+        LazyMember(u32, Vec<u8>),
+    }
     let base = ROOTFS.with(|state| match state.get(idx) {
         Some(inode) => match &inode.kind {
-            InodeKind::BaseRegular { blob_id, size } => Ok(Some((*blob_id, *size))),
-            InodeKind::Regular(_) => Ok(None),
+            InodeKind::BaseRegular { blob_id, size } => Ok(Base::BaseRegular(*blob_id, *size)),
+            InodeKind::Regular(_) => Ok(Base::None),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
             InodeKind::Special(_) => Err(Errno::EINVAL),
-            // TODO(3b-wiring.2): materialize via fetch_archive
-            InodeKind::LazyMember { .. } => Err(Errno::ENOSYS),
+            InodeKind::LazyMember {
+                archive_id,
+                source_path,
+                ..
+            } => Ok(Base::LazyMember(*archive_id, source_path.clone())),
         },
         None => Err(Errno::EBADF),
     })?;
-    let Some((blob_id, size)) = base else {
-        return Ok(());
-    };
-    let mut data = alloc::vec![0u8; size as usize];
-    let mut filled = 0usize;
-    while filled < data.len() {
-        let n = blob_read(blob_id, filled as u64, &mut data[filled..])?;
-        if n == 0 {
-            break; // short read: trust the manifest size but never spin
-        }
-        filled += n;
-    }
-    data.truncate(filled);
-    ROOTFS.with(|state| {
-        if let Some(inode) = state.get_mut(idx) {
-            // Re-check: only convert if still a base file (no reentrancy in the
-            // single-threaded kernel, but keep the store the source of truth).
-            if matches!(inode.kind, InodeKind::BaseRegular { .. }) {
-                inode.kind = InodeKind::Regular(data);
+    match base {
+        Base::None => Ok(()),
+        Base::BaseRegular(blob_id, size) => {
+            let mut data = alloc::vec![0u8; size as usize];
+            let mut filled = 0usize;
+            while filled < data.len() {
+                let n = blob_read(blob_id, filled as u64, &mut data[filled..])?;
+                if n == 0 {
+                    break; // short read: trust the manifest size but never spin
+                }
+                filled += n;
             }
+            data.truncate(filled);
+            ROOTFS.with(|state| {
+                if let Some(inode) = state.get_mut(idx) {
+                    // Re-check: only convert if still a base file (no
+                    // reentrancy in the single-threaded kernel, but keep the
+                    // store the source of truth).
+                    if matches!(inode.kind, InodeKind::BaseRegular { .. }) {
+                        inode.kind = InodeKind::Regular(data);
+                    }
+                }
+            });
+            Ok(())
         }
-    });
-    Ok(())
+        Base::LazyMember(archive_id, source_path) => {
+            let bytes = ensure_archive_member(archive_id, &source_path, fetch_archive)?;
+            ROOTFS.with(|state| {
+                if let Some(inode) = state.get_mut(idx) {
+                    // Re-check: only convert if still a lazy member.
+                    if matches!(inode.kind, InodeKind::LazyMember { .. }) {
+                        inode.kind = InodeKind::Regular(bytes);
+                    }
+                }
+            });
+            Ok(())
+        }
+    }
 }
 
 /// Write `buf` at `offset`, copying a base file into the overlay first, then
 /// growing (zero-filling any gap) as needed.
-pub fn write<F>(handle: i64, offset: i64, buf: &[u8], mut blob_read: F) -> Result<usize, Errno>
+pub fn write<F, G>(
+    handle: i64,
+    offset: i64,
+    buf: &[u8],
+    mut blob_read: F,
+    mut fetch_archive: G,
+) -> Result<usize, Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    ensure_materialized(idx, &mut blob_read)?;
+    ensure_materialized(idx, &mut blob_read, &mut fetch_archive)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
         {
@@ -1156,11 +1307,19 @@ where
 }
 
 /// Truncate an open rootfs regular file to `length`, zero-filling any growth.
-/// Truncating to 0 needs no base bytes; a non-zero truncate copies the base file
-/// into the overlay first. The caller enforces access mode and RLIMIT_FSIZE.
-pub fn truncate_handle<F>(handle: i64, length: i64, mut blob_read: F) -> Result<(), Errno>
+/// Truncating to 0 needs no base bytes (a `LazyMember` truncated to 0 needs no
+/// archive fetch either); a non-zero truncate copies the base file or lazy-
+/// archive member into the overlay first. The caller enforces access mode and
+/// RLIMIT_FSIZE.
+pub fn truncate_handle<F, G>(
+    handle: i64,
+    length: i64,
+    mut blob_read: F,
+    mut fetch_archive: G,
+) -> Result<(), Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
@@ -1170,12 +1329,8 @@ where
             let shrank = match &inode.kind {
                 InodeKind::Regular(d) => !d.is_empty(),
                 InodeKind::BaseRegular { size, .. } => *size > 0,
-                // Dir/Symlink/Special/LazyMember all fall through to EISDIR
-                // here. That's defensively safe (no corruption) but not the
-                // most accurate errno for a LazyMember; TODO(3b-wiring.2):
-                // give this an accurate errno (likely ENOSYS, mirroring
-                // ensure_materialized/read/open's O_TRUNC guard) once
-                // materialization/write support for lazy members lands.
+                InodeKind::LazyMember { size, .. } => *size > 0,
+                // Dir/Symlink/Special fall through to EISDIR.
                 _ => return Err(Errno::EISDIR),
             };
             inode.kind = InodeKind::Regular(Vec::new());
@@ -1186,7 +1341,7 @@ where
             Ok(())
         });
     }
-    ensure_materialized(idx, &mut blob_read)?;
+    ensure_materialized(idx, &mut blob_read, &mut fetch_archive)?;
     ROOTFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
         let changed = match &mut inode.kind {
@@ -1207,22 +1362,32 @@ where
 
 /// Read up to `buf.len()` bytes at `offset` from an open rootfs file. Base-file
 /// bytes come from the host byte store via `blob_read(blob_id, offset, buf)`;
-/// the store computes the EOF clamp and releases its lock *before* the host
-/// callback so no host boundary call runs under the spinlock. Returns the number
-/// of bytes read (0 at EOF).
-pub fn read<F>(handle: i64, offset: i64, buf: &mut [u8], mut blob_read: F) -> Result<usize, Errno>
+/// a lazy-archive member's bytes come from [`ensure_archive_member`] (fetch +
+/// decode, cached); the store computes the EOF clamp and releases its lock
+/// *before* the host callback so no host boundary call runs under the
+/// spinlock. Returns the number of bytes read (0 at EOF).
+pub fn read<F, G>(
+    handle: i64,
+    offset: i64,
+    buf: &mut [u8],
+    mut blob_read: F,
+    mut fetch_archive: G,
+) -> Result<usize, Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    // An overlay (Regular) file is copied under the lock; a base file yields its
-    // (blob_id, size) so the host byte read runs after the lock is released.
+    // An overlay (Regular) file is copied under the lock; a base file yields
+    // its (blob_id, size), and a lazy member its (archive_id, source_path,
+    // size), so the host/archive byte fetch runs after the lock is released.
     enum Plan {
         Done(usize),
         Base(u64, u64),
+        Lazy(u32, Vec<u8>, u64),
     }
     let plan = ROOTFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
@@ -1240,8 +1405,11 @@ where
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
             InodeKind::Special(_) => Err(Errno::EINVAL),
-            // TODO(3b-wiring.2): materialize via fetch_archive
-            InodeKind::LazyMember { .. } => Err(Errno::ENOSYS),
+            InodeKind::LazyMember {
+                archive_id,
+                source_path,
+                size,
+            } => Ok(Plan::Lazy(*archive_id, source_path.clone(), *size)),
         }
     })?;
     match plan {
@@ -1253,6 +1421,23 @@ where
             }
             let n = core::cmp::min(buf.len() as u64, size - start) as usize;
             blob_read(blob_id, start, &mut buf[..n])
+        }
+        Plan::Lazy(archive_id, source_path, size) => {
+            let start = offset as u64;
+            if start >= size {
+                return Ok(0);
+            }
+            let bytes = ensure_archive_member(archive_id, &source_path, &mut fetch_archive)?;
+            // Defensive: clamp to the member's actual decoded length too, in
+            // case it ever disagrees with the manifest-declared `size`.
+            let avail = core::cmp::min(size, bytes.len() as u64);
+            if start >= avail {
+                return Ok(0);
+            }
+            let start_us = start as usize;
+            let n = core::cmp::min(buf.len() as u64, avail - start) as usize;
+            buf[..n].copy_from_slice(&bytes[start_us..start_us + n]);
+            Ok(n)
         }
     }
 }
@@ -1279,17 +1464,19 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
 /// instead of a stale base-image `MemoryFileSystem`. Copy-on-written bytes come
 /// straight from the overlay; an unmodified base file's bytes come from
 /// `blob_read` exactly as a guest read would fetch them.
-pub fn read_file_at<F>(
+pub fn read_file_at<F, G>(
     path: &[u8],
     offset: i64,
     buf: &mut [u8],
     blob_read: F,
+    fetch_archive: G,
 ) -> Result<usize, Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
     let handle = open(path, O_RDONLY, 0, 0, 0)?;
-    let result = read(handle, offset, buf, blob_read);
+    let result = read(handle, offset, buf, blob_read, fetch_archive);
     release_handle(handle);
     result
 }
@@ -1303,20 +1490,22 @@ where
 ///
 /// Host-facing convenience for the 2e cutover so host-side `/` writes land in
 /// the authoritative overlay and are visible to live guests.
-pub fn write_file_at<F>(
+pub fn write_file_at<F, G>(
     path: &[u8],
     offset: i64,
     buf: &[u8],
     mode: u32,
     truncate: bool,
     blob_read: F,
+    fetch_archive: G,
 ) -> Result<usize, Errno>
 where
     F: FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno>,
+    G: FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
 {
     let flags = O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
     let handle = open(path, flags, mode & 0o7777, 0, 0)?;
-    let result = write(handle, offset, buf, blob_read);
+    let result = write(handle, offset, buf, blob_read, fetch_archive);
     release_handle(handle);
     // open(O_CREAT) preserves an existing file's mode, so a truncating replace
     // sets it explicitly — create and replace then behave alike, matching the
@@ -1949,6 +2138,67 @@ mod tests {
         insert_base_file(b"/etc-issue-blob-empty", 43, 0, 0o644, 0, 0, 6).unwrap();
     }
 
+    /// A small in-memory archive-byte store standing in for the host
+    /// `fetch_archive`, mirroring [`make_blob_reader`]. Returns the fetcher
+    /// closure alongside a shared call counter so tests can assert whether a
+    /// second touch was served from the archive cache (no host round trip) or
+    /// re-fetched.
+    fn make_archive_fetcher(
+        archives: alloc::vec::Vec<(u32, alloc::vec::Vec<u8>)>,
+    ) -> (
+        impl FnMut(u32, u64, &mut [u8]) -> Result<usize, Errno>,
+        alloc::rc::Rc<core::cell::Cell<usize>>,
+    ) {
+        let calls = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
+        let counter = calls.clone();
+        let fetcher = move |archive_id, offset, buf: &mut [u8]| -> Result<usize, Errno> {
+            counter.set(counter.get() + 1);
+            let (_, data) = archives
+                .iter()
+                .find(|(id, _)| *id == archive_id)
+                .ok_or(Errno::ENOENT)?;
+            let start = offset as usize;
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let n = core::cmp::min(buf.len(), data.len() - start);
+            buf[..n].copy_from_slice(&data[start..start + n]);
+            Ok(n)
+        };
+        (fetcher, calls)
+    }
+
+    /// The real tiny.zip fixture (see `zip.rs` tests for member facts): a
+    /// DEFLATE member `bin/big.txt` (4096 bytes, all `b'a'`) and a STORE
+    /// member `etc/small.txt` (`b"hello\n"`).
+    const TINY_ZIP: &[u8] = include_bytes!("testdata/tiny.zip");
+
+    /// Register archive `archive_id`'s manifest-authoritative `size` directly
+    /// in the registry, as `load_manifest_inner`'s v3 archive-table parsing
+    /// would. Test-only: production always goes through the manifest loader.
+    fn insert_archive_entry(archive_id: u32, size: u64) {
+        ROOTFS.with(|state| {
+            state.archives.insert(
+                archive_id,
+                ArchiveEntry {
+                    size,
+                    raw: None,
+                    directory: None,
+                    members: BTreeMap::new(),
+                },
+            );
+        });
+    }
+
+    /// `/lazy/f` is a `LazyMember` pointing at `bin/big.txt` (size 4096) in
+    /// archive 7, whose manifest-recorded size is `TINY_ZIP.len()`.
+    fn build_lazy_tree() {
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/lazy", 0o755, 0, 0, 2).unwrap();
+        insert_lazy_file(b"/lazy/f", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3).unwrap();
+        insert_archive_entry(7, TINY_ZIP.len() as u64);
+    }
+
     #[test]
     fn owns_path_excludes_tmpfs_scratch_and_relative() {
         assert!(owns_path(b"/usr/bin/ls"));
@@ -2021,15 +2271,15 @@ mod tests {
         assert_eq!(st.st_ino, 4);
 
         let mut buf = [0u8; 5];
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap(), 5);
+        assert_eq!(read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 5);
         assert_eq!(&buf, b"hello");
 
         let mut buf2 = [0u8; 32];
-        assert_eq!(read(h, 6, &mut buf2, &mut blob).unwrap(), 5); // "world" (clamped to size 11)
+        assert_eq!(read(h, 6, &mut buf2, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 5); // "world" (clamped to size 11)
         assert_eq!(&buf2[..5], b"world");
 
         // Read at/after EOF returns 0.
-        assert_eq!(read(h, 11, &mut buf2, &mut blob).unwrap(), 0);
+        assert_eq!(read(h, 11, &mut buf2, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 0);
 
         assert!(release_handle(h));
     }
@@ -2044,7 +2294,7 @@ mod tests {
         };
         let h = open(b"/etc-issue-blob-empty", O_RDONLY, 0, 0, 0).unwrap();
         let mut buf = [0u8; 8];
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap(), 0);
+        assert_eq!(read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 0);
         assert!(release_handle(h));
     }
 
@@ -2063,13 +2313,13 @@ mod tests {
         // O_RDWR == 2.
         let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
         // Overwrite "world" -> "there".
-        assert_eq!(write(h, 6, b"there", &mut blob).unwrap(), 5);
+        assert_eq!(write(h, 6, b"there", &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 5);
         // A reader that panics proves post-COW reads never touch the host.
         let mut panic_blob = |_: u64, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
             panic!("post-COW read must be served from the overlay");
         };
         let mut buf = [0u8; 16];
-        let n = read(h, 0, &mut buf, &mut panic_blob).unwrap();
+        let n = read(h, 0, &mut buf, &mut panic_blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"hello there");
         assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_size, 11);
         assert!(release_handle(h));
@@ -2081,9 +2331,9 @@ mod tests {
         build_sample_tree();
         let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
         let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
-        assert_eq!(write(h, 13, b"X", &mut blob).unwrap(), 1);
+        assert_eq!(write(h, 13, b"X", &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 1);
         let mut buf = [0u8; 32];
-        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        let n = read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(n, 14);
         assert_eq!(&buf[..11], b"hello world");
         assert_eq!(&buf[11..13], &[0u8, 0u8]); // zero-fill gap
@@ -2099,7 +2349,7 @@ mod tests {
         let mut blob = make_blob_reader(alloc::vec![(7u64, b"abc".to_vec())]);
         assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o4755);
         let h = open(b"/suid", 2, 0, 0, 0).unwrap();
-        write(h, 0, b"Z", &mut blob).unwrap();
+        write(h, 0, b"Z", &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
         release_handle(h);
     }
@@ -2114,9 +2364,9 @@ mod tests {
         };
         let h = open(b"/usr/bin/hello", 1 | O_TRUNC, 0, 0, 0).unwrap();
         assert_eq!(size(h).unwrap(), 0);
-        assert_eq!(write(h, 0, b"new", &mut panic_blob).unwrap(), 3);
+        assert_eq!(write(h, 0, b"new", &mut panic_blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 3);
         let mut buf = [0u8; 8];
-        assert_eq!(read(h, 0, &mut buf, &mut panic_blob).unwrap(), 3);
+        assert_eq!(read(h, 0, &mut buf, &mut panic_blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 3);
         assert_eq!(&buf[..3], b"new");
         release_handle(h);
     }
@@ -2128,7 +2378,7 @@ mod tests {
         let mut blob = make_blob_reader(alloc::vec![]);
         // O_CREAT|O_WRONLY == 0o100|1.
         let h = open(b"/usr/bin/fresh", O_CREAT | 1, 0o644, 7, 8).unwrap();
-        assert_eq!(write(h, 0, b"data", &mut blob).unwrap(), 4);
+        assert_eq!(write(h, 0, b"data", &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 4);
         release_handle(h);
         let st = lstat(b"/usr/bin/fresh").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
@@ -2150,12 +2400,12 @@ mod tests {
         let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
         let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
         // Shrink to 5.
-        truncate_handle(h, 5, &mut blob).unwrap();
+        truncate_handle(h, 5, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(size(h).unwrap(), 5);
         // Grow to 8 (zero-filled).
-        truncate_handle(h, 8, &mut blob).unwrap();
+        truncate_handle(h, 8, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         let mut buf = [0u8; 16];
-        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        let n = read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(n, 8);
         assert_eq!(&buf[..5], b"hello");
         assert_eq!(&buf[5..8], &[0u8, 0u8, 0u8]);
@@ -2207,7 +2457,7 @@ mod tests {
         // Name is gone, but the open handle still reads (unlink-while-open).
         assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
         let mut buf = [0u8; 5];
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap(), 5);
+        assert_eq!(read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap(), 5);
         assert_eq!(&buf, b"hello");
         assert!(release_handle(h)); // frees now
         assert!(!handle_is_live(h));
@@ -2329,7 +2579,7 @@ mod tests {
         let mut blob = make_blob_reader(alloc::vec![(99u64, b"hello, world".to_vec())]);
         let h = open(b"/usr/greeting", O_RDONLY, 0, 0, 0).unwrap();
         let mut buf = [0u8; 16];
-        let n = read(h, 0, &mut buf, &mut blob).unwrap();
+        let n = read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"hello, world");
         release_handle(h);
 
@@ -2405,7 +2655,7 @@ mod tests {
         let h = open(b"/a/g", O_RDONLY, 0, 0, 0).unwrap();
         let mut buf = [0u8; 8];
         let mut blob = make_blob_reader(alloc::vec::Vec::new());
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap_err(), Errno::ENOSYS);
+        assert_eq!(read(h, 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap_err(), Errno::ENOSYS);
         release_handle(h);
     }
 
@@ -2665,10 +2915,10 @@ mod tests {
         build_sample_tree();
         let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
         let mut buf = [0u8; 32];
-        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob).unwrap();
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"hello world");
         // Positioned read.
-        let n = read_file_at(b"/usr/bin/hello", 6, &mut buf, &mut blob).unwrap();
+        let n = read_file_at(b"/usr/bin/hello", 6, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"world");
     }
 
@@ -2677,7 +2927,7 @@ mod tests {
         let _g = TestGuard::acquire();
         build_sample_tree();
         let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
-        let n = write_file_at(b"/usr/bin/hello", 0, b"NEW", 0o600, true, &mut blob).unwrap();
+        let n = write_file_at(b"/usr/bin/hello", 0, b"NEW", 0o600, true, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(n, 3);
         let mut buf = [0u8; 32];
         // A reader that panics proves the replaced file is served from the
@@ -2685,7 +2935,7 @@ mod tests {
         let mut panic_blob = |_: u64, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
             panic!("replaced file must be served from the overlay");
         };
-        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut panic_blob).unwrap();
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut panic_blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"NEW");
         assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o600);
     }
@@ -2697,10 +2947,10 @@ mod tests {
         let mut blob = make_blob_reader(alloc::vec![(42u64, b"hello world".to_vec())]);
         // Non-truncating positioned write copies the base file into the overlay
         // and overwrites only the tail, keeping the leading bytes intact.
-        let n = write_file_at(b"/usr/bin/hello", 6, b"WORLD", 0o644, false, &mut blob).unwrap();
+        let n = write_file_at(b"/usr/bin/hello", 6, b"WORLD", 0o644, false, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(n, 5);
         let mut buf = [0u8; 32];
-        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob).unwrap();
+        let n = read_file_at(b"/usr/bin/hello", 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"hello WORLD");
     }
 
@@ -2709,11 +2959,150 @@ mod tests {
         let _g = TestGuard::acquire();
         build_sample_tree();
         let mut blob = make_blob_reader(alloc::vec![]);
-        let n = write_file_at(b"/usr/bin/fresh", 0, b"data", 0o644, true, &mut blob).unwrap();
+        let n = write_file_at(b"/usr/bin/fresh", 0, b"data", 0o644, true, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(n, 4);
         let mut buf = [0u8; 32];
-        let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
+        let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob, &mut |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) }).unwrap();
         assert_eq!(&buf[..n], b"data");
         assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
+    }
+
+    // -- LazyMember materialization (Increment 3b-wiring.2) ------------------
+
+    #[test]
+    fn lazy_member_read_fetches_decodes_and_serves_bytes() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        let (mut fetch, calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        let n = read(h, 0, &mut buf, &mut blob, &mut fetch).unwrap();
+        assert_eq!(n, 4096);
+        assert!(buf.iter().all(|&b| b == b'a'));
+        assert_eq!(calls.get(), 1);
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_second_read_served_from_cache() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        let (mut fetch, calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        read(h, 0, &mut buf, &mut blob, &mut fetch).unwrap();
+        let first_calls = calls.get();
+        assert_eq!(first_calls, 1);
+
+        let mut buf2 = [0u8; 4096];
+        let n = read(h, 0, &mut buf2, &mut blob, &mut fetch).unwrap();
+        assert_eq!(n, 4096);
+        assert!(buf2.iter().all(|&b| b == b'a'));
+        // Served from the archive's `members` cache: no second fetch.
+        assert_eq!(calls.get(), first_calls);
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_fetch_eagain_is_idempotent_restart() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        let mut failing = |_id: u32, _off: u64, _buf: &mut [u8]| -> Result<usize, Errno> {
+            Err(Errno::EAGAIN)
+        };
+        assert_eq!(
+            read(h, 0, &mut buf, &mut blob, &mut failing).unwrap_err(),
+            Errno::EAGAIN
+        );
+
+        // Nothing partial was cached by the failed attempt: a working fetcher
+        // on the very next call re-fetches the whole archive from scratch and
+        // succeeds.
+        let (mut fetch, calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let n = read(h, 0, &mut buf, &mut blob, &mut fetch).unwrap();
+        assert_eq!(n, 4096);
+        assert!(buf.iter().all(|&b| b == b'a'));
+        assert_eq!(calls.get(), 1);
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_missing_source_path_is_enoent() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_lazy_file(b"/g", 7, b"bin/nope", 10, 0o644, 0, 0, 2).unwrap();
+        insert_archive_entry(7, TINY_ZIP.len() as u64);
+        let (mut fetch, _calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        let h = open(b"/g", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            read(h, 0, &mut buf, &mut blob, &mut fetch).unwrap_err(),
+            Errno::ENOENT
+        );
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_missing_archive_registration_is_enoent() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_lazy_file(b"/g", 42, b"bin/big.txt", 4096, 0o644, 0, 0, 2).unwrap();
+        // No insert_archive_entry(42, ..): archive_id 42 is not registered.
+        let (mut fetch, _calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        let h = open(b"/g", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            read(h, 0, &mut buf, &mut blob, &mut fetch).unwrap_err(),
+            Errno::ENOENT
+        );
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_write_materializes_then_overwrites() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        let (mut fetch, calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        // O_RDWR == 2.
+        let h = open(b"/lazy/f", 2, 0, 0, 0).unwrap();
+        assert_eq!(write(h, 0, b"XYZ", &mut blob, &mut fetch).unwrap(), 3);
+        assert_eq!(calls.get(), 1);
+
+        // A fetcher that panics proves the post-materialization node is a
+        // Regular overlay file, never re-touching the archive.
+        let mut panic_fetch = |_: u32, _: u64, _: &mut [u8]| -> Result<usize, Errno> {
+            panic!("post-materialization read must be served from the overlay");
+        };
+        let mut buf = [0u8; 4096];
+        let n = read(h, 0, &mut buf, &mut blob, &mut panic_fetch).unwrap();
+        assert_eq!(n, 4096);
+        assert_eq!(&buf[..3], b"XYZ");
+        assert!(buf[3..].iter().all(|&b| b == b'a'));
+        assert_eq!(lstat(b"/lazy/f").unwrap().st_size, 4096);
+        release_handle(h);
+    }
+
+    #[test]
+    fn lazy_member_truncate_to_zero_converts_to_empty_regular() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        let (mut fetch, calls) = make_archive_fetcher(alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let mut blob = make_blob_reader(alloc::vec::Vec::new());
+        // O_RDWR == 2.
+        let h = open(b"/lazy/f", 2, 0, 0, 0).unwrap();
+        truncate_handle(h, 0, &mut blob, &mut fetch).unwrap();
+        // Truncating to 0 needs no archive bytes.
+        assert_eq!(calls.get(), 0);
+        assert_eq!(size(h).unwrap(), 0);
+        assert_eq!(lstat(b"/lazy/f").unwrap().st_size, 0);
+        release_handle(h);
     }
 }
