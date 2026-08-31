@@ -2460,6 +2460,48 @@ mod tests {
         assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
     }
 
+    /// Cross-language round-trip fixture: a v3 RTFS manifest emitted by the
+    /// REAL TypeScript emitter (`emitRootfsManifest` in
+    /// host/src/vfs/rootfs-manifest.ts), committed at
+    /// `testdata/rtfs-v3-lazy.bin` and regenerated via
+    /// `host/scripts/gen-rtfs-v3-fixture.mts`. If the TS emitter and this
+    /// loader ever disagree on the v3 wire format, this test — not just the
+    /// hand-built byte vectors above — is what catches the drift.
+    const RTFS_V3_FIXTURE: &[u8] = include_bytes!("testdata/rtfs-v3-lazy.bin");
+
+    #[test]
+    fn load_manifest_ts_emitted_v3_fixture_round_trips() {
+        let _g = TestGuard::acquire();
+
+        assert_eq!(&RTFS_V3_FIXTURE[0..4], &MANIFEST_MAGIC.to_le_bytes());
+        assert_eq!(&RTFS_V3_FIXTURE[4..8], &MANIFEST_VERSION_V3.to_le_bytes());
+
+        // Tree: /, /a (dir), /a/f (base file), /a/g (lazy file).
+        assert_eq!(load_manifest(RTFS_V3_FIXTURE).unwrap(), 4);
+
+        let root = lstat(b"/").unwrap();
+        assert_eq!(root.st_mode & S_IFMT, S_IFDIR);
+
+        let a = lstat(b"/a").unwrap();
+        assert_eq!(a.st_mode & S_IFMT, S_IFDIR);
+        assert_eq!(a.st_mode & 0o7777, 0o755);
+
+        let f = lstat(b"/a/f").unwrap();
+        assert_eq!(f.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(f.st_mode & 0o7777, 0o644);
+        assert_eq!(f.st_size, 6); // b"hello\n"
+
+        let g = lstat(b"/a/g").unwrap();
+        assert_eq!(g.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(g.st_mode & 0o7777, 0o644);
+        assert_eq!(g.st_size, 12); // b"lazy content"
+
+        let (archive_id, source_path) = lazy_member_source(b"/a/g").unwrap();
+        assert_eq!(archive_id, 7);
+        assert_eq!(source_path, b"bin/g".to_vec());
+        assert_eq!(archive_size(7), Some(1234));
+    }
+
     #[test]
     fn special_socket_and_fifo_nodes() {
         let _g = TestGuard::acquire();
