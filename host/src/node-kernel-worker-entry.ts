@@ -58,6 +58,7 @@ import { RecordingTimeProvider } from "./replication/clock";
 import {
   beginReplicationReplay,
   beginReplicationStream,
+  glQueryRecordTap,
 } from "./replication/worker";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
@@ -831,6 +832,7 @@ function beginStreamAtCapture(): void {
     replicationIO,
     baseTimeProvider,
     publishLog,
+    kernelWorker,
   );
 }
 
@@ -1527,6 +1529,7 @@ async function handleInit(msg: InitMessage) {
         replicationIO,
         baseTimeProvider,
         msg.replicationReplay,
+        kernelWorker,
         applyPushedDecision,
       ),
     };
@@ -4778,11 +4781,17 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "replication_record_start": {
       respondToReplication(msg.requestId, (io, clock) => {
         if (msg.stream) {
-          replicationRecorder = beginReplicationStream(io, clock, publishLog);
+          replicationRecorder = beginReplicationStream(
+            io,
+            clock,
+            publishLog,
+            kernelWorker,
+          );
           return;
         }
         replicationRecorder = new ReplicationLogRecorder();
         io.setTimeProvider(new RecordingTimeProvider(clock, replicationRecorder));
+        kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
       });
       break;
     }
@@ -4792,6 +4801,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       if (replicationIO && baseTimeProvider) {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
+      kernelWorker?.setGlQueryTap(null);
       post({
         type: "response",
         requestId: msg.requestId,
@@ -4802,7 +4812,13 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "replication_replay_start": {
       respondToReplication(msg.requestId, (io, clock) => {
         replicationReplay = {
-          reader: beginReplicationReplay(io, clock, msg, applyPushedDecision),
+          reader: beginReplicationReplay(
+            io,
+            clock,
+            msg,
+            kernelWorker,
+            applyPushedDecision,
+          ),
         };
       });
       break;
@@ -4813,6 +4829,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       if (replicationIO && baseTimeProvider) {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
+      kernelWorker?.setGlQueryTap(null);
       post({
         type: "response",
         requestId: msg.requestId,

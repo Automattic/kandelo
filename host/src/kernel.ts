@@ -814,6 +814,24 @@ export interface KernelCallbacks {
   markKmsCanvasGlOwned?: (crtcId: number) => void;
 }
 
+/**
+ * Replication's seam on `host_gl_query`.
+ *
+ * Record mode observes the guest-visible result — the raw return and the
+ * bytes written — after the query ran. Replay mode supplies both instead,
+ * and the local query still runs for its side effects; `take` may throw
+ * to refuse a replay that has diverged from the recording.
+ */
+export type GlQueryTap =
+  | {
+    readonly mode: "record";
+    readonly record: (op: number, rc: number, bytes: Uint8Array) => void;
+  }
+  | {
+    readonly mode: "replay";
+    readonly take: (op: number) => { rc: number; bytes: Uint8Array };
+  };
+
 export class WasmPosixKernel {
   private config: KernelConfig;
   private io: PlatformIO;
@@ -902,6 +920,21 @@ export class WasmPosixKernel {
    */
   private gl_submit_queue = new SubmitQueue((pid) => this.kms.isMasterPid(pid));
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
+  /**
+   * Replication's hand on `host_gl_query`; null when this machine is
+   * neither recording nor replaying.
+   *
+   * A GL query answer is a host-produced value the guest consumes, like a
+   * clock reading: two GPUs answer differently, so a primary records what
+   * its guest was handed and a replica hands its guest the recorded bytes,
+   * running its own query only for the side effects that keep its context
+   * following along. See `replication/log.ts`.
+   */
+  private glQueryTap: GlQueryTap | null = null;
+
+  setGlQueryTap(tap: GlQueryTap | null): void {
+    this.glQueryTap = tap;
+  }
 
   /**
    * Merge additional callbacks into the existing set.
@@ -2252,7 +2285,8 @@ export class WasmPosixKernel {
           outPtr: KernelPointer, outLen: KernelPointer,
         ): number => {
           const b = this.gl.get(pid);
-          if (!b || !b.gl) return -1;
+          const tap = this.glQueryTap;
+          if (tap === null && (!b || !b.gl)) return -1;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -2286,7 +2320,28 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
           const outBuf = new IntrinsicUint8Array(outputLength);
-          const written = runGlQuery(b, op, inBuf, outBuf);
+          let written: number;
+          if (tap?.mode === "replay") {
+            // The recorded answer is the guest-visible one. The local query
+            // still runs for its side effects — a uniform-location index it
+            // files — but a replica without a context yet answers the guest
+            // all the same, from the log.
+            const answer = tap.take(op);
+            if (b && b.gl) runGlQuery(b, op, inBuf, outBuf);
+            written = answer.rc;
+            if (written > 0) outBuf.set(answer.bytes.subarray(0, written));
+          } else {
+            written = b && b.gl ? runGlQuery(b, op, inBuf, outBuf) : -1;
+            if (tap !== null && Number.isSafeInteger(written)) {
+              tap.record(
+                op,
+                written,
+                written > 0
+                  ? sliceUint8Array(outBuf, 0, written)
+                  : new IntrinsicUint8Array(0),
+              );
+            }
+          }
           if (!Number.isSafeInteger(written)) return -5;
           if (written < 0) return written;
           if (written > outputLength) return -5;

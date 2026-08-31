@@ -29,6 +29,7 @@ import {
   getWasmPosixKernelRuntimeAccess,
   negErrno,
   WasmPosixKernel,
+  type GlQueryTap,
   type KernelPointer,
 } from "./kernel";
 import {
@@ -34229,6 +34230,11 @@ export class CentralizedKernelWorker {
 
   get kms() {
     return this.#kernel.kms;
+  }
+
+  /** Replication's hand on `host_gl_query`; see `WasmPosixKernel.setGlQueryTap`. */
+  setGlQueryTap(tap: GlQueryTap | null): void {
+    this.#kernel.setGlQueryTap(tap);
   }
 
   /** CRTCs whose canvas a GL context owns.
