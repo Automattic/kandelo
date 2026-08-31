@@ -1421,6 +1421,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
   },
   {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_blob_read destination", )',
+    disposition: "rust-lent",
+    why: "The host_blob_read Wasm import binds the untouched Rust pointer and capacity formals before invoking the rootfs base-file byte producer.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_archive destination", )',
+    disposition: "rust-lent",
+    why: "The host_fetch_archive Wasm import binds the untouched Rust pointer and capacity formals before invoking the rootfs lazy-archive byte producer.",
+  },
+  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_fstat destination", )',
     disposition: "rust-lent",
     why: "The host_fstat import binds its exact pointer formal to the generated fixed stat capacity before the backend consumes the handle.",
