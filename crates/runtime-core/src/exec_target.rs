@@ -436,7 +436,12 @@ fn target_pread(
     offset: i64,
 ) -> Result<usize, Errno> {
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
-        crate::rootfs::read(host_handle, offset, buf, |id, off, b| host.blob_read(id, b, off))
+        crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
+            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+                host.fetch_archive(archive_id, b, offset)
+            }
+        })
     } else {
         host.host_pread(host_handle, buf, offset)
     }
