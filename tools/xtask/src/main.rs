@@ -49,6 +49,7 @@ mod vfs_products;
 mod archive_extract_member;
 mod build_deps;
 mod bundle_program;
+mod cargo_closure;
 mod dump_abi;
 mod host_tool_probe;
 mod local_abi_identity;
