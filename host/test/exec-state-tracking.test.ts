@@ -100,6 +100,80 @@ describe("opaque prepared exec target launch", () => {
     expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 12);
   });
 
+  it("retries a transient EAGAIN read and completes without cancelling the token", async () => {
+    vi.useFakeTimers();
+    try {
+      const expected = Uint8Array.from([9, 8, 7]);
+      const cancel = vi.fn(() => 0);
+      let attempts = 0;
+      const kernel: PreparedExecKernel = {
+        execTargetSize: () => BigInt(expected.byteLength),
+        execTargetRead: (_ownerPid, _target, offset, destination) => {
+          attempts += 1;
+          if (attempts <= 2) return -11; // EAGAIN: archive member still fetching
+          const start = Number(offset);
+          destination.set(expected.subarray(start));
+          return expected.byteLength - start;
+        },
+        execTargetCancel: cancel,
+      };
+
+      const read = readPreparedExecTarget(kernel, 7, 21);
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(read).resolves.toEqual(expected);
+      expect(attempts).toBe(3);
+      expect(cancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws a truthful timeout once EAGAIN persists past the safety cap", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn(() => 0);
+      const kernel: PreparedExecKernel = {
+        execTargetSize: () => 4n,
+        execTargetRead: () => -11, // EAGAIN forever: a hypothetical stuck fetch
+        execTargetCancel: cancel,
+      };
+
+      const read = readPreparedExecTarget(kernel, 7, 22);
+      const assertion = expect(read).rejects.toEqual(
+        expect.objectContaining({
+          name: "PreparedExecTargetError",
+          errno: 110, // ETIMEDOUT
+          targetCancelled: true,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      await assertion;
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 22);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws immediately on a non-EAGAIN negative read without retrying", async () => {
+    const cancel = vi.fn(() => 0);
+    const read = vi.fn(() => -5); // EIO
+    const kernel: PreparedExecKernel = {
+      execTargetSize: () => 4n,
+      execTargetRead: read,
+      execTargetCancel: cancel,
+    };
+
+    await expect(readPreparedExecTarget(kernel, 7, 23)).rejects.toEqual(
+      expect.objectContaining({
+        name: "PreparedExecTargetError",
+        errno: 5,
+        targetCancelled: true,
+      }),
+    );
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 23);
+  });
+
   it("prepares only the shebang interpreter and keeps diagnosticPath display-only", async () => {
     const interpreter = new Uint8Array(
       readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
