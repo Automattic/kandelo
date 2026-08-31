@@ -754,3 +754,101 @@ migration is perf-neutral.
   capability the kernel directs for `pthread_create`/process creation; the kernel
   does no I/O itself. Add only if decode-on-the-kernel-worker shows as a
   measurable syscall stall.
+
+---
+
+# Increment 3b wiring — kernel-owned lazy-archive expansion (Model B)
+
+Slice steps 4-6 + the 2e cutover, wiring the SFFS (3b.1) and ZIP (3b.2) readers into
+the overlay so the host `/` mount can drop. **Authority split (decided 2026-08-30):**
+the **kernel is authoritative over all VFS I/O and semantics** (namespace, resolution,
+stat/read/readdir/perms/COW — already true via `rootfs::claims_path`, unchanged). The
+**host owns two non-authoritative services**: (a) the raw-byte **transport** (fetch
+archive bytes / eager-base byte store — the platform I/O floor: HTTP/OPFS/`fs`), and
+(b) the **projection** (which VFS paths lazy members occupy), emitted into the boot
+manifest. TS never interprets a guest syscall, so the migration's core criterion
+holds. NATIVE-HOST NOTE (Phase 7 follow-up, NOT blocking this cutover): because
+projection runs in the runtime host (TS), the native Wasmtime host will need the
+manifest baked at build time or the projection ported to Rust — tracked, deferred.
+
+Decision: **Model B** (host projects + fetches raw bytes; KERNEL decodes via 3b.2 +
+fills bytes). Rejected: (A) kernel re-derives projection (divergence risk, and the
+host projection is intricate — hardlink inodeGroup/atomicity/mode policy); (route ii)
+host also decodes (would make the 3b.2 kernel zip reader dead at runtime). tar-gzip is
+OUT of kernel scope (no runtime archive is tar; all lazy archives are `.zip`).
+
+## Flow
+- **Boot (host projects):** RTFS manifest emitted as today, but a lazy REGULAR file is
+  a new node kind carrying `(archive_id, source_path)` (its member path inside the
+  zip). Lazy symlinks/dirs are already fully placed at boot (target/metadata known) —
+  nothing new. Kernel loads the manifest; a lazy regular becomes an in-overlay
+  `LazyMember` node (known size, no bytes).
+- **First touch (kernel decodes):** read/exec of a `LazyMember` → if its archive isn't
+  materialized, kernel calls `fetch_archive(archive_id)` for the RAW zip bytes
+  (EAGAIN-parked while the host fetches), decodes the whole archive with the 3b.2 zip
+  reader, and caches every member's bytes in a per-archive registry (WHOLESALE, atomic).
+  Later reads of any member of that archive serve from the registry.
+- **Cutover:** drop the host `/` mount from the router; keep the memfs alive only as
+  the EAGER-base byte store; flip default-on.
+
+## Manifest RTFS v3 (`rootfs-manifest.ts` emit + `rootfs.rs` load_manifest)
+- New `KIND_LAZY_FILE = 4`: standard regular-file fields + `archive_id u32`,
+  `source_path_len u32`, `source_path`. `size` = member uncompressed size (build-known).
+- Trailing archive table: `archive_count u32`, per archive `archive_id u32 |
+  archive_size u64` (kernel sizes its fetch buffer); optional `sha256[32]`.
+- Coordinated `RTFS_VERSION 2->3` bump (positional parser; the version machinery exists).
+
+## Transport op `fetch_archive` (3-file blob_read pattern; additive host import)
+- `crates/kernel/src/wasm_api.rs`: extern `host_fetch_archive(archive_id: u32, buf_ptr,
+  buf_len, offset_lo, offset_hi) -> i32` -> `n | -EAGAIN | -errno` (mirrors host_blob_read).
+- `crates/runtime-core/src/process.rs`: `HostIO::fetch_archive(archive_id, buf, offset)
+  -> Result<usize, Errno>` (default ENOSYS).
+- `host/src/kernel.ts`: JS shim -> `#hostFetchArchive` -> installed `#archiveProvider`
+  (`setArchiveProvider`) backed by the existing lazy fetcher (ClosedLazyAsset set keyed
+  by archive_id->URL): kicks off the async fetch, returns `-EAGAIN` until ready (same
+  shape as lazy blob_read EAGAIN today). Not in the guest ABI snapshot (additive).
+
+## Kernel overlay: LazyMember + archive registry (`rootfs.rs`)
+- `InodeKind::LazyMember { archive_id: u32, source_path: Vec<u8>, size: u64 }`, placed by
+  `insert_lazy_file(...)` from manifest load; reverse index `archive_id -> [inode]`; per-
+  archive registry `archive_id -> { size, NotFetched | Materialized{ members:
+  Map<source_path, Vec<u8>> } }`.
+- `size`/`fstat`: use the manifest size immediately (stat/ls work pre-materialization).
+  `read`: if materialized serve `members[source_path]`; else `ensure_archive(id)` =
+  positioned `fetch_archive` into a kernel buffer of `archive_size` (a `-EAGAIN`
+  propagates so the generic blocking-retry parks + re-drives, like 3a), then
+  `zip::read_central_directory` + `zip::extract` per member -> populate `members` ->
+  Materialized -> serve. Wholesale + atomic (all members before serving).
+- COW write to a LazyMember materializes first, then reuses the existing overlay
+  Regular COW path.
+
+## Exec-target EAGAIN re-entry (the S4 blocker)
+- `open_prepared_exec_target_rootfs` (syscalls.rs): handle a LazyMember target (open a
+  rootfs handle + fstat from the manifest size; no bytes yet).
+- Host `readPreparedExecTarget` (exec-target.ts:114-141): currently throws on any
+  `read < 0`. Change: on `-EAGAIN`, PARK + re-drive the read (mirroring guest sys_read
+  retry) instead of failing + cancelling. Makes a lazy program materialize on exec.
+  (`exec_target::read` already returns the errno to the host; the fix is host-side.)
+
+## Cutover S4/S5/S6
+- S4: both worker entries, when `kernelRootfsEnabled()`, drop the `/` MountConfig from
+  VirtualPlatformIO; keep the memfs alive as the EAGER-base byte store (blob_read); the
+  lazy fetcher now feeds `fetch_archive` RAW bytes. Lazy members served entirely
+  in-kernel (no host memfs decode).
+- S5: validate opt-in (WASM_POSIX_ROOTFS=1): Node man-shell + node-lazy (mount DROPPED),
+  WordPress/PHP, libc/sortix, browser — vs overlay-off baseline.
+- S6: flip `kernelRootfsEnabled()` default true; re-validate WordPress-Chromium/libc/
+  sortix. USER SIGN-OFF (live browser); the agent takes it to S5-validated and stops.
+
+## Increments (review-gated, green-per-commit)
+1. Manifest v3 (Rust load + TS emit), additive/dormant. 2. Kernel LazyMember + registry
++ `fetch_archive` op + read-materialization (mock-host unit tests: mock serves a raw
+zip -> kernel decodes+serves). 3. Host archive provider + emit lazy linkage (Node+browser).
+4. Exec-target EAGAIN re-entry (man-shell overlay-on, mount present). 5. S4 mount-drop
+(man-shell + node-lazy, mount dropped). 6. S5 opt-in validation. 7. S6 default-on (user).
+
+## Validation contract
+runtime-core unit tests (mock host serves a raw zip -> kernel decodes+serves; recording-
+host asserts ZERO host FS/decode op for lazy `/` beyond `fetch_archive`); Node man-shell
++ node-lazy overlay-on MOUNT-DROPPED; WordPress-Chromium + libc/sortix at S5/S6. No
+"cutover works" claim without the exact evidence.
