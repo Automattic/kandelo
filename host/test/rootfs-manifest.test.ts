@@ -6,6 +6,7 @@ import {
   RTFS_VERSION,
 } from "../src/vfs/rootfs-manifest";
 import type { FileSystemBackend } from "../src/vfs/types";
+import type { RootfsLazyInput } from "../src/vfs/rootfs-manifest";
 
 const S_IFDIR = 0x4000;
 const S_IFREG = 0x8000;
@@ -100,8 +101,12 @@ function makeFakeBackend(tree: Record<string, FakeNode>): FileSystemBackend {
   return backend as unknown as FileSystemBackend;
 }
 
+const KIND_LAZY_FILE = 4;
+
 /** Decode the RTFS buffer back into entries (mirrors rootfs.rs load_manifest) so
- * the wire format is asserted from the consumer side, catching drift. */
+ * the wire format is asserted from the consumer side, catching drift. Handles
+ * both v2 (no archive table) and v3 (kind-4 archive_id/source_path fields plus
+ * the trailing archive table). */
 function decode(buf: Uint8Array): {
   version: number;
   entries: Array<{
@@ -116,7 +121,10 @@ function decode(buf: Uint8Array): {
     mtimeNsec: number;
     path: string;
     target: string;
+    archiveId?: number;
+    sourcePath?: string;
   }>;
+  archives: Array<{ archiveId: number; archiveSize: bigint }>;
 } {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   let p = 0;
@@ -153,10 +161,36 @@ function decode(buf: Uint8Array): {
     const mtimeNsec = u32();
     const path = str(u32());
     const target = str(u32());
-    entries.push({ kind, mode, uid, gid, ino, blobId, size, mtimeSec, mtimeNsec, path, target });
+    const entry: (typeof entries)[number] = {
+      kind,
+      mode,
+      uid,
+      gid,
+      ino,
+      blobId,
+      size,
+      mtimeSec,
+      mtimeNsec,
+      path,
+      target,
+    };
+    if (kind === KIND_LAZY_FILE) {
+      entry.archiveId = u32();
+      entry.sourcePath = str(u32());
+    }
+    entries.push(entry);
+  }
+  const archives: Array<{ archiveId: number; archiveSize: bigint }> = [];
+  if (version >= 3) {
+    const archiveCount = u32();
+    for (let i = 0; i < archiveCount; i++) {
+      const archiveId = u32();
+      const archiveSize = u64();
+      archives.push({ archiveId, archiveSize });
+    }
   }
   expect(p).toBe(buf.length); // no trailing bytes
-  return { version, entries };
+  return { version, entries, archives };
 }
 
 describe("rootfs manifest emitter", () => {
@@ -311,5 +345,57 @@ describe("rootfs manifest emitter", () => {
     );
     expect(entryCount).toBe(1); // just the root dir
     expect(skipped).toEqual(["/s"]);
+  });
+
+  it("emits KIND_LAZY_FILE entries + a populated archive table when lazy input is given", () => {
+    const lazyTree: Record<string, FakeNode> = {
+      "/": { ino: 1, mode: S_IFDIR | 0o755, uid: 0, gid: 0, children: ["a"] },
+      "/a": { ino: 2, mode: S_IFDIR | 0o755, uid: 0, gid: 0, children: ["g"] },
+      "/a/g": {
+        ino: 3,
+        mode: S_IFREG | 0o644,
+        uid: 0,
+        gid: 0,
+        data: new TextEncoder().encode("lazy content"),
+      },
+    };
+    const backend = makeFakeBackend(lazyTree);
+    const lazy: RootfsLazyInput = {
+      files: new Map([["/a/g", { archiveId: 7, sourcePath: "bin/g" }]]),
+      archives: [{ archiveId: 7, size: 1234 }],
+    };
+    const { buffer, entryCount, skipped, blobPaths } = emitRootfsManifest(
+      backend,
+      (p) => p,
+      lazy,
+    );
+    expect(skipped).toEqual([]);
+    expect(entryCount).toBe(3); // /, /a, /a/g
+    // A lazy file is not blob-served this increment.
+    expect(blobPaths.has(3)).toBe(false);
+
+    const { version, entries, archives } = decode(buffer);
+    expect(version).toBe(3);
+    expect(version).toBe(RTFS_VERSION);
+
+    const g = entries.find((e) => e.path === "/a/g")!;
+    expect(g.kind).toBe(KIND_LAZY_FILE);
+    expect(g.archiveId).toBe(7);
+    expect(g.sourcePath).toBe("bin/g");
+    expect(g.target).toBe(""); // target_len 0, unused for lazy files
+
+    expect(archives).toEqual([{ archiveId: 7, archiveSize: 1234n }]);
+  });
+
+  it("defaults to version 3 with an empty archive table and no lazy entries", () => {
+    const backend = makeFakeBackend(tree);
+    const { buffer, entryCount, skipped } = emitRootfsManifest(backend, (p) => p);
+    expect(skipped).toEqual([]);
+    expect(entryCount).toBe(7); // identical to the v2-era tree
+
+    const { version, entries, archives } = decode(buffer);
+    expect(version).toBe(3);
+    expect(archives).toEqual([]);
+    expect(entries.some((e) => e.kind === KIND_LAZY_FILE)).toBe(false);
   });
 });
