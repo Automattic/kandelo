@@ -1516,6 +1516,18 @@ pub extern "C" fn kernel_set_rootfs_enabled(enabled: i32) -> i32 {
     crate::rootfs::set_enabled(enabled != 0) as i32
 }
 
+/// Publish whether the overlay's `/` mount is `nosuid` (nonzero) or set-ID
+/// honoring (zero). The host calls this at boot, after loading the manifest and
+/// before enabling rootfs authority, with the resolved `/` mount-spec flag.
+/// Defaults set-ID honoring, so a setuid/setgid binary staged in the overlay
+/// (for example `/usr/bin/login`) elevates through exec exactly as on the host
+/// `/` mount; an explicitly `nosuid` mount drops the bits. Returns the previous
+/// state (0/1). See `rootfs::set_nosuid`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_rootfs_nosuid(nosuid: i32) -> i32 {
+    crate::rootfs::set_nosuid(nosuid != 0) as i32
+}
+
 /// Register the set of *foreign* mount prefixes still mounted under `/` after
 /// the host hands `/` ownership to the overlay (for example `/dev/shm` shmfs,
 /// `/run/kandelo-run` session-seed host mounts, and extra `HostFileSystem`

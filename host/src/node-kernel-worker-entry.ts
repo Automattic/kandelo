@@ -217,6 +217,12 @@ let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undef
  *  and handed to the in-kernel rootfs overlay in `handleInit` so it does not
  *  greedily claim these sibling paths. */
 let rootfsForeignPrefixes: string[] = [];
+/** Whether the overlay's `/` mount was configured `nosuid`. Captured in
+ *  `buildVirtualPlatformIO` from the resolved root mount and handed to the
+ *  in-kernel rootfs overlay in `handleInit` so an overlay-served setuid/setgid
+ *  exec target elevates (or, on a nosuid mount, does not) like the host `/`
+ *  mount. Defaults set-ID honoring. */
+let rootfsNosuid = false;
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -1086,6 +1092,7 @@ async function buildVirtualPlatformIO(
     ...extras,
   ];
   const rootMount = mounts.find((m) => m.mountPoint === "/");
+  rootfsNosuid = rootMount?.nosuid === true;
   rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
     ? rootMount.backend
     : null;
@@ -1400,6 +1407,7 @@ async function handleInit(msg: InitMessage) {
       createRootfsBlobProvider(rootfsMemfs, blobPaths),
       archiveProvider,
       rootfsForeignPrefixes,
+      rootfsNosuid,
     );
   }
 

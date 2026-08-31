@@ -566,6 +566,27 @@ pub fn is_enabled() -> bool {
     ROOTFS_ENABLED.load(Ordering::SeqCst)
 }
 
+/// Whether the overlay's `/` mount was configured `nosuid`. Defaults OFF: a
+/// normal boot mounts `/` set-ID-honoring, so a setuid/setgid binary staged in
+/// the overlay (for example `/usr/bin/login`, `su`, `passwd`) elevates through
+/// exec exactly as it does on the host `/` mount. The host publishes the mount's
+/// real flag at overlay-configure time via `set_nosuid`; `statfs` then reports
+/// `ST_NOSUID` so the exec-target set-ID proposal drops the bits on a `nosuid`
+/// mount and honors them otherwise. Cleared by `reset()`/`load_manifest`.
+static ROOTFS_NOSUID: AtomicBool = AtomicBool::new(false);
+
+/// Publish whether the overlay's `/` mount is `nosuid`. Returns the previous
+/// value. The host calls this once at boot, after loading the manifest (which
+/// resets it) and before enabling rootfs authority.
+pub fn set_nosuid(nosuid: bool) -> bool {
+    ROOTFS_NOSUID.swap(nosuid, Ordering::SeqCst)
+}
+
+/// Whether the overlay's `/` mount is currently `nosuid`.
+pub fn is_nosuid() -> bool {
+    ROOTFS_NOSUID.load(Ordering::SeqCst)
+}
+
 static ROOTFS_NOW_SEC: AtomicU64 = AtomicU64::new(0);
 static ROOTFS_NOW_NSEC: AtomicU32 = AtomicU32::new(0);
 
@@ -646,6 +667,7 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 pub fn reset() {
     ROOTFS.with(|state| *state = RootfsState::new());
     FOREIGN_MOUNTS.with(|slot| slot.clear());
+    ROOTFS_NOSUID.store(false, Ordering::SeqCst);
 }
 
 /// Split an absolute path into (parent components, final component). Returns
@@ -2247,7 +2269,11 @@ pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
         f_fsid: 0,
         f_namelen: 255,
         f_frsize: 4096,
-        f_flags: 0,
+        f_flags: if is_nosuid() {
+            wasm_posix_shared::statfs_flags::ST_NOSUID
+        } else {
+            0
+        },
         _pad: 0,
     })
 }
