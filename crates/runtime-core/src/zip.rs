@@ -104,16 +104,21 @@ pub fn read_central_directory(data: &[u8]) -> Result<alloc::vec::Vec<ZipEntry>, 
             return Err(Errno::EINVAL);
         }
 
-        let version_made_by = r16(data, offset + 4).ok_or(Errno::EINVAL)?;
-        let gpflag = r16(data, offset + 8).ok_or(Errno::EINVAL)?;
-        let method = r16(data, offset + 10).ok_or(Errno::EINVAL)?;
-        let compressed_size = r32(data, offset + 20).ok_or(Errno::EINVAL)?;
-        let uncompressed_size = r32(data, offset + 24).ok_or(Errno::EINVAL)?;
-        let name_len = r16(data, offset + 28).ok_or(Errno::EINVAL)? as usize;
-        let extra_len = r16(data, offset + 30).ok_or(Errno::EINVAL)? as usize;
-        let comment_len = r16(data, offset + 32).ok_or(Errno::EINVAL)? as usize;
-        let external_attrs = r32(data, offset + 38).ok_or(Errno::EINVAL)?;
-        let local_offset = r32(data, offset + 42).ok_or(Errno::EINVAL)?;
+        // `offset` is bumped by `checked_add` at the bottom of the loop and
+        // re-validated against `data.len()`, so these field offsets cannot
+        // practically overflow `usize`. Route them through `checked_add`
+        // anyway rather than relying on that invariant implicitly.
+        let field = |d: usize| offset.checked_add(d).ok_or(Errno::EINVAL);
+        let version_made_by = r16(data, field(4)?).ok_or(Errno::EINVAL)?;
+        let gpflag = r16(data, field(8)?).ok_or(Errno::EINVAL)?;
+        let method = r16(data, field(10)?).ok_or(Errno::EINVAL)?;
+        let compressed_size = r32(data, field(20)?).ok_or(Errno::EINVAL)?;
+        let uncompressed_size = r32(data, field(24)?).ok_or(Errno::EINVAL)?;
+        let name_len = r16(data, field(28)?).ok_or(Errno::EINVAL)? as usize;
+        let extra_len = r16(data, field(30)?).ok_or(Errno::EINVAL)? as usize;
+        let comment_len = r16(data, field(32)?).ok_or(Errno::EINVAL)? as usize;
+        let external_attrs = r32(data, field(38)?).ok_or(Errno::EINVAL)?;
+        let local_offset = r32(data, field(42)?).ok_or(Errno::EINVAL)?;
 
         if gpflag & GPFLAG_DATA_DESCRIPTOR != 0 {
             return Err(Errno::EINVAL);
@@ -177,9 +182,14 @@ fn member_data_range(data: &[u8], e: &ZipEntry) -> Result<(usize, usize), Errno>
         return Err(Errno::EINVAL);
     }
 
-    let local_method = r16(data, local_offset + 8).ok_or(Errno::EINVAL)?;
-    let local_name_len = r16(data, local_offset + 26).ok_or(Errno::EINVAL)? as usize;
-    let local_extra_len = r16(data, local_offset + 28).ok_or(Errno::EINVAL)? as usize;
+    // Same rationale as `read_central_directory`: `local_offset` is
+    // attacker-controlled (it comes straight from the central directory's
+    // `local_offset` field), so route its field offsets through
+    // `checked_add` instead of relying on plain `+` not wrapping.
+    let field = |d: usize| local_offset.checked_add(d).ok_or(Errno::EINVAL);
+    let local_method = r16(data, field(8)?).ok_or(Errno::EINVAL)?;
+    let local_name_len = r16(data, field(26)?).ok_or(Errno::EINVAL)? as usize;
+    let local_extra_len = r16(data, field(28)?).ok_or(Errno::EINVAL)? as usize;
 
     let name_start = local_offset
         .checked_add(LOCAL_HEADER_FIXED_SIZE)
@@ -452,5 +462,102 @@ mod tests {
             node,
             ZipNode::Regular { bytes: b"hello\n".to_vec(), mode: 0o644 }
         );
+    }
+
+    // -- Untrusted-input hardening: negative tests -------------------------
+    //
+    // Each test below feeds a corrupted or hand-crafted archive through the
+    // read path and asserts `Err`, not a panic. `TINY_ZIP` structure offsets
+    // (EOCD -> `cd_offset`, then fixed central-header fields) are located
+    // dynamically via the module's own bounds-checked readers rather than
+    // hardcoded magic numbers, so these tests stay correct if the fixture
+    // ever changes.
+
+    #[test]
+    fn truncated_buffer_is_rejected_without_panic() {
+        let truncated = &TINY_ZIP[..10];
+        assert_eq!(find_eocd(truncated), Err(Errno::EINVAL));
+        assert_eq!(read_central_directory(truncated), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn read_central_directory_rejects_unsupported_method() {
+        let eocd_off = find_eocd(TINY_ZIP).expect("EOCD should be found in tiny.zip");
+        let cd_off = r32(TINY_ZIP, eocd_off + 16).expect("cd offset field") as usize;
+
+        let mut corrupted: Vec<u8> = TINY_ZIP.to_vec();
+        // `method` is a u16 at central-header offset +10.
+        let patched = 99u16.to_le_bytes();
+        corrupted[cd_off + 10] = patched[0];
+        corrupted[cd_off + 11] = patched[1];
+
+        assert_eq!(read_central_directory(&corrupted), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn read_central_directory_rejects_data_descriptor_flag() {
+        let eocd_off = find_eocd(TINY_ZIP).expect("EOCD should be found in tiny.zip");
+        let cd_off = r32(TINY_ZIP, eocd_off + 16).expect("cd offset field") as usize;
+
+        let mut corrupted: Vec<u8> = TINY_ZIP.to_vec();
+        // `gpflag` is a u16 at central-header offset +8.
+        let gpflag = r16(&corrupted, cd_off + 8).expect("gpflag field");
+        let patched = (gpflag | GPFLAG_DATA_DESCRIPTOR).to_le_bytes();
+        corrupted[cd_off + 8] = patched[0];
+        corrupted[cd_off + 9] = patched[1];
+
+        assert_eq!(read_central_directory(&corrupted), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn extract_rejects_local_offset_past_eof() {
+        let eocd_off = find_eocd(TINY_ZIP).expect("EOCD should be found in tiny.zip");
+        let cd_off = r32(TINY_ZIP, eocd_off + 16).expect("cd offset field") as usize;
+
+        let mut corrupted: Vec<u8> = TINY_ZIP.to_vec();
+        // `local_offset` is a u32 at central-header offset +42. Push it well
+        // past EOF while staying clear of the zip64 "look elsewhere"
+        // sentinel (0xFFFF_FFFF), which is rejected earlier in the central
+        // directory walk and would not exercise `member_data_range`.
+        let huge = (corrupted.len() as u32).saturating_add(10_000);
+        assert_ne!(huge, ZIP64_SENTINEL);
+        let patched = huge.to_le_bytes();
+        corrupted[cd_off + 42] = patched[0];
+        corrupted[cd_off + 43] = patched[1];
+        corrupted[cd_off + 44] = patched[2];
+        corrupted[cd_off + 45] = patched[3];
+
+        let entries = read_central_directory(&corrupted)
+            .expect("central directory should still parse with an out-of-range local offset");
+        let entry = &entries[0];
+        assert_eq!(entry.local_offset, huge);
+        assert_eq!(extract(&corrupted, entry), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn extract_rejects_corrupt_deflate_stream_without_panic() {
+        let entries = read_central_directory(TINY_ZIP)
+            .expect("tiny.zip central directory should parse");
+        let big = find_entry(&entries, "bin/big.txt");
+
+        let mut corrupted: Vec<u8> = TINY_ZIP.to_vec();
+        let (start, end) =
+            member_data_range(&corrupted, big).expect("local header should parse");
+        assert!(end > start);
+        corrupted[start] ^= 0xff;
+
+        assert_eq!(extract(&corrupted, big), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn read_central_directory_rejects_non_utf8_name() {
+        let eocd_off = find_eocd(TINY_ZIP).expect("EOCD should be found in tiny.zip");
+        let cd_off = r32(TINY_ZIP, eocd_off + 16).expect("cd offset field") as usize;
+
+        let mut corrupted: Vec<u8> = TINY_ZIP.to_vec();
+        let name_start = cd_off + CENTRAL_DIR_FIXED_SIZE;
+        corrupted[name_start] = 0xFF;
+
+        assert_eq!(read_central_directory(&corrupted), Err(Errno::EINVAL));
     }
 }
