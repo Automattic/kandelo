@@ -8,12 +8,21 @@
  * for the entire tree, not one call per file.
  *
  * Wire format (little-endian) — must match `crates/runtime-core/src/rootfs.rs`:
- *   header: magic u32 = "RTFS" | version u32 = 1 | entry_count u32
- *   entry:  kind u8 (1=dir, 2=file, 3=symlink)
+ *   header: magic u32 = "RTFS" | version u32 = 3 | entry_count u32
+ *   entry:  kind u8 (1=dir, 2=file, 3=symlink, 4=lazy file)
  *           mode u32 | uid u32 | gid u32 | ino u64 | blob_id u64 | size u64
+ *           mtime_sec u64 | mtime_nsec u32
  *           path_len u32 | path[path_len]   (absolute, kernel-facing)
  *           target_len u32 | target[target_len]   (0 unless symlink)
+ *           -- kind=4 (lazy file) only, appended after target --
+ *           archive_id u32 | source_path_len u32 | source_path[source_path_len]
  * Entries are parent-first (pre-order walk) so each insert's parent exists.
+ *
+ * After the entry stream, a trailing archive table (always present in v3, even
+ * when empty): archive_count u32, then per archive archive_id u32 | archive_size
+ * u64. It records the total byte size of every lazy archive referenced by a
+ * kind=4 entry's `archive_id`; materializing those bytes is a later increment
+ * (3b-wiring.2) — this module only emits the table.
  *
  * `blob_id` is the file's inode number (see the decision record in
  * docs/plans/2026-08-28-phase5-vfs-to-rust.md): opaque to the kernel, mapped
@@ -24,7 +33,7 @@
 import type { FileSystemBackend } from "./types";
 
 export const RTFS_MAGIC = 0x5346_5452; // "RTFS" little-endian
-export const RTFS_VERSION = 2;
+export const RTFS_VERSION = 3;
 
 const S_IFMT = 0xf000;
 const S_IFDIR = 0x4000;
@@ -35,6 +44,7 @@ const O_RDONLY = 0;
 const KIND_DIR = 1;
 const KIND_FILE = 2;
 const KIND_SYMLINK = 3;
+const KIND_LAZY_FILE = 4;
 
 /** Growable little-endian byte writer (no DataView aliasing across growth). */
 class ByteWriter {
@@ -111,11 +121,39 @@ export interface EmittedRootfsManifest {
   readonly buffer: Uint8Array;
   /** `inode number -> backend path`, for the byte provider. */
   readonly blobPaths: Map<number, string>;
-  /** Number of entries emitted (dirs + files + symlinks). */
+  /** Number of entries emitted (dirs + files + symlinks + lazy files). */
   readonly entryCount: number;
   /** Paths skipped because they were neither dir/file/symlink (e.g. sockets or
    * device nodes that should not appear in a `/` image). Surfaced, not hidden. */
   readonly skipped: readonly string[];
+}
+
+/** Where a lazy (archive-backed) file's bytes live: `archive_id` identifies
+ * the archive in the trailing archive table, `sourcePath` is the member's
+ * path within it. Materializing those bytes is a later increment; this
+ * module only records the mapping in the manifest (`KIND_LAZY_FILE`). */
+export interface RootfsLazyFile {
+  readonly archiveId: number;
+  readonly sourcePath: string;
+}
+
+/** Total byte size of a lazy archive, recorded in the trailing archive table
+ * so the kernel can validate/plan reads before the archive is fetched. */
+export interface RootfsLazyArchive {
+  readonly archiveId: number;
+  readonly size: number | bigint;
+}
+
+/**
+ * Optional description of lazy (archive-backed) files to emit as
+ * `KIND_LAZY_FILE` instead of `KIND_FILE`. Keyed by the kernel-facing
+ * absolute VFS path (the same `absPath` the walker already computes), so a
+ * caller can mark a subset of otherwise-ordinary regular files as lazy
+ * without changing how the backend tree is walked.
+ */
+export interface RootfsLazyInput {
+  readonly files: ReadonlyMap<string, RootfsLazyFile>;
+  readonly archives: readonly RootfsLazyArchive[];
 }
 
 const encoder = new TextEncoder();
@@ -123,10 +161,18 @@ const encoder = new TextEncoder();
 /**
  * Walk the `/` image backend pre-order and emit the RTFS manifest plus the
  * inode->path map the byte provider needs.
+ *
+ * `lazy`, when provided, marks a subset of regular files (by absolute VFS
+ * path) as archive-backed: those are emitted as `KIND_LAZY_FILE` entries
+ * carrying `archive_id`/`source_path` instead of `KIND_FILE`, and the trailing
+ * archive table is populated from `lazy.archives`. When omitted, the emitted
+ * tree is identical to before this file gained v3 support (version bumps to
+ * 3, and the archive table is still written, empty: `archive_count = 0`).
  */
 export function emitRootfsManifest(
   backend: FileSystemBackend,
   toBackendPath: ToBackendPath,
+  lazy?: RootfsLazyInput,
 ): EmittedRootfsManifest {
   const w = new ByteWriter();
   w.u32(RTFS_MAGIC);
@@ -149,6 +195,7 @@ export function emitRootfsManifest(
     size: number,
     mtimeMs: number,
     target: Uint8Array,
+    lazyFile?: RootfsLazyFile,
   ): void => {
     const pathBytes = encoder.encode(absPath);
     // Preserve the image's real mtime (split into whole seconds + nanoseconds)
@@ -171,6 +218,15 @@ export function emitRootfsManifest(
     w.bytes(pathBytes);
     w.u32(target.length);
     w.bytes(target);
+    if (kind === KIND_LAZY_FILE) {
+      if (!lazyFile) {
+        throw new Error(`rootfs manifest: KIND_LAZY_FILE entry ${absPath} missing lazy info`);
+      }
+      const sourceBytes = encoder.encode(lazyFile.sourcePath);
+      w.u32(lazyFile.archiveId >>> 0);
+      w.u32(sourceBytes.length);
+      w.bytes(sourceBytes);
+    }
     count++;
   };
 
@@ -204,8 +260,13 @@ export function emitRootfsManifest(
         emit(KIND_DIR, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, st.mtimeMs, EMPTY);
         walk(abs);
       } else if (type === S_IFREG) {
-        emit(KIND_FILE, abs, st.mode, st.uid, st.gid, st.ino, st.ino, st.size, st.mtimeMs, EMPTY);
-        blobPaths.set(Number(st.ino), toBackendPath(abs));
+        const lazyFile = lazy?.files.get(abs);
+        if (lazyFile) {
+          emit(KIND_LAZY_FILE, abs, st.mode, st.uid, st.gid, st.ino, 0, st.size, st.mtimeMs, EMPTY, lazyFile);
+        } else {
+          emit(KIND_FILE, abs, st.mode, st.uid, st.gid, st.ino, st.ino, st.size, st.mtimeMs, EMPTY);
+          blobPaths.set(Number(st.ino), toBackendPath(abs));
+        }
       } else if (type === S_IFLNK) {
         const target = encoder.encode(backend.readlink(toBackendPath(abs)));
         emit(KIND_SYMLINK, abs, st.mode, st.uid, st.gid, st.ino, 0, 0, st.mtimeMs, target);
@@ -219,6 +280,15 @@ export function emitRootfsManifest(
 
   walk("/");
   w.patchU32(countPos, count);
+
+  // Trailing archive table: always present in v3 (empty when no lazy input).
+  const archives = lazy?.archives ?? [];
+  w.u32(archives.length);
+  for (const archive of archives) {
+    w.u32(archive.archiveId >>> 0);
+    w.u64(BigInt(archive.size));
+  }
+
   return { buffer: w.take(), blobPaths, entryCount: count, skipped };
 }
 
