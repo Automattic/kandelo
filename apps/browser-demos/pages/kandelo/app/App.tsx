@@ -167,8 +167,17 @@ export const App: React.FC = () => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
-    setDemoGuideOpen(dockPane === null && demoGuide !== null);
-  }, [demoGuide?.title, desc.id, dockPane]);
+    // A replica's descriptor is the other computer's launch, not this
+    // person's; its guide would cover the machine they were already watching.
+    const replicaBoot = replication.joining || replication.replicating;
+    setDemoGuideOpen(dockPane === null && demoGuide !== null && !replicaBoot);
+  }, [
+    demoGuide?.title,
+    desc.id,
+    dockPane,
+    replication.joining,
+    replication.replicating,
+  ]);
 
   React.useEffect(() => {
     setDemoDockControls(null);
@@ -376,11 +385,12 @@ export const App: React.FC = () => {
   return (
     <div className={appClassName} style={appStyle} data-audio-state={audioState}>
       <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-        {(isEmpty || handover.taking) && peer.link ? (
+        {(isEmpty || handover.taking || replication.joining) && peer.link ? (
           // While a machine is arriving, this pane stays up over the boot that
           // is running behind it. `taking` ends when `adoptMachine` resolves,
-          // which is after the checkpoint has restored, so the swap happens
-          // when there is a live screen to swap to.
+          // and `joining` when `replicateMachine` does — both after the
+          // checkpoint has restored, so the swap happens when there is a live
+          // screen to swap to.
           <SharedMachine
             link={peer.link}
             moving={moving}

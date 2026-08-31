@@ -196,6 +196,11 @@ test("gives the viewer the user's shell, not a shell of its own", async ({
       .poll(() => terminalText(viewer, ".kshell-host"), { timeout: 180_000 })
       .toContain(typed);
 
+    // The guide belongs to a launch. This computer launched nothing — it
+    // connected to a machine — so the replica arriving must not open one
+    // over the shell the person was already watching.
+    await expect(viewer.locator(".kdemo")).toHaveCount(0);
+
     // And the viewer cannot answer it. A keystroke here reaches no log, so the
     // machine the user holds would never make the decision this one just made.
     const refused = `kandelo-refused-${Date.now().toString(36)}`;
