@@ -459,6 +459,94 @@ unsafe impl Sync for RootfsGlobal {}
 
 static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 
+/// Registry of *foreign* mount prefixes: the canonical mount points of every
+/// other filesystem still mounted under `/` after the host hands `/` to the
+/// overlay (for example `/dev/shm` shmfs, `/run/kandelo-run` session-seed host
+/// mounts, and extra `HostFileSystem` mounts). Once the overlay is the sole `/`
+/// authority it would otherwise greedily claim these sibling paths and shadow
+/// the real mount, so `owns_path` returns false for any path at or under a
+/// registered prefix and the syscall falls through to the host mount exactly as
+/// before the cutover.
+///
+/// Populated once by the host at overlay-configure time via
+/// `set_foreign_prefixes`. tmpfs scratch mounts are excluded separately by
+/// `tmpfs::owns_path`; a tmpfs prefix appearing here too is harmless (either
+/// check independently disqualifies the path).
+struct ForeignMounts {
+    locked: AtomicBool,
+    prefixes: UnsafeCell<Vec<Vec<u8>>>,
+}
+
+impl ForeignMounts {
+    const fn new() -> Self {
+        ForeignMounts {
+            locked: AtomicBool::new(false),
+            prefixes: UnsafeCell::new(Vec::new()),
+        }
+    }
+
+    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<Vec<u8>>) -> R) -> R {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let _unlock = UnlockOnDrop(&self.locked);
+        // SAFETY: same invariant as RootfsGlobal — the spinlock is the sole gate
+        // and no reference escapes the closure.
+        let slot = unsafe { &mut *self.prefixes.get() };
+        f(slot)
+    }
+}
+
+// SAFETY: identical invariant to RootfsGlobal / TmpfsGlobal.
+unsafe impl Sync for ForeignMounts {}
+
+static FOREIGN_MOUNTS: ForeignMounts = ForeignMounts::new();
+
+/// Register the set of foreign mount prefixes (see [`ForeignMounts`]). `buf` is
+/// a NUL-separated list of canonical absolute mount points supplied by the host
+/// at overlay-configure time. Replaces any previously registered set. Entries
+/// that are empty, non-absolute, or exactly `/` are ignored (`/` is the
+/// overlay's own root, never foreign); trailing slashes are trimmed and
+/// duplicates dropped. Returns the number of prefixes registered.
+pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
+    let mut prefixes: Vec<Vec<u8>> = Vec::new();
+    for part in buf.split(|&b| b == 0) {
+        if part.first() != Some(&b'/') {
+            continue;
+        }
+        let mut p = part.to_vec();
+        while p.len() > 1 && p.last() == Some(&b'/') {
+            p.pop();
+        }
+        if p == b"/" {
+            continue;
+        }
+        if !prefixes.iter().any(|e| e == &p) {
+            prefixes.push(p);
+        }
+    }
+    let count = prefixes.len();
+    FOREIGN_MOUNTS.with(|slot| *slot = prefixes);
+    count
+}
+
+/// Whether `path` lies at or under a registered foreign mount prefix. The match
+/// respects path-component boundaries, so a foreign mount at `/run/kandelo-run`
+/// matches `/run/kandelo-run` and `/run/kandelo-run/...` but not
+/// `/run/kandelo-runner` or a sibling `/run/other`.
+fn path_under_foreign(path: &[u8]) -> bool {
+    FOREIGN_MOUNTS.with(|prefixes| {
+        prefixes.iter().any(|p| {
+            path == p.as_slice()
+                || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/')
+        })
+    })
+}
+
 /// Split a canonical absolute path into non-empty components.
 fn split_components(path: &[u8]) -> Vec<&[u8]> {
     path.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect()
@@ -495,14 +583,17 @@ fn now() -> (u64, u32) {
     )
 }
 
-/// Whether a canonical path belongs to the rootfs overlay: any absolute path
-/// that is not owned by the tmpfs scratch mounts. Pure predicate; does not
-/// consider whether rootfs authority is enabled. Synthetic namespaces (procfs,
-/// devfs, pty, `/dev/fd`, synthetic regulars) are matched *before* rootfs in
-/// `namespace_lstat_raw`, exactly where the host `/` fall-through sits today, so
-/// they never reach this predicate in dispatch.
+/// Whether a canonical path belongs to the rootfs overlay: an absolute path
+/// that is owned neither by the tmpfs scratch mounts nor by a registered foreign
+/// mount (a sibling filesystem still mounted under `/`, see [`ForeignMounts`]).
+/// Pure predicate; does not consider whether rootfs authority is enabled.
+/// Synthetic namespaces (procfs, devfs, pty, `/dev/fd`, synthetic regulars) are
+/// matched *before* rootfs in `namespace_lstat_raw`, exactly where the host `/`
+/// fall-through sits today, so they never reach this predicate in dispatch.
 pub fn owns_path(path: &[u8]) -> bool {
-    path.first() == Some(&b'/') && !crate::tmpfs::owns_path(path)
+    path.first() == Some(&b'/')
+        && !crate::tmpfs::owns_path(path)
+        && !path_under_foreign(path)
 }
 
 /// Whether the in-kernel rootfs currently claims authority over a path: rootfs
@@ -554,6 +645,7 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// repopulating from a fresh manifest and by tests for isolation.
 pub fn reset() {
     ROOTFS.with(|state| *state = RootfsState::new());
+    FOREIGN_MOUNTS.with(|slot| slot.clear());
 }
 
 /// Split an absolute path into (parent components, final component). Returns
@@ -2224,6 +2316,49 @@ mod tests {
         assert!(!owns_path(b"/var/run/php.sock"));
         // non-absolute is never a rootfs path.
         assert!(!owns_path(b"relative"));
+    }
+
+    #[test]
+    fn owns_path_excludes_registered_foreign_mounts() {
+        let _g = TestGuard::acquire();
+        // Baseline: with nothing registered, sibling `/` paths are overlay-owned.
+        assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+        assert!(owns_path(b"/dev/shm/sem.foo"));
+
+        // The host registers the sibling mounts that remain after dropping `/`.
+        let n = set_foreign_prefixes(b"/dev/shm\0/run/kandelo-run\0/mnt/data\0");
+        assert_eq!(n, 3);
+
+        // Paths at or under a foreign prefix are NOT overlay-owned: they must
+        // fall through to the sibling host mount.
+        assert!(!owns_path(b"/run/kandelo-run"));
+        assert!(!owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+        assert!(!owns_path(b"/dev/shm"));
+        assert!(!owns_path(b"/dev/shm/sem.foo"));
+        assert!(!owns_path(b"/mnt/data/file"));
+
+        // Siblings that share a leading path segment but are NOT under a
+        // foreign mount stay overlay-owned (component-boundary match).
+        assert!(owns_path(b"/run/other"));
+        assert!(owns_path(b"/run/kandelo-runner")); // not `/run/kandelo-run/...`
+        assert!(owns_path(b"/mnt/datastore")); // not `/mnt/data/...`
+        assert!(owns_path(b"/usr/bin/ls"));
+        assert!(owns_path(b"/"));
+
+        // A fresh (empty) registration restores the greedy default.
+        assert_eq!(set_foreign_prefixes(b""), 0);
+        assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
+    }
+
+    #[test]
+    fn set_foreign_prefixes_ignores_root_relative_and_dedupes() {
+        let _g = TestGuard::acquire();
+        // `/` (the overlay's own root) and non-absolute / empty entries are
+        // dropped; trailing slashes trimmed; duplicates collapsed.
+        let n = set_foreign_prefixes(b"/\0\0relative\0/dev/shm/\0/dev/shm\0");
+        assert_eq!(n, 1);
+        assert!(!owns_path(b"/dev/shm/x"));
+        assert!(owns_path(b"/")); // root is never foreign
     }
 
     #[test]

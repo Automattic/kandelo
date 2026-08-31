@@ -1516,6 +1516,25 @@ pub extern "C" fn kernel_set_rootfs_enabled(enabled: i32) -> i32 {
     crate::rootfs::set_enabled(enabled != 0) as i32
 }
 
+/// Register the set of *foreign* mount prefixes still mounted under `/` after
+/// the host hands `/` ownership to the overlay (for example `/dev/shm` shmfs,
+/// `/run/kandelo-run` session-seed host mounts, and extra `HostFileSystem`
+/// mounts). `ptr..len` is a NUL-separated list of canonical absolute mount
+/// points in kernel Wasm memory. The overlay must not claim paths at or under
+/// these prefixes — they belong to a sibling filesystem and must fall through
+/// to the host mount. The host calls this once at boot, after loading the
+/// manifest and before enabling rootfs authority. Returns the number of
+/// prefixes registered (>=0). See `rootfs::set_foreign_prefixes`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_foreign_prefixes(ptr: *const u8, len: u32) -> i32 {
+    let buf: &[u8] = if len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+    };
+    i32::try_from(crate::rootfs::set_foreign_prefixes(buf)).unwrap_or(i32::MAX)
+}
+
 /// Publish the wall-clock time the rootfs overlay stamps onto metadata
 /// mutations and onto base entries loaded from the manifest. The host calls this
 /// once at boot before loading the manifest (so base entries are not epoch-
