@@ -2661,9 +2661,12 @@ pub fn open_prepared_exec_target(
 /// provider, copy-on-writes directly), so a program that exists only in the
 /// overlay (e.g. a guest-compiled `/root/a.out`) prepares correctly.
 ///
-/// The overlay mount is treated as `nosuid` for exec: set-ID is not elevated
-/// through an overlay binary until the overlay's per-inode permission
-/// enforcement lands, so this cannot become a privilege-escalation path.
+/// Set-ID handling follows the overlay `/` mount's real `nosuid` flag
+/// (`rootfs::statfs`, published by the host at overlay-configure time). A normal
+/// boot mounts `/` set-ID-honoring, so a setuid/setgid overlay binary (for
+/// example `/usr/bin/login`, `su`, `passwd`) elevates through exec exactly as it
+/// does on the host `/` mount, producing the same AT_SECURE / euid transition;
+/// an explicitly `nosuid` mount drops the bits, matching POSIX.
 fn open_prepared_exec_target_rootfs(
     proc: &mut Process,
     resolved: &[u8],
@@ -2697,8 +2700,7 @@ fn open_prepared_exec_target_rootfs(
         crate::descriptor_backing::release_for_ofd(FileType::Regular, host_handle);
         return Err(error);
     }
-    let mut statfs = crate::rootfs::statfs(resolved)?;
-    statfs.f_flags |= wasm_posix_shared::statfs_flags::ST_NOSUID;
+    let statfs = crate::rootfs::statfs(resolved)?;
     let file_id = (stat.st_ino != 0).then_some(FileId::Host {
         dev: stat.st_dev,
         ino: stat.st_ino,

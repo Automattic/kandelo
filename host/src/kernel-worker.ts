@@ -2842,6 +2842,14 @@ export class CentralizedKernelWorker {
    * when the rootfs gate is off or nothing else is mounted.
    */
   #rootfsForeignPrefixes: string[] = [];
+  /**
+   * Whether the overlay's `/` mount was configured `nosuid`. Handed in via
+   * {@link configureRootfsOverlay}; `#maybeLoadKernelRootfs` publishes it to the
+   * kernel (`kernel_set_rootfs_nosuid`) before enabling rootfs authority so an
+   * overlay-served setuid/setgid exec target elevates (or, on a nosuid mount,
+   * does not) exactly like the host `/` mount. Defaults set-ID honoring.
+   */
+  #rootfsNosuid = false;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5093,11 +5101,13 @@ export class CentralizedKernelWorker {
       dest: Uint8Array,
     ) => number,
     foreignMountPrefixes?: string[],
+    rootNosuid?: boolean,
   ): void {
     this.#rootfsManifest = manifest;
     this.#rootfsBlobProvider = blobProvider;
     this.#rootfsArchiveProvider = archiveProvider ?? null;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
+    this.#rootfsNosuid = rootNosuid === true;
   }
 
   /**
@@ -5181,6 +5191,16 @@ export class CentralizedKernelWorker {
         new Uint8Array(memory.buffer, fptrValue, encoded.byteLength).set(encoded);
         setForeign(fptr, encoded.byteLength);
       }
+    }
+    // Publish the `/` mount's set-ID policy before enabling authority. A kernel
+    // that predates the export keeps its built-in default (set-ID honoring),
+    // visible as the real behavior it is rather than silently patched. Only a
+    // `nosuid` mount needs the call; the honoring default matches the kernel's.
+    const setNosuid = instance.exports.kernel_set_rootfs_nosuid as
+      | ((nosuid: number) => number)
+      | undefined;
+    if (typeof setNosuid === "function") {
+      setNosuid(this.#rootfsNosuid ? 1 : 0);
     }
     enable(1);
   }

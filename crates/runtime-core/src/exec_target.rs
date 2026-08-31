@@ -353,11 +353,10 @@ fn retain_empty_path_target(
     let stat = target_fstat(host, host_handle)?;
     crate::syscalls::check_prepared_exec_stat(proc, &stat)?;
     let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
-        // Conservative nosuid mount view for overlay targets (no set-ID
-        // elevation through exec until per-inode permission enforcement lands).
-        let mut statfs = crate::rootfs::statfs(&diagnostic_path)?;
-        statfs.f_flags |= ST_NOSUID;
-        statfs
+        // The overlay statfs carries the `/` mount's real `nosuid` flag, so an
+        // AT_EMPTY_PATH exec of a set-ID overlay binary honors (or, on a nosuid
+        // mount, drops) the set-ID bits exactly like the pathname exec path.
+        crate::rootfs::statfs(&diagnostic_path)?
     } else {
         crate::syscalls::host_fstatfs_or_default(host, host_handle)?
     };

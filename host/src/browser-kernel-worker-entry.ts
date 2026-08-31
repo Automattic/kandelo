@@ -1352,6 +1352,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       createRootfsBlobProvider(memfs, blobPaths),
       archiveProvider,
       rootfsForeignPrefixes,
+      rootMount?.nosuid === true,
     );
   }
 
