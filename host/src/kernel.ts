@@ -860,6 +860,20 @@ export class WasmPosixKernel {
   #rootfsBlobProvider:
     | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
+  /**
+   * Rootfs raw-archive byte-store provider (Phase 5 Increment 3b). The Rust
+   * kernel owns `LazyMember` decode: it asks the host only for whole-archive
+   * bytes at `offset`, addressed by a manifest-assigned `archive_id` (a plain
+   * `u32`, unsplit at the Wasm boundary). The kernel decodes the zip central
+   * directory and extracts members itself; the host is purely a byte
+   * transport. The provider fills `dest` from the archive at `offset` and
+   * returns the count (or a negative errno). Wired by the worker from the
+   * boot manifest; until set, `host_fetch_archive` reports ENOSYS so the
+   * seam is truthfully unbacked.
+   */
+  #rootfsArchiveProvider:
+    | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -960,6 +974,16 @@ export class WasmPosixKernel {
     provider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
   ): void {
     this.#rootfsBlobProvider = provider;
+  }
+
+  /**
+   * Install the rootfs raw-archive byte-store provider (Phase 5 Increment 3b).
+   * See {@link WasmPosixKernel.prototype} `#rootfsArchiveProvider`.
+   */
+  setRootfsArchiveProvider(
+    provider: (archiveId: number, offset: bigint, dest: Uint8Array) => number,
+  ): void {
+    this.#rootfsArchiveProvider = provider;
   }
 
   constructor(
@@ -1601,6 +1625,27 @@ export class WasmPosixKernel {
                 bufPtr,
                 bufLen,
                 "host_blob_read destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_fetch_archive: (
+          archiveId: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          try {
+            return this.#hostFetchArchive(
+              archiveId,
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_fetch_archive destination",
               ),
             );
           } catch {
@@ -2701,6 +2746,59 @@ export class WasmPosixKernel {
     let result: number;
     try {
       result = provider(blobId, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
+      return -5; // EIO
+    }
+    if (result < 0) {
+      return result; // provider-reported negative errno
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(
+          destination,
+          subarrayUint8Array(staged, 0, result),
+        );
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
+  }
+
+  /**
+   * host_fetch_archive(archive_id, buf_ptr, buf_len, offset) -> i32
+   *
+   * Serve raw whole-archive bytes from the installed archive provider. The
+   * host is a byte transport only: the Rust kernel decodes the zip central
+   * directory and extracts `LazyMember` bytes itself. `archiveId` is a plain
+   * `u32` (unsplit at the Wasm boundary, unlike `blobId`'s lo/hi split).
+   * Bytes are staged outside kernel memory and published once (never lend a
+   * live view of Rust-owned memory to the provider), mirroring
+   * `#hostBlobRead`. Reports ENOSYS when no provider is installed (the seam
+   * is truthfully unbacked until the boot manifest wires it).
+   */
+  #hostFetchArchive(
+    archiveId: number,
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#rootfsArchiveProvider;
+    if (provider === undefined) {
+      return -38; // ENOSYS
+    }
+    const destinationCapacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(destinationCapacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(archiveId, offset, staged);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }
