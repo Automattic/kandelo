@@ -8,12 +8,34 @@ import {
   MAX_REPORTABLE_TRANSFER_BYTES,
 } from "./generated/abi";
 
+const EAGAIN = 11;
 const EFBIG = 27;
 const EIO = 5;
 const ENOEXEC = 8;
 const ENOMEM = 12;
 const EOVERFLOW = 75;
+const ETIMEDOUT = 110;
 const MAX_SHEBANG_LINE_BYTES = 4096;
+
+// A lazy-archive-backed exec target's kernel read returns EAGAIN while the
+// backing archive member is still being fetched (rootfs-lazy-archives.ts),
+// then resolves to either bytes or a terminal EIO once the fetch settles. So
+// EAGAIN here is guaranteed transient and retrying is safe: exec_target::read
+// on the Rust side short-circuits on error before recording any read, making
+// a same-offset retry idempotent. The 10ms cadence mirrors the default
+// blocking-retry poll (kernel-worker.ts's `#registerTimeout(retryFn, 10)`),
+// and a `setTimeout`-backed delay (not a microtask) is required so the
+// worker event loop can run the in-flight archive `fetch()` callback between
+// retries.
+const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
+// Defensive backstop only — normal operation always resolves via bytes or a
+// terminal EIO well before this. It exists so a hypothetical stuck fetch
+// fails with a truthful timeout instead of hanging exec forever.
+const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export interface PreparedExecKernel {
   execTargetSize(ownerPid: number, target: number): bigint;
@@ -112,6 +134,7 @@ export async function readPreparedExecTarget(
     }
 
     let offset = 0n;
+    let eagainWaitedMs = 0;
     while (offset < size) {
       const start = Number(offset);
       const capacity = Math.min(
@@ -125,6 +148,23 @@ export async function readPreparedExecTarget(
         offset,
         destination,
       );
+      if (read === -EAGAIN) {
+        // The backing lazy-archive member is still being fetched. Retry the
+        // exact same offset/destination once the fetch has had a chance to
+        // progress; do not throw or cancel the token (see the constant
+        // comments above for why this is safe and bounded).
+        if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
+          throw new PreparedExecTargetError(
+            "prepared exec target read did not become available after "
+              + `${EXEC_TARGET_EAGAIN_MAX_WAIT_MS}ms of retrying a transient `
+              + "EAGAIN",
+            ETIMEDOUT,
+          );
+        }
+        await delay(EXEC_TARGET_EAGAIN_RETRY_DELAY_MS);
+        eagainWaitedMs += EXEC_TARGET_EAGAIN_RETRY_DELAY_MS;
+        continue;
+      }
       if (read < 0) {
         throw new PreparedExecTargetError(
           "prepared exec target read failed",
