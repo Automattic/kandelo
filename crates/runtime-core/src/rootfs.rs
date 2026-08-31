@@ -1561,6 +1561,71 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
     })
 }
 
+/// POSIX `SYMLOOP_MAX`: the maximum number of symlink hops the host-facing read
+/// resolver follows before yielding `ELOOP`.
+const SYMLOOP_MAX: usize = 40;
+
+/// Resolve a host-facing overlay read path, following a symlinked final
+/// component within the overlay up to [`SYMLOOP_MAX`] hops — exactly like a
+/// normal `open()` *without* `O_NOFOLLOW`. Returns the canonical absolute path
+/// of the first non-symlink target.
+///
+/// Guest opens do NOT use this. The namespace resolver already follows symlinks
+/// before calling [`open`], so [`open`] intentionally refuses a symlinked final
+/// component with `ELOOP` (`O_NOFOLLOW` semantics — see [`open`]). But
+/// host-initiated reads ([`read_file_at`] → `kernel_rootfs_read_file`, used to
+/// materialize exec targets such as `/bin/sh` → `/bin/dash`) pass a RAW path
+/// with no pre-resolution, so they would hit that spurious `ELOOP`. This helper
+/// closes that host-side gap while leaving the guest `O_NOFOLLOW` path intact.
+///
+/// A relative link target resolves against the symlink's parent directory; an
+/// absolute target restarts at the mount root; `.`/`..` components collapse.
+fn resolve_read_symlinks(path: &[u8]) -> Result<Vec<u8>, Errno> {
+    let mut comps: Vec<Vec<u8>> = split_components(path).iter().map(|c| c.to_vec()).collect();
+    for _ in 0..SYMLOOP_MAX {
+        let link_target = ROOTFS.with(|state| {
+            let root = state.mount_root();
+            let refs: Vec<&[u8]> = comps.iter().map(|c| c.as_slice()).collect();
+            let idx = state.walk(root, &refs)?;
+            match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
+                InodeKind::Symlink(target) => Ok::<_, Errno>(Some(target.clone())),
+                _ => Ok(None),
+            }
+        })?;
+        let Some(target) = link_target else {
+            // First non-symlink target: rebuild its canonical absolute path.
+            let mut out = Vec::new();
+            for c in &comps {
+                out.push(b'/');
+                out.extend_from_slice(c);
+            }
+            if out.is_empty() {
+                out.push(b'/');
+            }
+            return Ok(out);
+        };
+        // Rewrite the working path to the link target: an absolute target
+        // restarts at the mount root, a relative one resolves against the
+        // symlink's parent dir; `.` is dropped and `..` pops a component.
+        let mut next: Vec<Vec<u8>> = if target.first() == Some(&b'/') {
+            Vec::new()
+        } else {
+            comps[..comps.len().saturating_sub(1)].to_vec()
+        };
+        for part in target.split(|&b| b == b'/') {
+            match part {
+                b"" | b"." => {}
+                b".." => {
+                    next.pop();
+                }
+                _ => next.push(part.to_vec()),
+            }
+        }
+        comps = next;
+    }
+    Err(Errno::ELOOP)
+}
+
 /// Read up to `buf.len()` bytes at `offset` from the rootfs file named by
 /// `path` (open `O_RDONLY` + [`read`] + [`release_handle`]).
 ///
@@ -1569,6 +1634,11 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
 /// instead of a stale base-image `MemoryFileSystem`. Copy-on-written bytes come
 /// straight from the overlay; an unmodified base file's bytes come from
 /// `byte_source` exactly as a guest read would fetch them.
+///
+/// A symlinked path is followed within the overlay ([`resolve_read_symlinks`],
+/// bounded by [`SYMLOOP_MAX`]) so a host-initiated read of `/bin/sh` →
+/// `/bin/dash` serves dash's bytes instead of failing `ELOOP` — the guest open
+/// path pre-resolves symlinks, but this host-facing raw-path reader must not.
 pub fn read_file_at<F>(
     path: &[u8],
     offset: i64,
@@ -1578,7 +1648,8 @@ pub fn read_file_at<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    let handle = open(path, O_RDONLY, 0, 0, 0)?;
+    let resolved = resolve_read_symlinks(path)?;
+    let handle = open(&resolved, O_RDONLY, 0, 0, 0)?;
     let result = read(handle, offset, buf, byte_source);
     release_handle(handle);
     result
@@ -3114,6 +3185,52 @@ mod tests {
         let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
         assert_eq!(&buf[..n], b"data");
         assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
+    }
+
+    #[test]
+    fn read_file_at_follows_final_symlink() {
+        // /bin/dash is a real base file; /bin/sh -> dash (relative). A
+        // host-facing read of the symlink must serve dash's bytes, not ELOOP.
+        // This is the popen("/bin/sh") exec-materialize path (gap G7).
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
+        insert_base_file(b"/bin/dash", 50, 5, 0o755, 0, 0, 3).unwrap();
+        insert_base_symlink(b"/bin/sh", b"dash", 0o777, 0, 0, 4).unwrap();
+        let (mut blob, _) = make_byte_source(alloc::vec![(50u64, b"DASH!".to_vec())], alloc::vec::Vec::new());
+        let mut buf = [0u8; 32];
+        let n = read_file_at(b"/bin/sh", 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"DASH!");
+    }
+
+    #[test]
+    fn read_file_at_follows_symlink_chain_and_absolute_target() {
+        // /a -> /b (absolute) -> c (relative to /) -> file. Every hop must be
+        // followed to the terminal regular file.
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/c", 60, 3, 0o644, 0, 0, 2).unwrap();
+        insert_base_symlink(b"/b", b"c", 0o777, 0, 0, 3).unwrap();
+        insert_base_symlink(b"/a", b"/b", 0o777, 0, 0, 4).unwrap();
+        let (mut blob, _) = make_byte_source(alloc::vec![(60u64, b"XYZ".to_vec())], alloc::vec::Vec::new());
+        let mut buf = [0u8; 32];
+        let n = read_file_at(b"/a", 0, &mut buf, &mut blob).unwrap();
+        assert_eq!(&buf[..n], b"XYZ");
+    }
+
+    #[test]
+    fn read_file_at_self_loop_symlink_is_eloop() {
+        // /loop -> loop resolves forever; the bounded resolver returns ELOOP
+        // rather than spinning.
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_symlink(b"/loop", b"loop", 0o777, 0, 0, 2).unwrap();
+        let (mut blob, _) = make_byte_source(alloc::vec::Vec::new(), alloc::vec::Vec::new());
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            read_file_at(b"/loop", 0, &mut buf, &mut blob).unwrap_err(),
+            Errno::ELOOP
+        );
     }
 
     // -- LazyMember materialization (Increment 3b-wiring.2) ------------------
