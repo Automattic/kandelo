@@ -176,15 +176,12 @@ export interface CheckpointMachine {
   readonly framebuffers: () => readonly CheckpointFramebuffer[];
   /** Read under the freeze: the display is quiescent. */
   readonly kmsState: () => CheckpointKmsState;
-  /** CRTCs whose canvas a GL context owns.
-   *
-   *  A GL guest paints its OffscreenCanvas through the EGL to WebGL2 bridge,
-   *  so no CPU ever assembles a frame and no host buffer holds one. Those
-   *  pixels are outside what a checkpoint can read, and the capture refuses
-   *  rather than restoring a machine whose screen is silently gone. */
-  readonly glOwnedCrtcs: () => readonly number[];
   /** Read under the freeze: every GL binding's context state, read back out
-   *  of WebGL2 plus what the bridge retained; see `webgl/snapshot.ts`. */
+   *  of WebGL2 plus what the bridge retained; see `webgl/snapshot.ts`.
+   *
+   *  A GL guest's pixels never reach a host buffer, but the checkpoint does
+   *  not need them: the guest's context state travels here, a restore
+   *  rebuilds it, and the restored guest's own draws repaint the screen. */
   readonly glContexts: () => readonly CheckpointGlContext[];
   /** This machine's CLOCK_MONOTONIC in nanoseconds. */
   readonly monotonicNowNs: () => number;
@@ -590,15 +587,6 @@ export async function captureMachineCheckpoint(
   machine: CheckpointMachine,
   options: CheckpointFreezeOptions,
 ): Promise<CheckpointFreezeResult> {
-  const glOwned = machine.glOwnedCrtcs();
-  if (glOwned.length > 0) {
-    return {
-      status: "failed",
-      reason:
-        `CRTC ${glOwned.join(", ")} paints through a GL-owned canvas, whose ` +
-        `pixels never reach a host buffer a checkpoint can read`,
-    };
-  }
   try {
     return await machine.runWithoutWorkerCreation(
       "checkpoint freeze",

@@ -2166,10 +2166,12 @@ export class WasmPosixKernel {
             ctx.getExtension("EXT_float_blend");
             // GL owns the CRTC's canvas from here, and not before. Until this
             // context exists the guest's pixels still reach its GBM buffer
-            // object, which a checkpoint reads and carries. Marking ownership
-            // earlier — when a canvas was merely found, or when the embedder
-            // declared `mode: "webgl2"` — refuses a capture the platform can
-            // take, for a reason that is not true of that machine yet.
+            // object, which a checkpoint reads and carries; from here a
+            // checkpoint carries the GL context state instead, and the
+            // vblank pump must not blit over what GL paints. Marking
+            // ownership earlier — when a canvas was merely found, or when
+            // the embedder declared `mode: "webgl2"` — would claim both for
+            // a context that does not exist yet.
             if (crtc != null && this.callbacks.getKmsCanvas?.(crtc) === b.canvas) {
               this.callbacks.markKmsCanvasGlOwned?.(crtc);
             }

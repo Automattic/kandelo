@@ -73,7 +73,6 @@ interface TestMachine {
   settleVforks: () => Promise<void>;
   unreleasable: number[];
   kms: CheckpointKmsState;
-  glOwnedCrtcs: number[];
   glContexts: CheckpointGlContext[];
 }
 
@@ -95,7 +94,6 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
     settleVforks: () => Promise.resolve(),
     unreleasable: [],
     kms: { fbs: [], crtcs: [], masterPid: null, buffers: [] },
-    glOwnedCrtcs: [],
     glContexts: [],
     machine: {
       runWithoutWorkerCreation: (operation, exclusive) =>
@@ -139,7 +137,6 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
       ],
       framebuffers: () => [],
       kmsState: () => state.kms,
-      glOwnedCrtcs: () => state.glOwnedCrtcs,
       glContexts: () => state.glContexts,
       monotonicNowNs: () => 7_000_000_000,
       kernelAbiVersion: () => KERNEL_ABI,
@@ -404,22 +401,6 @@ describe("machine checkpoint freeze", () => {
       reason: "pid=4: the process ended during the checkpoint freeze",
     });
     expect(state.held).toEqual([]);
-  });
-
-  it("refuses a GL-owned CRTC without freezing the machine", async () => {
-    const state = testMachine([processSource(4, 1)]);
-    state.glOwnedCrtcs = [31];
-
-    await expect(captureMachineCheckpoint(state.machine, options)).resolves.toEqual({
-      status: "failed",
-      reason:
-        "CRTC 31 paints through a GL-owned canvas, whose pixels never reach "
-        + "a host buffer a checkpoint can read",
-    });
-    expect(state.held).toEqual([]);
-    expect(state.armed).toEqual([]);
-    expect(Atomics.load(new Int32Array(state.sources[0]!.checkpointFreeze.gate), 0))
-      .toBe(0);
   });
 
   it("carries the GL contexts and transfers their bytes", async () => {
