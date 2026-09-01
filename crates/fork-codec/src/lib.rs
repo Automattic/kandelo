@@ -26,6 +26,7 @@ extern crate wasm_posix_shared;
 
 pub mod gc_codec;
 pub mod imported_globals;
+pub mod imported_tables;
 pub mod linked_frames;
 pub mod module_state;
 pub mod reference_recipes;
@@ -33,6 +34,7 @@ pub mod replay_events;
 
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
+pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
     LinkedFrames,

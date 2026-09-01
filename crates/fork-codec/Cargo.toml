@@ -36,6 +36,8 @@ wasmparser = { version = "0.247", optional = true }
 #     --test gen_gc_codec_fixture -- --ignored --nocapture
 #   cargo test -p fork-codec --features gen-fixtures \
 #     --test gen_imported_globals_fixture -- --ignored --nocapture
+#   cargo test -p fork-codec --features gen-fixtures \
+#     --test gen_imported_tables_fixture -- --ignored --nocapture
 gen-fixtures = ["dep:fork-instrument", "dep:walrus", "dep:wat", "dep:wasmparser"]
 
 [[test]]
@@ -44,4 +46,8 @@ required-features = ["gen-fixtures"]
 
 [[test]]
 name = "gen_imported_globals_fixture"
+required-features = ["gen-fixtures"]
+
+[[test]]
+name = "gen_imported_tables_fixture"
 required-features = ["gen-fixtures"]
