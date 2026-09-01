@@ -31,6 +31,7 @@ pub mod gc_codec;
 pub mod imported_globals;
 pub mod imported_tables;
 pub mod linked_frames;
+pub mod linked_frames_writer;
 pub mod module_state;
 pub mod module_state_records;
 pub mod reference_recipes;
@@ -55,6 +56,7 @@ pub use linked_frames::{
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
     LinkedFrames,
 };
+pub use linked_frames_writer::{ChunkAllocator, LinkedFrameWriter};
 pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
