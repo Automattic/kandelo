@@ -1,8 +1,8 @@
 /**
  * Regression: a setuid/setgid exec target served by the in-kernel rootfs
- * overlay (`WASM_POSIX_ROOTFS=1`) must produce the same secure-exec state
- * (AT_SECURE, environment sanitization, euid/egid change) as the host-mount
- * path (Phase 5 cutover gap G5).
+ * overlay (the unconditional sole `/` authority) must produce correct
+ * secure-exec state (AT_SECURE, environment sanitization, euid/egid change)
+ * (Phase 5 cutover gap G5).
  *
  * Root cause this pins: `open_prepared_exec_target_rootfs` (and the
  * AT_EMPTY_PATH twin `retain_empty_path_target`) unconditionally forced
@@ -16,9 +16,8 @@
  *
  * This boots the real Node kernel worker (the path that wires the overlay) and
  * stages the probe as an overlay-resident setuid-root `/usr/bin/login` launched
- * from an ordinary (uid 1000) process. With `WASM_POSIX_ROOTFS=0` the same
- * image is served by the host `/` mount, which already honored the set-ID bits;
- * the test asserts the correct secure state under whichever mode runs.
+ * from an ordinary (uid 1000) process. The overlay owns `/`, so the set-ID
+ * bits it serves must drive the correct secure-exec state.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -45,8 +44,6 @@ const probePath = join(
   repoRoot,
   "local-binaries/programs/wasm32/secure-exec-probe.wasm",
 );
-
-const overlayMode = process.env.WASM_POSIX_ROOTFS === "1" ? "on" : "off";
 
 const kernelPath = tryResolveBinary("kernel.wasm");
 const havePrereqs = existsSync(probePath) && kernelPath !== null;
@@ -102,7 +99,7 @@ async function run(
 }
 
 describe.runIf(havePrereqs)(
-  `secure-exec for an overlay-served set-ID target (overlay ${overlayMode})`,
+  "secure-exec for an overlay-served set-ID target",
   () => {
     it(
       "enters secure startup for a setuid-root overlay exec target",

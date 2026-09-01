@@ -3,19 +3,18 @@
  * a sibling filesystem still mounted under `/` after the host drops its `/`
  * mount (Phase 5 3b-wiring / cutover gap G2).
  *
- * When `WASM_POSIX_ROOTFS=1` the overlay is the sole `/` authority. Before the
- * fix, `rootfs::owns_path` treated *any* non-tmpfs absolute path as
- * overlay-owned, so it shadowed host-backed sibling mounts such as the
- * `/run/kandelo-run` session-seed tree the isolated-fixture harness uses to
- * stage test programs. The concrete symptom was
- * `spawnFromVfs("/run/kandelo-run/...") -> ENOENT`, which broke the entire
- * POSIX + sortix conformance runners (they exec every test program from that
- * seeded tree).
+ * The overlay is the unconditional sole `/` authority. Before the fix,
+ * `rootfs::owns_path` treated *any* non-tmpfs absolute path as overlay-owned,
+ * so it shadowed host-backed sibling mounts such as the `/run/kandelo-run`
+ * session-seed tree the isolated-fixture harness uses to stage test programs.
+ * The concrete symptom was `spawnFromVfs("/run/kandelo-run/...") -> ENOENT`,
+ * which broke the entire POSIX + sortix conformance runners (they exec every
+ * test program from that seeded tree).
  *
  * This boots the real Node kernel worker (the path that wires the overlay) and
  * spawns a program that lives ONLY under the `/run/kandelo-run` host mount. It
- * must run and exit 0 whether the overlay is on or off — the sibling mount stays
- * visible across the cutover. The kernel-side predicate itself is covered by
+ * must run and exit 0 — the sibling mount stays visible even though the overlay
+ * owns `/`. The kernel-side predicate itself is covered by
  * `rootfs::tests::owns_path_excludes_registered_foreign_mounts`.
  */
 
@@ -42,14 +41,12 @@ const repoRoot = join(here, "../..");
 const rootfsImagePath = join(repoRoot, "host/wasm/rootfs.vfs");
 const helloWasmPath = join(repoRoot, "examples/hello.wasm");
 
-const overlayMode = process.env.WASM_POSIX_ROOTFS === "1" ? "on" : "off";
-
 const kernelPath = tryResolveBinary("kernel.wasm");
 const havePrereqs = existsSync(rootfsImagePath) &&
   existsSync(helloWasmPath) && kernelPath !== null;
 
 describe.runIf(havePrereqs)(
-  `rootfs overlay foreign sibling mounts (overlay ${overlayMode})`,
+  "rootfs overlay foreign sibling mounts",
   () => {
     it(
       "spawns a program that lives only under the /run/kandelo-run host mount",

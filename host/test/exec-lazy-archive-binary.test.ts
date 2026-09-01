@@ -15,8 +15,8 @@ import { parseZipCentralDirectory } from "../src/vfs/zip";
 // Phase 5 Increment 3b-wiring.4 (exec-target EAGAIN retry, see
 // docs/superpowers/plans/2026-08-31-phase5-3b-inc-w4-exec-target-eagain.md):
 // durable end-to-end proof that a binary living ONLY inside a lazy VFS
-// archive can be `exec`'d through the in-kernel rootfs overlay
-// (`WASM_POSIX_ROOTFS=1`). Reads of a lazy member already worked (w3,
+// archive can be `exec`'d through the in-kernel rootfs overlay (the
+// unconditional sole `/` authority). Reads of a lazy member already worked (w3,
 // `node-lazy-archive-runtime.test.ts`'s "materializes a lazy base file..."
 // test); this pins the exec path specifically, which needed the host
 // exec-target reader (`host/src/exec-target.ts`) to retry on the kernel's
@@ -75,9 +75,6 @@ describe.skipIf(!available)(
     it(
       "execs /bin/environment-lifecycle through the overlay's lazy-archive provider",
       async () => {
-        const prevFlag = process.env.WASM_POSIX_ROOTFS;
-        process.env.WASM_POSIX_ROOTFS = "1"; // worker_thread inherits process.env
-
         const execBytes = new Uint8Array(readFileSync(environmentProgramPath));
         // fflate's zipSync does not stamp a Unix creator OS, so
         // `parseZipCentralDirectory` falls back to its `bin/`-prefix
@@ -161,8 +158,6 @@ describe.skipIf(!available)(
         } finally {
           await host.destroy().catch(() => {});
           await new Promise<void>((resolve) => server.close(() => resolve()));
-          if (prevFlag === undefined) delete process.env.WASM_POSIX_ROOTFS;
-          else process.env.WASM_POSIX_ROOTFS = prevFlag;
         }
       },
       60_000,

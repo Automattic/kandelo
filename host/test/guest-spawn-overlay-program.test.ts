@@ -1,8 +1,8 @@
 /**
  * Regression: a GUEST-initiated spawn (posix_spawn / popen / system, and the
  * PHP popen/proc_open/shell_exec that build on them) must be able to launch a
- * program whose bytes live in the in-kernel rootfs overlay when
- * `WASM_POSIX_ROOTFS=1` (Phase 5 cutover gap G1).
+ * program whose bytes live in the in-kernel rootfs overlay (the unconditional
+ * sole `/` authority) (Phase 5 cutover gap G1).
  *
  * Root cause this pins: the kernel handles SYS_SPAWN inside a protocol
  * transaction-start (`CentralizedKernelWorker.#handleSpawn` ->
@@ -26,10 +26,6 @@
  * stages BOTH the spawner and its child as overlay-resident programs. The child
  * is NOT provided via `execPrograms`, so the only way SYS_SPAWN can find it is
  * through the overlay — exactly the failing path. It must run and exit 0.
- *
- * With `WASM_POSIX_ROOTFS=0` (overlay off) this exercises the pre-cutover
- * path and also passes; the test asserts success under whichever mode the
- * suite is run in.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -55,14 +51,12 @@ const repoRoot = join(here, "../..");
 const spawnSmokeWasmPath = join(repoRoot, "examples/spawn-smoke.wasm");
 const helloWasmPath = join(repoRoot, "examples/hello.wasm");
 
-const overlayMode = process.env.WASM_POSIX_ROOTFS === "1" ? "on" : "off";
-
 const kernelPath = tryResolveBinary("kernel.wasm");
 const havePrereqs = existsSync(spawnSmokeWasmPath) &&
   existsSync(helloWasmPath) && kernelPath !== null;
 
 describe.runIf(havePrereqs)(
-  `guest-initiated posix_spawn of an overlay-resident program (overlay ${overlayMode})`,
+  "guest-initiated posix_spawn of an overlay-resident program",
   () => {
     it(
       "posix_spawns an overlay-resident child from a guest program",
