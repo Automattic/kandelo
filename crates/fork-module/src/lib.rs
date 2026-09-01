@@ -109,10 +109,12 @@ mod wasm {
     use fork_codec::{
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
         encode_replay_events, ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter,
-        ModuleStateFormat, ReferenceReplayDriver, ReferenceTransactionRecord, ReplayEventJournal,
-        ResumeSlotTable, RewindDriver,
+        ModuleStateFormat, ReconstructionState, ReferenceReplayDriver, ReferenceTransactionRecord,
+        ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, Errno};
+
+    use crate::host_capabilities::WpkForkHost;
 
     // The wasm memory/trap intrinsics live in an arch-specific module. Alias the
     // correct one so the same code builds for a wasm32 (`pointer_width = 4`) and
@@ -241,6 +243,33 @@ mod wasm {
     // a flag-on funcref fork drives reconstruction through the module this has
     // advanced; a silent JS fallback leaves it unchanged. Never resets.
     static REFERENCES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+
+    // Monotonic count of externrefs the module has re-rooted through the
+    // `wpk_fork_host` engine-floor seam since worker start (Phase 6 D6.2).
+    // Proof-of-use mirror of `REFERENCES_RECONSTRUCTED` for the externref path:
+    // `fm_begin_reference_replay` drives `resolve_externref` once per externref
+    // node and bumps this by that count; a silent JS fallback (the module was
+    // never asked to drive the reference reconstruction) leaves it unchanged.
+    // Never resets.
+    static EXTERNREFS_RESOLVED: AtomicU64 = AtomicU64::new(0);
+
+    // The host identities the last `fm_begin_reference_replay` drive re-rooted
+    // for this fork (the externref `HostRef`s + their owning generation). Held
+    // alongside `REFERENCE_STATE` so the once-per-value roots outlive the drive:
+    // the still-JS `__wpk_fork_ref_decode_externref` import returns the value the
+    // module caused the host to resolve, and fork teardown releases the
+    // generation. Independent of the frame `ForkModule` lifecycle.
+    struct ReconstructionStateCell(UnsafeCell<Option<ReconstructionState>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ReconstructionStateCell {}
+    static RECONSTRUCTION_STATE: ReconstructionStateCell =
+        ReconstructionStateCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn reconstruction_state() -> &'static mut Option<ReconstructionState> {
+        // SAFETY: single-threaded per worker; only one guest drives the imports.
+        unsafe { &mut *RECONSTRUCTION_STATE.0.get() }
+    }
 
     // The i32 sentinels `fm_funcref_ordinal` returns to the injected wasm shim.
     // A NON-NEGATIVE value is a catalog ordinal for `table.get`; `NULL_ORDINAL`
@@ -742,7 +771,7 @@ mod wasm {
     /// than one activation, is a truthful `EOPNOTSUPP` — the host predicate keeps
     /// such a fork on the JS path, and this re-check means a disagreeing host can
     /// never drive an unsupported reference through the funcref import.
-    fn begin_reference_replay_impl(module_state_root: u64) -> Result<(), Errno> {
+    fn begin_reference_replay_impl(module_state_root: u64, pid: u32) -> Result<(), Errno> {
         // The pointer width was seeded once (with the linked-frame format) via
         // `fm_set_format`; the module-state chunk header size derives from it.
         let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
@@ -758,6 +787,7 @@ mod wasm {
 
         // Reclaim any prior fork's reference state.
         *reference_state() = None;
+        *reconstruction_state() = None;
 
         // Decode the sealed module-state arena from the COPIED guest memory
         // (immutable whole-memory view — only reads, so the release-LLVM
@@ -786,14 +816,32 @@ mod wasm {
         )?;
         let driver = ReferenceReplayDriver::new(transaction);
 
-        // D6.1 gate (defense in depth; the host computes the same predicate).
-        if !driver.all_nodes_funcref_or_null() {
+        // D6.2 gate (defense in depth; the host computes the same predicate).
+        // Widened from D6.1's funcref/null to admit externref: the module now
+        // orchestrates externref re-rooting through the `wpk_fork_host` seam.
+        // Every other kind (exnref / GC struct/array / i31 / static-root) still
+        // needs a JS engine-floor provider this slice does not move, so it is a
+        // truthful `EOPNOTSUPP` that keeps the fork on the byte-identical JS
+        // reference path.
+        if !driver.all_nodes_externref_funcref_or_null() {
             return Err(Errno::EOPNOTSUPP);
         }
         // One imported catalog table => funcrefs must share one activation.
         driver.sole_funcref_activation().map_err(|_| Errno::EOPNOTSUPP)?;
 
+        // Drive the once-per-value host reconstruction: obtain each externref's
+        // durable host identity through the `wpk_fork_host` seam (PHASE A) and
+        // root the transit-reachable ones (PHASE B). The MODULE owns the order;
+        // the HOST owns identity behind opaque `u32` ordinals — no live reference
+        // crosses into the module. A funcref/null graph opens no host generation
+        // and never consults the (possibly inert) host, preserving the D6.1 path.
+        // The still-JS `__wpk_fork_ref_decode_externref` import then returns the
+        // value the module caused the host to resolve.
+        let reconstruction = driver.drive_reconstruction(&mut WpkForkHost, pid)?;
+        EXTERNREFS_RESOLVED.fetch_add(reconstruction.reconstructed() as u64, Ordering::Relaxed);
+
         *reference_state() = Some(driver);
+        *reconstruction_state() = Some(reconstruction);
         Ok(())
     }
 
@@ -1052,17 +1100,24 @@ mod wasm {
         FRAMES_COMMITTED.load(Ordering::Relaxed) as i64
     }
 
-    /// Seed the funcref/null reference graph for this fork from the KFMS
-    /// module-state arena rooted at `module_state_root` (Phase 6 D6.1). The host
-    /// calls this once on a qualifying funcref-only fork, after
+    /// Seed the reference graph for this fork from the KFMS module-state arena
+    /// rooted at `module_state_root` and drive its once-per-value host
+    /// reconstruction (Phase 6 D6.2, widened from D6.1). The host calls this once
+    /// on a qualifying fork whose graph is null / funcref / externref only, after
     /// `fm_begin_child_replay`, before the guest rewind reconstructs references.
-    /// On success the guest's `__wpk_fork_ref_decode_funcref` is served by this
-    /// module; failure (check `fm_last_errno`: `EOPNOTSUPP` for an unsupported
-    /// graph, `EINVAL` for a malformed arena) means the host must keep the JS
-    /// reference path for this fork.
+    /// `pid` names the child process image; it opens the host root generation
+    /// (`begin_generation`) that owns the re-rooted externref identities.
+    ///
+    /// On success the module has already driven `resolve_externref` (+ any
+    /// transit rooting) through the `wpk_fork_host` seam, the guest's
+    /// `__wpk_fork_ref_decode_funcref` is served by this module, and the still-JS
+    /// `__wpk_fork_ref_decode_externref` returns the value the module resolved.
+    /// Failure (check `fm_last_errno`: `EOPNOTSUPP` for an unadmitted kind,
+    /// `EINVAL` for a malformed arena or a lost transit identity) means the host
+    /// must keep the byte-identical JS reference path for this fork.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_begin_reference_replay(module_state_root: usize) {
-        match begin_reference_replay_impl(module_state_root as u64) {
+    pub extern "C" fn fm_begin_reference_replay(module_state_root: usize, pid: u32) {
+        match begin_reference_replay_impl(module_state_root as u64, pid) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -1088,6 +1143,17 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_references_reconstructed() -> i64 {
         REFERENCES_RECONSTRUCTED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Monotonic count of externrefs this module has re-rooted through the
+    /// `wpk_fork_host` engine-floor seam since worker start (Phase 6 D6.2).
+    /// Proof-of-use mirror of `fm_references_reconstructed` for the externref
+    /// path: after a flag-on externref fork drives reconstruction through the
+    /// module, this has advanced by the graph's externref-node count; a silent JS
+    /// fallback leaves it unchanged. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_externrefs_resolved() -> i64 {
+        EXTERNREFS_RESOLVED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).

@@ -68,6 +68,13 @@ export interface ForkModuleBackendOptions {
    * JS abort-replay handshake). Must be a non-zero page multiple.
    */
   readonly frameArenaBytes: number;
+  /**
+   * The child process PID. Passed to the module's `fm_begin_reference_replay`
+   * so its `drive_reconstruction` opens the host root generation
+   * (`begin_generation(pid)`) that owns this fork's re-rooted externref
+   * identities (Phase 6 D6.2).
+   */
+  readonly pid: number;
   readonly label: string;
 }
 
@@ -88,6 +95,7 @@ export class ForkModuleContinuationBackend {
   private readonly reserveRegion: (size: number) => number;
   private readonly releaseRegion: (addr: number, size: number) => void;
   private readonly frameArenaBytes: number;
+  private readonly pid: number;
   private readonly label: string;
 
   /** The parent-owned frame arena (0 in a replay-only child). */
@@ -104,6 +112,7 @@ export class ForkModuleContinuationBackend {
     this.reserveRegion = options.reserveRegion;
     this.releaseRegion = options.releaseRegion;
     this.frameArenaBytes = options.frameArenaBytes;
+    this.pid = options.pid;
     this.label = options.label;
     if (
       this.frameArenaBytes <= 0
@@ -171,6 +180,16 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of externrefs the module has re-rooted through the `wpk_fork_host`
+   * engine-floor seam since worker start (Phase 6 D6.2 proof-of-use). Advances
+   * only when `fm_begin_reference_replay` drives `resolve_externref` through the
+   * module; a silent JS fallback leaves it unchanged.
+   */
+  externrefsResolved(): bigint {
+    return BigInt(this.exports.fm_externrefs_resolved() as number | bigint);
+  }
+
+  /**
    * Seed the module's funcref/null reference graph for this fork from the KFMS
    * module-state arena rooted at `moduleStateRoot` (Phase 6 D6.1). The caller
    * gates this on the funcref-only reference predicate; the module re-checks and
@@ -180,7 +199,7 @@ export class ForkModuleContinuationBackend {
    */
   beginReferenceReplay(moduleStateRoot: number): void {
     this.requireSetup("begin reference replay");
-    this.exports.fm_begin_reference_replay(this.wptr(moduleStateRoot));
+    this.exports.fm_begin_reference_replay(this.wptr(moduleStateRoot), this.pid);
     this.requireOk("fm_begin_reference_replay");
   }
 

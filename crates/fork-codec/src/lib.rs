@@ -84,7 +84,7 @@ pub use module_state_records::{
 pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };
-pub use reference_replay::{FuncrefTarget, ReferenceReplayDriver};
+pub use reference_replay::{FuncrefTarget, ReconstructionState, ReferenceReplayDriver};
 pub use reference_segments::ReferenceTransactionRecord;
 pub use reference_transaction::{
     decode_segmented_reference_transaction, vector_intern_key, SegmentedReferenceTransaction,

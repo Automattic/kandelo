@@ -374,7 +374,7 @@ fn decode_node_record(
 }
 
 /// The ordered graph edges of a decoded node, mirroring the TS `nodeEdges`.
-fn node_edges(node: &ReferenceRecipeNode) -> &[u32] {
+pub(crate) fn node_edges(node: &ReferenceRecipeNode) -> &[u32] {
     match node {
         ReferenceRecipeNode::Exnref { payloads, .. } => payloads,
         ReferenceRecipeNode::Struct { fields, .. } => fields,

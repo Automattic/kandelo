@@ -46,6 +46,8 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "__wpk_fork_ref_decode_funcref",
   "fm_begin_reference_replay",
   "fm_references_reconstructed",
+  // Phase 6 D6.2 externref reconstruction proof-of-use counter.
+  "fm_externrefs_resolved",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
@@ -81,6 +83,19 @@ export interface InstantiateForkModuleOptions {
    * decoded, so an empty table is inert.
    */
   functionCatalog?: WebAssembly.Table;
+  /**
+   * Real engine-floor `wpk_fork_host.*` import bodies (Phase 6 D6.2). The
+   * co-resident module DECLARES the whole engine-floor seam
+   * (`crates/fork-module/src/host_capabilities.rs`); its `WpkForkHost` routes
+   * the seam's opaque `u32` ordinals across these imports to re-root externref
+   * identity (through the broker token cache) and stage the anyref transit
+   * during `fm_begin_reference_replay`. When provided, the named bodies back the
+   * seam; when omitted (frame-only / funcref-only forks, and tests) every
+   * `wpk_fork_host` import defaults to an inert `() => 0` stub. A funcref/null
+   * graph opens no host generation and never calls them, so the inert default
+   * keeps the D6.1 path and flag-off byte-identical.
+   */
+  hostCapabilities?: Readonly<Record<string, (...args: number[]) => number>>;
 }
 
 export interface ForkModuleInstance {
@@ -225,14 +240,15 @@ export function instantiateForkModule(
     new WebAssembly.Table({ element: "anyfunc", initial: 0 });
 
   // The module DECLARES the `wpk_fork_host.*` engine-floor seam imports (Phase 6
-  // D6, `crates/fork-module/src/host_capabilities.rs`) so the eventual host API
-  // surface stays linked, but the funcref/frame paths never call them. Satisfy
-  // them with inert stubs so instantiation succeeds; `() => 0` fits every
-  // signature (all return i32/u32). If a future slice wires a real backend, it
-  // supplies these instead.
-  const forkHostStubs: Record<string, () => number> = {};
+  // D6, `crates/fork-module/src/host_capabilities.rs`). For the externref path
+  // (D6.2) the caller supplies REAL bodies via `hostCapabilities`; otherwise
+  // (frame-only / funcref-only forks, and tests) each import gets an inert
+  // `() => 0` stub, which fits every signature (all return i32/u32) and is never
+  // called because a funcref/null graph opens no host generation.
+  const forkHostStubs: Record<string, (...args: number[]) => number> = {};
   for (const imp of WebAssembly.Module.imports(module)) {
-    if (imp.module === "wpk_fork_host") forkHostStubs[imp.name] = () => 0;
+    if (imp.module !== "wpk_fork_host") continue;
+    forkHostStubs[imp.name] = options.hostCapabilities?.[imp.name] ?? (() => 0);
   }
 
   const imports: WebAssembly.Imports = {

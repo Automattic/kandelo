@@ -26,7 +26,10 @@
 
 use wasm_posix_shared::Errno;
 
-use crate::reference_recipes::ReferenceRecipeNode;
+use alloc::vec::Vec;
+
+use crate::host_capabilities::{ForkHostCapabilities, HostGeneration, HostRef};
+use crate::reference_recipes::{node_edges, ReferenceRecipeNode};
 use crate::reference_transaction::SegmentedReferenceTransaction;
 
 /// The resolved funcref recipe for one node: the activation whose function
@@ -35,6 +38,41 @@ use crate::reference_transaction::SegmentedReferenceTransaction;
 pub struct FuncrefTarget {
     pub module_activation: u32,
     pub function_ordinal: u32,
+}
+
+/// The result of one reference-reconstruction drive: the host identities the
+/// module re-rooted for this fork, the host generation that owns them, and how
+/// many references it reconstructed. `host_refs` is indexed by recipe id; a slot
+/// is `None` for a node the drive did not re-root (Null / Funcref / a
+/// not-yet-admitted aggregate). The module stashes this alongside its driver so
+/// the once-per-value host roots outlive the drive until fork teardown calls
+/// `ForkHostCapabilities::release_generation(generation)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconstructionState {
+    host_refs: Vec<Option<HostRef>>,
+    generation: HostGeneration,
+    reconstructed: u32,
+}
+
+impl ReconstructionState {
+    /// The host generation that owns every root re-established by the drive. It
+    /// is `HostGeneration(0)` (the reserved sentinel) when the drive needed no
+    /// host identity at all (a funcref/null graph), in which case no generation
+    /// was begun and nothing needs releasing.
+    pub fn generation(&self) -> HostGeneration {
+        self.generation
+    }
+
+    /// The number of references the drive re-rooted through the host seam (the
+    /// externref count for D6.2). Proof-of-use for `fm_externrefs_resolved`.
+    pub fn reconstructed(&self) -> u32 {
+        self.reconstructed
+    }
+
+    /// The host ref the drive re-rooted for `recipe_id`, if any.
+    pub fn host_ref(&self, recipe_id: u32) -> Option<HostRef> {
+        self.host_refs.get(recipe_id as usize).copied().flatten()
+    }
 }
 
 /// Holds a decoded reference transaction and answers the funcref/null recipe
@@ -104,6 +142,161 @@ impl ReferenceReplayDriver {
                 entry.node,
                 ReferenceRecipeNode::Null | ReferenceRecipeNode::Funcref { .. }
             )
+        })
+    }
+
+    /// True when EVERY node is Null, Funcref, or Externref — the widened kind set
+    /// D6.2 reconstructs through the module. Externref adds the host engine-floor
+    /// (`resolve_externref` + the anyref transit) on top of D6.1's funcref/null.
+    /// The host computes the same predicate before flipping the reference path;
+    /// the module re-checks so a disagreeing host can never drive an unadmitted
+    /// kind (exnref / GC struct/array / i31 / static-root) through the seam.
+    pub fn all_nodes_externref_funcref_or_null(&self) -> bool {
+        self.transaction.nodes.iter().all(|entry| {
+            matches!(
+                entry.node,
+                ReferenceRecipeNode::Null
+                    | ReferenceRecipeNode::Funcref { .. }
+                    | ReferenceRecipeNode::Externref { .. }
+            )
+        })
+    }
+
+    /// The recipe ids of externrefs that a typed/exnref consumer reaches — the
+    /// externrefs that MUST be staged in the anyref transit table (at slot
+    /// `recipe_id + 1`) before the consumer's GC fill / exception materialize
+    /// reads them (the R1 rooting hazard). Mirrors the reachable-externref set
+    /// `materializeTypedGraph` publishes into the transit
+    /// (`fork-early-reference-provider.ts:1252-1255`).
+    ///
+    /// EMPTY for a plain externref-in-a-local graph: a bare externref is decoded
+    /// straight through the (still-JS) `__wpk_fork_ref_decode_externref` import
+    /// and never enters the transit. So D6.2's admitted graphs (null / funcref /
+    /// externref, with no aggregate consumer) publish nothing here; the transit
+    /// path is exercised by hand-built graphs now and by real forks once the
+    /// aggregate kinds (D6.3 exnref, D6.4 struct/array) are admitted.
+    pub fn transit_rooted_recipes(&self) -> Vec<u32> {
+        let nodes = &self.transaction.nodes;
+        // Seed the reachability walk from every aggregate consumer's edges.
+        let mut pending: Vec<u32> = Vec::new();
+        for entry in nodes {
+            if matches!(
+                entry.node,
+                ReferenceRecipeNode::Exnref { .. }
+                    | ReferenceRecipeNode::Struct { .. }
+                    | ReferenceRecipeNode::Array { .. }
+            ) {
+                pending.extend_from_slice(node_edges(&entry.node));
+            }
+        }
+        let mut seen = alloc::vec![false; nodes.len()];
+        let mut rooted: Vec<u32> = Vec::new();
+        while let Some(id) = pending.pop() {
+            let index = id as usize;
+            match seen.get(index) {
+                Some(false) => seen[index] = true,
+                _ => continue, // out of range (impossible on a decoded graph) or already seen
+            }
+            let node = &nodes[index].node;
+            if matches!(node, ReferenceRecipeNode::Externref { .. }) {
+                rooted.push(id);
+            }
+            pending.extend_from_slice(node_edges(node));
+        }
+        rooted.sort_unstable();
+        rooted.dedup();
+        rooted
+    }
+
+    /// Drive the once-per-value host reconstruction the co-resident module
+    /// orchestrates: obtain each externref's durable host identity, then root the
+    /// transit-reachable ones in the anyref transit. The MODULE owns the ORDER;
+    /// the HOST owns the identity, addressed only by opaque `u32` ordinal, so no
+    /// live reference ever crosses into the module.
+    ///
+    /// PHASE A (obtain): walk the nodes in id order and re-root each externref
+    /// via `resolve_externref`, recording `recipe_id -> HostRef`. Null / Funcref
+    /// / StaticRoot / I31 need no host identity here (funcref stays the
+    /// wasm→wasm `table.get` path from D6.1). The aggregate arms are the D6.3 /
+    /// D6.4 seams; today they are inert (the caller's gate keeps aggregate graphs
+    /// out of production, and the hand-built transit unit test walks them).
+    ///
+    /// PHASE B (root): for each `transit_rooted_recipes()` id, publish the
+    /// obtained ref into the transit at `recipe_id + 1`, then read it back and
+    /// assert the SAME identity (`Err(EINVAL)` otherwise — the R1 guard that a
+    /// reachable slot is non-null and unmoved before any GC fill consumes it).
+    ///
+    /// The host generation is opened only when there is host-backed work
+    /// (an externref to root, or a transit slot to publish); a pure funcref/null
+    /// graph opens none (its `generation` is the reserved sentinel `0`), so the
+    /// inert-stub D6.1 path never consults the host. On success the returned
+    /// [`ReconstructionState`] holds the live roots until fork teardown releases
+    /// the generation.
+    pub fn drive_reconstruction<H: ForkHostCapabilities>(
+        &self,
+        host: &mut H,
+        pid: u32,
+    ) -> Result<ReconstructionState, Errno> {
+        let nodes = &self.transaction.nodes;
+        let mut host_refs: Vec<Option<HostRef>> = alloc::vec![None; nodes.len()];
+        let mut reconstructed: u32 = 0;
+
+        let transit_recipes = self.transit_rooted_recipes();
+        let needs_host = !transit_recipes.is_empty()
+            || nodes
+                .iter()
+                .any(|entry| matches!(entry.node, ReferenceRecipeNode::Externref { .. }));
+
+        // Only open a host root scope when there is identity to re-root; a
+        // funcref/null graph leaves the sentinel generation and never calls out.
+        let generation = if needs_host {
+            host.begin_generation(pid)?
+        } else {
+            HostGeneration(0)
+        };
+
+        // PHASE A — obtain each reconstructed value's host identity.
+        for entry in nodes {
+            match &entry.node {
+                ReferenceRecipeNode::Externref { handle } => {
+                    let host_ref = host.resolve_externref(generation, *handle)?;
+                    host_refs[entry.id as usize] = Some(host_ref);
+                    reconstructed = reconstructed.checked_add(1).ok_or(Errno::ENOSPC)?;
+                }
+                // Funcref stays the wasm→wasm table.get path (D6.1); the other
+                // scalars need no host identity in this phase.
+                ReferenceRecipeNode::Null
+                | ReferenceRecipeNode::Funcref { .. }
+                | ReferenceRecipeNode::StaticRoot { .. }
+                | ReferenceRecipeNode::I31 { .. } => {}
+                // D6.3: Exnref arm — mint_exception_tag + materialize payload +
+                // publish the exnref; inert until the exnref slice lands.
+                ReferenceRecipeNode::Exnref { .. } => {}
+                // D6.4: Struct/Array arm — allocate the shell, then fill in edge
+                // order with the R1/R2 guards; inert until the GC slice lands.
+                ReferenceRecipeNode::Struct { .. } | ReferenceRecipeNode::Array { .. } => {}
+            }
+        }
+
+        // PHASE B — root every transit-reachable externref, then verify identity.
+        for recipe_id in transit_recipes {
+            let host_ref = host_refs
+                .get(recipe_id as usize)
+                .copied()
+                .flatten()
+                .ok_or(Errno::EINVAL)?;
+            let slot = recipe_id.checked_add(1).ok_or(Errno::EINVAL)?;
+            host.transit_publish(generation, slot, host_ref)?;
+            let read_back = host.transit_read(generation, slot)?;
+            if read_back != host_ref {
+                return Err(Errno::EINVAL); // R1: slot lost identity before consume
+            }
+        }
+
+        Ok(ReconstructionState {
+            host_refs,
+            generation,
+            reconstructed,
         })
     }
 
@@ -242,5 +435,122 @@ mod tests {
         let driver = funcref_only();
         assert_eq!(driver.node_count(), 3);
         assert_eq!(driver.transaction().nodes.len(), 3);
+    }
+
+    // --- D6.2: externref reconstruction drive through the host seam --------
+
+    use crate::host_capabilities::mock::MockForkHost;
+    use crate::host_capabilities::ForkHostCapabilities;
+
+    /// A plain externref-in-a-local graph: Null at id 0, two durable externrefs.
+    /// No aggregate consumer, so nothing is transit-rooted (D6.2 case).
+    fn plain_externref() -> ReferenceReplayDriver {
+        ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::Null),
+            entry(1, ReferenceRecipeNode::Externref { handle: 7 }),
+            entry(2, ReferenceRecipeNode::Externref { handle: 42 }),
+        ]))
+    }
+
+    /// A transit-reachable graph (hand-built): a struct whose field edge names an
+    /// externref, so the externref must be published into the anyref transit
+    /// before the struct fill consumes it. D6.2 does not admit structs in
+    /// production (the gate rejects them), but `drive_reconstruction` walks this
+    /// directly to exercise PHASE B without waiting for the aggregate slice.
+    fn struct_over_externref() -> ReferenceReplayDriver {
+        ReferenceReplayDriver::new(transaction(vec![
+            entry(
+                0,
+                ReferenceRecipeNode::Struct {
+                    module_activation: 3,
+                    type_ordinal: 1,
+                    layout_id: 9,
+                    scalars: alloc::vec![0u8; 4],
+                    fields: vec![1],
+                },
+            ),
+            entry(1, ReferenceRecipeNode::Externref { handle: 5 }),
+        ]))
+    }
+
+    #[test]
+    fn widened_gate_admits_externref_funcref_null() {
+        assert!(plain_externref().all_nodes_externref_funcref_or_null());
+        assert!(funcref_only().all_nodes_externref_funcref_or_null());
+        // A struct is still not an admitted kind for D6.2.
+        assert!(!struct_over_externref().all_nodes_externref_funcref_or_null());
+    }
+
+    #[test]
+    fn plain_externref_graph_has_no_transit_rooted_recipes() {
+        assert!(plain_externref().transit_rooted_recipes().is_empty());
+        assert!(funcref_only().transit_rooted_recipes().is_empty());
+    }
+
+    #[test]
+    fn drive_resolves_each_externref_node_through_the_host() {
+        let mut host = MockForkHost::new();
+        let driver = plain_externref();
+        let state = driver.drive_reconstruction(&mut host, 99).expect("drive");
+
+        // Every externref node was resolved through the seam, in node order.
+        assert_eq!(host.resolved_externref_handles(), &[7, 42]);
+        assert_eq!(state.reconstructed(), 2);
+        // Null carries no host ref; each externref recorded one.
+        assert!(state.host_ref(0).is_none());
+        assert!(state.host_ref(1).is_some());
+        assert!(state.host_ref(2).is_some());
+
+        // The generation is live and roots exactly the two externrefs; a plain
+        // externref graph publishes nothing into the transit.
+        let generation = state.generation();
+        assert!(host.is_active(generation));
+        assert_eq!(host.live_ref_count(generation), 2);
+        assert_eq!(host.transit_slot_count(generation), 0);
+
+        // Release drops the roots (the fork-teardown step drive does not do).
+        host.release_generation(generation).expect("release");
+        assert!(!host.is_active(generation));
+    }
+
+    #[test]
+    fn funcref_only_drive_touches_no_host() {
+        // A funcref/null graph needs no host identity (funcref stays wasm→wasm
+        // via table.get). The drive must not open a generation, so an inert host
+        // is never consulted — preserving the D6.1 path with inert stubs.
+        let mut host = MockForkHost::new();
+        let state = funcref_only()
+            .drive_reconstruction(&mut host, 1)
+            .expect("drive");
+        assert_eq!(state.reconstructed(), 0);
+        assert!(host.resolved_externref_handles().is_empty());
+        // No generation was begun (sentinel 0), so nothing is active.
+        assert!(!host.is_active(state.generation()));
+    }
+
+    #[test]
+    fn drive_publishes_and_verifies_transit_for_reachable_externref() {
+        let mut host = MockForkHost::new();
+        let driver = struct_over_externref();
+        let state = driver.drive_reconstruction(&mut host, 3).expect("drive");
+
+        // PHASE A resolved the externref; PHASE B published it into the transit
+        // at recipe_id+1 and read it back with matching identity.
+        assert_eq!(host.resolved_externref_handles(), &[5]);
+        assert_eq!(state.reconstructed(), 1);
+        assert_eq!(driver.transit_rooted_recipes(), vec![1]);
+        assert_eq!(host.transit_slot_count(state.generation()), 1);
+    }
+
+    #[test]
+    fn drive_rejects_lost_transit_identity_without_panic() {
+        // An engine that loses the anyref slot's identity between publish and
+        // read is a truthful EINVAL (R1 guard), never a silent wrong value.
+        let mut host = MockForkHost::new();
+        host.corrupt_transit_reads();
+        assert_eq!(
+            struct_over_externref().drive_reconstruction(&mut host, 3),
+            Err(Errno::EINVAL)
+        );
     }
 }
