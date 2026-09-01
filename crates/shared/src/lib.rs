@@ -114,8 +114,9 @@ pub mod process_layout;
 ///     share a refcounted stream across fork and exec, and the host consumes a
 ///     versioned bounded transport paced by the audio clock. The kernel owns
 ///     the exec `#!` interpreter-line decode through a required
-///     `kernel_exec_target_shebang` export so no host interprets the exec guest
-///     ABI.
+///     `kernel_exec_target_shebang` export, and the `posix_spawn` blob's
+///     argv/envp decode through a required `kernel_spawn_blob_decode` export,
+///     so no host interprets the exec or spawn guest ABI.
 pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -3049,6 +3050,7 @@ pub mod abi {
         "kernel_set_current_tid",
         "kernel_set_cwd",
         "kernel_shmid_ds_bytes",
+        "kernel_spawn_blob_decode",
         "kernel_spawn_exec_commit",
         "kernel_spawn_exec_target_prepare",
         "kernel_spawn_process",

@@ -237,16 +237,7 @@ import {
   SIGNAL_MASK_BYTES,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
-  SPAWN_MAX_ACTION_COUNT,
-  SPAWN_MAX_ARGV_COUNT,
-  SPAWN_MAX_ENVP_COUNT,
-  SPAWN_WIRE_ACTION_RECORD_BYTES,
-  SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-  SPAWN_WIRE_HEADER_ARGC_OFFSET,
-  SPAWN_WIRE_HEADER_BYTES,
-  SPAWN_WIRE_HEADER_ENVC_OFFSET,
   SPAWN_WIRE_MAX_BYTES,
-  SPAWN_WIRE_STRING_OFFSET_BYTES,
   STRUCT_SIZE_KERNEL_CMSGHDR_WIRE,
   STRUCT_SIZE_KERNEL_IOVEC_WIRE,
   STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
@@ -1516,125 +1507,6 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
     malformed("trailing bytes follow the declared records");
   }
   return out;
-}
-
-/**
- * Decode just the argv and envp strings out of a SYS_SPAWN blob. The kernel
- * does the authoritative parsing (file actions, attrs); this minimal
- * decoder exists because `onSpawn` needs `string[]` for the worker-launch
- * path.
- *
- * Wire format mirrors `crates/kernel/src/spawn.rs::parse_blob` — see
- * `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
- *
- * Throws on malformed input. Callers should treat the throw as EINVAL.
- */
-function decodeSpawnBlobStrings(
-  blob: Uint8Array,
-  pointerWidth: 4 | 8,
-): { argv: string[]; envp: string[] } {
-  if (blob.byteLength < SPAWN_WIRE_HEADER_BYTES) {
-    throw new Error("blob too short for header");
-  }
-  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-  const argc = view.getUint32(SPAWN_WIRE_HEADER_ARGC_OFFSET, true);
-  const envc = view.getUint32(SPAWN_WIRE_HEADER_ENVC_OFFSET, true);
-  const nActions = view.getUint32(
-    SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-    true,
-  );
-
-  // Cap counts to mirror the kernel parser's adversarial-input cap.
-  if (
-    argc > SPAWN_MAX_ARGV_COUNT
-    || envc > SPAWN_MAX_ENVP_COUNT
-    || nActions > SPAWN_MAX_ACTION_COUNT
-  ) {
-    throw new Error("blob count exceeds limit");
-  }
-
-  const argvOffsetsAt = SPAWN_WIRE_HEADER_BYTES;
-  const envpOffsetsAt =
-    argvOffsetsAt + argc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const actionsAt =
-    envpOffsetsAt + envc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const stringsAt =
-    actionsAt + nActions * SPAWN_WIRE_ACTION_RECORD_BYTES;
-
-  if (stringsAt > blob.byteLength) {
-    throw new Error("blob truncated before strings region");
-  }
-  const stringsLen = blob.byteLength - stringsAt;
-  const decoder = new TextDecoder();
-
-  // Account for every pointer before scanning or decoding any string. Then
-  // measure all referenced wire spans against one incremental budget. This
-  // makes the total scanning and allocation work proportional to ARG_MAX:
-  // thousands of duplicate offsets into a multi-megabyte tail are rejected
-  // before TextDecoder can allocate that tail once per entry.
-  let representedBytes = (argc + envc + 2) * pointerWidth;
-  if (
-    !Number.isSafeInteger(representedBytes)
-    || representedBytes > POSIX_ARG_MAX_BYTES
-  ) {
-    throw new KernelScratchError(
-      "spawn argv/environment pointer representation exceeds ARG_MAX",
-      E2BIG,
-    );
-  }
-  const measure = (
-    offsetsAt: number,
-    count: number,
-  ): Array<{ start: number; end: number }> => {
-    const ranges = new Array<{ start: number; end: number }>(count);
-    for (let i = 0; i < count; i++) {
-      const off = view.getUint32(
-        offsetsAt + i * SPAWN_WIRE_STRING_OFFSET_BYTES,
-        true,
-      );
-      if (off > stringsLen) {
-        throw new KernelScratchError("spawn string offset is out of bounds", EINVAL);
-      }
-      let end = off;
-      while (end < stringsLen && blob[stringsAt + end] !== 0) end++;
-      if (end === stringsLen) {
-        throw new KernelScratchError(
-          "spawn string is missing its terminating NUL",
-          EINVAL,
-        );
-      }
-      const length = end - off;
-      if (length > PROCESS_METADATA_ENTRY_MAX_BYTES) {
-        throw new KernelScratchError(
-          "spawn metadata entry exceeds the process-metadata transport limit",
-          E2BIG,
-        );
-      }
-      representedBytes += length + 1;
-      if (
-        !Number.isSafeInteger(representedBytes)
-        || representedBytes > POSIX_ARG_MAX_BYTES
-      ) {
-        throw new KernelScratchError(
-          "spawn argv/environment representation exceeds ARG_MAX",
-          E2BIG,
-        );
-      }
-      ranges[i] = {
-        start: stringsAt + off,
-        end: stringsAt + end,
-      };
-    }
-    return ranges;
-  };
-
-  const argvRanges = measure(argvOffsetsAt, argc);
-  const envpRanges = measure(envpOffsetsAt, envc);
-  const decode = ({ start, end }: { start: number; end: number }): string =>
-    decoder.decode(blob.subarray(start, end));
-  const argv = argvRanges.map(decode);
-  const envp = envpRanges.map(decode);
-  return { argv, envp };
 }
 
 /** Syscall number → name mapping for logging */
@@ -22733,17 +22605,14 @@ export class CentralizedKernelWorker {
       checkedBlobPtr + blobLen,
     );
 
-    // ── Decode argv + envp host-side ──
-    // The kernel parses the blob too, but onSpawn needs string[] for the
-    // worker launch path. We don't redo action/attr parsing here; the
-    // kernel is the authoritative parser for that surface.
+    // ── Decode argv + envp through the kernel ──
+    // The kernel is the sole spawn-blob parser; onSpawn needs string[] for the
+    // worker launch path, so it reads back the kernel's own argv/envp decode.
+    // File actions and attrs stay entirely inside the kernel parse.
     let argv: string[];
     let envp: string[];
     try {
-      const decoded = decodeSpawnBlobStrings(
-        blobBytes,
-        this.getPtrWidth(parentPid),
-      );
+      const decoded = this.#spawnDecodeArgvEnvp(blobBytes, entry);
       argv = decoded.argv;
       envp = decoded.envp;
     } catch (error) {
@@ -23020,6 +22889,242 @@ export class CentralizedKernelWorker {
       `kernel rejected spawn scratch cancellation: ${String(result)}`,
       EIO,
     );
+  }
+
+  /**
+   * Decode a SYS_SPAWN blob's argv and envp through the kernel's
+   * `kernel_spawn_blob_decode` export, so the host never interprets the
+   * `posix_spawn` guest ABI. The kernel is the authoritative blob parser
+   * (`crate::spawn::parse_blob`); this reads back only the argv/envp strings the
+   * deferred worker-launch path needs before the child is built. File actions
+   * and spawn attrs stay entirely inside the kernel parse.
+   *
+   * The kernel decodes in place: the blob is copied into the front of a scratch
+   * range and the argv/envp framing (`[argc u32][envc u32]`, then each entry as
+   * `[len u32][raw bytes]`) overwrites it. Blobs within the shared syscall
+   * scratch use it directly; larger blobs use one tokenized reservation.
+   *
+   * Throws `KernelScratchError` (POSIX errno) on a malformed blob or a framing
+   * that exceeds the argv/environment budget. `validateExecMetadata` still
+   * applies the ARG_MAX and per-entry limits to the decoded strings afterward.
+   */
+  #spawnDecodeArgvEnvp(
+    blobBytes: Uint8Array,
+    entry: KernelWorkerEntryContext,
+  ): { argv: string[]; envp: string[] } {
+    const blobLen = blobBytes.byteLength;
+    if (blobLen <= 0) {
+      throw new KernelScratchError("spawn blob is empty", EINVAL);
+    }
+    if (
+      typeof this.#kernelInstanceForEntry(entry).exports
+        .kernel_spawn_blob_decode !== "function"
+    ) {
+      throw new KernelScratchError(
+        "Kernel missing required kernel_spawn_blob_decode export",
+        EIO,
+      );
+    }
+    if (blobLen <= SCRATCH_SIZE) {
+      const region = this.#requireMainScratchRegion();
+      return region.withLease((scratch) =>
+        this.#decodeSpawnFramingWithinLease(
+          entry,
+          scratch,
+          region.capacity,
+          blobBytes,
+          blobLen,
+        )
+      );
+    }
+    return this.#decodeLargeSpawnBlob(blobBytes, blobLen, entry);
+  }
+
+  /**
+   * Copy the blob into one leased scratch range, invoke
+   * `kernel_spawn_blob_decode` in place, and parse the read-back framing. The
+   * capacity is the full leased range: the kernel reads only `blobLen` bytes but
+   * may write a framing that a duplicated-offset blob makes wider than the blob.
+   */
+  #decodeSpawnFramingWithinLease(
+    entry: KernelWorkerEntryContext,
+    scratch: KernelScratchLease,
+    capacity: number,
+    blobBytes: Uint8Array,
+    blobLen: number,
+  ): { argv: string[]; envp: string[] } {
+    scratch.copyFrom(blobBytes, 0, 0, blobLen);
+    const result = this.#invokeEntryScratchExport(
+      entry,
+      scratch,
+      "kernel_spawn_blob_decode",
+      [
+        scratch.exportPointer(0, capacity),
+        this.toKernelPtr(capacity),
+        this.toKernelPtr(blobLen),
+      ],
+    );
+    if (result < 0) {
+      const errno = (-result) >>> 0;
+      // A framing wider than the buffer means the decoded argv/environment is
+      // too large to transport — the same boundary `validateExecMetadata`
+      // reports for oversized strings, so surface it as E2BIG.
+      throw new KernelScratchError(
+        "kernel_spawn_blob_decode rejected the spawn blob",
+        errno === EOVERFLOW
+          ? E2BIG
+          : errno > 0 && errno <= 4095
+          ? errno
+          : EIO,
+      );
+    }
+    const framedLen = this.#checkedScratchProducerByteLength(
+      result,
+      capacity,
+      "kernel_spawn_blob_decode",
+    );
+    return this.#parseSpawnFraming(scratch.copyOut(0, framedLen));
+  }
+
+  /**
+   * Decode a spawn blob larger than the shared syscall scratch through one
+   * tokenized kernel reservation, then release it before returning so the
+   * later transport reservation in `#handleSpawnAfterResolve` finds the slot
+   * free. A trapped export leaves the guard set and propagates as fatal.
+   */
+  #decodeLargeSpawnBlob(
+    blobBytes: Uint8Array,
+    blobLen: number,
+    entry: KernelWorkerEntryContext,
+  ): { argv: string[]; envp: string[] } {
+    if (this.#largeSpawnScratchInUse) {
+      throw new KernelScratchError(
+        "spawn scratch reservation is already in use",
+        EBUSY,
+      );
+    }
+    this.#largeSpawnScratchInUse = true;
+    let reservation: ReservedSpawnScratch | null = null;
+    let decoded: { argv: string[]; envp: string[] } | null = null;
+    let caught: unknown = undefined;
+    let fatalError: KernelTransferExecuteTrapError | null = null;
+    try {
+      const begun = this.#beginLargeSpawnScratch(blobLen, entry);
+      reservation = begun.reservation;
+      if (!reservation?.region) {
+        throw new KernelScratchError(
+          "kernel could not reserve spawn decode scratch",
+          begun.errno > 0 && begun.errno <= 4095 ? begun.errno : EIO,
+        );
+      }
+      const region = reservation.region;
+      decoded = region.withLease((scratch) =>
+        this.#decodeSpawnFramingWithinLease(
+          entry,
+          scratch,
+          region.capacity,
+          blobBytes,
+          blobLen,
+        )
+      );
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      caught = error;
+      if (this.#kernelFatalError !== null) {
+        fatalError = error instanceof KernelTransferExecuteTrapError
+          ? error
+          : new KernelTransferExecuteTrapError(
+            "kernel spawn decode reservation trapped",
+            error,
+          );
+      }
+    }
+    if (reservation) {
+      try {
+        reservation.region?.revoke();
+      } catch (revokeError) {
+        this.#rethrowKernelEntryFatal(revokeError);
+        fatalError ??= new KernelTransferExecuteTrapError(
+          "kernel spawn decode reservation lease could not be revoked",
+          revokeError,
+        );
+      }
+      if (fatalError === null) {
+        try {
+          this.#cancelLargeSpawnScratch(reservation.token, entry);
+        } catch (cancelError) {
+          this.#rethrowKernelEntryFatal(cancelError);
+          fatalError = new KernelTransferExecuteTrapError(
+            "kernel spawn decode reservation could not be settled",
+            cancelError,
+          );
+        }
+      }
+    }
+    if (fatalError !== null) throw fatalError;
+    this.#largeSpawnScratchInUse = false;
+    if (caught !== undefined) throw caught;
+    // Every branch either set `decoded` or threw; the sentinel is unreachable.
+    if (decoded === null) {
+      throw new KernelScratchError("spawn decode produced no result", EIO);
+    }
+    return decoded;
+  }
+
+  /**
+   * Parse the host-private framing `kernel_spawn_blob_decode` wrote:
+   * `[argc u32][envc u32]` then each argv and envp entry as `[len u32][bytes]`.
+   * The bytes are `TextDecode`d exactly as the deleted host wire decoder did.
+   */
+  #parseSpawnFraming(framed: Uint8Array): { argv: string[]; envp: string[] } {
+    if (framed.byteLength < 8) {
+      throw new KernelScratchError(
+        "spawn framing is shorter than its header",
+        EIO,
+      );
+    }
+    const view = new DataView(
+      framed.buffer,
+      framed.byteOffset,
+      framed.byteLength,
+    );
+    const argc = view.getUint32(0, true);
+    const envc = view.getUint32(4, true);
+    // Each entry needs at least its 4-byte length prefix, so a count wider than
+    // the framing is corrupt; reject before allocating an array for it.
+    if (argc > framed.byteLength || envc > framed.byteLength) {
+      throw new KernelScratchError("spawn framing count is out of bounds", EIO);
+    }
+    const decoder = new TextDecoder();
+    let cursor = 8;
+    const readEntries = (count: number): string[] => {
+      const out = new Array<string>(count);
+      for (let i = 0; i < count; i++) {
+        if (cursor + 4 > framed.byteLength) {
+          throw new KernelScratchError(
+            "spawn framing entry header is out of bounds",
+            EIO,
+          );
+        }
+        const len = view.getUint32(cursor, true);
+        cursor += 4;
+        if (len > framed.byteLength - cursor) {
+          throw new KernelScratchError(
+            "spawn framing entry is out of bounds",
+            EIO,
+          );
+        }
+        out[i] = decoder.decode(framed.subarray(cursor, cursor + len));
+        cursor += len;
+      }
+      return out;
+    };
+    const argv = readEntries(argc);
+    const envp = readEntries(envc);
+    if (cursor !== framed.byteLength) {
+      throw new KernelScratchError("spawn framing has trailing bytes", EIO);
+    }
+    return { argv, envp };
   }
 
   #completeSpawnWithinKernelEntry(
