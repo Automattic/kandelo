@@ -36,6 +36,7 @@ pub mod module_state;
 pub mod module_state_records;
 pub mod reference_recipes;
 pub mod replay_events;
+pub mod replay_journal;
 
 pub use catalogs::{
     decode_resume_catalog, decode_static_root_catalog, ForkResumeCatalog, ForkResumeCatalogRecord,
@@ -70,3 +71,4 @@ pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };
 pub use replay_events::{decode_replay_events, ReplayEvent, ReplayEvents};
+pub use replay_journal::{JournalPhase, ReplayEventJournal, ResumeSlotTable};
