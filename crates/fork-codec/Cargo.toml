@@ -46,6 +46,13 @@ wasmparser = { version = "0.247", optional = true }
 #     --test gen_resume_catalog_fixture -- --ignored --nocapture
 gen-fixtures = ["dep:fork-instrument", "dep:walrus", "dep:wat", "dep:wasmparser"]
 
+# Type-check the documented native-Wasmtime backend sketch
+# (`src/native_sketch.rs`). Adds NO dependency: the sketch's bodies are
+# panic-free `ENOSYS` stubs and every `wasmtime` type is named only in doc
+# comments. Enabling this only proves the engine-floor trait is native-shaped:
+#   cargo build -p fork-codec --features native-sketch
+native-sketch = []
+
 [[test]]
 name = "gen_gc_codec_fixture"
 required-features = ["gen-fixtures"]

@@ -28,12 +28,18 @@ pub mod catalogs;
 pub mod dylink_archive;
 pub mod exception_codec;
 pub mod gc_codec;
+pub mod host_capabilities;
 pub mod imported_globals;
 pub mod imported_tables;
 pub mod linked_frames;
 pub mod linked_frames_writer;
 pub mod module_state;
 pub mod module_state_records;
+/// Documented native-Wasmtime backend SKETCH for the engine-floor seam. Gated
+/// behind the `native-sketch` feature; adds NO `wasmtime` dependency (stub
+/// bodies + a per-method mapping table). See `host_capabilities`.
+#[cfg(feature = "native-sketch")]
+pub mod native_sketch;
 pub mod reference_recipes;
 pub mod replay_events;
 pub mod replay_journal;
@@ -52,6 +58,10 @@ pub use exception_codec::{
     decode_exception_codec, ForkExceptionCodec, ForkExceptionTagLayout,
 };
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
+pub use host_capabilities::{
+    ForkHostCapabilities, ForkLifecycleCapabilities, HostGeneration, HostInstance, HostRef,
+    HostTag, HostThread,
+};
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
 pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{

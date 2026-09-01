@@ -86,6 +86,13 @@
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 extern crate alloc;
 
+// The Wasm-import-backed backend for the `fork_codec::ForkHostCapabilities`
+// engine-floor seam (Phase 6 D6, ADDITIVE). Declares the `wpk_fork_host` host
+// imports and a zero-cost impl; NOT wired to the guest. Wasm-only: on the host
+// target this crate stays empty (see below).
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+mod host_capabilities;
+
 // On non-wasm targets this crate is intentionally empty: it is a wasm32 cdylib
 // (the exports and linear-memory management are wasm-only). Keeping it empty on
 // the host lets `cargo build/test --workspace` on a host target stay green while
