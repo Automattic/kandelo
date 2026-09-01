@@ -41,6 +41,8 @@ pub mod module_state_records;
 #[cfg(feature = "native-sketch")]
 pub mod native_sketch;
 pub mod reference_recipes;
+pub mod reference_segments;
+pub mod reference_transaction;
 pub mod replay_events;
 pub mod replay_journal;
 pub mod rewind_driver;
@@ -80,6 +82,11 @@ pub use module_state_records::{
 };
 pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
+};
+pub use reference_segments::ReferenceTransactionRecord;
+pub use reference_transaction::{
+    decode_segmented_reference_transaction, vector_intern_key, SegmentedReferenceTransaction,
+    VectorInternIndex, VectorInternKey,
 };
 pub use replay_events::{
     decode_replay_events, decode_replay_events_image, encode_replay_events, ReplayEvent,
