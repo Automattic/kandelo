@@ -327,6 +327,9 @@ const processMemoryCreators = new ProcessMemoryCreatorGate();
 const checkpointMachine: CheckpointMachine = {
   runWithoutWorkerCreation: (operation, exclusive) =>
     processMemoryCreators.runExclusive(operation, exclusive),
+  hasQueuedLaunch: () => processMemoryCreators.hasQueuedAdmissions(),
+  onLaunchQueuedDuringFreeze: (listener) =>
+    processMemoryCreators.onLaunchQueuedDuringExclusive(listener),
   runWithoutRootfsMutation: (operation) => rootfsSnapshotGate.runSnapshot(operation),
   settleActiveVforkBorrows: () => vforkLifetimes.settleActiveBorrows(),
   holdProcessDispatch: () => kernelWorker.holdProcessDispatchForCheckpoint(),
@@ -1399,7 +1402,7 @@ async function handleInit(msg: InitMessage) {
             );
       },
       onExec: async (request) => {
-        const creatorAdmission = processMemoryCreators.acquire(
+        const creatorAdmission = await processMemoryCreators.acquire(
           "an exec process Worker",
         );
         try {

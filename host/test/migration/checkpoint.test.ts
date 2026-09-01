@@ -102,6 +102,9 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
     machine: {
       runWithoutWorkerCreation: (operation, exclusive) =>
         creators.runExclusive(operation, exclusive),
+      hasQueuedLaunch: () => creators.hasQueuedAdmissions(),
+      onLaunchQueuedDuringFreeze: (listener) =>
+        creators.onLaunchQueuedDuringExclusive(listener),
       runWithoutRootfsMutation: (operation) => rootfs.runSnapshot(operation),
       settleActiveVforkBorrows: () => state.settleVforks(),
       holdProcessDispatch: () => {
@@ -303,22 +306,29 @@ describe("machine checkpoint freeze", () => {
     expect(state.released).toEqual([[4]]);
   });
 
-  it("admits no worker creation and no rootfs mutation while it runs", async () => {
+  it("queues a launch behind the freeze, gives the machine back, and retries", async () => {
     const state = testMachine([processSource(4, 1)]);
     const capture = captureMachineCheckpoint(state.machine, options);
     await flush();
 
-    const spawn = vi.fn();
-    await expect(state.creators.run("spawn", spawn)).rejects.toThrow(
-      "checkpoint freeze is in progress; cannot start spawn",
-    );
+    const spawn = vi.fn(() => 11);
+    const queuedSpawn = state.creators.run("spawn", spawn);
+    // The launch is never refused: the read must not be visible to the
+    // machine as a failed fork or spawn. It waits out the freeze instead.
     expect(spawn).not.toHaveBeenCalled();
     expect(() => state.rootfs.beginMutation("write /etc/passwd")).toThrow(
       "rootfs export is in progress",
     );
 
+    // The queued launch's process is parked inside the launch, so this
+    // attempt gives the machine back at once, the launch runs, and the next
+    // attempt parks a machine that can park.
+    await expect(queuedSpawn).resolves.toBe(11);
+    while (state.sources[0]!.checkpointFreeze.currentPhase !== "armed") {
+      await flush();
+    }
     state.sources[0]!.checkpointFreeze.unwound();
-    await capture;
+    await expect(capture).resolves.toMatchObject({ status: "captured" });
   });
 
   it("resumes the machine when a process never reaches UNWINDING", async () => {
