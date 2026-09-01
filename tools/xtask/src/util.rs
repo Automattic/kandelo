@@ -28,6 +28,15 @@ pub fn hex_to_32(s: &str) -> Result<[u8; 32], String> {
             s.len()
         ));
     }
+    if !s.is_ascii() {
+        // `s.len()` above is a BYTE count, so a 64-byte string can still
+        // contain a multibyte UTF-8 character and fewer than 64 chars, with
+        // a non-char-boundary landing inside one of the 2-byte slice
+        // windows below. Reject it here instead of panicking on that slice.
+        return Err(format!(
+            "invalid hex digest {s:?}: expected 64 ASCII hex characters, found non-ASCII bytes"
+        ));
+    }
     let mut out = [0u8; 32];
     for (i, slot) in out.iter_mut().enumerate() {
         *slot = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|error| {
@@ -74,6 +83,18 @@ mod tests {
     #[test]
     fn hex_to_32_rejects_non_hex_characters() {
         let error = hex_to_32(&"z".repeat(64)).unwrap_err();
+        assert!(error.contains("invalid hex digest"), "{error}");
+    }
+
+    #[test]
+    fn hex_to_32_rejects_a_64_byte_non_ascii_string_without_panicking() {
+        // A multibyte UTF-8 character can make `s.len()` (a BYTE count) equal
+        // 64 while `s` has fewer than 64 chars and a non-char-boundary sits
+        // inside one of the 2-byte slice windows `hex_to_32` walks. This must
+        // return an `Err`, not panic on a non-char-boundary slice index.
+        let s = format!("{}{}", "0".repeat(61), '\u{20AC}'); // 61 + 3 bytes = 64 bytes
+        assert_eq!(s.len(), 64);
+        let error = hex_to_32(&s).unwrap_err();
         assert!(error.contains("invalid hex digest"), "{error}");
     }
 }

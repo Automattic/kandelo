@@ -15631,6 +15631,15 @@ fn validate_cache_entry(
 /// -- never the whole entry tree -- so the trusted fast path stays cheap
 /// relative to a full re-hash, even though it is not a zero-byte check.
 ///
+/// A member with NO stamp at all is tolerated, not rejected: it predates
+/// Task 5's stamping and cannot be shown to be either fresh or corrupt, so
+/// failing it would wall existing cache users off entries that were
+/// trustworthy under the pre-stamp contract. It self-migrates the next time
+/// it is rebuilt and re-stamped. Only a *mismatched* stamp -- a present
+/// stamp for a different key -- is treated as corruption evidence, because
+/// that is a positive signal of wrong bytes at the right key, not merely an
+/// absence of evidence.
+///
 /// Coverage boundary: this only checks entries whose canonical directory has
 /// a persisted receipt sidecar (see `materialized_wasm_members` below for
 /// which production path writes one and which does not). An entry stamped
@@ -15661,11 +15670,13 @@ fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) 
                 ));
             }
             None => {
-                return Err(format!(
-                    "cached entry {} member {} has no build key stamp; rebuild with `--rebuild`.",
-                    canonical.display(),
-                    member.display()
-                ));
+                // Legacy pre-stamp entry: tolerated, not rejected. This
+                // member predates Task 5's stamping and cannot be proven
+                // fresh or corrupt either way, so it self-migrates on its
+                // next rebuild instead of walling existing cache users off
+                // an entry that was trustworthy under the pre-stamp
+                // contract. Only a MISMATCHED stamp (above) is corruption
+                // evidence worth failing loudly for.
             }
         }
     }
@@ -35664,12 +35675,14 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
 
     /// Task 7 belt-and-suspenders check, `None` branch: a receipt-bearing
     /// canonical entry whose wasm member carries NO `kandelo.build.key`
-    /// stamp at all cannot be proven fresh, so the trusted cache-hit path
-    /// must reject it just as it rejects a wrong-key stamp above -- an
-    /// unstamped member is exactly as untrustworthy as a mismatched one,
-    /// since neither can be shown to belong to this entry's key.
+    /// stamp at all predates Task 5's stamping and cannot be proven fresh
+    /// OR corrupt, so the trusted cache-hit path must tolerate it -- unlike
+    /// a present-but-wrong-key stamp (positive corruption evidence, still
+    /// rejected above), an absent stamp is only a lack of evidence, and
+    /// rejecting it would wall existing legacy cache entries off instead of
+    /// letting them self-migrate on their next rebuild.
     #[test]
-    fn trusted_entry_rejected_when_stamp_is_missing() {
+    fn trusted_entry_tolerates_a_missing_stamp() {
         let repo = tempdir("trusted-nostamp-repo");
         prepare_local_rebuild_fixture_repo(&repo);
         write_program(
@@ -35713,18 +35726,14 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
         fs::write(&member, minimal_executable_wasm()).unwrap();
 
-        let err = validate_cache_entry(
+        validate_cache_entry(
             &target,
             &canonical,
             TargetArch::Wasm32,
             TEST_ABI,
             &receipt.cache_key_sha256,
         )
-        .unwrap_err();
-        assert!(
-            err.contains("no build key stamp"),
-            "must report the missing stamp: {err}"
-        );
+        .expect("an absent build-key stamp must be tolerated, not rejected, as a legacy entry");
     }
 
     /// Full SourceOnlyV1 kernel fixture for the verify-fresh build-key tests

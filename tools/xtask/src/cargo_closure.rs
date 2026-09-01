@@ -113,7 +113,6 @@ fn crate_dir_relative(repo_root: &Path, manifest_path: &str) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     // Uses the real checked-in workspace so `cargo metadata` resolves the
     // kernel crate ("kandelo") and its workspace path-deps.

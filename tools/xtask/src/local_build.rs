@@ -886,7 +886,9 @@ fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), Stri
         .map_err(|error| format!("run {}: {error}", script.display()))?;
     if !status.success() {
         return Err(
-            "abi/snapshot.json has drifted from its sources. Run \
+            "the ABI-snapshot freshness check did not pass (either abi/snapshot.json \
+             drifted from its sources, or the check could not run -- see the check \
+             output above). If it drifted, run \
              `bash scripts/check-abi-version.sh update` and commit the result."
                 .to_string(),
         );
@@ -6137,6 +6139,14 @@ materialization = "lazy"
         assert!(
             err.contains("snapshot") && err.contains("check-abi-version.sh update"),
             "error must name the snapshot and the update command: {err}"
+        );
+        // The script's own failure can be a provisioning problem (e.g. "sysroot
+        // not found") rather than actual snapshot drift, since the real script
+        // builds the kernel before comparing. The mapped error must not assert
+        // drift as fact -- it must allow for "the check could not run" too.
+        assert!(
+            err.contains("could not run"),
+            "error must not assert drift as the only explanation for a non-zero exit: {err}"
         );
     }
 
