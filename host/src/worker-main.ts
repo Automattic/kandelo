@@ -89,6 +89,10 @@ import {
 } from "./fork-unwind-transport";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
+  type ForkModuleInstance,
+  instantiateForkModule,
+} from "./fork-module-instance";
+import {
   computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
   ForkModuleStateArena,
@@ -3396,6 +3400,46 @@ export async function centralizedWorkerMain(
             `does not match linked frames ${linkedFrameFormat.ptrWidth}`,
         );
       }
+      // Phase 6 D5: eagerly instantiate the co-resident `fork-module` once, at
+      // process init, behind `initData.forkModuleEnabled`. It is placed into a
+      // host-reserved region of the shared memory (via the same channel
+      // `continuationMmap` the fork arena uses), so its static/BSS/stack never
+      // collide with live guest data. This step does NOT flip any guest fork
+      // import — the guest still uses the JavaScript `continuationImports`
+      // closures — so a successful instantiation is not yet observable. Assert
+      // exports loudly here, never mid-fork. Flag-off is byte-identical: this
+      // whole branch is skipped and no region is reserved.
+      let forkModuleInstance: ForkModuleInstance | null = null;
+      // A vfork/borrowed child temporarily shares its parent's memory and must
+      // not reserve or own a co-resident region; it also owns no durable fork
+      // arena. Skip it (it exec()s almost immediately). Every other worker —
+      // the parent, a COW fork child, and a fresh exec image — instantiates.
+      if (initData.forkModuleEnabled && !borrowedForkChild) {
+        const forkModuleModule = initData.forkModuleModule;
+        if (!forkModuleModule) {
+          throw new Error(
+            `pid=${pid}: forkModuleEnabled but no forkModuleModule was shipped`,
+          );
+        }
+        if (ptrWidth !== linkedFrameFormat.ptrWidth) {
+          throw new Error(
+            `pid=${pid}: fork-module width mismatch: process ptrWidth ` +
+              `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
+          );
+        }
+        forkModuleInstance = instantiateForkModule({
+          module: forkModuleModule,
+          memory,
+          ptrWidth,
+          reserve: (size) =>
+            continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
+          label: `pid=${pid}: fork-module`,
+        });
+      }
+      // Retained on the worker for later D5 steps (the import flip + coordinator
+      // wiring). Referenced here only to keep the binding live without changing
+      // any observable behavior this step.
+      void forkModuleInstance;
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
       const forkContinuation = new LinkedForkContinuation(
         memory,

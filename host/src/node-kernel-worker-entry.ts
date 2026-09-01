@@ -61,7 +61,7 @@ import {
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
-import { findRepoRoot } from "./binary-resolver";
+import { findRepoRoot, resolveBinary } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {
@@ -162,6 +162,28 @@ if (!parentPort) {
 }
 
 const port = parentPort;
+
+/**
+ * Phase 6 D5: read the `WASM_POSIX_FORK_MODULE` decision ONCE at this kernel
+ * host (the Node kernel worker builds every `centralized_init` message). When
+ * enabled, resolve and compile the width-matching co-resident `fork-module`
+ * once per pointer width and ship it to each fork-instrumented process worker.
+ * Default (unset) leaves the init message byte-identical to today.
+ */
+const forkModuleEnabled = process.env.WASM_POSIX_FORK_MODULE === "1";
+const forkModuleModuleByWidth = new Map<4 | 8, WebAssembly.Module>();
+function forkModuleInitFields(
+  ptrWidth: 4 | 8,
+): { forkModuleEnabled?: true; forkModuleModule?: WebAssembly.Module } {
+  if (!forkModuleEnabled) return {};
+  let mod = forkModuleModuleByWidth.get(ptrWidth);
+  if (!mod) {
+    const name = `fork_module${ptrWidth === 8 ? 64 : 32}.wasm`;
+    mod = new WebAssembly.Module(readFileSync(resolveBinary(name)));
+    forkModuleModuleByWidth.set(ptrWidth, mod);
+  }
+  return { forkModuleEnabled: true, forkModuleModule: mod };
+}
 
 // --- State ---
 
@@ -1547,6 +1569,7 @@ async function handleSpawn(msg: SpawnMessage) {
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     // A constructor may expose Memory to a partially created Worker before it
@@ -2337,6 +2360,7 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2673,6 +2697,7 @@ async function handleExec(
         ptrWidth: newPtrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        ...forkModuleInitFields(newPtrWidth),
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -3027,6 +3052,7 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     newWorker = new DeferredWorkerHandle(

@@ -54,13 +54,37 @@ RUSTFLAGS="${PIC_RUSTFLAGS[*]}" \
 WASM32="target/wasm32-unknown-unknown/release/fork_module.wasm"
 echo "wasm32 artifact: $WASM32"
 
+# Stage the artifacts where BOTH hosts load them, mirroring how the kernel
+# stages `kernel.wasm`:
+#
+#   * Node resolves `resolveBinary("fork_module32.wasm")`, which searches the
+#     `local-binaries/` (source-generation) tier and the installed-package
+#     `host/wasm/` tier. Stage into both so a source checkout AND the published
+#     npm package resolve the module.
+#   * The browser's Vite `@fork-module32-wasm?url` alias resolves the same
+#     `local-binaries/`/`host/wasm/` copies.
+#
+# The per-width filename (`fork_module32.wasm` / `fork_module64.wasm`) lets the
+# kernel host ship the width matching the guest's pointer width.
+stage_fork_module() {
+  local src="$1" width="$2"
+  local name="fork_module${width}.wasm"
+  mkdir -p "$REPO_ROOT/local-binaries" "$REPO_ROOT/host/wasm"
+  cp "$src" "$REPO_ROOT/local-binaries/$name"
+  cp "$src" "$REPO_ROOT/host/wasm/$name"
+  echo "staged $name -> local-binaries/$name, host/wasm/$name"
+}
+stage_fork_module "$WASM32" 32
+
 # The wasm64 (`pointer_width = 8` guest) variant. wasm64-unknown-unknown is a
 # tier-3 target built entirely from source via build-std. Best-effort: a wasm64
 # guest is not yet exercised by the harness, so a failure here is non-fatal.
 echo "== building fork-module (PIC side module, wasm64, best-effort) =="
 if RUSTFLAGS="${PIC_RUSTFLAGS[*]}" \
     cargo build --release -p fork-module --target wasm64-unknown-unknown -Z build-std=core,alloc; then
-  echo "wasm64 artifact: target/wasm64-unknown-unknown/release/fork_module.wasm"
+  WASM64="target/wasm64-unknown-unknown/release/fork_module.wasm"
+  echo "wasm64 artifact: $WASM64"
+  stage_fork_module "$WASM64" 64
 else
   echo "wasm64 build unavailable on this toolchain (wasm32 is sufficient for this slice)"
 fi

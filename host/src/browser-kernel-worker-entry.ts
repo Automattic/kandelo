@@ -144,6 +144,22 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
+// Phase 6 D5: the co-resident wasm32 fork-module, compiled ONCE at kernel init
+// when the main thread forwards `WASM_POSIX_FORK_MODULE`. Browser workers
+// cannot read `process.env`, so the decision and bytes arrive in the init
+// message. Shipped to each fork-instrumented process worker; default off.
+let forkModuleEnabledBrowser = false;
+let forkModuleModule32Browser: WebAssembly.Module | null = null;
+function forkModuleInitFields(
+  ptrWidth: 4 | 8,
+): { forkModuleEnabled?: true; forkModuleModule?: WebAssembly.Module } {
+  // Only the wasm32 module ships in the browser this step; wasm32 is the guest
+  // width. A wasm64 guest under the flag simply skips (unchanged path).
+  if (!forkModuleEnabledBrowser || ptrWidth !== 4 || !forkModuleModule32Browser) {
+    return {};
+  }
+  return { forkModuleEnabled: true, forkModuleModule: forkModuleModule32Browser };
+}
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
@@ -1351,6 +1367,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   await kernelWorker.init(msg.kernelWasmBytes);
 
+  // Phase 6 D5: compile the fork-module once here, at the kernel host, so each
+  // process worker instantiates from a pre-compiled module. Fail loud at init
+  // if enabled without bytes.
+  if (msg.forkModuleEnabled) {
+    if (!msg.forkModuleBytes) {
+      throw new Error("forkModuleEnabled but no forkModuleBytes were shipped");
+    }
+    forkModuleEnabledBrowser = true;
+    forkModuleModule32Browser = await WebAssembly.compile(msg.forkModuleBytes);
+  }
+
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
   // exposes raw process Memory and must pair every bind with the exact release
@@ -1592,6 +1619,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     workerCreationAttempted = true;
@@ -2526,6 +2554,7 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2896,6 +2925,7 @@ async function handleExec(
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        ...forkModuleInitFields(ptrWidth),
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -3279,6 +3309,7 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      ...forkModuleInitFields(ptrWidth),
     };
 
     newWorker = new DeferredWorkerHandle(
