@@ -138,18 +138,76 @@ for (const name of [
   "__wpk_fork_ref_decode_funcref",
   "fm_begin_reference_replay",
   "fm_references_reconstructed",
+  // Phase 6 D6.2 externref reconstruction proof-of-use + the seam anchor.
+  "fm_externrefs_resolved",
+  "fm_host_capabilities_probe",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
 
-// Inert stubs for the engine-floor host-capability imports so the module
-// instantiates. The frame/continuation path under test never calls them; only
-// the `fm_host_capabilities_probe` retention anchor references them, and this
-// harness does not invoke it. `() => 0` satisfies every signature (all return
-// i32/u32; i64 return values are not used).
-const forkHostStubs = {};
+// REAL (not inert) engine-floor host-capability bodies (Phase 6 D6.2). The
+// frame/continuation path under test never calls these, but the
+// `fm_host_capabilities_probe` retention anchor drives the WHOLE seam once, so
+// give it functioning bodies backed by a JS token map + a fake anyref transit.
+// This proves, in a real engine, that the module's `WpkForkHost` routes the
+// seam's opaque `u32` ordinals across the import boundary end to end. Every
+// handle-returning body returns a NON-ZERO ordinal (0 == failure); status
+// bodies return 0 (success). `hostCalls` records that the drive actually
+// invoked resolve/publish.
+const hostCalls = { resolveExternref: 0, transitPublish: 0, transitRead: 0 };
+const hostState = {
+  nextRef: 0,
+  tokens: new Map(), // ordinal -> broker handle (proxy for the real externref)
+  transit: new Map(), // slot -> ordinal
+  nextTag: 0,
+  generation: 0,
+};
+const forkHostStubs = {
+  host_begin_generation: (_pid) => {
+    hostState.generation += 1;
+    return hostState.generation;
+  },
+  host_resolve_externref: (_generation, brokerHandle) => {
+    hostCalls.resolveExternref += 1;
+    hostState.nextRef += 1;
+    hostState.tokens.set(hostState.nextRef, brokerHandle);
+    return hostState.nextRef;
+  },
+  host_resolve_funcref: (_activation, _ordinal) => {
+    hostState.nextRef += 1;
+    return hostState.nextRef;
+  },
+  host_resolve_static_root: (_activation, _ordinal) => {
+    hostState.nextRef += 1;
+    return hostState.nextRef;
+  },
+  host_install_reference_global: () => 0,
+  host_transit_publish: (_generation, slot, value) => {
+    hostCalls.transitPublish += 1;
+    hostState.transit.set(slot, value);
+    return 0;
+  },
+  host_transit_read: (_generation, slot) => {
+    hostCalls.transitRead += 1;
+    // Fake transit: hand back exactly what was published (identity preserved).
+    return hostState.transit.get(slot) ?? 0;
+  },
+  host_mint_exception_tag: () => {
+    hostState.nextTag += 1;
+    return hostState.nextTag;
+  },
+  host_provide_unwind_transport_tag: () => 0xffffffff,
+  host_recognize_unwind_transport: () => 1,
+  host_release_generation: () => 0,
+  host_instantiate_child: () => 1,
+  host_spawn_thread: () => 1,
+  host_last_errno: () => 0,
+};
+// Any import we did not name above (future additions) stays inert.
 for (const imp of WebAssembly.Module.imports(module)) {
-  if (imp.module === "wpk_fork_host") forkHostStubs[imp.name] = () => 0;
+  if (imp.module === "wpk_fork_host" && !(imp.name in forkHostStubs)) {
+    forkHostStubs[imp.name] = () => 0;
+  }
 }
 importObject["wpk_fork_host"] = forkHostStubs;
 
@@ -164,6 +222,24 @@ const readU32 = (off) => view().getUint32(off, true);
 const writeU32 = (off, val) => view().setUint32(off, val >>> 0, true);
 const readByte = (off) => u8()[off];
 const errno = () => x.fm_last_errno();
+
+// -- Phase 6 D6.2: drive the engine-floor seam end to end via the anchor -------
+//
+// `fm_host_capabilities_probe` exercises every `WpkForkHost` method once. With
+// the REAL host bodies above (token map + fake transit), driving it proves the
+// module routes the seam across the wasm→JS import boundary and that
+// resolve_externref + transit_publish were actually invoked (not optimized out).
+{
+  const acc = x.fm_host_capabilities_probe(0x1234);
+  assert.equal(typeof acc, "bigint", "probe returns an i64");
+  assert.ok(hostCalls.resolveExternref > 0, "seam drove host_resolve_externref");
+  assert.ok(hostCalls.transitPublish > 0, "seam drove host_transit_publish");
+  assert.ok(hostCalls.transitRead > 0, "seam drove host_transit_read");
+  console.log(
+    `  ok: engine-floor seam driven — resolve_externref x${hostCalls.resolveExternref}, `
+      + `transit_publish x${hostCalls.transitPublish}, transit_read x${hostCalls.transitRead}`,
+  );
+}
 
 // -- The sentinel: proxy for live guest data at LOW offsets --------------------
 //

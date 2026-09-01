@@ -404,11 +404,31 @@ pub mod mock {
         generations: HashMap<u32, GenState>,
         next_generation: u32,
         unwind_tag: Option<u32>,
+        /// When set, `transit_read` returns a DIFFERENT ordinal than was
+        /// published — an adversarial engine that lost the anyref slot's
+        /// identity. Drives the R1 non-null/identity guard in
+        /// `ReferenceReplayDriver::drive_reconstruction` to a truthful `EINVAL`.
+        corrupt_transit: bool,
+        /// Records the recipe handles passed to `resolve_externref`, in call
+        /// order (test inspector: proves the module drove the seam per node).
+        resolved_externref_handles: Vec<u32>,
     }
 
     impl MockForkHost {
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Make every `transit_read` hand back a corrupted (non-matching)
+        /// ordinal, so a publish→read identity check fails (test inspector).
+        pub fn corrupt_transit_reads(&mut self) {
+            self.corrupt_transit = true;
+        }
+
+        /// The externref broker handles `resolve_externref` was called with, in
+        /// order (test inspector: proof the drive resolved each externref node).
+        pub fn resolved_externref_handles(&self) -> &[u32] {
+            &self.resolved_externref_handles
         }
 
         /// Number of live rooted references in `generation` (test inspector).
@@ -478,7 +498,9 @@ pub mod mock {
             if broker_handle == 0 {
                 return Err(Errno::EINVAL); // externref handles are 1..=0xffff_ffff
             }
-            self.mint_ref(generation, MockValue::Externref { broker_handle })
+            let host_ref = self.mint_ref(generation, MockValue::Externref { broker_handle })?;
+            self.resolved_externref_handles.push(broker_handle);
+            Ok(host_ref)
         }
 
         fn resolve_funcref(
@@ -548,9 +570,18 @@ pub mod mock {
             generation: HostGeneration,
             slot: u32,
         ) -> Result<HostRef, Errno> {
+            let corrupt = self.corrupt_transit;
             let g = self.active_gen_mut(generation)?;
             // Non-null guard: an unpublished slot is a truthful EINVAL.
-            g.transit.get(&slot).copied().map(HostRef).ok_or(Errno::EINVAL)
+            let published = g.transit.get(&slot).copied().ok_or(Errno::EINVAL)?;
+            // Adversarial mode: return an ordinal that is non-null but does NOT
+            // match what was published, so the drive's identity assert fires.
+            let value = if corrupt {
+                published.wrapping_add(1).max(1)
+            } else {
+                published
+            };
+            Ok(HostRef(value))
         }
 
         fn mint_exception_tag(

@@ -99,6 +99,10 @@ import {
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
 import {
+  type ForkModuleHostCapabilities,
+  createForkModuleHostCapabilities,
+} from "./fork-module-host-capabilities";
+import {
   computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
   ForkModuleStateArena,
@@ -3419,6 +3423,10 @@ export async function centralizedWorkerMain(
       // coordinator through it. Flag-off is byte-identical: this whole branch is
       // skipped, no region is reserved, and no import is flipped.
       let forkModuleInstance: ForkModuleInstance | null = null;
+      // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
+      // externref side table + broker token materialization). Null when the
+      // fork-module is not instantiated (flag-off / borrowed child).
+      let forkModuleHostCapabilities: ForkModuleHostCapabilities | null = null;
       // Phase 6 D5 step 4b/5: when the fork qualifies, this backend drives the
       // continuation through the co-resident module and the coordinator takes
       // its module-backed branches. Null (non-qualifying / flag-off) => the
@@ -3433,6 +3441,23 @@ export async function centralizedWorkerMain(
       // fork transaction existed) and for any fork with a non-funcref reference,
       // so those keep the byte-identical JS reference path.
       let moduleReferenceKindsSupported = false;
+      // The child worker's externref token cache (broker handle -> canonical
+      // worker-local token). Created BEFORE the fork-module so the D6.2
+      // engine-floor seam can close over it; also owned by the JS reference path
+      // (the still-JS `__wpk_fork_ref_decode_externref` materializes the SAME
+      // idempotent token, so the module and JS agree on identity).
+      if (
+        initData.forkHostImports === undefined ||
+        initData.externrefGenerationId === undefined
+      ) {
+        throw new Error(
+          `pid=${pid}: ABI 43 fork artifact requires its process owner ` +
+            "host-import mailbox and externref generation",
+        );
+      }
+      const externrefTokens = new ForkExternrefTokenCache(
+        initData.externrefGenerationId,
+      );
       // A vfork/borrowed child temporarily shares its parent's memory and must
       // not reserve or own a co-resident region; it also owns no durable fork
       // arena. Skip it (it exec()s almost immediately). Every other worker —
@@ -3450,6 +3475,16 @@ export async function centralizedWorkerMain(
               `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
           );
         }
+        // Phase 6 D6.2: the REAL engine-floor `wpk_fork_host.*` bodies backing
+        // the module's `WpkForkHost` seam. They close over this worker's
+        // externref token cache so `host_resolve_externref` re-roots the SAME
+        // canonical token the still-JS `__wpk_fork_ref_decode_externref` returns
+        // (identity parity). The anyref transit is a D6.3/6.4 seam (a plain
+        // externref fork publishes nothing into it), so none is passed here.
+        forkModuleHostCapabilities = createForkModuleHostCapabilities({
+          tokens: externrefTokens,
+          generationId: initData.externrefGenerationId,
+        });
         forkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
           memory,
@@ -3457,6 +3492,7 @@ export async function centralizedWorkerMain(
           reserve: (size) =>
             continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
           label: `pid=${pid}: fork-module`,
+          hostCapabilities: forkModuleHostCapabilities.imports,
         });
 
         // QUALIFYING PREDICATE for the module-backed continuation. All of:
@@ -3504,6 +3540,7 @@ export async function centralizedWorkerMain(
                 `pid=${pid}: fork-module arena`,
               ),
             frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
+            pid,
             label: `pid=${pid}: fork-module`,
           });
           // Seed the linked-frame format + full resume catalog once, now, before
@@ -3556,18 +3593,6 @@ export async function centralizedWorkerMain(
           `pid=${pid}`,
         );
 
-      if (
-        initData.forkHostImports === undefined ||
-        initData.externrefGenerationId === undefined
-      ) {
-        throw new Error(
-          `pid=${pid}: ABI 43 fork artifact requires its process owner ` +
-            "host-import mailbox and externref generation",
-        );
-      }
-      const externrefTokens = new ForkExternrefTokenCache(
-        initData.externrefGenerationId,
-      );
       processHostImportRuntime = new ForkHostImportWorkerRuntime(
         initData.forkHostImports,
         pid,
@@ -4041,18 +4066,30 @@ export async function centralizedWorkerMain(
             exceptionDescriptor:
               readForkExceptionCodecDescriptor(activationModule),
           }));
-        // Phase 6 D6.1 predicate: this child's references can be reconstructed
-        // through the module iff EVERY graph node is null or funcref (so only
-        // `__wpk_fork_ref_decode_funcref` and the null branch are exercised — no
-        // externref/gc/exnref/static-root, which need the JS engine-floor
-        // providers this slice does not move). The module re-checks the same
-        // predicate in `fm_begin_reference_replay`, so a disagreement fails loud.
+        // Phase 6 D6.2 predicate (widened from D6.1): this child's references
+        // can be reconstructed through the module iff EVERY graph node is null,
+        // funcref, or externref. Funcref stays the wasm→wasm `table.get` path;
+        // externref is re-rooted through the `wpk_fork_host` engine-floor seam
+        // (`host_resolve_externref` over the broker token cache), while the
+        // still-JS `__wpk_fork_ref_decode_externref` returns the resolved value.
+        // Every OTHER kind still needs a JS engine-floor provider this slice does
+        // not move, so it keeps the byte-identical JS reference path:
+        //   * exnref / gc struct / gc array — the tag mint + typed drive-order
+        //     (D6.3 / D6.4);
+        //   * i31 — the guest codec's i31 materialization;
+        //   * static-root — NOT transit-free: it publishes into the anyref
+        //     transit, which needs `resolve_static_root` + the transit seam
+        //     wired, deferred with the GC slice.
+        // The module re-checks the same predicate in `fm_begin_reference_replay`,
+        // so a host/module disagreement fails loud (`EOPNOTSUPP`), never silently.
         moduleReferenceKindsSupported =
           useForkModule &&
           forkModuleInstance !== null &&
           [...decodedChildReferences.graph.nodes].every(
             (entry) =>
-              entry.node.kind === "null" || entry.node.kind === "funcref",
+              entry.node.kind === "null" ||
+              entry.node.kind === "funcref" ||
+              entry.node.kind === "externref",
           );
         earlyChildReferences = new ForkEarlyChildReferenceProvider({
           records,
