@@ -415,6 +415,14 @@ name = "qtbase"
 class = "platform"
 
 [[packages]]
+name = "qtdeclarative"
+class = "platform"
+
+[[packages]]
+name = "qtshadertools"
+class = "platform"
+
+[[packages]]
 name = "redis"
 class = "user-software"
 

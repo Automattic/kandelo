@@ -1,0 +1,13 @@
+script_path = "packages/registry/qtdeclarative/build-qtdeclarative.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "9072b5384"
+revision    = 2
+
+# The fetched `qtdeclarative-src/` tree is gitignored; the resolver
+# hashes these tracked inputs on a clean checkout. script_path is not
+# implicit — only what this list names reaches the cache key.
+inputs = [
+  "packages/registry/qtdeclarative/build-qtdeclarative.sh",
+  "packages/registry/qtdeclarative/src/qv4-stack-bounds-on-wasm.patch",
+  "scripts/package-build-roots.sh",
+]
