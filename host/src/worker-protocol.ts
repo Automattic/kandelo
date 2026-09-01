@@ -192,7 +192,20 @@ export type WorkerToHostMessage =
   | ExecCompleteMessage
   | AlarmSetMessage
   | VmInterruptTimerMessage
+  | ForkModuleFramesMessage
   | ForkHostImportWakeMessage;
+
+/**
+ * Phase 6 D5: proof-of-use for the co-resident fork-module. A process worker
+ * that drove a qualifying fork through the module reports how many frames the
+ * module committed, so the host (and tests) can confirm the continuation ran
+ * through the module and did not silently fall back to the JS closures.
+ */
+export interface ForkModuleFramesMessage {
+  type: "fork_module_frames";
+  pid: number;
+  frames: number;
+}
 
 export interface WorkerReadyMessage {
   type: "ready";

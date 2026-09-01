@@ -95,7 +95,7 @@ extern crate alloc;
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::UnsafeCell;
-    use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
     use alloc::vec::Vec;
 
@@ -127,6 +127,86 @@ mod wasm {
     // geometry).
     static FMT_POINTER_WIDTH: AtomicU32 = AtomicU32::new(0);
     static FMT_FIXED_PREFIX: AtomicU32 = AtomicU32::new(0);
+
+    // -- Host-seeded resume-slot catalog ------------------------------------
+    //
+    // Resume-slot PARITY (D5 §"Other couplings" 1): the guest imports the JS
+    // `__wpk_fork_resume_table` (a `WebAssembly.Table` numbered from the FULL
+    // resume catalog, slot 0 reserved, then slots 1..N by sorted function
+    // ordinal). The module's `resume_peek` returns an index INTO that JS table,
+    // so the module's `ResumeSlotTable` numbering MUST match the JS one exactly
+    // or `call_indirect` targets the wrong thunk (silent corruption).
+    //
+    // The JS table registers the WHOLE catalog; the module, left to its own
+    // devices, would number from the COMMITTED ordinals only, diverging whenever
+    // committed != catalog. To make the numbering identical BY CONSTRUCTION, the
+    // host seeds the same full catalog (the fork-instrumented function ordinals,
+    // any order) into the module ONCE per worker via `fm_set_resume_catalog`,
+    // and the module registers its resume table from that catalog instead of the
+    // committed ordinals. Both sides then sort the identical ordinal set and
+    // assign slots 1..N the same way. A committed frame's function always has a
+    // resume thunk, so committed is always a subset of the catalog.
+    //
+    // A fixed BSS buffer holds the catalog so it survives the per-fork heap
+    // reset (`fm_begin_unwind` clears the bump heap). A catalog larger than the
+    // cap yields a truthful `E2BIG`; the host then declines the module path and
+    // keeps the byte-identical JavaScript continuation for that program.
+    const RESUME_CATALOG_CAP: usize = 16_384;
+
+    #[repr(C, align(4))]
+    struct CatalogCell(UnsafeCell<[u32; RESUME_CATALOG_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for CatalogCell {}
+    static RESUME_CATALOG: CatalogCell =
+        CatalogCell(UnsafeCell::new([0u32; RESUME_CATALOG_CAP]));
+    static RESUME_CATALOG_LEN: AtomicU32 = AtomicU32::new(0);
+
+    fn set_resume_catalog_impl(ptr: u64, count: u64) -> Result<(), Errno> {
+        let count = usize::try_from(count).map_err(|_| Errno::EINVAL)?;
+        if count > RESUME_CATALOG_CAP {
+            return Err(Errno::E2BIG);
+        }
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let byte_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
+        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // catalog region past the end of guest memory
+        }
+        // Copy the little-endian u32 ordinals out of guest memory through raw
+        // pointers (the same aliasing-safe idiom the journal image copy uses).
+        // SAFETY: `[start, end)` is within guest linear memory (checked above);
+        // the destination is the distinct static BSS catalog buffer.
+        let dst = unsafe { &mut *RESUME_CATALOG.0.get() };
+        let src = core::hint::black_box(start) as *const u8;
+        for (index, slot) in dst.iter_mut().take(count).enumerate() {
+            let mut bytes = [0u8; 4];
+            unsafe {
+                core::ptr::copy(src.add(index * 4), bytes.as_mut_ptr(), 4);
+            }
+            *slot = u32::from_le_bytes(bytes);
+        }
+        RESUME_CATALOG_LEN.store(count as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The seeded resume catalog, or an empty slice if the host never seeded one
+    /// (legacy harness path: fall back to committed-ordinal numbering).
+    fn resume_catalog() -> &'static [u32] {
+        let len = RESUME_CATALOG_LEN.load(Ordering::Relaxed) as usize;
+        if len == 0 {
+            return &[];
+        }
+        // SAFETY: single-threaded per worker; `len <= RESUME_CATALOG_CAP` by the
+        // `set_resume_catalog_impl` bound. The buffer outlives every borrow.
+        let all = unsafe { &*RESUME_CATALOG.0.get() };
+        &all[..len]
+    }
+
+    // Monotonic count of frames the module has committed since worker start.
+    // Proof-of-use for the host: after a flag-on fork drives the continuation
+    // through this module, the counter has advanced past its pre-fork value. A
+    // silent fallback to the JavaScript path leaves it unchanged.
+    static FRAMES_COMMITTED: AtomicU64 = AtomicU64::new(0);
 
     fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
@@ -393,6 +473,7 @@ mod wasm {
         let ordinal = RewindDriver::read_function_ordinal(mem, payload)?;
         st.journal.record_commit(st.activation_id, ordinal)?;
         st.committed_ordinals.push(ordinal);
+        FRAMES_COMMITTED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -408,12 +489,20 @@ mod wasm {
         st.journal.begin_parent_replay()?;
         let mem = unsafe { mem_ref() };
         let driver = RewindDriver::attach(mem, st.module_buffer, &st.format)?;
-        // Register the activation's resume targets: the distinct captured
-        // function ordinals, sorted (mirrors ForkResumeTable.registerActivation).
-        let mut distinct = st.committed_ordinals.clone();
-        distinct.sort_unstable();
-        distinct.dedup();
-        st.table.register_activation(st.activation_id, &distinct)?;
+        // Register the activation's resume targets. When the host has seeded the
+        // FULL resume catalog (`fm_set_resume_catalog`), register from it so the
+        // slot numbering matches the JS `__wpk_fork_resume_table` by construction
+        // (D5 resume-slot parity). Otherwise (legacy harness, no catalog) fall
+        // back to the distinct captured ordinals, sorted — the prior behavior.
+        let catalog = resume_catalog();
+        if catalog.is_empty() {
+            let mut distinct = st.committed_ordinals.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            st.table.register_activation(st.activation_id, &distinct)?;
+        } else {
+            st.table.register_activation(st.activation_id, catalog)?;
+        }
         st.driver = Some(driver);
         Ok(())
     }
@@ -553,12 +642,21 @@ mod wasm {
             .filter(|event| event.activation_id == activation_id)
             .map(|event| event.function_ordinal)
             .collect();
-        let mut distinct = committed_ordinals.clone();
-        distinct.sort_unstable();
-        distinct.dedup();
+        // Same resume-slot parity contract as the parent (`begin_replay_impl`):
+        // register from the host-seeded FULL catalog when present so the child's
+        // numbering matches its own JS `__wpk_fork_resume_table`; otherwise fall
+        // back to the distinct decoded ordinals (legacy harness).
+        let catalog = resume_catalog();
         let mut table = ResumeSlotTable::new();
-        if !distinct.is_empty() {
-            table.register_activation(activation_id, &distinct)?;
+        if catalog.is_empty() {
+            let mut distinct = committed_ordinals.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if !distinct.is_empty() {
+                table.register_activation(activation_id, &distinct)?;
+            }
+        } else {
+            table.register_activation(activation_id, catalog)?;
         }
 
         // Attach the rewind driver to the continuation the parent published,
@@ -786,6 +884,31 @@ mod wasm {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
+    }
+
+    /// Seed the FULL resume catalog for this worker: `[ptr, ptr + count*4)` is a
+    /// little-endian `u32` array of the fork-instrumented function ordinals (the
+    /// same set the host registers into the JS `__wpk_fork_resume_table`). The
+    /// module registers its `ResumeSlotTable` from this catalog at replay so its
+    /// slot numbering matches the JS table by construction (resume-slot parity).
+    /// Called ONCE per worker (like `fm_set_format`), before any fork. A catalog
+    /// larger than the module's cap fails with `E2BIG` (check `fm_last_errno`);
+    /// the host then keeps the JavaScript continuation for that program.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_resume_catalog(ptr: usize, count: usize) {
+        match set_resume_catalog_impl(ptr as u64, count as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Monotonic count of frames this module has committed since worker start.
+    /// Proof-of-use: after a flag-on qualifying fork drives the continuation
+    /// through the module, this has advanced; a silent JS fallback leaves it
+    /// unchanged. Never resets (including across `fm_begin_unwind`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frames_committed() -> i64 {
+        FRAMES_COMMITTED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).

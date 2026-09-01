@@ -93,6 +93,11 @@ import {
   instantiateForkModule,
 } from "./fork-module-instance";
 import {
+  FORK_MODULE_FRAME_ARENA_BYTES,
+  FORK_MODULE_RESUME_CATALOG_CAP,
+  ForkModuleContinuationBackend,
+} from "./fork-module-backend";
+import {
   computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
   ForkModuleStateArena,
@@ -130,7 +135,10 @@ import {
   ForkProcessContinuationCoordinator,
   type ForkBorrowedReplayWorkspaceRequirements,
 } from "./fork-process-continuation";
-import { forkResumeTargetsFromInstance } from "./fork-resume-catalog";
+import {
+  forkResumeTargetsFromInstance,
+  readForkResumeCatalog,
+} from "./fork-resume-catalog";
 import {
   ForkExternrefTokenCache,
   ForkExternrefTokenRecipeProvider,
@@ -3404,12 +3412,18 @@ export async function centralizedWorkerMain(
       // process init, behind `initData.forkModuleEnabled`. It is placed into a
       // host-reserved region of the shared memory (via the same channel
       // `continuationMmap` the fork arena uses), so its static/BSS/stack never
-      // collide with live guest data. This step does NOT flip any guest fork
-      // import — the guest still uses the JavaScript `continuationImports`
-      // closures — so a successful instantiation is not yet observable. Assert
-      // exports loudly here, never mid-fork. Flag-off is byte-identical: this
-      // whole branch is skipped and no region is reserved.
+      // collide with live guest data. Assert exports loudly here, never mid-fork.
+      // For a QUALIFYING fork (see the predicate below) step 4b/5 then flips the
+      // guest's five frame/resume imports to this instance and routes the
+      // coordinator through it. Flag-off is byte-identical: this whole branch is
+      // skipped, no region is reserved, and no import is flipped.
       let forkModuleInstance: ForkModuleInstance | null = null;
+      // Phase 6 D5 step 4b/5: when the fork qualifies, this backend drives the
+      // continuation through the co-resident module and the coordinator takes
+      // its module-backed branches. Null (non-qualifying / flag-off) => the
+      // byte-identical JavaScript continuation.
+      let forkModuleBackend: ForkModuleContinuationBackend | null = null;
+      let useForkModule = false;
       // A vfork/borrowed child temporarily shares its parent's memory and must
       // not reserve or own a co-resident region; it also owns no durable fork
       // arena. Skip it (it exec()s almost immediately). Every other worker —
@@ -3435,11 +3449,59 @@ export async function centralizedWorkerMain(
             continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
           label: `pid=${pid}: fork-module`,
         });
+
+        // QUALIFYING PREDICATE for the module-backed continuation. All of:
+        //  - the module instantiated and its width matches the guest;
+        //  - the program cannot add fork activations at runtime (no dlopen fork
+        //    role) => the fork is single-activation (activation 0 only);
+        //  - not a fork-from-thread child (that path replays a thread stack);
+        //  - the full resume catalog fits the module's static cap, so the
+        //    module can register it and match the JS resume-slot numbering.
+        // Single-thread and not-vfork hold by construction here: this is the
+        // main process worker path (the pthread coordinator is separate) and a
+        // borrowed vfork child never reaches this branch (`!borrowedForkChild`).
+        // Any miss keeps `useForkModule=false` => byte-identical JS path.
+        const catalogOrdinals = readForkResumeCatalog(module).map(
+          (entry) => entry.functionOrdinal,
+        );
+        const isForkFromThreadChild =
+          initData.isForkChild === true &&
+          initData.forkChildThreadFnPtr != null;
+        useForkModule =
+          ptrWidth === linkedFrameFormat.ptrWidth &&
+          !hasDylinkForkRole &&
+          !isForkFromThreadChild &&
+          catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP;
+        if (useForkModule) {
+          forkModuleBackend = new ForkModuleContinuationBackend({
+            exports: forkModuleInstance.exports,
+            memory,
+            ptrWidth,
+            format: linkedFrameFormat,
+            catalogOrdinals,
+            reserveRegion: (size) =>
+              continuationMmap(
+                memory,
+                channelOffset,
+                size,
+                `pid=${pid}: fork-module arena`,
+              ),
+            releaseRegion: (addr, size) =>
+              continuationMunmap(
+                memory,
+                channelOffset,
+                addr,
+                size,
+                `pid=${pid}: fork-module arena`,
+              ),
+            frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
+            label: `pid=${pid}: fork-module`,
+          });
+          // Seed the linked-frame format + full resume catalog once, now, before
+          // any fork drives the module. Both are host-known custom sections.
+          forkModuleBackend.setup();
+        }
       }
-      // Retained on the worker for later D5 steps (the import flip + coordinator
-      // wiring). Referenced here only to keep the binding live without changing
-      // any observable behavior this step.
-      void forkModuleInstance;
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
       const forkContinuation = new LinkedForkContinuation(
         memory,
@@ -3559,6 +3621,12 @@ export async function centralizedWorkerMain(
         activationRegistry,
         `pid=${pid}: process continuation`,
       );
+      if (forkModuleBackend) {
+        // Route this worker's next fork through the co-resident module. The
+        // coordinator's module-backed branches then own the journal/frames/
+        // resume slots; every non-qualifying fork stays on the JS path.
+        processContinuation.enableModuleBacking(forkModuleBackend);
+      }
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
       const tableGenerationOffset =
@@ -4031,6 +4099,27 @@ export async function centralizedWorkerMain(
         ...processContinuation.continuationImports(0, (errno) => {
           processContinuation.beginCaptureAbort(errno);
         }),
+        // Phase 6 D5 IMPORT FLIP: for a QUALIFYING fork, the guest calls the
+        // co-resident module's frame/resume exports directly (wasm->wasm over
+        // shared memory), replacing exactly the five per-frame JS closures from
+        // `continuationImports`. Everything else — crucially the JS
+        // `__wpk_fork_resume_table` funcref table the module's `resume_peek`
+        // indexes — is kept from `continuationImports`. Guest ABI names and
+        // signatures are unchanged; no guest re-instrumentation.
+        ...(useForkModule && forkModuleInstance
+          ? {
+              __wpk_fork_frame_reserve:
+                forkModuleInstance.exports.__wpk_fork_frame_reserve,
+              __wpk_fork_frame_commit:
+                forkModuleInstance.exports.__wpk_fork_frame_commit,
+              __wpk_fork_frame_peek:
+                forkModuleInstance.exports.__wpk_fork_frame_peek,
+              __wpk_fork_frame_next:
+                forkModuleInstance.exports.__wpk_fork_frame_next,
+              __wpk_fork_resume_peek:
+                forkModuleInstance.exports.__wpk_fork_resume_peek,
+            }
+          : {}),
         ...buildForkActivationStateImports(
           0,
           activationRegistry,
@@ -4384,6 +4473,19 @@ export async function centralizedWorkerMain(
           }
           throw e;
         }
+      }
+
+      // Phase 6 D5 proof-of-use: a parent worker that ran a qualifying fork
+      // through the co-resident module reports how many frames the module
+      // committed. Only the parent commits (a replay-only child never does), so
+      // scope this to the non-child worker. A silent JS fallback would leave
+      // the counter at zero and fail the flag-on proof test.
+      if (forkModuleBackend && !initData.isForkChild) {
+        port.postMessage({
+          type: "fork_module_frames",
+          pid,
+          frames: Number(forkModuleBackend.framesCommitted()),
+        } satisfies WorkerToHostMessage);
       }
 
       processContinuation.clear();
