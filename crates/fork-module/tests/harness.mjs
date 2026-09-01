@@ -91,6 +91,28 @@ for (const need of [
 ]) {
   assert.ok(imports.includes(need), `module must import ${need}, got ${imports}`);
 }
+// The engine-floor host-capability seam (Phase 6 D6, ADDITIVE): the module now
+// DECLARES the `wpk_fork_host.*` imports (see src/host_capabilities.rs). Assert
+// the whole seam is exposed so the artifact carries the eventual host API
+// surface, even though this harness — which exercises only the reference-free
+// frame/continuation path — never calls them.
+for (const need of [
+  "wpk_fork_host.host_begin_generation",
+  "wpk_fork_host.host_resolve_externref",
+  "wpk_fork_host.host_resolve_funcref",
+  "wpk_fork_host.host_resolve_static_root",
+  "wpk_fork_host.host_install_reference_global",
+  "wpk_fork_host.host_transit_publish",
+  "wpk_fork_host.host_transit_read",
+  "wpk_fork_host.host_mint_exception_tag",
+  "wpk_fork_host.host_provide_unwind_transport_tag",
+  "wpk_fork_host.host_recognize_unwind_transport",
+  "wpk_fork_host.host_release_generation",
+  "wpk_fork_host.host_last_errno",
+]) {
+  assert.ok(imports.includes(need), `module must import ${need}, got ${imports}`);
+}
+
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
   "__wpk_fork_frame_reserve",
@@ -109,6 +131,17 @@ for (const name of [
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
+
+// Inert stubs for the engine-floor host-capability imports so the module
+// instantiates. The frame/continuation path under test never calls them; only
+// the `fm_host_capabilities_probe` retention anchor references them, and this
+// harness does not invoke it. `() => 0` satisfies every signature (all return
+// i32/u32; i64 return values are not used).
+const forkHostStubs = {};
+for (const imp of WebAssembly.Module.imports(module)) {
+  if (imp.module === "wpk_fork_host") forkHostStubs[imp.name] = () => 0;
+}
+importObject["wpk_fork_host"] = forkHostStubs;
 
 const instance = new WebAssembly.Instance(module, importObject);
 const x = instance.exports;
@@ -370,6 +403,8 @@ function instantiateAt(mem, moduleBase, stackTop) {
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
     },
+    // Inert engine-floor stubs (never called by the reference-free frame path).
+    wpk_fork_host: forkHostStubs,
   }).exports;
 }
 
