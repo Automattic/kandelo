@@ -313,7 +313,7 @@ describe("NodeKernelHost rootfs export contract", () => {
   );
 
   it.skipIf(!haveKernel)(
-    "exports a faithful image from the in-kernel overlay tree (WASM_POSIX_ROOTFS=1)",
+    "exports a faithful image from the in-kernel overlay tree",
     async () => {
       const kernel = new Uint8Array(readFileSync(kernelPath!));
 
@@ -343,30 +343,22 @@ describe("NodeKernelHost rootfs export contract", () => {
       );
       const baseImage = await base.saveImage();
 
-      const prevFlag = process.env.WASM_POSIX_ROOTFS;
-      process.env.WASM_POSIX_ROOTFS = "1"; // worker_thread inherits process.env
-
       const created = new Uint8Array([9, 8, 7, 6]);
       let exported: Uint8Array;
+      const host = new NodeKernelHost({ rootfsImage: baseImage });
       try {
-        const host = new NodeKernelHost({ rootfsImage: baseImage });
-        try {
-          await host.init(asArrayBuffer(kernel));
+        await host.init(asArrayBuffer(kernel));
 
-          await host.writeFileToVfs("/var/lib/ingested", created, 0o620);
-          await host.writeFileToVfs(
-            "/var/lib/base-to-overwrite",
-            new TextEncoder().encode("copy-on-written\n"),
-            0o600,
-          );
+        await host.writeFileToVfs("/var/lib/ingested", created, 0o620);
+        await host.writeFileToVfs(
+          "/var/lib/base-to-overwrite",
+          new TextEncoder().encode("copy-on-written\n"),
+          0o600,
+        );
 
-          exported = await host.exportRootfsImage();
-        } finally {
-          await host.destroy();
-        }
+        exported = await host.exportRootfsImage();
       } finally {
-        if (prevFlag === undefined) delete process.env.WASM_POSIX_ROOTFS;
-        else process.env.WASM_POSIX_ROOTFS = prevFlag;
+        await host.destroy();
       }
 
       // The exported image round-trips through the normal loader.
@@ -402,32 +394,25 @@ describe("NodeKernelHost rootfs export contract", () => {
       ]);
 
       // Rebooting from the exported image and re-exporting is idempotent.
-      const prevFlag2 = process.env.WASM_POSIX_ROOTFS;
-      process.env.WASM_POSIX_ROOTFS = "1";
+      const rebooted = new NodeKernelHost({ rootfsImage: exported });
       try {
-        const rebooted = new NodeKernelHost({ rootfsImage: exported });
-        try {
-          await rebooted.init(asArrayBuffer(kernel));
-          const again = await rebooted.exportRootfsImage();
-          const againFs = MemoryFileSystem.fromImage(again);
-          expect(new TextDecoder().decode(
-            readFile(againFs, "/var/lib/base-to-overwrite"),
-          )).toBe("copy-on-written\n");
-          expect(readFile(againFs, "/var/lib/ingested")).toEqual(created);
-          expect(againFs.readlink("/var/lib/link")).toBe("persisted-state");
-          expect(againFs.exportLazyEntries()).toEqual([
-            expect.objectContaining({
-              path: "/opt/lazy-tool",
-              url: "https://packages.example.test/lazy-tool.wasm",
-              size: 4242,
-            }),
-          ]);
-        } finally {
-          await rebooted.destroy();
-        }
+        await rebooted.init(asArrayBuffer(kernel));
+        const again = await rebooted.exportRootfsImage();
+        const againFs = MemoryFileSystem.fromImage(again);
+        expect(new TextDecoder().decode(
+          readFile(againFs, "/var/lib/base-to-overwrite"),
+        )).toBe("copy-on-written\n");
+        expect(readFile(againFs, "/var/lib/ingested")).toEqual(created);
+        expect(againFs.readlink("/var/lib/link")).toBe("persisted-state");
+        expect(againFs.exportLazyEntries()).toEqual([
+          expect.objectContaining({
+            path: "/opt/lazy-tool",
+            url: "https://packages.example.test/lazy-tool.wasm",
+            size: 4242,
+          }),
+        ]);
       } finally {
-        if (prevFlag2 === undefined) delete process.env.WASM_POSIX_ROOTFS;
-        else process.env.WASM_POSIX_ROOTFS = prevFlag2;
+        await rebooted.destroy();
       }
     },
   );

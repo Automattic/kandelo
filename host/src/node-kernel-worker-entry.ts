@@ -54,7 +54,6 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
-import { kernelRootfsEnabled } from "./vfs/kernel-rootfs-gate";
 import {
   emitRootfsManifest,
   createRootfsBlobProvider,
@@ -82,7 +81,6 @@ import {
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   FILE_MODES,
-  OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -164,8 +162,6 @@ if (!parentPort) {
 }
 
 const port = parentPort;
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 // --- State ---
 
@@ -847,7 +843,14 @@ function resolveExecLocal(path: string): ArrayBuffer | null {
 function isMissingPathError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
-  return code === -2 || code === "ENOENT";
+  if (code === -2 || code === "ENOENT") return true;
+  // With the overlay owning `/`, the host `/` mount is dropped, so a `/`-owned
+  // path the overlay disowns hits `VirtualPlatformIO` with no covering mount
+  // ("ENOENT: no mount for path: ..."). That is a missing-path condition, not a
+  // hard failure — treat it as ENOENT so exec resolution falls through cleanly.
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" &&
+    message.startsWith("ENOENT: no mount for path");
 }
 
 // EAGAIN retry shape for host-initiated exec-byte reads through the in-kernel
@@ -884,9 +887,9 @@ class ExecOverlayReadTimeoutError extends Error {
 }
 
 // Read a file's bytes for host-initiated exec (`resolveExec` /
-// `spawnFromVfs`) THROUGH the in-kernel rootfs overlay instead of the host
-// `/` mount. Used when `kernelRootfsEnabled()` so the overlay is the sole
-// source of exec bytes ahead of the `/` mount removal (w5 Task 2). ENOENT/
+// `spawnFromVfs`) THROUGH the in-kernel rootfs overlay. The overlay is the
+// unconditional sole `/` authority, so it is the sole source of exec bytes
+// for `/`-tree paths (the host `/` mount no longer exists). ENOENT/
 // ENOTDIR/EISDIR mean "not a readable regular file here" -> null, so callers
 // fall through to the main-thread `resolve_exec` exactly as the pre-overlay
 // path did. Any other errno is a truthful failure.
@@ -931,23 +934,19 @@ async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
 }
 
 async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
-  // When the overlay owns `/`, it is the authority for `/`-tree exec bytes
-  // ahead of the `/` mount removal (w5 Task 2) — read through it directly
-  // instead of the host `/` mount, with async EAGAIN retry so a lazy archive
-  // fetch can complete.
-  if (kernelRootfsEnabled()) {
-    const fromOverlay = await readExecFromOverlay(path);
-    if (fromOverlay) return fromOverlay;
-    // The overlay is the sole `/` authority, but sibling foreign mounts that
-    // remain in the guest mount table (e.g. `/run/kandelo-run` session-seed
-    // trees, extra host mounts) still serve their own exec bytes. The overlay
-    // correctly disowns those paths (see `rootfs::owns_path` foreign-mount
-    // registry), so a null overlay read must fall through to the guest mount
-    // table rather than fail — otherwise `spawnFromVfs` of a program that only
-    // lives under a foreign mount would ENOENT. This does NOT reintroduce the
-    // `/` double-fetch w5 removed: `/` is unmounted, so only genuine sibling
-    // mounts resolve here.
-  }
+  // The overlay owns `/` unconditionally, so it is the authority for `/`-tree
+  // exec bytes — read through it directly (the host `/` mount no longer
+  // exists), with async EAGAIN retry so a lazy archive fetch can complete.
+  const fromOverlay = await readExecFromOverlay(path);
+  if (fromOverlay) return fromOverlay;
+  // The overlay is the sole `/` authority, but sibling foreign mounts that
+  // remain in the guest mount table (e.g. `/run/kandelo-run` session-seed
+  // trees, extra host mounts) still serve their own exec bytes. The overlay
+  // correctly disowns those paths (see `rootfs::owns_path` foreign-mount
+  // registry), so a null overlay read must fall through to the guest mount
+  // table rather than fail — otherwise `spawnFromVfs` of a program that only
+  // lives under a foreign mount would ENOENT. `/` is unmounted, so only
+  // genuine sibling mounts resolve here.
   const io = vfsExecIO;
   if (io) {
     try {
@@ -1125,28 +1124,23 @@ async function buildVirtualPlatformIO(
     rootfsMemfs.setLazyFetcher(lazyFetcher);
     rootfsLazyFetcher = lazyFetcher;
   }
-  // Phase 5 Increment 3b-wiring.5: when the in-kernel rootfs overlay is the
-  // sole `/` authority, drop the host `/` mount from the guest-facing
-  // VirtualPlatformIO. Guest syscalls already route non-tmpfs `/` paths
+  // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
+  // `/` authority, so the host `/` mount is always dropped from the
+  // guest-facing VirtualPlatformIO. Guest syscalls route non-tmpfs `/` paths
   // through the overlay (`rootfs::claims_path`), and host-initiated exec-byte
-  // reads were redirected through the overlay in w5 Task 1
-  // (`readExecFromOverlay`), so nothing still depends on `/` being mounted
-  // here. Leaving it mounted caused a double-fetch of lazy archives (this
-  // host mount plus the overlay's own lazy wiring both fetching). `rootMount`
-  // was already captured into `rootfsMemfs` above, so the backing
-  // MemoryFileSystem stays alive as the `blob_read` byte store and lazy-group
-  // source even though it is no longer mounted.
-  const guestMounts = kernelRootfsEnabled()
-    ? mounts.filter((m) => m.mountPoint !== "/")
-    : mounts;
+  // reads go through the overlay (`readExecFromOverlay`), so nothing depends
+  // on `/` being mounted here. Leaving it mounted would double-fetch lazy
+  // archives (this host mount plus the overlay's own lazy wiring both
+  // fetching). `rootMount` was already captured into `rootfsMemfs` above, so
+  // the backing MemoryFileSystem stays alive as the `blob_read` byte store and
+  // lazy-group source even though it is no longer mounted.
+  const guestMounts = mounts.filter((m) => m.mountPoint !== "/");
   // The mounts that survive dropping `/` are exactly the sibling filesystems the
   // overlay must not claim. Hand their prefixes to the overlay so `/dev/shm`,
   // `/run/kandelo-run` session-seed trees, and extra host mounts keep resolving
   // through their own backend rather than being shadowed by the sole `/`
   // authority. (tmpfs scratch mounts are excluded by the kernel independently.)
-  rootfsForeignPrefixes = kernelRootfsEnabled()
-    ? guestMounts.map((m) => m.mountPoint)
-    : [];
+  rootfsForeignPrefixes = guestMounts.map((m) => m.mountPoint);
   return new VirtualPlatformIO(guestMounts, new NodeTimeProvider());
 }
 
@@ -1370,10 +1364,11 @@ async function handleInit(msg: InitMessage) {
     },
   });
 
-  // Phase 5 Increment 2 (rootfs gate, default off): hand the `/` image tree to
-  // the in-kernel rootfs overlay and install the byte provider before init
-  // applies them. The `/` MemoryFileSystem is reachable only here in the entry.
-  if (kernelRootfsEnabled() && rootfsMemfs) {
+  // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
+  // `/` authority. Hand the `/` image tree to the overlay and install the byte
+  // provider before init applies them. The `/` MemoryFileSystem is reachable
+  // only here in the entry.
+  if (rootfsMemfs) {
     // Phase 5 Increment 3b-wiring.3: also bridge System A's lazy-archive
     // export (`rootfsMemfs.exportLazyArchiveEntries()`) into the overlay's
     // `KIND_LAZY_FILE` linkage + `host_fetch_archive` provider.
@@ -3823,19 +3818,16 @@ async function handleExportRootfsImage(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
       }
-      if (kernelRootfsEnabled()) {
-        // The kernel overlay owns `/`; `rootfsMemfs` is only the frozen base
-        // image. Rebuild a faithful image by reconciling that base with the
-        // overlay's authoritative tree (copy-on-writes, runtime creates/deletes,
-        // metadata) rather than serializing the stale base directly.
-        const { image: overlayImage } = await exportRootfsImageFromOverlay({
-          baseImage: await rootfsMemfs!.saveImage(),
-          overlayTree: kernelWorker.rootfsExportTree(),
-          readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
-        });
-        return overlayImage;
-      }
-      return rootfsMemfs!.saveImage();
+      // The kernel overlay owns `/`; `rootfsMemfs` is only the frozen base
+      // image. Rebuild a faithful image by reconciling that base with the
+      // overlay's authoritative tree (copy-on-writes, runtime creates/deletes,
+      // metadata) rather than serializing the stale base directly.
+      const { image: overlayImage } = await exportRootfsImageFromOverlay({
+        baseImage: await rootfsMemfs!.saveImage(),
+        overlayTree: kernelWorker.rootfsExportTree(),
+        readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
+      });
+      return overlayImage;
     });
     respondTransferredBytes(msg.requestId, image);
   } catch (error) {
@@ -3849,127 +3841,47 @@ async function handleExportRootfsImage(
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
-  if (kernelRootfsEnabled()) {
-    // The kernel overlay owns `/`; read authoritative bytes from it (including
-    // guest copy-on-writes) rather than the demoted base-image MemoryFileSystem.
-    try {
-      const data = kernelWorker.rootfsReadFile(msg.path);
-      respondTransferredBytes(msg.requestId, data);
-    } catch (error) {
-      const errno = (error as { errno?: number }).errno;
-      // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
-      // file -> null, matching the host-served path's contract.
-      if (errno === 2 || errno === 20 || errno === 21) {
-        respond(msg.requestId, null);
-      } else {
-        respondError(
-          msg.requestId,
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
-    return;
-  }
-  const io = vfsExecIO;
-  if (!io) {
-    respond(msg.requestId, null);
-    return;
-  }
-  let releaseMutation: (() => void) | undefined;
+  // The kernel overlay owns `/` unconditionally; read authoritative bytes from
+  // it (including guest copy-on-writes). The host `/` mount no longer exists.
   try {
-    // A read can materialize a deferred file/tree, so it participates in the
-    // same exclusion contract as process launches and rootfs snapshots.
-    releaseMutation = rootfsSnapshotGate.beginMutation(
-      "read or materialize a rootfs file",
-    );
-    const { data, stat } = await readPreparedPlatformFile(io, msg.path);
-    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
-      respond(msg.requestId, null);
-      return;
-    }
+    const data = kernelWorker.rootfsReadFile(msg.path);
     respondTransferredBytes(msg.requestId, data);
   } catch (error) {
-    if (isMissingPathError(error)) respond(msg.requestId, null);
-    else {
+    const errno = (error as { errno?: number }).errno;
+    // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
+    // file -> null, matching the host-served path's contract.
+    if (errno === 2 || errno === 20 || errno === 21) {
+      respond(msg.requestId, null);
+    } else {
       respondError(
         msg.requestId,
         error instanceof Error ? error.message : String(error),
       );
     }
-  } finally {
-    releaseMutation?.();
   }
 }
 
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
-  if (kernelRootfsEnabled()) {
-    // The kernel overlay owns `/`; write into it so the file is visible to live
-    // guests, instead of the demoted base-image MemoryFileSystem the guest no
-    // longer reads.
-    let releaseMutation: (() => void) | undefined;
-    try {
-      releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
-      kernelWorker.rootfsWriteFile(
-        msg.path,
-        msg.data,
-        msg.mode & FILE_MODES.S_MODE_BITS,
-      );
-      respond(msg.requestId, true);
-    } catch (error) {
-      respondError(
-        msg.requestId,
-        error instanceof Error ? error.message : String(error),
-      );
-    } finally {
-      releaseMutation?.();
-    }
-    return;
-  }
-  const io = vfsExecIO;
-  if (!io) {
+  // The kernel overlay owns `/` unconditionally; write into it so the file is
+  // visible to live guests. The host `/` mount no longer exists. A kernel
+  // booted without a `/` image has no overlay to write into — reject clearly
+  // rather than surfacing a lower-level "rootfs write failed".
+  if (!rootfsMemfs) {
     respondError(msg.requestId, "VFS is not initialized");
     return;
   }
   let releaseMutation: (() => void) | undefined;
-  let fd: number | null = null;
   try {
-    releaseMutation = rootfsSnapshotGate.beginMutation(
-      "write a rootfs file",
-    );
-    fd = io.open(
+    releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
+    kernelWorker.rootfsWriteFile(
       msg.path,
-      O_WRONLY_CREAT_TRUNC,
+      msg.data,
       msg.mode & FILE_MODES.S_MODE_BITS,
     );
-    let offset = 0;
-    while (offset < msg.data.byteLength) {
-      const written = io.write(
-        fd,
-        msg.data.subarray(offset),
-        null,
-        msg.data.byteLength - offset,
-      );
-      if (written <= 0) {
-        throw new Error(`Short write while staging ${msg.path}`);
-      }
-      offset += written;
-    }
-    io.close(fd);
-    fd = null;
-    // open(O_CREAT) preserves an existing file's mode. Apply the caller's
-    // requested mode explicitly so replacement and creation behave alike.
-    io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
     respond(msg.requestId, true);
   } catch (error) {
-    if (fd !== null) {
-      try {
-        io.close(fd);
-      } catch {
-        // Preserve the write failure as the useful error.
-      }
-    }
     respondError(
       msg.requestId,
       error instanceof Error ? error.message : String(error),

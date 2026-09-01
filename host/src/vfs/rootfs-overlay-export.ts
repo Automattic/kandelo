@@ -1,7 +1,7 @@
 /**
  * Rootfs overlay image export (Phase 5 cutover).
  *
- * When the in-kernel overlay owns `/` (`WASM_POSIX_ROOTFS=1`) the host's
+ * The in-kernel overlay owns `/` unconditionally, so the host's
  * `MemoryFileSystem` is demoted to a frozen byte store for the base image: it no
  * longer reflects runtime mutations (copy-on-written files, files created or
  * deleted at runtime, `chmod`/`chown`/`utimens`). Serializing it directly would
