@@ -84,7 +84,7 @@ const SETUP_FAILURE =
  * CTRL+Space, and switchable themes — and every piece is driven from the
  * keyboard. Skips (via gotoOrSkip) when the binaries aren't built.
  */
-test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page }) => {
+test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page, browserName }) => {
   test.setTimeout(300_000);
 
   await gotoOrSkip(page, "/?demo=omarchy");
@@ -198,10 +198,11 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/LAYER ns=launcher layer=3 /);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_READY n=8/);
+    .toMatch(/KLAUNCHER_READY n=10/);
 
-  // "te" narrows the eight entries (Bash, Clock, Foot, Nano, NetHack, Paint,
-  // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
+  // "te" narrows the ten entries (Bash, Clock, Foot, Nano, NetHack, Paint,
+  // Qt Demo, Quickshell, Terminal, Vim) to Terminal alone — "t" alone still
+  // matches Paint.
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("KeyT");
@@ -268,6 +269,75 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/TILE n=6 i=5 /);
   expect(await syslogText(page), "foot binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
+  // GLDRAW is the compositor's proof that it drew this window's texture.
+  // Every marker above is protocol — map, focus, tile — and all of them
+  // fire for a window whose wl_shm pool the GPU cannot import (a memfd
+  // pool instead of a gbm prime fd). foot carries the gbm-pool patch that
+  // keeps its pools importable; this is the gate that notices if it stops.
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/GLDRAW app_id=foot/);
+
+  // Gate 5d: a Qt application through the same path. "qt" narrows to Qt Demo;
+  // its entry runs qtdemo — QtGui's wayland QPA plugin connecting via
+  // XDG_RUNTIME_DIR, xdg-shell configure, the raster backing store through
+  // wl_shm, fontconfig resolving "sans-serif" through the staged fonts.conf —
+  // and the seventh tile only appears once Qt maps its first frame. The
+  // QTDEMO_FRAME marker proves the frame-callback loop keeps granting Qt new
+  // frames, not just the first paint.
+  const beforeQt = await launcherSessions(page);
+  await pressCtrl(page, "Space");
+  await expect
+    .poll(() => launcherSessions(page), { timeout: 60_000 })
+    .toBeGreaterThan(beforeQt);
+  await pressKeys(page, ["KeyQ", "KeyT", "Enter"]);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtdemo/);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/QTDEMO_PLATFORM=wayland/);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/TILE n=7 i=6 /);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/QTDEMO_FRAME n=30/);
+  expect(await syslogText(page), "qtdemo binary does not match the kernel ABI")
+    .not.toMatch(/ABI version mismatch/);
+  // The invisible-window gate. Qt's stock backing store allocates memfd
+  // pools; the GL renderer cannot import those, skips the surface, and
+  // every gate above still passes — that is exactly how the invisible
+  // qtdemo shipped. Qt now carries the same gbm-pool patch as foot and
+  // GTK, and GLDRAW only fires once the window's texture was drawn.
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/GLDRAW app_id=qtdemo/);
+
+  // Gate 5e: a QtQuick application through the same path. "qu" narrows to
+  // Quickshell; its entry runs quickshell with the staged shell.qml. The QML
+  // engine loads, the scenegraph renders through the software adaptation
+  // (QT_QUICK_BACKEND=software from the compositor's environ), and the
+  // PanelWindow maps as a wlr-layer-shell surface under Quickshell's default
+  // namespace — layer surfaces never emit GLDRAW, so the LAYER line is the
+  // mapping proof. Firefox is excluded: the running desktop's wasm code plus
+  // Quickshell's main and pthread modules exceeds SpiderMonkey's fixed 2 GiB
+  // per-process executable-code arena, so Quickshell's first QThread::start
+  // fails — see docs/browser-support.md#firefox-executable-code-limit.
+  if (browserName !== "firefox") {
+    const beforeQs = await launcherSessions(page);
+    await pressCtrl(page, "Space");
+    await expect
+      .poll(() => launcherSessions(page), { timeout: 60_000 })
+      .toBeGreaterThan(beforeQs);
+    await pressKeys(page, ["KeyQ", "KeyU", "Enter"]);
+    await expect
+      .poll(() => syslogStream(page), { timeout: 60_000 })
+      .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/quickshell/);
+    await expect
+      .poll(() => syslogStream(page), { timeout: 120_000 })
+      .toMatch(/LAYER ns=quickshell /);
+  }
 
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the

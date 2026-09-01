@@ -36,6 +36,7 @@ export const OMARCHY_WAYBAR_CONFIG_PATH = "/usr/share/kandelo/waybar/config.json
 export const OMARCHY_WAYBAR_STYLE_SEED_PATH = "/usr/share/kandelo/waybar/style.css";
 export const OMARCHY_WAYBAR_STYLE_PATH = "/tmp/waybar-style.css";
 export const OMARCHY_MAKO_CONFIG_PATH = "/usr/share/kandelo/mako/config";
+export const OMARCHY_QUICKSHELL_CONFIG_PATH = "/usr/share/kandelo/quickshell/shell.qml";
 
 /**
  * The compositor config. SUPER is what real Hyprland (and Omarchy) binds, but
@@ -118,13 +119,16 @@ export const OMARCHY_APPS: Record<string, string> = {
   "bash.conf": "name = Bash\nexec = /usr/local/bin/wlterm /usr/bin/bash -i\n",
   "foot.conf":
     "name = Foot\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
+  "qtdemo.conf": "name = Qt Demo\nexec = /usr/local/bin/qtdemo\n",
+  "quickshell.conf":
+    "name = Quickshell\nexec = /usr/local/bin/quickshell -p /usr/share/kandelo/quickshell/shell.qml\n",
 };
 
 /**
- * The fontconfig configuration foot reads at startup. The demo stages one
- * font (Inconsolata) under /usr/share/fonts and aliases the generic
- * "monospace" family to it, so foot's default font pattern resolves without
- * a per-user configuration.
+ * The fontconfig configuration foot and qtdemo read at startup. The demo
+ * stages one font (Inconsolata) under /usr/share/fonts and aliases the
+ * generic "monospace" and "sans-serif" families to it, so both clients'
+ * default font patterns resolve without a per-user configuration.
  */
 export const OMARCHY_FONTS_CONF = `<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
@@ -133,6 +137,10 @@ export const OMARCHY_FONTS_CONF = `<?xml version="1.0"?>
   <cachedir>/tmp/fontconfig</cachedir>
   <alias>
     <family>monospace</family>
+    <prefer><family>Inconsolata</family></prefer>
+  </alias>
+  <alias>
+    <family>sans-serif</family>
     <prefer><family>Inconsolata</family></prefer>
   </alias>
 </fontconfig>
@@ -170,6 +178,38 @@ export const OMARCHY_MAKO_CONFIG = `default-timeout=5000
 background-color=#1a1b26
 text-color=#c0caf5
 border-color=#7aa2f7
+`;
+
+/**
+ * The Quickshell demo shell: one layer-shell bar with a live clock, in the
+ * tokyo-night palette the desktop boots with. Quickshell renders it through
+ * QtQuick's software scenegraph (QT_QUICK_BACKEND=software comes from the
+ * compositor's environment), so the bar proves the whole QtQuick-on-wl_shm
+ * pipeline. It anchors to the bottom edge because Waybar owns the top.
+ */
+export const OMARCHY_QUICKSHELL_CONFIG = `import Quickshell
+import QtQuick
+
+ShellRoot {
+  SystemClock {
+    id: clock
+    precision: SystemClock.Seconds
+  }
+  PanelWindow {
+    anchors {
+      bottom: true
+      left: true
+      right: true
+    }
+    implicitHeight: 30
+    color: "#1a1b26"
+    Text {
+      anchors.centerIn: parent
+      color: "#c0caf5"
+      text: "Quickshell — " + Qt.formatDateTime(clock.date, "hh:mm:ss")
+    }
+  }
+}
 `;
 
 /**

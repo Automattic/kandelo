@@ -245,6 +245,7 @@ struct surface {
     /* Set once wl_surface.enter has named the output to this surface. One
      * output means one enter, so this keeps the two senders from doubling it. */
     int entered;
+    int gl_drawn;                       /* GLDRAW marker printed */
 };
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
@@ -3092,6 +3093,16 @@ static int repaint_gl(void) {
                            glc_px(dw + 4), glc_px(dh + 4));
         glc_draw_tex_rect(texs[i], surface_alpha[i], glc_px(s->x), glc_px(s->y),
                           glc_px(dw), glc_px(dh), uv);
+        /* One-shot per window: the GL renderer drew this window's own
+         * texture. Every protocol marker (map, focus, tile, frame callback)
+         * still fires for a window whose pool the GPU cannot import — the
+         * collection loop leaves a zero texture and the window is skipped
+         * silently. The browser gate polls this marker by app_id. */
+        if (s->xdg_toplevel && !s->gl_drawn) {
+            printf("GLDRAW app_id=%s\n", s->app_id);
+            fflush(stdout);
+            s->gl_drawn = 1;
+        }
         for (int j = 0; j < g.n_all_surfaces; j++) {
             struct surface *sub = g.all_surfaces[j];
             if (sub->parent != s || !surface_visible(sub) || !sub->buffer)

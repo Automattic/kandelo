@@ -325,7 +325,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
-| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
+| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + qtdemo + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling, a QtGui client in the launcher. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -648,6 +648,18 @@ on the compositor's own process rather than on a foreground terminal.
   freetype/fontconfig/fcft rasterizing the staged Inconsolata through
   `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
+  The Qt Demo entry is the first Qt client: a `QRasterWindow` from the
+  `qtdemo` package, drawing an animated wave field, gradient-filled type and
+  a live clock through QtGui's raster engine and the wayland QPA plugin onto
+  `wl_shm` — antialiasing the wpkdraw clients don't have. It reads the same
+  `/etc/fonts/fonts.conf`, which aliases `sans-serif` alongside `monospace`
+  to the staged Inconsolata for it. `Esc` or `Q` closes it. The Quickshell
+  entry is the first QtQuick client: **Quickshell 0.3.1** runs the staged
+  `/usr/share/kandelo/quickshell/shell.qml`, the QML engine renders through
+  the scenegraph's software adaptation (`QT_QUICK_BACKEND=software` from the
+  compositor's environ), and its `PanelWindow` maps as a wlr-layer-shell
+  clock bar along the bottom edge — except on Firefox, see
+  [the executable-code limit below](#firefox-executable-code-limit).
 - **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
   at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
   the installed themes and `Enter` switches live. `Esc` in a submenu goes
@@ -671,6 +683,24 @@ on the compositor's own process rather than on a foreground terminal.
   focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every
   bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
   browser, which reserves `SUPER` (see the caveat above).
+
+#### Firefox executable-code limit
+
+SpiderMonkey reserves one fixed 2 GiB region per content process for all
+JIT and wasm compiled code (`MaxCodeBytesPerProcess`), shared by every
+worker on the page. Compiled wasm code is several times the module's size:
+the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
+full desktop running — compositor, Waybar, qtdemo, foot, mako, dbus-daemon,
+klauncher — the region already holds ~1.2 GB of live code. Quickshell's
+launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
+thread-patched module as a second full copy, which cannot fit; the compile
+throws SpiderMonkey's `InternalError: out of memory`, Qt logs
+`QThread::start: Thread creation error`, and the panel never maps. Chrome
+and WebKit have no fixed per-process code cap, so the same desktop passes
+there. This is an engine limit, not a memory shortage — the process RSS
+stays far below the machine's capacity when it hits. The omarchy spec
+therefore skips its Quickshell gate (5e) on Firefox; everything up to and
+after it runs on all three engines.
 
 See
 [architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).

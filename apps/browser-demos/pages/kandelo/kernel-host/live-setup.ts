@@ -95,6 +95,8 @@ import {
   OMARCHY_FONTS_CONF,
   OMARCHY_MAKO_CONFIG,
   OMARCHY_MAKO_CONFIG_PATH,
+  OMARCHY_QUICKSHELL_CONFIG,
+  OMARCHY_QUICKSHELL_CONFIG_PATH,
   OMARCHY_THEME_DIR,
   OMARCHY_THEME_HOOK,
   OMARCHY_THEMES,
@@ -273,6 +275,18 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/foot.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/qtdemo.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/qtdemo.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/quickshell.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/quickshell.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -1920,11 +1934,16 @@ async function bootProfile(
           const busEnv = omarchy
             ? [`DBUS_SESSION_BUS_ADDRESS=unix:path=${OMARCHY_BUS_SOCKET}`]
             : [];
+          // QtQuick clients (quickshell) must select the software scenegraph
+          // — there is no GL surface — and `dispatch exec` spawns them with
+          // the compositor's environment.
+          const quickEnv = omarchy ? ["QT_QUICK_BACKEND=software"] : [];
           const compositorExit = spawnBg("/usr/local/bin/wlcompositor", "wlcompositor", [
             "WLC_LAYOUT=dwindle",
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
             `WLC_SCALE=${outputScale}`,
             ...busEnv,
+            ...quickEnv,
           ]);
 
           if (omarchy) {
@@ -2224,13 +2243,15 @@ async function stageWaylandDesktopRuntime(
   if (!profile.omarchyDemo) return;
 
   const [barBytes, launcherBytes, daemonBytes, makoBytes,
-    notifySendBytes, footBytes, fontBytes] = await Promise.all([
+    notifySendBytes, footBytes, qtdemoBytes, quickshellBytes, fontBytes] = await Promise.all([
     fetchBinary("waybar.wasm", "waybar.wasm"),
     fetchBinary("wldesktop/klauncher.wasm", "klauncher.wasm"),
     fetchBinary("dbus/dbus-daemon.wasm", "dbus-daemon.wasm"),
     fetchBinary("mako/mako.wasm", "mako.wasm"),
     fetchBinary("wldesktop/notify-send.wasm", "notify-send.wasm"),
     fetchBinary("foot.wasm", "foot.wasm"),
+    fetchBinary("qtdemo.wasm", "qtdemo.wasm"),
+    fetchBinary("quickshell.wasm", "quickshell.wasm"),
     fetch(inconsolataFontUrl).then(failOn("Inconsolata-Regular.ttf"))
       .then((r) => r.arrayBuffer()),
   ]);
@@ -2248,6 +2269,10 @@ async function stageWaylandDesktopRuntime(
   writeVfsBinary(fs, "/usr/local/bin/notify-send", new Uint8Array(notifySendBytes), 0o755);
   writeVfsFile(fs, "/usr/local/bin/omarchy-theme-changed", OMARCHY_THEME_HOOK, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/foot", new Uint8Array(footBytes), 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/qtdemo", new Uint8Array(qtdemoBytes), 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/quickshell", new Uint8Array(quickshellBytes), 0o755);
+  ensureDirRecursive(fs, dirname(OMARCHY_QUICKSHELL_CONFIG_PATH));
+  writeVfsFile(fs, OMARCHY_QUICKSHELL_CONFIG_PATH, OMARCHY_QUICKSHELL_CONFIG, 0o644);
   ensureDirRecursive(fs, "/etc/dbus-1");
   writeVfsFile(fs, "/etc/dbus-1/session.conf", OMARCHY_DBUS_SESSION_CONF, 0o644);
   ensureDirRecursive(fs, dirname(OMARCHY_MAKO_CONFIG_PATH));
