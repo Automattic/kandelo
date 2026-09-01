@@ -1,0 +1,12 @@
+[package]
+name = "fork-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "fork_codec"
+crate-type = ["rlib"]
+
+[dependencies]
+wasm-posix-shared = { path = "../shared" }
