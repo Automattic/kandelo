@@ -250,6 +250,7 @@ host/test/pthread-trap-semantics.test.ts	prepared-product
 host/test/pthread.test.ts	prepared-product
 host/test/pty-ownership.test.ts	prepared-product
 host/test/putenv.test.ts	prepared-product
+host/test/qtwaylandscanner-host-tool.test.ts	source-only
 host/test/readdir-atomicity.test.ts	source-only
 host/test/readiness-deadline.test.ts	source-only
 host/test/readiness-wakeup.test.ts	source-only

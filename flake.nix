@@ -43,6 +43,61 @@
             llvmPkg.libcxx.dev
           ];
         };
+        qtHostVersion = pkgs.qt6.qtbase.version;
+
+        # nixpkgs' qtbase takes wayland only where the platform has it
+        # (modules/qtbase/default.nix:82), and that is what decides whether it
+        # finds the Wayland::Scanner its own qtwaylandscanner is gated on
+        # (qtbase src/tools/configure.cmake:5). Linux gets the generator and
+        # its Qt6WaylandScannerTools CMake package from qtbase itself; darwin
+        # gets neither, and a Qt Wayland cross-build there stops at
+        # `Failed to find the host tool "Qt6::qtwaylandscanner"`.
+        qtHostHasWaylandScanner =
+          pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.wayland;
+
+        # The generator qtbase declined to build, built from qtbase's own src
+        # and version so it cannot drift from the moc/rcc/uic beside it in
+        # qtHostTree. Reusing that source also means no second fetch. The tool
+        # is 1332 lines over QtCore alone; nix/qtwaylandscanner/CMakeLists.txt
+        # carries the details.
+        qtWaylandScanner = pkgs.stdenv.mkDerivation {
+          pname = "qtwaylandscanner";
+          inherit (pkgs.qt6.qtbase) version src;
+          nativeBuildInputs = [ pkgs.cmake pkgs.ninja ];
+          buildInputs = [ pkgs.qt6.qtbase ];
+          # nixpkgs' qtPreHook fails any qtbase consumer that states no
+          # wrapping choice. The scanner reads XML and writes C++; it loads no
+          # Qt plugin, so it wants the plain binary Qt itself installs.
+          dontWrapQtApps = true;
+          postPatch = ''
+            mkdir host-qtwaylandscanner
+            cp ${./nix/qtwaylandscanner/CMakeLists.txt} host-qtwaylandscanner/CMakeLists.txt
+          '';
+          # $PWD is the unpacked qtbase root: preConfigure runs before the
+          # cmake hook descends into its build directory.
+          preConfigure = ''
+            cmakeFlagsArray+=( "-DQTBASE_SRC=$PWD" )
+          '';
+          cmakeDir = "../host-qtwaylandscanner";
+        };
+
+        # Combined tree so QT_HOST_PATH is one prefix, the shape Qt's
+        # cross-build CMake requires: it reads moc/rcc/uic out of
+        # <prefix>/libexec and the QML generators out of the same place,
+        # then loads the Qt6*Tools CMake packages from <prefix>/lib/cmake.
+        # nixpkgs splits those across four derivations, so a bare
+        # qtbase prefix resolves moc but fails on qmltyperegistrar.
+        qtHostTree = pkgs.symlinkJoin {
+          name = "qt-${qtHostVersion}-host-tree";
+          paths = [
+            pkgs.qt6.qtbase
+            pkgs.qt6.qtbase.dev
+            pkgs.qt6.qtdeclarative
+            pkgs.qt6.qtdeclarative.dev
+            pkgs.qt6.qtshadertools
+            pkgs.qt6.qtshadertools.dev
+          ] ++ pkgs.lib.optional (!qtHostHasWaylandScanner) qtWaylandScanner;
+        };
         devShellPackages = [
             rustToolchain
             # The wrapper supplies host `cc`, `c++`, `ar`, and linker tools
@@ -68,6 +123,10 @@
             # WebKitGTK, and Xorg just to run `erl`/`erlc`.
             pkgs.beam_minimal.interpreters.erlang_28
             pkgs.cmake
+            # ninja — Qt's own configure selects it as the generator
+            # whenever it is on PATH (QtProcessConfigureArgs.cmake:1136),
+            # so it is the generator Qt builds and tests against.
+            pkgs.ninja
             pkgs.autoconf
             pkgs.automake
             pkgs.libtool
@@ -108,6 +167,30 @@
             # wayland version so its runtime matches the generated glue.
             # Consumers declare it as a `[[host_tools]]` prerequisite.
             pkgs.wayland-scanner
+            # spirv-opt — qsb shells out to it for every shader built with
+            # qt_add_shaders(... OPTIMIZED), which Quickshell's widgets
+            # module uses.
+            pkgs.spirv-tools
+            # Qt 6 host tools — the code generators a Qt cross-build runs on
+            # the build machine: moc, rcc, uic, qmltyperegistrar and
+            # qmlcachegen. They emit plain C++ that consumers compile to
+            # wasm32, so their role is wayland-scanner's, one layer up.
+            #
+            # Qt cross-builds require a host Qt of the *same* version as the
+            # target: CMake reads it through QT_HOST_PATH and refuses a
+            # mismatch. So nixpkgs' 6.10.2 fixes the version the qtbase and
+            # qtdeclarative recipes pin. Bumping nixpkgs moves both.
+            #
+            # Taken from nixpkgs rather than built from the qtbase recipe's
+            # own source: a host build would compile Qt twice per cold cache,
+            # once natively and once for wasm32, to obtain generators whose
+            # output is platform-independent.
+            #
+            # Both are darwin+linux clean — they are the ordinary desktop
+            # derivations, and only their generators are used, never their
+            # libraries, which target the host and cannot link into a
+            # wasm32 program.
+            qtHostTree
             # cbindgen — required by Mozilla's JS/SpiderMonkey configure
             # path once Rust support is enabled.
             pkgs.rust-cbindgen
@@ -287,6 +370,10 @@
             # tools instead of ambient host binaries.
             export AR="$LLVM_BIN/llvm-ar"
             export RANLIB="$LLVM_BIN/llvm-ranlib"
+            # Qt cross-builds resolve their host generators through this
+            # prefix and refuse a host/target version mismatch, so it also
+            # fixes the version a Qt recipe may declare.
+            export QT_HOST_PATH=${qtHostTree}
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
             # CA bundle for HTTPS — pure-shell strips the user's
