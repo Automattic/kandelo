@@ -7473,6 +7473,30 @@ fn build_input_digests_from_repo(
                 ));
             }
         }
+        if let Some(crate_name) = input.strip_prefix(crate::cargo_closure::CARGO_INPUT_PREFIX) {
+            let crate_name = crate_name.trim();
+            if crate_name.is_empty() {
+                return Err(format!(
+                    "{}: build.toml input `{input}` has an empty crate name",
+                    target.spec()
+                ));
+            }
+            for rel in crate::cargo_closure::cargo_closure_paths(main_repo_root, crate_name)? {
+                let path = resolve_build_input_path_from_repo(target, registry, &rel, main_repo_root)?;
+                let digest = if validate_declared_source_inputs {
+                    let authority_root =
+                        repository_source_authority_root(&path, registry, main_repo_root)?;
+                    strict_source_build_input_digest(&authority_root, &path)?
+                } else {
+                    hash_build_input(&path)?
+                };
+                out.push(BuildInputDigest {
+                    label: format!("{input}::{rel}"),
+                    digest,
+                });
+            }
+            continue;
+        }
         let path = resolve_build_input_path_from_repo(target, registry, input, main_repo_root)?;
         let digest = if validate_declared_source_inputs {
             let authority_root = repository_source_authority_root(&path, registry, main_repo_root)?;
@@ -8479,7 +8503,7 @@ pub fn canonical_path(
     cache_root.join(kind_subdir).join(basename)
 }
 
-use crate::util::hex;
+use crate::util::{hex, hex_to_32};
 
 // ---------------------------------------------------------------------
 // Build + cache-install
@@ -13483,6 +13507,50 @@ fn build_into_cache(
         work.cleanup_source_only().map_err(|error| {
             format!("{}: clean package work scratch before publication: {error}", target.spec())
         })?;
+        // Stamp every declared wasm output with the cache key it was just
+        // built under, at cache-store time -- before `complete_cache_receipt_v1`
+        // below hashes `tmp`'s tree, so the staging receipt (and every later
+        // receipt/snapshot re-hash of this exact entry) describes the
+        // stamped bytes that actually get published to `canonical`, never
+        // the pre-stamp ones. `crate::build_stamp::stamp_build_key` refuses
+        // to double-stamp, and this runs exactly once per fresh build (cache
+        // hits short-circuit before ever calling `build_into_cache`), so a
+        // second stamp attempt here would itself be a bug, not a benign
+        // no-op. Because `materialize_source_only_program_target*` copies
+        // these exact bytes verbatim into the `source-only-v1` mirror, the
+        // mirror carries the identical stamp with no separate stamping step.
+        if target.kind == ManifestKind::Program {
+            let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
+                format!(
+                    "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
+                    target.spec()
+                )
+            })?;
+            for output in &target.program_outputs {
+                let member = tmp.join(&output.wasm);
+                let bytes = std::fs::read(&member).map_err(|error| {
+                    format!(
+                        "{}: read built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
+                    format!(
+                        "{}: stamp built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                std::fs::write(&member, stamped).map_err(|error| {
+                    format!(
+                        "{}: write stamped wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+            }
+        }
     }
 
     if policy == ResolvePolicy::Default {
@@ -15543,7 +15611,124 @@ fn validate_cache_entry(
     cache_key_sha: &str,
 ) -> Result<(), String> {
     validate_cache_artifacts(target, dir)?;
-    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)
+    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)?;
+    validate_cache_entry_build_key_stamps(dir, cache_key_sha)
+}
+
+/// Belt-and-suspenders check for the trusted (no-rehash) cache-hit path:
+/// read every materialized wasm member's `kandelo.build.key` stamp (Task 5
+/// writes it at cache-store time, into both the canonical entry and its
+/// mirror -- see the `stamp_build_key` call in `build_into_cache`) and
+/// confirm it equals the key this canonical entry is stored under. The
+/// content-addressed directory name already binds every declared input, but
+/// it is only the *name*; this confirms the *bytes* underneath actually
+/// belong to that name, catching a corrupted or misfiled cache entry (wrong
+/// bytes at the right key) that `validate_cache_artifacts` and
+/// `validate_cache_provenance` cannot detect because neither inspects wasm
+/// content. Reads the small receipt sidecar plus a bounded whole-file read
+/// of each named wasm member (`read_build_key` then parses the trailing
+/// custom section out of that buffer; this is not a targeted section seek)
+/// -- never the whole entry tree -- so the trusted fast path stays cheap
+/// relative to a full re-hash, even though it is not a zero-byte check.
+///
+/// A member with NO stamp at all is tolerated, not rejected: it predates
+/// Task 5's stamping and cannot be shown to be either fresh or corrupt, so
+/// failing it would wall existing cache users off entries that were
+/// trustworthy under the pre-stamp contract. It self-migrates the next time
+/// it is rebuilt and re-stamped. Only a *mismatched* stamp -- a present
+/// stamp for a different key -- is treated as corruption evidence, because
+/// that is a positive signal of wrong bytes at the right key, not merely an
+/// absence of evidence.
+///
+/// Coverage boundary: this only checks entries whose canonical directory has
+/// a persisted receipt sidecar (see `materialized_wasm_members` below for
+/// which production path writes one and which does not). An entry stamped
+/// by `build_into_cache` but never given a receipt sidecar silently has
+/// nothing to check here and is *not* protected by this belt check -- for
+/// the kernel specifically, Task 6's `verify_fresh_report` build-key check
+/// is the primary staleness gate regardless of receipt coverage, and this
+/// check is additional, not a replacement.
+fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
+    let expected_key = hex_to_32(cache_key_sha).map_err(|error| {
+        format!(
+            "cached entry {}: cache_key_sha is not a valid sha256 hex digest: {error}",
+            canonical.display()
+        )
+    })?;
+    for member in materialized_wasm_members(canonical, cache_key_sha)? {
+        let bytes = std::fs::read(&member)
+            .map_err(|e| format!("read cached member {}: {e}", member.display()))?;
+        match crate::build_stamp::read_build_key(&bytes)? {
+            Some(stamp) if stamp == expected_key => {}
+            Some(stamp) => {
+                return Err(format!(
+                    "cached entry {} is corrupt: member {} carries build key {} but the \
+                     entry is keyed {cache_key_sha}. Rebuild with `--rebuild`.",
+                    canonical.display(),
+                    member.display(),
+                    hex(&stamp),
+                ));
+            }
+            None => {
+                // Legacy pre-stamp entry: tolerated, not rejected. This
+                // member predates Task 5's stamping and cannot be proven
+                // fresh or corrupt either way, so it self-migrates on its
+                // next rebuild instead of walling existing cache users off
+                // an entry that was trustworthy under the pre-stamp
+                // contract. Only a MISMATCHED stamp (above) is corruption
+                // evidence worth failing loudly for.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Canonical paths of the wasm members a SourceOnlyV1 cache entry's
+/// persisted receipt sidecar (Task 5) records, for the belt-and-suspenders
+/// build-key stamp check above. Reads only the small receipt sidecar --
+/// never lists or hashes the entry tree -- so this stays a cheap addition to
+/// the trusted fast path.
+///
+/// Not every stamped cache entry has a receipt sidecar, and this returns an
+/// empty list -- silently skipping the belt check above, not failing -- for
+/// any entry that lacks one. Only one production path writes the sidecar:
+/// `resolve_local_build_package_node_with_projection_hooks` (the
+/// `local-build`/graph-node path). The kernel is materialized through that
+/// path, so the belt check does fire for it. `ensure_built_inner`'s own
+/// store paths do not write a receipt sidecar, even though `build_into_cache`
+/// still stamps the wasm on that path -- so entries reached only through
+/// `ensure_built_inner` (i.e. `xtask build-deps resolve <name>`, which
+/// `run.sh`'s node.wasm bootstrap and most `packages/registry/*/build-*.sh`
+/// dependency resolution use) are stamped but receipt-less, and this belt
+/// check is a permanent no-op for them. Extending receipt-writing to
+/// `ensure_built_inner` is out of scope here (tracked separately for
+/// Stage 2); an entry with no persisted receipt for any other reason (built
+/// before the sidecar existed, or a manifest kind that never gets one, e.g.
+/// a library) is handled the same way. `validate_cache_artifacts` already
+/// enforces declared-output shape independent of this check, for every
+/// entry regardless of receipt coverage.
+#[cfg(unix)]
+fn materialized_wasm_members(canonical: &Path, cache_key_sha: &str) -> Result<Vec<PathBuf>, String> {
+    let receipt = match read_source_only_cache_receipt(canonical, cache_key_sha)? {
+        Some(receipt) => receipt,
+        None => return Ok(Vec::new()),
+    };
+    Ok(receipt
+        .materialized_members
+        .into_iter()
+        .filter(|member| member.mirror_path.ends_with(".wasm"))
+        .map(|member| canonical.join(&member.source_artifact))
+        .collect())
+}
+
+/// Source-only caching (and its receipt sidecar) requires Unix no-follow
+/// filesystem semantics; there is nothing to check on other platforms.
+#[cfg(not(unix))]
+fn materialized_wasm_members(
+    _canonical: &Path,
+    _cache_key_sha: &str,
+) -> Result<Vec<PathBuf>, String> {
+    Ok(Vec::new())
 }
 
 fn remove_cache_entry(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
@@ -16829,6 +17014,28 @@ fn manifest_cache_key_sha_for_policy(
         &mut chain,
     )
     .map(|sha| hex(&sha))
+}
+
+/// The SourceOnlyV1 cache key `build_into_cache` stamps onto every published
+/// wasm output (see the `stamp_build_key` call in `build_into_cache`),
+/// recomputed for `manifest`. `verify-fresh` reuses THIS exact function so a
+/// staged artifact's stamp is compared against the same key the build engine
+/// would produce -- never the Default-policy key, which omits the abi-contract
+/// fold and uses non-strict source digests, so it would never match a
+/// SourceOnlyV1 stamp on a real build.
+pub(crate) fn source_only_cache_key_sha(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<String, String> {
+    manifest_cache_key_sha_for_policy(
+        manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -20635,6 +20842,38 @@ revision = {revision}
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         fs::canonicalize(p).unwrap()
+    }
+
+    /// Recursively copy `src` into `dst`, skipping `target/`, `.git/`, and
+    /// `local-binaries/` at any depth. Those directories can be enormous
+    /// (build output, submodule history, fetched binaries) and are never
+    /// read by `cargo metadata` or by build-input hashing, so copying them
+    /// would make repo-cloning tests pathologically slow for no benefit.
+    /// Symlinks are skipped rather than followed: nothing this helper's
+    /// callers hash needs to resolve through one, and following symlinks
+    /// blindly risks escaping the copy or looping.
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let name = entry.file_name();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if matches!(
+                    name.to_str(),
+                    Some("target") | Some(".git") | Some("local-binaries")
+                ) {
+                    continue;
+                }
+                copy_dir_recursive(&entry.path(), &dst.join(&name))?;
+            } else {
+                fs::copy(entry.path(), dst.join(&name))?;
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -30587,6 +30826,93 @@ libs = ["lib/libF3b.a"]
         assert!(symlink_input.contains("symlink"), "{symlink_input}");
     }
 
+    #[test]
+    fn cargo_input_tag_expands_and_includes_cargo_config() {
+        // A synthetic fixture package (unrelated to the kernel) declares
+        // `inputs = ["cargo:kandelo"]`. `kandelo` (crates/kernel) is a real
+        // workspace crate, so `cargo_closure_paths` resolves it against the
+        // real repo regardless of which package declares the tag. This
+        // keeps Task 2 independently testable ahead of Task 3, which
+        // migrates the kernel's own build.toml to this same tag.
+        let repo_root = crate::repo_root();
+        let fixture_root = std::fs::canonicalize(tempdir("cargo-input-tag-fixture")).unwrap();
+        write(&fixture_root, "cargoInputFixture", "1.0.0", &[]);
+        std::fs::write(
+            fixture_root.join("cargoInputFixture/build.toml"),
+            "script_path = \"build.sh\"\ninputs = [\"cargo:kandelo\"]\nrepo_url = \"https://example.test/kandelo.git\"\ncommit = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\nrevision = 1\n",
+        )
+        .unwrap();
+        let registry = Registry {
+            roots: vec![fixture_root.clone()],
+        };
+        let manifest = registry.load("cargoInputFixture").unwrap();
+        let digests = build_input_digests_from_repo(
+            &manifest,
+            &registry,
+            &repo_root,
+            ResolvePolicy::SourceOnlyV1,
+        )
+        .expect("input digests");
+        let labels: Vec<&str> = digests.iter().map(|d| d.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("cargo:kandelo::") && l.ends_with(".cargo/config.toml")),
+            "expected an expanded .cargo/config.toml input, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| *l == "cargo:kandelo::crates/runtime-core"),
+            "expected runtime-core input, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn kernel_key_changes_when_cargo_config_changes() {
+        // Regression test for the reported bug: the kernel's cache key did
+        // not fold `.cargo/config.toml`, so editing kernel codegen/link
+        // flags there (e.g. rustflags) left a stale kernel cached under an
+        // unchanged key. Copy the real repo into a temp dir, compute the
+        // kernel's cache key, mutate `.cargo/config.toml`, recompute, and
+        // assert the key moved. All build-input resolution (including
+        // `cargo:<crate>` expansion) is anchored at the process-wide
+        // `repo_root()`, not at the manifest's own directory, so the repo
+        // root override is installed to point at the temp copy for the
+        // duration of both computations.
+        let src = crate::repo_root();
+        let tmp = tempdir("kernel-cargo-config");
+        copy_dir_recursive(&src, &tmp).expect("copy repo");
+        let _repo_root = crate::install_repo_root_override(tmp.clone()).unwrap();
+
+        let reg = Registry {
+            roots: vec![tmp.join("packages/registry")],
+        };
+        let kernel = reg.load("kernel").expect("kernel");
+
+        let before = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key before");
+
+        // Append a harmless comment to .cargo/config.toml (codegen input).
+        let cfg = tmp.join(".cargo/config.toml");
+        let mut contents = std::fs::read_to_string(&cfg).unwrap();
+        contents.push_str("\n# staleness-regression-probe\n");
+        std::fs::write(&cfg, contents).unwrap();
+
+        let after = compute_cache_key_sha_for_package(
+            &kernel.dir,
+            &reg,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+        )
+        .expect("key after");
+
+        assert_ne!(before, after, ".cargo/config.toml must be a kernel cache input");
+    }
+
     #[cfg(unix)]
     #[test]
     fn source_only_provider_dev_shell_identity_is_bounded_and_binds_every_input() {
@@ -31568,9 +31894,20 @@ revision = 1
         );
         let published = binaries.join("programs/wasm32/localtool.wasm");
         assert!(published.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(
-            std::fs::read(&published).unwrap(),
-            minimal_executable_wasm()
+        let published_bytes = std::fs::read(&published).unwrap();
+        // The local-build engine stamps every published `.wasm` with its
+        // cache key (Task 5 of the kernel-staleness Stage 1 fix), appended
+        // as a trailing custom section, so the published bytes are the raw
+        // build output plus that stamp -- not byte-identical to it.
+        assert!(
+            published_bytes.starts_with(&minimal_executable_wasm()),
+            "published wasm must retain its original bytes ahead of the build-key stamp"
+        );
+        assert!(
+            crate::build_stamp::read_build_key(&published_bytes)
+                .unwrap()
+                .is_some(),
+            "published wasm must carry a kandelo.build.key stamp"
         );
         assert!(
             std::fs::canonicalize(&published)
@@ -35167,6 +35504,404 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         })
         .unwrap_err();
         assert!(error.contains("materialized") || error.contains("member"), "{error}");
+    }
+
+    /// Task 5 of the kernel-staleness Stage 1 fix: a wasm output published by
+    /// the local-build engine must carry a `kandelo.build.key` custom section
+    /// (Task 4's `build_stamp` module) equal to its own `cache_key_sha256`, so
+    /// a later reader can detect a stale mirror by comparing the stamp
+    /// against a freshly recomputed key. This exercises the real production
+    /// path end to end: build a small program package whose build script
+    /// emits a real (policy-valid) wasm module, resolve+materialize it, and
+    /// read the stamp back out of the published `source-only-v1` mirror.
+    #[test]
+    fn materialized_kernel_carries_build_key_stamp() {
+        let repo = tempdir("stamp-mirror-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "kstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("kstamp.wasm", &minimal_executable_wasm()),
+            &[("kstamp", "kstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "kstamp");
+        let manifest_path = repo.join("kstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kstamp.wasm\"",
+                "wasm = \"kstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("kstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("stamp-mirror-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("stamp-mirror-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+
+        let mirror = output.join("programs/wasm32/kstamp.wasm");
+        let bytes = fs::read(&mirror).unwrap();
+        let stamp = crate::build_stamp::read_build_key(&bytes)
+            .unwrap()
+            .expect("mirror must carry a kandelo.build.key stamp");
+        let expected = hex_to_32(&receipt.cache_key_sha256).unwrap();
+        assert_eq!(stamp, expected, "mirror must be stamped with its own cache key");
+
+        // The stamp is written at cache-store time (inside `build_into_cache`,
+        // before the staging receipt is hashed), then the mirror above is a
+        // verbatim copy -- so the canonical `source-only-v1/compiled` cache
+        // entry Task 7 later reads from must independently carry the exact
+        // same stamp, not just the mirror.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let canonical_bytes = fs::read(canonical.join("kstamp.wasm")).unwrap();
+        let canonical_stamp = crate::build_stamp::read_build_key(&canonical_bytes)
+            .unwrap()
+            .expect("canonical cache entry must carry a kandelo.build.key stamp");
+        assert_eq!(
+            canonical_stamp, expected,
+            "canonical cache entry must be stamped with its own cache key"
+        );
+
+        // Stamping runs exactly once, at cache-store time. A repeat resolve
+        // against the same unchanged package is a cache hit that never
+        // re-enters `build_into_cache`, so it must not attempt to
+        // double-stamp (which `stamp_build_key` rejects) and the mirror must
+        // still read back the identical stamp afterward.
+        let second = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        assert_eq!(second.disposition, LocalBuildDisposition::Cached);
+        let mirror_bytes_after_hit = fs::read(&mirror).unwrap();
+        let stamp_after_hit = crate::build_stamp::read_build_key(&mirror_bytes_after_hit)
+            .unwrap()
+            .expect("mirror must still carry its stamp after a cache-hit resolve");
+        assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// Task 7 belt-and-suspenders check: the trusted (no-rehash) cache-hit
+    /// path must reject a canonical entry whose wasm member carries a
+    /// `kandelo.build.key` stamp for a DIFFERENT key than the entry is
+    /// keyed under -- the "wrong bytes at the right key name" corruption a
+    /// misfiled or overwritten cache entry produces. Fabricates a real
+    /// materialized program node (so the canonical entry, its receipt
+    /// sidecar, and the correctly-stamped wasm member all exist exactly as
+    /// production leaves them), then overwrites just the canonical wasm
+    /// member with a module stamped for an unrelated key and asserts
+    /// `validate_cache_entry` -- the function `source_only_cache_entry_is_trusted`
+    /// calls on every trusted hit -- rejects it loudly instead of trusting
+    /// the directory name.
+    #[test]
+    fn trusted_entry_rejected_when_stamp_mismatches_key() {
+        let repo = tempdir("trusted-stamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "tstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("tstamp.wasm", &minimal_executable_wasm()),
+            &[("tstamp", "tstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "tstamp");
+        let manifest_path = repo.join("tstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"tstamp.wasm\"",
+                "wasm = \"tstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("tstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-stamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-stamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Sanity: the real build engine stamped the canonical member with
+        // the entry's own key (Task 5), so the pre-tamper entry validates.
+        validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .expect("a freshly built, correctly stamped entry must validate");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // stamped for an unrelated key -- a fresh, never-stamped module, so
+        // this doesn't hit `stamp_build_key`'s double-stamp guard.
+        let member = canonical.join("tstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        let tampered =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0x99; 32]).unwrap();
+        fs::write(&member, tampered).unwrap();
+
+        let err = validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("build key") || err.contains("stamp"),
+            "must name the stamp/build-key mismatch: {err}"
+        );
+    }
+
+    /// Task 7 belt-and-suspenders check, `None` branch: a receipt-bearing
+    /// canonical entry whose wasm member carries NO `kandelo.build.key`
+    /// stamp at all predates Task 5's stamping and cannot be proven fresh
+    /// OR corrupt, so the trusted cache-hit path must tolerate it -- unlike
+    /// a present-but-wrong-key stamp (positive corruption evidence, still
+    /// rejected above), an absent stamp is only a lack of evidence, and
+    /// rejecting it would wall existing legacy cache entries off instead of
+    /// letting them self-migrate on their next rebuild.
+    #[test]
+    fn trusted_entry_tolerates_a_missing_stamp() {
+        let repo = tempdir("trusted-nostamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "nstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("nstamp.wasm", &minimal_executable_wasm()),
+            &[("nstamp", "nstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "nstamp");
+        let manifest_path = repo.join("nstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"nstamp.wasm\"",
+                "wasm = \"nstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("nstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-nostamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-nostamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // that was never stamped at all (unlike the mismatch test, no
+        // `stamp_build_key` call here).
+        let member = canonical.join("nstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        fs::write(&member, minimal_executable_wasm()).unwrap();
+
+        validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .expect("an absent build-key stamp must be tolerated, not rejected, as a legacy entry");
+    }
+
+    /// Full SourceOnlyV1 kernel fixture for the verify-fresh build-key tests
+    /// (Task 6). Builds a `kernel` program package through the REAL materialize
+    /// path so `build_into_cache` stamps the published wasm with its own
+    /// SourceOnlyV1 cache key, exactly as production does, then copies the
+    /// stamped mirror to the `source-only-v1/kernel.wasm` location
+    /// `verify_fresh_report` reads.
+    ///
+    /// Layout: the kernel package lives under `<repo>/packages/registry/kernel`
+    /// and the repo-root override points at `<repo>/packages/registry`, so the
+    /// build-time key and the key `expected_source_only_cache_key(<repo>, ...)`
+    /// recomputes (its registry root is `<repo>/packages/registry`) resolve the
+    /// SAME manifest, declared inputs, and global toolchain surface. The abi
+    /// snapshot is pinned to the production `ABI_VERSION` so both the folded
+    /// abi-contract digest and `verify_fresh_report`'s `__abi_version` check
+    /// agree.
+    ///
+    /// Returns the verify-fresh repo root, the live repo-root override guard
+    /// (the caller keeps it alive so `expected_source_only_cache_key` resolves
+    /// against the same override the build used), and the staged `kernel.wasm`
+    /// path.
+    #[cfg(unix)]
+    fn materialize_kernel_for_verify_fresh(
+        label: &str,
+    ) -> (PathBuf, crate::RepoRootOverrideGuard, PathBuf) {
+        let repo = tempdir(label);
+        // Task 8's `snapshot_drift_check` gate reads `<repo>/abi/snapshot.json`
+        // directly (distinct from the `build_root` snapshot below, which
+        // feeds the build-key resolution path). Without this file the
+        // gate's "missing snapshot" conservative default would force
+        // `verify_fresh_report` to shell out to the real, kernel-building
+        // `check-abi-version.sh` against this synthetic, non-git repo.
+        // Neither `crates/shared` nor `crates/kernel` exist under `repo`
+        // either, so the gate has nothing newer to compare against and
+        // stays closed regardless of this file's mtime.
+        fs::create_dir_all(repo.join("abi")).unwrap();
+        fs::write(
+            repo.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
+        let build_root = repo.join("packages/registry");
+        fs::create_dir_all(&build_root).unwrap();
+        prepare_local_rebuild_fixture_repo(&build_root);
+        // `prepare_local_rebuild_fixture_repo` writes TEST_ABI; the build-key
+        // path runs under the real `ABI_VERSION`, and `local_abi_contract_digest`
+        // rejects a snapshot whose `abi_version` differs from the requested one,
+        // so pin the snapshot to `ABI_VERSION`.
+        fs::write(
+            build_root.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
+        // A `kernel`/`kernel` output is validated against the full kernel
+        // export set (`required_exports_for_program_output`), so the fixture
+        // must emit a module exporting `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`
+        // (which includes `__abi_version` at the current ABI), not the bare
+        // program entrypoint set.
+        write_program(
+            &build_root,
+            "kernel",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script(
+                "kernel.wasm",
+                &wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+            ),
+            &[("kernel", "kernel.wasm")],
+        );
+        write_source_only_repository_inputs(&build_root, "kernel");
+        let manifest_path = build_root.join("kernel/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kernel.wasm\"",
+                "wasm = \"kernel.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+
+        let registry = Registry {
+            roots: vec![build_root.clone()],
+        };
+        let guard = crate::install_repo_root_override(build_root.clone()).unwrap();
+        let target = registry.load("kernel").unwrap();
+        let (base, compiled) = source_only_test_roots(&format!("{label}-cache"));
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir(&format!("{label}-output"));
+        let node = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+            &roots,
+            &build_root,
+            &output,
+            false,
+            &mut || Ok(()),
+        )
+        .unwrap();
+
+        // The published mirror and the canonical cache entry carry identical
+        // stamped bytes (Task 5); copy from the canonical entry, whose layout
+        // (`<canonical>/kernel.wasm`) is stable regardless of where a `kernel`
+        // program's mirror is projected.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let staged = repo.join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::copy(canonical.join("kernel.wasm"), &staged).unwrap();
+        (repo, guard, staged)
+    }
+
+    /// Happy-path proof (CRITICAL, non-tautological): a kernel published by the
+    /// REAL build engine carries a stamp equal to the key
+    /// `expected_source_only_cache_key` recomputes, so `verify_fresh_report`
+    /// passes. The stamp is written by production `build_into_cache` code and
+    /// the expected key is computed by verify-fresh's own path; their agreement
+    /// proves both derive the SAME SourceOnlyV1 key -- a Default-policy expected
+    /// key would fail here.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_passes_for_a_real_materialized_kernel_stamp() {
+        let (repo, _guard, _staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-real-kernel");
+        crate::local_build::verify_fresh_report(&repo)
+            .expect("a freshly materialized kernel must verify fresh");
+    }
+
+    /// A staged kernel whose stamp does not match the freshly-resolved key is
+    /// stale and must fail loud -- the same-ABI staleness the ABI-only check
+    /// misses.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_on_build_key_mismatch() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-key-mismatch");
+        // Replace the staged kernel with a valid ABI_VERSION module stamped
+        // with a WRONG key. (A fresh, unstamped module -- `stamp_build_key`
+        // refuses to double-stamp the already-stamped mirror.)
+        let wrong =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0xAB; 32]).unwrap();
+        fs::write(&staged, wrong).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(err.contains("stale"), "expected stale error, got: {err}");
+        assert!(
+            err.contains("built for key") || err.contains("build key"),
+            "must name the key mismatch: {err}"
+        );
+    }
+
+    /// A staged kernel that carries NO build-key stamp cannot be proven fresh,
+    /// so verify-fresh fails loud rather than trusting an unstamped artifact.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_when_kernel_has_no_build_key_stamp() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-no-stamp");
+        // An unstamped module that still declares the current ABI, so the ABI
+        // check passes and control reaches the build-key branch.
+        fs::write(&staged, minimal_executable_wasm()).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "must report the missing stamp: {err}"
+        );
     }
 
     #[test]

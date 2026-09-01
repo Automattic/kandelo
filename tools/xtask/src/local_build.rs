@@ -28,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
 const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
@@ -398,9 +399,40 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// Default `--source-cache-root` for `bootstrap`, matching
 /// `scripts/run-local-build.sh` so the engine step here and the
 /// `./run.sh local-build` front door share one persistent cache location.
+///
+/// The SourceOnly build cache is shared across every worktree on the
+/// machine by default (it is content-addressed, so identical inputs are
+/// built once and reused everywhere — this is what keeps a fresh worktree
+/// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
+/// worktree its own isolated cache instead; leaving it unset shares the
+/// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
 fn default_source_cache_root() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
+    resolve_source_cache_root(
+        std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure resolver behind [`default_source_cache_root`]: an explicit
+/// `KANDELO_SOURCE_CACHE_ROOT` override (must be absolute) wins; otherwise
+/// fall back to `$HOME/.cache/kandelo/source-only`. Split out so the
+/// override precedence is unit-testable without mutating process env.
+fn resolve_source_cache_root(
+    override_root: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(override_root) = override_root {
+        let override_root = PathBuf::from(override_root);
+        if !override_root.is_absolute() {
+            return Err(format!(
+                "KANDELO_SOURCE_CACHE_ROOT must be an absolute path, got {}",
+                override_root.display()
+            ));
+        }
+        return Ok(override_root);
+    }
+    let home =
+        home.ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
     let home = PathBuf::from(home);
     if !home.is_absolute() {
         return Err(format!(
@@ -811,7 +843,182 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
             kernel_path.display()
         ));
     }
+    // Same-ABI staleness backstop (B1). The ABI-version check above only
+    // catches cross-ABI staleness; an internal kernel change that keeps
+    // `ABI_VERSION` still moves the SourceOnlyV1 cache key the build engine
+    // stamps onto `kernel.wasm`. So the staged kernel must carry the exact key
+    // its current source resolves to -- a stale mirror's stamp no longer
+    // matches (or is absent) and fails loud here instead of letting a test
+    // suite run against yesterday's kernel.
+    //
+    // Read the stamp before recomputing the expected key: an unstamped
+    // artifact is unverifiable regardless of the source tree, so report that
+    // directly without the (comparatively expensive) SourceOnlyV1 resolve.
+    let stamp = crate::build_stamp::read_build_key(&bytes)
+        .map_err(|error| format!("{}: {error}", kernel_path.display()))?;
+    let Some(stamp) = stamp else {
+        return Err(format!(
+            "{} carries no build key stamp; rebuild with `./run.sh setup` \
+             so freshness can be verified.",
+            kernel_path.display()
+        ));
+    };
+    let expected_key = expected_source_only_cache_key(repo, "kernel")?;
+    if stamp != expected_key {
+        return Err(format!(
+            "{} is stale: it was built for key {}, but the current source \
+             tree resolves to key {}. Rebuild with `./run.sh setup` (or \
+             `cargo xtask bootstrap`).",
+            kernel_path.display(),
+            crate::util::hex(&stamp),
+            crate::util::hex(&expected_key),
+        ));
+    }
+    // B3: the ABI-version check and the build-key backstop above both prove
+    // the staged kernel.wasm matches the current source tree. Neither one
+    // proves the committed abi/snapshot.json (a separate tracked artifact,
+    // consumed by CI's structural-compat gate) still matches those same
+    // sources -- so run that check too, gated to keep the local no-op path
+    // fast.
+    snapshot_drift_check(repo, false)?;
     Ok(())
+}
+
+/// Fail loud if the committed `abi/snapshot.json` has drifted from its
+/// sources. Invokes `check-abi-version.sh check` (regenerate-in-memory-and-
+/// compare) -- it never runs `update`, so the tracked file is never
+/// overwritten by this call. `force` bypasses the mtime gate below; real
+/// callers (`verify_fresh_report`) pass `false` so an unrelated `verify-
+/// fresh` run does not pay for a kernel rebuild + dump-abi pass.
+///
+/// CI runs `check-abi-version.sh check` unconditionally through its own
+/// workflow regardless of this gate: a fresh checkout has meaningless
+/// relative mtimes, so CI cannot rely on the same shortcut. This gate only
+/// spares the LOCAL no-op path when nothing ABI-relevant changed.
+pub(crate) fn snapshot_drift_check(repo: &Path, force: bool) -> Result<(), String> {
+    if !force && !abi_sources_changed_since_snapshot(repo)? {
+        return Ok(());
+    }
+    run_check_abi_version_check(repo, "scripts/check-abi-version.sh")
+}
+
+/// Run `bash <repo>/<script_rel> check` and map a non-zero exit to a loud,
+/// actionable error. Split out from `snapshot_drift_check` so tests can
+/// substitute a stub script to exercise the exit-code-to-error mapping
+/// without ever invoking the real `check-abi-version.sh`, which builds the
+/// kernel and requires a real git checkout.
+fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), String> {
+    let script = repo.join(script_rel);
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg("check")
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("run {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(
+            "the ABI-snapshot freshness check did not pass (either abi/snapshot.json \
+             drifted from its sources, or the check could not run -- see the check \
+             output above). If it drifted, run \
+             `bash scripts/check-abi-version.sh update` and commit the result."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Cheap gate for `snapshot_drift_check`: has any ABI-defining source
+/// changed more recently than the committed snapshot? Compares
+/// `abi/snapshot.json`'s mtime against the newest mtime found under
+/// `crates/shared` and `crates/kernel`. This is a gate, not the safety
+/// check itself -- a false "changed" only costs one extra
+/// `check-abi-version.sh` run -- so ambiguity resolves to `true`: a
+/// missing snapshot, or an error walking a source directory that does
+/// exist, both return `true` (run the check) rather than silently
+/// skipping it.
+fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
+    let snapshot = repo.join("abi/snapshot.json");
+    let snapshot_mtime = match fs::metadata(&snapshot).and_then(|meta| meta.modified()) {
+        Ok(mtime) => mtime,
+        Err(_) => return Ok(true),
+    };
+    for dir in ["crates/shared", "crates/kernel"] {
+        match newest_mtime_under(&repo.join(dir)) {
+            Ok(mtime) if mtime > snapshot_mtime => return Ok(true),
+            Ok(_) => {}
+            // A read error inside a directory that DOES exist (permission
+            // denied, a symlink that can't be stat'd, etc) is ambiguity
+            // unrelated to ABI drift, not proof of "nothing changed." Open
+            // the gate and let the authoritative `check-abi-version.sh`
+            // run rather than propagating the error and failing the whole
+            // pre-test gate on something that has nothing to do with the
+            // ABI snapshot.
+            Err(_) => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+/// Newest file mtime found anywhere under `dir`, walked recursively. A
+/// `dir` that does not exist at all contributes no files, so it returns
+/// `SystemTime::UNIX_EPOCH` rather than an error: the real repo always has
+/// `crates/shared` and `crates/kernel`, so this only matters for synthetic
+/// test fixtures that do not materialize the whole tree. An error reading
+/// an entry inside a directory that DOES exist is real ambiguity and is
+/// propagated, which `abi_sources_changed_since_snapshot` maps to the
+/// conservative "run the check" outcome.
+fn newest_mtime_under(dir: &Path) -> Result<SystemTime, String> {
+    if !dir.exists() {
+        return Ok(SystemTime::UNIX_EPOCH);
+    }
+    let mut newest = SystemTime::UNIX_EPOCH;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|error| format!("read_dir {}: {error}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("read_dir entry under {}: {error}", current.display())
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("file_type {}: {error}", entry.path().display())
+            })?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map_err(|error| format!("mtime {}: {error}", entry.path().display()))?;
+            if modified > newest {
+                newest = modified;
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// Recompute the SourceOnlyV1 cache key `package` currently resolves to -- the
+/// same key `build_into_cache` stamps onto the package's published wasm output.
+/// `verify_fresh_report` compares this against the staged kernel's stamp, so a
+/// stale mirror (older stamp, or none) fails loud. Reuses the build engine's
+/// own key function (`build_deps::source_only_cache_key_sha`) rather than
+/// recomputing, so the expected key can never drift from what a real build
+/// stamps.
+pub(crate) fn expected_source_only_cache_key(
+    repo: &Path,
+    package: &str,
+) -> Result<[u8; 32], String> {
+    let registry = fixed_registry(repo);
+    let manifest = registry.load(package)?;
+    let sha = crate::build_deps::source_only_cache_key_sha(
+        &manifest,
+        &registry,
+        TargetArch::Wasm32,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    crate::util::hex_to_32(&sha)
 }
 
 /// Walk REVERSE edges over `graph.dependencies` (which maps a node to the
@@ -4471,6 +4678,40 @@ mod tests {
     }
 
     #[test]
+    fn source_cache_root_defaults_to_home_when_no_override() {
+        let resolved =
+            resolve_source_cache_root(None, Some(std::ffi::OsString::from("/home/dev"))).unwrap();
+        assert_eq!(resolved, PathBuf::from("/home/dev/.cache/kandelo/source-only"));
+    }
+
+    #[test]
+    fn source_cache_root_override_wins_over_home() {
+        let resolved = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("/tmp/wt-cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/wt-cache"));
+    }
+
+    #[test]
+    fn source_cache_root_override_must_be_absolute() {
+        let err = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("relative/cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap_err();
+        assert!(err.contains("KANDELO_SOURCE_CACHE_ROOT"), "{err}");
+        assert!(err.contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn source_cache_root_errors_when_no_override_and_no_home() {
+        let err = resolve_source_cache_root(None, None).unwrap_err();
+        assert!(err.contains("HOME is not set"), "{err}");
+    }
+
+    #[test]
     fn source_only_program_projection_is_current_matches_recorded_graph_authority() {
         let temp = tempfile::TempDir::new().unwrap();
         let output = temp.path();
@@ -5725,10 +5966,21 @@ materialization = "lazy"
         );
     }
 
+    /// A current-ABI kernel that carries no build-key stamp is no longer
+    /// accepted as fresh: passing the ABI check is necessary but not
+    /// sufficient, since a same-ABI internal change moves the build key. The
+    /// synthetic fixture here has no stamp, so it must be flagged. (A kernel
+    /// carrying the *correct* stamp verifying fresh through the real build
+    /// engine is proven by `verify_fresh_passes_for_a_real_materialized_kernel_stamp`
+    /// in `build_deps`, which needs that module's materialize fixtures.)
     #[test]
-    fn verify_fresh_ok_for_current_kernel() {
+    fn verify_fresh_flags_a_current_abi_kernel_with_no_build_key_stamp() {
         let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION);
-        assert!(verify_fresh_report(repo.path()).is_ok());
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "an unstamped current-ABI kernel must fail the build-key check: {err}"
+        );
     }
 
     #[test]
@@ -5801,6 +6053,175 @@ materialization = "lazy"
             err.contains("kernel.wasm has no __abi_version export"),
             "must name the missing export: {err}"
         );
+    }
+
+    // -- snapshot_drift_check / abi_sources_changed_since_snapshot (B3) --
+    //
+    // `check-abi-version.sh check` itself is deliberately NOT exercised
+    // here: it requires a real git checkout (`git rev-parse
+    // --show-toplevel`) and builds the kernel wasm via `cargo build -p
+    // kandelo`, so it cannot run against these synthetic temp repos
+    // without failing for the wrong reason (no git root / unbuildable
+    // kernel, not snapshot drift). These tests instead cover the two
+    // pieces that ARE unit-testable in isolation:
+    //   - the mtime gate (`abi_sources_changed_since_snapshot` /
+    //     `newest_mtime_under`), including that `snapshot_drift_check`
+    //     honors a false gate without shelling out at all; and
+    //   - the exit-code-to-error mapping (`run_check_abi_version_check`),
+    //     exercised against a stub script instead of the real one.
+    // A genuinely-drifted `abi/snapshot.json` actually failing
+    // `verify-fresh` end to end is validated in Task 9, against the real
+    // repo.
+
+    fn set_mtime(path: &Path, when: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn snapshot_drift_check_skips_the_script_when_the_gate_is_false() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared").unwrap();
+        set_mtime(&shared_src, hour_ago);
+
+        let kernel_src = repo.path().join("crates/kernel/src/lib.rs");
+        fs::create_dir_all(kernel_src.parent().unwrap()).unwrap();
+        fs::write(&kernel_src, "// kernel").unwrap();
+        set_mtime(&kernel_src, hour_ago);
+
+        // Newer than both sources, but deliberately not valid JSON: if the
+        // gate were open this would reach `check-abi-version.sh` (which
+        // does not exist under this synthetic repo) and fail to launch.
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "not-json").unwrap();
+        set_mtime(&snapshot, now);
+
+        snapshot_drift_check(repo.path(), /* force= */ false)
+            .expect("gate must skip the check when no ABI source is newer than the snapshot");
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_the_snapshot_is_missing() {
+        let repo = tempfile::TempDir::new().unwrap();
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a missing snapshot must resolve to the conservative 'run the check' outcome"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_false_when_source_dirs_are_absent() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        // No crates/shared or crates/kernel under this repo at all.
+        assert!(
+            !abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "an absent source directory contributes no files, not ambiguity"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_a_source_is_newer_than_the_snapshot() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        set_mtime(&snapshot, hour_ago);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared, edited after the snapshot").unwrap();
+        set_mtime(&shared_src, now);
+
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a source newer than the snapshot must open the gate"
+        );
+    }
+
+    /// A directory-walk error inside an EXISTING source directory (as
+    /// opposed to the directory itself being absent, covered above) is
+    /// ambiguity unrelated to ABI drift, not proof of "nothing changed."
+    /// The gate must resolve this to `true` (run the authoritative check)
+    /// rather than propagating the error and failing the whole pre-test
+    /// gate on something that has nothing to do with the ABI snapshot.
+    /// Constructed with a permission-restricted subdirectory rather than a
+    /// stubbed seam: `newest_mtime_under` walks the real filesystem with no
+    /// injection point, and an unreadable directory is a robust, portable
+    /// way to make `fs::read_dir` fail on Unix without relying on a
+    /// dangling-symlink `metadata()` call, which does NOT error (`DirEntry
+    /// ::metadata` on Unix is `lstat`-equivalent and succeeds even for a
+    /// dangling symlink).
+    #[test]
+    #[cfg(unix)]
+    fn abi_sources_changed_since_snapshot_is_true_when_an_existing_source_dir_has_an_unreadable_entry()
+     {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+
+        // `crates/shared` DOES exist here (unlike the "absent dir" test
+        // above), but a subdirectory inside it cannot be listed.
+        let restricted = repo.path().join("crates/shared/restricted");
+        fs::create_dir_all(&restricted).unwrap();
+        let original_permissions = fs::metadata(&restricted).unwrap().permissions();
+        fs::set_permissions(&restricted, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = abi_sources_changed_since_snapshot(repo.path());
+
+        // Restore permissions unconditionally (before asserting) so a
+        // failing assertion never leaves an unreadable directory behind
+        // for the `TempDir` to fail to clean up.
+        fs::set_permissions(&restricted, original_permissions).unwrap();
+
+        assert!(
+            result.unwrap(),
+            "an unreadable entry inside an EXISTING source dir must open the \
+             gate, not fail closed or silently report no change"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_maps_a_nonzero_exit_to_a_loud_error() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 1\n").unwrap();
+
+        let err = run_check_abi_version_check(repo.path(), "fake-check.sh").unwrap_err();
+        assert!(
+            err.contains("snapshot") && err.contains("check-abi-version.sh update"),
+            "error must name the snapshot and the update command: {err}"
+        );
+        // The script's own failure can be a provisioning problem (e.g. "sysroot
+        // not found") rather than actual snapshot drift, since the real script
+        // builds the kernel before comparing. The mapped error must not assert
+        // drift as fact -- it must allow for "the check could not run" too.
+        assert!(
+            err.contains("could not run"),
+            "error must not assert drift as the only explanation for a non-zero exit: {err}"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_is_ok_when_the_script_exits_zero() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 0\n").unwrap();
+
+        run_check_abi_version_check(repo.path(), "fake-check.sh")
+            .expect("a zero exit must not be reported as drift");
     }
 
     #[test]
