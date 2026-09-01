@@ -485,17 +485,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onResolveSpawn: async (path, argv) => {
         const mappedProgram = options.execPrograms?.get(path);
         if (!mappedProgram) return null;
-        const spawnProgramBytes = loadProgramWasm(mappedProgram);
-        try {
-          return {
-            programBytes: spawnProgramBytes,
-            programModule: await WebAssembly.compile(spawnProgramBytes),
-            argv,
-          };
-        } catch (error) {
-          if (error instanceof WebAssembly.CompileError) return { errno: 8 };
-          throw error;
-        }
+        return { programBytes: loadProgramWasm(mappedProgram), argv };
       },
       onSpawn: async (_parentPid, childPid, program, envp) => {
         if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;

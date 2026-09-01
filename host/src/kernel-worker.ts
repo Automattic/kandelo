@@ -2019,6 +2019,17 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
+/**
+ * A resolver's spawn candidate carries bytes only. Compilation happens exactly
+ * once, in `compileSpawnCandidateSnapshot`; a resolver-side module would be
+ * discarded there while still pinning executable memory (a full desktop of
+ * duplicate modules exhausts SpiderMonkey's 2 GiB per-process code arena).
+ */
+export interface ResolvedSpawnCandidate {
+  programBytes: ArrayBuffer;
+  argv: string[];
+}
+
 export interface SpawnResolveError {
   errno: number;
 }
@@ -2106,6 +2117,8 @@ function createThreadChannelAttachment(
 }
 
 export type SpawnProgramResolution = ResolvedSpawnProgram | SpawnResolveError;
+
+export type SpawnCandidateResolution = ResolvedSpawnCandidate | SpawnResolveError;
 
 interface ReservedSpawnScratch {
   // A token exists before its pointer/capacity can be validated. Keeping that
@@ -2244,7 +2257,7 @@ interface BlockingRetryWakeTargets {
 }
 
 function isSpawnResolveError(
-  resolution: SpawnProgramResolution,
+  resolution: SpawnProgramResolution | SpawnCandidateResolution,
 ): resolution is SpawnResolveError {
   return "errno" in resolution &&
     typeof resolution.errno === "number";
@@ -2306,9 +2319,10 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the validated program
-   * bytes, their compiled module, and launch argv for `path`, `{ errno }` for
-   * a located but unlaunchable program, or `null` for ENOENT. **Must NOT have
-   * side effects** —
+   * bytes and launch argv for `path`, `{ errno }` for a located but
+   * unlaunchable program, or `null` for ENOENT. The shared worker compiles
+   * the candidate exactly once, from its own isolated byte snapshot.
+   * **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -2319,7 +2333,7 @@ export interface CentralizedKernelCallbacks {
    *
    * Required if `onSpawn` is set; together they form the spawn surface.
    */
-  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
+  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnCandidateResolution | null>;
 
   /**
    * Launch a worker for the spawned child with bytes and module derived from
