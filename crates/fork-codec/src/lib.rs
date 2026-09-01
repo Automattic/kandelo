@@ -26,6 +26,7 @@ extern crate wasm_posix_shared;
 
 pub mod linked_frames;
 pub mod module_state;
+pub mod replay_events;
 
 pub use linked_frames::{
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
@@ -34,3 +35,4 @@ pub use linked_frames::{
 pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
+pub use replay_events::{decode_replay_events, ReplayEvent, ReplayEvents};
