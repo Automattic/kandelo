@@ -1,0 +1,16 @@
+script_path = "packages/registry/qtbase/build-qtbase.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "9072b5384"
+revision    = 7
+
+# The fetched `qtbase-src/` tree is gitignored; the resolver hashes these
+# tracked inputs on a clean checkout. script_path is not implicit — only
+# what this list names reaches the cache key.
+inputs = [
+  "packages/registry/qtbase/build-qtbase.sh",
+  "packages/registry/qtbase/src/qmutex-honour-qt-linuxbase.patch",
+  "packages/registry/qtbase/src/wayland-shm-gbm-pool.patch",
+  "packages/registry/qtbase/src/forkfd-generic-on-wasm.patch",
+  "packages/registry/qtbase/src/include/linux/fs.h",
+  "scripts/package-build-roots.sh",
+]

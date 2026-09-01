@@ -250,6 +250,7 @@ host/test/pthread-trap-semantics.test.ts	prepared-product
 host/test/pthread.test.ts	prepared-product
 host/test/pty-ownership.test.ts	prepared-product
 host/test/putenv.test.ts	prepared-product
+host/test/qt-gui-smoke.test.ts	source-only
 host/test/qtwaylandscanner-host-tool.test.ts	source-only
 host/test/readdir-atomicity.test.ts	source-only
 host/test/readiness-deadline.test.ts	source-only
@@ -427,6 +428,7 @@ tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
+tests/package-system/qtbase-package.test.ts	source-only
 tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product

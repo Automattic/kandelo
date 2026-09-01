@@ -411,6 +411,10 @@ name = "posix-utils-lite"
 class = "user-software"
 
 [[packages]]
+name = "qtbase"
+class = "platform"
+
+[[packages]]
 name = "redis"
 class = "user-software"
 
