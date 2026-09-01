@@ -133,13 +133,39 @@ nix_develop=(
     --accept-flake-config
 )
 
+# Pin the dev-shell closure with a durable GC root so a background Nix
+# garbage collection cannot evict declared build tools mid-build. Without a
+# root, `nix develop` holds only a transient root for its own process; when
+# a GC fires during a long build (Determinate Nix runs one periodically),
+# it deletes an unrooted tool's store path, which surfaces as an
+# intermittent "env: 'zip': No such file or directory" (or help2man, ...)
+# on one package while a sibling in the same run succeeds. A `--profile` is
+# a stable indirect GC root (registered under /nix/var/nix/gcroots/auto),
+# updated atomically in place, so it also stops re-realizing the closure on
+# every entry. Best-effort: if the profile directory is not writable, fall
+# back to the unrooted behavior rather than failing the shell entry.
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+gcroot_args=()
+gcroot_dir="${KANDELO_DEV_SHELL_PROFILE_DIR:-$repo_root/.nix-dev-shell}"
+if mkdir -p "$gcroot_dir" 2>/dev/null && [ -w "$gcroot_dir" ]; then
+    gcroot_args=(--profile "$gcroot_dir/profile")
+fi
+
 # Realizing the shell closure is split out from running the user's command
 # so the source-bootstrap watchdog below only ever inspects Nix's own
 # substitution output. Once `--command "${dev_command[@]}"` is running,
 # arbitrary build output shares the same stream and would produce false
 # positives. `true` needs no PATH repair, so the warm phase deliberately
-# does not go through `dev_command`.
-warm=("${nix_develop[@]}" --command true)
+# does not go through `dev_command`. The warm phase carries the `--profile`
+# root; it persists for the unrooted `exec` below, so the whole invocation
+# stays protected without churning a second profile generation per run.
+# `${#arr[@]}` is used instead of expanding a possibly-empty array so the
+# fallback path stays safe under `set -u` on macOS's bash 3.2.
+if [ "${#gcroot_args[@]}" -gt 0 ]; then
+    warm=("${nix_develop[@]}" "${gcroot_args[@]}" --command true)
+else
+    warm=("${nix_develop[@]}" --command true)
+fi
 
 is_transient_nix_fetch_failure() {
     local log_file="$1"

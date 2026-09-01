@@ -155,3 +155,7 @@ packages/registry/*/package.pr.toml
 # replacement across cooperating xtask processes. It is intentionally retained
 # so waiters never split onto different lock inodes.
 .*.kandelo-index.lock
+
+# Durable Nix GC root for the dev shell closure (scripts/dev-shell.sh);
+# prevents background GC from evicting build tools mid-build.
+/.nix-dev-shell/
