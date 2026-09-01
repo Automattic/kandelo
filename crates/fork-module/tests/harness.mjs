@@ -142,6 +142,8 @@ for (const name of [
   "fm_externrefs_resolved",
   // Phase 6 D6.3a exnref reconstruction proof-of-use counter.
   "fm_exnrefs_reconstructed",
+  // Phase 6 D6.4a typed-GC (struct/array/i31) reconstruction proof-of-use counter.
+  "fm_gc_nodes_reconstructed",
   "fm_host_capabilities_probe",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -261,6 +263,23 @@ assert.equal(
   "exnref counter is inert until fm_begin_reference_replay admits an exnref graph",
 );
 console.log("  ok: fm_exnrefs_reconstructed present and inert (0) outside a reference replay");
+
+// -- Phase 6 D6.4a: the typed-GC proof-of-use counter is present and inert here -
+//
+// `fm_gc_nodes_reconstructed` advances ONLY when `fm_begin_reference_replay`
+// admits a typed-GC (struct/array/i31) graph and drives it. The seam probe above
+// never drives `fm_begin_reference_replay`, so the GC counter must still read 0 —
+// proving the counter export is real and not spuriously bumped by the seam probe.
+// The full typed-GC drive (real KFMS arena -> module admits a struct↔array cycle
+// -> PHASE B roots the aliased externref leaf in the REAL anyref transit ONCE ->
+// counter advances -> no tag minted) is validated in
+// `host/test/fork-module-gc-replay.test.ts`.
+assert.equal(
+  x.fm_gc_nodes_reconstructed(),
+  0n,
+  "typed-GC counter is inert until fm_begin_reference_replay admits a GC graph",
+);
+console.log("  ok: fm_gc_nodes_reconstructed present and inert (0) outside a reference replay");
 
 // -- The sentinel: proxy for live guest data at LOW offsets --------------------
 //

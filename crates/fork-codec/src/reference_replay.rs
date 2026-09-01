@@ -201,6 +201,62 @@ impl ReferenceReplayDriver {
             .count() as u32
     }
 
+    /// True when EVERY node is Null, Funcref, Externref, Exnref, or a typed-GC
+    /// value (Struct / Array / I31) — the widened kind set D6.4a admits through
+    /// the module. Admitting typed GC adds NO new engine-floor callback and moves
+    /// NO drive-order into the module: the fork side module is instantiated BEFORE
+    /// the guest exists, so it cannot import the guest's `_gc_allocate`/`_gc_fill`
+    /// exports, and the PROVEN JS drive-order (`materializeTypedGraph`) keeps the
+    /// topological allocate/fill walk plus cycle-breaking and aliases. The
+    /// module's only GC job is leaf-identity + transit rooting: `transit_rooted_
+    /// recipes` already seeds its reachability walk from Struct/Array edges, so
+    /// PHASE B roots every struct/array-reachable externref leaf with the R1
+    /// read-back assert before the guest fill consumes it. An i31 is a scalar leaf
+    /// (no host call, no transit). StaticRoot STAYS EXCLUDED: it needs
+    /// `resolve_static_root` + a host static-root catalog seam that is not wired,
+    /// so a static-root graph keeps the byte-identical JS reference path. The host
+    /// computes the same KIND predicate (plus a GC-descriptor validity check only
+    /// it can see) before flipping the reference path; the module re-checks so a
+    /// disagreeing host can never drive an unadmitted kind (static-root) through
+    /// the seam.
+    pub fn all_nodes_gc_exnref_externref_funcref_or_null(&self) -> bool {
+        self.transaction.nodes.iter().all(|entry| {
+            matches!(
+                entry.node,
+                ReferenceRecipeNode::Null
+                    | ReferenceRecipeNode::Funcref { .. }
+                    | ReferenceRecipeNode::Externref { .. }
+                    | ReferenceRecipeNode::Exnref { .. }
+                    | ReferenceRecipeNode::Struct { .. }
+                    | ReferenceRecipeNode::Array { .. }
+                    | ReferenceRecipeNode::I31 { .. }
+            )
+        })
+    }
+
+    /// The number of typed-GC nodes (Struct + Array + I31) in the graph — the
+    /// proof-of-use count the module bumps into `fm_gc_nodes_reconstructed` once a
+    /// typed-GC graph is admitted and driven through the module. The Struct/Array/
+    /// I31 arms of `drive_reconstruction` stay inert (the guest drives the GC
+    /// allocate/fill under the JS order; the module only roots reachable externref
+    /// leaves via PHASE B), so this count — not `ReconstructionState::
+    /// reconstructed` — is what proves the module (not a silent JS fallback)
+    /// admitted a typed-GC graph.
+    pub fn gc_node_count(&self) -> u32 {
+        self.transaction
+            .nodes
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.node,
+                    ReferenceRecipeNode::Struct { .. }
+                        | ReferenceRecipeNode::Array { .. }
+                        | ReferenceRecipeNode::I31 { .. }
+                )
+            })
+            .count() as u32
+    }
+
     /// The recipe ids of externrefs that a typed/exnref consumer reaches — the
     /// externrefs that MUST be staged in the anyref transit table (at slot
     /// `recipe_id + 1`) before the consumer's GC fill / exception materialize
@@ -302,17 +358,24 @@ impl ReferenceReplayDriver {
                     host_refs[entry.id as usize] = Some(host_ref);
                     reconstructed = reconstructed.checked_add(1).ok_or(Errno::ENOSPC)?;
                 }
-                // Funcref stays the wasm→wasm table.get path (D6.1); the other
-                // scalars need no host identity in this phase.
+                // Funcref stays the wasm→wasm table.get path (D6.1); i31 is a
+                // scalar leaf (no host call, no transit); static-root is excluded
+                // by the gate. None need host identity in this phase.
                 ReferenceRecipeNode::Null
                 | ReferenceRecipeNode::Funcref { .. }
                 | ReferenceRecipeNode::StaticRoot { .. }
                 | ReferenceRecipeNode::I31 { .. } => {}
-                // D6.3: Exnref arm — mint_exception_tag + materialize payload +
-                // publish the exnref; inert until the exnref slice lands.
+                // Exnref (D6.3a): admitted; the guest export materializes the
+                // exception against its own module-local tag, so this arm stays a
+                // no-op while PHASE B still roots the exnref's reachable externref
+                // payloads via the transit.
                 ReferenceRecipeNode::Exnref { .. } => {}
-                // D6.4: Struct/Array arm — allocate the shell, then fill in edge
-                // order with the R1/R2 guards; inert until the GC slice lands.
+                // Struct/Array (D6.4a): admitted; the guest drives allocate/fill
+                // under the JS order (the module precedes the guest, so it cannot
+                // import `_gc_allocate`/`_gc_fill`), so this arm stays inert. The
+                // module roots the struct/array-reachable externref leaves via
+                // PHASE B (`transit_rooted_recipes` seeds from these edges). Moving
+                // the drive-order into Rust is D6.4b.
                 ReferenceRecipeNode::Struct { .. } | ReferenceRecipeNode::Array { .. } => {}
             }
         }
@@ -663,6 +726,128 @@ mod tests {
         host.corrupt_transit_reads();
         assert_eq!(
             exnref_over_externref().drive_reconstruction(&mut host, 5),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    // --- D6.4a: typed-GC (struct/array/i31) admission + leaf rooting ---------
+
+    /// A struct↔array CYCLE whose subgraph reaches an ALIASED externref leaf:
+    ///   id 0 = struct  -> array(1) + externref(2)
+    ///   id 1 = array   -> struct(0) (back-edge, the cycle) + externref(2) (alias)
+    ///   id 2 = externref (reached from BOTH the struct field and the array element)
+    /// The module admits this graph (typed GC) and roots the reachable externref
+    /// leaf through PHASE B, but the guest still DRIVES the allocate/fill under the
+    /// JS order, so the Struct/Array arms of `drive_reconstruction` stay inert. The
+    /// externref must be rooted EXACTLY ONCE despite the alias (dedup).
+    fn struct_array_cycle_over_externref() -> ReferenceReplayDriver {
+        ReferenceReplayDriver::new(transaction(vec![
+            entry(
+                0,
+                ReferenceRecipeNode::Struct {
+                    module_activation: 0,
+                    type_ordinal: 1,
+                    layout_id: 1,
+                    scalars: alloc::vec![0u8; 4],
+                    fields: vec![1, 2],
+                },
+            ),
+            entry(
+                1,
+                ReferenceRecipeNode::Array {
+                    module_activation: 0,
+                    type_ordinal: 2,
+                    layout_id: 2,
+                    scalars: alloc::vec![0u8; 2],
+                    elements: vec![0, 2],
+                },
+            ),
+            entry(2, ReferenceRecipeNode::Externref { handle: 12 }),
+        ]))
+    }
+
+    #[test]
+    fn widened_gc_gate_admits_struct_array_i31_but_d6_3a_predicate_does_not() {
+        let driver = struct_array_cycle_over_externref();
+        // The D6.4a predicate admits the typed-GC cycle; the D6.3a predicate does
+        // not (struct/array are not exnref/externref/funcref/null).
+        assert!(driver.all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(!driver.all_nodes_exnref_externref_funcref_or_null());
+
+        // i31 is a scalar leaf admitted by the widened gate.
+        let i31_graph = ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::I31 { value: -17 }),
+            entry(1, ReferenceRecipeNode::I31 { value: 42 }),
+        ]));
+        assert!(i31_graph.all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(!i31_graph.all_nodes_exnref_externref_funcref_or_null());
+
+        // The widened gate still admits every previously-admitted graph.
+        assert!(exnref_over_externref().all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(plain_externref().all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(funcref_only().all_nodes_gc_exnref_externref_funcref_or_null());
+
+        // static-root STAYS EXCLUDED (needs resolve_static_root + a host catalog
+        // seam not wired): even the widened D6.4a gate rejects it.
+        let static_root = ReferenceReplayDriver::new(transaction(vec![entry(
+            0,
+            ReferenceRecipeNode::StaticRoot {
+                module_activation: 0,
+                static_root_ordinal: 0,
+            },
+        )]));
+        assert!(!static_root.all_nodes_gc_exnref_externref_funcref_or_null());
+    }
+
+    #[test]
+    fn gc_node_count_counts_struct_array_and_i31_nodes() {
+        // struct + array (the externref leaf is not a GC node).
+        assert_eq!(struct_array_cycle_over_externref().gc_node_count(), 2);
+        // A pure i31 pair.
+        let i31_graph = ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::I31 { value: 1 }),
+            entry(1, ReferenceRecipeNode::I31 { value: 2 }),
+            entry(2, ReferenceRecipeNode::Null),
+        ]));
+        assert_eq!(i31_graph.gc_node_count(), 2);
+        // Graphs with no GC nodes count zero.
+        assert_eq!(plain_externref().gc_node_count(), 0);
+        assert_eq!(exnref_over_externref().gc_node_count(), 0);
+    }
+
+    #[test]
+    fn drive_roots_aliased_externref_leaf_once_for_typed_gc_cycle() {
+        let mut host = MockForkHost::new();
+        let driver = struct_array_cycle_over_externref();
+        let state = driver.drive_reconstruction(&mut host, 7).expect("drive");
+
+        // The aliased externref leaf (reached from BOTH the struct field and the
+        // array element) was resolved EXACTLY ONCE, and transit-rooted once at
+        // recipe_id+1 with the PHASE B read-back identity holding (the drive
+        // returned Ok, so the R1 assert passed).
+        assert_eq!(host.resolved_externref_handles(), &[12]);
+        assert_eq!(state.reconstructed(), 1);
+        assert_eq!(driver.transit_rooted_recipes(), vec![2]);
+        assert_eq!(host.transit_slot_count(state.generation()), 1);
+
+        // The typed-GC nodes were admitted (proof-of-use for
+        // `fm_gc_nodes_reconstructed`) ...
+        assert_eq!(driver.gc_node_count(), 2);
+        // ... but the Struct/Array drive arms stayed INERT: the guest drives the
+        // allocate/fill under the JS order, so the module minted no exception tag
+        // and did no GC allocation here.
+        assert_eq!(host.mint_exception_tag_calls(), 0);
+    }
+
+    #[test]
+    fn drive_rejects_lost_transit_identity_for_typed_gc_cycle_without_panic() {
+        // The R1 guard applies to a typed-GC cycle's reachable externref leaf: an
+        // engine that loses the anyref slot identity is a truthful EINVAL, never a
+        // silently corrupted GC graph.
+        let mut host = MockForkHost::new();
+        host.corrupt_transit_reads();
+        assert_eq!(
+            struct_array_cycle_over_externref().drive_reconstruction(&mut host, 7),
             Err(Errno::EINVAL)
         );
     }
