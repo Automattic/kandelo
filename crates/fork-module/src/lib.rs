@@ -265,6 +265,18 @@ mod wasm {
     // Never resets.
     static EXNREFS_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 
+    // Monotonic count of typed-GC nodes (struct + array + i31) the module has
+    // admitted and driven since worker start (Phase 6 D6.4a). Proof-of-use mirror
+    // of `EXNREFS_RECONSTRUCTED` for the typed-GC path: `fm_begin_reference_replay`
+    // bumps this by the admitted graph's GC-node count. The DRIVE itself leaves the
+    // Struct/Array/I31 arms inert — the module precedes the guest, so the guest
+    // export drives the GC allocate/fill under the JS order, and i31 is a scalar
+    // leaf — so this count (not the externref `reconstructed` count) is what proves
+    // the module, not a silent JS fallback, admitted a typed-GC graph. Any
+    // struct/array-reachable externref leaves are rooted by the same PHASE B
+    // transit path. Never resets.
+    static GC_NODES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+
     // The host identities the last `fm_begin_reference_replay` drive re-rooted
     // for this fork (the externref `HostRef`s + their owning generation). Held
     // alongside `REFERENCE_STATE` so the once-per-value roots outlive the drive:
@@ -828,18 +840,22 @@ mod wasm {
         )?;
         let driver = ReferenceReplayDriver::new(transaction);
 
-        // D6.3a gate (defense in depth; the host computes the same predicate,
-        // plus an exception-descriptor validity check only the host can see).
-        // Widened from D6.2's null/funcref/externref to also admit exnref: an
-        // exnref adds NO new engine-floor callback — its program exception tag is
-        // guest-module-local, so the guest export `__wpk_fork_exception_
-        // materialize` does the throw/`catch_ref`; the module only re-roots the
-        // exnref's reachable externref payloads through the transit (PHASE B).
-        // Every remaining kind (GC struct/array / i31 / static-root) still needs
-        // a JS drive-order this slice does not move, so it is a truthful
-        // `EOPNOTSUPP` that keeps the fork on the byte-identical JS reference
-        // path.
-        if !driver.all_nodes_exnref_externref_funcref_or_null() {
+        // D6.4a gate (defense in depth; the host computes the same predicate,
+        // plus a GC-descriptor validity check only the host can see). Widened from
+        // D6.3a's null/funcref/externref/exnref to also admit typed GC (struct /
+        // array / i31). Admitting typed GC adds NO new engine-floor callback and
+        // moves NO drive-order into the module: the fork side module is
+        // instantiated BEFORE the guest exists, so it cannot import the guest's
+        // `_gc_allocate`/`_gc_fill` exports; the PROVEN JS drive-order keeps the
+        // topological allocate/fill walk plus cycle-breaking and aliases. The
+        // module's only GC job is leaf identity + transit rooting — PHASE B roots
+        // every struct/array-reachable externref leaf (`transit_rooted_recipes`
+        // already seeds from Struct/Array edges) with the R1 read-back assert, and
+        // i31 is a scalar leaf. Only static-root remains unadmitted (it needs
+        // `resolve_static_root` + a host static-root catalog seam not wired), so a
+        // static-root graph is a truthful `EOPNOTSUPP` that keeps the fork on the
+        // byte-identical JS reference path.
+        if !driver.all_nodes_gc_exnref_externref_funcref_or_null() {
             return Err(Errno::EOPNOTSUPP);
         }
         // One imported catalog table => funcrefs must share one activation.
@@ -858,6 +874,11 @@ mod wasm {
         // D6.3a proof-of-use: the drive's Exnref arm is inert (the guest export
         // materializes the exception), so count the admitted exnref nodes here.
         EXNREFS_RECONSTRUCTED.fetch_add(driver.exnref_node_count() as u64, Ordering::Relaxed);
+        // D6.4a proof-of-use: the Struct/Array/I31 arms are inert (the guest drives
+        // the GC allocate/fill under the JS order), so count the admitted typed-GC
+        // nodes here. The struct/array-reachable externref leaves are rooted via
+        // the same PHASE B transit path (`EXTERNREFS_RESOLVED` also advances).
+        GC_NODES_RECONSTRUCTED.fetch_add(driver.gc_node_count() as u64, Ordering::Relaxed);
 
         *reference_state() = Some(driver);
         *reconstruction_state() = Some(reconstruction);
@@ -1186,6 +1207,20 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_exnrefs_reconstructed() -> i64 {
         EXNREFS_RECONSTRUCTED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Monotonic count of typed-GC nodes (struct + array + i31) this module has
+    /// admitted and driven since worker start (Phase 6 D6.4a). Proof-of-use mirror
+    /// of `fm_exnrefs_reconstructed` for the typed-GC path: after a flag-on
+    /// typed-GC fork drives reconstruction through the module, this has advanced by
+    /// the graph's GC-node count; a silent JS fallback leaves it unchanged. The
+    /// struct/array-reachable externref leaves are rooted through the same transit
+    /// path (`fm_externrefs_resolved` also advances), while the GC allocate/fill is
+    /// driven by the guest export under the JS order (i31 is a scalar leaf). Never
+    /// resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_nodes_reconstructed() -> i64 {
+        GC_NODES_RECONSTRUCTED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).

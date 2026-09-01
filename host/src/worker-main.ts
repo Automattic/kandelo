@@ -4079,26 +4079,33 @@ export async function centralizedWorkerMain(
             exceptionDescriptor:
               readForkExceptionCodecDescriptor(activationModule),
           }));
-        // Phase 6 D6.3a predicate (widened from D6.2): this child's references
+        // Phase 6 D6.4a predicate (widened from D6.3a): this child's references
         // can be reconstructed through the module iff EVERY graph node is null,
-        // funcref, externref, or exnref. Funcref stays the wasm→wasm `table.get`
-        // path; externref is re-rooted through the `wpk_fork_host` engine-floor
-        // seam (`host_resolve_externref` over the broker token cache); an exnref
-        // adds NO new engine-floor callback — its program exception tag is
-        // guest-module-local, so the guest export `__wpk_fork_exception_
-        // materialize` does the throw/`catch_ref`, and the module only roots the
-        // exnref's reachable externref payloads through the anyref transit
-        // (brought into production above). An exnref is admitted ONLY when its
-        // owning activation ships a valid exception codec descriptor naming the
-        // tag — a defense the module cannot see, so the host adds it here.
-        // Every OTHER kind still needs a JS engine-floor drive this slice does not
-        // move, so it keeps the byte-identical JS reference path:
-        //   * gc struct / gc array — the typed drive-order (D6.4);
-        //   * i31 — the guest codec's i31 materialization;
-        //   * static-root — NOT transit-free: it publishes into the anyref
-        //     transit, which needs `resolve_static_root` wired, deferred with the
-        //     GC slice.
-        // The module re-checks the same KIND predicate in
+        // funcref, externref, exnref, or a typed-GC value (struct / array / i31).
+        // Funcref stays the wasm→wasm `table.get` path; externref is re-rooted
+        // through the `wpk_fork_host` engine-floor seam (`host_resolve_externref`
+        // over the broker token cache); an exnref adds NO new engine-floor
+        // callback — its program exception tag is guest-module-local, so the guest
+        // export `__wpk_fork_exception_materialize` does the throw/`catch_ref`, and
+        // the module only roots the exnref's reachable externref payloads through
+        // the anyref transit. Admitting typed GC (D6.4a) ALSO adds no new
+        // engine-floor callback and moves NO drive-order into the module: the fork
+        // side module is instantiated BEFORE the guest exists, so it cannot import
+        // the guest's `_gc_allocate`/`_gc_fill` exports; the PROVEN JS drive-order
+        // (`materializeTypedGraph`) keeps the topological allocate/fill walk plus
+        // cycle-breaking and aliases. The module's only GC job is leaf identity +
+        // transit rooting — PHASE B roots every struct/array-reachable externref
+        // leaf (already brought into production above), and i31 is a scalar leaf.
+        // An exnref is admitted ONLY when its owning activation ships a valid
+        // exception codec descriptor naming the tag; a struct/array is admitted
+        // ONLY when its owning activation ships a GC codec descriptor with the
+        // node's layout — defenses the module cannot see, so the host adds them
+        // here (mirroring the JS drive-order's `validateGcRecipe`, which requires
+        // the same layout before materializing).
+        // Only static-root still needs a JS engine-floor drive this slice does not
+        // move (it is NOT transit-free: it publishes into the anyref transit, which
+        // needs `resolve_static_root` wired), so it keeps the byte-identical JS
+        // reference path. The module re-checks the same KIND predicate in
         // `fm_begin_reference_replay`, so a host/module disagreement fails loud
         // (`EOPNOTSUPP`), never silently.
         const exceptionDescriptorAdmitsExnref = (
@@ -4113,6 +4120,27 @@ export async function centralizedWorkerMain(
             (tag) => tag.tagOrdinal === tagOrdinal,
           );
         };
+        // A struct/array is admitted only when its owning activation ships a GC
+        // codec descriptor whose layout the node names — the same gate the JS
+        // drive-order enforces via `ForkGcCodecDescriptor.require(layoutId)` inside
+        // `validateGcRecipe`. Without a valid layout the module cannot be admitted
+        // (the guest still drives the GC fill under the JS order), so it falls back
+        // to the byte-identical JS reference path rather than admitting blindly.
+        const gcDescriptorAdmits = (
+          activation: number,
+          layoutId: number,
+        ): boolean => {
+          const declaration = declarations.find(
+            (entry) => entry.activationId === activation,
+          );
+          if (!declaration || !declaration.gcDescriptor) return false;
+          try {
+            declaration.gcDescriptor.require(layoutId);
+            return true;
+          } catch {
+            return false;
+          }
+        };
         moduleReferenceKindsSupported =
           useForkModule &&
           forkModuleInstance !== null &&
@@ -4121,12 +4149,21 @@ export async function centralizedWorkerMain(
               case "null":
               case "funcref":
               case "externref":
+              case "i31":
                 return true;
               case "exnref":
                 return exceptionDescriptorAdmitsExnref(
                   entry.node.moduleActivation,
                   entry.node.tagOrdinal,
                 );
+              case "struct":
+              case "array":
+                return gcDescriptorAdmits(
+                  entry.node.moduleActivation,
+                  entry.node.layoutId ?? 0,
+                );
+              // static-root (and any future kind) stays on the byte-identical JS
+              // reference path.
               default:
                 return false;
             }
