@@ -110,8 +110,11 @@ pub mod process_layout;
 ///     completions consumed outside libc's post-syscall trampoline. OSS PCM
 ///     ioctl transfers use request-sized arguments, `/dev/dsp` descriptors
 ///     share a refcounted stream across fork and exec, and the host consumes a
-///     versioned bounded transport paced by the audio clock.
-pub const ABI_VERSION: u32 = 43;
+///     versioned bounded transport paced by the audio clock. The kernel owns
+///     the exec `#!` interpreter-line decode through a required
+///     `kernel_exec_target_shebang` export so no host interprets the exec guest
+///     ABI.
+pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2981,6 +2984,7 @@ pub mod abi {
         "kernel_exec_target_cancel",
         "kernel_exec_target_prepare",
         "kernel_exec_target_read",
+        "kernel_exec_target_shebang",
         "kernel_exec_target_size",
         "kernel_fork_process",
         "kernel_get_cwd",

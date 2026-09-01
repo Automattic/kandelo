@@ -70,10 +70,12 @@ import {
 } from "./host-owned-process-reap";
 import {
   compileSpawnCandidateSnapshot,
+  decodePreparedExecShebang,
   launchPreparedExecTarget,
   PreparedExecTargetError,
   type ExecLaunchCallback,
   type PreparedExecKernel,
+  type PreparedExecShebang,
 } from "./exec-target";
 import {
   buildRawHttpRequest,
@@ -8862,6 +8864,70 @@ export class CentralizedKernelWorker {
       throw new KernelReentrantEntryError("kernel exec target read");
     }
     return result;
+  }
+
+  /**
+   * Decode the retained target's `#!` interpreter line in the kernel. Returns
+   * null when the target is not a script. The host never parses program bytes
+   * to make this decision; the kernel owns the exec guest-ABI interpretation
+   * and writes back only the decoded interpreter and single optional argument.
+   */
+  execTargetShebang(
+    ownerPid: number,
+    target: number,
+  ): PreparedExecShebang | null {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const region = this.#requireMainScratchRegion();
+    let decoded: PreparedExecShebang | null = null;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target shebang pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          region.withLease((lease) => {
+            result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_shebang",
+              [
+                ownerPid,
+                target,
+                lease.exportPointer(0, region.capacity),
+                region.capacity,
+              ],
+            );
+            if (result > 0) {
+              const byteLength = this.#checkedScratchProducerByteLength(
+                result,
+                region.capacity,
+                "kernel_exec_target_shebang",
+              );
+              const record = new Uint8Array(byteLength);
+              lease.copyTo(record, 0, 0, byteLength);
+              decoded = decodePreparedExecShebang(record);
+            }
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target shebang");
+    }
+    if (result < 0) {
+      const errno = -result;
+      throw new PreparedExecTargetError(
+        "prepared exec target shebang decode failed",
+        errno > 0 && errno <= 4095 ? errno : EIO,
+      );
+    }
+    return decoded;
   }
 
   execTargetCancel(ownerPid: number, target: number): number {

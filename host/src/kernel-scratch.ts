@@ -133,6 +133,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_enum_procs",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
+  "kernel_exec_target_shebang",
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
@@ -248,6 +249,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_tcgetattr":
       return REQUIRED_POINTER_1;
     case "kernel_dequeue_signal":
+    case "kernel_exec_target_shebang":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
     case "kernel_ioctl":
@@ -318,6 +320,7 @@ function isKernelScratchExportName(
     case "kernel_enum_procs":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
+    case "kernel_exec_target_shebang":
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":

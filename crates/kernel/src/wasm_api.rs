@@ -3084,6 +3084,68 @@ pub extern "C" fn kernel_exec_target_read(
     }
 }
 
+/// Decode the retained target's `#!` interpreter line into caller scratch.
+///
+/// The kernel owns the shebang byte interpretation the host formerly did in
+/// TypeScript: it reads the target header through the retained handle and
+/// writes a small record the host uses to assemble argv:
+///
+///   `[has_arg: u8][interp_len: u32 LE][arg_len: u32 LE][interp][arg]`
+///
+/// The return value is the record length in bytes for a script, `0` when the
+/// target is not a script, or a negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_shebang(
+    owner_pid: u32,
+    token: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    if out_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if out_len != 0 && (out_ptr == 0 || out_ptr.checked_add(out_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = if out_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) }
+    };
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    let shebang = match crate::exec_target::shebang(proc, &mut host, owner_pid, token) {
+        Ok(shebang) => shebang,
+        Err(error) => return -(error as i32),
+    };
+    let Some(shebang) = shebang else {
+        return 0;
+    };
+    let interpreter = shebang.interpreter.as_bytes();
+    let argument = shebang.argument.as_deref().map(str::as_bytes);
+    let argument_bytes = argument.unwrap_or(&[]);
+    let Some(total) = 9usize
+        .checked_add(interpreter.len())
+        .and_then(|partial| partial.checked_add(argument_bytes.len()))
+    else {
+        return -(Errno::EOVERFLOW as i32);
+    };
+    if total > out.len() {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    let interpreter_len = interpreter.len() as u32;
+    let argument_len = argument_bytes.len() as u32;
+    out[0] = u8::from(argument.is_some());
+    out[1..5].copy_from_slice(&interpreter_len.to_le_bytes());
+    out[5..9].copy_from_slice(&argument_len.to_le_bytes());
+    out[9..9 + interpreter.len()].copy_from_slice(interpreter);
+    out[9 + interpreter.len()..total].copy_from_slice(argument_bytes);
+    total as i32
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };

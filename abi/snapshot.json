@@ -1,5 +1,5 @@
 {
-  "abi_version": 43,
+  "abi_version": 44,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -976,7 +976,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 43,
+      "abi_version": 44,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1065,6 +1065,7 @@
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
       "kernel_exec_target_read",
+      "kernel_exec_target_shebang",
       "kernel_exec_target_size",
       "kernel_fork_process",
       "kernel_get_cwd",
@@ -1999,6 +2000,11 @@
       "kind": "func",
       "name": "kernel_exec_target_read",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_shebang",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
