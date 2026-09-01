@@ -3474,15 +3474,29 @@ export async function centralizedWorkerMain(
               `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
           );
         }
-        // Phase 6 D6.2: the REAL engine-floor `wpk_fork_host.*` bodies backing
-        // the module's `WpkForkHost` seam. They close over this worker's
+        // Phase 6 D6.2/D6.3a: the REAL engine-floor `wpk_fork_host.*` bodies
+        // backing the module's `WpkForkHost` seam. They close over this worker's
         // externref token cache so `host_resolve_externref` re-roots the SAME
         // canonical token the still-JS `__wpk_fork_ref_decode_externref` returns
-        // (identity parity). The anyref transit is a D6.3/6.4 seam (a plain
-        // externref fork publishes nothing into it), so none is passed here.
+        // (identity parity). D6.3a brings the anyref transit into PRODUCTION: an
+        // exnref's reachable externref payload must be rooted in the real
+        // `(ref null any)` table before the guest codec's exception materialize
+        // consumes it, so `host_transit_publish` / `host_transit_read` route
+        // through this worker's early-GC transit (the same table the JS reference
+        // path uses via `publishEarlyGcTransit` / `readEarlyGcTransit`). A plain
+        // externref/funcref/null fork has no transit-reachable node, so PHASE B
+        // never calls the adapter — the wiring is inert for those graphs and
+        // flag-off. `activationRegistry` is created later in this worker's setup;
+        // the adapter closes over it and is only invoked during
+        // `fm_begin_reference_replay`, long after it exists.
         forkModuleHostCapabilities = createForkModuleHostCapabilities({
           tokens: externrefTokens,
           generationId: initData.externrefGenerationId,
+          transit: {
+            publish: (recipeId, value) =>
+              activationRegistry.publishEarlyGcTransit(recipeId, value),
+            read: (recipeId) => activationRegistry.readEarlyGcTransit(recipeId),
+          },
         });
         forkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
@@ -4065,31 +4079,58 @@ export async function centralizedWorkerMain(
             exceptionDescriptor:
               readForkExceptionCodecDescriptor(activationModule),
           }));
-        // Phase 6 D6.2 predicate (widened from D6.1): this child's references
+        // Phase 6 D6.3a predicate (widened from D6.2): this child's references
         // can be reconstructed through the module iff EVERY graph node is null,
-        // funcref, or externref. Funcref stays the wasm→wasm `table.get` path;
-        // externref is re-rooted through the `wpk_fork_host` engine-floor seam
-        // (`host_resolve_externref` over the broker token cache), while the
-        // still-JS `__wpk_fork_ref_decode_externref` returns the resolved value.
-        // Every OTHER kind still needs a JS engine-floor provider this slice does
-        // not move, so it keeps the byte-identical JS reference path:
-        //   * exnref / gc struct / gc array — the tag mint + typed drive-order
-        //     (D6.3 / D6.4);
+        // funcref, externref, or exnref. Funcref stays the wasm→wasm `table.get`
+        // path; externref is re-rooted through the `wpk_fork_host` engine-floor
+        // seam (`host_resolve_externref` over the broker token cache); an exnref
+        // adds NO new engine-floor callback — its program exception tag is
+        // guest-module-local, so the guest export `__wpk_fork_exception_
+        // materialize` does the throw/`catch_ref`, and the module only roots the
+        // exnref's reachable externref payloads through the anyref transit
+        // (brought into production above). An exnref is admitted ONLY when its
+        // owning activation ships a valid exception codec descriptor naming the
+        // tag — a defense the module cannot see, so the host adds it here.
+        // Every OTHER kind still needs a JS engine-floor drive this slice does not
+        // move, so it keeps the byte-identical JS reference path:
+        //   * gc struct / gc array — the typed drive-order (D6.4);
         //   * i31 — the guest codec's i31 materialization;
         //   * static-root — NOT transit-free: it publishes into the anyref
-        //     transit, which needs `resolve_static_root` + the transit seam
-        //     wired, deferred with the GC slice.
-        // The module re-checks the same predicate in `fm_begin_reference_replay`,
-        // so a host/module disagreement fails loud (`EOPNOTSUPP`), never silently.
+        //     transit, which needs `resolve_static_root` wired, deferred with the
+        //     GC slice.
+        // The module re-checks the same KIND predicate in
+        // `fm_begin_reference_replay`, so a host/module disagreement fails loud
+        // (`EOPNOTSUPP`), never silently.
+        const exceptionDescriptorAdmitsExnref = (
+          activation: number,
+          tagOrdinal: number,
+        ): boolean => {
+          const declaration = declarations.find(
+            (entry) => entry.activationId === activation,
+          );
+          if (!declaration) return false;
+          return declaration.exceptionDescriptor.tags.some(
+            (tag) => tag.tagOrdinal === tagOrdinal,
+          );
+        };
         moduleReferenceKindsSupported =
           useForkModule &&
           forkModuleInstance !== null &&
-          [...decodedChildReferences.graph.nodes].every(
-            (entry) =>
-              entry.node.kind === "null" ||
-              entry.node.kind === "funcref" ||
-              entry.node.kind === "externref",
-          );
+          [...decodedChildReferences.graph.nodes].every((entry) => {
+            switch (entry.node.kind) {
+              case "null":
+              case "funcref":
+              case "externref":
+                return true;
+              case "exnref":
+                return exceptionDescriptorAdmitsExnref(
+                  entry.node.moduleActivation,
+                  entry.node.tagOrdinal,
+                );
+              default:
+                return false;
+            }
+          });
         earlyChildReferences = new ForkEarlyChildReferenceProvider({
           records,
           transaction: decodedChildReferences,
