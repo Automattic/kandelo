@@ -1,3 +1,7 @@
+import {
+  CH_CHECKPOINT_REQUEST,
+  CH_CHECKPOINT_REQUEST_RESTART,
+} from "../generated/abi";
 import type { CheckpointFreezeGateCoordinator } from "../checkpoint-freeze-gate";
 import type { ProcessMemoryLayout } from "../process-memory";
 import type { ThreadPageAllocatorState } from "../thread-allocator";
@@ -713,6 +717,29 @@ async function freezeAndRead(
   return { status: "captured", checkpoint: checkpoint! };
 }
 
+/**
+ * Recall stale checkpoint-unwind requests from one copied process memory.
+ *
+ * The read happens while the freeze is still armed, so a channel word that a
+ * completion republished after the guest cleared it travels in the bytes.
+ * `disarmCheckpointUnwind` recalls those words on the machine that resumes;
+ * this is the same recall for the machine a restore boots — a restored guest
+ * that read the leftover unwind bit would begin a capture with no freeze to
+ * resume it, and park forever. The restart bit stays for the same reason the
+ * disarm keeps it: the guest is owed the syscall it was making.
+ */
+function recallCheckpointRequests(
+  memory: Uint8Array,
+  channelOffsets: readonly number[],
+): void {
+  const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+  for (const channelOffset of channelOffsets) {
+    const address = channelOffset + CH_CHECKPOINT_REQUEST;
+    const published = view.getUint32(address, true);
+    view.setUint32(address, published & CH_CHECKPOINT_REQUEST_RESTART, true);
+  }
+}
+
 function readMachine(
   machine: CheckpointMachine,
   sources: readonly CheckpointProcessSource[],
@@ -744,21 +771,29 @@ function readMachine(
     })),
     kms: machine.kmsState(),
     gl: machine.glContexts(),
-    processes: sources.map((source) => ({
-      pid: source.pid,
-      executionGeneration: source.executionGeneration,
-      ptrWidth: source.ptrWidth,
-      channelOffset: source.channelOffset,
-      layout: source.layout,
-      argv: [...source.argv],
-      env: [...source.env],
-      memory: new Uint8Array(source.memory.buffer).slice(),
-      programBytes: source.programBytes(),
-      threadAllocator: source.threadAllocatorState(),
-      threads: source.threads(),
-      ...(source.forkReplayContext
-        ? { forkReplayContext: source.forkReplayContext }
-        : {}),
-    })),
+    processes: sources.map((source) => {
+      const memory = new Uint8Array(source.memory.buffer).slice();
+      const threads = source.threads();
+      recallCheckpointRequests(memory, [
+        source.channelOffset,
+        ...threads.map((thread) => thread.channelOffset),
+      ]);
+      return {
+        pid: source.pid,
+        executionGeneration: source.executionGeneration,
+        ptrWidth: source.ptrWidth,
+        channelOffset: source.channelOffset,
+        layout: source.layout,
+        argv: [...source.argv],
+        env: [...source.env],
+        memory,
+        programBytes: source.programBytes(),
+        threadAllocator: source.threadAllocatorState(),
+        threads,
+        ...(source.forkReplayContext
+          ? { forkReplayContext: source.forkReplayContext }
+          : {}),
+      };
+    }),
   };
 }

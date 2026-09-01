@@ -11,6 +11,7 @@ import {
   type CheckpointMachine,
   type CheckpointProcessSource,
 } from "../../src/migration/checkpoint";
+import { CH_TOTAL_SIZE } from "../../src/generated/abi";
 import type { ProcessMemoryLayout } from "../../src/process-memory";
 import type { CheckpointGlContext } from "../../src/webgl/snapshot";
 
@@ -18,7 +19,9 @@ const KERNEL_MEMORY_BYTES = 64;
 const FILESYSTEM_BYTES = 128;
 const SCRATCH_BYTES = 64;
 const REFUSAL = "a host directory backs this mount and owns no shared buffer";
-const PROCESS_MEMORY_BYTES = 256;
+// Every fixture pid's channel fits inside its memory, the way a real layout
+// guarantees: the read recalls each channel's checkpoint request word.
+const PROCESS_MEMORY_BYTES = 16 * 1024 + CH_TOTAL_SIZE;
 const PROGRAM_BYTES = 32;
 const KERNEL_ABI = 977;
 
