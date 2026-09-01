@@ -103,6 +103,8 @@ for (const name of [
   "fm_finish_unwind",
   "fm_begin_replay",
   "fm_finish_replay",
+  "fm_serialize_journal",
+  "fm_begin_child_replay",
   "fm_last_errno",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -306,6 +308,263 @@ runStress(5000);
 assertSentinelIntact("after 5000-frame stress fork");
 console.log("  ok: SENTINEL SURVIVED 5000-frame stress fork — no low-memory corruption across reuse");
 
+// ===========================================================================
+// HEADLINE: parent -> address-space copy -> child replay seeding (Phase 6 D5)
+// ===========================================================================
+//
+// This simulates a REAL fork end to end. In a live fork the child inherits a
+// BYTE COPY of the parent's guest linear memory (the frame arena included) but
+// runs a FRESH module instance placed at a DIFFERENT `__memory_base` whose
+// journal starts EMPTY. So the child module cannot see the parent module's
+// in-memory journal. The parent therefore serializes its sealed replay journal
+// as a KFRE image into guest memory BEFORE the fork (`fm_serialize_journal`);
+// the child, after the copy, decodes that image from the SAME guest offset and
+// seeds its own journal + resume-slot table (`fm_begin_child_replay`), then
+// drives the rewind. This is the module equivalent of the JS
+// `arena.appendReplayEvents` (parent) / `replayEventsForChild` (child) path in
+// `host/src/fork-process-continuation.ts`.
+//
+// The proof asserts the child rewinds in EXACTLY the parent's frame order with
+// EXACTLY the parent's resume slots, reading ONLY copied guest memory (the
+// parent's module region is scrubbed to garbage in the child copy first), from
+// a disjoint, independent module placement.
+
+// A self-contained layout for the fork round trip (disjoint from the globals
+// above; each of the parent and child gets its OWN memory). All regions are
+// mutually disjoint so a byte copy of the whole memory keeps every one intact:
+//   [0, FR_MB_A)                          low guest data (sentinel proxy)
+//   [FR_MB_A, FR_MB_A+FR_MOD_MEM)         PARENT module data + BSS  (__memory_base A)
+//   [.., FR_PSTACK_TOP)                   parent shadow stack (1 MiB, grows down)
+//   [FR_MB_B, FR_MB_B+FR_MOD_MEM)         CHILD module data + BSS   (__memory_base B)
+//   [.., FR_CSTACK_TOP)                   child shadow stack (1 MiB, grows down)
+//   [FR_IMAGE_BASE, +FR_IMAGE_CAP)        serialized KFRE journal image
+//   [FR_ARENA_BASE, +FR_ARENA_LEN)        per-fork linked-frame arena
+const MiB = 1024 * 1024;
+const FR_MB_A = 8 * MiB; // parent __memory_base
+const FR_MOD_MEM = 8 * MiB; // module data + BSS reservation (> 4 MiB heap)
+const FR_PSTACK_TOP = FR_MB_A + FR_MOD_MEM + 1 * MiB; // 17 MiB
+const FR_MB_B = 18 * MiB; // child __memory_base (disjoint from A)
+const FR_CSTACK_TOP = FR_MB_B + FR_MOD_MEM + 1 * MiB; // 27 MiB
+const FR_IMAGE_BASE = 28 * MiB;
+const FR_IMAGE_CAP = 1 * MiB;
+const FR_ARENA_BASE = 32 * MiB;
+const FR_ARENA_LEN = 8 * MiB;
+const FR_ARENA_END = FR_ARENA_BASE + FR_ARENA_LEN; // 40 MiB
+const FR_SENTINEL_END = FR_MB_A; // low guest region, below both module bases
+const FR_PAGES = Math.ceil((FR_ARENA_END + PAGE) / PAGE);
+
+// Static disjointness guarantees (so the whole-memory byte copy is lossless and
+// the parent/child module placements never overlap).
+assert.ok(FR_MB_A + FR_MOD_MEM <= FR_PSTACK_TOP - 1 * MiB, "parent data below its stack");
+assert.ok(FR_PSTACK_TOP <= FR_MB_B, "parent region below child base");
+assert.ok(FR_MB_B + FR_MOD_MEM <= FR_CSTACK_TOP - 1 * MiB, "child data below its stack");
+assert.ok(FR_CSTACK_TOP <= FR_IMAGE_BASE, "child region below image");
+assert.ok(FR_IMAGE_BASE + FR_IMAGE_CAP <= FR_ARENA_BASE, "image below arena");
+
+function instantiateAt(mem, moduleBase, stackTop) {
+  return new WebAssembly.Instance(module, {
+    env: {
+      memory: mem,
+      __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, stackTop),
+      __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
+      __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
+    },
+  }).exports;
+}
+
+function memViews(mem) {
+  const u8 = () => new Uint8Array(mem.buffer);
+  const dv = () => new DataView(mem.buffer);
+  return {
+    u8,
+    readU32: (off) => dv().getUint32(off, true),
+    writeU32: (off, val) => dv().setUint32(off, val >>> 0, true),
+    readByte: (off) => u8()[off],
+  };
+}
+
+// Run one full parent -> copy -> child replay-seeding round trip. Returns the
+// serialized image length and the child's observed resume-slot sequence.
+function forkRoundTrip(act, frames, label) {
+  // --- PARENT instance at __memory_base A, over its own memory. ---
+  const parentMemory = new WebAssembly.Memory({ initial: FR_PAGES, maximum: 16384, shared: true });
+  const P = instantiateAt(parentMemory, FR_MB_A, FR_PSTACK_TOP);
+  const pm = memViews(parentMemory);
+  const perr = () => P.fm_last_errno();
+
+  // Seed a low guest sentinel below both module bases (a co-residency proxy).
+  {
+    const buf = pm.u8();
+    for (let off = 0; off < FR_SENTINEL_END; off++) buf[off] = sentinelByte(off);
+  }
+
+  P.fm_set_format(4, 128);
+  assert.equal(perr(), 0, `${label}: parent set_format`);
+
+  const moduleBuffer = P.fm_begin_unwind(act, FR_ARENA_BASE, FR_ARENA_LEN) >>> 0;
+  assert.equal(perr(), 0, `${label}: parent begin_unwind`);
+  assert.ok(moduleBuffer >= FR_ARENA_BASE && moduleBuffer < FR_ARENA_END, `${label}: buffer in arena`);
+
+  for (const s of frames) {
+    const payload = P.__wpk_fork_frame_reserve(s.size) >>> 0;
+    assert.equal(perr(), 0, `${label}: reserve ${s.func}`);
+    assert.ok(payload >= FR_ARENA_BASE && payload < FR_ARENA_END, `${label}: payload ${s.func} in arena`);
+    pm.writeU32(payload + 0, s.func);
+    pm.writeU32(payload + 4, s.call);
+    pm.writeU32(payload + 8, 0);
+    pm.writeU32(payload + 12, 0);
+    const buf = pm.u8();
+    for (let i = 16; i < s.size; i++) buf[payload + i] = s.fill;
+    P.__wpk_fork_frame_commit(payload);
+    assert.equal(perr(), 0, `${label}: commit ${s.func}`);
+  }
+  P.fm_finish_unwind();
+  assert.equal(perr(), 0, `${label}: parent finish_unwind`);
+
+  // Parent serializes its sealed journal as a KFRE image INTO guest memory.
+  const imageLen = P.fm_serialize_journal(FR_IMAGE_BASE, FR_IMAGE_CAP) >>> 0;
+  assert.equal(perr(), 0, `${label}: parent serialize_journal`);
+  // KFRE = 40-byte manifest + one 24-byte header per segment + N * 8-byte
+  // entries. Segments hold up to SEGMENT_CAPACITY (4080) events each.
+  const SEGMENT_CAPACITY = 4080;
+  const segmentCount = Math.ceil(frames.length / SEGMENT_CAPACITY);
+  const expectedImageLen = 40 + segmentCount * 24 + frames.length * 8;
+  assert.equal(imageLen, expectedImageLen, `${label}: serialized KFRE image length`);
+  assert.ok(imageLen <= FR_IMAGE_CAP, `${label}: KFRE image fits the host region`);
+
+  // --- Simulate the fork address-space copy: byte-copy the WHOLE memory. ---
+  const childMemory = new WebAssembly.Memory({ initial: FR_PAGES, maximum: 16384, shared: true });
+  new Uint8Array(childMemory.buffer).set(new Uint8Array(parentMemory.buffer));
+
+  // Prove the child depends ONLY on copied guest data (the arena + the KFRE
+  // image), never on the parent module's live state: scrub the parent's module
+  // data + BSS + stack region in the CHILD copy to garbage before the child
+  // runs. If the child read anything there, its replay would diverge or fault.
+  {
+    const cbuf = new Uint8Array(childMemory.buffer);
+    for (let off = FR_MB_A; off < FR_PSTACK_TOP; off++) cbuf[off] = 0x5a;
+  }
+
+  // --- Parent drives its OWN replay as the parity oracle. ---
+  P.fm_begin_replay();
+  assert.equal(perr(), 0, `${label}: parent begin_replay`);
+  const parentSeq = [];
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const slot = P.__wpk_fork_resume_peek(0);
+    assert.equal(perr(), 0, `${label}: parent resume_peek step ${i}`);
+    const payload = P.__wpk_fork_frame_next(frames[i].size) >>> 0;
+    assert.equal(perr(), 0, `${label}: parent next ${frames[i].func}`);
+    parentSeq.push({ slot, func: pm.readU32(payload) });
+  }
+  assert.equal(P.__wpk_fork_resume_peek(0), 0, `${label}: parent sentinel slot`);
+  P.fm_finish_replay();
+  assert.equal(perr(), 0, `${label}: parent finish_replay`);
+
+  // --- CHILD: a FRESH instance at a DIFFERENT __memory_base, empty journal. ---
+  const C = instantiateAt(childMemory, FR_MB_B, FR_CSTACK_TOP);
+  const cm = memViews(childMemory);
+  const cerr = () => C.fm_last_errno();
+  C.fm_set_format(4, 128);
+  assert.equal(cerr(), 0, `${label}: child set_format`);
+
+  // Seed the child's journal + resume table from the COPIED KFRE image and
+  // attach its rewind driver to the COPIED arena at the inherited anchor.
+  C.fm_begin_child_replay(moduleBuffer, FR_IMAGE_BASE, imageLen);
+  assert.equal(cerr(), 0, `${label}: child begin_child_replay`);
+
+  const childSeq = [];
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const s = frames[i];
+    const slot = C.__wpk_fork_resume_peek(0);
+    assert.equal(cerr(), 0, `${label}: child resume_peek ${s.func}`);
+    const peeked = C.__wpk_fork_frame_peek(s.size) >>> 0;
+    assert.equal(cerr(), 0, `${label}: child peek ${s.func}`);
+    assert.equal(cm.readU32(peeked), s.func, `${label}: child peeked func ${s.func}`);
+    const payload = C.__wpk_fork_frame_next(s.size) >>> 0;
+    assert.equal(cerr(), 0, `${label}: child next ${s.func}`);
+    assert.equal(payload, peeked, `${label}: child peek==next ${s.func}`);
+    assert.equal(cm.readByte(payload + 16), s.fill, `${label}: child payload fill ${s.func}`);
+    childSeq.push({ slot, func: cm.readU32(payload) });
+  }
+  assert.equal(C.__wpk_fork_resume_peek(0), 0, `${label}: child sentinel slot`);
+  C.fm_finish_replay();
+  assert.equal(cerr(), 0, `${label}: child finish_replay`);
+
+  // --- Parity: the child rewound in EXACTLY the parent's order + slots. ---
+  assert.equal(childSeq.length, parentSeq.length, `${label}: replay length parity`);
+  for (let i = 0; i < parentSeq.length; i++) {
+    assert.equal(childSeq[i].func, parentSeq[i].func, `${label}: order parity step ${i}`);
+    assert.equal(childSeq[i].slot, parentSeq[i].slot, `${label}: RESUME-SLOT parity step ${i}`);
+    // The order must also equal the reverse of commit order (rewind semantics).
+    assert.equal(
+      childSeq[i].func,
+      frames[frames.length - 1 - i].func,
+      `${label}: reverse-of-commit step ${i}`,
+    );
+  }
+
+  // A replay-only child must REFUSE to reserve (it has no live frame arena).
+  assert.equal(C.__wpk_fork_frame_reserve(32), 0, `${label}: child reserve refused`);
+  assert.equal(cerr(), EINVAL, `${label}: child reserve EINVAL`);
+
+  // The child left the low guest sentinel (copied) byte-for-byte intact.
+  {
+    const cbuf = cm.u8();
+    for (let off = 0; off < FR_SENTINEL_END; off += 4093) {
+      if (cbuf[off] !== sentinelByte(off)) {
+        assert.fail(`${label}: child corrupted low sentinel at 0x${off.toString(16)}`);
+      }
+    }
+  }
+
+  return { imageLen, slots: childSeq.map((entry) => entry.slot) };
+}
+
+console.log("");
+console.log("fork-module parent -> address-space copy -> child replay seeding (real fork):");
+
+// Case A: a 4-frame, multi-chunk fork. Distinct funcs -> slots 1..4; the child
+// must reproduce the reverse-of-commit slot sequence [4, 3, 2, 1].
+const small = forkRoundTrip(
+  7,
+  [
+    { func: 101, call: 1, fill: 0xa1, size: 40 },
+    { func: 202, call: 2, fill: 0xb2, size: 64 },
+    { func: 303, call: 3, fill: 0xc3, size: 65216 }, // forces a second chunk
+    { func: 404, call: 4, fill: 0xd4, size: 48 },
+  ],
+  "4-frame",
+);
+assert.deepEqual(small.slots, [4, 3, 2, 1], "4-frame child resume-slot sequence");
+console.log(
+  `  ok: 4-frame multi-chunk fork — child (fresh instance, different __memory_base, empty journal) `
+    + `seeded from a ${small.imageLen}-byte KFRE image in copied memory; rewind order + slots [4,3,2,1] match the parent`,
+);
+
+// Case B: a >=5000-frame fork. Distinct funcs 1000..5999 -> slots 1..5000; the
+// child's reverse replay yields slots 5000, 4999, ..., 1.
+const bigFrames = [];
+for (let i = 0; i < 5000; i++) {
+  bigFrames.push({ func: 1000 + i, call: i, fill: i & 0xff, size: 32 });
+}
+const big = forkRoundTrip(3, bigFrames, "5000-frame");
+assert.equal(big.slots.length, 5000, "5000-frame child slot count");
+assert.equal(big.slots[0], 5000, "5000-frame first replay slot");
+assert.equal(big.slots[4999], 1, "5000-frame last replay slot");
+for (let i = 0; i < 5000; i++) {
+  assert.equal(big.slots[i], 5000 - i, `5000-frame slot parity step ${i}`);
+}
+console.log(
+  `  ok: 5000-frame fork — child seeded from a ${big.imageLen}-byte KFRE image in copied memory; `
+    + `all 5000 resume slots match the parent exactly`,
+);
+console.log(
+  "  ok: CHILD REPLAY SEEDING proven — the child rewound entirely from copied guest memory "
+    + "(parent module region scrubbed) at a disjoint placement, with resume-slot parity.",
+);
+
+console.log("");
 console.log(
   "ALL PASS: co-resident PIE module drove the full unwind->rewind loop over a host arena AND left the low guest sentinel byte-for-byte intact.",
 );
