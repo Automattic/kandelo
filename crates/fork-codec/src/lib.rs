@@ -28,6 +28,7 @@ pub mod gc_codec;
 pub mod imported_globals;
 pub mod linked_frames;
 pub mod module_state;
+pub mod reference_recipes;
 pub mod replay_events;
 
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
@@ -38,5 +39,8 @@ pub use linked_frames::{
 };
 pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
+};
+pub use reference_recipes::{
+    decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };
 pub use replay_events::{decode_replay_events, ReplayEvent, ReplayEvents};
