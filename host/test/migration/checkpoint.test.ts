@@ -49,6 +49,7 @@ function processSource(pid: number, generation: number): CheckpointProcessSource
     channelOffset: pid * 1024,
     layout: layout(pid * 1024),
     argv: [`/bin/program-${pid}`],
+    env: [`PROGRAM=${pid}`],
     memory,
     programBytes: () => new Uint8Array(PROGRAM_BYTES).fill(pid).buffer,
     threadAllocatorState: () =>
@@ -208,7 +209,7 @@ describe("machine checkpoint freeze", () => {
     expect(result.checkpoint.processes[0]!.memory.byteLength)
       .toBe(PROCESS_MEMORY_BYTES);
     expect(result.checkpoint.processes[0]!.argv).toEqual(["/bin/program-4"]);
-    expect(result.checkpoint.format).toBe(5);
+    expect(result.checkpoint.format).toBe(6);
     expect(result.checkpoint.kernelAbiVersion).toBe(KERNEL_ABI);
     expect(
       new Uint8Array(result.checkpoint.processes[0]!.programBytes),

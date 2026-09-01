@@ -121,6 +121,13 @@ export interface CheckpointProcessSource {
   readonly channelOffset: number;
   readonly layout: ProcessMemoryLayout;
   readonly argv: readonly string[];
+  /**
+   * Launch environment for this exact image. A guest captured inside `_start`
+   * re-reads argv and environment from its worker's startup imports when it
+   * resumes, so a restore must relaunch the worker with the same values or
+   * the CRT's startup contract truthfully traps.
+   */
+  readonly env: readonly string[];
   readonly memory: WebAssembly.Memory;
   /**
    * The exact program image this generation runs. Read under the freeze:
@@ -253,6 +260,8 @@ export interface CheckpointProcessBucket {
   readonly channelOffset: number;
   readonly layout: ProcessMemoryLayout;
   readonly argv: readonly string[];
+  /** Launch environment; a guest resumed inside `_start` re-reads it. */
+  readonly env: readonly string[];
   readonly memory: Uint8Array;
   /** Live reference, never mutated: exec replaces the buffer, in place. */
   readonly programBytes: ArrayBuffer;
@@ -268,7 +277,7 @@ export interface CheckpointProcessBucket {
  * refuses a checkpoint whose format it does not know rather than guessing at
  * the missing or extra fields.
  */
-export const MACHINE_CHECKPOINT_FORMAT = 5;
+export const MACHINE_CHECKPOINT_FORMAT = 6;
 
 export interface MachineCheckpoint {
   readonly format: typeof MACHINE_CHECKPOINT_FORMAT;
@@ -742,6 +751,7 @@ function readMachine(
       channelOffset: source.channelOffset,
       layout: source.layout,
       argv: [...source.argv],
+      env: [...source.env],
       memory: new Uint8Array(source.memory.buffer).slice(),
       programBytes: source.programBytes(),
       threadAllocator: source.threadAllocatorState(),
