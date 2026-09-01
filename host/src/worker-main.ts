@@ -4658,6 +4658,28 @@ export async function centralizedWorkerMain(
         } satisfies WorkerToHostMessage);
       }
 
+      // Phase 6 D6.5 proof-of-use: a fresh fork CHILD whose carried references
+      // were reconstructed through the co-resident module reports the count. The
+      // reference decode runs in the CHILD (the flipped
+      // `__wpk_fork_ref_decode_funcref` / `fm_begin_reference_replay`), so —
+      // unlike the parent-committed frame count above — scope this to the child
+      // worker. Emitted ONLY when the module actually reconstructed a reference
+      // (count > 0): a reference-free fork (the common case, e.g. `d_01`) leaves
+      // the counter at zero and must stay silent, so it does not add a second
+      // `fork-module` diagnostic that could race a consumer waiting for the
+      // parent's frame count. A nonzero value is the positive proof the module
+      // drove the reconstruction rather than the JS reference fallback.
+      if (forkModuleBackend && initData.isForkChild) {
+        const references = Number(forkModuleBackend.referencesReconstructed());
+        if (references > 0) {
+          port.postMessage({
+            type: "fork_module_references",
+            pid,
+            references,
+          } satisfies WorkerToHostMessage);
+        }
+      }
+
       processContinuation.clear();
       releaseProcessForkArchiveReader();
       importedStateCapture?.clear();

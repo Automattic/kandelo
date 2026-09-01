@@ -183,6 +183,7 @@ export type WorkerToHostMessage =
   | AlarmSetMessage
   | VmInterruptTimerMessage
   | ForkModuleFramesMessage
+  | ForkModuleReferencesMessage
   | ForkHostImportWakeMessage;
 
 /**
@@ -195,6 +196,23 @@ export interface ForkModuleFramesMessage {
   type: "fork_module_frames";
   pid: number;
   frames: number;
+}
+
+/**
+ * Phase 6 D6.5: proof-of-use for the co-resident fork-module's REFERENCE
+ * reconstruction. A fresh fork CHILD worker whose carried references were
+ * reconstructed through the module (the flipped `__wpk_fork_ref_decode_funcref`
+ * and, for externref graphs, `fm_begin_reference_replay`) reports how many
+ * references the module reconstructed, so the host (and tests) can confirm the
+ * reference decode ran through the module rather than silently falling back to
+ * the JS reference path. Reference reconstruction happens in the child, so —
+ * unlike `fork_module_frames`, which the parent commits — this is posted by the
+ * child worker.
+ */
+export interface ForkModuleReferencesMessage {
+  type: "fork_module_references";
+  pid: number;
+  references: number;
 }
 
 export interface WorkerReadyMessage {
