@@ -8525,6 +8525,15 @@ pub struct ResolveOpts<'a> {
     /// disables symlink placement (test fixtures, library-only
     /// resolves, etc.).
     pub binaries_dir: Option<&'a Path>,
+    /// Hermetic SourceOnlyV1 output tree (the local-build engine's
+    /// `--output-root`). When `Some`, source-build children receive it as
+    /// `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`, so a recipe that boots the
+    /// kernel host (`host/src/binary-resolver.ts` demands that variable
+    /// whenever the policy env is set) works under the env-scrubbed
+    /// `dev-shell.sh` entry. `None` leaves the child's ambient value
+    /// untouched (standalone `build-deps resolve` callers export it
+    /// themselves).
+    pub source_only_binary_root: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9097,6 +9106,7 @@ where
         force_source_build: forced.as_ref(),
         repo_root: Some(repo_root),
         binaries_dir: None,
+        source_only_binary_root: Some(output_root),
     };
     validate_resolve_cache_pair(&opts)?;
     let canonical_repo = exact_canonical_real_directory(repo_root, "local-build repository root")?;
@@ -10251,6 +10261,7 @@ fn ensure_built_uncached(
                 &cache_key_sha_hex,
                 opts.cache_root,
                 opts.source_cache_root,
+                opts.source_only_binary_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -10282,6 +10293,7 @@ fn ensure_built_uncached(
                 &cache_key_sha_hex,
                 opts.cache_root,
                 opts.source_cache_root,
+                opts.source_only_binary_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -13111,6 +13123,7 @@ fn build_into_cache(
     cache_key_sha: &str,
     cache_root: &Path,
     source_cache_root: Option<&Path>,
+    source_only_binary_root: Option<&Path>,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
@@ -13322,6 +13335,9 @@ fn build_into_cache(
                 })?;
                 cmd.env(SOURCE_ONLY_POLICY_ENV, SOURCE_ONLY_POLICY_VALUE);
                 cmd.env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", base);
+                if let Some(binary_root) = source_only_binary_root {
+                    cmd.env("WASM_POSIX_SOURCE_ONLY_BINARY_ROOT", binary_root);
+                }
                 let registry_root = registry
                     .roots
                     .iter()
@@ -16251,7 +16267,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps path: unexpected extra arg".into());
                     }
-                    cmd_path(&manifest, &registry, arch)
+                    cmd_path(&manifest, &registry, arch, resolve_policy)
                 }
                 "resolve" => {
                     if extra.is_some() {
@@ -16417,18 +16433,28 @@ fn cmd_sha(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<()
     Ok(())
 }
 
-fn cmd_path(m: &DepsManifest, registry: &Registry, arch: TargetArch) -> Result<(), String> {
+fn cmd_path(
+    m: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    policy: ResolvePolicy,
+) -> Result<(), String> {
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
-    let sha = compute_sha(
+    let sha = compute_sha_for_policy(
         m,
         registry,
         arch,
         current_abi_version(),
+        policy,
         &mut memo,
         &mut chain,
     )?;
-    let path = canonical_path(&default_cache_root(), m, arch, &sha);
+    let cache_root = match policy {
+        ResolvePolicy::SourceOnlyV1 => source_only_cache_roots()?.compiled,
+        ResolvePolicy::Default => default_cache_root(),
+    };
+    let path = canonical_path(&cache_root, m, arch, &sha);
     println!("{}", path.display());
     Ok(())
 }
@@ -16598,6 +16624,7 @@ fn cmd_resolve(
         // package binaries via `tryResolveBinary` need the dep
         // symlinks too.
         binaries_dir,
+        source_only_binary_root: None,
     };
     let path = ensure_built(m, registry, arch, current_abi_version(), &opts)?;
 
@@ -23738,6 +23765,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -23758,6 +23786,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: Some(repo_root),
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -23777,6 +23806,7 @@ spdx = "TestLicense"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         }
     }
 
@@ -29012,6 +29042,7 @@ spdx = "BSD-3-Clause"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert!(
@@ -29556,6 +29587,7 @@ libs = ["lib/libF1.a"]
             force_source_build: Some(&force),
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let p3 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         assert_eq!(p1, p3, "force-rebuild must land at the same canonical path");
@@ -29642,6 +29674,7 @@ libs = ["lib/libF3b.a"]
             force_source_build: Some(&force),
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
         ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
@@ -31472,6 +31505,7 @@ revision = 1
             force_source_build: None,
             repo_root: None,
             binaries_dir: Some(&binaries),
+            source_only_binary_root: None,
         };
         ensure_built(
             &target,
@@ -31983,6 +32017,7 @@ printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: None,
             repo_root: None,
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let resolved = ensure_built(
             &manifest,
@@ -31993,6 +32028,52 @@ printf NESTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         )
         .unwrap();
         assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"NESTED");
+    }
+
+    #[test]
+    fn source_only_recipe_receives_engine_binary_root() {
+        let root = tempdir("source-only-binary-root-registry");
+        let cache_base = tempdir("source-only-binary-root-cache");
+        let cache = cache_base.join("source-only-v1/compiled");
+        std::fs::create_dir_all(&cache).unwrap();
+        let binary_root = tempdir("source-only-binary-root-output");
+        write_lib(
+            &root,
+            "libRooted",
+            "1.0.0",
+            &[],
+            &format!(
+                r#"
+test "${{WASM_POSIX_SOURCE_ONLY_BINARY_ROOT:-}}" = "{}"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf ROOTED > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+"#,
+                binary_root.display()
+            ),
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        write_source_only_repository_inputs(&root, "libRooted");
+        let registry = Registry { roots: vec![root] };
+        let manifest = registry.load("libRooted").unwrap();
+        let opts = ResolveOpts {
+            policy: ResolvePolicy::SourceOnlyV1,
+            source_cache_root: Some(&cache_base),
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            repo_root: None,
+            binaries_dir: None,
+            source_only_binary_root: Some(&binary_root),
+        };
+        let resolved = ensure_built(
+            &manifest,
+            &registry,
+            TEST_ARCH,
+            current_abi_version(),
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(resolved.join("lib/out.a")).unwrap(), b"ROOTED");
     }
 
     #[test]
@@ -33385,6 +33466,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             &"1".repeat(64),
             &cache,
             None,
+            None,
             &canonical,
             &deps,
             "",
@@ -33426,6 +33508,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
                 current_abi_version(),
                 &"1".repeat(64),
                 &cache,
+                None,
                 None,
                 &canonical,
                 &reserved,
@@ -33552,6 +33635,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: Some(&forced),
             repo_root: Some(&root),
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let canonical =
             ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI, &opts).unwrap();
@@ -33660,6 +33744,7 @@ printf '%s\n' "{consumer}" > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             force_source_build: None,
             repo_root: Some(&root),
             binaries_dir: None,
+            source_only_binary_root: None,
         };
         let cached = ensure_built(
             &manifest,
@@ -33931,6 +34016,7 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             force_source_build: None,
             repo_root: Some(repo),
             binaries_dir,
+            source_only_binary_root: None,
         };
         let path = ensure_built(m, registry, arch, TEST_ABI, &opts)?;
         if let Some(bdir) = binaries_dir {
