@@ -35752,6 +35752,21 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         label: &str,
     ) -> (PathBuf, crate::RepoRootOverrideGuard, PathBuf) {
         let repo = tempdir(label);
+        // Task 8's `snapshot_drift_check` gate reads `<repo>/abi/snapshot.json`
+        // directly (distinct from the `build_root` snapshot below, which
+        // feeds the build-key resolution path). Without this file the
+        // gate's "missing snapshot" conservative default would force
+        // `verify_fresh_report` to shell out to the real, kernel-building
+        // `check-abi-version.sh` against this synthetic, non-git repo.
+        // Neither `crates/shared` nor `crates/kernel` exist under `repo`
+        // either, so the gate has nothing newer to compare against and
+        // stays closed regardless of this file's mtime.
+        fs::create_dir_all(repo.join("abi")).unwrap();
+        fs::write(
+            repo.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
         let build_root = repo.join("packages/registry");
         fs::create_dir_all(&build_root).unwrap();
         prepare_local_rebuild_fixture_repo(&build_root);

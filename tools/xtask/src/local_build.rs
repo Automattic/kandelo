@@ -28,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
 const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
@@ -842,7 +843,118 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
             crate::util::hex(&expected_key),
         ));
     }
+    // B3: the ABI-version check and the build-key backstop above both prove
+    // the staged kernel.wasm matches the current source tree. Neither one
+    // proves the committed abi/snapshot.json (a separate tracked artifact,
+    // consumed by CI's structural-compat gate) still matches those same
+    // sources -- so run that check too, gated to keep the local no-op path
+    // fast.
+    snapshot_drift_check(repo, false)?;
     Ok(())
+}
+
+/// Fail loud if the committed `abi/snapshot.json` has drifted from its
+/// sources. Invokes `check-abi-version.sh check` (regenerate-in-memory-and-
+/// compare) -- it never runs `update`, so the tracked file is never
+/// overwritten by this call. `force` bypasses the mtime gate below; real
+/// callers (`verify_fresh_report`) pass `false` so an unrelated `verify-
+/// fresh` run does not pay for a kernel rebuild + dump-abi pass.
+///
+/// CI runs `check-abi-version.sh check` unconditionally through its own
+/// workflow regardless of this gate: a fresh checkout has meaningless
+/// relative mtimes, so CI cannot rely on the same shortcut. This gate only
+/// spares the LOCAL no-op path when nothing ABI-relevant changed.
+pub(crate) fn snapshot_drift_check(repo: &Path, force: bool) -> Result<(), String> {
+    if !force && !abi_sources_changed_since_snapshot(repo)? {
+        return Ok(());
+    }
+    run_check_abi_version_check(repo, "scripts/check-abi-version.sh")
+}
+
+/// Run `bash <repo>/<script_rel> check` and map a non-zero exit to a loud,
+/// actionable error. Split out from `snapshot_drift_check` so tests can
+/// substitute a stub script to exercise the exit-code-to-error mapping
+/// without ever invoking the real `check-abi-version.sh`, which builds the
+/// kernel and requires a real git checkout.
+fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), String> {
+    let script = repo.join(script_rel);
+    let status = Command::new("bash")
+        .arg(&script)
+        .arg("check")
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("run {}: {error}", script.display()))?;
+    if !status.success() {
+        return Err(
+            "abi/snapshot.json has drifted from its sources. Run \
+             `bash scripts/check-abi-version.sh update` and commit the result."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Cheap gate for `snapshot_drift_check`: has any ABI-defining source
+/// changed more recently than the committed snapshot? Compares
+/// `abi/snapshot.json`'s mtime against the newest mtime found under
+/// `crates/shared` and `crates/kernel`. This is a gate, not the safety
+/// check itself -- a false "changed" only costs one extra
+/// `check-abi-version.sh` run -- so ambiguity resolves to `true`: a
+/// missing snapshot, or an error walking a source directory that does
+/// exist, both return `true` (run the check) rather than silently
+/// skipping it.
+fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
+    let snapshot = repo.join("abi/snapshot.json");
+    let snapshot_mtime = match fs::metadata(&snapshot).and_then(|meta| meta.modified()) {
+        Ok(mtime) => mtime,
+        Err(_) => return Ok(true),
+    };
+    for dir in ["crates/shared", "crates/kernel"] {
+        if newest_mtime_under(&repo.join(dir))? > snapshot_mtime {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Newest file mtime found anywhere under `dir`, walked recursively. A
+/// `dir` that does not exist at all contributes no files, so it returns
+/// `SystemTime::UNIX_EPOCH` rather than an error: the real repo always has
+/// `crates/shared` and `crates/kernel`, so this only matters for synthetic
+/// test fixtures that do not materialize the whole tree. An error reading
+/// an entry inside a directory that DOES exist is real ambiguity and is
+/// propagated, which `abi_sources_changed_since_snapshot` maps to the
+/// conservative "run the check" outcome.
+fn newest_mtime_under(dir: &Path) -> Result<SystemTime, String> {
+    if !dir.exists() {
+        return Ok(SystemTime::UNIX_EPOCH);
+    }
+    let mut newest = SystemTime::UNIX_EPOCH;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|error| format!("read_dir {}: {error}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("read_dir entry under {}: {error}", current.display())
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("file_type {}: {error}", entry.path().display())
+            })?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map_err(|error| format!("mtime {}: {error}", entry.path().display()))?;
+            if modified > newest {
+                newest = modified;
+            }
+        }
+    }
+    Ok(newest)
 }
 
 /// Recompute the SourceOnlyV1 cache key `package` currently resolves to -- the
@@ -5865,6 +5977,122 @@ materialization = "lazy"
             err.contains("kernel.wasm has no __abi_version export"),
             "must name the missing export: {err}"
         );
+    }
+
+    // -- snapshot_drift_check / abi_sources_changed_since_snapshot (B3) --
+    //
+    // `check-abi-version.sh check` itself is deliberately NOT exercised
+    // here: it requires a real git checkout (`git rev-parse
+    // --show-toplevel`) and builds the kernel wasm via `cargo build -p
+    // kandelo`, so it cannot run against these synthetic temp repos
+    // without failing for the wrong reason (no git root / unbuildable
+    // kernel, not snapshot drift). These tests instead cover the two
+    // pieces that ARE unit-testable in isolation:
+    //   - the mtime gate (`abi_sources_changed_since_snapshot` /
+    //     `newest_mtime_under`), including that `snapshot_drift_check`
+    //     honors a false gate without shelling out at all; and
+    //   - the exit-code-to-error mapping (`run_check_abi_version_check`),
+    //     exercised against a stub script instead of the real one.
+    // A genuinely-drifted `abi/snapshot.json` actually failing
+    // `verify-fresh` end to end is validated in Task 9, against the real
+    // repo.
+
+    fn set_mtime(path: &Path, when: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn snapshot_drift_check_skips_the_script_when_the_gate_is_false() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared").unwrap();
+        set_mtime(&shared_src, hour_ago);
+
+        let kernel_src = repo.path().join("crates/kernel/src/lib.rs");
+        fs::create_dir_all(kernel_src.parent().unwrap()).unwrap();
+        fs::write(&kernel_src, "// kernel").unwrap();
+        set_mtime(&kernel_src, hour_ago);
+
+        // Newer than both sources, but deliberately not valid JSON: if the
+        // gate were open this would reach `check-abi-version.sh` (which
+        // does not exist under this synthetic repo) and fail to launch.
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "not-json").unwrap();
+        set_mtime(&snapshot, now);
+
+        snapshot_drift_check(repo.path(), /* force= */ false)
+            .expect("gate must skip the check when no ABI source is newer than the snapshot");
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_the_snapshot_is_missing() {
+        let repo = tempfile::TempDir::new().unwrap();
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a missing snapshot must resolve to the conservative 'run the check' outcome"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_false_when_source_dirs_are_absent() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        // No crates/shared or crates/kernel under this repo at all.
+        assert!(
+            !abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "an absent source directory contributes no files, not ambiguity"
+        );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_is_true_when_a_source_is_newer_than_the_snapshot() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        set_mtime(&snapshot, hour_ago);
+
+        let shared_src = repo.path().join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared_src.parent().unwrap()).unwrap();
+        fs::write(&shared_src, "// shared, edited after the snapshot").unwrap();
+        set_mtime(&shared_src, now);
+
+        assert!(
+            abi_sources_changed_since_snapshot(repo.path()).unwrap(),
+            "a source newer than the snapshot must open the gate"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_maps_a_nonzero_exit_to_a_loud_error() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 1\n").unwrap();
+
+        let err = run_check_abi_version_check(repo.path(), "fake-check.sh").unwrap_err();
+        assert!(
+            err.contains("snapshot") && err.contains("check-abi-version.sh update"),
+            "error must name the snapshot and the update command: {err}"
+        );
+    }
+
+    #[test]
+    fn run_check_abi_version_check_is_ok_when_the_script_exits_zero() {
+        let repo = tempfile::TempDir::new().unwrap();
+        fs::write(repo.path().join("fake-check.sh"), "#!/bin/bash\nexit 0\n").unwrap();
+
+        run_check_abi_version_check(repo.path(), "fake-check.sh")
+            .expect("a zero exit must not be reported as drift");
     }
 
     #[test]
