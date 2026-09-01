@@ -15625,9 +15625,20 @@ fn validate_cache_entry(
 /// belong to that name, catching a corrupted or misfiled cache entry (wrong
 /// bytes at the right key) that `validate_cache_artifacts` and
 /// `validate_cache_provenance` cannot detect because neither inspects wasm
-/// content. Reads only the receipt sidecar plus each wasm member's trailing
-/// custom section -- never the whole entry tree -- so the trusted fast path
-/// stays fast.
+/// content. Reads the small receipt sidecar plus a bounded whole-file read
+/// of each named wasm member (`read_build_key` then parses the trailing
+/// custom section out of that buffer; this is not a targeted section seek)
+/// -- never the whole entry tree -- so the trusted fast path stays cheap
+/// relative to a full re-hash, even though it is not a zero-byte check.
+///
+/// Coverage boundary: this only checks entries whose canonical directory has
+/// a persisted receipt sidecar (see `materialized_wasm_members` below for
+/// which production path writes one and which does not). An entry stamped
+/// by `build_into_cache` but never given a receipt sidecar silently has
+/// nothing to check here and is *not* protected by this belt check -- for
+/// the kernel specifically, Task 6's `verify_fresh_report` build-key check
+/// is the primary staleness gate regardless of receipt coverage, and this
+/// check is additional, not a replacement.
 fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
     let expected_key = hex_to_32(cache_key_sha).map_err(|error| {
         format!(
@@ -15665,10 +15676,26 @@ fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) 
 /// persisted receipt sidecar (Task 5) records, for the belt-and-suspenders
 /// build-key stamp check above. Reads only the small receipt sidecar --
 /// never lists or hashes the entry tree -- so this stays a cheap addition to
-/// the trusted fast path. An entry with no persisted receipt (built before
-/// the sidecar existed, or a manifest kind that never gets one, e.g. a
-/// library) has no members to check here; `validate_cache_artifacts` already
-/// enforces its declared-output shape independent of this check.
+/// the trusted fast path.
+///
+/// Not every stamped cache entry has a receipt sidecar, and this returns an
+/// empty list -- silently skipping the belt check above, not failing -- for
+/// any entry that lacks one. Only one production path writes the sidecar:
+/// `resolve_local_build_package_node_with_projection_hooks` (the
+/// `local-build`/graph-node path). The kernel is materialized through that
+/// path, so the belt check does fire for it. `ensure_built_inner`'s own
+/// store paths do not write a receipt sidecar, even though `build_into_cache`
+/// still stamps the wasm on that path -- so entries reached only through
+/// `ensure_built_inner` (i.e. `xtask build-deps resolve <name>`, which
+/// `run.sh`'s node.wasm bootstrap and most `packages/registry/*/build-*.sh`
+/// dependency resolution use) are stamped but receipt-less, and this belt
+/// check is a permanent no-op for them. Extending receipt-writing to
+/// `ensure_built_inner` is out of scope here (tracked separately for
+/// Stage 2); an entry with no persisted receipt for any other reason (built
+/// before the sidecar existed, or a manifest kind that never gets one, e.g.
+/// a library) is handled the same way. `validate_cache_artifacts` already
+/// enforces declared-output shape independent of this check, for every
+/// entry regardless of receipt coverage.
 #[cfg(unix)]
 fn materialized_wasm_members(canonical: &Path, cache_key_sha: &str) -> Result<Vec<PathBuf>, String> {
     let receipt = match read_source_only_cache_receipt(canonical, cache_key_sha)? {
@@ -35632,6 +35659,71 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         assert!(
             err.contains("build key") || err.contains("stamp"),
             "must name the stamp/build-key mismatch: {err}"
+        );
+    }
+
+    /// Task 7 belt-and-suspenders check, `None` branch: a receipt-bearing
+    /// canonical entry whose wasm member carries NO `kandelo.build.key`
+    /// stamp at all cannot be proven fresh, so the trusted cache-hit path
+    /// must reject it just as it rejects a wrong-key stamp above -- an
+    /// unstamped member is exactly as untrustworthy as a mismatched one,
+    /// since neither can be shown to belong to this entry's key.
+    #[test]
+    fn trusted_entry_rejected_when_stamp_is_missing() {
+        let repo = tempdir("trusted-nostamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "nstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("nstamp.wasm", &minimal_executable_wasm()),
+            &[("nstamp", "nstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "nstamp");
+        let manifest_path = repo.join("nstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"nstamp.wasm\"",
+                "wasm = \"nstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("nstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-nostamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-nostamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // that was never stamped at all (unlike the mismatch test, no
+        // `stamp_build_key` call here).
+        let member = canonical.join("nstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        fs::write(&member, minimal_executable_wasm()).unwrap();
+
+        let err = validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "must report the missing stamp: {err}"
         );
     }
 
