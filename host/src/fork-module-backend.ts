@@ -159,6 +159,32 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of references (funcref or null) the module has reconstructed since
+   * worker start (Phase 6 D6.1 proof-of-use). Advances only when
+   * `__wpk_fork_ref_decode_funcref` runs through the module; a silent JS
+   * fallback leaves it unchanged.
+   */
+  referencesReconstructed(): bigint {
+    return BigInt(
+      this.exports.fm_references_reconstructed() as number | bigint,
+    );
+  }
+
+  /**
+   * Seed the module's funcref/null reference graph for this fork from the KFMS
+   * module-state arena rooted at `moduleStateRoot` (Phase 6 D6.1). The caller
+   * gates this on the funcref-only reference predicate; the module re-checks and
+   * fails loudly (`EOPNOTSUPP`) if the graph is not funcref/null, so an
+   * unsupported reference can never be driven through the flipped funcref import.
+   * Must run before the guest rewind that reconstructs references.
+   */
+  beginReferenceReplay(moduleStateRoot: number): void {
+    this.requireSetup("begin reference replay");
+    this.exports.fm_begin_reference_replay(this.wptr(moduleStateRoot));
+    this.requireOk("fm_begin_reference_replay");
+  }
+
+  /**
    * Parent: reserve the host frame arena and begin the module unwind. Returns
    * the module-buffer anchor (the continuation root) the coordinator writes into
    * the module-state prefix and passes to the guest's `wpk_fork_unwind_begin`.

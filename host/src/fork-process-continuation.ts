@@ -140,6 +140,13 @@ export class ForkProcessContinuationCoordinator {
   // and the module-backed branches below drive them. Null on the JavaScript
   // default path, so every other fork is byte-identical to today.
   private moduleBackend: ForkModuleContinuationBackend | null = null;
+  // Phase 6 D6.1: when true (only via `enableModuleReferenceReplay`, only for a
+  // qualifying FUNCREF-ONLY child fork whose guest `__wpk_fork_ref_decode_funcref`
+  // import was flipped to the module), the child seeds the module's reference
+  // graph and the module reconstructs funcref/null references during rewind.
+  // False on every other fork (references stay on the JS provider), so the
+  // reference path is byte-identical to today unless the funcref predicate holds.
+  private moduleReferenceReplay = false;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -169,6 +176,23 @@ export class ForkProcessContinuationCoordinator {
   /** Whether the module-backed path is active (proof/diagnostics). */
   isModuleBacked(): boolean {
     return this.moduleBackend !== null;
+  }
+
+  /**
+   * Route this child's funcref/null reference reconstruction through the module
+   * (Phase 6 D6.1). The caller (worker-main) enables this ONLY when the child's
+   * decoded reference graph is funcref/null AND its guest
+   * `__wpk_fork_ref_decode_funcref` import was flipped to the module export.
+   * Requires module frame backing to already be enabled.
+   */
+  enableModuleReferenceReplay(): void {
+    this.requireIdle("enable fork-module reference replay");
+    if (!this.moduleBackend) {
+      throw new Error(
+        `${this.label}: fork-module reference replay needs module backing`,
+      );
+    }
+    this.moduleReferenceReplay = true;
   }
 
   private requireSingleModuleActivation(operation: string): CompleteForkProcessActivation {
@@ -926,6 +950,12 @@ export class ForkProcessContinuationCoordinator {
       activation.root = copiedLaunchRoot;
       activation.replayRoot = copiedLaunchRoot;
       backend.beginChildReplay(copiedLaunchRoot);
+      // Phase 6 D6.1: seed the module's funcref/null reference graph from the
+      // inherited KFMS arena BEFORE the guest rewind reconstructs references, so
+      // the flipped `__wpk_fork_ref_decode_funcref` resolves through the module.
+      if (this.moduleReferenceReplay) {
+        backend.beginReferenceReplay(arena.rootAddress());
+      }
       invokeForkContinuationBegin(
         requireExportFunction(activation, "wpk_fork_rewind_begin"),
         copiedLaunchRoot,
