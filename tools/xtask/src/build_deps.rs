@@ -8503,7 +8503,7 @@ pub fn canonical_path(
     cache_root.join(kind_subdir).join(basename)
 }
 
-use crate::util::hex;
+use crate::util::{hex, hex_to_32};
 
 // ---------------------------------------------------------------------
 // Build + cache-install
@@ -13507,6 +13507,50 @@ fn build_into_cache(
         work.cleanup_source_only().map_err(|error| {
             format!("{}: clean package work scratch before publication: {error}", target.spec())
         })?;
+        // Stamp every declared wasm output with the cache key it was just
+        // built under, at cache-store time -- before `complete_cache_receipt_v1`
+        // below hashes `tmp`'s tree, so the staging receipt (and every later
+        // receipt/snapshot re-hash of this exact entry) describes the
+        // stamped bytes that actually get published to `canonical`, never
+        // the pre-stamp ones. `crate::build_stamp::stamp_build_key` refuses
+        // to double-stamp, and this runs exactly once per fresh build (cache
+        // hits short-circuit before ever calling `build_into_cache`), so a
+        // second stamp attempt here would itself be a bug, not a benign
+        // no-op. Because `materialize_source_only_program_target*` copies
+        // these exact bytes verbatim into the `source-only-v1` mirror, the
+        // mirror carries the identical stamp with no separate stamping step.
+        if target.kind == ManifestKind::Program {
+            let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
+                format!(
+                    "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
+                    target.spec()
+                )
+            })?;
+            for output in &target.program_outputs {
+                let member = tmp.join(&output.wasm);
+                let bytes = std::fs::read(&member).map_err(|error| {
+                    format!(
+                        "{}: read built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
+                    format!(
+                        "{}: stamp built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                std::fs::write(&member, stamped).map_err(|error| {
+                    format!(
+                        "{}: write stamped wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+            }
+        }
     }
 
     if policy == ResolvePolicy::Default {
@@ -31711,9 +31755,20 @@ revision = 1
         );
         let published = binaries.join("programs/wasm32/localtool.wasm");
         assert!(published.symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(
-            std::fs::read(&published).unwrap(),
-            minimal_executable_wasm()
+        let published_bytes = std::fs::read(&published).unwrap();
+        // The local-build engine stamps every published `.wasm` with its
+        // cache key (Task 5 of the kernel-staleness Stage 1 fix), appended
+        // as a trailing custom section, so the published bytes are the raw
+        // build output plus that stamp -- not byte-identical to it.
+        assert!(
+            published_bytes.starts_with(&minimal_executable_wasm()),
+            "published wasm must retain its original bytes ahead of the build-key stamp"
+        );
+        assert!(
+            crate::build_stamp::read_build_key(&published_bytes)
+                .unwrap()
+                .is_some(),
+            "published wasm must carry a kandelo.build.key stamp"
         );
         assert!(
             std::fs::canonicalize(&published)
@@ -35310,6 +35365,89 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         })
         .unwrap_err();
         assert!(error.contains("materialized") || error.contains("member"), "{error}");
+    }
+
+    /// Task 5 of the kernel-staleness Stage 1 fix: a wasm output published by
+    /// the local-build engine must carry a `kandelo.build.key` custom section
+    /// (Task 4's `build_stamp` module) equal to its own `cache_key_sha256`, so
+    /// a later reader can detect a stale mirror by comparing the stamp
+    /// against a freshly recomputed key. This exercises the real production
+    /// path end to end: build a small program package whose build script
+    /// emits a real (policy-valid) wasm module, resolve+materialize it, and
+    /// read the stamp back out of the published `source-only-v1` mirror.
+    #[test]
+    fn materialized_kernel_carries_build_key_stamp() {
+        let repo = tempdir("stamp-mirror-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "kstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("kstamp.wasm", &minimal_executable_wasm()),
+            &[("kstamp", "kstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "kstamp");
+        let manifest_path = repo.join("kstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kstamp.wasm\"",
+                "wasm = \"kstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("kstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("stamp-mirror-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("stamp-mirror-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+
+        let mirror = output.join("programs/wasm32/kstamp.wasm");
+        let bytes = fs::read(&mirror).unwrap();
+        let stamp = crate::build_stamp::read_build_key(&bytes)
+            .unwrap()
+            .expect("mirror must carry a kandelo.build.key stamp");
+        let expected = hex_to_32(&receipt.cache_key_sha256).unwrap();
+        assert_eq!(stamp, expected, "mirror must be stamped with its own cache key");
+
+        // The stamp is written at cache-store time (inside `build_into_cache`,
+        // before the staging receipt is hashed), then the mirror above is a
+        // verbatim copy -- so the canonical `source-only-v1/compiled` cache
+        // entry Task 7 later reads from must independently carry the exact
+        // same stamp, not just the mirror.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let canonical_bytes = fs::read(canonical.join("kstamp.wasm")).unwrap();
+        let canonical_stamp = crate::build_stamp::read_build_key(&canonical_bytes)
+            .unwrap()
+            .expect("canonical cache entry must carry a kandelo.build.key stamp");
+        assert_eq!(
+            canonical_stamp, expected,
+            "canonical cache entry must be stamped with its own cache key"
+        );
+
+        // Stamping runs exactly once, at cache-store time. A repeat resolve
+        // against the same unchanged package is a cache hit that never
+        // re-enters `build_into_cache`, so it must not attempt to
+        // double-stamp (which `stamp_build_key` rejects) and the mirror must
+        // still read back the identical stamp afterward.
+        let second = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        assert_eq!(second.disposition, LocalBuildDisposition::Cached);
+        let mirror_bytes_after_hit = fs::read(&mirror).unwrap();
+        let stamp_after_hit = crate::build_stamp::read_build_key(&mirror_bytes_after_hit)
+            .unwrap()
+            .expect("mirror must still carry its stamp after a cache-hit resolve");
+        assert_eq!(stamp_after_hit, expected);
     }
 
     #[test]
