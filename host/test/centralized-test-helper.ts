@@ -327,6 +327,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
+    forkModuleEnabled: options.forkModuleEnabled,
     execPrograms,
     rootfsImage,
     enableTcpNetwork: options.enableTcpNetwork,

@@ -398,6 +398,18 @@ function installProcessWorkerListeners(
       handleVmInterruptTimer(message, pid, process);
     } else if (message.type === "fork_host_import") {
       dispatchForkHostImport(worker, message);
+    } else if (message.type === "fork_module_frames" && message.pid === pid) {
+      // Surface the co-resident fork-module's proof-of-use as a host
+      // diagnostic (Phase 6 D5): a nonzero frame count confirms the qualifying
+      // fork ran its continuation through the module, not the JS fallback.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_frames=${message.frames}`,
+        },
+        "warn",
+      );
     }
   });
   installCrashSafetyNet(worker, pid);

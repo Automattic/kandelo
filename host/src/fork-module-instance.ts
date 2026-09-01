@@ -28,10 +28,14 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "__wpk_fork_frame_next",
   "__wpk_fork_resume_peek",
   "fm_set_format",
+  "fm_set_resume_catalog",
   "fm_begin_unwind",
   "fm_finish_unwind",
+  "fm_serialize_journal",
   "fm_begin_replay",
+  "fm_begin_child_replay",
   "fm_finish_replay",
+  "fm_frames_committed",
   "fm_last_errno",
 ] as const;
 

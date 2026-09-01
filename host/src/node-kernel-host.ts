@@ -65,6 +65,13 @@ const DEFAULT_SSL_ENV = [
 ] as const;
 
 export interface NodeKernelHostOptions {
+  /**
+   * Phase 6 D5: enable the co-resident fork-module for qualifying forks. The
+   * kernel worker reads `WASM_POSIX_FORK_MODULE`; setting this passes that env
+   * to the kernel worker thread, which then ships the module + `forkModuleEnabled`
+   * to each process worker's init. Off by default (byte-identical JS path).
+   */
+  forkModuleEnabled?: boolean;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -290,7 +297,7 @@ export class NodeKernelHost {
       throw new Error("sessionSeedTrees requires rootfsImage");
     }
 
-    this.worker = spawnKernelWorkerThread();
+    this.worker = spawnKernelWorkerThread(this.options.forkModuleEnabled === true);
     this.workerStarted = true;
     this.kernelWorkerExitExpected = false;
     this.workerTermination = null;
@@ -1260,17 +1267,25 @@ export function resolveRootfsArtifact(
 }
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */
-function spawnKernelWorkerThread(): NodeThreadWorker {
+function spawnKernelWorkerThread(forkModuleEnabled = false): NodeThreadWorker {
   const entryTs = join(MODULE_DIR, "node-kernel-worker-entry.ts");
   const entryJs = join(MODULE_DIR, "node-kernel-worker-entry.js");
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
+  // The kernel worker reads `WASM_POSIX_FORK_MODULE` to decide whether to ship
+  // the co-resident fork-module to process workers. Pass a scoped env override
+  // (never mutate the shared `process.env`) so this decision is per-host.
+  const workerEnv = forkModuleEnabled
+    ? { ...process.env, WASM_POSIX_FORK_MODULE: "1" }
+    : undefined;
+  const workerOptions = workerEnv ? { env: workerEnv } : undefined;
+
   // Check for compiled .js version first (much faster startup)
   if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {
-    return new NodeThreadWorker(distJs);
+    return new NodeThreadWorker(distJs, workerOptions);
   }
   if (compiledWorkerEntryIsCurrent(entryTs, entryJs)) {
-    return new NodeThreadWorker(entryJs);
+    return new NodeThreadWorker(entryJs, workerOptions);
   }
 
   // Fallback: tsx eval bootstrap
@@ -1283,5 +1298,5 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `register();`,
     `await import('${entryUrl}');`,
   ].join("\n");
-  return new NodeThreadWorker(bootstrap, { eval: true });
+  return new NodeThreadWorker(bootstrap, { eval: true, ...(workerEnv ? { env: workerEnv } : {}) });
 }
