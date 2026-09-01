@@ -166,7 +166,30 @@ cp "$SRC_DIR/include/drm/drm_fourcc.h" "$INSTALL_DIR/include/drm/"
 cp "$SRC_DIR/xf86drm.h"                "$INSTALL_DIR/include/libdrm/"
 cp "$SRC_DIR/xf86drmMode.h"            "$INSTALL_DIR/include/libdrm/"
 
+# A consumer that defines __linux__ (Qt clients must) sends drm.h down
+# its Linux branch, which includes <linux/types.h> and <asm/ioctl.h> —
+# UAPI headers musl does not ship. Install the same forwarding shims
+# this script compiles against, so the installed headers are
+# self-contained; the .pc's -I${includedir} puts them on the path.
+mkdir -p "$INSTALL_DIR/include/linux" "$INSTALL_DIR/include/asm"
+cp "$BUILD_DIR/linux/types.h" "$INSTALL_DIR/include/linux/"
+cp "$BUILD_DIR/asm/ioctl.h"   "$INSTALL_DIR/include/asm/"
+
+mkdir -p "$INSTALL_DIR/lib/pkgconfig"
+cat > "$INSTALL_DIR/lib/pkgconfig/libdrm.pc" <<PCEOF
+prefix=\${pcfiledir}/../..
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libdrm
+Description: Userspace interface to kernel DRM services
+Version: $LIBDRM_VERSION
+Libs: -L\${libdir} -ldrm
+Cflags: -I\${includedir} -I\${includedir}/libdrm -I\${includedir}/drm
+PCEOF
+
 test -f "$INSTALL_DIR/lib/libdrm.a"
 test -f "$INSTALL_DIR/include/libdrm/xf86drmMode.h"
 test -f "$INSTALL_DIR/include/drm/drm_fourcc.h"
+test -f "$INSTALL_DIR/lib/pkgconfig/libdrm.pc"
 echo "==> libdrm $LIBDRM_VERSION KMS-subset package complete"
