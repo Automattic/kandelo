@@ -344,6 +344,7 @@ dependencies = [
  "fork-instrument",
  "walrus",
  "wasm-posix-shared",
+ "wasmparser 0.247.0",
  "wat",
 ]
 
