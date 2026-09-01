@@ -148,6 +148,13 @@ export interface RunProgramOptions {
   /** Optional pre-compiled module for programPath. */
   programModule?: WebAssembly.Module;
   /**
+   * Phase 6 D5: mirror the kernel host's `WASM_POSIX_FORK_MODULE` decision.
+   * When true, ship the width-matching pre-compiled `fork-module` and set
+   * `forkModuleEnabled` so each fork-instrumented worker instantiates it at
+   * init. Default (undefined/false) is the unchanged path.
+   */
+  forkModuleEnabled?: boolean;
+  /**
    * Explicit path to the kernel `.wasm` to boot. When omitted the kernel is
    * resolved through the binary resolver. Build-time callers (e.g. package
    * recipes running under the scrubbed source-only resolver, where the
@@ -238,6 +245,26 @@ export interface RunProgramResult {
   forkCount?: bigint;
   spawnScratchCapacity?: number;
   kernelMemoryPages?: number;
+}
+
+/**
+ * Phase 6 D5: resolve, compile (once per width), and package the co-resident
+ * `fork-module` init fields, mirroring what the kernel host ships. Returns an
+ * empty object when disabled so the default init message is byte-identical.
+ */
+const forkModuleModuleByWidth = new Map<4 | 8, WebAssembly.Module>();
+function centralizedForkModuleFields(
+  enabled: boolean | undefined,
+  ptrWidth: 4 | 8,
+): { forkModuleEnabled?: true; forkModuleModule?: WebAssembly.Module } {
+  if (!enabled) return {};
+  let mod = forkModuleModuleByWidth.get(ptrWidth);
+  if (!mod) {
+    const name = `fork_module${ptrWidth === 8 ? 64 : 32}.wasm`;
+    mod = new WebAssembly.Module(readFileSync(resolveBinary(name)));
+    forkModuleModuleByWidth.set(ptrWidth, mod);
+  }
+  return { forkModuleEnabled: true, forkModuleModule: mod };
 }
 
 /**
@@ -585,6 +612,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: childPtrWidth,
           externrefGenerationId: childGeneration.id,
           forkHostImports: childForkHostImports.init,
+          ...centralizedForkModuleFields(options.forkModuleEnabled, childPtrWidth),
         };
 
         try {
@@ -725,6 +753,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: parentPtrWidth,
           externrefGenerationId: childGeneration.id,
           forkHostImports: childForkHostImports.init,
+          ...centralizedForkModuleFields(options.forkModuleEnabled, parentPtrWidth),
         };
 
         try {
@@ -950,6 +979,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 ptrWidth: newPtrWidth,
                 externrefGenerationId: replacementGeneration.id,
                 forkHostImports: replacementForkHostImports.init,
+                ...centralizedForkModuleFields(
+                  options.forkModuleEnabled,
+                  newPtrWidth,
+                ),
               };
 
               replacementWorker = workerAdapter.createWorker(initData);
@@ -1221,6 +1254,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     ptrWidth,
     externrefGenerationId: mainGeneration.id,
     forkHostImports: mainForkHostImports.init,
+    ...centralizedForkModuleFields(options.forkModuleEnabled, ptrWidth),
   };
 
   try {

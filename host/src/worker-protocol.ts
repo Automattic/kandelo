@@ -38,6 +38,20 @@ export interface CentralizedWorkerInitMessage {
   programBytes: ArrayBuffer;
   /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */
   programModule?: WebAssembly.Module;
+  /**
+   * Phase 6 D5: whether this worker should instantiate the co-resident
+   * `fork-module` (gated by `WASM_POSIX_FORK_MODULE` at the kernel host).
+   * Browser workers cannot read `process.env`, so the kernel host forwards the
+   * decision as this boolean. Absent/false is the unchanged default path.
+   */
+  forkModuleEnabled?: boolean;
+  /**
+   * Phase 6 D5: the pre-compiled `fork-module` matching this process's pointer
+   * width. The kernel host resolves and compiles it once and ships it here so
+   * the worker instantiates without recompiling. Present only when
+   * `forkModuleEnabled` is set.
+   */
+  forkModuleModule?: WebAssembly.Module;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
