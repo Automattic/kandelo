@@ -1,24 +1,26 @@
-// End-to-end validation harness for the co-resident fork-module cdylib.
+// End-to-end + CO-RESIDENCY validation harness for the fork-module PIE side module.
 //
-// THIS IS THE KEY DELIVERABLE of the Phase 6 D2 scaffold: it proves, in a real
-// production WebAssembly engine (Node's V8 — the same engine the browser/Node
-// process workers run), that a SECOND wasm module can
+// THIS IS THE KEY DELIVERABLE of the Phase 6 D5 gating slice. It proves, in a
+// real production WebAssembly engine (Node's V8 — the same engine the browser
+// and Node process workers run), that the fork-module can be instantiated
+// AGAINST LIVE, NON-EMPTY guest memory WITHOUT corrupting the guest's data,
+// because the module is built as a position-independent (PIC / `--pie`) side
+// module whose data, BSS heap, and shadow stack are placed by HOST-supplied
+// `__memory_base` / `__stack_pointer` / `__table_base` globals into a
+// host-reserved region that the "guest" is not using.
 //
-//   1. import the guest's linear Memory as `env.memory`,
-//   2. export the guest-facing `__wpk_fork_frame_*` / `__wpk_fork_resume_peek`
-//      functions with the frozen guest ABI signatures, and
-//   3. drive the full reserve/commit -> next/peek/resume continuation loop
-//      against that shared memory,
+// The old D2 scaffold could NOT pass this test: it was a plain cdylib whose
+// static data, 16 MiB BSS heap, and `--stack-first` shadow stack lived at FIXED
+// LOW linear-memory offsets, so instantiating it against live guest memory
+// would overwrite guest data at those offsets. The harness demonstrates the
+// difference directly: it fills the LOW region (where the old scaffold's
+// static/BSS/stack lived) with a known sentinel pattern BEFORE instantiating and
+// running the module, then asserts that region is byte-for-byte UNCHANGED after
+// a full multi-chunk unwind->rewind loop and a >=5000-frame stress fork.
 //
-// end to end, matching the pure-logic expectation the fork-codec unit tests
-// already pin down. See
-// `.superpowers/sdd/2026-09-01-phase6-fork-exec/D2-CORESIDENT-MODULE-DESIGN.md`.
-//
-// Engine choice: we use Node/V8 rather than the `wasmtime` crate because V8 is
-// the actual production engine for the Node and browser process workers, and
-// because the crate is a wasm32-only cdylib (a host-target `cargo test` cannot
-// build it). V8 exercising the exact SharedArrayBuffer + imported-memory path
-// the host uses is the most faithful proof. See the crate README.
+// It also proves the Option A arena contract: the HOST allocates the per-fork
+// frame arena and passes its (base, len) into `fm_begin_unwind` — the module no
+// longer grows memory itself.
 //
 // Run: node crates/fork-module/tests/harness.mjs <path-to-fork_module.wasm>
 
@@ -34,20 +36,61 @@ if (!wasmPath) {
 const PAGE = 65536;
 const EINVAL = 22;
 
-// The module imports env.memory as a shared memory (built with
-// --import-memory --shared-memory, exactly like the kernel). Provide a shared
-// memory whose initial size comfortably exceeds the module's static footprint
-// (its 8 MiB bump heap + stack + data); the module grows the memory itself to
-// carve the per-fork frame arena above everything.
-const memory = new WebAssembly.Memory({ initial: 512, maximum: 16384, shared: true });
+// -- Host memory layout (the host's job, mirrors the production worker) --------
+//
+// The host chooses disjoint regions in the shared linear memory:
+//   [0, MODULE_BASE)                      guest data (proxied here by a sentinel)
+//   [MODULE_BASE, MODULE_BASE+MODULE_MEM) module data + BSS heap (via __memory_base)
+//   [STACK_LOW, STACK_TOP)                module shadow stack   (via __stack_pointer)
+//   [ARENA_BASE, ARENA_BASE+ARENA_LEN)    per-fork frame arena  (via fm_begin_unwind)
+//
+// MODULE_BASE is deliberately HIGH (32 MiB) so the whole low region — where the
+// old plain-cdylib scaffold's static/BSS/stack lived — is free to hold the
+// guest sentinel, proving co-residency.
+const MODULE_BASE = 32 * 1024 * 1024; // 0x2000000  __memory_base
+const MODULE_MEM = 16 * 1024 * 1024; // module data + BSS heap reservation
+const STACK_LOW = MODULE_BASE + MODULE_MEM; // 48 MiB
+const STACK_SIZE = 1024 * 1024;
+const STACK_TOP = STACK_LOW + STACK_SIZE; // 49 MiB  __stack_pointer (grows down)
+const TABLE_BASE = 0;
+const ARENA_BASE = 56 * 1024 * 1024; // 0x3800000  page-aligned frame arena base
+const ARENA_LEN = 4 * 1024 * 1024; // per-fork frame arena length
+const ARENA_END = ARENA_BASE + ARENA_LEN;
+
+// Memory must cover the highest region used (the arena end), rounded to pages.
+const INITIAL_PAGES = Math.ceil((ARENA_END + PAGE) / PAGE);
+const memory = new WebAssembly.Memory({
+  initial: INITIAL_PAGES,
+  maximum: 16384,
+  shared: true,
+});
+
+// The PIC placement globals the host supplies to a `--pie` side module.
+const importObject = {
+  env: {
+    memory,
+    __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
+    __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
+    __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
+  },
+};
 
 const bytes = readFileSync(wasmPath);
 const module = new WebAssembly.Module(bytes);
 
-// Structural check: the built .wasm imports env.memory and exports the frozen
-// guest-facing frame functions. (wasm-objdump verifies signatures separately.)
-const importNames = WebAssembly.Module.imports(module).map((i) => `${i.module}.${i.name}`);
-assert.ok(importNames.includes("env.memory"), `module must import env.memory, got ${importNames}`);
+// Structural check: the built .wasm is a PIE side module that imports the
+// host-supplied placement globals and exports the frozen guest-facing frame
+// functions plus the coordinator surface.
+const imports = WebAssembly.Module.imports(module).map((i) => `${i.module}.${i.name}`);
+for (const need of [
+  "env.memory",
+  "env.__memory_base",
+  "env.__stack_pointer",
+  "env.__table_base",
+]) {
+  assert.ok(imports.includes(need), `module must import ${need}, got ${imports}`);
+}
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
   "__wpk_fork_frame_reserve",
@@ -55,6 +98,7 @@ for (const name of [
   "__wpk_fork_frame_peek",
   "__wpk_fork_frame_next",
   "__wpk_fork_resume_peek",
+  "fm_set_format",
   "fm_begin_unwind",
   "fm_finish_unwind",
   "fm_begin_replay",
@@ -64,38 +108,100 @@ for (const name of [
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
 
-const instance = new WebAssembly.Instance(module, { env: { memory } });
+const instance = new WebAssembly.Instance(module, importObject);
 const x = instance.exports;
 
-// A fresh DataView every access: growing a shared memory replaces the buffer.
+// A shared memory's buffer is stable here (the host pre-grew it; the module no
+// longer grows memory), but re-deriving views is cheap and future-proof.
+const u8 = () => new Uint8Array(memory.buffer);
 const view = () => new DataView(memory.buffer);
 const readU32 = (off) => view().getUint32(off, true);
 const writeU32 = (off, val) => view().setUint32(off, val >>> 0, true);
-const writeByte = (off, val) => new Uint8Array(memory.buffer)[off] = val & 0xff;
-const readByte = (off) => new Uint8Array(memory.buffer)[off];
+const readByte = (off) => u8()[off];
 const errno = () => x.fm_last_errno();
 
-// Write the frame payload the guest would fill between reserve and commit: the
-// ABI frame header (func_index at +0, call_index at +4, catch selector +8,
-// reference-vector ordinal +12) plus a scalar fill tail. The module reads
-// func_index at payload+0 for the journal / resume-slot machinery.
+// -- The sentinel: proxy for live guest data at LOW offsets --------------------
+//
+// Fill [0, MODULE_BASE) with a deterministic, offset-dependent pattern. This is
+// exactly the region the old plain-cdylib scaffold's shadow stack ([0, 1 MiB),
+// `--stack-first`) and static data + 16 MiB BSS heap (up to ~17.8 MiB) occupied.
+// A correctly-placed PIE module must NEVER write here.
+const SENTINEL_END = MODULE_BASE;
+function sentinelByte(off) {
+  // A cheap, well-mixed, offset-dependent byte (no all-zero / all-one runs).
+  return ((off * 2654435761) >>> 24) & 0xff;
+}
+function fillSentinel() {
+  const buf = u8();
+  for (let off = 0; off < SENTINEL_END; off++) buf[off] = sentinelByte(off);
+}
+// Verify the sentinel is intact. Check EVERY byte of the hottest old-scaffold
+// pages exactly, and a dense prime-strided sweep across the whole low region so
+// any stray write anywhere in [0, MODULE_BASE) is caught.
+function assertSentinelIntact(label) {
+  const buf = u8();
+  // Exact, byte-for-byte over the old scaffold's shadow-stack window [0, 1 MiB)
+  // and the start of its static-data window around 1 MiB, plus the region near
+  // its old __data_end (~16.7 MiB) and __heap_base — the pages most likely to be
+  // clobbered by a mis-placed module.
+  const exactWindows = [
+    [0, 1 * 1024 * 1024], // old shadow stack (--stack-first)
+    [1 * 1024 * 1024, 1 * 1024 * 1024 + 4096], // old static data start
+    [16 * 1024 * 1024, 16 * 1024 * 1024 + 4096], // old heap/data tail vicinity
+  ];
+  for (const [start, end] of exactWindows) {
+    for (let off = start; off < end; off++) {
+      if (buf[off] !== sentinelByte(off)) {
+        assert.fail(
+          `${label}: guest sentinel CORRUPTED at low offset 0x${off.toString(16)} ` +
+            `(expected 0x${sentinelByte(off).toString(16)}, got 0x${buf[off].toString(16)})`,
+        );
+      }
+    }
+  }
+  // Dense prime-strided sweep across the entire low region.
+  for (let off = 0; off < SENTINEL_END; off += 4093) {
+    if (buf[off] !== sentinelByte(off)) {
+      assert.fail(
+        `${label}: guest sentinel CORRUPTED at low offset 0x${off.toString(16)} ` +
+          `(expected 0x${sentinelByte(off).toString(16)}, got 0x${buf[off].toString(16)})`,
+      );
+    }
+  }
+}
+
+// Write the frame payload the guest fills between reserve and commit: the ABI
+// frame header (func_index +0, call_index +4, catch selector +8, reference
+// ordinal +12) plus a scalar fill tail. The module reads func_index at
+// payload+0 for the journal / resume-slot machinery.
 function writePayload(payload, func, call, fill, size) {
   writeU32(payload + 0, func);
   writeU32(payload + 4, call);
   writeU32(payload + 8, 0);
   writeU32(payload + 12, 0);
-  const u8 = new Uint8Array(memory.buffer);
-  for (let i = 16; i < size; i++) u8[payload + i] = fill;
+  const buf = u8();
+  for (let i = 16; i < size; i++) buf[payload + i] = fill;
 }
 
-// --- Case 1: multi-chunk closed loop (the headline) ---------------------------
-//
-// Four frames, innermost-first, with one oversized frame that forces the module
-// to allocate a SECOND continuation chunk mid-unwind. Distinct function
-// ordinals so the resume-slot table assigns deterministic slots (sorted
-// ascending: 101->1, 202->2, 303->3, 404->4). Rewind is tail-first (outermost
-// committed first), so the expected replay order is the reverse of commit order
-// and the expected resume slots are [4, 3, 2, 1].
+// Seed the real linked-frame format (pointer_width=4 wasm32, fixed_prefix=128),
+// once, before any fork — the production host reads these from the guest
+// module's `kandelo.wpk_fork.linked_frames` descriptor.
+function setFormat() {
+  x.fm_set_format(4, 128);
+  assert.equal(errno(), 0, "fm_set_format errno");
+}
+
+// Begin a fork with a HOST-allocated arena (Option A): the host owns [base,len).
+function beginUnwind(act) {
+  const moduleBuffer = x.fm_begin_unwind(act, ARENA_BASE, ARENA_LEN) >>> 0;
+  assert.equal(errno(), 0, "fm_begin_unwind errno");
+  assert.notEqual(moduleBuffer, 0, "fm_begin_unwind returned a module buffer");
+  // The arena the module wrote into must be entirely inside the host region.
+  assert.ok(moduleBuffer >= ARENA_BASE && moduleBuffer < ARENA_END, "module buffer in host arena");
+  return moduleBuffer;
+}
+
+// --- Case 1: multi-chunk closed loop, over a HOST arena, co-resident ----------
 function runMultiChunk() {
   const ACT = 7;
   const specs = [
@@ -105,32 +211,23 @@ function runMultiChunk() {
     { func: 404, call: 4, fill: 0xd4, size: 48 },
   ];
 
-  // Grow a 16-page (1 MiB) frame arena and begin the unwind.
-  const moduleBuffer = x.fm_begin_unwind(ACT, 16) >>> 0;
-  assert.equal(errno(), 0, "fm_begin_unwind errno");
-  assert.notEqual(moduleBuffer, 0, "fm_begin_unwind returned a module buffer");
+  beginUnwind(ACT);
 
-  // Reserve + fill + commit each frame, innermost first (the guest's per-frame
-  // reserve/commit transaction).
-  const payloads = [];
   for (const s of specs) {
     const payload = x.__wpk_fork_frame_reserve(s.size) >>> 0;
     assert.equal(errno(), 0, `reserve errno for func ${s.func}`);
     assert.notEqual(payload, 0, `reserve returned payload for func ${s.func}`);
+    assert.ok(payload >= ARENA_BASE && payload < ARENA_END, `frame ${s.func} payload in host arena`);
     writePayload(payload, s.func, s.call, s.fill, s.size);
     x.__wpk_fork_frame_commit(payload);
     assert.equal(errno(), 0, `commit errno for func ${s.func}`);
-    payloads.push(payload);
   }
 
   x.fm_finish_unwind();
   assert.equal(errno(), 0, "fm_finish_unwind errno");
-
   x.fm_begin_replay();
   assert.equal(errno(), 0, "fm_begin_replay errno");
 
-  // Rewind: tail-first (reverse of commit order). At each step the resume slot,
-  // the journal-gated peek, and the consuming next must all agree.
   const replayOrder = [...specs].reverse();
   const expectedSlots = [4, 3, 2, 1];
   for (let i = 0; i < replayOrder.length; i++) {
@@ -149,46 +246,34 @@ function runMultiChunk() {
     assert.equal(readByte(advanced + 16), s.fill, `payload fill round-trips at step ${i}`);
   }
 
-  // Exhausted: resume_peek yields the reserved sentinel slot 0, and a further
-  // peek is a truthful EINVAL (not a panic, not a false success).
   assert.equal(x.__wpk_fork_resume_peek(0), 0, "sentinel slot after exhaustion");
   assert.equal(x.__wpk_fork_frame_peek(0), 0, "peek past end returns 0");
   assert.equal(errno(), EINVAL, "peek past end sets EINVAL");
 
   x.fm_finish_replay();
   assert.equal(errno(), 0, "fm_finish_replay errno");
-  console.log("  ok: multi-chunk closed loop (4 frames, 2 chunks, slots [4,3,2,1])");
+  console.log("  ok: multi-chunk closed loop over host arena (4 frames, 2 chunks, slots [4,3,2,1])");
 }
 
-// --- Case 2: many-frame stress, single chunk ---------------------------------
-//
-// A deep single-activation stack to show the loop scales past a few frames and
-// that per-fork heap reset lets the module be reused across forks.
-function runStress() {
+// --- Case 2: >=5000-frame stress, single fork, module reused ------------------
+function runStress(N) {
   const ACT = 3;
-  const N = 300;
-  const specs = [];
-  for (let i = 0; i < N; i++) specs.push({ func: 1000 + i, call: i, fill: i & 0xff, size: 32 });
+  beginUnwind(ACT);
 
-  const moduleBuffer = x.fm_begin_unwind(ACT, 16) >>> 0;
-  assert.equal(errno(), 0, "stress fm_begin_unwind errno");
-  assert.notEqual(moduleBuffer, 0);
-
-  for (const s of specs) {
-    const payload = x.__wpk_fork_frame_reserve(s.size) >>> 0;
-    assert.equal(errno(), 0, `stress reserve errno func ${s.func}`);
-    writePayload(payload, s.func, s.call, s.fill, s.size);
+  for (let i = 0; i < N; i++) {
+    const func = 1000 + i;
+    const payload = x.__wpk_fork_frame_reserve(32) >>> 0;
+    assert.equal(errno(), 0, `stress reserve errno func ${func}`);
+    assert.ok(payload >= ARENA_BASE && payload < ARENA_END, `stress payload ${func} in host arena`);
+    writePayload(payload, func, i, i & 0xff, 32);
     x.__wpk_fork_frame_commit(payload);
-    assert.equal(errno(), 0, `stress commit errno func ${s.func}`);
+    assert.equal(errno(), 0, `stress commit errno func ${func}`);
   }
   x.fm_finish_unwind();
   assert.equal(errno(), 0, "stress finish_unwind errno");
   x.fm_begin_replay();
   assert.equal(errno(), 0, "stress begin_replay errno");
 
-  // Replay is reverse of commit order; funcs are distinct so slots are the
-  // 1-based rank of the func ordinal. func 1000+i has rank i+1; replay visits
-  // i = N-1 .. 0, so slots go N, N-1, ... 1.
   for (let i = N - 1; i >= 0; i--) {
     const expectedFunc = 1000 + i;
     const slot = x.__wpk_fork_resume_peek(0);
@@ -200,10 +285,27 @@ function runStress() {
   assert.equal(x.__wpk_fork_resume_peek(0), 0, "stress sentinel after exhaustion");
   x.fm_finish_replay();
   assert.equal(errno(), 0, "stress finish_replay errno");
-  console.log(`  ok: ${N}-frame stress loop, module reused across forks`);
+  console.log(`  ok: ${N}-frame stress fork over host arena, module reused`);
 }
 
-console.log("fork-module end-to-end harness (Node/V8, shared imported memory):");
+console.log("fork-module co-residency harness (Node/V8, live imported memory, PIC placement):");
+
+// Prime the low region with guest data BEFORE instantiating anything into it.
+fillSentinel();
+assertSentinelIntact("baseline");
+console.log(`  ok: seeded ${(SENTINEL_END / (1024 * 1024)).toFixed(0)} MiB guest sentinel at [0, 0x${SENTINEL_END.toString(16)})`);
+
+setFormat();
 runMultiChunk();
-runStress();
-console.log("ALL PASS: co-resident module drove the full unwind->rewind loop against the imported guest memory.");
+// THE HEADLINE ASSERTION: after a real fork loop, guest data at the low offsets
+// where the old scaffold's static/BSS/stack lived is byte-for-byte intact.
+assertSentinelIntact("after multi-chunk fork");
+console.log("  ok: SENTINEL SURVIVED multi-chunk fork — module data/stack are co-resident, not colliding");
+
+runStress(5000);
+assertSentinelIntact("after 5000-frame stress fork");
+console.log("  ok: SENTINEL SURVIVED 5000-frame stress fork — no low-memory corruption across reuse");
+
+console.log(
+  "ALL PASS: co-resident PIE module drove the full unwind->rewind loop over a host arena AND left the low guest sentinel byte-for-byte intact.",
+);

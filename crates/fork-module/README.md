@@ -1,12 +1,13 @@
-# fork-module — co-resident process-worker fork module (Phase 6 D2 scaffold)
+# fork-module — co-resident process-worker fork module
 
-**Status: ADDITIVE scaffolding. NOT wired into the live host/worker.** Nothing
-in this crate touches `host/`, `crates/kernel/`, `crates/shared/`,
-`crates/runtime-core/`, `abi/`, or `libc/`. It builds a standalone wasm32 cdylib
-and is validated in isolation.
+**Status: ADDITIVE. NOT wired into the live host/worker.** Nothing in this crate
+touches `host/`, `crates/kernel/`, `crates/shared/`, `crates/runtime-core/`,
+`crates/fork-codec/`, `abi/`, or `libc/`. It builds standalone
+position-independent wasm side modules and is validated in isolation.
 
 See `.superpowers/sdd/2026-09-01-phase6-fork-exec/D2-CORESIDENT-MODULE-DESIGN.md`
-for the full design.
+(design) and `.../D5-FIRST-SLICE-PLAN.md` (this gating slice) for the full
+context.
 
 ## What it is
 
@@ -29,86 +30,113 @@ pure-logic `fork-codec` core:
 | `__wpk_fork_frame_next(size) -> payload` | `RewindDriver::drive_next` |
 | `__wpk_fork_resume_peek(diag) -> slot` | `RewindDriver::resume_peek` (`ResumeSlotTable`) |
 
-Plus a minimal coordinator surface (`fm_begin_unwind`, `fm_finish_unwind`,
-`fm_begin_replay`, `fm_finish_replay`, `fm_last_errno`) sufficient to drive a
-full unwind-then-rewind cycle from a test.
+Plus a coordinator surface (JS→wasm, once per phase, not hot):
 
-## Memory topology (and why)
+- `fm_set_format(pointer_width, fixed_prefix_size)` — seed the linked-frame
+  geometry ONCE (from the guest's `kandelo.wpk_fork.linked_frames` descriptor)
+  before any fork. `pointer_width` is 4 (wasm32 guest) or 8 (wasm64 guest).
+- `fm_begin_unwind(activation_id, arena_base, arena_len)` — begin a fork over a
+  **host-allocated** frame arena (see "Arena", below).
+- `fm_finish_unwind`, `fm_begin_replay`, `fm_finish_replay`, `fm_last_errno`.
 
-**Single shared imported memory** (the production "single-shared-memory" shape),
-NOT the D2 §1d multi-memory fallback:
+## Memory topology — PIC side module (the D5 gating fix)
 
-- The module imports `env.memory` as its ONLY memory, built like the kernel with
-  `--import-memory --shared-memory` (inherited from the repo `.cargo/config.toml`).
-  All frame reads/writes happen in that shared memory at absolute guest byte
-  offsets, exactly as the D1 decoders assume.
-- The module's own Rust heap (the `Vec`/`BTreeMap` state of the writer, driver,
-  journal, and slot table) is a **bump allocator over a fixed 16 MiB static
-  region, reset per fork**, living in the module's own BSS — disjoint from the
-  frame data, and reclaimed each fork so the module is reusable.
-- The per-fork **frame arena** is carved by GROWING the shared memory at
-  `fm_begin_unwind` (`memory.grow` returns a fresh page-aligned region above all
-  existing data), guaranteeing frames never collide with module heap/stack/
-  static or the guest's own data. This is the scaffold stand-in for the
-  production channel-`mmap` arena.
+This is the sub-problem the earlier D2 scaffold did **not** solve. A plain wasm
+cdylib emits its static data, its BSS heap, and its `--stack-first` shadow stack
+at **fixed low linear-memory offsets**. Instantiated against the LIVE guest's
+shared memory (which the module imports as its only memory), those low-offset
+writes would **overwrite guest data**. The scaffold's harness only passed
+because it ran against an EMPTY memory.
 
-Why not the multi-memory fallback (module's own default memory + guest memory
-imported as a second memory): Rust/LLVM lower every ordinary pointer dereference
-against memory index 0, so the `fork-codec` `&mut [u8]` frame APIs cannot target
-a second imported memory without hand-written multi-memory instructions; and the
-repo-wide `--import-memory` forces memory 0 to be imported, so the module cannot
-own a private default memory without editing global build config (non-additive,
-out of scope). The single-shared-memory arena is both the only path that works
-with Rust codegen and the production-shaped choice.
+The fix: build this crate as a **position-independent (`--pie
+--experimental-pic`) wasm side module**. It then imports three HOST-supplied
+placement globals and relocates itself into a host-chosen region:
 
-**The heap-bootstrap open question (design §7.1) is NOT settled by this
-scaffold.** Production must still decide how the module obtains its heap/arena in
-the real worker (the channel-`mmap` handshake); the scaffold grows memory
-directly, which a live worker may not be free to do the same way.
+- `env.memory` — the guest's single shared linear memory (the frame data plane).
+- `env.__memory_base` (immutable) — the host-chosen base for the module's own
+  data + BSS heap. Data segments are **passive** and copied by the module's
+  start function to `__memory_base + offset`; every static/BSS access is
+  `__memory_base`-relative. `wasm-objdump` shows **no fixed low-offset active
+  data segment** — the property that makes co-residency possible.
+- `env.__stack_pointer` (mutable) — the host-chosen shadow-stack top; the stack
+  grows down from here, in the host region.
+- `env.__table_base` + `env.__indirect_function_table` — PIC table base + shared
+  function table (no entries added in this slice; `dylink.0` table_size = 0).
+
+The `dylink.0` section reports the module's `mem_size` (~4 MiB here, dominated by
+the reset-per-fork bump heap) so the host knows how much of the `__memory_base`
+region to reserve.
+
+### Arena (Option A: the host owns it)
+
+`fm_begin_unwind` takes an explicit `(arena_base, arena_len)`: the **host**
+allocates the per-fork frame arena (production: a `continuationMmap` of the
+shared memory) and passes it in. The module does **not** grow memory. `arena_base`
+must be page-aligned and `arena_len` a non-zero page multiple.
+
+### Why not the multi-memory fallback
+
+Rust/LLVM lower every ordinary pointer dereference against memory index 0, so
+the `fork-codec` `&mut [u8]` frame APIs cannot target a second imported memory
+without hand-written multi-memory instructions. The PIC side module keeps memory
+0 as the single shared guest memory AND relocates the module's own state off the
+guest's low offsets — the only path that both works with Rust codegen and solves
+the collision.
 
 ## Build
 
-Mirror the kernel's flags. **Release is required** (the whole-memory byte view
-is based at wasm address 0, which is valid in wasm's flat memory but trips the
-debug-only non-null slice precondition):
+Use the crate's build script (it carries the PIC flags; a `RUSTFLAGS` env value
+replaces the repo `.cargo/config.toml` target rustflags, so this crate gets its
+own PIC flag set without editing the repo-wide, non-PIC kernel/guest config):
 
 ```
-scripts/dev-shell.sh bash -c "cargo build --release -p fork-module \
-  --target wasm32-unknown-unknown -Z build-std=core,alloc"
+scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh          # wasm32 (+wasm64 best-effort)
+scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh --run    # + co-residency harness
 ```
 
-Artifact: `target/wasm32-unknown-unknown/release/fork_module.wasm`.
+Artifacts:
+- `target/wasm32-unknown-unknown/release/fork_module.wasm` (pointer_width 4)
+- `target/wasm64-unknown-unknown/release/fork_module.wasm` (pointer_width 8;
+  built with the nightly `simd_wasm64` feature for the wasm64 memory intrinsic)
 
-## Validate (end-to-end)
+Release is required (the whole-memory byte view is based at wasm address 0,
+valid in wasm's flat memory but tripping the debug-only non-null slice
+precondition).
 
-The key deliverable is `tests/harness.mjs`: a Node/V8 harness that instantiates
-the built `.wasm` with a shared `WebAssembly.Memory` playing the guest memory and
-drives the full reserve/commit → next/peek/resume loop, asserting the closed
-loop matches the pure-logic expectation (frame order, resume slots).
+`rustc` unconditionally appends `--export=__heap_base` for a wasm cdylib, but a
+`--pie` side module has no static heap base, so `wasm-ld` doesn't define it and
+the forced export would fail to link. The crate defines a trivial vestigial
+`__heap_base` export purely to satisfy that; the host never consumes it.
+
+## Validate (end-to-end + co-residency)
+
+`tests/harness.mjs` is the key deliverable: a Node/V8 harness (V8 is the actual
+production engine for the Node and browser process workers) that
+
+1. seeds a 32 MiB **sentinel** over the whole LOW region `[0, 0x2000000)` —
+   exactly where the old plain-cdylib scaffold's stack/data/BSS lived,
+2. instantiates the module placed HIGH via host `__memory_base` /
+   `__stack_pointer`, with a host-allocated frame arena,
+3. drives the full multi-chunk reserve/commit → next/peek/resume loop and a
+   >=5000-frame stress fork, then
+4. **asserts the low sentinel is byte-for-byte intact** (co-residency) AND that
+   the loop produced the correct frame order and resume slots.
 
 ```
 scripts/dev-shell.sh bash -c "node crates/fork-module/tests/harness.mjs \
   target/wasm32-unknown-unknown/release/fork_module.wasm"
 ```
 
-**Engine choice — Node/V8, not the `wasmtime` crate.** V8 is the actual
-production engine for the Node and browser process workers, so exercising the
-exact SharedArrayBuffer + imported-memory path in V8 is the most faithful proof.
-The crate is also a wasm32-only cdylib, so a host-target `cargo test` cannot
-build it, and `wasmtime` is not vendored in this workspace. The harness proves
-what the design's "biggest unknown" needed: a second wasm module can import the
-guest's `Memory`, export the frame functions, and drive the continuation loop
-against that memory, end to end in a real engine.
-
 ## Deliberately DEFERRED (awaits user review / later slices)
 
 - **LIVE HOST WIRING** — flipping the guest's `env.__wpk_fork_frame_*` imports to
-  this module's exports in `host/src/worker-main.ts` is the risky
-  live-integration step and is **left for user review**. It is NOT done here.
-- **Production `mmap`-arena heap bootstrap** (channel `memory.atomic.wait32`
-  chunk mapping). This scaffold grows the memory directly instead; the
-  heap-bootstrap question is not settled.
+  this module's exports in `host/src/worker-main.ts`, and the host code that
+  reserves the `__memory_base`/stack region and `continuationMmap` arena, is the
+  risky live-integration step and is **left for user review**.
 - **Reference / exception / GC engine-floor imports** (the irreducible JS floor)
   and the funcref/anyref engine tables — inert for a no-reference program.
-- **wasm64 variant** — only the wasm32 artifact is built here.
-- **Per-worker instantiation plumbing** and the **ABI-44 snapshot record**.
+- **wasm64 harness coverage** — the wasm64 artifact is structurally verified
+  (`wasm-objdump`: i64 memory + PIC placement globals), but the harness exercises
+  only the wasm32 artifact.
+- **Per-worker instantiation plumbing** and the **ABI-44 snapshot record** for
+  the shipped `fork_module{32,64}.wasm` artifacts.

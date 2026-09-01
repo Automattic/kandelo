@@ -17,51 +17,71 @@
 //! `ReplayEventJournal` + `ResumeSlotTable` (the load-bearing journal coupling
 //! the design requires to move into the module alongside the allocator).
 //!
-//! ## Memory topology chosen (and why)
+//! ## Memory topology chosen (and why) — PIC side module (D5 gating fix)
 //!
 //! SINGLE shared imported memory (the production "single-shared-memory" shape),
-//! NOT the multi-memory fallback:
+//! placed by the HOST via position-independent-code globals. This is the gating
+//! sub-problem the D2 scaffold did NOT solve: a plain cdylib emits its static
+//! data, BSS heap, and `--stack-first` shadow stack at FIXED LOW linear-memory
+//! offsets, so instantiating it against the LIVE guest's shared memory would
+//! overwrite guest data at those offsets. The scaffold's `tests/harness.mjs`
+//! only passed because it ran against an EMPTY memory.
 //!
-//! * The module imports `env.memory` as its ONLY memory (built, like the kernel,
-//!   with `--import-memory --shared-memory`). All frame reads/writes happen in
-//!   that shared memory at absolute guest byte offsets, exactly as the D1
-//!   decoders assume.
-//! * The module's own Rust heap (the `Vec`/`BTreeMap` state of the writer,
-//!   driver, journal, and slot table) is a bump allocator over a fixed static
-//!   region, reset per fork. It lives in the module's own BSS, disjoint from the
-//!   frame data.
-//! * The per-fork FRAME ARENA (where continuation chunks are written) is carved
-//!   by GROWING the shared memory at `fm_begin_unwind`: `memory.grow` returns a
-//!   fresh, page-aligned region above all existing data, guaranteeing the frames
-//!   never collide with the module heap/stack/static or the guest's own data.
-//!   This is the scaffold stand-in for the production channel-`mmap` arena.
+//! The fix is to build this crate as a POSITION-INDEPENDENT (`--pie
+//! --experimental-pic`) wasm SIDE MODULE. That makes the module import three
+//! HOST-supplied placement globals and relocate itself into a host-chosen
+//! region of the shared memory:
+//!
+//! * `env.memory` — the guest's ONLY memory (shared). All frame reads/writes
+//!   happen here at absolute guest byte offsets, exactly as the D1 decoders
+//!   assume.
+//! * `env.__memory_base` (immutable global) — the host-chosen base for the
+//!   module's own data + BSS. The module's data segments are PASSIVE and copied
+//!   by the start function to `__memory_base + offset`; every static/BSS access
+//!   is `__memory_base`-relative. The host points this into a region the guest
+//!   is NOT using, so the module's `Vec`/`BTreeMap`/journal heap never collides
+//!   with guest data.
+//! * `env.__stack_pointer` (mutable global) — the host-chosen shadow-stack top.
+//!   The stack grows DOWN from here, in the host region, not at the fixed low
+//!   `--stack-first` offset a plain cdylib would use.
+//! * `env.__table_base` + `env.__indirect_function_table` — the PIC ABI table
+//!   base and shared function table (no entries added in this slice).
+//!
+//! With this placement the module's ONLY writes are (a) into its own
+//! host-placed `__memory_base` region, (b) onto its own host-placed shadow
+//! stack, and (c) into the per-fork FRAME ARENA the host passes explicitly to
+//! `fm_begin_unwind(activation_id, arena_base, arena_len)` — Option A: the HOST
+//! allocates the arena (production: `continuationMmap`), the module never grows
+//! memory. `tests/harness.mjs` proves co-residency by seeding a sentinel over
+//! the whole low region and asserting it is byte-for-byte intact after a full
+//! fork loop.
 //!
 //! Why NOT the D2 §1d multi-memory fallback (module's own default memory +
 //! guest memory imported as a second memory): Rust/LLVM lower every ordinary
 //! pointer dereference against memory index 0, so the `fork-codec` `&mut [u8]`
 //! frame APIs cannot target a second imported memory without hand-written
-//! multi-memory instructions; and the repo-wide `.cargo/config.toml` forces
-//! `--import-memory` on memory 0, so the module cannot own a private default
-//! memory without editing global build config (out of scope, non-additive).
-//! Choosing the single-shared-memory arena is both the only path that works with
-//! Rust codegen AND the production-shaped choice.
+//! multi-memory instructions. The PIC side module keeps memory 0 as the single
+//! shared guest memory AND relocates the module's own state off the guest's low
+//! offsets — the only path that both works with Rust codegen and solves the
+//! collision.
 //!
 //! ## Deliberately DEFERRED (NOT done here; see README)
 //!
 //! * LIVE HOST WIRING: flipping the guest's `env.__wpk_fork_frame_*` imports to
-//!   this module's exports in `host/src/worker-main.ts` is the risky
-//!   live-integration step and is left for user review. Nothing here touches the
-//!   host, kernel, shared ABI, runtime-core, `abi/`, or `libc/`.
-//! * The production `mmap`-arena heap bootstrap (channel `memory.atomic.wait32`
-//!   chunk mapping). This scaffold grows the memory directly instead. The
-//!   heap-bootstrap open question (design §7.1) is NOT settled.
+//!   this module's exports in `host/src/worker-main.ts`, and the host code that
+//!   reserves the `__memory_base`/stack region + `continuationMmap` arena, is
+//!   the risky live-integration step and is left for user review. Nothing here
+//!   touches the host, kernel, shared ABI, runtime-core, `abi/`, or `libc/`.
 //! * The reference / exception / GC engine-floor imports (the JS floor) and the
 //!   funcref/anyref engine tables — inert for a no-reference program.
-//! * The wasm64 artifact variant (only wasm32 is built here).
 //! * Per-worker instantiation plumbing and the ABI-44 snapshot record.
 
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_main)]
+// The wasm64 memory intrinsics (`core::arch::wasm64::memory_size`) are still
+// behind the `simd_wasm64` feature gate (rust-lang/rust#90599). Enable it only
+// for the wasm64 build; the wasm32 and host builds are unaffected.
+#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 extern crate alloc;
@@ -75,7 +95,7 @@ extern crate alloc;
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::UnsafeCell;
-    use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
     use alloc::vec::Vec;
 
@@ -85,31 +105,71 @@ mod wasm {
     };
     use wasm_posix_shared::{abi, Errno};
 
+    // The wasm memory/trap intrinsics live in an arch-specific module. Alias the
+    // correct one so the same code builds for a wasm32 (`pointer_width = 4`) and
+    // a wasm64 (`pointer_width = 8`) guest.
+    #[cfg(target_arch = "wasm32")]
+    use core::arch::wasm32 as wasm_intr;
+    #[cfg(target_arch = "wasm64")]
+    use core::arch::wasm64 as wasm_intr;
+
     const PAGE: u64 = 65_536;
 
-    // The wasm32 module's chosen fixed-prefix size, matching the committed
-    // linked-frame fixture geometry. In production this comes from the guest
-    // module's `kandelo.wpk_fork.linked_frames` descriptor; the scaffold pins it
-    // so the writer and the driver share one self-consistent format.
-    const FIXED_PREFIX: u32 = 128;
+    // -- Host-seeded linked-frame format ------------------------------------
+    //
+    // In production the host reads the guest module's
+    // `kandelo.wpk_fork.linked_frames` descriptor (`readLinkedFrameFormat`) and
+    // passes the pointer width and fixed-prefix size to the module ONCE via
+    // `fm_set_format` before any fork. The chunk/node header sizes are derived
+    // from the pointer width by the shared ABI helpers, so those two values are
+    // the whole format. `0` means "not seeded yet" — `fm_begin_unwind` refuses
+    // to run until the format is set (truthful `EINVAL`, never a guessed
+    // geometry).
+    static FMT_POINTER_WIDTH: AtomicU32 = AtomicU32::new(0);
+    static FMT_FIXED_PREFIX: AtomicU32 = AtomicU32::new(0);
 
-    fn format() -> LinkedFrameFormat {
-        LinkedFrameFormat {
-            pointer_width: 4,
-            chunk_header_size: abi::wpk_fork_linked_chunk_header_size(4).unwrap_or(32),
-            node_header_size: abi::wpk_fork_linked_node_header_size(4).unwrap_or(24),
-            fixed_prefix_size: FIXED_PREFIX,
+    fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
+        // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
+        if abi::wpk_fork_linked_chunk_header_size(pointer_width as u8).is_none() {
+            return Err(Errno::EINVAL);
         }
+        FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
+        FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn format() -> Result<LinkedFrameFormat, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(LinkedFrameFormat {
+            pointer_width: pw as u8,
+            chunk_header_size: abi::wpk_fork_linked_chunk_header_size(pw as u8)
+                .ok_or(Errno::EINVAL)?,
+            node_header_size: abi::wpk_fork_linked_node_header_size(pw as u8).ok_or(Errno::EINVAL)?,
+            fixed_prefix_size: FMT_FIXED_PREFIX.load(Ordering::Relaxed),
+        })
     }
 
     // -- Per-worker bump heap ------------------------------------------------
     //
-    // A fixed static region serves the module's own `alloc` allocations. It is
-    // reset at each `fm_begin_unwind`, so per-fork state is reclaimed and the
-    // module can be reused across forks without unbounded growth. `dealloc` is a
-    // no-op (bump); freeing happens only at the per-fork reset.
-
-    const HEAP_SIZE: usize = 16 * 1024 * 1024;
+    // A fixed static region serves the module's own `alloc` allocations (the
+    // writer/journal/slot-table `Vec`/`BTreeMap` state). It is reset at each
+    // `fm_begin_unwind`, so per-fork state is reclaimed and the module can be
+    // reused across forks without unbounded growth. `dealloc` is a no-op (bump);
+    // freeing happens only at the per-fork reset.
+    //
+    // Because this crate is a PIC (`--pie`) side module, this BSS region is NOT
+    // at a fixed low linear-memory offset: it lives at `__memory_base + offset`,
+    // where the HOST chooses `__memory_base` to point into a region the guest is
+    // not using. So the heap no longer collides with guest data (the D5 gating
+    // fix; see the module doc comment and `tests/harness.mjs`). 4 MiB comfortably
+    // covers a single fork's peak state — including bump waste from `Vec`
+    // doubling — for well past the 5000-frame stress workload, and it sets the
+    // module's `dylink.0` `mem_size` (how much of the `__memory_base` region the
+    // host must reserve).
+    const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
     #[repr(C, align(16))]
     struct HeapCell(UnsafeCell<[u8; HEAP_SIZE]>);
@@ -159,13 +219,13 @@ mod wasm {
 
     #[panic_handler]
     fn panic(_info: &core::panic::PanicInfo) -> ! {
-        core::arch::wasm32::unreachable()
+        wasm_intr::unreachable()
     }
 
     // -- Shared guest memory access -----------------------------------------
 
     fn mem_len_bytes() -> usize {
-        (core::arch::wasm32::memory_size(0)) * 65_536
+        wasm_intr::memory_size(0) * 65_536
     }
 
     /// A mutable view of the whole guest linear memory.
@@ -261,23 +321,25 @@ mod wasm {
 
     // -- Coordinator (JS→wasm, once per phase, not hot) ---------------------
 
-    fn begin_unwind_impl(activation_id: u32, arena_pages: usize) -> Result<u64, Errno> {
-        if arena_pages == 0 {
+    fn begin_unwind_impl(activation_id: u32, arena_base: u64, arena_len: u64) -> Result<u64, Errno> {
+        // Option A: the HOST owns the per-fork frame arena and passes its base
+        // and length in (production: a `continuationMmap` of the shared memory).
+        // The module does NOT grow memory. The base must be page-aligned and the
+        // length a non-zero page multiple — exactly what `LinkedFrameWriter`
+        // requires of chunk boundaries, and what a page-rounded host mapping
+        // yields.
+        if arena_len == 0 || arena_base % PAGE != 0 || arena_len % PAGE != 0 {
             return Err(Errno::EINVAL);
         }
+        let arena_end = arena_base.checked_add(arena_len).ok_or(Errno::EINVAL)?;
+
+        // The format must have been seeded (once) via `fm_set_format`.
+        let fmt = format()?;
+
         // Reclaim the previous fork's state and heap before this fork.
         *state() = None;
         ALLOC.reset();
 
-        // Carve a fresh, page-aligned frame arena above all existing memory.
-        let prev = core::arch::wasm32::memory_grow(0, arena_pages);
-        if prev == usize::MAX {
-            return Err(Errno::ENOMEM);
-        }
-        let arena_base = (prev as u64) * PAGE;
-        let arena_end = arena_base + (arena_pages as u64) * PAGE;
-
-        let fmt = format();
         let mut module = ForkModule {
             format: fmt,
             activation_id,
@@ -449,12 +511,30 @@ mod wasm {
 
     // -- Coordinator exports (fm_*) -----------------------------------------
 
-    /// Begin a fork unwind for `activation_id`, growing an `arena_pages`-page
-    /// frame arena. Returns the module-buffer anchor (0 on failure; check
-    /// `fm_last_errno`).
+    /// Seed the linked-frame format for subsequent forks. `pointer_width` is 4
+    /// (wasm32 guest) or 8 (wasm64 guest); `fixed_prefix_size` is the guest's
+    /// module-buffer fixed-prefix size. Called ONCE by the host (from the guest
+    /// module's `kandelo.wpk_fork.linked_frames` descriptor) before any
+    /// `fm_begin_unwind`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_begin_unwind(activation_id: u32, arena_pages: usize) -> usize {
-        match begin_unwind_impl(activation_id, arena_pages) {
+    pub extern "C" fn fm_set_format(pointer_width: u32, fixed_prefix_size: u32) {
+        match set_format_impl(pointer_width, fixed_prefix_size) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Begin a fork unwind for `activation_id` over the HOST-allocated frame
+    /// arena `[arena_base, arena_base + arena_len)` (Option A). `arena_base` must
+    /// be page-aligned and `arena_len` a non-zero page multiple. Returns the
+    /// module-buffer anchor (0 on failure; check `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_unwind(
+        activation_id: u32,
+        arena_base: usize,
+        arena_len: usize,
+    ) -> usize {
+        match begin_unwind_impl(activation_id, arena_base as u64, arena_len as u64) {
             Ok(module_buffer) => {
                 set_ok();
                 module_buffer as usize
@@ -464,6 +544,21 @@ mod wasm {
                 0
             }
         }
+    }
+
+    /// Vestigial `__heap_base` export.
+    ///
+    /// `rustc` unconditionally appends `--export=__heap_base` for a wasm
+    /// `cdylib`, but a position-independent (`--pie`) side module has no static
+    /// heap base — its heap lives at `__memory_base`-relative offsets the HOST
+    /// chooses, so `wasm-ld` does NOT define `__heap_base` and the forced export
+    /// would fail to link. Defining this trivial symbol satisfies the export.
+    /// The host never consumes it (the module's allocator uses its own
+    /// `__memory_base`-relative BSS heap), so its value is meaningless; it exists
+    /// only so the `--pie` link succeeds.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __heap_base() -> i32 {
+        0
     }
 
     /// Finish the unwind: seal the writer and the captured journal.
