@@ -492,7 +492,13 @@ export const App: React.FC = () => {
               : "user"
         }
         themeOpen={themeOpen}
-        status={surface.status}
+        // A machine on its way here is booting, whatever the surface it is
+        // replacing happens to be doing. During a take-over the departing
+        // replica still reports "running", and showing that beside a role
+        // that already says "user" would claim a typeable machine before
+        // there is one: the arriving image boots and restores first, and the
+        // dock says "Running" when that machine is the one running.
+        status={handover.taking || replication.joining ? "booting" : surface.status}
         machineTitle={isEmpty ? "Kandelo" : desc.title}
         viewDisabled={{
           demo: !surface.canOpenDemo,
