@@ -399,9 +399,40 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// Default `--source-cache-root` for `bootstrap`, matching
 /// `scripts/run-local-build.sh` so the engine step here and the
 /// `./run.sh local-build` front door share one persistent cache location.
+///
+/// The SourceOnly build cache is shared across every worktree on the
+/// machine by default (it is content-addressed, so identical inputs are
+/// built once and reused everywhere — this is what keeps a fresh worktree
+/// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
+/// worktree its own isolated cache instead; leaving it unset shares the
+/// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
 fn default_source_cache_root() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
+    resolve_source_cache_root(
+        std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure resolver behind [`default_source_cache_root`]: an explicit
+/// `KANDELO_SOURCE_CACHE_ROOT` override (must be absolute) wins; otherwise
+/// fall back to `$HOME/.cache/kandelo/source-only`. Split out so the
+/// override precedence is unit-testable without mutating process env.
+fn resolve_source_cache_root(
+    override_root: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(override_root) = override_root {
+        let override_root = PathBuf::from(override_root);
+        if !override_root.is_absolute() {
+            return Err(format!(
+                "KANDELO_SOURCE_CACHE_ROOT must be an absolute path, got {}",
+                override_root.display()
+            ));
+        }
+        return Ok(override_root);
+    }
+    let home =
+        home.ok_or_else(|| "bootstrap: HOME is not set; cannot locate source cache root".to_string())?;
     let home = PathBuf::from(home);
     if !home.is_absolute() {
         return Err(format!(
@@ -4644,6 +4675,40 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn source_cache_root_defaults_to_home_when_no_override() {
+        let resolved =
+            resolve_source_cache_root(None, Some(std::ffi::OsString::from("/home/dev"))).unwrap();
+        assert_eq!(resolved, PathBuf::from("/home/dev/.cache/kandelo/source-only"));
+    }
+
+    #[test]
+    fn source_cache_root_override_wins_over_home() {
+        let resolved = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("/tmp/wt-cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/wt-cache"));
+    }
+
+    #[test]
+    fn source_cache_root_override_must_be_absolute() {
+        let err = resolve_source_cache_root(
+            Some(std::ffi::OsString::from("relative/cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap_err();
+        assert!(err.contains("KANDELO_SOURCE_CACHE_ROOT"), "{err}");
+        assert!(err.contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn source_cache_root_errors_when_no_override_and_no_home() {
+        let err = resolve_source_cache_root(None, None).unwrap_err();
+        assert!(err.contains("HOME is not set"), "{err}");
     }
 
     #[test]

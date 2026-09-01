@@ -21,6 +21,16 @@
 #   --pr-staging                  Use the current PR's staging binary index for
 #                                  fetch/package commands. Browser rejects it.
 #
+# Environment:
+#   KANDELO_SOURCE_CACHE_ROOT     Absolute path to this worktree's own
+#                                 SourceOnly build cache. Unset (default) shares
+#                                 the machine-wide cache at
+#                                 $HOME/.cache/kandelo/source-only, so identical
+#                                 inputs build once and are reused across
+#                                 worktrees. Set it to isolate a worktree whose
+#                                 in-progress change alters cached artifact
+#                                 bytes. See docs/package-management.md.
+#
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
