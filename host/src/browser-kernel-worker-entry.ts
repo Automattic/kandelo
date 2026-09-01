@@ -1848,6 +1848,19 @@ function installProcessWorkerListeners(
       handleVmInterruptTimer(m, pid, process);
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(worker, m);
+    } else if (m.type === "fork_module_frames" && m.pid === pid) {
+      // Surface the co-resident fork-module's proof-of-use as a host
+      // diagnostic (Phase 6 D5): a nonzero frame count confirms the qualifying
+      // fork ran its continuation through the module, not the JS fallback.
+      // Mirrors node-kernel-worker-entry so both hosts report identically.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_frames=${m.frames}`,
+        },
+        "warn",
+      );
     }
   });
 }
