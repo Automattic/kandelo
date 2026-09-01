@@ -252,6 +252,7 @@ host/test/pty-ownership.test.ts	prepared-product
 host/test/putenv.test.ts	prepared-product
 host/test/qt-gui-smoke.test.ts	source-only
 host/test/qt-qml-smoke.test.ts	source-only
+host/test/qtdemo-smoke.test.ts	prepared-product
 host/test/qtwaylandscanner-host-tool.test.ts	source-only
 host/test/readdir-atomicity.test.ts	source-only
 host/test/readiness-deadline.test.ts	source-only

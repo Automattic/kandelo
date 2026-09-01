@@ -1,0 +1,9 @@
+script_path = "packages/registry/qtdemo/build-qtdemo.sh"
+inputs = [
+  "packages/registry/qtdemo/build-qtdemo.sh",
+  "programs/qtdemo/qtdemo.cpp",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

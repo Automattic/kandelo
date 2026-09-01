@@ -419,6 +419,10 @@ name = "qtdeclarative"
 class = "platform"
 
 [[packages]]
+name = "qtdemo"
+class = "user-software"
+
+[[packages]]
 name = "qtshadertools"
 class = "platform"
 
