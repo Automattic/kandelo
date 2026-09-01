@@ -54,6 +54,29 @@ RUSTFLAGS="${PIC_RUSTFLAGS[*]}" \
 WASM32="target/wasm32-unknown-unknown/release/fork_module.wasm"
 echo "wasm32 artifact: $WASM32"
 
+# Build the host-only post-build injector (Phase 6 D6.1). Rust cannot emit the
+# `__wpk_fork_ref_decode_funcref` export (a function that RETURNS a funcref by
+# reading an imported funcref table), so this tool injects that one static wasm
+# function — wired to the module's Rust `fm_funcref_ordinal` helper and a new
+# `env.__wpk_fork_function_catalog` funcref-table import — into the compiled
+# module before staging. See crates/fork-module-inject.
+echo "== building fork-module injector (host) =="
+# The repo `.cargo/config.toml` defaults `build.target` to wasm32; the injector
+# is a HOST tool (it needs std + walrus), so build it for the host triple.
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+cargo build --release -p fork-module-inject --target "$HOST_TRIPLE"
+INJECTOR="target/$HOST_TRIPLE/release/fork-module-inject"
+
+# Inject the funcref decode export into a wasm artifact IN PLACE (produces a
+# temp, then replaces the artifact so the existing staging path is unchanged).
+inject_funcref_decode() {
+  local wasm="$1"
+  local injected="${wasm%.wasm}.injected.wasm"
+  "$INJECTOR" "$wasm" "$injected"
+  mv "$injected" "$wasm"
+}
+inject_funcref_decode "$WASM32"
+
 # Stage the artifacts where BOTH hosts load them, mirroring how the kernel
 # stages `kernel.wasm`:
 #
@@ -84,6 +107,7 @@ if RUSTFLAGS="${PIC_RUSTFLAGS[*]}" \
     cargo build --release -p fork-module --target wasm64-unknown-unknown -Z build-std=core,alloc; then
   WASM64="target/wasm64-unknown-unknown/release/fork_module.wasm"
   echo "wasm64 artifact: $WASM64"
+  inject_funcref_decode "$WASM64"
   stage_fork_module "$WASM64" 64
 else
   echo "wasm64 build unavailable on this toolchain (wasm32 is sufficient for this slice)"

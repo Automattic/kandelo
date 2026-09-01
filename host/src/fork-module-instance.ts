@@ -37,6 +37,15 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_finish_replay",
   "fm_frames_committed",
   "fm_last_errno",
+  // Phase 6 D6.1 reference reconstruction (funcref + null):
+  //  - `__wpk_fork_ref_decode_funcref` is the funcref-returning export the
+  //    walrus injector adds (Rust cannot emit it); it reads the imported
+  //    `__wpk_fork_function_catalog` table with `table.get`.
+  //  - `fm_begin_reference_replay` seeds the funcref/null reference graph.
+  //  - `fm_references_reconstructed` is the proof-of-use counter.
+  "__wpk_fork_ref_decode_funcref",
+  "fm_begin_reference_replay",
+  "fm_references_reconstructed",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
@@ -59,6 +68,19 @@ export interface InstantiateForkModuleOptions {
   reserve: (size: number) => number;
   /** Diagnostic label (e.g. `pid=NN`). */
   label: string;
+  /**
+   * The funcref table the module's `__wpk_fork_ref_decode_funcref` reads with
+   * `table.get` (Phase 6 D6.1). The guest's own `__wpk_fork_function_catalog` is
+   * a guest EXPORT that only exists after the guest instance is created — which
+   * is AFTER this module is instantiated (the module must precede the guest to
+   * supply the frame-flip imports). So the host passes a growable, host-owned
+   * mirror table here and populates it from the guest's catalog (identical
+   * funcref identities) once the guest instance exists. When omitted (tests /
+   * non-funcref paths) an empty growable table is created; the module never
+   * reads it unless `fm_begin_reference_replay` succeeds and a funcref recipe is
+   * decoded, so an empty table is inert.
+   */
+  functionCatalog?: WebAssembly.Table;
 }
 
 export interface ForkModuleInstance {
@@ -70,6 +92,12 @@ export interface ForkModuleInstance {
   regionBytes: number;
   /** The module's own (empty) indirect function table. */
   table: WebAssembly.Table;
+  /**
+   * The funcref catalog table the module's `__wpk_fork_ref_decode_funcref`
+   * reads (Phase 6 D6.1). The host populates this from the guest's
+   * `__wpk_fork_function_catalog` export after the guest instance exists.
+   */
+  functionCatalog: WebAssembly.Table;
 }
 
 /**
@@ -189,15 +217,34 @@ export function instantiateForkModule(
   // The module declares table_size = 0, so it never adds entries. Give it its
   // own empty table rather than coupling to any guest table this step.
   const table = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+  // The funcref catalog the module's `__wpk_fork_ref_decode_funcref` reads
+  // (Phase 6 D6.1). Default to an empty GROWABLE table (no maximum) the host can
+  // grow + populate from the guest's catalog once the guest instance exists.
+  const functionCatalog =
+    options.functionCatalog ??
+    new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+
+  // The module DECLARES the `wpk_fork_host.*` engine-floor seam imports (Phase 6
+  // D6, `crates/fork-module/src/host_capabilities.rs`) so the eventual host API
+  // surface stays linked, but the funcref/frame paths never call them. Satisfy
+  // them with inert stubs so instantiation succeeds; `() => 0` fits every
+  // signature (all return i32/u32). If a future slice wires a real backend, it
+  // supplies these instead.
+  const forkHostStubs: Record<string, () => number> = {};
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (imp.module === "wpk_fork_host") forkHostStubs[imp.name] = () => 0;
+  }
 
   const imports: WebAssembly.Imports = {
     env: {
       memory,
       __indirect_function_table: table,
+      __wpk_fork_function_catalog: functionCatalog,
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
       __stack_pointer: stackPointerGlobal,
     },
+    wpk_fork_host: forkHostStubs,
   };
 
   // Synchronous instantiation runs the module's start (data-reloc / passive
@@ -221,5 +268,5 @@ export function instantiateForkModule(
     );
   }
 
-  return { instance, exports, memoryBase, regionBytes, table };
+  return { instance, exports, memoryBase, regionBytes, table, functionCatalog };
 }

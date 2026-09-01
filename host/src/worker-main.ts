@@ -92,6 +92,7 @@ import {
   type ForkModuleInstance,
   instantiateForkModule,
 } from "./fork-module-instance";
+import { FORK_FUNCTION_CATALOG_EXPORT } from "./fork-function-catalog";
 import {
   FORK_MODULE_FRAME_ARENA_BYTES,
   FORK_MODULE_RESUME_CATALOG_CAP,
@@ -3424,6 +3425,14 @@ export async function centralizedWorkerMain(
       // byte-identical JavaScript continuation.
       let forkModuleBackend: ForkModuleContinuationBackend | null = null;
       let useForkModule = false;
+      // Phase 6 D6.1: true only for a CHILD fork whose decoded reference graph is
+      // FUNCREF + NULL only (no externref/gc/exnref/static-root to reconstruct).
+      // Gates flipping the guest's `__wpk_fork_ref_decode_funcref` import to the
+      // module AND seeding the module's reference graph on the child. Stays false
+      // for the parent (its guest was instantiated at parent init, before any
+      // fork transaction existed) and for any fork with a non-funcref reference,
+      // so those keep the byte-identical JS reference path.
+      let moduleReferenceKindsSupported = false;
       // A vfork/borrowed child temporarily shares its parent's memory and must
       // not reserve or own a co-resident region; it also owns no durable fork
       // arena. Skip it (it exec()s almost immediately). Every other worker —
@@ -4032,6 +4041,19 @@ export async function centralizedWorkerMain(
             exceptionDescriptor:
               readForkExceptionCodecDescriptor(activationModule),
           }));
+        // Phase 6 D6.1 predicate: this child's references can be reconstructed
+        // through the module iff EVERY graph node is null or funcref (so only
+        // `__wpk_fork_ref_decode_funcref` and the null branch are exercised — no
+        // externref/gc/exnref/static-root, which need the JS engine-floor
+        // providers this slice does not move). The module re-checks the same
+        // predicate in `fm_begin_reference_replay`, so a disagreement fails loud.
+        moduleReferenceKindsSupported =
+          useForkModule &&
+          forkModuleInstance !== null &&
+          [...decodedChildReferences.graph.nodes].every(
+            (entry) =>
+              entry.node.kind === "null" || entry.node.kind === "funcref",
+          );
         earlyChildReferences = new ForkEarlyChildReferenceProvider({
           records,
           transaction: decodedChildReferences,
@@ -4141,6 +4163,19 @@ export async function centralizedWorkerMain(
           },
           referenceReplay,
         }),
+        // Phase 6 D6.1 REFERENCE IMPORT FLIP: for a funcref-only child fork,
+        // replace ONLY the JS `__wpk_fork_ref_decode_funcref` (supplied by
+        // `buildForkActivationStateImports` above) with the module export, which
+        // reads the imported `__wpk_fork_function_catalog` mirror table with
+        // `table.get`. Placed AFTER `buildForkActivationStateImports` so this
+        // key wins. Every other reference import stays JS (unused for a
+        // funcref/null graph). Flag-off / non-funcref forks skip this entirely.
+        ...(moduleReferenceKindsSupported && forkModuleInstance
+          ? {
+              __wpk_fork_ref_decode_funcref:
+                forkModuleInstance.exports.__wpk_fork_ref_decode_funcref,
+            }
+          : {}),
       };
       const importObject = buildImportObject(
         module,
@@ -4314,6 +4349,27 @@ export async function centralizedWorkerMain(
           early.adoptInto(activationRegistry.currentReferences());
           earlyChildReferences = null;
         };
+        if (moduleReferenceKindsSupported && forkModuleInstance) {
+          // Phase 6 D6.1: the guest instance now exists, so mirror its
+          // `__wpk_fork_function_catalog` funcref table into the host-owned table
+          // the fork-module imported at init (the module could not import the
+          // guest export directly — it is instantiated BEFORE the guest to
+          // supply the frame-flip imports). Copying preserves funcref identity
+          // (`table.get` returns the same functions), so the module's
+          // reconstruction matches the JS catalog byte for byte. Then route this
+          // child's funcref reconstruction through the module.
+          const guestCatalog = instance.exports[
+            FORK_FUNCTION_CATALOG_EXPORT
+          ] as WebAssembly.Table;
+          const mirror = forkModuleInstance.functionCatalog;
+          if (mirror.length < guestCatalog.length) {
+            mirror.grow(guestCatalog.length - mirror.length);
+          }
+          for (let slot = 0; slot < guestCatalog.length; slot += 1) {
+            mirror.set(slot, guestCatalog.get(slot));
+          }
+          processContinuation.enableModuleReferenceReplay();
+        }
         if (borrowedWorkspace) {
           processContinuation.attachBorrowedChild(
             childArena,

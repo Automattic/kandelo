@@ -637,6 +637,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fork-module-inject"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "walrus",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

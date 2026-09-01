@@ -107,8 +107,10 @@ mod wasm {
     use alloc::vec::Vec;
 
     use fork_codec::{
-        decode_replay_events_image, encode_replay_events, ChunkAllocator, LinkedFrameFormat,
-        LinkedFrameWriter, ReplayEventJournal, ResumeSlotTable, RewindDriver,
+        decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
+        encode_replay_events, ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter,
+        ModuleStateFormat, ReferenceReplayDriver, ReferenceTransactionRecord, ReplayEventJournal,
+        ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, Errno};
 
@@ -214,6 +216,39 @@ mod wasm {
     // through this module, the counter has advanced past its pre-fork value. A
     // silent fallback to the JavaScript path leaves it unchanged.
     static FRAMES_COMMITTED: AtomicU64 = AtomicU64::new(0);
+
+    // -- Reference reconstruction (Phase 6 D6.1 — funcref + null) -----------
+    //
+    // The decoded funcref/null reference graph for the current fork, seeded once
+    // by `fm_begin_reference_replay` from the KFMS module-state arena and
+    // consulted by `fm_funcref_ordinal` (the helper the injected
+    // `__wpk_fork_ref_decode_funcref` shim calls) during the guest's rewind.
+    // Held in its own static so it is independent of the frame `ForkModule`
+    // lifecycle: the guest interleaves reference decode with frame next/peek.
+    struct ReferenceStateCell(UnsafeCell<Option<ReferenceReplayDriver>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ReferenceStateCell {}
+    static REFERENCE_STATE: ReferenceStateCell = ReferenceStateCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn reference_state() -> &'static mut Option<ReferenceReplayDriver> {
+        // SAFETY: single-threaded per worker; only one guest drives the imports.
+        unsafe { &mut *REFERENCE_STATE.0.get() }
+    }
+
+    // Monotonic count of references the module has reconstructed (funcref or
+    // null) since worker start. Proof-of-use mirror of `FRAMES_COMMITTED`: after
+    // a flag-on funcref fork drives reconstruction through the module this has
+    // advanced; a silent JS fallback leaves it unchanged. Never resets.
+    static REFERENCES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+
+    // The i32 sentinels `fm_funcref_ordinal` returns to the injected wasm shim.
+    // A NON-NEGATIVE value is a catalog ordinal for `table.get`; `NULL_ORDINAL`
+    // means reconstruct `ref.null func`. The shim treats every other negative as
+    // impossible: `fm_funcref_ordinal` traps (unreachable) on any inconsistency
+    // rather than hand back a value the shim would misread, so a corrupt graph is
+    // a truthful hard failure, never a wrong funcref.
+    const NULL_ORDINAL: i32 = -1;
 
     fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
@@ -693,6 +728,105 @@ mod wasm {
         Ok(())
     }
 
+    // -- Reference reconstruction impls (Phase 6 D6.1) ----------------------
+
+    /// Decode the funcref/null reference graph for this fork from the KFMS
+    /// module-state arena rooted at `module_state_root` (inherited via the fork
+    /// memory copy, same as `fm_begin_child_replay`'s frame arena), and seed the
+    /// reference-replay driver. Reuses the D6.0 live decode
+    /// (`decode_segmented_reference_transaction`) over the arena's reference
+    /// records; no framing logic is duplicated here.
+    ///
+    /// D6.1 admits FUNCREF + NULL only, from a SINGLE activation (one imported
+    /// catalog table). A graph with any other kind, or funcrefs spanning more
+    /// than one activation, is a truthful `EOPNOTSUPP` — the host predicate keeps
+    /// such a fork on the JS path, and this re-check means a disagreeing host can
+    /// never drive an unsupported reference through the funcref import.
+    fn begin_reference_replay_impl(module_state_root: u64) -> Result<(), Errno> {
+        // The pointer width was seeded once (with the linked-frame format) via
+        // `fm_set_format`; the module-state chunk header size derives from it.
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+
+        // Reclaim any prior fork's reference state.
+        *reference_state() = None;
+
+        // Decode the sealed module-state arena from the COPIED guest memory
+        // (immutable whole-memory view — only reads, so the release-LLVM
+        // `&mut`-noalias miscompile the serialize/child paths avoid does not
+        // apply here). Then lift each record's payload into a borrowed
+        // `ReferenceTransactionRecord` view and reuse the D6.0 transaction decode.
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        let mut records: Vec<ReferenceTransactionRecord> =
+            Vec::with_capacity(module_state.records.len());
+        for record in &module_state.records {
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            records.push(ReferenceTransactionRecord {
+                kind: record.kind,
+                activation_id: record.activation_id,
+                owner_id: record.owner_id,
+                payload,
+            });
+        }
+        let transaction = decode_segmented_reference_transaction(
+            &records,
+            abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
+        )?;
+        let driver = ReferenceReplayDriver::new(transaction);
+
+        // D6.1 gate (defense in depth; the host computes the same predicate).
+        if !driver.all_nodes_funcref_or_null() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        // One imported catalog table => funcrefs must share one activation.
+        driver.sole_funcref_activation().map_err(|_| Errno::EOPNOTSUPP)?;
+
+        *reference_state() = Some(driver);
+        Ok(())
+    }
+
+    /// Resolve a funcref recipe to a catalog ordinal for the injected shim.
+    /// Returns a NON-NEGATIVE catalog ordinal for a Funcref, `NULL_ORDINAL` for
+    /// the canonical Null reference, and TRAPS on any inconsistency (missing
+    /// reference state, out-of-range recipe, non-funcref kind, or an ordinal that
+    /// does not fit `i32`). Every success bumps `REFERENCES_RECONSTRUCTED`.
+    fn funcref_ordinal_impl(recipe_id: u32) -> i32 {
+        let driver = match reference_state().as_ref() {
+            Some(driver) => driver,
+            None => wasm_intr::unreachable(),
+        };
+        match driver.funcref_node(recipe_id) {
+            Ok(None) => {
+                REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                NULL_ORDINAL
+            }
+            Ok(Some(target)) => match i32::try_from(target.function_ordinal) {
+                Ok(ordinal) if ordinal >= 0 => {
+                    REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                    ordinal
+                }
+                // A catalog ordinal that does not fit a non-negative i32 cannot
+                // index the imported funcref table — a corrupt graph, not a value.
+                _ => wasm_intr::unreachable(),
+            },
+            // Out-of-range recipe or a kind D6.1 does not admit: the host gate
+            // should have kept this fork on JS, so reaching here is corruption.
+            Err(_) => wasm_intr::unreachable(),
+        }
+    }
+
     // -- Guest-facing exports (signatures == WPK_FORK_REQUIRED_IMPORTS) ------
 
     /// `__wpk_fork_frame_reserve(size) -> payload`. Reserve the next frame node
@@ -916,6 +1050,44 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_frames_committed() -> i64 {
         FRAMES_COMMITTED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Seed the funcref/null reference graph for this fork from the KFMS
+    /// module-state arena rooted at `module_state_root` (Phase 6 D6.1). The host
+    /// calls this once on a qualifying funcref-only fork, after
+    /// `fm_begin_child_replay`, before the guest rewind reconstructs references.
+    /// On success the guest's `__wpk_fork_ref_decode_funcref` is served by this
+    /// module; failure (check `fm_last_errno`: `EOPNOTSUPP` for an unsupported
+    /// graph, `EINVAL` for a malformed arena) means the host must keep the JS
+    /// reference path for this fork.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_reference_replay(module_state_root: usize) {
+        match begin_reference_replay_impl(module_state_root as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Resolve a funcref recipe id to a function-catalog ordinal (Phase 6 D6.1).
+    /// This is NOT a guest-facing import: it is the helper the injected
+    /// `__wpk_fork_ref_decode_funcref` wasm shim calls to get the ordinal, then
+    /// does `table.get` on the imported `__wpk_fork_function_catalog` table (a
+    /// funcref a Rust function cannot itself return). Returns a non-negative
+    /// catalog ordinal for a Funcref, `-1` for the canonical Null reference, and
+    /// TRAPS on any inconsistency. See `funcref_ordinal_impl`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_funcref_ordinal(recipe_id: u32) -> i32 {
+        funcref_ordinal_impl(recipe_id)
+    }
+
+    /// Monotonic count of references (funcref or null) this module has
+    /// reconstructed since worker start. Proof-of-use mirror of
+    /// `fm_frames_committed`: after a flag-on funcref fork reconstructs its
+    /// references through the module, this has advanced; a silent JS fallback
+    /// leaves it unchanged. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_references_reconstructed() -> i64 {
+        REFERENCES_RECONSTRUCTED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).

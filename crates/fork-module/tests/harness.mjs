@@ -70,6 +70,10 @@ const importObject = {
   env: {
     memory,
     __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    // Phase 6 D6.1: the module now imports the guest's funcref function catalog
+    // for `__wpk_fork_ref_decode_funcref`. This frame/continuation harness never
+    // reconstructs references, so an empty funcref table is inert here.
+    __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
@@ -88,6 +92,8 @@ for (const need of [
   "env.__memory_base",
   "env.__stack_pointer",
   "env.__table_base",
+  // Phase 6 D6.1: the injected funcref decode export reads this funcref table.
+  "env.__wpk_fork_function_catalog",
 ]) {
   assert.ok(imports.includes(need), `module must import ${need}, got ${imports}`);
 }
@@ -128,6 +134,10 @@ for (const name of [
   "fm_serialize_journal",
   "fm_begin_child_replay",
   "fm_last_errno",
+  // Phase 6 D6.1 reference reconstruction (funcref + null).
+  "__wpk_fork_ref_decode_funcref",
+  "fm_begin_reference_replay",
+  "fm_references_reconstructed",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
@@ -399,6 +409,7 @@ function instantiateAt(mem, moduleBase, stackTop) {
     env: {
       memory: mem,
       __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, stackTop),
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
