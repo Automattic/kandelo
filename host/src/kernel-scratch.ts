@@ -117,7 +117,9 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * borrowed bytes before returning. `kernel_handle_channel` scopes its raw
  * mailbox view to decoding/publishing and clears the active task binding;
  * `kernel_spawn_process` parses the complete blob into owned Rust values
- * before it enters process-table or host work; and
+ * before it enters process-table or host work; `kernel_spawn_blob_decode`
+ * likewise parses the complete blob into owned Rust values and drops that
+ * borrow before it writes the argv/envp framing back into the same range; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
  * the path before returning. The transfer execute export names no raw pointer,
@@ -164,6 +166,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_set_cwd",
   "kernel_setsockopt",
   "kernel_socketpair",
+  "kernel_spawn_blob_decode",
   "kernel_spawn_exec_target_prepare",
   "kernel_spawn_process",
   "kernel_take_process_timer_cleanup",
@@ -233,6 +236,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_mq_drain_notification":
     case "kernel_poll":
     case "kernel_rootfs_stat_mode":
+    case "kernel_spawn_blob_decode":
     case "kernel_truncate":
     case "kernel_uname":
       return REQUIRED_POINTER_0;
@@ -351,6 +355,7 @@ function isKernelScratchExportName(
     case "kernel_set_cwd":
     case "kernel_setsockopt":
     case "kernel_socketpair":
+    case "kernel_spawn_blob_decode":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_spawn_process":
     case "kernel_take_process_timer_cleanup":

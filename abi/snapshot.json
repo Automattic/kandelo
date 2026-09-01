@@ -1114,6 +1114,7 @@
       "kernel_set_current_tid",
       "kernel_set_cwd",
       "kernel_shmid_ds_bytes",
+      "kernel_spawn_blob_decode",
       "kernel_spawn_exec_commit",
       "kernel_spawn_exec_target_prepare",
       "kernel_spawn_process",
@@ -3165,6 +3166,11 @@
       "kind": "func",
       "name": "kernel_socketpair",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_blob_decode",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

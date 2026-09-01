@@ -33,6 +33,7 @@ import {
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { mockKernelSpawnBlobDecode } from "./support/spawn-blob-decode-mock";
 
 const preparedExecFixture = new Uint8Array(
   readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
@@ -2053,6 +2054,12 @@ function createWorker(overrides: Record<string, unknown>): any {
       _outPtr: number,
       _outLen: number,
     ) => 0);
+  }
+  if (!("kernel_spawn_blob_decode" in exports)) {
+    // The kernel now owns the SYS_SPAWN blob decode; the host reads back the
+    // argv/envp framing it writes. Use the faithful in-place double so spawn
+    // cases surface the same errno the real kernel would.
+    exports.kernel_spawn_blob_decode = mockKernelSpawnBlobDecode(kernelMemory);
   }
   if (!("kernel_exec_target_cancel" in exports)) {
     exports.kernel_exec_target_cancel = vi.fn(() => 0);

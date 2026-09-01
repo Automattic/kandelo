@@ -2109,6 +2109,66 @@ fn spawn_parsed_for_caller(
     }
 }
 
+/// Decode a SYS_SPAWN blob's argv and envp into the host-private read-back
+/// framing, so no host interprets the `posix_spawn` guest ABI.
+///
+/// The kernel is already the authoritative spawn-blob parser
+/// (`kernel_spawn_process` → `crate::spawn::parse_blob`); this export exposes
+/// the same parse to the host worker-launch path, which needs argv/envp as
+/// strings before the child is built. It REUSES `parse_blob` — no second
+/// decoder — then serializes `[argc u32][envc u32]` followed by each argv and
+/// envp entry as `[len u32][raw bytes]` (see `crate::spawn::serialize_argv_envp`).
+///
+/// The decode is in place within one borrowed buffer: `buf` holds the blob in
+/// its first `blob_len` bytes on entry, and the framing overwrites the front of
+/// `buf` on return. WHY a single range instead of separate in/out pointers: the
+/// host scratch lease forbids overlapping borrowed ranges and couples each
+/// pointer to an exact capacity, so a distinct output pointer would either
+/// halve the usable capacity or be rejected. One range keeps the full buffer
+/// available for framing that a duplicated-offset blob can make wider than the
+/// compact blob.
+///
+/// Returns the framed byte length written (positive), or a negated errno:
+/// `parse_blob`'s `EINVAL`/`E2BIG`/`ENAMETOOLONG` for a malformed blob, or
+/// `EOVERFLOW` when `buf_cap` cannot hold the complete framing (the host then
+/// retries with a larger buffer or reports the argv/envp as too large).
+///
+/// SAFETY: `buf_ptr`/`buf_cap` must name one kernel-owned range fully inside
+/// current linear memory whose bytes cannot change for the duration of the
+/// call, and `blob_len <= buf_cap`. The blob's shared borrow is dropped before
+/// the mutable output slice is formed, so no live reference aliases the bytes
+/// the serializer overwrites.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_spawn_blob_decode(
+    buf_ptr: usize,
+    buf_cap: usize,
+    blob_len: usize,
+) -> i32 {
+    if blob_len == 0 || blob_len > buf_cap {
+        return -(Errno::EINVAL as i32);
+    }
+    if buf_cap > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_ptr == 0 || buf_ptr.checked_add(buf_cap).is_none() {
+        return -(Errno::EFAULT as i32);
+    }
+    // Parse into an owned representation, then drop the blob borrow before the
+    // mutable output slice exists so the in-place decode stays sound.
+    let parsed = {
+        let bytes = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, blob_len) };
+        match crate::spawn::parse_blob(bytes) {
+            Ok(parsed) => parsed,
+            Err(error) => return -(error as i32),
+        }
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_cap) };
+    match crate::spawn::serialize_argv_envp(&parsed, out) {
+        Ok(written) => written as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Returns the per-process fork counter (parent side, incremented on
 /// successful fork). Used by the non-forking spawn test suite as a
 /// regression guardrail. Returns `u64::MAX` as a sentinel if the pid

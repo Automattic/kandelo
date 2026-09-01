@@ -473,6 +473,10 @@ function signatures(
       parameters: [i32, i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_spawn_blob_decode: {
+      parameters: [pointer, pointer, pointer],
+      result: i32,
+    },
     kernel_spawn_process: {
       parameters: [i32, i32, pointer, pointer],
       result: i32,
