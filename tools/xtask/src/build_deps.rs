@@ -15611,7 +15611,86 @@ fn validate_cache_entry(
     cache_key_sha: &str,
 ) -> Result<(), String> {
     validate_cache_artifacts(target, dir)?;
-    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)
+    validate_cache_provenance(target, dir, arch, abi_version, cache_key_sha)?;
+    validate_cache_entry_build_key_stamps(dir, cache_key_sha)
+}
+
+/// Belt-and-suspenders check for the trusted (no-rehash) cache-hit path:
+/// read every materialized wasm member's `kandelo.build.key` stamp (Task 5
+/// writes it at cache-store time, into both the canonical entry and its
+/// mirror -- see the `stamp_build_key` call in `build_into_cache`) and
+/// confirm it equals the key this canonical entry is stored under. The
+/// content-addressed directory name already binds every declared input, but
+/// it is only the *name*; this confirms the *bytes* underneath actually
+/// belong to that name, catching a corrupted or misfiled cache entry (wrong
+/// bytes at the right key) that `validate_cache_artifacts` and
+/// `validate_cache_provenance` cannot detect because neither inspects wasm
+/// content. Reads only the receipt sidecar plus each wasm member's trailing
+/// custom section -- never the whole entry tree -- so the trusted fast path
+/// stays fast.
+fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
+    let expected_key = hex_to_32(cache_key_sha).map_err(|error| {
+        format!(
+            "cached entry {}: cache_key_sha is not a valid sha256 hex digest: {error}",
+            canonical.display()
+        )
+    })?;
+    for member in materialized_wasm_members(canonical, cache_key_sha)? {
+        let bytes = std::fs::read(&member)
+            .map_err(|e| format!("read cached member {}: {e}", member.display()))?;
+        match crate::build_stamp::read_build_key(&bytes)? {
+            Some(stamp) if stamp == expected_key => {}
+            Some(stamp) => {
+                return Err(format!(
+                    "cached entry {} is corrupt: member {} carries build key {} but the \
+                     entry is keyed {cache_key_sha}. Rebuild with `--rebuild`.",
+                    canonical.display(),
+                    member.display(),
+                    hex(&stamp),
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "cached entry {} member {} has no build key stamp; rebuild with `--rebuild`.",
+                    canonical.display(),
+                    member.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Canonical paths of the wasm members a SourceOnlyV1 cache entry's
+/// persisted receipt sidecar (Task 5) records, for the belt-and-suspenders
+/// build-key stamp check above. Reads only the small receipt sidecar --
+/// never lists or hashes the entry tree -- so this stays a cheap addition to
+/// the trusted fast path. An entry with no persisted receipt (built before
+/// the sidecar existed, or a manifest kind that never gets one, e.g. a
+/// library) has no members to check here; `validate_cache_artifacts` already
+/// enforces its declared-output shape independent of this check.
+#[cfg(unix)]
+fn materialized_wasm_members(canonical: &Path, cache_key_sha: &str) -> Result<Vec<PathBuf>, String> {
+    let receipt = match read_source_only_cache_receipt(canonical, cache_key_sha)? {
+        Some(receipt) => receipt,
+        None => return Ok(Vec::new()),
+    };
+    Ok(receipt
+        .materialized_members
+        .into_iter()
+        .filter(|member| member.mirror_path.ends_with(".wasm"))
+        .map(|member| canonical.join(&member.source_artifact))
+        .collect())
+}
+
+/// Source-only caching (and its receipt sidecar) requires Unix no-follow
+/// filesystem semantics; there is nothing to check on other platforms.
+#[cfg(not(unix))]
+fn materialized_wasm_members(
+    _canonical: &Path,
+    _cache_key_sha: &str,
+) -> Result<Vec<PathBuf>, String> {
+    Ok(Vec::new())
 }
 
 fn remove_cache_entry(canonical: &Path, cache_key_sha: &str) -> Result<(), String> {
@@ -35470,6 +35549,90 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             .unwrap()
             .expect("mirror must still carry its stamp after a cache-hit resolve");
         assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// Task 7 belt-and-suspenders check: the trusted (no-rehash) cache-hit
+    /// path must reject a canonical entry whose wasm member carries a
+    /// `kandelo.build.key` stamp for a DIFFERENT key than the entry is
+    /// keyed under -- the "wrong bytes at the right key name" corruption a
+    /// misfiled or overwritten cache entry produces. Fabricates a real
+    /// materialized program node (so the canonical entry, its receipt
+    /// sidecar, and the correctly-stamped wasm member all exist exactly as
+    /// production leaves them), then overwrites just the canonical wasm
+    /// member with a module stamped for an unrelated key and asserts
+    /// `validate_cache_entry` -- the function `source_only_cache_entry_is_trusted`
+    /// calls on every trusted hit -- rejects it loudly instead of trusting
+    /// the directory name.
+    #[test]
+    fn trusted_entry_rejected_when_stamp_mismatches_key() {
+        let repo = tempdir("trusted-stamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        write_program(
+            &repo,
+            "tstamp",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script("tstamp.wasm", &minimal_executable_wasm()),
+            &[("tstamp", "tstamp.wasm")],
+        );
+        write_source_only_repository_inputs(&repo, "tstamp");
+        let manifest_path = repo.join("tstamp/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"tstamp.wasm\"",
+                "wasm = \"tstamp.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("tstamp").unwrap();
+        let (base, compiled) = source_only_test_roots("trusted-stamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("trusted-stamp-output");
+
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // Sanity: the real build engine stamped the canonical member with
+        // the entry's own key (Task 5), so the pre-tamper entry validates.
+        validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .expect("a freshly built, correctly stamped entry must validate");
+
+        // Overwrite the canonical wasm member with a policy-valid module
+        // stamped for an unrelated key -- a fresh, never-stamped module, so
+        // this doesn't hit `stamp_build_key`'s double-stamp guard.
+        let member = canonical.join("tstamp.wasm");
+        assert!(member.exists(), "fabricated entry must materialize the declared wasm output");
+        let tampered =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0x99; 32]).unwrap();
+        fs::write(&member, tampered).unwrap();
+
+        let err = validate_cache_entry(
+            &target,
+            &canonical,
+            TargetArch::Wasm32,
+            TEST_ABI,
+            &receipt.cache_key_sha256,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("build key") || err.contains("stamp"),
+            "must name the stamp/build-key mismatch: {err}"
+        );
     }
 
     /// Full SourceOnlyV1 kernel fixture for the verify-fresh build-key tests
