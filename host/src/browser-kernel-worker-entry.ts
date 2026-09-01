@@ -1862,6 +1862,19 @@ function installProcessWorkerListeners(
         },
         "warn",
       );
+    } else if (m.type === "fork_module_references" && m.pid === pid) {
+      // Surface the co-resident fork-module's REFERENCE proof-of-use as a host
+      // diagnostic (Phase 6 D6.5): a nonzero count confirms the child's carried
+      // references were reconstructed through the module, not the JS fallback.
+      // Mirrors node-kernel-worker-entry so both hosts report identically.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_references=${m.references}`,
+        },
+        "warn",
+      );
     }
   });
 }

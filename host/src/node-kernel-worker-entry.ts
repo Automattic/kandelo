@@ -410,6 +410,21 @@ function installProcessWorkerListeners(
         },
         "warn",
       );
+    } else if (
+      message.type === "fork_module_references" &&
+      message.pid === pid
+    ) {
+      // Surface the co-resident fork-module's REFERENCE proof-of-use as a host
+      // diagnostic (Phase 6 D6.5): a nonzero count confirms the child's carried
+      // references were reconstructed through the module, not the JS fallback.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_references=${message.references}`,
+        },
+        "warn",
+      );
     }
   });
   installCrashSafetyNet(worker, pid);
