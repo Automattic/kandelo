@@ -261,6 +261,110 @@ pub fn decode_replay_events(
     })
 }
 
+/// Encode `events` (capture, i.e. leaf-to-root order) as a single contiguous
+/// KFRE image: the 40-byte manifest immediately followed by the segment
+/// payloads, chunked at `SEGMENT_CAPACITY` events per segment.
+///
+/// This is the production encoder for the replay-event journal wire, mirroring
+/// the TS `encodeForkReplayEventManifest` + `encodeForkReplayEventSegment`
+/// (host/src/fork-replay-events.ts, the exact bytes `capturedManifestPayload` /
+/// `capturedSegmentPayloads` emit). Its inverse is
+/// [`decode_replay_events_image`]; every image this produces decodes back to
+/// the same events.
+///
+/// The co-resident fork module uses this to serialize a parent's sealed replay
+/// journal into guest linear memory before a fork, so the forked child — a
+/// fresh module instance with an empty journal that only inherits the COPIED
+/// guest memory — can decode the events back and seed its own replay journal.
+/// This is the Rust equivalent of the JS `arena.appendReplayEvents(events)`
+/// parent-serialize / `replayEventsForChild(records)` child-decode path.
+pub fn encode_replay_events(events: &[ReplayEvent]) -> Vec<u8> {
+    let event_count = events.len() as u64;
+    let segment_count = segment_count_for_events(event_count);
+    let cap = SEGMENT_CAPACITY as usize;
+    let mut image = Vec::with_capacity(
+        HEADER_SIZE as usize
+            + segment_count as usize * SEGMENT_HEADER_SIZE as usize
+            + events.len() * ENTRY_SIZE as usize,
+    );
+    // Manifest (all little-endian; layout mirrors `decode_manifest`).
+    image.extend_from_slice(&MAGIC); // +0
+    image.extend_from_slice(&VERSION.to_le_bytes()); // +4
+    image.extend_from_slice(&HEADER_SIZE.to_le_bytes()); // +6
+    image.extend_from_slice(&ENTRY_SIZE.to_le_bytes()); // +8
+    image.extend_from_slice(&SEGMENT_HEADER_SIZE.to_le_bytes()); // +10
+    image.extend_from_slice(&SEGMENT_CAPACITY.to_le_bytes()); // +12
+    image.extend_from_slice(&0u16.to_le_bytes()); // +16 flags
+    image.extend_from_slice(&0u16.to_le_bytes()); // +18 reserved
+    image.extend_from_slice(&0u32.to_le_bytes()); // +20 reserved
+    image.extend_from_slice(&segment_count.to_le_bytes()); // +24
+    image.extend_from_slice(&event_count.to_le_bytes()); // +32
+    debug_assert_eq!(image.len(), HEADER_SIZE as usize);
+    // Segments (each `decode_segment`-shaped: full pages until the remainder).
+    for (index, chunk) in events.chunks(cap).enumerate() {
+        image.extend_from_slice(&SEGMENT_VERSION.to_le_bytes()); // +0
+        image.extend_from_slice(&SEGMENT_HEADER_SIZE.to_le_bytes()); // +2
+        image.extend_from_slice(&ENTRY_SIZE.to_le_bytes()); // +4
+        image.extend_from_slice(&0u16.to_le_bytes()); // +6 flags
+        image.extend_from_slice(&(index as u64).to_le_bytes()); // +8 sequence
+        image.extend_from_slice(&(chunk.len() as u32).to_le_bytes()); // +16 count
+        image.extend_from_slice(&0u32.to_le_bytes()); // +20 reserved
+        for event in chunk {
+            image.extend_from_slice(&event.activation_id.to_le_bytes());
+            image.extend_from_slice(&event.function_ordinal.to_le_bytes());
+        }
+    }
+    image
+}
+
+/// Decode a contiguous KFRE image (manifest immediately followed by its segment
+/// payloads, as produced by [`encode_replay_events`]) back into the ordered
+/// events. This splits the single buffer into the manifest and the segment
+/// slices — deriving each segment's byte length from the manifest's declared
+/// geometry (full `SEGMENT_CAPACITY` pages until the final remainder) — and then
+/// defers all framing validation to [`decode_replay_events`]. Any short,
+/// oversized, or trailing bytes yield `Err(Errno::EINVAL)`; the function never
+/// panics.
+///
+/// This is the reader the forked child uses over its COPIED guest memory: the
+/// parent serialized the image with [`encode_replay_events`]; the child reads it
+/// back from the same guest byte offset and seeds its journal.
+pub fn decode_replay_events_image(image: &[u8]) -> Result<ReplayEvents, Errno> {
+    let manifest = image.get(0..HEADER_SIZE as usize).ok_or(Errno::EINVAL)?;
+    let (event_count, segment_count) = decode_manifest(manifest)?;
+
+    let mut segments: Vec<&[u8]> = Vec::new();
+    let mut offset = HEADER_SIZE as usize;
+    let mut remaining = event_count;
+    let mut sequence: u64 = 0;
+    while sequence < segment_count {
+        // Non-final pages are full; the final page holds the remainder. This is
+        // the same geometry `decode_replay_events` requires, so a lying manifest
+        // that inflates the length is caught either by a failed slice below or by
+        // `decode_replay_events`' own per-segment framing checks.
+        let count = if remaining > SEGMENT_CAPACITY as u64 {
+            SEGMENT_CAPACITY as u64
+        } else {
+            remaining
+        };
+        let seg_len = (SEGMENT_HEADER_SIZE as u64)
+            .checked_add(count.checked_mul(ENTRY_SIZE as u64).ok_or(Errno::EINVAL)?)
+            .ok_or(Errno::EINVAL)?;
+        let seg_len = usize::try_from(seg_len).map_err(|_| Errno::EINVAL)?;
+        let end = offset.checked_add(seg_len).ok_or(Errno::EINVAL)?;
+        let segment = image.get(offset..end).ok_or(Errno::EINVAL)?; // truncated image
+        segments.push(segment);
+        offset = end;
+        remaining = remaining.checked_sub(count).ok_or(Errno::EINVAL)?;
+        sequence = sequence.checked_add(1).ok_or(Errno::EINVAL)?;
+    }
+    // Trailing bytes after the final segment are malformed.
+    if offset != image.len() {
+        return Err(Errno::EINVAL);
+    }
+    decode_replay_events(manifest, &segments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +742,101 @@ mod tests {
             decode_replay_events(&manifest, &swapped),
             Err(Errno::EINVAL)
         );
+    }
+
+    // --- Contiguous-image encode/decode round trip -----------------------
+
+    fn ev(activation_id: u32, function_ordinal: u32) -> ReplayEvent {
+        ReplayEvent { activation_id, function_ordinal }
+    }
+
+    /// The production `encode_replay_events` image must equal the manifest
+    /// concatenated with the per-page segments the hand-built test encoders
+    /// produce (the same bytes the TS journal emits), page-for-page.
+    #[test]
+    fn encode_image_matches_manifest_plus_segments() {
+        let total = SEGMENT_CAPACITY as usize + 3; // two pages: full + remainder
+        let events: Vec<ReplayEvent> =
+            (0..total).map(|i| ev((i % 4) as u32, i as u32)).collect();
+
+        let image = encode_replay_events(&events);
+
+        let pairs: Vec<(u32, u32)> =
+            events.iter().map(|e| (e.activation_id, e.function_ordinal)).collect();
+        let (manifest, segments) = build_wire(&pairs);
+        let mut expected = manifest.clone();
+        for segment in &segments {
+            expected.extend_from_slice(segment);
+        }
+        assert_eq!(image, expected, "encoded image must match manifest+segments");
+    }
+
+    /// Encode then decode-image round-trips to the exact events, across a page
+    /// boundary, for the empty journal, and for a single event.
+    #[test]
+    fn encode_then_decode_image_round_trips() {
+        for total in [0usize, 1, 3, SEGMENT_CAPACITY as usize, SEGMENT_CAPACITY as usize + 2] {
+            let events: Vec<ReplayEvent> =
+                (0..total).map(|i| ev((i % 3) as u32, (7 * i) as u32)).collect();
+            let image = encode_replay_events(&events);
+            let decoded = decode_replay_events_image(&image).unwrap();
+            assert_eq!(decoded.events, events, "round trip for {total} events");
+            assert_eq!(decoded.event_count, total as u64);
+            assert_eq!(decoded.segment_count, segment_count_for_events(total as u64));
+        }
+    }
+
+    /// `decode_replay_events_image` must accept the genuine TS fixture bytes
+    /// (manifest concatenated with its segment) and agree with the split-args
+    /// `decode_replay_events`.
+    #[test]
+    fn decode_image_accepts_ts_fixture() {
+        let via_image = decode_replay_events_image(TS_FIXTURE).unwrap();
+        let via_split =
+            decode_replay_events(fixture_manifest(), &[fixture_segment()]).unwrap();
+        assert_eq!(via_image, via_split);
+    }
+
+    #[test]
+    fn decode_image_rejects_trailing_bytes() {
+        let mut image = encode_replay_events(&[ev(1, 2), ev(3, 4)]);
+        image.push(0);
+        assert_eq!(decode_replay_events_image(&image), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn decode_image_rejects_truncated_segment() {
+        let mut image = encode_replay_events(&[ev(1, 2), ev(3, 4)]);
+        image.truncate(image.len() - 1);
+        assert_eq!(decode_replay_events_image(&image), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn decode_image_rejects_truncated_manifest() {
+        let image = encode_replay_events(&[ev(1, 2)]);
+        assert_eq!(
+            decode_replay_events_image(&image[..HEADER_SIZE as usize - 1]),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    /// A lying manifest that inflates `event_count` to an absurd value must fail
+    /// fast (a failed slice), never loop or panic.
+    #[test]
+    fn decode_image_rejects_inflated_event_count_without_hanging() {
+        let mut image = encode_replay_events(&[ev(1, 2)]);
+        put_u64(&mut image, 32, u64::MAX / 2); // event_count
+        // segment_count no longer matches -> manifest rejected; either way, Err.
+        assert_eq!(decode_replay_events_image(&image), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn decode_image_arbitrary_prefixes_never_panic() {
+        let image = encode_replay_events(&[ev(0, 0), ev(1, 1), ev(2, 2)]);
+        for split in 0..=image.len() {
+            let _ = decode_replay_events_image(&image[..split]);
+        }
+        let _ = decode_replay_events_image(&[]);
     }
 
     // --- Panic-freedom on arbitrary bytes --------------------------------

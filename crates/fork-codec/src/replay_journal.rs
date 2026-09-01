@@ -133,6 +133,16 @@ impl ReplayEventJournal {
         Ok(self.events.iter().map(|event| event.activation_id).collect())
     }
 
+    /// The captured events, in capture (leaf-to-root) order. Readable while
+    /// capturing or sealed (the same phases `capturedSegmentPayloads` /
+    /// `capturedManifestPayload` are readable in TS). This is the source the
+    /// co-resident fork module serializes with `encode_replay_events` so a
+    /// forked child can seed its own journal from the copied guest memory.
+    pub fn captured_events(&self) -> Result<&[ReplayEvent], Errno> {
+        self.require_capture_readable()?;
+        Ok(&self.events)
+    }
+
     /// Begin replaying the parent's own captured events. `SealedParent ->
     /// Replay`. Mirrors `beginParentReplay`.
     pub fn begin_parent_replay(&mut self) -> Result<(), Errno> {
@@ -631,6 +641,56 @@ mod tests {
     }
 
     // --- Adversarial: phase violations ------------------------------------
+
+    #[test]
+    fn captured_events_readable_in_capture_and_sealed_only() {
+        let mut journal = ReplayEventJournal::new();
+        assert_eq!(journal.captured_events(), Err(Errno::EINVAL)); // idle
+        journal.begin_capture().unwrap();
+        journal.record_commit(3, 8).unwrap();
+        journal.record_commit(3, 4).unwrap();
+        assert_eq!(journal.captured_events().unwrap(), &[ev(3, 8), ev(3, 4)]); // capture
+        journal.seal_capture().unwrap();
+        assert_eq!(journal.captured_events().unwrap(), &[ev(3, 8), ev(3, 4)]); // sealed
+        journal.begin_parent_replay().unwrap();
+        assert_eq!(journal.captured_events(), Err(Errno::EINVAL)); // replay
+    }
+
+    /// The parent-serialize / child-seed round trip end to end: capture events,
+    /// serialize them as a KFRE image (as the fork module does post-seal),
+    /// decode that image (as the forked child does over copied memory), and
+    /// attach it — the child journal must replay the exact same events.
+    #[test]
+    fn serialize_image_seeds_child_journal_identically() {
+        use crate::replay_events::{decode_replay_events_image, encode_replay_events};
+        let mut parent = ReplayEventJournal::new();
+        parent.begin_capture().unwrap();
+        let events = [ev(7, 101), ev(7, 202), ev(7, 303), ev(7, 404)];
+        for e in &events {
+            parent.record_commit(e.activation_id, e.function_ordinal).unwrap();
+        }
+        parent.seal_capture().unwrap();
+        // Parent serializes its sealed journal into a KFRE image.
+        let image = encode_replay_events(parent.captured_events().unwrap());
+        // Child decodes the copied image and seeds its own journal.
+        let decoded = decode_replay_events_image(&image).unwrap();
+        let mut child = ReplayEventJournal::new();
+        child.attach_child(&decoded.events).unwrap();
+        // Both replay the exact reverse-of-capture order in lockstep.
+        parent.begin_parent_replay().unwrap();
+        for e in events.iter().rev() {
+            let p = parent.peek().unwrap().unwrap();
+            let c = child.peek().unwrap().unwrap();
+            assert_eq!(p, c);
+            assert_eq!(p, *e);
+            parent.consume(e.activation_id, e.function_ordinal).unwrap();
+            child.consume(e.activation_id, e.function_ordinal).unwrap();
+        }
+        assert_eq!(parent.peek().unwrap(), None);
+        assert_eq!(child.peek().unwrap(), None);
+        parent.finish_replay().unwrap();
+        child.finish_replay().unwrap();
+    }
 
     #[test]
     fn record_after_seal_errs() {

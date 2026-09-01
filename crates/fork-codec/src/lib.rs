@@ -71,6 +71,9 @@ pub use module_state_records::{
 pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };
-pub use replay_events::{decode_replay_events, ReplayEvent, ReplayEvents};
+pub use replay_events::{
+    decode_replay_events, decode_replay_events_image, encode_replay_events, ReplayEvent,
+    ReplayEvents,
+};
 pub use replay_journal::{JournalPhase, ReplayEventJournal, ResumeSlotTable};
 pub use rewind_driver::RewindDriver;

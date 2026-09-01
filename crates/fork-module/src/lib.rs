@@ -100,8 +100,8 @@ mod wasm {
     use alloc::vec::Vec;
 
     use fork_codec::{
-        ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter, ReplayEventJournal, ResumeSlotTable,
-        RewindDriver,
+        decode_replay_events_image, encode_replay_events, ChunkAllocator, LinkedFrameFormat,
+        LinkedFrameWriter, ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, Errno};
 
@@ -295,6 +295,12 @@ mod wasm {
         driver: Option<RewindDriver>,
         committed_ordinals: Vec<u32>,
         module_buffer: u64,
+        /// A child (forked) instance seeds its journal from copied guest memory
+        /// and only ever replays; it never unwinds, so it has no live frame
+        /// arena to reserve into. Guard the reserve/commit exports against it so
+        /// a stray guest reserve on a replay-only child is a truthful `EINVAL`
+        /// rather than a write into an unowned region.
+        replay_only: bool,
     }
 
     struct StateCell(UnsafeCell<Option<ForkModule>>);
@@ -353,6 +359,7 @@ mod wasm {
             driver: None,
             committed_ordinals: Vec::new(),
             module_buffer: 0,
+            replay_only: false,
         };
 
         module.journal.begin_capture()?;
@@ -366,12 +373,18 @@ mod wasm {
 
     fn reserve_impl(size: u64) -> Result<u64, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        if st.replay_only {
+            return Err(Errno::EINVAL); // a forked child never unwinds
+        }
         let mem = unsafe { mem_mut() };
         st.writer.reserve_frame(mem, &mut st.arena, size)
     }
 
     fn commit_impl(payload: u64) -> Result<(), Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        if st.replay_only {
+            return Err(Errno::EINVAL); // a forked child never unwinds
+        }
         let mem = unsafe { mem_mut() };
         st.writer.commit_frame(mem, payload)?;
         // The guest fills the frame header before commit; the function ordinal is
@@ -429,6 +442,149 @@ mod wasm {
         let driver = st.driver.as_ref().ok_or(Errno::EINVAL)?;
         driver.finish_rewind()?;
         st.journal.finish_replay()?;
+        Ok(())
+    }
+
+    // -- Child replay seeding across the fork memory copy -------------------
+    //
+    // In a live fork the child inherits a COPY of the parent's guest linear
+    // memory (including the linked-frame arena the parent wrote) but runs a
+    // FRESH module instance placed at a DIFFERENT `__memory_base`, whose journal
+    // starts EMPTY. So the child's module cannot see the parent module's
+    // in-memory journal. The parent therefore serializes its sealed journal as a
+    // KFRE image into a caller-given guest-memory region BEFORE the fork
+    // (`fm_serialize_journal`); the child, after the memory copy, decodes that
+    // image back from the same guest offset and seeds its own journal +
+    // resume-slot table (`fm_begin_child_replay`). This mirrors the JS path:
+    // `sealCapture` -> `arena.appendReplayEvents(events)` (parent) and
+    // `attachChild` -> `replayEventsForChild(records)` -> `events.attachChild`
+    // (child) in `host/src/fork-process-continuation.ts`.
+
+    fn serialize_journal_impl(dst_ptr: u64, dst_cap: u64) -> Result<u64, Errno> {
+        let st = state().as_ref().ok_or(Errno::EINVAL)?;
+        // The journal must be sealed (post `fm_finish_unwind`) so the captured
+        // events are complete and still capture-readable — exactly when JS
+        // `sealCapture` serializes them.
+        let image = encode_replay_events(st.journal.captured_events()?);
+        let len = image.len() as u64;
+        if len > dst_cap {
+            return Err(Errno::ENOSPC); // caller region too small; truthful failure
+        }
+        let start = usize::try_from(dst_ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(image.len()).ok_or(Errno::EINVAL)?;
+        // Bounds-check against the guest memory size WITHOUT forming an exclusive
+        // `&mut [u8]` over the whole memory: such a slice is `noalias`, yet the
+        // source `image` lives inside this same linear memory (the module's own
+        // heap), so an aliasing `&mut`-slice copy miscompiles under release LLVM.
+        // Copy through raw pointers instead — the source (module heap) and the
+        // destination (guest region) are distinct byte ranges.
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // destination past the end of guest memory
+        }
+        let dst = core::hint::black_box(start) as *mut u8;
+        // SAFETY: `[start, end)` is within guest linear memory (checked above);
+        // `image` is a distinct heap allocation. `copy` (memmove semantics)
+        // tolerates any overlap defensively.
+        unsafe {
+            core::ptr::copy(image.as_ptr(), dst, image.len());
+        }
+        Ok(len)
+    }
+
+    fn begin_child_replay_impl(
+        module_buffer: u64,
+        image_ptr: u64,
+        image_len: u64,
+    ) -> Result<(), Errno> {
+        // The format must have been seeded (once) on THIS fresh child instance,
+        // exactly as the host seeds every process-worker instance.
+        let fmt = format()?;
+
+        // Reclaim any prior state and heap before this child's replay.
+        *state() = None;
+        ALLOC.reset();
+
+        // Decode the KFRE image the parent serialized, read from the child's
+        // COPIED guest memory. Copy the image bytes out through raw pointers into
+        // a module-heap buffer first: forming a `&[u8]` sub-slice of a
+        // whole-guest-memory slice and decoding from it in-place miscompiles the
+        // bounds checks under release LLVM (the same aliasing hazard the
+        // serialize path avoids). `decode_replay_events_image` then reuses the D1
+        // `decode_replay_events` codec — no framing logic is duplicated here.
+        let start = usize::try_from(image_ptr).map_err(|_| Errno::EINVAL)?;
+        let len = usize::try_from(image_len).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // image region past the end of guest memory
+        }
+        let mut image_bytes = alloc::vec![0u8; len];
+        let src = core::hint::black_box(start) as *const u8;
+        // SAFETY: `[start, end)` is within guest linear memory (checked above);
+        // `image_bytes` is a distinct heap allocation of exactly `len` bytes.
+        unsafe {
+            core::ptr::copy(src, image_bytes.as_mut_ptr(), len);
+        }
+        let decoded = decode_replay_events_image(&image_bytes)?;
+
+        // This first slice mirrors the parent's single-activation fork: the
+        // captured events must all belong to one activation. A multi-activation
+        // (cross-module) fork is deferred, so it fails loudly rather than
+        // guessing an activation for the frame gate.
+        let activation_id = match decoded.activation_ids.len() {
+            0 => 0, // empty journal: no frames to replay
+            1 => *decoded.activation_ids.iter().next().ok_or(Errno::EINVAL)?,
+            _ => return Err(Errno::EINVAL),
+        };
+
+        // Seed the child journal from the decoded (capture-order) events; it
+        // will replay the exact reverse, in lockstep with the frame chain.
+        let mut journal = ReplayEventJournal::new();
+        journal.attach_child(&decoded.events)?;
+
+        // Rebuild the resume-slot table with the SAME numbering the parent's
+        // committed order produced: the activation's distinct function ordinals,
+        // sorted (mirrors `begin_replay_impl` / `ForkResumeTable.registerActivation`).
+        // Because the events are the parent's own committed events (serialized
+        // and decoded round-trip), this distinct-sorted set — and therefore the
+        // slot assignment — is identical to the parent's.
+        let mut committed_ordinals: Vec<u32> = decoded
+            .events
+            .iter()
+            .filter(|event| event.activation_id == activation_id)
+            .map(|event| event.function_ordinal)
+            .collect();
+        let mut distinct = committed_ordinals.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let mut table = ResumeSlotTable::new();
+        if !distinct.is_empty() {
+            table.register_activation(activation_id, &distinct)?;
+        }
+
+        // Attach the rewind driver to the continuation the parent published,
+        // read from the COPIED arena at the same guest offset the child
+        // inherited. The child mutates none of the guest frame memory.
+        let driver = {
+            let mem = unsafe { mem_ref() };
+            RewindDriver::attach(mem, module_buffer, &fmt)?
+        };
+
+        // `committed_ordinals` is retained only for symmetry/diagnostics; the
+        // child drives replay through `driver` + `journal` + `table`.
+        committed_ordinals.shrink_to_fit();
+
+        *state() = Some(ForkModule {
+            format: fmt,
+            activation_id,
+            writer: LinkedFrameWriter::new(fmt),
+            arena: ArenaAllocator { next: 0, end: 0 },
+            journal,
+            table,
+            driver: Some(driver),
+            committed_ordinals,
+            module_buffer,
+            replay_only: true,
+        });
         Ok(())
     }
 
@@ -588,9 +744,54 @@ mod wasm {
         }
     }
 
+    /// Serialize the sealed capture journal as a KFRE image into the guest
+    /// linear-memory region `[dst_ptr, dst_ptr + dst_cap)`, returning the number
+    /// of bytes written (0 on failure; check `fm_last_errno`). The PARENT calls
+    /// this once after `fm_finish_unwind` and before the fork, placing the image
+    /// where the forked child will find it after the address-space copy. This is
+    /// the module equivalent of JS `sealCapture` ->
+    /// `arena.appendReplayEvents(events)`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_serialize_journal(dst_ptr: usize, dst_cap: usize) -> usize {
+        match serialize_journal_impl(dst_ptr as u64, dst_cap as u64) {
+            Ok(len) => {
+                set_ok();
+                len as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Seed a forked CHILD instance's replay from copied guest memory and attach
+    /// its rewind driver. `module_buffer` is the continuation anchor the parent
+    /// published (inherited at the same guest offset); `[image_ptr, image_ptr +
+    /// image_len)` is the KFRE image the parent serialized with
+    /// `fm_serialize_journal` (also inherited via the memory copy). The child is
+    /// a FRESH instance placed at a DIFFERENT `__memory_base` with an empty
+    /// journal; this rebuilds the journal + resume-slot table from the COPIED
+    /// bytes only, then drives replay exactly as the parent's committed order
+    /// dictates. This is the module equivalent of JS `attachChild` ->
+    /// `replayEventsForChild(records)` -> `events.attachChild`. On success the
+    /// guest then drives `__wpk_fork_frame_peek/next` + `__wpk_fork_resume_peek`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_child_replay(
+        module_buffer: usize,
+        image_ptr: usize,
+        image_len: usize,
+    ) {
+        match begin_child_replay_impl(module_buffer as u64, image_ptr as u64, image_len as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     /// The sticky errno of the most recent export call (0 == success).
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_last_errno() -> i32 {
         LAST_ERRNO.load(Ordering::Relaxed)
     }
+
 }
