@@ -2,8 +2,11 @@
 # Thin wrapper around the Rust `xtask check-determinism` tool: build the
 # project twice with the incidental environment varied and diff the outputs to
 # discover non-reproducible packages. The implementation is Rust
-# (tools/xtask/src/determinism_check.rs); this wrapper only enters the pinned
-# dev shell and forwards arguments.
+# (tools/xtask/src/determinism_check.rs); this wrapper enters the pinned dev
+# shell, ensures the repo-local JS build dependencies are present (the
+# source-only build of the *-browser-bundle packages shells out to the
+# repo-locked `tsx`, which `./run.sh setup` does not install), and forwards
+# arguments.
 #
 # Usage:
 #   scripts/check-determinism.sh [--product <id>] [--scratch <dir>] \
@@ -46,6 +49,12 @@ done
 
 exec bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
     cd "'"$REPO_ROOT"'"
+    # Ensure repo-local JS build deps (tsx) are installed. The source-only
+    # build of node-browser-bundle runs the repo-locked tsx CLI; `./run.sh
+    # setup` never installs root node_modules (only the `./run.sh run` path
+    # does), so provision it here from the committed lockfile. Idempotent:
+    # a no-op once node_modules exists.
+    [ -d node_modules ] || npm ci
     HOST_TARGET="$(rustc -vV | awk "/^host:/{print \$2}")"
     cargo run --release -q -p xtask --target "$HOST_TARGET" -- \
         check-determinism run \

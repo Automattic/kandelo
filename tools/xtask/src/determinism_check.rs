@@ -16,6 +16,23 @@
 //! at the root (deterministic `ar`, `-ffile-prefix-map`, pinned clock/env).
 //! It never mutates the repo.
 //!
+//! Known limitation (products with build-time kernel-boot packages):
+//! a package whose *build script* boots a Kandelo kernel to produce its
+//! output — `coreutils-docs`, which runs the real `coreutils.wasm` under a
+//! kernel to capture `--help`/`--version` for its man pages — resolves that
+//! kernel through the source-only *program projection*
+//! (`<root>/.kandelo/source-only-program-projection-v1.json`). A single
+//! `local-build run` only finalizes that projection at the *end* of the
+//! build, so such a package cannot resolve the kernel mid-build within the
+//! same pass: it fails with a missing/absent projection authority and blocks
+//! its dependents (`shell`, and therefore every `browser-*` product in
+//! `local-supported`). Building these products source-only in one pass needs
+//! a platform change (a pre-finalized projection root, or a two-phase build)
+//! that is out of scope for this tool. Until then, point `--product` at a
+//! target whose closure contains no build-time kernel-boot package, or run
+//! the check once that platform support lands. This is a pre-existing
+//! platform boundary the check surfaces, not a gap it introduces.
+//!
 //! Modes:
 //!   check-determinism diff <dir-a> <dir-b>
 //!       Diff two already-produced trees. Pure, build-free — used by tests
@@ -278,6 +295,17 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
 
     fs::create_dir_all(&flags.scratch)
         .map_err(|error| format!("create scratch {}: {error}", flags.scratch.display()))?;
+    // Canonicalize the scratch root before deriving any per-variation path.
+    // Under source-only, the host resolver requires
+    // `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT` to already be in its canonical
+    // spelling: both lexically normalized (no `//`, no trailing `/`) and free
+    // of symlinks. A raw scratch derived from `$TMPDIR` fails this on macOS,
+    // where `$TMPDIR` ends in `/` (→ `//` after the join) and lives under
+    // `/var`, a symlink to `/private/var`. Canonicalizing here makes every
+    // derived output/cache root a real, normalized path so the guard accepts
+    // it instead of failing the build (and aborting the whole comparison).
+    let scratch = fs::canonicalize(&flags.scratch)
+        .map_err(|error| format!("canonicalize scratch {}: {error}", flags.scratch.display()))?;
 
     // The two builds differ only in incidental environment: distinct
     // output/cache/scratch paths (exposes embedded build paths) and distinct
@@ -299,9 +327,9 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
     }
 
     for variation in &variations {
-        let out_root = flags.scratch.join(variation.label);
-        let cache_root = flags.scratch.join(format!("{}-src", variation.label));
-        let tmp_dir = flags.scratch.join(format!("{}-tmp", variation.label));
+        let out_root = scratch.join(variation.label);
+        let cache_root = scratch.join(format!("{}-src", variation.label));
+        let tmp_dir = scratch.join(format!("{}-tmp", variation.label));
         fs::create_dir_all(&tmp_dir)
             .map_err(|error| format!("create tmp {}: {error}", tmp_dir.display()))?;
 
@@ -326,8 +354,13 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
             .arg(&cache_root)
             .arg("--jobs")
             .arg(&flags.jobs)
-            // Mirror the environment a normal source-only build runs under, so
-            // the resolver targets this variation's isolated output root.
+            // Point the source-only resolver at this variation's isolated
+            // output root, so any build step that resolves a program (see the
+            // known limitation in this file's header) reads from the tree this
+            // build is producing rather than a shared ambient root. NOTE: a
+            // plain `local-build run` does NOT set this variable; only the
+            // runtime path (`./run.sh run`) does. It is set here so the two
+            // varied builds stay fully isolated from each other.
             .env("WASM_POSIX_SOURCE_ONLY_BINARY_ROOT", &out_root)
             .env("TMPDIR", &tmp_dir)
             .env("HOSTNAME", variation.hostname);
@@ -351,8 +384,8 @@ fn run_build_twice(args: Vec<String>) -> Result<(), String> {
     // Compare the built artifacts (the `programs/` subtree), not the whole
     // output root: the root may carry resolver bookkeeping that is not a
     // shipped artifact.
-    let programs_a = flags.scratch.join("a").join("programs");
-    let programs_b = flags.scratch.join("b").join("programs");
+    let programs_a = scratch.join("a").join("programs");
+    let programs_b = scratch.join("b").join("programs");
     let report = diff_trees(&programs_a, &programs_b)?;
     let rendered = report.render();
     print!("{rendered}");
