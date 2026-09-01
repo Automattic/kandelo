@@ -25,8 +25,12 @@ extern crate alloc;
 extern crate wasm_posix_shared;
 
 pub mod linked_frames;
+pub mod module_state;
 
 pub use linked_frames::{
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
     LinkedFrames,
+};
+pub use module_state::{
+    decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
