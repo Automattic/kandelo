@@ -31,13 +31,19 @@ wat = { version = "1", optional = true }
 wasmparser = { version = "0.247", optional = true }
 
 [features]
-# Enable only to regenerate the committed gc_codec / imported-globals fixtures:
+# Enable only to regenerate the committed instrumenter-emitted fixtures:
 #   cargo test -p fork-codec --features gen-fixtures \
 #     --test gen_gc_codec_fixture -- --ignored --nocapture
 #   cargo test -p fork-codec --features gen-fixtures \
 #     --test gen_imported_globals_fixture -- --ignored --nocapture
 #   cargo test -p fork-codec --features gen-fixtures \
 #     --test gen_imported_tables_fixture -- --ignored --nocapture
+#   cargo test -p fork-codec --features gen-fixtures \
+#     --test gen_exception_codec_fixture -- --ignored --nocapture
+#   cargo test -p fork-codec --features gen-fixtures \
+#     --test gen_static_root_catalog_fixture -- --ignored --nocapture
+#   cargo test -p fork-codec --features gen-fixtures \
+#     --test gen_resume_catalog_fixture -- --ignored --nocapture
 gen-fixtures = ["dep:fork-instrument", "dep:walrus", "dep:wat", "dep:wasmparser"]
 
 [[test]]
@@ -50,4 +56,16 @@ required-features = ["gen-fixtures"]
 
 [[test]]
 name = "gen_imported_tables_fixture"
+required-features = ["gen-fixtures"]
+
+[[test]]
+name = "gen_exception_codec_fixture"
+required-features = ["gen-fixtures"]
+
+[[test]]
+name = "gen_static_root_catalog_fixture"
+required-features = ["gen-fixtures"]
+
+[[test]]
+name = "gen_resume_catalog_fixture"
 required-features = ["gen-fixtures"]

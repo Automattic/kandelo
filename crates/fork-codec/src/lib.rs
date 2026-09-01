@@ -24,7 +24,9 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
+pub mod catalogs;
 pub mod dylink_archive;
+pub mod exception_codec;
 pub mod gc_codec;
 pub mod imported_globals;
 pub mod imported_tables;
@@ -34,10 +36,17 @@ pub mod module_state_records;
 pub mod reference_recipes;
 pub mod replay_events;
 
+pub use catalogs::{
+    decode_resume_catalog, decode_static_root_catalog, ForkResumeCatalog, ForkResumeCatalogRecord,
+    StaticRootCatalog,
+};
 pub use dylink_archive::{
     decode_dylink_archive, DylinkAllocation, DylinkArchive, DylinkInitialization,
     DylinkInitializationStage, DylinkModule, DylinkTableFunction, DylinkTablePatch,
     DylinkTablePatchRun, DylinkTransaction,
+};
+pub use exception_codec::{
+    decode_exception_codec, ForkExceptionCodec, ForkExceptionTagLayout,
 };
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
