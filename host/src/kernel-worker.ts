@@ -288,7 +288,6 @@ import {
   growMemoryToCover,
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
-import { kernelTmpfsScratchEnabled } from "./vfs/kernel-tmpfs-gate";
 import { readForkContinuationAnchor } from "./fork-continuation";
 import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
 import {
@@ -1100,19 +1099,13 @@ const EAGAIN_RETRY_MS = 1;
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
 
 /**
- * In-kernel tmpfs (Phase 5): the scratch mounts (`/tmp`, `/var/*`, `/root`,
- * `/srv`, ...) are served by the Rust kernel instead of a host-side memory FS.
- * On by default (the cutover); opt back out with the kill-switch
- * `WASM_POSIX_TMPFS=0` (Node) or `globalThis.__WASM_POSIX_TMPFS__ = false`
- * (browser).
- *
- * The gate lives in `kernelTmpfsScratchEnabled` — a single source of truth
- * shared with the mount resolvers, which drop the host-side scratch backends
- * under the same gate, so the kernel-enable and host-mount-removal halves of
- * the cutover never disagree.
+ * In-kernel tmpfs (Phase 5 cutover): the scratch mounts (`/tmp`, `/var/*`,
+ * `/root`, `/srv`, ...) are served by the Rust kernel instead of a host-side
+ * memory FS. This is the unconditional authority — the mount resolvers always
+ * drop the host-side scratch backends (`filterMountSpecForKernelTmpfs`), so the
+ * kernel-enable and host-mount-removal halves of the cutover never disagree.
  */
-function maybeEnableKernelTmpfs(instance: WebAssembly.Instance): void {
-  if (!kernelTmpfsScratchEnabled()) return;
+function enableKernelTmpfs(instance: WebAssembly.Instance): void {
   const fn = instance.exports.kernel_set_tmpfs_enabled as
     | ((enabled: number) => number)
     | undefined;
@@ -5578,7 +5571,7 @@ export class CentralizedKernelWorker {
         // Phase 5 bring-up: optionally hand scratch-mount ownership to the
         // in-kernel tmpfs, and the `/` tree to the in-kernel rootfs overlay,
         // before any guest filesystem op runs.
-        maybeEnableKernelTmpfs(instance);
+        enableKernelTmpfs(instance);
         this.#maybeLoadKernelRootfs(instance);
 
         // Allocate scratch from the kernel heap. Host-side memory.grow() would

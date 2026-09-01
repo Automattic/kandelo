@@ -5,7 +5,7 @@
  * for optimal performance. Falls back to main-thread mode when a custom
  * PlatformIO is provided (PlatformIO can't be serialized across threads).
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
@@ -43,6 +43,25 @@ import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, Worker
 import type { PlatformIO } from "../src/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Create a fresh host temp directory that the in-kernel tmpfs never claims.
+ *
+ * The in-kernel tmpfs (Phase 5 cutover) is the unconditional authority for its
+ * scratch prefixes (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`,
+ * `/root`, `/srv`). `os.tmpdir()` frequently resolves under `/tmp` (the nix dev
+ * shell sets `TMPDIR=/tmp/nix-shell.*`, and Linux defaults to `/tmp`), so a
+ * kernel-routed guest open of a path there is served by the empty in-kernel
+ * tmpfs, not the host directory. Tests that need the guest to reach a real host
+ * file through `NodePlatformIO` must therefore stage it outside every scratch
+ * prefix. `<repoRoot>/target` is git-ignored and never a scratch prefix, so it
+ * gives raw host-filesystem coverage on every platform. Callers own cleanup.
+ */
+export function makeHostScratchTempRoot(prefix: string): string {
+  const base = join(__dirname, "../..", "target", "host-fs-test-scratch");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 const MAX_PAGES = 16384;
 const SIGSEGV = 11;

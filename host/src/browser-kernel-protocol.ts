@@ -101,14 +101,6 @@ export interface InitMessage {
     /** Routes guest HTTP(S) and external lazy VFS downloads through a browser
      *  proxy when the page is not controlled by Kandelo's service worker. */
     corsProxy?: BrowserCorsProxyConfig;
-    /**
-     * In-kernel tmpfs (Phase 5): when set, the kernel serves the scratch
-     * prefixes and the resolver drops the host scratch mounts. The browser has
-     * no `process.env`, and the main thread's `globalThis.__WASM_POSIX_TMPFS__`
-     * does not cross into the worker, so this carries the setting the Node host
-     * reads from `WASM_POSIX_TMPFS`. Undefined leaves the worker gate default.
-     */
-    tmpfsScratchEnabled?: boolean;
   };
 }
 
