@@ -63,6 +63,15 @@ function preparedExecExports(memory: WebAssembly.Memory) {
       return count;
     }),
     kernel_exec_target_cancel: vi.fn(() => 0),
+    // The exec-child fixture is a real Wasm module, never a `#!` script, so
+    // the kernel-owned shebang decode reports "not a script" (0). The four
+    // parameters match the real export's arity the scratch caller enforces.
+    kernel_exec_target_shebang: vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _outPtr: number,
+      _outLen: number,
+    ) => 0),
   };
 }
 
@@ -81,6 +90,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 11)).resolves.toEqual(
@@ -116,6 +126,7 @@ describe("opaque prepared exec target launch", () => {
           return expected.byteLength - start;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
       };
 
       const read = readPreparedExecTarget(kernel, 7, 21);
@@ -136,6 +147,7 @@ describe("opaque prepared exec target launch", () => {
         execTargetSize: () => 4n,
         execTargetRead: () => -11, // EAGAIN forever: a hypothetical stuck fetch
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
       };
 
       const read = readPreparedExecTarget(kernel, 7, 22);
@@ -161,6 +173,7 @@ describe("opaque prepared exec target launch", () => {
       execTargetSize: () => 4n,
       execTargetRead: read,
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 23)).rejects.toEqual(
@@ -202,6 +215,12 @@ describe("opaque prepared exec target launch", () => {
         cancelled.push(target);
         return 0;
       },
+      // The kernel owns the `#!` decode: target 31 is the script, target 32
+      // (the resolved interpreter) is a real module, never a nested script.
+      execTargetShebang: (_ownerPid, target) =>
+        target === 31
+          ? { interpreter: "/bin/exact-interpreter", argument: "--flag" }
+          : null,
     };
 
     const result = await launchPreparedExecTarget({
@@ -267,6 +286,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
     };
     const options = () => ({
       kernel,
@@ -324,6 +344,7 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
     };
     const launch = (
       target: number,
@@ -391,6 +412,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -458,6 +480,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -507,6 +530,7 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -2018,6 +2042,17 @@ function createWorker(overrides: Record<string, unknown>): any {
       );
       return count;
     });
+  }
+  if (!("kernel_exec_target_shebang" in exports)) {
+    // The synthetic spawn target is a real Wasm module, never a `#!` script,
+    // so the kernel-owned decode reports "not a script" (0). Four parameters
+    // match the export arity the scratch caller enforces.
+    exports.kernel_exec_target_shebang = vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _outPtr: number,
+      _outLen: number,
+    ) => 0);
   }
   if (!("kernel_exec_target_cancel" in exports)) {
     exports.kernel_exec_target_cancel = vi.fn(() => 0);

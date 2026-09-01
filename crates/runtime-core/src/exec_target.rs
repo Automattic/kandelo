@@ -223,6 +223,118 @@ impl PreparedExecTarget {
     }
 }
 
+/// The largest `#!` header prefix the shebang decoder ever inspects.
+///
+/// `parse_shebang` scans at most to byte index 4096 for the terminating
+/// newline, so reading the first `min(size, 4096)` bytes of a target is
+/// sufficient to decode the interpreter line exactly.
+const SHEBANG_HEADER_MAX_BYTES: usize = 4096;
+
+/// One decoded `#!` interpreter line.
+///
+/// This is the Rust-owned replacement for the host's former `parseShebang`
+/// byte interpretation: the kernel decodes the interpreter path and its single
+/// optional argument, and the host merely assembles argv from these fields.
+pub struct Shebang {
+    pub interpreter: alloc::string::String,
+    pub argument: Option<alloc::string::String>,
+}
+
+/// The JavaScript `\s` / `String.prototype.trim` whitespace set.
+///
+/// ECMAScript's `WhiteSpace` + `LineTerminator` production and the RegExp `\s`
+/// class cover the exact same code points, so one predicate faithfully mirrors
+/// both the `.trim()` and `\S`/`\s` behavior of the former `parseShebang`.
+fn is_js_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+/// The code points a JavaScript `.` (no `s` flag) refuses to match.
+fn is_js_line_terminator(c: char) -> bool {
+    matches!(c, '\u{000A}' | '\u{000D}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Decode a `#!` interpreter line exactly as the host's former `parseShebang`
+/// did (`host/src/exec-target.ts`).
+///
+/// Contract, ported byte-for-byte:
+///   * require the `#!` magic (`0x23 0x21`); fewer than two bytes → `None`.
+///   * scan for the terminating newline, bounded at index 4096.
+///   * decode the scanned bytes as UTF-8 with replacement (`TextDecoder`),
+///     drop exactly one trailing `\r` (`/\r$/`), then trim JS whitespace.
+///   * apply `/^(\S+)(?:\s+(.*))?$/`: the first non-whitespace run is the
+///     interpreter, and the remainder after the following whitespace run is a
+///     single optional argument. A trimmed line that is empty, or whose
+///     argument would contain an internal line terminator (so JS `$` cannot
+///     match), yields `None`.
+pub fn parse_shebang(bytes: &[u8]) -> Option<Shebang> {
+    if bytes.len() < 2 || bytes[0] != 0x23 || bytes[1] != 0x21 {
+        return None;
+    }
+    let mut end = 2usize;
+    while end < bytes.len() && end < SHEBANG_HEADER_MAX_BYTES && bytes[end] != 0x0A {
+        end += 1;
+    }
+    // `new TextDecoder().decode(...)`: UTF-8, invalid sequences → U+FFFD.
+    let decoded = alloc::string::String::from_utf8_lossy(&bytes[2..end]);
+    // `.replace(/\r$/, "")`: drop exactly one trailing carriage return.
+    let without_cr = decoded.strip_suffix('\r').unwrap_or(&decoded);
+    // `.trim()`: strip leading and trailing JS whitespace.
+    let line = without_cr.trim_matches(|c: char| is_js_whitespace(c));
+    if line.is_empty() {
+        return None;
+    }
+
+    // `\S+`: the leading non-whitespace run (non-empty, the line is trimmed).
+    let interp_end = line
+        .char_indices()
+        .find(|&(_, c)| is_js_whitespace(c))
+        .map(|(offset, _)| offset)
+        .unwrap_or(line.len());
+    let interpreter = &line[..interp_end];
+    if interp_end == line.len() {
+        return Some(Shebang {
+            interpreter: interpreter.into(),
+            argument: None,
+        });
+    }
+
+    // `\s+`: consume the whitespace run separating interpreter and argument.
+    let arg_start = line[interp_end..]
+        .char_indices()
+        .find(|&(_, c)| !is_js_whitespace(c))
+        .map(|(offset, _)| interp_end + offset)
+        // Only whitespace remained (impossible after `.trim()`); no argument.
+        .unwrap_or(line.len());
+    let argument = &line[arg_start..];
+    // `.*` stops at a line terminator, so an internal one leaves `$` unmatched
+    // and the whole pattern fails — exactly as JS returns null.
+    if argument.chars().any(is_js_line_terminator) {
+        return None;
+    }
+    Some(Shebang {
+        interpreter: interpreter.into(),
+        argument: Some(argument.into()),
+    })
+}
+
 pub struct PreparedExecLedger {
     entries: BTreeMap<u32, PreparedExecTarget>,
     next_token: Option<u32>,
@@ -485,6 +597,42 @@ pub fn read(
     Ok(read)
 }
 
+/// Decode the retained target's `#!` interpreter line, reading the header
+/// bytes internally through the retained handle.
+///
+/// This deliberately does not consult `observed_bytes` or `record_read`: the
+/// kernel owns the shebang decode independently of whatever positioned reads
+/// the host has issued, so decoding never depends on host read ordering. A
+/// positioned read of the first `min(size, 4096)` bytes is all `parse_shebang`
+/// ever inspects.
+pub fn shebang(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    owner_pid: u32,
+    token: u32,
+) -> Result<Option<Shebang>, Errno> {
+    let (handle, size) = {
+        let target = proc.prepared_exec_targets.get(token)?;
+        owner_matches_ledger_pid(target.owner(), owner_pid)?;
+        (retained_host_handle(proc, target)?, target.size())
+    };
+    let want = size.min(SHEBANG_HEADER_MAX_BYTES);
+    let mut header = [0u8; SHEBANG_HEADER_MAX_BYTES];
+    let mut filled = 0usize;
+    while filled < want {
+        let read = target_pread(host, handle, &mut header[filled..want], filled as i64)?;
+        if read == 0 {
+            // A short read cannot advance the header; decode what is present.
+            break;
+        }
+        if read > want - filled {
+            return Err(Errno::EIO);
+        }
+        filled += read;
+    }
+    Ok(parse_shebang(&header[..filled]))
+}
+
 pub fn cancel(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
@@ -700,10 +848,99 @@ impl Default for PreparedExecLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedExecLedger, PreparedExecOwner, PreparedExecTarget};
+    use super::{
+        PreparedExecLedger, PreparedExecOwner, PreparedExecTarget, SHEBANG_HEADER_MAX_BYTES,
+        parse_shebang,
+    };
     use crate::fd::OpenFileDescRef;
     use crate::lock::{FileId, OfdId};
     use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
+
+    /// Flatten a decoded shebang into borrowed fields for terse assertions.
+    fn decode(bytes: &[u8]) -> Option<(alloc::string::String, Option<alloc::string::String>)> {
+        parse_shebang(bytes).map(|shebang| (shebang.interpreter, shebang.argument))
+    }
+
+    #[test]
+    fn rejects_non_shebang_and_too_short_inputs() {
+        // Fewer than two bytes, or without the exact `#!` magic, is never a
+        // script — byte-for-byte with the former `parseShebang`.
+        assert!(decode(b"").is_none());
+        assert!(decode(b"#").is_none());
+        assert!(decode(b"!/bin/sh").is_none());
+        assert!(decode(b"#x/bin/sh").is_none());
+        assert!(decode(b"\0asm").is_none());
+        // The two-byte prefix present but nothing else → empty line → None.
+        assert!(decode(b"#!").is_none());
+    }
+
+    #[test]
+    fn splits_interpreter_and_single_argument() {
+        assert_eq!(
+            decode(b"#!/bin/sh\n"),
+            Some(("/bin/sh".into(), None)),
+        );
+        assert_eq!(
+            decode(b"#!/bin/exact-interpreter --script-flag\nignored body\n"),
+            Some((
+                "/bin/exact-interpreter".into(),
+                Some("--script-flag".into()),
+            )),
+        );
+        // The remainder after the first whitespace run is one single argument,
+        // internal spaces preserved.
+        assert_eq!(
+            decode(b"#!/usr/bin/env python -u -B\n"),
+            Some(("/usr/bin/env".into(), Some("python -u -B".into()))),
+        );
+    }
+
+    #[test]
+    fn strips_one_trailing_carriage_return_and_surrounding_whitespace() {
+        // `/\r$/` removes the CRLF carriage return the newline scan leaves.
+        assert_eq!(
+            decode(b"#!/bin/sh\r\n"),
+            Some(("/bin/sh".into(), None)),
+        );
+        // `.trim()` removes leading and trailing whitespace around the line.
+        assert_eq!(
+            decode(b"#!  \t /bin/sh -x \t \n"),
+            Some(("/bin/sh".into(), Some("-x".into()))),
+        );
+    }
+
+    #[test]
+    fn treats_a_line_with_only_whitespace_as_no_shebang() {
+        // `#!` followed by only spaces/tabs trims to empty → no match → None.
+        assert!(decode(b"#!   \n").is_none());
+        assert!(decode(b"#!\t \r\n").is_none());
+    }
+
+    #[test]
+    fn caps_the_interpreter_line_scan_at_four_kib() {
+        // A newline beyond index 4096 is never seen; the interpreter token is
+        // taken from the first 4096 bytes exactly as the host bound did.
+        let mut bytes = alloc::vec::Vec::new();
+        bytes.extend_from_slice(b"#!");
+        bytes.extend(core::iter::repeat(b'a').take(8192));
+        bytes.push(b'\n');
+        let (interpreter, argument) = decode(&bytes).unwrap();
+        assert_eq!(interpreter.len(), SHEBANG_HEADER_MAX_BYTES - 2);
+        assert!(argument.is_none());
+        assert!(interpreter.bytes().all(|byte| byte == b'a'));
+    }
+
+    #[test]
+    fn rejects_an_argument_containing_an_internal_line_terminator() {
+        // `.*` cannot cross a bare CR, so JS `$` fails and the whole line does
+        // not match: the result is None (not a truncated argument).
+        assert!(decode(b"#!/bin/sh a\rb\n").is_none());
+        // A CR consumed inside the interpreter/argument whitespace run is fine.
+        assert_eq!(
+            decode(b"#!/bin/sh\rarg\n"),
+            Some(("/bin/sh".into(), Some("arg".into()))),
+        );
+    }
 
     fn stat() -> WasmStat {
         WasmStat {
