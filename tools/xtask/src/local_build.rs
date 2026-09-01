@@ -811,7 +811,60 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
             kernel_path.display()
         ));
     }
+    // Same-ABI staleness backstop (B1). The ABI-version check above only
+    // catches cross-ABI staleness; an internal kernel change that keeps
+    // `ABI_VERSION` still moves the SourceOnlyV1 cache key the build engine
+    // stamps onto `kernel.wasm`. So the staged kernel must carry the exact key
+    // its current source resolves to -- a stale mirror's stamp no longer
+    // matches (or is absent) and fails loud here instead of letting a test
+    // suite run against yesterday's kernel.
+    //
+    // Read the stamp before recomputing the expected key: an unstamped
+    // artifact is unverifiable regardless of the source tree, so report that
+    // directly without the (comparatively expensive) SourceOnlyV1 resolve.
+    let stamp = crate::build_stamp::read_build_key(&bytes)
+        .map_err(|error| format!("{}: {error}", kernel_path.display()))?;
+    let Some(stamp) = stamp else {
+        return Err(format!(
+            "{} carries no build key stamp; rebuild with `./run.sh setup` \
+             so freshness can be verified.",
+            kernel_path.display()
+        ));
+    };
+    let expected_key = expected_source_only_cache_key(repo, "kernel")?;
+    if stamp != expected_key {
+        return Err(format!(
+            "{} is stale: it was built for key {}, but the current source \
+             tree resolves to key {}. Rebuild with `./run.sh setup` (or \
+             `cargo xtask bootstrap`).",
+            kernel_path.display(),
+            crate::util::hex(&stamp),
+            crate::util::hex(&expected_key),
+        ));
+    }
     Ok(())
+}
+
+/// Recompute the SourceOnlyV1 cache key `package` currently resolves to -- the
+/// same key `build_into_cache` stamps onto the package's published wasm output.
+/// `verify_fresh_report` compares this against the staged kernel's stamp, so a
+/// stale mirror (older stamp, or none) fails loud. Reuses the build engine's
+/// own key function (`build_deps::source_only_cache_key_sha`) rather than
+/// recomputing, so the expected key can never drift from what a real build
+/// stamps.
+pub(crate) fn expected_source_only_cache_key(
+    repo: &Path,
+    package: &str,
+) -> Result<[u8; 32], String> {
+    let registry = fixed_registry(repo);
+    let manifest = registry.load(package)?;
+    let sha = crate::build_deps::source_only_cache_key_sha(
+        &manifest,
+        &registry,
+        TargetArch::Wasm32,
+        wasm_posix_shared::ABI_VERSION,
+    )?;
+    crate::util::hex_to_32(&sha)
 }
 
 /// Walk REVERSE edges over `graph.dependencies` (which maps a node to the
@@ -5725,10 +5778,21 @@ materialization = "lazy"
         );
     }
 
+    /// A current-ABI kernel that carries no build-key stamp is no longer
+    /// accepted as fresh: passing the ABI check is necessary but not
+    /// sufficient, since a same-ABI internal change moves the build key. The
+    /// synthetic fixture here has no stamp, so it must be flagged. (A kernel
+    /// carrying the *correct* stamp verifying fresh through the real build
+    /// engine is proven by `verify_fresh_passes_for_a_real_materialized_kernel_stamp`
+    /// in `build_deps`, which needs that module's materialize fixtures.)
     #[test]
-    fn verify_fresh_ok_for_current_kernel() {
+    fn verify_fresh_flags_a_current_abi_kernel_with_no_build_key_stamp() {
         let repo = temp_repo_with_kernel(wasm_posix_shared::ABI_VERSION);
-        assert!(verify_fresh_report(repo.path()).is_ok());
+        let err = verify_fresh_report(repo.path()).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "an unstamped current-ABI kernel must fail the build-key check: {err}"
+        );
     }
 
     #[test]

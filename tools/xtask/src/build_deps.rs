@@ -16899,6 +16899,28 @@ fn manifest_cache_key_sha_for_policy(
     .map(|sha| hex(&sha))
 }
 
+/// The SourceOnlyV1 cache key `build_into_cache` stamps onto every published
+/// wasm output (see the `stamp_build_key` call in `build_into_cache`),
+/// recomputed for `manifest`. `verify-fresh` reuses THIS exact function so a
+/// staged artifact's stamp is compared against the same key the build engine
+/// would produce -- never the Default-policy key, which omits the abi-contract
+/// fold and uses non-strict source digests, so it would never match a
+/// SourceOnlyV1 stamp on a real build.
+pub(crate) fn source_only_cache_key_sha(
+    manifest: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+) -> Result<String, String> {
+    manifest_cache_key_sha_for_policy(
+        manifest,
+        registry,
+        arch,
+        abi_version,
+        ResolvePolicy::SourceOnlyV1,
+    )
+}
+
 #[derive(Clone, Debug)]
 struct DeclaredLocalArtifact {
     source_suffix: PathBuf,
@@ -35448,6 +35470,159 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             .unwrap()
             .expect("mirror must still carry its stamp after a cache-hit resolve");
         assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// Full SourceOnlyV1 kernel fixture for the verify-fresh build-key tests
+    /// (Task 6). Builds a `kernel` program package through the REAL materialize
+    /// path so `build_into_cache` stamps the published wasm with its own
+    /// SourceOnlyV1 cache key, exactly as production does, then copies the
+    /// stamped mirror to the `source-only-v1/kernel.wasm` location
+    /// `verify_fresh_report` reads.
+    ///
+    /// Layout: the kernel package lives under `<repo>/packages/registry/kernel`
+    /// and the repo-root override points at `<repo>/packages/registry`, so the
+    /// build-time key and the key `expected_source_only_cache_key(<repo>, ...)`
+    /// recomputes (its registry root is `<repo>/packages/registry`) resolve the
+    /// SAME manifest, declared inputs, and global toolchain surface. The abi
+    /// snapshot is pinned to the production `ABI_VERSION` so both the folded
+    /// abi-contract digest and `verify_fresh_report`'s `__abi_version` check
+    /// agree.
+    ///
+    /// Returns the verify-fresh repo root, the live repo-root override guard
+    /// (the caller keeps it alive so `expected_source_only_cache_key` resolves
+    /// against the same override the build used), and the staged `kernel.wasm`
+    /// path.
+    #[cfg(unix)]
+    fn materialize_kernel_for_verify_fresh(
+        label: &str,
+    ) -> (PathBuf, crate::RepoRootOverrideGuard, PathBuf) {
+        let repo = tempdir(label);
+        let build_root = repo.join("packages/registry");
+        fs::create_dir_all(&build_root).unwrap();
+        prepare_local_rebuild_fixture_repo(&build_root);
+        // `prepare_local_rebuild_fixture_repo` writes TEST_ABI; the build-key
+        // path runs under the real `ABI_VERSION`, and `local_abi_contract_digest`
+        // rejects a snapshot whose `abi_version` differs from the requested one,
+        // so pin the snapshot to `ABI_VERSION`.
+        fs::write(
+            build_root.join("abi/snapshot.json"),
+            format!("{{\"abi_version\":{}}}", wasm_posix_shared::ABI_VERSION),
+        )
+        .unwrap();
+        // A `kernel`/`kernel` output is validated against the full kernel
+        // export set (`required_exports_for_program_output`), so the fixture
+        // must emit a module exporting `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`
+        // (which includes `__abi_version` at the current ABI), not the bare
+        // program entrypoint set.
+        write_program(
+            &build_root,
+            "kernel",
+            "1.0.0",
+            &[],
+            &emit_wasm_build_script(
+                "kernel.wasm",
+                &wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+            ),
+            &[("kernel", "kernel.wasm")],
+        );
+        write_source_only_repository_inputs(&build_root, "kernel");
+        let manifest_path = build_root.join("kernel/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path).unwrap().replace(
+                "wasm = \"kernel.wasm\"",
+                "wasm = \"kernel.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+
+        let registry = Registry {
+            roots: vec![build_root.clone()],
+        };
+        let guard = crate::install_repo_root_override(build_root.clone()).unwrap();
+        let target = registry.load("kernel").unwrap();
+        let (base, compiled) = source_only_test_roots(&format!("{label}-cache"));
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir(&format!("{label}-output"));
+        let node = resolve_local_build_package_node(
+            &target,
+            &registry,
+            TargetArch::Wasm32,
+            wasm_posix_shared::ABI_VERSION,
+            &roots,
+            &build_root,
+            &output,
+            false,
+            &mut || Ok(()),
+        )
+        .unwrap();
+
+        // The published mirror and the canonical cache entry carry identical
+        // stamped bytes (Task 5); copy from the canonical entry, whose layout
+        // (`<canonical>/kernel.wasm`) is stable regardless of where a `kernel`
+        // program's mirror is projected.
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+        let staged = repo.join("local-binaries/source-only-v1/kernel.wasm");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::copy(canonical.join("kernel.wasm"), &staged).unwrap();
+        (repo, guard, staged)
+    }
+
+    /// Happy-path proof (CRITICAL, non-tautological): a kernel published by the
+    /// REAL build engine carries a stamp equal to the key
+    /// `expected_source_only_cache_key` recomputes, so `verify_fresh_report`
+    /// passes. The stamp is written by production `build_into_cache` code and
+    /// the expected key is computed by verify-fresh's own path; their agreement
+    /// proves both derive the SAME SourceOnlyV1 key -- a Default-policy expected
+    /// key would fail here.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_passes_for_a_real_materialized_kernel_stamp() {
+        let (repo, _guard, _staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-real-kernel");
+        crate::local_build::verify_fresh_report(&repo)
+            .expect("a freshly materialized kernel must verify fresh");
+    }
+
+    /// A staged kernel whose stamp does not match the freshly-resolved key is
+    /// stale and must fail loud -- the same-ABI staleness the ABI-only check
+    /// misses.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_on_build_key_mismatch() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-key-mismatch");
+        // Replace the staged kernel with a valid ABI_VERSION module stamped
+        // with a WRONG key. (A fresh, unstamped module -- `stamp_build_key`
+        // refuses to double-stamp the already-stamped mirror.)
+        let wrong =
+            crate::build_stamp::stamp_build_key(&minimal_executable_wasm(), &[0xAB; 32]).unwrap();
+        fs::write(&staged, wrong).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(err.contains("stale"), "expected stale error, got: {err}");
+        assert!(
+            err.contains("built for key") || err.contains("build key"),
+            "must name the key mismatch: {err}"
+        );
+    }
+
+    /// A staged kernel that carries NO build-key stamp cannot be proven fresh,
+    /// so verify-fresh fails loud rather than trusting an unstamped artifact.
+    #[cfg(unix)]
+    #[test]
+    fn verify_fresh_fails_when_kernel_has_no_build_key_stamp() {
+        let (repo, _guard, staged) =
+            materialize_kernel_for_verify_fresh("verify-fresh-no-stamp");
+        // An unstamped module that still declares the current ABI, so the ABI
+        // check passes and control reaches the build-key branch.
+        fs::write(&staged, minimal_executable_wasm()).unwrap();
+        let err = crate::local_build::verify_fresh_report(&repo).unwrap_err();
+        assert!(
+            err.contains("no build key stamp"),
+            "must report the missing stamp: {err}"
+        );
     }
 
     #[test]
