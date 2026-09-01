@@ -1968,8 +1968,7 @@ clean_target() {
             # cargo `target/` directories below are the underlying build's
             # own scratch space, which the engine's cache does not track.
             xtask_clean_target kernel
-            rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" \
-                  "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
+            rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
             warn "Cleaned kernel" ;;
         sysroot)

@@ -378,7 +378,6 @@ scripts/run-sortix-tests.sh --all
 crates/
   shared/            Shared types (Errno, syscall numbers, flags, channel layout)
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
-  userspace/         User-space stub library
 host/
   src/               TypeScript host runtime shared by Node.js and browser hosts
     node-kernel-host.ts / node-kernel-worker-entry.ts

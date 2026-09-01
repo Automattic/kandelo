@@ -198,7 +198,6 @@ function requirePortableResolverPath(relPath: string): string {
  *
  * Example paths:
  *   `kernel.wasm`
- *   `userspace.wasm`
  *   `programs/vim.zip`               (implicit wasm32 — see below)
  *   `programs/git/git.wasm`          (implicit wasm32)
  *   `programs/php/icu.dat`           (implicit wasm32 runtime file)
@@ -232,8 +231,6 @@ function packagedBinaryCandidates(
   const candidates = [join(root, adjusted)];
   if (relPath === "kernel.wasm") {
     candidates.push(join(root, "kandelo-kernel.wasm"));
-  } else if (relPath === "userspace.wasm") {
-    candidates.push(join(root, "wasm_posix_userspace.wasm"));
   } else if (relPath === "rootfs.vfs") {
     candidates.push(join(root, "rootfs.vfs"));
   }
@@ -283,9 +280,9 @@ export class BinaryNotFoundError extends Error {
  * engine writes here and this tier's `candidatesFor` resolves unadjusted —
  * not the old `build.sh`-era `kandelo-kernel.wasm` name from the ambient
  * `local-binaries/` tier, which Stage 1 stopped producing), the one artifact
- * here with an ABI to go stale (`__abi_version`). `userspace.wasm` exports
- * no ABI at all, and everything under `programs/` is a content-addressed
- * generation the local-build engine keys by cache key — a stale input there
+ * here with an ABI to go stale (`__abi_version`). Everything under
+ * `programs/` is a content-addressed generation the local-build engine
+ * keys by cache key — a stale input there
  * is a cache-key mismatch the engine's normal rebuild path already catches,
  * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
@@ -1726,7 +1723,7 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       projectedProgram?.arches.includes(targetArch) ?? false;
     const isRootMirrorNode =
       !projection.packages.has(packageName)
-      && (packageName === "kernel" || packageName === "userspace")
+      && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
     if (!isExactProgramNode && !isRootMirrorNode) {

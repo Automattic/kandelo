@@ -65,14 +65,3 @@ copy_first_existing \
     "$HOST_WASM_DIR/rootfs.vfs" \
     "$REPO_ROOT/local-binaries/rootfs.vfs" \
     "$REPO_ROOT/binaries/rootfs.vfs"
-
-if copy_first_existing \
-    "$HOST_WASM_DIR/wasm_posix_userspace.wasm" \
-    "$REPO_ROOT/local-binaries/userspace.wasm" \
-    "$REPO_ROOT/binaries/userspace.wasm" \
-    "$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm" \
-    "$HOST_WASM_DIR/wasm_posix_userspace.wasm"; then
-    cp "$HOST_WASM_DIR/wasm_posix_userspace.wasm" "$HOST_WASM_DIR/userspace.wasm"
-else
-    echo "prepare-host-package: userspace wasm not present; continuing without it" >&2
-fi

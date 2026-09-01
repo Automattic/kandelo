@@ -5347,10 +5347,10 @@ fn program_package_index_for_root_once(
         if !matches!(manifest.kind, ManifestKind::Program) {
             continue;
         }
-        // The kernel and userspace adapter are published as root boot
-        // artifacts (`binaries/kernel.wasm` and `binaries/userspace.wasm`),
-        // not as architecture-scoped guest programs. They therefore do not
-        // belong in the program-mirror projection.
+        // The kernel is published as a root boot artifact
+        // (`binaries/kernel.wasm`), not as an architecture-scoped guest
+        // program. It therefore does not belong in the program-mirror
+        // projection.
         if manifest.uses_root_binary_mirror() {
             continue;
         }
@@ -14749,7 +14749,7 @@ fn required_exports_for_program_output(
 ) -> &'static [&'static str] {
     if target.name == "kernel" && out.name == "kernel" {
         wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
-    } else if out.wasm.ends_with(".wasm") && target.name != "userspace" {
+    } else if out.wasm.ends_with(".wasm") {
         &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS
     } else {
         &[]
@@ -17265,12 +17265,12 @@ fn install_local_artifact(
                 generation_member.display(),
             )
         })?;
-        // WHY: kernel and userspace are package-owned boot artifacts even
-        // though their historical public mirrors live at the binary root.
-        // Publishing their direct builds below programs/<arch>/ would leave
-        // an identityless root file in place and let later dependency
-        // materialization either substitute different bytes or fail on the
-        // ownership collision.
+        // WHY: kernel is a package-owned boot artifact even though its
+        // historical public mirror lives at the binary root. Publishing its
+        // direct build below programs/<arch>/ would leave an identityless
+        // root file in place and let later dependency materialization
+        // either substitute different bytes or fail on the ownership
+        // collision.
         let destination = if manifest.uses_root_binary_mirror() {
             binaries_dir.join(&declared.mirror_relative)
         } else {
@@ -17931,7 +17931,7 @@ fn lexically_normalize_absolute_path(path: &Path) -> Option<PathBuf> {
 /// walk may still materialize the corresponding released package, but it must
 /// not replace a validated local generation with those lower-priority bytes.
 /// This applies equally to ordinary one-member program mirrors and the
-/// root-level kernel/userspace boot mirrors.
+/// root-level kernel boot mirror.
 fn scalar_mirror_selects_local_generation(
     manifest: &DepsManifest,
     output: &crate::pkg_manifest::ProgramOutput,
@@ -19513,7 +19513,7 @@ fn cleanup_reserved_local_stage(
 ///     `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
 ///   * ≥2 total members:
 ///     `<binaries_dir>/programs/<arch>/<program.name>/<output.name>.wasm`.
-///   * first-party kernel/userspace: `<binaries_dir>/<output.name>.wasm`.
+///   * first-party kernel: `<binaries_dir>/<output.name>.wasm`.
 ///
 /// This is the single source of truth for the symlink layout. Browser
 /// demos hardcode these paths (see `apps/browser-demos/vite.config.ts`
@@ -20912,14 +20912,6 @@ revision = {revision}
             &[],
             ":",
             &[("kernel", "kandelo-kernel.wasm")],
-        );
-        write_program(
-            &registry_root,
-            "userspace",
-            "1.0.0",
-            &[],
-            ":",
-            &[("userspace", "wasm_posix_userspace.wasm")],
         );
         write_program(
             &registry_root,
@@ -26526,12 +26518,6 @@ wasm = "single-local.wasm"
         for (package, output, artifact, root_mirror) in [
             ("single-local", "single-local", "single-local.wasm", false),
             ("kernel", "kernel", "kandelo-kernel.wasm", true),
-            (
-                "userspace",
-                "userspace",
-                "wasm_posix_userspace.wasm",
-                true,
-            ),
         ] {
             let manifest = DepsManifest::parse(
                 &format!(
@@ -32205,42 +32191,40 @@ printf 'CLEAN-ENV\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
 
     #[cfg(unix)]
     #[test]
-    fn source_only_kernel_and_userspace_recipes_write_cargo_outputs_below_work() {
+    fn source_only_kernel_recipe_writes_cargo_outputs_below_work() {
         use std::os::unix::fs::PermissionsExt;
 
-        for (package, artifact) in [
-            ("kernel", "kandelo-kernel.wasm"),
-            ("userspace", "wasm_posix_userspace.wasm"),
-        ] {
-            let fixture = tempdir(&format!("source-only-{package}-cargo-target"));
-            let package_dir = fixture.join(format!("packages/registry/{package}"));
-            let scripts_dir = fixture.join("scripts");
-            let tool_bin = fixture.join("tools/bin");
-            let work = fixture.join("resolver-work");
-            let output = fixture.join("resolver-output");
-            fs::create_dir_all(&package_dir).unwrap();
-            fs::create_dir_all(&scripts_dir).unwrap();
-            fs::create_dir_all(&tool_bin).unwrap();
-            fs::create_dir_all(&work).unwrap();
-            fs::create_dir_all(&output).unwrap();
-            let script_name = format!("build-{package}.sh");
-            fs::copy(
-                crate::repo_root()
-                    .join("packages/registry")
-                    .join(package)
-                    .join(&script_name),
-                package_dir.join(&script_name),
-            )
-            .unwrap();
-            fs::write(
-                scripts_dir.join("wasm-artifact-guards.sh"),
-                "wasm_require_exports() { :; }\nwasm_require_target_aware_exec_authority() { :; }\n",
-            )
-            .unwrap();
-            let fake_cargo = tool_bin.join("cargo");
-            fs::write(
-                &fake_cargo,
-                r#"#!/usr/bin/env bash
+        let package = "kernel";
+        let artifact = "kandelo-kernel.wasm";
+        let fixture = tempdir(&format!("source-only-{package}-cargo-target"));
+        let package_dir = fixture.join(format!("packages/registry/{package}"));
+        let scripts_dir = fixture.join("scripts");
+        let tool_bin = fixture.join("tools/bin");
+        let work = fixture.join("resolver-work");
+        let output = fixture.join("resolver-output");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::create_dir_all(&tool_bin).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let script_name = format!("build-{package}.sh");
+        fs::copy(
+            crate::repo_root()
+                .join("packages/registry")
+                .join(package)
+                .join(&script_name),
+            package_dir.join(&script_name),
+        )
+        .unwrap();
+        fs::write(
+            scripts_dir.join("wasm-artifact-guards.sh"),
+            "wasm_require_exports() { :; }\nwasm_require_target_aware_exec_authority() { :; }\n",
+        )
+        .unwrap();
+        let fake_cargo = tool_bin.join("cargo");
+        fs::write(
+            &fake_cargo,
+            r#"#!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "-V" ]; then
   echo 'cargo 1.97.0-nightly fixture'
@@ -32248,43 +32232,41 @@ if [ "${1:-}" = "-V" ]; then
 fi
 case " $* " in
   *" -p kandelo "*) artifact=kandelo_kernel.wasm ;;
-  *" -p wasm-posix-userspace "*) artifact=wasm_posix_userspace.wasm ;;
   *) exit 91 ;;
 esac
 mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"
 printf '\0asm\1\0\0\0fixture' > "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/$artifact"
 "#,
-            )
-            .unwrap();
-            fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
-            let mut path = std::ffi::OsString::from(&tool_bin);
-            path.push(":");
-            path.push(std::env::var_os("PATH").unwrap_or_default());
+        )
+        .unwrap();
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut path = std::ffi::OsString::from(&tool_bin);
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
 
-            let command_output = Command::new("bash")
-                .arg(package_dir.join(&script_name))
-                .env("PATH", path)
-                .env("WASM_POSIX_DEP_WORK_DIR", &work)
-                .env("WASM_POSIX_DEP_OUT_DIR", &output)
-                .env("CARGO_TARGET_DIR", work.join("cargo-target"))
-                .output()
-                .unwrap();
-            assert!(
-                command_output.status.success(),
-                "{package} resolver recipe failed:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&command_output.stdout),
-                String::from_utf8_lossy(&command_output.stderr),
-            );
-            assert!(output.join(artifact).is_file());
-            assert!(
-                !fixture.join("target").exists(),
-                "{package} wrote Cargo output into the checkout",
-            );
-            assert!(
-                !fixture.join("local-binaries").exists() && !fixture.join("host/wasm").exists(),
-                "{package} resolver recipe installed checkout mirrors",
-            );
-        }
+        let command_output = Command::new("bash")
+            .arg(package_dir.join(&script_name))
+            .env("PATH", path)
+            .env("WASM_POSIX_DEP_WORK_DIR", &work)
+            .env("WASM_POSIX_DEP_OUT_DIR", &output)
+            .env("CARGO_TARGET_DIR", work.join("cargo-target"))
+            .output()
+            .unwrap();
+        assert!(
+            command_output.status.success(),
+            "{package} resolver recipe failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&command_output.stdout),
+            String::from_utf8_lossy(&command_output.stderr),
+        );
+        assert!(output.join(artifact).is_file());
+        assert!(
+            !fixture.join("target").exists(),
+            "{package} wrote Cargo output into the checkout",
+        );
+        assert!(
+            !fixture.join("local-binaries").exists() && !fixture.join("host/wasm").exists(),
+            "{package} resolver recipe installed checkout mirrors",
+        );
     }
 
     #[test]
@@ -34113,9 +34095,9 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
 
     #[test]
     fn cmd_resolve_with_binaries_dir_places_kernel_at_root() {
-        // First-party kernel/userspace artifacts are consumed as
-        // binaries/kernel.wasm and binaries/userspace.wasm, not as
-        // regular programs under binaries/programs/<arch>/.
+        // The first-party kernel artifact is consumed as
+        // binaries/kernel.wasm, not as a regular program under
+        // binaries/programs/<arch>/.
         let root = tempdir("resolve-bdir-kernel-reg");
         let cache = tempdir("resolve-bdir-kernel-cache");
         let bin_dir = tempdir("resolve-bdir-kernel-bin");
