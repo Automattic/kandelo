@@ -5129,11 +5129,13 @@ export class CentralizedKernelWorker {
 
     const nowMs = Date.now();
     const nowSec = Math.floor(nowMs / 1000);
-    setNow(
-      nowSec >>> 0,
-      Math.floor(nowSec / 0x1_0000_0000),
-      (nowMs % 1000) * 1_000_000,
-    );
+    // Hoist the clock control scalars so the kernel-export call site carries
+    // only reviewed scalar identifiers (no arithmetic operators), matching the
+    // scratch-contract audit's exact-key convention for kernel_* export calls.
+    const rootfsNowSecLo = nowSec >>> 0;
+    const rootfsNowSecHi = Math.floor(nowSec / 0x1_0000_0000);
+    const rootfsNowNsec = (nowMs % 1000) * 1_000_000;
+    setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec);
 
     const ptr = alloc(manifest.byteLength);
     const ptrValue = Number(ptr);
