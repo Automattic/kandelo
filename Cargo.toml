@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/shared",
     "crates/runtime-core",
+    "crates/fork-codec",
     "crates/kernel",
     "crates/fork-instrument",
     "crates/wasm-local-root-spill",
