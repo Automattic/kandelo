@@ -910,8 +910,17 @@ fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
         Err(_) => return Ok(true),
     };
     for dir in ["crates/shared", "crates/kernel"] {
-        if newest_mtime_under(&repo.join(dir))? > snapshot_mtime {
-            return Ok(true);
+        match newest_mtime_under(&repo.join(dir)) {
+            Ok(mtime) if mtime > snapshot_mtime => return Ok(true),
+            Ok(_) => {}
+            // A read error inside a directory that DOES exist (permission
+            // denied, a symlink that can't be stat'd, etc) is ambiguity
+            // unrelated to ABI drift, not proof of "nothing changed." Open
+            // the gate and let the authoritative `check-abi-version.sh`
+            // run rather than propagating the error and failing the whole
+            // pre-test gate on something that has nothing to do with the
+            // ABI snapshot.
+            Err(_) => return Ok(true),
         }
     }
     Ok(false)
@@ -6071,6 +6080,51 @@ materialization = "lazy"
         assert!(
             abi_sources_changed_since_snapshot(repo.path()).unwrap(),
             "a source newer than the snapshot must open the gate"
+        );
+    }
+
+    /// A directory-walk error inside an EXISTING source directory (as
+    /// opposed to the directory itself being absent, covered above) is
+    /// ambiguity unrelated to ABI drift, not proof of "nothing changed."
+    /// The gate must resolve this to `true` (run the authoritative check)
+    /// rather than propagating the error and failing the whole pre-test
+    /// gate on something that has nothing to do with the ABI snapshot.
+    /// Constructed with a permission-restricted subdirectory rather than a
+    /// stubbed seam: `newest_mtime_under` walks the real filesystem with no
+    /// injection point, and an unreadable directory is a robust, portable
+    /// way to make `fs::read_dir` fail on Unix without relying on a
+    /// dangling-symlink `metadata()` call, which does NOT error (`DirEntry
+    /// ::metadata` on Unix is `lstat`-equivalent and succeeds even for a
+    /// dangling symlink).
+    #[test]
+    #[cfg(unix)]
+    fn abi_sources_changed_since_snapshot_is_true_when_an_existing_source_dir_has_an_unreadable_entry()
+     {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+
+        // `crates/shared` DOES exist here (unlike the "absent dir" test
+        // above), but a subdirectory inside it cannot be listed.
+        let restricted = repo.path().join("crates/shared/restricted");
+        fs::create_dir_all(&restricted).unwrap();
+        let original_permissions = fs::metadata(&restricted).unwrap().permissions();
+        fs::set_permissions(&restricted, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = abi_sources_changed_since_snapshot(repo.path());
+
+        // Restore permissions unconditionally (before asserting) so a
+        // failing assertion never leaves an unreadable directory behind
+        // for the `TempDir` to fail to clean up.
+        fs::set_permissions(&restricted, original_permissions).unwrap();
+
+        assert!(
+            result.unwrap(),
+            "an unreadable entry inside an EXISTING source dir must open the \
+             gate, not fail closed or silently report no change"
         );
     }
 
