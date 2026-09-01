@@ -24,10 +24,12 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
+pub mod gc_codec;
 pub mod linked_frames;
 pub mod module_state;
 pub mod replay_events;
 
+pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use linked_frames::{
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
     LinkedFrames,
