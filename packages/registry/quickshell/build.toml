@@ -1,0 +1,13 @@
+script_path = "packages/registry/quickshell/build-quickshell.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+# The fetched `quickshell-src/` tree is gitignored; the resolver hashes
+# these tracked inputs on a clean checkout. script_path is not implicit —
+# only what this list names reaches the cache key.
+inputs = [
+  "packages/registry/quickshell/build-quickshell.sh",
+  "packages/registry/quickshell/src/no-wl-proxy-interpose-on-wasm.patch",
+  "scripts/package-build-roots.sh",
+]

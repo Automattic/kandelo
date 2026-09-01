@@ -63,6 +63,10 @@ name = "cairomm"
 class = "platform"
 
 [[packages]]
+name = "cli11"
+class = "platform"
+
+[[packages]]
 name = "coreutils"
 class = "user-software"
 
@@ -425,6 +429,10 @@ class = "user-software"
 [[packages]]
 name = "qtshadertools"
 class = "platform"
+
+[[packages]]
+name = "quickshell"
+class = "user-software"
 
 [[packages]]
 name = "redis"

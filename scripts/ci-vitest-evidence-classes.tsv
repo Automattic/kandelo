@@ -254,6 +254,7 @@ host/test/qt-gui-smoke.test.ts	source-only
 host/test/qt-qml-smoke.test.ts	source-only
 host/test/qtdemo-smoke.test.ts	prepared-product
 host/test/qtwaylandscanner-host-tool.test.ts	source-only
+host/test/quickshell-smoke.test.ts	prepared-product
 host/test/readdir-atomicity.test.ts	source-only
 host/test/readiness-deadline.test.ts	source-only
 host/test/readiness-wakeup.test.ts	source-only
