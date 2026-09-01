@@ -253,6 +253,18 @@ mod wasm {
     // Never resets.
     static EXTERNREFS_RESOLVED: AtomicU64 = AtomicU64::new(0);
 
+    // Monotonic count of exnref nodes the module has admitted and driven through
+    // reference reconstruction since worker start (Phase 6 D6.3a). Proof-of-use
+    // mirror of `EXTERNREFS_RESOLVED` for the exnref path: `fm_begin_reference_
+    // replay` bumps this by the admitted graph's exnref-node count. The DRIVE
+    // itself leaves the Exnref arm inert — the guest export
+    // `__wpk_fork_exception_materialize` mints/throws its own module-local tag —
+    // so this count (not the externref `reconstructed` count) is what proves the
+    // module, not a silent JS fallback, handled an exnref-bearing graph. Its
+    // reachable externref payloads are rooted by the same PHASE B transit path.
+    // Never resets.
+    static EXNREFS_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+
     // The host identities the last `fm_begin_reference_replay` drive re-rooted
     // for this fork (the externref `HostRef`s + their owning generation). Held
     // alongside `REFERENCE_STATE` so the once-per-value roots outlive the drive:
@@ -816,14 +828,18 @@ mod wasm {
         )?;
         let driver = ReferenceReplayDriver::new(transaction);
 
-        // D6.2 gate (defense in depth; the host computes the same predicate).
-        // Widened from D6.1's funcref/null to admit externref: the module now
-        // orchestrates externref re-rooting through the `wpk_fork_host` seam.
-        // Every other kind (exnref / GC struct/array / i31 / static-root) still
-        // needs a JS engine-floor provider this slice does not move, so it is a
-        // truthful `EOPNOTSUPP` that keeps the fork on the byte-identical JS
-        // reference path.
-        if !driver.all_nodes_externref_funcref_or_null() {
+        // D6.3a gate (defense in depth; the host computes the same predicate,
+        // plus an exception-descriptor validity check only the host can see).
+        // Widened from D6.2's null/funcref/externref to also admit exnref: an
+        // exnref adds NO new engine-floor callback — its program exception tag is
+        // guest-module-local, so the guest export `__wpk_fork_exception_
+        // materialize` does the throw/`catch_ref`; the module only re-roots the
+        // exnref's reachable externref payloads through the transit (PHASE B).
+        // Every remaining kind (GC struct/array / i31 / static-root) still needs
+        // a JS drive-order this slice does not move, so it is a truthful
+        // `EOPNOTSUPP` that keeps the fork on the byte-identical JS reference
+        // path.
+        if !driver.all_nodes_exnref_externref_funcref_or_null() {
             return Err(Errno::EOPNOTSUPP);
         }
         // One imported catalog table => funcrefs must share one activation.
@@ -839,6 +855,9 @@ mod wasm {
         // value the module caused the host to resolve.
         let reconstruction = driver.drive_reconstruction(&mut WpkForkHost, pid)?;
         EXTERNREFS_RESOLVED.fetch_add(reconstruction.reconstructed() as u64, Ordering::Relaxed);
+        // D6.3a proof-of-use: the drive's Exnref arm is inert (the guest export
+        // materializes the exception), so count the admitted exnref nodes here.
+        EXNREFS_RECONSTRUCTED.fetch_add(driver.exnref_node_count() as u64, Ordering::Relaxed);
 
         *reference_state() = Some(driver);
         *reconstruction_state() = Some(reconstruction);
@@ -1154,6 +1173,19 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_externrefs_resolved() -> i64 {
         EXTERNREFS_RESOLVED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Monotonic count of exnref nodes this module has admitted and driven since
+    /// worker start (Phase 6 D6.3a). Proof-of-use mirror of
+    /// `fm_externrefs_resolved` for the exnref path: after a flag-on
+    /// exnref-bearing fork drives reconstruction through the module, this has
+    /// advanced by the graph's exnref-node count; a silent JS fallback leaves it
+    /// unchanged. The exnref's reachable externref payloads are rooted through
+    /// the same transit path (`fm_externrefs_resolved` also advances), while the
+    /// exnref value itself is materialized by the guest export. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_exnrefs_reconstructed() -> i64 {
+        EXNREFS_RECONSTRUCTED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).

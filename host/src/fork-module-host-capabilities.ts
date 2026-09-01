@@ -1,5 +1,5 @@
-// Phase 6 D6.2 — the REAL engine-floor `wpk_fork_host.*` import bodies that back
-// the co-resident fork-module's `WpkForkHost` seam.
+// Phase 6 D6.2/D6.3a — the REAL engine-floor `wpk_fork_host.*` import bodies that
+// back the co-resident fork-module's `WpkForkHost` seam.
 //
 // The co-resident module (crates/fork-module) ORCHESTRATES reference
 // reconstruction but cannot hold a live `externref` — Wasm has no linear-memory
@@ -15,9 +15,12 @@
 //     parity) — and hands the module an ordinal into a side table,
 //   * `host_transit_publish` / `host_transit_read` stage a reconstructed ref in
 //     the anyref transit at `recipe_id + 1` and read it back with an identity
-//     check (the R1 rooting guard). Used only for externrefs reachable from a GC
-//     struct/array or exnref consumer (D6.3/6.4); a plain externref-in-a-local
-//     fork (D6.2) publishes nothing here.
+//     check (the R1 rooting guard). Used only for externrefs reachable from an
+//     exnref consumer (D6.3a) or a GC struct/array (D6.4); a plain
+//     externref-in-a-local fork (D6.2) publishes nothing here. D6.3a wires the
+//     real transit adapter (`ForkModuleTransitAdapter`, backed by the worker's
+//     early-GC transit) into production so an admitted exnref's payload is rooted
+//     in the real `(ref null any)` table.
 //   * `host_release_generation(gen)` drops this fork's ordinal roots. It does NOT
 //     clear the shared externref token cache: the JS reference path still owns
 //     that and clears it at process/exec teardown.
@@ -31,10 +34,12 @@ import type { ForkExternrefTokenCache } from "./fork-reference-broker";
 
 /**
  * The anyref transit the transit-publish/read bodies bridge to. For a plain
- * externref fork (D6.2) it is never driven; the GC/exception slices (D6.3/6.4)
- * supply the real `any.convert_extern`-backed transit. `publish` stores a
- * reconstructed reference at `recipeId`; `read` returns it (or a different
- * identity if the engine lost the slot, which the module's R1 guard rejects).
+ * externref fork (D6.2) it is never driven; the exnref slice (D6.3a) supplies the
+ * real transit (backed by the worker's early-GC `ForkAnyrefTransitTable`, whose
+ * `table.set` internalizes the externref token as an `(ref any)`), and the GC
+ * slice (D6.4) reuses it. `publish` stores a reconstructed reference at
+ * `recipeId`; `read` returns it (or a different identity if the engine lost the
+ * slot, which the module's R1 guard rejects).
  */
 export interface ForkModuleTransitAdapter {
   publish(recipeId: number, value: unknown): void;
@@ -54,10 +59,12 @@ export interface ForkModuleHostCapabilitiesBacking {
    */
   readonly generationId: number;
   /**
-   * The anyref transit (D6.3/6.4). Optional: a plain externref fork never
-   * publishes into the transit, so D6.2 production passes none. When absent, the
-   * transit bodies are a truthful `EINVAL` (they are never called for an
-   * admitted D6.2 graph).
+   * The anyref transit (D6.3a exnref / D6.4 GC). Optional: a plain
+   * externref/funcref/null fork never publishes into the transit, so its PHASE B
+   * is empty and the adapter is never called. When absent, the transit bodies are
+   * a truthful `EINVAL` — which is exactly how an exnref fork fails loud if a host
+   * admits it without wiring the transit, rather than leaving a payload unrooted.
+   * D6.3a production passes a real adapter over the worker's early-GC transit.
    */
   readonly transit?: ForkModuleTransitAdapter;
 }

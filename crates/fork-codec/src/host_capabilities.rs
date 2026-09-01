@@ -256,8 +256,14 @@ pub trait ForkHostCapabilities {
     /// cannot construct a `Tag`, only refer to one. Backs the exception tag mint
     /// in `fork-worker-import-exceptions.ts` (the D6 plan's `host_mint_tag`).
     ///
-    /// When: REPLAY, once per distinct exception tag before materializing any
-    /// exnref that uses it.
+    /// STAYS INERT on the Wasm/exnref path (D6.3a). A program exception tag is
+    /// GUEST-MODULE-LOCAL, so the guest export `__wpk_fork_exception_materialize`
+    /// throws/`catch_ref`s against its own tag; the co-resident module neither
+    /// mints a tag nor throws, so it NEVER calls this during an exnref drive.
+    /// This method exists for the NATIVE backend (`native_sketch`), where the
+    /// host owns tag identity via `Tag::new`. When it becomes live in the Wasm
+    /// backend it would be called once per distinct exception tag before
+    /// materializing any exnref that uses it.
     fn mint_exception_tag(
         &mut self,
         generation: HostGeneration,
@@ -285,11 +291,14 @@ pub trait ForkHostCapabilities {
     /// `isForkUnwindException` (`host/src/fork-unwind-transport.ts`).
     ///
     /// When: distinguishing the transport from a genuine program exception
-    /// during unwind/abort. TODO(D6.3): in today's JS floor this check runs
-    /// INLINE at the guest/worker-entry catch site; the module-facing form
-    /// addresses the caught value by ordinal, which requires the host to have
-    /// first bound the caught exception to a [`HostRef`]. The signature is the
-    /// intended shape; the caller wiring lands with the exnref slice.
+    /// during unwind/abort. STAYS INERT through D6.3a: admitting exnref forks
+    /// (D6.3a) needs no new engine-floor callback, and this identity check is an
+    /// unwind/exec-catch concern, not part of the exnref reference drive. In
+    /// today's JS floor the check runs INLINE at the guest/worker-entry catch
+    /// site; the module-facing form addresses the caught value by ordinal, which
+    /// requires the host to have first bound the caught exception to a
+    /// [`HostRef`]. The signature is the intended shape; the caller wiring is
+    /// deferred to the later unwind/exec slice (it does NOT land with D6.3a).
     fn recognize_unwind_transport(
         &mut self,
         tag: HostTag,
@@ -412,6 +421,11 @@ pub mod mock {
         /// Records the recipe handles passed to `resolve_externref`, in call
         /// order (test inspector: proves the module drove the seam per node).
         resolved_externref_handles: Vec<u32>,
+        /// Count of `mint_exception_tag` calls (test inspector). D6.3a asserts
+        /// this stays 0 across an exnref drive: the drive's Exnref arm is inert
+        /// (the guest export mints/throws its own module-local tag), so the drive
+        /// must never mint a tag.
+        mint_exception_tag_calls: u32,
     }
 
     impl MockForkHost {
@@ -429,6 +443,11 @@ pub mod mock {
         /// order (test inspector: proof the drive resolved each externref node).
         pub fn resolved_externref_handles(&self) -> &[u32] {
             &self.resolved_externref_handles
+        }
+
+        /// Number of times `mint_exception_tag` was called (test inspector).
+        pub fn mint_exception_tag_calls(&self) -> u32 {
+            self.mint_exception_tag_calls
         }
 
         /// Number of live rooted references in `generation` (test inspector).
@@ -590,6 +609,8 @@ pub mod mock {
             module_activation: u32,
             layout_id: u32,
         ) -> Result<HostTag, Errno> {
+            self.mint_exception_tag_calls =
+                self.mint_exception_tag_calls.saturating_add(1);
             let g = self.active_gen_mut(generation)?;
             g.next_tag = g.next_tag.checked_add(1).ok_or(Errno::ENOSPC)?;
             let id = g.next_tag;

@@ -140,6 +140,8 @@ for (const name of [
   "fm_references_reconstructed",
   // Phase 6 D6.2 externref reconstruction proof-of-use + the seam anchor.
   "fm_externrefs_resolved",
+  // Phase 6 D6.3a exnref reconstruction proof-of-use counter.
+  "fm_exnrefs_reconstructed",
   "fm_host_capabilities_probe",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -240,6 +242,25 @@ const errno = () => x.fm_last_errno();
       + `transit_publish x${hostCalls.transitPublish}, transit_read x${hostCalls.transitRead}`,
   );
 }
+
+// -- Phase 6 D6.3a: the exnref proof-of-use counter is present and inert here --
+//
+// `fm_exnrefs_reconstructed` advances ONLY when `fm_begin_reference_replay`
+// admits an exnref-bearing graph and drives it. The retention-anchor probe above
+// exercises the raw seam (including `host_mint_exception_tag`), but it never
+// drives `fm_begin_reference_replay`, so the exnref counter must still read 0 —
+// proving the counter export is real and is not spuriously bumped by the seam
+// probe. The full exnref drive (real KFMS arena -> module admits -> PHASE B roots
+// the payload in the REAL anyref transit -> counter advances -> mint NOT called)
+// is validated in `host/test/fork-module-exnref-replay.test.ts`, which builds the
+// arena with the production TypeScript KFMS/KFRV encoder (the same Node/V8 engine
+// this harness runs in) rather than hand-encoding it here.
+assert.equal(
+  x.fm_exnrefs_reconstructed(),
+  0n,
+  "exnref counter is inert until fm_begin_reference_replay admits an exnref graph",
+);
+console.log("  ok: fm_exnrefs_reconstructed present and inert (0) outside a reference replay");
 
 // -- The sentinel: proxy for live guest data at LOW offsets --------------------
 //

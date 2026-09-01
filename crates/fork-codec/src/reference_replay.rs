@@ -162,6 +162,45 @@ impl ReferenceReplayDriver {
         })
     }
 
+    /// True when EVERY node is Null, Funcref, Externref, or Exnref — the widened
+    /// kind set D6.3a admits through the module. An exnref adds NO new
+    /// engine-floor callback: its program exception tag is guest-module-local, so
+    /// the guest export `__wpk_fork_exception_materialize` does the throw /
+    /// `catch_ref` against its own tag. The module's only job is to root the
+    /// exnref's reachable externref payloads in the anyref transit
+    /// (`transit_rooted_recipes` + PHASE B) before the guest codec consumes them.
+    /// The still-deferred aggregate kinds (GC struct/array / i31 / static-root)
+    /// need a JS drive-order this slice does not move, so they keep the
+    /// byte-identical JS reference path. The host computes the same predicate
+    /// (plus an exception-descriptor validity check it alone can see) before
+    /// flipping the reference path; the module re-checks so a disagreeing host can
+    /// never drive an unadmitted kind through the seam.
+    pub fn all_nodes_exnref_externref_funcref_or_null(&self) -> bool {
+        self.transaction.nodes.iter().all(|entry| {
+            matches!(
+                entry.node,
+                ReferenceRecipeNode::Null
+                    | ReferenceRecipeNode::Funcref { .. }
+                    | ReferenceRecipeNode::Externref { .. }
+                    | ReferenceRecipeNode::Exnref { .. }
+            )
+        })
+    }
+
+    /// The number of Exnref nodes in the graph — the proof-of-use count the
+    /// module bumps into `fm_exnrefs_reconstructed` once an exnref-bearing graph
+    /// is admitted and driven through the module. The drive itself leaves the
+    /// Exnref arm inert (the guest export materializes the exception), so this
+    /// count, not `ReconstructionState::reconstructed`, is what proves the module
+    /// (not a silent JS fallback) handled an exnref graph.
+    pub fn exnref_node_count(&self) -> u32 {
+        self.transaction
+            .nodes
+            .iter()
+            .filter(|entry| matches!(entry.node, ReferenceRecipeNode::Exnref { .. }))
+            .count() as u32
+    }
+
     /// The recipe ids of externrefs that a typed/exnref consumer reaches — the
     /// externrefs that MUST be staged in the anyref transit table (at slot
     /// `recipe_id + 1`) before the consumer's GC fill / exception materialize
@@ -550,6 +589,80 @@ mod tests {
         host.corrupt_transit_reads();
         assert_eq!(
             struct_over_externref().drive_reconstruction(&mut host, 3),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    // --- D6.3a: exnref admission + transit into production ------------------
+
+    /// An exnref whose reference payload names an externref: the externref must
+    /// be published into the anyref transit before the guest codec's
+    /// `__wpk_fork_exception_materialize` throws/catch_refs it. The MODULE does
+    /// not mint the exception tag or throw (that is the guest export's job); it
+    /// only re-roots the reachable externref payload, so `drive_reconstruction`'s
+    /// Exnref arm stays a no-op while PHASE B still roots the payload.
+    fn exnref_over_externref() -> ReferenceReplayDriver {
+        ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::Null),
+            entry(1, ReferenceRecipeNode::Externref { handle: 8 }),
+            entry(
+                2,
+                ReferenceRecipeNode::Exnref {
+                    module_activation: 0,
+                    tag_ordinal: 0,
+                    layout_id: 0,
+                    scalars: alloc::vec![0u8; 0],
+                    payloads: vec![1],
+                },
+            ),
+        ]))
+    }
+
+    #[test]
+    fn widened_gate_admits_exnref_but_d6_2_predicate_does_not() {
+        let driver = exnref_over_externref();
+        // The D6.3a predicate admits exnref; the D6.2 predicate rejects it.
+        assert!(driver.all_nodes_exnref_externref_funcref_or_null());
+        assert!(!driver.all_nodes_externref_funcref_or_null());
+        // The widened gate still admits every previously-admitted graph.
+        assert!(plain_externref().all_nodes_exnref_externref_funcref_or_null());
+        assert!(funcref_only().all_nodes_exnref_externref_funcref_or_null());
+        // A struct is still not an admitted kind (deferred to D6.4).
+        assert!(!struct_over_externref().all_nodes_exnref_externref_funcref_or_null());
+    }
+
+    #[test]
+    fn drive_roots_exnref_reachable_externref_without_minting_a_tag() {
+        let mut host = MockForkHost::new();
+        let driver = exnref_over_externref();
+        let state = driver.drive_reconstruction(&mut host, 5).expect("drive");
+
+        // PHASE A resolved the reachable externref payload; PHASE B published it
+        // into the transit at recipe_id+1 and read it back with matching
+        // identity (the R1 rooting guard the guest exception materialize relies
+        // on).
+        assert_eq!(host.resolved_externref_handles(), &[8]);
+        assert_eq!(state.reconstructed(), 1);
+        assert_eq!(driver.transit_rooted_recipes(), vec![1]);
+        assert_eq!(host.transit_slot_count(state.generation()), 1);
+
+        // The exnref node was admitted (proof-of-use count for
+        // `fm_exnrefs_reconstructed`) ...
+        assert_eq!(driver.exnref_node_count(), 1);
+        // ... but the drive minted NO exception tag: the guest export owns the
+        // throw/catch_ref against its own module-local tag, so the Exnref drive
+        // arm stays inert (`mint_exception_tag` must never be called here).
+        assert_eq!(host.mint_exception_tag_calls(), 0);
+    }
+
+    #[test]
+    fn drive_rejects_lost_transit_identity_for_exnref_without_panic() {
+        // The same R1 guard applies to an exnref's reachable externref payload:
+        // an engine that loses the anyref slot identity is a truthful EINVAL.
+        let mut host = MockForkHost::new();
+        host.corrupt_transit_reads();
+        assert_eq!(
+            exnref_over_externref().drive_reconstruction(&mut host, 5),
             Err(Errno::EINVAL)
         );
     }
