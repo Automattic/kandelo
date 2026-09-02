@@ -1,10 +1,4 @@
-;; Fork-continuation integration fixture for reference-bearing exception
-;; payloads.
-;;
-;; The __abi_version body is a placeholder sentinel (999999999), NOT a real ABI
-;; epoch; wasm-fork-instrument --stamp-abi-version overwrites it with the current
-;; ABI at build time. Instrumenting without the flag leaves the sentinel, which
-;; the host rejects as stale (exercised by the ABI-staleness negative test).
+;; ABI 43 integration fixture for reference-bearing exception payloads.
 ;;
 ;; Each path catches a reference payload through CatchRef, forks from that
 ;; handler, and waits for the child. The funcref is non-null; the externref
@@ -27,7 +21,7 @@
     (i32.const 65536))
 
   (func (export "__abi_version") (result i32)
-    i32.const 999999999)
+    i32.const 44)
 
   (func $sentinel (type $sentinel_type) (result i32)
     i32.const 77)

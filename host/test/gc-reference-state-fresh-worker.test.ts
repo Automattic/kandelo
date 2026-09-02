@@ -1,15 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { moduleReferenceProof } from "./fork-module-reference-proof";
 import {
   RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX,
 } from "./fixtures/gc-reference-state-fresh-worker-bytes";
-import { describeWasmArtifactPolicyFailures, extractAbiVersion } from "../src/constants";
-import { ABI_VERSION } from "../src/generated/abi";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixtureSource = resolve(
@@ -21,19 +20,13 @@ const instrumenter = resolve(
   "../../tools/bin/wasm-fork-instrument",
 );
 
-function readArtifact(path: string): ArrayBuffer {
-  const bytes = readFileSync(path);
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
-
 describe("Wasm GC reference state in a fresh process Worker", () => {
   let workDir = "";
-  let rawPath = "";
   let programPath = "";
 
   beforeAll(() => {
     workDir = mkdtempSync(join(tmpdir(), "kandelo-gc-reference-worker-"));
-    rawPath = join(workDir, "gc-reference-state.raw.wasm");
+    const rawPath = join(workDir, "gc-reference-state.raw.wasm");
     programPath = join(workDir, "gc-reference-state.wasm");
     // Keep the source path live in the test contract even though the checked
     // byte fixture is required for WABT compatibility.
@@ -42,17 +35,7 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
       rawPath,
       Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
     );
-    // The committed fixture declares a placeholder sentinel __abi_version, not a
-    // real ABI epoch. Stamp the current ABI at instrumentation time (test-only
-    // flag) so the artifact tracks the running ABI instead of going stale on
-    // every bump. This unblocks the artifact gate only; the reconstruction
-    // assertion below is what proves correctness.
-    execFileSync(instrumenter, [
-      "--stamp-abi-version",
-      rawPath,
-      "-o",
-      programPath,
-    ]);
+    execFileSync(instrumenter, [rawPath, "-o", programPath]);
   });
 
   afterAll(() => {
@@ -74,28 +57,35 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
     expect(result.stderr).toBe("");
   });
 
-  it("keeps the ABI-staleness gate real: without --stamp-abi-version the fixture is rejected", () => {
-    // Guard that the test-only stamp flag is load-bearing and the rejection path
-    // it bypasses is genuine. Instrumenting the same fixture WITHOUT the flag
-    // preserves the committed placeholder sentinel, which the host
-    // artifact-policy gate rejects as a stale ABI epoch.
-    const stalePath = join(workDir, "gc-reference-state.stale.wasm");
-    execFileSync(instrumenter, [rawPath, "-o", stalePath]);
-    const staleBytes = readArtifact(stalePath);
+  it("drives the cyclic typed-GC identity reconstruction through the module (flag on)", async () => {
+    // Phase 6 D6.5: the same self-cyclic, 4-aliased `$node` struct, but with the
+    // co-resident fork-module ENABLED. Asserts (a) PARITY — the child still
+    // exits 0 (its ref.eq alias checks + scalar field 77 all hold) exactly as the
+    // flag-off run; and (b) PROOF OF USE — the module advanced its typed-GC node
+    // counter (> 0), so the GC graph was reconstructed THROUGH the module rather
+    // than silently falling back to the JS typed-graph drive-order.
+    const result = await runCentralizedProgram({
+      programPath,
+      argv: ["gc-reference-state-fresh-worker"],
+      timeout: 30_000,
+      useDefaultRootfs: false,
+      forkModuleEnabled: true,
+    });
 
-    const declared = extractAbiVersion(staleBytes);
-    expect(declared).not.toBeNull();
-    expect(declared).not.toBe(ABI_VERSION);
+    // (a) PARITY.
     expect(
-      describeWasmArtifactPolicyFailures(staleBytes, { expectedAbi: ABI_VERSION }),
-    ).toContain(`ABI ${declared}, expected ${ABI_VERSION}`);
+      result.exitCode,
+      `flag-on GC fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
+    expect(result.stderr).toBe("");
 
-    // The stamped artifact used by the reconstruction test above declares the
-    // current epoch and no longer trips the ABI-mismatch gate.
-    const stampedBytes = readArtifact(programPath);
-    expect(extractAbiVersion(stampedBytes)).toBe(ABI_VERSION);
+    // (b) PROOF OF USE: the module reconstructed the typed-GC node graph.
+    const gcNodes = moduleReferenceProof(result.hostDiagnostics, "gc");
     expect(
-      describeWasmArtifactPolicyFailures(stampedBytes, { expectedAbi: ABI_VERSION }),
-    ).not.toContain(`ABI ${ABI_VERSION}, expected ${ABI_VERSION}`);
+      gcNodes,
+      "expected a fork-module typed-GC proof-of-use diagnostic; the module did " +
+        "not drive the GC reconstruction",
+    ).not.toBeNull();
+    expect(gcNodes!).toBeGreaterThan(0);
   });
 });

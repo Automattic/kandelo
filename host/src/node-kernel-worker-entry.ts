@@ -431,14 +431,20 @@ function installProcessWorkerListeners(
       message.type === "fork_module_references" &&
       message.pid === pid
     ) {
-      // Surface the co-resident fork-module's REFERENCE proof-of-use as a host
-      // diagnostic (Phase 6 D6.5): a nonzero count confirms the child's carried
-      // references were reconstructed through the module, not the JS fallback.
+      // Surface the co-resident fork-module's PER-KIND REFERENCE proof-of-use as
+      // a host diagnostic (Phase 6 D6.5): a nonzero count for a kind confirms the
+      // child's carried references of that kind were reconstructed through the
+      // module, not the JS fallback. All kinds ride one diagnostic string so a
+      // reader can extract any of funcref/externref/exnref/typed-GC.
       reportHostDiagnostic(
         {
           pid,
           source: "fork-module",
-          message: `fork_module_references=${message.references}`,
+          message:
+            `fork_module_references=${message.references} ` +
+            `externrefs_resolved=${message.externrefs} ` +
+            `exnrefs_reconstructed=${message.exnrefs} ` +
+            `gc_nodes_reconstructed=${message.gcNodes}`,
         },
         "warn",
       );

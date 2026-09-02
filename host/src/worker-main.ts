@@ -4684,12 +4684,27 @@ export async function centralizedWorkerMain(
       // parent's frame count. A nonzero value is the positive proof the module
       // drove the reconstruction rather than the JS reference fallback.
       if (forkModuleBackend && initData.isForkChild) {
+        // Per-kind proof-of-use (Phase 6 D6.5): report each reference kind the
+        // module reconstructed — funcref/null, externref, exnref, and typed-GC.
+        // A graph can mix kinds (an exnref whose payload is an externref advances
+        // both), so all four ride one message. Emitted ONLY when at least one is
+        // positive: a reference-free fork (the common case, e.g. `d_01`) leaves
+        // every counter at zero and must stay silent, so it does not add a second
+        // `fork-module` diagnostic that could race a consumer waiting for the
+        // parent's frame count. A nonzero value is the positive proof the module
+        // drove that kind's reconstruction rather than the JS reference fallback.
         const references = Number(forkModuleBackend.referencesReconstructed());
-        if (references > 0) {
+        const externrefs = Number(forkModuleBackend.externrefsResolved());
+        const exnrefs = Number(forkModuleBackend.exnrefsReconstructed());
+        const gcNodes = Number(forkModuleBackend.gcNodesReconstructed());
+        if (references > 0 || externrefs > 0 || exnrefs > 0 || gcNodes > 0) {
           port.postMessage({
             type: "fork_module_references",
             pid,
             references,
+            externrefs,
+            exnrefs,
+            gcNodes,
           } satisfies WorkerToHostMessage);
         }
         // Phase 6 D7b replay-side proof-of-use: a fork CHILD (crucially a

@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { moduleReferenceProof } from "./fork-module-reference-proof";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixtureSource = resolve(
@@ -85,6 +86,37 @@ describe("CatchRef fresh process worker replay", () => {
       `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
     ).toBe(0);
     expect(result.stderr).toBe("");
+  });
+
+  it("catches, forks, and restores the scalar payload with the module (flag on)", async () => {
+    // Phase 6 D6.5: the same catch-then-fork, with the co-resident fork-module
+    // ENABLED. NOTE this fixture DROPS the caught exnref and forks carrying only
+    // the scalar payload 42 (see `drop` / `local.set $caught` in the `.wat`), so
+    // there is no exnref in the fork's reference graph. This asserts (a) PARITY —
+    // the child still exits 0 (payload 42 restored) exactly as the flag-off run;
+    // and (b) the exnref proof-of-use stays SILENT (null), because a scalar-only
+    // fork carries no exnref for the module to reconstruct (the D7b silent-when-
+    // zero contract). Live exnref reconstruction is proven separately by
+    // `exnref-local-fork-fresh-worker.test.ts`, whose fixture keeps the exnref
+    // live across the fork.
+    const result = await runCentralizedProgram({
+      programPath,
+      argv: ["catch-ref-fresh-worker"],
+      timeout: 30_000,
+      useDefaultRootfs: false,
+      forkModuleEnabled: true,
+    });
+
+    // (a) PARITY.
+    expect(
+      result.exitCode,
+      `flag-on catch-then-fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
+    expect(result.stderr).toBe("");
+
+    // (b) No exnref is carried across the fork, so the module reconstructs none
+    // and the per-kind exnref proof-of-use stays silent.
+    expect(moduleReferenceProof(result.hostDiagnostics, "exnref")).toBeNull();
   });
 
   it("reconstructs reference-bearing catches in fresh Node child workers", async () => {

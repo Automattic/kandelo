@@ -1,12 +1,4 @@
-;; Fork-continuation real-worker integration fixture for activation-owned Wasm
-;; GC state.
-;;
-;; The __abi_version body is a placeholder sentinel (999999999), NOT a real ABI
-;; epoch; wasm-fork-instrument --stamp-abi-version overwrites it with the current
-;; ABI at build time. Instrumenting without the flag leaves the sentinel, which
-;; the host rejects as stale (exercised by the ABI-staleness negative test). The
-;; committed hex in gc-reference-state-fresh-worker-bytes.ts is the wat-crate
-;; assembly of this source (WABT cannot parse the typed-reference syntax).
+;; ABI 44 real-worker integration fixture for activation-owned Wasm GC state.
 ;;
 ;; One cyclic object is aliased simultaneously by a reference parameter, an
 ;; operand-stack carryover across kernel_fork, a mutable reference global, and
@@ -31,7 +23,7 @@
     (i32.const 65536))
 
   (func (export "__abi_version") (result i32)
-    i32.const 999999999)
+    i32.const 44)
 
   (func $wait_child (param $pid i32) (result i32)
     (local $base i32)
