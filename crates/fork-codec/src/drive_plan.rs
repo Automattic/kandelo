@@ -15,15 +15,19 @@
 //! `call`s the module's Rust `fm_after_alloc(recipe)` for the R1 transit-read
 //! assert.
 //!
-//! This slice builds ONLY the mechanism, proven on a TRIVIAL single struct
-//! (ALLOC then FILL for one recipe). The full topological plan-from-graph walk
-//! (R1/R2 order + cycle breaking) is item 3c.
+//! Item 3b built ONLY the mechanism, proven on a TRIVIAL single struct (ALLOC
+//! then FILL for one recipe): [`trivial_struct_plan`]. Item 3c adds the FULL
+//! topological plan-from-graph walk — [`build_drive_plan`] — that reproduces the
+//! proven JS `materializeTypedGraph` drive-order (R1 allocate then R2 fill, with
+//! dependency-ordered allocation, cycle-breaking, defaultable-shell pre-allocate,
+//! exception materialize, and per-activation base seeding) as an ordered
+//! [`DriveStep`] sequence.
 //!
 //! ## Serialized step layout (16 bytes, little-endian) — SHARED with the injected
 //! `fm_drive_execute` shim (`crates/fork-module-inject/src/main.rs`) and the host:
 //!
 //! ```text
-//!   +0  op      u32   DRIVE_OP_ALLOC (0) | DRIVE_OP_FILL (1)
+//!   +0  op      u32   DRIVE_OP_ALLOC (0) | DRIVE_OP_FILL (1) | DRIVE_OP_EXN (2)
 //!   +4  slot    u32   absolute drive-table index = base(activation) + op
 //!   +8  recipe  u32   reference recipe id (fm_after_alloc reads transit slot recipe+1)
 //!   +12 arg     u32   the i32 argument passed to the guest export via call_indirect
@@ -46,11 +50,22 @@ pub const DRIVE_STEP_OFF_ARG: usize = 12;
 pub const DRIVE_OP_ALLOC: u32 = 0;
 /// `op` value: fill the aggregate's scalars/edges (`_gc_fill`).
 pub const DRIVE_OP_FILL: u32 = 1;
+/// `op` value: materialize an exception (`__wpk_fork_exception_materialize`).
+/// Like ALLOC/FILL this is a `(i32) -> ()` guest export the shim
+/// `call_indirect`s; UNLIKE ALLOC it runs NO `fm_after_alloc` R1 assert (the
+/// guest export throws/`catch_ref`s against its own module-local tag and the
+/// exnref's reachable externref payloads were already transit-rooted by
+/// `ReferenceReplayDriver::drive_reconstruction` PHASE B). Mirrors the JS
+/// `materializeException` -> `exceptions.materialize(recipeId)` call.
+pub const DRIVE_OP_EXN: u32 = 2;
 
-/// Drive-table slots reserved per activation: one ALLOC + one FILL. Each
-/// activation `a` binds its `_gc_allocate` at `base(a)+DRIVE_OP_ALLOC` and its
-/// `_gc_fill` at `base(a)+DRIVE_OP_FILL`.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 2;
+/// Drive-table slots reserved per activation: one ALLOC + one FILL + one EXN.
+/// Each activation `a` binds its `_gc_allocate` at `base(a)+DRIVE_OP_ALLOC`, its
+/// `_gc_fill` at `base(a)+DRIVE_OP_FILL`, and its `__wpk_fork_exception_
+/// materialize` at `base(a)+DRIVE_OP_EXN`. The host reads `fm_drive_table_base`
+/// and binds the guest exports at these offsets, so bumping this count stays
+/// consistent as long as every side derives its slots from `drive_table_base`.
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 3;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -141,16 +156,275 @@ pub fn trivial_struct_plan(activation: u32, recipe: u32) -> [DriveStep; 2] {
     ]
 }
 
+// -- Full topological plan-from-graph walk (Phase 6 item 3c) ------------------
+
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
+
+use crate::reference_recipes::{node_edges, ReferenceRecipeEntry, ReferenceRecipeNode};
+
+/// The GC-layout facts [`build_drive_plan`] cannot read from the reference graph
+/// alone, supplied by the caller (in production, computed from the decoded
+/// per-activation `kandelo.wpk_fork.gc_codec` layout catalog, exactly as the JS
+/// `ForkEarlyChildReferenceProvider` reads its `ForkGcLayoutDescriptor`s).
+///
+/// The reference-recipe graph names each struct/array's raw `fields`/`elements`
+/// edges but NOT which of them are *constructor* (allocation-time) dependencies
+/// versus mutable fields filled later — that split lives in the layout
+/// descriptor (`provenanceReferenceCount` + `FORK_GC_FIELD_ALLOCATION_DEPENDENCY`
+/// flags), and it is what makes the allocate order topological. It also names
+/// the defaultable-shell layouts (pre-allocated before the identity walk) and
+/// the i31 / exception OWNER activations (the smallest GC- / exception-declaring
+/// activation, and the host-exception remap), none of which are graph-local.
+///
+/// The trait mirrors the JS drive-order's inputs field-for-field:
+///
+/// * [`allocation_dependencies`](Self::allocation_dependencies) == the JS
+///   `gcAllocationDependencies(node, layout)` result for a struct/array recipe
+///   (its constructor-dependency edges, in order). MUST be empty for i31 and for
+///   any non-typed recipe.
+/// * [`is_defaultable_shell`](Self::is_defaultable_shell) == the JS
+///   `(layout.flags & FORK_GC_LAYOUT_DEFAULTABLE_SHELL) !== 0` for a struct/array
+///   recipe (pre-allocated with NO dependency walk).
+/// * [`i31_owner`](Self::i31_owner) == the JS `i31Owner` (the activation whose
+///   `_gc_allocate` mints i31 values); `None` when the graph has no i31 node.
+/// * [`exn_owner`](Self::exn_owner) == the JS `directOwner(node)` for an exnref
+///   recipe (its `module_activation`, or the host-exception owner for the
+///   reserved host activation id); `None` only for a non-exnref recipe.
+pub trait DrivePlanHints {
+    /// The ordered constructor-dependency edges of struct/array `recipe_id`
+    /// (empty for i31 / non-typed recipes). Faithful to `gcAllocationDependencies`.
+    fn allocation_dependencies(&self, recipe_id: u32) -> &[u32];
+    /// Whether struct/array `recipe_id` is a defaultable-shell layout.
+    fn is_defaultable_shell(&self, recipe_id: u32) -> bool;
+    /// The activation that owns i31 allocation, if the graph carries any i31.
+    fn i31_owner(&self) -> Option<u32>;
+    /// The activation that materializes exnref `recipe_id` (its `directOwner`).
+    fn exn_owner(&self, recipe_id: u32) -> Option<u32>;
+}
+
+/// The mutable walk state for one `build_drive_plan` call. The memo sets mirror
+/// the JS provider's `allocatedTypedRecipes` / `filledTypedRecipes` /
+/// `materializedExceptionRecipes` (each drive call is issued at most once), and
+/// `visiting` mirrors the JS per-walk `visiting` set that detects an
+/// unallocatable constructor cycle.
+struct PlanWalk<'a, H: DrivePlanHints> {
+    nodes: &'a [ReferenceRecipeEntry],
+    hints: &'a H,
+    allocated: BTreeSet<u32>,
+    filled: BTreeSet<u32>,
+    materialized_exn: BTreeSet<u32>,
+    visiting: BTreeSet<u32>,
+    steps: Vec<DriveStep>,
+}
+
+impl<'a, H: DrivePlanHints> PlanWalk<'a, H> {
+    /// The node at canonical id `recipe_id` (the decoder guarantees id == index).
+    fn node(&self, recipe_id: u32) -> Result<&'a ReferenceRecipeNode, Errno> {
+        let entry = self.nodes.get(recipe_id as usize).ok_or(Errno::EINVAL)?;
+        if entry.id != recipe_id {
+            return Err(Errno::EINVAL); // non-canonical graph
+        }
+        Ok(&entry.node)
+    }
+
+    /// Push one drive step for guest export `op` in `activation`, driven with the
+    /// recipe id as both the transit key (`recipe`) and the guest `arg`.
+    fn emit(&mut self, op: u32, activation: u32, recipe_id: u32) {
+        let slot = drive_table_base(activation) + op;
+        self.steps.push(DriveStep {
+            op,
+            slot,
+            recipe: recipe_id,
+            arg: recipe_id,
+        });
+    }
+
+    /// Mirror the JS `ensureIdentity`: dispatch by kind. Only the typed-GC
+    /// (allocate) and exnref (materialize) arms issue a guest drive step; null /
+    /// funcref / static-root / externref are reconstructed OUTSIDE the drive (the
+    /// funcref shim, the still-JS static-root path, and the Rust
+    /// `drive_reconstruction` externref/transit phases), so they emit nothing.
+    fn ensure_identity(&mut self, recipe_id: u32) -> Result<(), Errno> {
+        match self.node(recipe_id)? {
+            ReferenceRecipeNode::Null
+            | ReferenceRecipeNode::Funcref { .. }
+            | ReferenceRecipeNode::StaticRoot { .. }
+            | ReferenceRecipeNode::Externref { .. } => Ok(()),
+            ReferenceRecipeNode::Exnref { .. } => self.materialize_exception(recipe_id),
+            ReferenceRecipeNode::I31 { .. }
+            | ReferenceRecipeNode::Struct { .. }
+            | ReferenceRecipeNode::Array { .. } => self.allocate_typed(recipe_id, false),
+        }
+    }
+
+    /// Mirror the JS `allocateTyped`: allocate a struct/array/i31 recipe (its
+    /// `_gc_allocate` ALLOC step) after recursively ensuring its constructor
+    /// dependencies (unless a defaultable-shell pre-allocate, which takes no
+    /// dependency walk). Idempotent; a re-entry on a recipe still in `visiting`
+    /// is an unallocatable constructor cycle -> `EINVAL` (the JS throw).
+    fn allocate_typed(&mut self, recipe_id: u32, defaultable_shell: bool) -> Result<(), Errno> {
+        if self.allocated.contains(&recipe_id) {
+            return Ok(());
+        }
+        if self.visiting.contains(&recipe_id) {
+            return Err(Errno::EINVAL); // unallocatable constructor cycle
+        }
+        let activation = match self.node(recipe_id)? {
+            ReferenceRecipeNode::I31 { .. } => self.hints.i31_owner().ok_or(Errno::EINVAL)?,
+            ReferenceRecipeNode::Struct {
+                module_activation, ..
+            }
+            | ReferenceRecipeNode::Array {
+                module_activation, ..
+            } => *module_activation,
+            _ => return Err(Errno::EINVAL), // not a typed recipe
+        };
+        self.visiting.insert(recipe_id);
+        // struct/array constructor dependencies are ensured first so an immutable
+        // constructor never reads a not-yet-allocated aggregate; i31 has none, and
+        // a defaultable shell is pre-allocated empty (deps come on the later walk).
+        if !defaultable_shell {
+            // Copy out of the caller's hints before the &mut self recursion.
+            let deps: Vec<u32> = self.hints.allocation_dependencies(recipe_id).to_vec();
+            for dependency in deps {
+                self.ensure_identity(dependency)?;
+            }
+        }
+        self.emit(DRIVE_OP_ALLOC, activation, recipe_id);
+        self.allocated.insert(recipe_id);
+        self.visiting.remove(&recipe_id);
+        Ok(())
+    }
+
+    /// Mirror the JS `materializeException`: ensure every reference payload's
+    /// identity, then issue the exnref's materialize (EXN) step in its owner
+    /// activation. Idempotent; a re-entry while visiting is a cycle -> `EINVAL`.
+    fn materialize_exception(&mut self, recipe_id: u32) -> Result<(), Errno> {
+        if self.materialized_exn.contains(&recipe_id) {
+            return Ok(());
+        }
+        if self.visiting.contains(&recipe_id) {
+            return Err(Errno::EINVAL); // unallocatable exception cycle
+        }
+        let payloads: Vec<u32> = match self.node(recipe_id)? {
+            ReferenceRecipeNode::Exnref { payloads, .. } => payloads.clone(),
+            _ => return Err(Errno::EINVAL), // not an exception recipe
+        };
+        let owner = self.hints.exn_owner(recipe_id).ok_or(Errno::EINVAL)?;
+        self.visiting.insert(recipe_id);
+        for payload in payloads {
+            self.ensure_identity(payload)?;
+        }
+        self.emit(DRIVE_OP_EXN, owner, recipe_id);
+        self.materialized_exn.insert(recipe_id);
+        self.visiting.remove(&recipe_id);
+        Ok(())
+    }
+}
+
+/// Build the ordered drive plan for a fork's whole reference graph, reproducing
+/// the proven JS `materializeTypedGraph` drive-order as a serializable
+/// [`DriveStep`] sequence for `fm_drive_execute`.
+///
+/// `nodes` is the decoded, canonical (`id == index`) reference-recipe graph;
+/// `hints` supplies the per-recipe GC-layout facts the graph does not carry (see
+/// [`DrivePlanHints`]). The host gate keeps only admitted graphs (null / funcref
+/// / externref / exnref / typed-GC — no static-root) on this path, so a
+/// static-root recipe here is a caller error, but it simply emits no step (it is
+/// not a drive kind), exactly as `ensureIdentity` treats it.
+///
+/// The plan issues, in order:
+///
+/// 1. **Defaultable-shell pre-allocate** (JS phase 3): an ALLOC step for every
+///    reachable struct/array whose layout is a defaultable shell, in id order,
+///    with NO dependency walk — so a shell exists before the identity walk fills
+///    a cycle through it.
+/// 2. **Allocate / identity walk** (JS phase 4): `ensureIdentity` over every node
+///    in id order, which post-order-allocates each typed recipe after its
+///    constructor dependencies (topological with cycle-breaking) and materializes
+///    each exnref after its payloads. Emits ALLOC (`_gc_allocate`) and EXN
+///    (`__wpk_fork_exception_materialize`) steps.
+/// 3. **Fill walk** (JS phase 5): a FILL (`_gc_fill`) step for every struct/array
+///    not yet filled, in id order, after re-ensuring its edges' identity (already
+///    satisfied, so no new steps).
+///
+/// The externref / transit rooting and null/funcref reconstruction are NOT in
+/// this plan: they are the Rust `ReferenceReplayDriver::drive_reconstruction`
+/// (PHASE A/B) and the injected funcref shim, run before `fm_drive_execute`.
+///
+/// Returns `Err(Errno::EINVAL)` on a non-canonical graph, a missing i31/exn
+/// owner, or an unallocatable constructor/exception cycle (the JS throw); it
+/// never panics.
+pub fn build_drive_plan<H: DrivePlanHints>(
+    nodes: &[ReferenceRecipeEntry],
+    hints: &H,
+) -> Result<Vec<DriveStep>, Errno> {
+    let mut walk = PlanWalk {
+        nodes,
+        hints,
+        allocated: BTreeSet::new(),
+        filled: BTreeSet::new(),
+        materialized_exn: BTreeSet::new(),
+        visiting: BTreeSet::new(),
+        steps: Vec::new(),
+    };
+
+    // Phase 3 — defaultable-shell pre-allocate (id order, no dependency walk).
+    for entry in nodes {
+        let is_shell = matches!(
+            entry.node,
+            ReferenceRecipeNode::Struct { .. } | ReferenceRecipeNode::Array { .. }
+        ) && hints.is_defaultable_shell(entry.id);
+        if is_shell && !walk.allocated.contains(&entry.id) {
+            walk.allocate_typed(entry.id, true)?;
+        }
+    }
+
+    // Phase 4 — allocate / identity walk (id order). `visiting` is empty between
+    // top-level calls (each completes and removes itself), matching the JS shared
+    // per-walk set.
+    for entry in nodes {
+        walk.ensure_identity(entry.id)?;
+    }
+
+    // Phase 5 — fill walk (id order): FILL every struct/array once, after
+    // re-ensuring edge identity (idempotent; deps are already allocated).
+    for entry in nodes {
+        let (activation, edges) = match &entry.node {
+            ReferenceRecipeNode::Struct {
+                module_activation, ..
+            }
+            | ReferenceRecipeNode::Array {
+                module_activation, ..
+            } => (*module_activation, node_edges(&entry.node)),
+            _ => continue,
+        };
+        if walk.filled.contains(&entry.id) {
+            continue;
+        }
+        for &edge in edges {
+            walk.ensure_identity(edge)?;
+        }
+        walk.emit(DRIVE_OP_FILL, activation, entry.id);
+        walk.filled.insert(entry.id);
+    }
+
+    Ok(walk.steps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
 
     #[test]
-    fn drive_table_base_reserves_two_slots_per_activation() {
+    fn drive_table_base_reserves_slots_per_activation() {
+        // Three slots per activation (ALLOC, FILL, EXN).
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 3);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 2);
-        assert_eq!(drive_table_base(3), 6);
+        assert_eq!(drive_table_base(1), 3);
+        assert_eq!(drive_table_base(3), 9);
     }
 
     #[test]
@@ -168,10 +442,10 @@ mod tests {
 
     #[test]
     fn trivial_struct_plan_uses_the_activation_base_slots() {
-        // Activation 2 -> base 4: ALLOC slot 4, FILL slot 5.
+        // Activation 2 -> base 6 (3 slots/activation): ALLOC slot 6, FILL slot 7.
         let plan = trivial_struct_plan(2, 9);
-        assert_eq!(plan[0].slot, 4);
-        assert_eq!(plan[1].slot, 5);
+        assert_eq!(plan[0].slot, 6);
+        assert_eq!(plan[1].slot, 7);
     }
 
     #[test]
@@ -197,5 +471,305 @@ mod tests {
         let mut bytes = vec![0u8; DRIVE_STEP_SIZE * plan.len()];
         serialize_plan(&plan, &mut bytes).unwrap();
         assert_eq!(read_step(&bytes, 2), Err(Errno::EINVAL));
+    }
+
+    // --- item 3c: build_drive_plan graph-walk ------------------------------
+
+    // `BTreeSet`, `Vec`, `ReferenceRecipeEntry`/`Node`, `node_edges`, and the
+    // builder API all arrive via `use super::*`; only `BTreeMap` is new here.
+    use alloc::collections::BTreeMap;
+
+    /// A test double for [`DrivePlanHints`]: per-recipe allocation dependencies +
+    /// defaultable-shell flags, plus the i31 / exn owner activations. Faithful
+    /// stand-in for the production GC-layout-descriptor lookups.
+    #[derive(Default)]
+    struct MockHints {
+        deps: BTreeMap<u32, Vec<u32>>,
+        shells: BTreeSet<u32>,
+        i31_owner: Option<u32>,
+        exn_owner: Option<u32>,
+    }
+
+    impl DrivePlanHints for MockHints {
+        fn allocation_dependencies(&self, recipe_id: u32) -> &[u32] {
+            self.deps.get(&recipe_id).map(|v| v.as_slice()).unwrap_or(&[])
+        }
+        fn is_defaultable_shell(&self, recipe_id: u32) -> bool {
+            self.shells.contains(&recipe_id)
+        }
+        fn i31_owner(&self) -> Option<u32> {
+            self.i31_owner
+        }
+        fn exn_owner(&self, _recipe_id: u32) -> Option<u32> {
+            self.exn_owner
+        }
+    }
+
+    fn entry(id: u32, node: ReferenceRecipeNode) -> ReferenceRecipeEntry {
+        ReferenceRecipeEntry { id, node }
+    }
+
+    fn struct_node(id: u32, activation: u32, fields: Vec<u32>) -> ReferenceRecipeEntry {
+        entry(
+            id,
+            ReferenceRecipeNode::Struct {
+                module_activation: activation,
+                type_ordinal: 1,
+                layout_id: 1,
+                scalars: vec![0u8; 4],
+                fields,
+            },
+        )
+    }
+
+    fn array_node(id: u32, activation: u32, elements: Vec<u32>) -> ReferenceRecipeEntry {
+        entry(
+            id,
+            ReferenceRecipeNode::Array {
+                module_activation: activation,
+                type_ordinal: 2,
+                layout_id: 2,
+                scalars: vec![0u8; 2],
+                elements,
+            },
+        )
+    }
+
+    /// A step's (op, slot, recipe) — the shape assertions care about.
+    fn triple(step: &DriveStep) -> (u32, u32, u32) {
+        (step.op, step.slot, step.recipe)
+    }
+
+    #[test]
+    fn plain_struct_over_externref_is_alloc_then_fill() {
+        // struct(0) -> externref(1). No deps: allocate then fill; the externref is
+        // NOT a drive step (Rust drive_reconstruction roots it).
+        let nodes = vec![
+            struct_node(0, 0, vec![1]),
+            entry(1, ReferenceRecipeNode::Externref { handle: 9 }),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert_eq!(
+            plan.iter().map(triple).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_ALLOC, drive_table_base(0) + DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_FILL, drive_table_base(0) + DRIVE_OP_FILL, 0),
+            ]
+        );
+        // arg mirrors the recipe id for every step.
+        assert!(plan.iter().all(|s| s.arg == s.recipe));
+    }
+
+    #[test]
+    fn allocation_dependency_orders_alloc_before_the_dependent() {
+        // struct(0) names array(1) as a CONSTRUCTOR dependency (immutable), so the
+        // array must be allocated BEFORE the struct even though the struct has the
+        // lower id. Mutation guard: if the builder allocated in id order instead,
+        // ALLOC 0 would precede ALLOC 1 and this test fails.
+        let nodes = vec![struct_node(0, 0, vec![1]), array_node(1, 0, vec![])];
+        let mut hints = MockHints::default();
+        hints.deps.insert(0, vec![1]); // struct 0 depends on array 1
+        let plan = build_drive_plan(&nodes, &hints).unwrap();
+        let allocs: Vec<u32> = plan
+            .iter()
+            .filter(|s| s.op == DRIVE_OP_ALLOC)
+            .map(|s| s.recipe)
+            .collect();
+        assert_eq!(allocs, vec![1, 0]); // dependency first, then the dependent
+        // The full order: ALLOC 1, ALLOC 0, FILL 0, FILL 1 (fill is id order).
+        assert_eq!(
+            plan.iter().map(|s| (s.op, s.recipe)).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_ALLOC, 1),
+                (DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_FILL, 0),
+                (DRIVE_OP_FILL, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_alloc_precedes_every_fill() {
+        // The R1-then-R2 invariant across a multi-node graph: no FILL may appear
+        // before the last ALLOC. Mutation guard against interleaving fill into the
+        // allocate walk.
+        let nodes = vec![
+            struct_node(0, 0, vec![1]),
+            array_node(1, 0, vec![2]),
+            struct_node(2, 0, vec![]),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        let last_alloc = plan.iter().rposition(|s| s.op == DRIVE_OP_ALLOC).unwrap();
+        let first_fill = plan.iter().position(|s| s.op == DRIVE_OP_FILL).unwrap();
+        assert!(last_alloc < first_fill, "all ALLOC steps must precede all FILL");
+        // Three struct/array nodes -> three ALLOC + three FILL.
+        assert_eq!(plan.iter().filter(|s| s.op == DRIVE_OP_ALLOC).count(), 3);
+        assert_eq!(plan.iter().filter(|s| s.op == DRIVE_OP_FILL).count(), 3);
+    }
+
+    #[test]
+    fn struct_array_cycle_over_externref_allocates_all_then_fills() {
+        // The CYCLIC graph from reference_replay's tests, with MUTABLE fields (no
+        // constructor deps): struct(0) <-> array(1), both reaching externref(2).
+        // Allocate-all-first breaks the cycle: ALLOC 0, ALLOC 1, then FILL 0,
+        // FILL 1. The externref is not a drive step; the aliased leaf appears once.
+        let nodes = vec![
+            struct_node(0, 0, vec![1, 2]),
+            array_node(1, 0, vec![0, 2]),
+            entry(2, ReferenceRecipeNode::Externref { handle: 12 }),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert_eq!(
+            plan.iter().map(|s| (s.op, s.recipe)).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_ALLOC, 1),
+                (DRIVE_OP_FILL, 0),
+                (DRIVE_OP_FILL, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn immutable_constructor_cycle_is_einval() {
+        // struct(0) and array(1) each name the OTHER as a constructor dependency:
+        // an unbreakable allocation cycle. The JS `allocateTyped` throws; the
+        // builder is a truthful EINVAL, never a wrong order.
+        let nodes = vec![struct_node(0, 0, vec![1]), array_node(1, 0, vec![0])];
+        let mut hints = MockHints::default();
+        hints.deps.insert(0, vec![1]);
+        hints.deps.insert(1, vec![0]);
+        assert_eq!(build_drive_plan(&nodes, &hints), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn defaultable_shell_preallocates_before_the_dependency_walk() {
+        // struct(0) is a defaultable shell that (as a mutable field) points at
+        // array(1); array(1) names struct(0) as a CONSTRUCTOR dependency. Without
+        // the shell pre-allocate, allocating array 1 would recurse into struct 0
+        // which depends (transitively) back — the shell pass allocates struct 0
+        // FIRST with no dependency walk, so the whole graph allocates. The shell's
+        // ALLOC must be the very first step.
+        let nodes = vec![struct_node(0, 0, vec![1]), array_node(1, 0, vec![0])];
+        let mut hints = MockHints::default();
+        hints.shells.insert(0); // struct 0 is a defaultable shell
+        hints.deps.insert(1, vec![0]); // array 1 constructor-depends on struct 0
+        let plan = build_drive_plan(&nodes, &hints).unwrap();
+        let allocs: Vec<u32> = plan
+            .iter()
+            .filter(|s| s.op == DRIVE_OP_ALLOC)
+            .map(|s| s.recipe)
+            .collect();
+        assert_eq!(allocs, vec![0, 1]); // shell 0 pre-allocated, then array 1
+        // Each aggregate allocated exactly once despite the shell + walk passes.
+        assert_eq!(plan.iter().filter(|s| s.op == DRIVE_OP_ALLOC).count(), 2);
+    }
+
+    #[test]
+    fn i31_allocates_in_its_owner_activation_with_no_fill() {
+        // An i31 is a scalar leaf: one ALLOC in the i31-owner activation, no fill.
+        let nodes = vec![entry(0, ReferenceRecipeNode::I31 { value: -17 })];
+        let mut hints = MockHints::default();
+        hints.i31_owner = Some(4);
+        let plan = build_drive_plan(&nodes, &hints).unwrap();
+        assert_eq!(
+            plan.iter().map(triple).collect::<Vec<_>>(),
+            vec![(DRIVE_OP_ALLOC, drive_table_base(4) + DRIVE_OP_ALLOC, 0)]
+        );
+    }
+
+    #[test]
+    fn i31_without_a_seeded_owner_is_einval() {
+        let nodes = vec![entry(0, ReferenceRecipeNode::I31 { value: 1 })];
+        assert_eq!(build_drive_plan(&nodes, &MockHints::default()), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn exnref_over_externref_materializes_after_its_payload() {
+        // exnref(1) whose payload is externref(0). The externref emits no drive
+        // step (Rust roots it); the exnref emits ONE EXN step in its owner
+        // activation, after the payload's identity is ensured.
+        let nodes = vec![
+            entry(0, ReferenceRecipeNode::Externref { handle: 8 }),
+            entry(
+                1,
+                ReferenceRecipeNode::Exnref {
+                    module_activation: 0,
+                    tag_ordinal: 0,
+                    layout_id: 0,
+                    scalars: Vec::new(),
+                    payloads: vec![0],
+                },
+            ),
+        ];
+        let mut hints = MockHints::default();
+        hints.exn_owner = Some(3);
+        let plan = build_drive_plan(&nodes, &hints).unwrap();
+        assert_eq!(
+            plan.iter().map(triple).collect::<Vec<_>>(),
+            vec![(DRIVE_OP_EXN, drive_table_base(3) + DRIVE_OP_EXN, 1)]
+        );
+    }
+
+    #[test]
+    fn multi_activation_uses_each_nodes_own_activation_base() {
+        // A struct in activation 5 and an array in activation 2, independent. Each
+        // ALLOC/FILL must land in ITS OWN activation's drive-table slice, never the
+        // other's. Mutation guard for the per-activation base seeding.
+        let nodes = vec![struct_node(0, 5, vec![]), array_node(1, 2, vec![])];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert_eq!(
+            plan.iter().map(triple).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_ALLOC, drive_table_base(5) + DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_ALLOC, drive_table_base(2) + DRIVE_OP_ALLOC, 1),
+                (DRIVE_OP_FILL, drive_table_base(5) + DRIVE_OP_FILL, 0),
+                (DRIVE_OP_FILL, drive_table_base(2) + DRIVE_OP_FILL, 1),
+            ]
+        );
+        // Activation 5's base (15) and activation 2's base (6) do not overlap.
+        assert_eq!(drive_table_base(5), 15);
+        assert_eq!(drive_table_base(2), 6);
+    }
+
+    #[test]
+    fn funcref_and_null_only_graph_drives_nothing() {
+        // A graph with no typed-GC / exnref nodes issues no guest drive step (the
+        // funcref shim + Rust reconstruction handle it entirely).
+        let nodes = vec![
+            entry(0, ReferenceRecipeNode::Null),
+            entry(
+                1,
+                ReferenceRecipeNode::Funcref {
+                    module_activation: 0,
+                    function_ordinal: 3,
+                },
+            ),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn non_canonical_graph_is_einval() {
+        // A stored id that disagrees with its index must fail loudly.
+        let nodes = vec![struct_node(9, 0, vec![])];
+        assert_eq!(build_drive_plan(&nodes, &MockHints::default()), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn plan_round_trips_through_serialize() {
+        // The real plan serializes/reads back field-for-field, so `fm_drive_execute`
+        // reads exactly what the builder emitted.
+        let nodes = vec![
+            struct_node(0, 0, vec![1]),
+            entry(1, ReferenceRecipeNode::Externref { handle: 9 }),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        let mut bytes = vec![0u8; DRIVE_STEP_SIZE * plan.len()];
+        serialize_plan(&plan, &mut bytes).unwrap();
+        for (index, step) in plan.iter().enumerate() {
+            assert_eq!(read_step(&bytes, index).unwrap(), *step);
+        }
     }
 }
