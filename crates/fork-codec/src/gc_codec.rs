@@ -61,27 +61,38 @@ const HEADER_SIZE: u16 = abi::WPK_FORK_GC_CODEC_HEADER_SIZE;
 const LAYOUT_RECORD_SIZE: u16 = abi::WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE;
 const FIELD_RECORD_SIZE: u16 = abi::WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE;
 
-/// `ForkGcLayoutKind`.
-const KIND_STRUCT: u8 = 1;
-const KIND_ARRAY: u8 = 2;
+/// `ForkGcLayoutKind`. Public so the drive-plan hints adapter
+/// (`drive_plan_hints`) can match a recipe's kind against its layout descriptor,
+/// exactly as the JS `validateGcRecipe` coordinate check does.
+pub const KIND_STRUCT: u8 = 1;
+pub const KIND_ARRAY: u8 = 2;
 
-/// `ForkGcConstructorKind`.
-const CONSTRUCTOR_STRUCT: u8 = 0;
+/// `ForkGcConstructorKind`. `CONSTRUCTOR_ARRAY_NEW` / `CONSTRUCTOR_ARRAY_FIXED`
+/// are public so the drive-plan hints adapter can reproduce the array-constructor
+/// dependency arms of the JS `gcAllocationDependencies`.
+pub const CONSTRUCTOR_STRUCT: u8 = 0;
 const CONSTRUCTOR_ARRAY_GENERIC: u8 = 1;
-const CONSTRUCTOR_ARRAY_NEW: u8 = 2;
+pub const CONSTRUCTOR_ARRAY_NEW: u8 = 2;
 const CONSTRUCTOR_ARRAY_DEFAULT: u8 = 3;
-const CONSTRUCTOR_ARRAY_FIXED: u8 = 4;
+pub const CONSTRUCTOR_ARRAY_FIXED: u8 = 4;
 const CONSTRUCTOR_ARRAY_DATA: u8 = 5;
 const CONSTRUCTOR_ARRAY_ELEMENT: u8 = 6;
 
 const LAYOUT_FLAG_REQUIRES_PROVENANCE: u16 = 1 << 0;
-const LAYOUT_FLAG_DEFAULTABLE_SHELL: u16 = 1 << 1;
+/// A defaultable-shell layout is pre-allocated before the identity walk. Public
+/// so the drive-plan hints adapter mirrors the JS `FORK_GC_LAYOUT_DEFAULTABLE_
+/// SHELL` shell pre-allocate.
+pub const LAYOUT_FLAG_DEFAULTABLE_SHELL: u16 = 1 << 1;
 const LAYOUT_KNOWN_FLAGS: u16 = LAYOUT_FLAG_REQUIRES_PROVENANCE | LAYOUT_FLAG_DEFAULTABLE_SHELL;
 
 const FIELD_FLAG_MUTABLE: u8 = 1 << 0;
 const FIELD_FLAG_NULLABLE: u8 = 1 << 1;
-const FIELD_FLAG_REFERENCE: u8 = 1 << 2;
-const FIELD_FLAG_ALLOCATION_DEPENDENCY: u8 = 1 << 3;
+/// A reference field (storage == `STORAGE_REFERENCE`). Public so the drive-plan
+/// hints adapter mirrors the JS `FORK_GC_FIELD_REFERENCE` array-element check.
+pub const FIELD_FLAG_REFERENCE: u8 = 1 << 2;
+/// A constructor (allocation-time) dependency field. Public so the drive-plan
+/// hints adapter mirrors the JS `FORK_GC_FIELD_ALLOCATION_DEPENDENCY` struct arm.
+pub const FIELD_FLAG_ALLOCATION_DEPENDENCY: u8 = 1 << 3;
 const FIELD_KNOWN_FLAGS: u8 = FIELD_FLAG_MUTABLE
     | FIELD_FLAG_NULLABLE
     | FIELD_FLAG_REFERENCE
