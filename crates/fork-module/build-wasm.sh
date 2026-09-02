@@ -116,4 +116,6 @@ fi
 if [[ "${1:-}" == "--run" ]]; then
   echo "== running co-residency harness (wasm32) =="
   node crates/fork-module/tests/harness.mjs "$WASM32"
+  echo "== running multi-activation frame-routing harness (wasm32) =="
+  node crates/fork-module/tests/harness-multi-activation.mjs "$WASM32"
 fi
