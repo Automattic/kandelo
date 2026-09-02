@@ -98,8 +98,16 @@ export class ForkModuleContinuationBackend {
   private readonly pid: number;
   private readonly label: string;
 
-  /** The parent-owned frame arena (0 in a replay-only child). */
+  /** Activation 0's parent-owned frame arena (0 in a replay-only child). */
   private frameArenaAddr = 0;
+  /**
+   * Phase 6 D7a.1a: a dlopen fork's SIDE activations each own their own
+   * host frame arena (Option A). Keyed by activation id (side ids only —
+   * activation 0 is `frameArenaAddr`). Only the parent reserves these; a
+   * replay-only child reads each side activation's inherited continuation
+   * anchor and never owns an arena.
+   */
+  private readonly sideArenaAddrs = new Map<number, number>();
   private moduleBuffer = 0;
   private didSetup = false;
 
@@ -349,6 +357,119 @@ export class ForkModuleContinuationBackend {
     this.requireOk("fm_begin_child_replay");
   }
 
+  /**
+   * Phase 6 D7a.1a: seed ONE side activation's resume catalog once per worker,
+   * before any fork (mirrors `setup()`'s global catalog seed for activation 0).
+   * A dlopen fork loads N modules, each with its own fork-instrumented function
+   * catalog; the module numbers each activation's resume slots from ITS catalog
+   * so the slot numbering matches THAT activation's JS `__wpk_fork_resume_table`
+   * by construction. Activation 0 stays on the GLOBAL catalog (`setup()`), so a
+   * single-activation fork is byte-identical. A catalog that overflows the
+   * module's per-activation arena fails loudly (`E2BIG`); the caller then keeps
+   * the JavaScript continuation for that program.
+   */
+  setActivationResumeCatalog(
+    activationId: number,
+    ordinals: readonly number[],
+  ): void {
+    this.requireSetup("seed activation resume catalog");
+    const count = ordinals.length;
+    if (count === 0) return;
+    if (count > FORK_MODULE_RESUME_CATALOG_CAP) {
+      throw new RangeError(
+        `${this.label}: activation ${activationId} resume catalog of ${count} `
+          + `exceeds the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
+      );
+    }
+    const byteLen = count * 4;
+    const regionBytes = alignUpPage(byteLen);
+    const scratch = this.reserveRegion(regionBytes);
+    try {
+      const view = new DataView(this.memory.buffer);
+      for (let i = 0; i < count; i++) {
+        view.setUint32(scratch + i * 4, ordinals[i]! >>> 0, true);
+      }
+      this.exports.fm_set_activation_resume_catalog(
+        this.wptr(activationId),
+        this.wptr(scratch),
+        this.wptr(count),
+      );
+      this.requireOk("fm_set_activation_resume_catalog");
+    } finally {
+      this.releaseRegion(scratch, regionBytes);
+    }
+  }
+
+  /**
+   * Parent: add a dlopen fork's SIDE activation to the capture begun by
+   * `beginUnwind`. Reserves ITS own host frame arena and calls
+   * `fm_add_activation_unwind(act, base, len, fixedPrefix)`. Returns the
+   * activation's module-buffer anchor (the continuation root the coordinator
+   * writes into its module-state prefix and passes to `wpk_fork_unwind_begin`).
+   */
+  addActivationUnwind(activationId: number, fixedPrefix: number): number {
+    this.requireSetup("add activation unwind");
+    if (activationId === 0) {
+      throw new Error(`${this.label}: activation 0 uses beginUnwind, not addActivationUnwind`);
+    }
+    if (this.sideArenaAddrs.has(activationId)) {
+      throw new Error(`${this.label}: activation ${activationId} unwind already active`);
+    }
+    const base = this.reserveRegion(this.frameArenaBytes);
+    if (!Number.isSafeInteger(base) || base <= 0 || base % WASM_PAGE_SIZE !== 0) {
+      throw new Error(
+        `${this.label}: activation ${activationId} frame arena base is invalid`,
+      );
+    }
+    this.sideArenaAddrs.set(activationId, base);
+    // A side arena holds only frames — the KFRE journal image lives in
+    // activation 0's arena (serialized once). So the whole arena is frame region.
+    const moduleBuffer = this.toNum(
+      this.exports.fm_add_activation_unwind(
+        this.wptr(activationId),
+        this.wptr(base),
+        this.wptr(this.frameArenaBytes),
+        this.wptr(fixedPrefix),
+      ),
+    );
+    this.requireOk("fm_add_activation_unwind");
+    if (!Number.isSafeInteger(moduleBuffer) || moduleBuffer <= 0) {
+      throw new Error(
+        `${this.label}: fm_add_activation_unwind returned invalid anchor for `
+          + `activation ${activationId}`,
+      );
+    }
+    return moduleBuffer;
+  }
+
+  /**
+   * Child: add a dlopen fork's SIDE activation to the replay begun by
+   * `beginChildReplay`. `root` is the activation's inherited continuation anchor
+   * (its parent module buffer at the same guest offset), `fixedPrefix` its own
+   * module-buffer fixed runtime prefix. The process-wide journal is not reseeded:
+   * this attaches the activation's replay-only frame state against the SAME
+   * journal + table `beginChildReplay` created.
+   */
+  addActivationChildReplay(
+    activationId: number,
+    root: number,
+    fixedPrefix: number,
+  ): void {
+    this.requireSetup("add activation child replay");
+    if (!Number.isSafeInteger(root) || root <= 0) {
+      throw new Error(
+        `${this.label}: activation ${activationId} inherited continuation root `
+          + `${root} is invalid`,
+      );
+    }
+    this.exports.fm_add_activation_child_replay(
+      this.wptr(activationId),
+      this.wptr(root),
+      this.wptr(fixedPrefix),
+    );
+    this.requireOk("fm_add_activation_child_replay");
+  }
+
   /** Bytes of the frame arena the module writes frames into (below the image). */
   private frameRegionBytes(): number {
     return this.frameArenaBytes - FORK_MODULE_IMAGE_REGION_BYTES;
@@ -369,6 +490,12 @@ export class ForkModuleContinuationBackend {
   }
 
   private releaseFrameArena(): void {
+    // Release every side activation's arena (Phase 6 D7a.1a) before activation
+    // 0's, so a failing deallocator still clears the whole map.
+    for (const [activationId, base] of this.sideArenaAddrs) {
+      this.sideArenaAddrs.delete(activationId);
+      this.releaseRegion(base, this.frameArenaBytes);
+    }
     const addr = this.frameArenaAddr;
     if (addr === 0) return;
     this.frameArenaAddr = 0;
