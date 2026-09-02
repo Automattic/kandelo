@@ -185,6 +185,10 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Exact kernel module bytes. Overrides ambient kernel resolution so a
+   * resolver-driven package build can supply its declared kernel
+   * dependency. Worker-thread mode only. */
+  kernelWasmBytes?: ArrayBuffer;
   /** Observe process lifecycle events emitted by NodeKernelHost. Worker-thread mode only. */
   onProcessEvent?: (event: {
     kind: "spawn" | "exec" | "exit";
@@ -303,7 +307,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     },
   });
 
-  await host.init();
+  await host.init(options.kernelWasmBytes);
 
   // Capture the spawned pid so child process events can sample its
   // kernel-side fork_count. The user-supplied onStarted (if any) still runs.

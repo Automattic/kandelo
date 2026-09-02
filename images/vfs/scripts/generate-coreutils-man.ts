@@ -18,9 +18,24 @@
  *
  * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir>
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+
+// Resolver-driven builds run with no ambient binary projection, so the
+// kernel must come from the recipe's declared kernel dependency rather
+// than ambient resolution (the same contract as build-wp-vfs-image.ts).
+function dependencyKernelBytes(): ArrayBuffer | undefined {
+  const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
+  if (kernelRoot === undefined) return undefined;
+  const bytes = readFileSync(join(kernelRoot, "kandelo-kernel.wasm"));
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+}
+
+const kernelWasmBytes = dependencyKernelBytes();
 
 // The GNU coreutils 9.6 tool set, minus the tools this build disables via
 // --enable-no-install-program=stdbuf,pinky,who,users,uptime (see
@@ -49,6 +64,8 @@ async function capture(bin: string, tool: string, flag: string): Promise<string>
     programPath: bin,
     argv: [tool, flag],
     env: ["PATH=/usr/bin:/bin", "POSIXLY_CORRECT=1"],
+    kernelWasmBytes,
+    useDefaultRootfs: false,
   });
   return stdout;
 }
