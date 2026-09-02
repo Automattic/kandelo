@@ -74,6 +74,7 @@ const importObject = {
     // for `__wpk_fork_ref_decode_funcref`. This frame/continuation harness never
     // reconstructs references, so an empty funcref table is inert here.
     __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
@@ -526,6 +527,7 @@ function instantiateAt(mem, moduleBase, stackTop) {
       memory: mem,
       __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, stackTop),
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),

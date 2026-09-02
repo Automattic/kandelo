@@ -108,6 +108,22 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // a test can prove the guest codec read the graph THROUGH the module rather
   // than the JS provider.
   "fm_ref_feed_reads",
+  // Phase 6 item 3b (minimize host surface): the call_indirect drive-shim
+  // mechanism for driving the guest's typed-GC `_gc_allocate`/`_gc_fill` exports
+  // from the module.
+  //  - `fm_drive_execute` is the walrus-injected wasm loop (Rust cannot emit
+  //    `call_indirect`): it strides a serialized drive PLAN, `call_indirect`s the
+  //    host-bound `__wpk_fork_drive_table` slot for each step, and `call`s
+  //    `fm_after_alloc` after each ALLOC step.
+  //  - `fm_after_alloc` is the R1 transit-read assert (traps on a null/moved slot).
+  //  - `fm_drive_table_base` gives the host the first drive-table slot for an
+  //    activation, so the host binds `_gc_allocate`/`_gc_fill` at the slots the
+  //    Rust plan encodes.
+  // The full topological plan-from-graph drive (which flips the JS
+  // `materializeTypedGraph` order to the module) is item 3c.
+  "fm_drive_execute",
+  "fm_after_alloc",
+  "fm_drive_table_base",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
@@ -144,6 +160,20 @@ export interface InstantiateForkModuleOptions {
    */
   functionCatalog?: WebAssembly.Table;
   /**
+   * The MUTABLE funcref drive table the module's injected `fm_drive_execute`
+   * `call_indirect`s (Phase 6 item 3b). The guest's `_gc_allocate`/`_gc_fill`
+   * exports only exist AFTER the guest instance is created — which is AFTER this
+   * module is instantiated (the module must precede the guest to supply the
+   * frame-flip imports). So the host passes a growable, host-owned table here and
+   * binds each activation's `_gc_allocate`/`_gc_fill` into it (at
+   * `fm_drive_table_base(activation) + {ALLOC, FILL}`) once the guest instance
+   * exists. When omitted (tests / forks that never run the module drive) an empty
+   * growable table is created; the module never `call_indirect`s it unless the
+   * host both binds the exports and calls `fm_drive_execute`, so an empty table
+   * is inert and flag-off byte-identical.
+   */
+  driveTable?: WebAssembly.Table;
+  /**
    * Real engine-floor `wpk_fork_host.*` import bodies (Phase 6 D6.2). The
    * co-resident module DECLARES the whole engine-floor seam
    * (`crates/fork-module/src/host_capabilities.rs`); its `WpkForkHost` routes
@@ -173,6 +203,12 @@ export interface ForkModuleInstance {
    * `__wpk_fork_function_catalog` export after the guest instance exists.
    */
   functionCatalog: WebAssembly.Table;
+  /**
+   * The MUTABLE funcref drive table the module's injected `fm_drive_execute`
+   * `call_indirect`s (Phase 6 item 3b). The host binds each activation's guest
+   * `_gc_allocate`/`_gc_fill` exports into it once the guest instances exist.
+   */
+  driveTable: WebAssembly.Table;
 }
 
 /**
@@ -298,6 +334,13 @@ export function instantiateForkModule(
   const functionCatalog =
     options.functionCatalog ??
     new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+  // The mutable funcref drive table the module's injected `fm_drive_execute`
+  // `call_indirect`s (Phase 6 item 3b). Default to an empty GROWABLE table the
+  // host grows + binds the guest `_gc_allocate`/`_gc_fill` exports into once the
+  // guest instances exist; inert until the host both binds and drives.
+  const driveTable =
+    options.driveTable ??
+    new WebAssembly.Table({ element: "anyfunc", initial: 0 });
 
   // The module DECLARES the `wpk_fork_host.*` engine-floor seam imports (Phase 6
   // D6, `crates/fork-module/src/host_capabilities.rs`). For the externref path
@@ -316,6 +359,7 @@ export function instantiateForkModule(
       memory,
       __indirect_function_table: table,
       __wpk_fork_function_catalog: functionCatalog,
+      __wpk_fork_drive_table: driveTable,
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
       __stack_pointer: stackPointerGlobal,
@@ -344,5 +388,13 @@ export function instantiateForkModule(
     );
   }
 
-  return { instance, exports, memoryBase, regionBytes, table, functionCatalog };
+  return {
+    instance,
+    exports,
+    memoryBase,
+    regionBytes,
+    table,
+    functionCatalog,
+    driveTable,
+  };
 }

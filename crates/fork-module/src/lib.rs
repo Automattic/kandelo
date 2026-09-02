@@ -142,9 +142,10 @@ mod wasm {
 
     use fork_codec::{
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
-        encode_replay_events, ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter,
-        ModuleStateFormat, ReconstructionState, ReferenceReplayDriver, ReferenceReplayFeed,
-        ReferenceTransactionRecord, ReplayEvent, ReplayEventJournal, ResumeSlotTable, RewindDriver,
+        drive_plan, encode_replay_events, ChunkAllocator, ForkHostCapabilities, HostGeneration,
+        LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
+        ReferenceReplayDriver, ReferenceReplayFeed, ReferenceTransactionRecord, ReplayEvent,
+        ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, channel, mmap, ChannelStatus, Errno, Syscall};
 
@@ -611,6 +612,67 @@ mod wasm {
     // rather than hand back a value the shim would misread, so a corrupt graph is
     // a truthful hard failure, never a wrong funcref.
     const NULL_ORDINAL: i32 = -1;
+
+    // -- GC drive-shim state (Phase 6 item 3b — call_indirect drive mechanism) --
+    //
+    // The injected `fm_drive_execute(plan_ptr, count)` shim (crates/fork-module-
+    // inject) loops a serialized drive PLAN and `call_indirect`s the guest's
+    // `_gc_allocate`/`_gc_fill` exports through the host-bound
+    // `env.__wpk_fork_drive_table`, then `call`s `fm_after_alloc(recipe)` after
+    // each ALLOC step for the R1 transit-read assert. This slice proves the
+    // MECHANISM on a trivial single struct; the full topological plan-from-graph
+    // walk (R1/R2 order + cycle breaking) is item 3c.
+
+    // The host generation `fm_build_trivial_plan` opened (PHASE A) so
+    // `fm_after_alloc` can read the transit slot the guest's `_gc_allocate` +
+    // PHASE-B rooting published. 0 == not seeded (fm_after_alloc then traps,
+    // never silently passes an R1 assert with no generation).
+    static DRIVE_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+    // Owns the serialized drive plan's backing bytes so the pointer
+    // `fm_build_trivial_plan` returns stays valid while the shim reads it. Held
+    // in its OWN static (the bump `dealloc` is a no-op, but keeping the `Vec`
+    // rooted here is explicit and independent of the per-fork heap reset).
+    struct DrivePlanCell(UnsafeCell<Option<Vec<u8>>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for DrivePlanCell {}
+    static DRIVE_PLAN: DrivePlanCell = DrivePlanCell(UnsafeCell::new(None));
+
+    fn build_trivial_plan_impl(activation: u32, recipe: u32, pid: u32) -> Result<usize, Errno> {
+        // PHASE A: open the host root generation so `fm_after_alloc`'s R1 read has
+        // a generation to read the transit slot under (mirrors what
+        // `fm_begin_reference_replay` does before the real drive).
+        let mut host = WpkForkHost;
+        let generation = host.begin_generation(pid)?;
+        DRIVE_GENERATION.store(generation.0, Ordering::Relaxed);
+
+        // Serialize the trivial ALLOC-then-FILL plan into a module-owned buffer;
+        // its guest address is what `fm_drive_execute` strides over.
+        let steps = drive_plan::trivial_struct_plan(activation, recipe);
+        let mut buf = Vec::new();
+        buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
+        drive_plan::serialize_plan(&steps, &mut buf)?;
+        let ptr = buf.as_ptr() as usize;
+        // SAFETY: single-threaded per worker; rooting the backing bytes so the
+        // returned pointer stays valid for the shim's reads.
+        unsafe {
+            *DRIVE_PLAN.0.get() = Some(buf);
+        }
+        Ok(ptr)
+    }
+
+    fn after_alloc_impl(recipe: u32) -> Result<(), Errno> {
+        let generation = DRIVE_GENERATION.load(Ordering::Relaxed);
+        if generation == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // R1: the transit slot `recipe + 1` must hold a live identity. The seam's
+        // `transit_read` returns `Err` for a null/moved slot, so the export traps
+        // rather than let a corrupt GC graph continue.
+        let mut host = WpkForkHost;
+        host.transit_read(HostGeneration(generation), recipe + 1)?;
+        Ok(())
+    }
 
     fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
@@ -2436,6 +2498,57 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_nodes_reconstructed() -> i64 {
         GC_NODES_RECONSTRUCTED.load(Ordering::Relaxed) as i64
+    }
+
+    // -- GC drive-shim exports (Phase 6 item 3b) -----------------------------
+
+    /// The first `env.__wpk_fork_drive_table` slot for `activation` (item 3b).
+    /// The host reads this to bind each activation's `_gc_allocate`/`_gc_fill`
+    /// guest exports at `base + {ALLOC, FILL}`, matching the absolute slot numbers
+    /// the Rust drive PLAN encodes. A single-activation fork uses base 0.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_drive_table_base(activation: u32) -> i32 {
+        drive_plan::drive_table_base(activation) as i32
+    }
+
+    /// Serialize a TRIVIAL single-struct drive plan (ALLOC then FILL for one
+    /// `recipe` in `activation`) into a module-owned scratch buffer and return its
+    /// guest address for `fm_drive_execute`. Opens a host generation via the
+    /// engine-floor seam so `fm_after_alloc`'s R1 read has a scope. Returns 0 on
+    /// failure (check `fm_last_errno`). This proves the drive MECHANISM; item 3c
+    /// builds the real plan by walking the decoded reference graph.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_build_trivial_plan(activation: u32, recipe: u32, pid: u32) -> usize {
+        match build_trivial_plan_impl(activation, recipe, pid) {
+            Ok(ptr) => {
+                set_ok();
+                ptr
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// The step count of the plan `fm_build_trivial_plan` wrote (the `count`
+    /// argument for `fm_drive_execute`). The trivial plan is exactly ALLOC + FILL.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_trivial_plan_count() -> i32 {
+        2
+    }
+
+    /// The R1 transit-read assert the injected `fm_drive_execute` shim `call`s
+    /// after each ALLOC step (item 3b). Reads the transit slot `recipe + 1`
+    /// through the engine-floor seam and TRAPS (`unreachable`) if it is
+    /// null/moved — the guest's `_gc_allocate` must have published a live
+    /// aggregate identity there. A lost slot is silent GC corruption, so a hard
+    /// trap is the only truthful outcome (same discipline as `fm_funcref_ordinal`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_after_alloc(recipe: u32) {
+        if after_alloc_impl(recipe).is_err() {
+            wasm_intr::unreachable();
+        }
     }
 
     /// The sticky errno of the most recent export call (0 == success).
