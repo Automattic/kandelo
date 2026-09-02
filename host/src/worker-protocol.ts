@@ -109,6 +109,14 @@ export interface CentralizedWorkerInitMessage {
    * own `__abi_version` export and refuses mismatches.
    */
   kernelAbiVersion?: number;
+  /**
+   * Kernel's ABI-contract digest (32 bytes, read from the kernel wasm's own
+   * `kandelo.abi.contract` custom section at startup). The worker compares
+   * this against the program's own stamp and refuses a mismatch even when the
+   * ABI version NUMBERS coincide. Uint8Array clones fine across postMessage.
+   * Absent when the kernel build predates the stamp.
+   */
+  kernelAbiContractDigest?: Uint8Array;
 }
 
 /**
@@ -148,6 +156,8 @@ export interface CentralizedThreadInitMessage {
   ptrWidth?: 4 | 8;
   /** See [`CentralizedWorkerInitMessage#kernelAbiVersion`]. */
   kernelAbiVersion?: number;
+  /** See [`CentralizedWorkerInitMessage#kernelAbiContractDigest`]. */
+  kernelAbiContractDigest?: Uint8Array;
 }
 
 export interface WorkerTerminateMessage {

@@ -13526,6 +13526,23 @@ fn build_into_cache(
                     target.spec()
                 )
             })?;
+            // Sibling of the build key: the ABI-contract digest
+            // (hash(abi/snapshot.json + ABI_VERSION)) this artifact was built
+            // against. Stamped on EVERY program (kernel, userspace, and every
+            // guest) so the host can compare a guest's stamp against the
+            // running kernel's own kandelo.abi.contract stamp at exec and
+            // refuse a stale guest even when the ABI version numbers coincide.
+            // This is the same digest folded into the SourceOnlyV1 cache key,
+            // so it is reliable, not best-effort: propagate errors like the
+            // build-key stamp.
+            let abi_contract_digest =
+                crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
+                    .map_err(|error| {
+                        format!(
+                            "{}: compute ABI contract digest for stamp: {error}",
+                            target.spec()
+                        )
+                    })?;
             for output in &target.program_outputs {
                 let member = tmp.join(&output.wasm);
                 let bytes = std::fs::read(&member).map_err(|error| {
@@ -13538,6 +13555,18 @@ fn build_into_cache(
                 let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
                     format!(
                         "{}: stamp built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                let stamped = crate::build_stamp::stamp_named_section(
+                    &stamped,
+                    crate::build_stamp::ABI_CONTRACT_SECTION,
+                    &abi_contract_digest,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: stamp ABI contract digest on wasm output {}: {error}",
                         target.spec(),
                         member.display()
                     )
@@ -31908,6 +31937,26 @@ revision = 1
                 .unwrap()
                 .is_some(),
             "published wasm must carry a kandelo.build.key stamp"
+        );
+        // Every published program also carries the sibling ABI-contract stamp,
+        // equal to hash(abi/snapshot.json + ABI_VERSION) for the repo it was
+        // built against. This resolve runs under `crate::repo_root()` and the
+        // current ABI version, so the stamped digest must equal the same
+        // `local_abi_contract_digest` the host reads from the kernel at exec.
+        let stamped_contract = crate::build_stamp::read_named_section(
+            &published_bytes,
+            crate::build_stamp::ABI_CONTRACT_SECTION,
+        )
+        .unwrap()
+        .expect("published wasm must carry a kandelo.abi.contract stamp");
+        let expected_contract = crate::local_abi_identity::local_abi_contract_digest(
+            &crate::repo_root(),
+            current_abi_version(),
+        )
+        .unwrap();
+        assert_eq!(
+            stamped_contract, expected_contract,
+            "stamped ABI-contract digest must equal local_abi_contract_digest(repo, ABI_VERSION)"
         );
         assert!(
             std::fs::canonicalize(&published)

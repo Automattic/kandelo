@@ -145,6 +145,36 @@ mod tests {
     }
 
     #[test]
+    fn local_abi_identity_moves_with_snapshot_not_sibling_files() {
+        // The digest binds ONLY abi/snapshot.json + ABI_VERSION. Editing an
+        // unrelated sibling file (e.g. a kernel .rs source) must not change it;
+        // editing the snapshot must.
+        let root = snapshot_root("boundary", r#"{"abi_version":4,"layout":{"bytes":32}}"#);
+        let baseline = local_abi_contract_digest(&root, 4).unwrap();
+        std::fs::create_dir_all(root.join("crates/kernel/src")).unwrap();
+        std::fs::write(
+            root.join("crates/kernel/src/lib.rs"),
+            "// a kernel source edit unrelated to the ABI snapshot\n",
+        )
+        .unwrap();
+        assert_eq!(
+            baseline,
+            local_abi_contract_digest(&root, 4).unwrap(),
+            "editing a non-snapshot sibling file must not move the contract digest"
+        );
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            r#"{"abi_version":4,"layout":{"bytes":64}}"#,
+        )
+        .unwrap();
+        assert_ne!(
+            baseline,
+            local_abi_contract_digest(&root, 4).unwrap(),
+            "editing abi/snapshot.json must move the contract digest"
+        );
+    }
+
+    #[test]
     fn local_abi_identity_rejects_non_object_and_version_mismatch() {
         let array = snapshot_root("non-object", r#"[4]"#);
         assert!(

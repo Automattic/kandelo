@@ -274,7 +274,11 @@ import {
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
-import { WASM_PAGE_SIZE } from "./constants";
+import {
+  ABI_CONTRACT_SECTION,
+  readWasmCustomSectionPayload,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import {
   FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryRetirementBacklogError,
@@ -2785,6 +2789,13 @@ export class CentralizedKernelWorker {
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
+  /**
+   * ABI-contract digest read from the kernel wasm's own
+   * `kandelo.abi.contract` custom section at startup, or null if the kernel
+   * build predates the stamp. Threaded to worker processes so a guest's stamp
+   * can be compared against the running kernel's at exec.
+   */
+  private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
   private activeChannels: ChannelInfo[] = [];
   /**
@@ -5018,6 +5029,21 @@ export class CentralizedKernelWorker {
     if (this.#kernelFatalError !== null) {
       throw new Error("cannot reinitialize a failed kernel worker");
     }
+    // Read the kernel's own ABI-contract stamp before init compiles the bytes.
+    // The same local-build engine that stamps every guest stamps the kernel,
+    // so this is the authoritative digest each guest's stamp is compared
+    // against at exec (threaded via CentralizedWorkerInitMessage). Null when
+    // the kernel build predates the stamp — the exec check then only warns.
+    const kernelWasmBuffer = ArrayBuffer.isView(kernelWasmBytes)
+      ? kernelWasmBytes.buffer.slice(
+          kernelWasmBytes.byteOffset,
+          kernelWasmBytes.byteOffset + kernelWasmBytes.byteLength,
+        )
+      : kernelWasmBytes.slice(0);
+    this.kernelAbiContractDigest = readWasmCustomSectionPayload(
+      kernelWasmBuffer,
+      ABI_CONTRACT_SECTION,
+    );
     await this.#kernel.init(kernelWasmBytes);
     // WHY: these capabilities belong only to the worker that owns the gate.
     // Public kernel accessors expose neither mutable Memory nor raw callables.
@@ -30456,6 +30482,17 @@ export class CentralizedKernelWorker {
    */
   getKernelAbiVersion(): number {
     return this.kernelAbiVersion;
+  }
+
+  /**
+   * ABI-contract digest the running kernel was built against, read from its
+   * own `kandelo.abi.contract` custom section at startup, or null if the
+   * kernel build predates the stamp. Worker processes compare each guest's
+   * stamp against this to refuse a stale guest even when the ABI version
+   * numbers coincide.
+   */
+  getKernelAbiContractDigest(): Uint8Array | null {
+    return this.kernelAbiContractDigest;
   }
 
   /**
