@@ -16,9 +16,11 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +50,12 @@ const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
   existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
 
-const BUILD_DIR = join(tmpdir(), "wasm-fork-dlopen-replay-e2e");
+// Stage built `.so`/`.wasm` under `<repoRoot>/target` (never an in-kernel
+// tmpfs scratch prefix) so the guest reaches the real host file through
+// NodePlatformIO. Under `os.tmpdir()` (the nix dev shell sets
+// `TMPDIR=/tmp/nix-shell.*`), the empty in-kernel tmpfs shadows the path and
+// the guest dlopen fails with "cannot stat library".
+const BUILD_DIR = makeHostScratchTempRoot("wasm-fork-dlopen-replay-e2e-");
 
 function findLibcxxPrefix(): string | undefined {
   const explicit = process.env.KANDELO_LIBCXX_PREFIX;
@@ -249,7 +256,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () =>
     mkdirSync(BUILD_DIR, { recursive: true });
   });
 
-  // The .so file lives under `os.tmpdir()` (an absolute host path that
+  // The .so file lives under `<repoRoot>/target` (an absolute host path that
   // the default mount-based VFS doesn't know about). Opt into
   // NodePlatformIO so dlopen() can reach it — same constraint as
   // dlopen-e2e.test.ts.
