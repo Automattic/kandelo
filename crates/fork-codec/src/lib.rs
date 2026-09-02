@@ -25,6 +25,7 @@ extern crate alloc;
 extern crate wasm_posix_shared;
 
 pub mod catalogs;
+pub mod drive_plan;
 pub mod dylink_archive;
 pub mod exception_codec;
 pub mod gc_codec;

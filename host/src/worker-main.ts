@@ -61,6 +61,8 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+  WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
+  WPK_FORK_REFERENCE_EXPORT_GC_FILL,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
@@ -4687,6 +4689,44 @@ export async function centralizedWorkerMain(
               );
             }
             base += guestCatalog.length;
+          }
+          // Phase 6 item 3b (minimize host surface): bind each activation's guest
+          // `_gc_allocate`/`_gc_fill` exports into the module's imported drive
+          // table at `fm_drive_table_base(act) + {ALLOC, FILL}`, so the injected
+          // `fm_drive_execute` shim can `call_indirect` them. The module could not
+          // import the guest exports directly — it is instantiated BEFORE the
+          // guests to supply the frame-flip imports. The absolute slot numbers
+          // match the ones the Rust drive PLAN encodes (`fork_codec::drive_plan`).
+          //
+          // ADDITIVE + INERT this slice: nothing calls `fm_drive_execute` yet —
+          // the PROVEN JS `materializeTypedGraph` still drives the GC allocate/fill
+          // topological order (item 3c flips that to the module). Binding an unused
+          // funcref table changes no guest-observable behavior, so a flag-on fork
+          // stays byte-identical until 3c, and a flag-off fork skips this entirely.
+          const driveTable = forkModuleInstance.driveTable;
+          const driveTableBase = forkModuleInstance.exports
+            .fm_drive_table_base as (activation: number) => number;
+          // Op offsets within an activation's drive-table slice (see
+          // `fork_codec::drive_plan` DRIVE_OP_ALLOC / DRIVE_OP_FILL).
+          const DRIVE_OP_ALLOC = 0;
+          const DRIVE_OP_FILL = 1;
+          for (const activation of sortedActivations) {
+            const slotBase = driveTableBase(activation.activationId);
+            const allocate =
+              activation.instance.exports[WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE];
+            const fill =
+              activation.instance.exports[WPK_FORK_REFERENCE_EXPORT_GC_FILL];
+            // A fork whose guest carries no typed-GC codec exports no
+            // allocate/fill; leave those slots empty (they are never driven).
+            if (typeof allocate !== "function" || typeof fill !== "function") {
+              continue;
+            }
+            const needed = slotBase + DRIVE_OP_FILL + 1;
+            if (driveTable.length < needed) {
+              driveTable.grow(needed - driveTable.length);
+            }
+            driveTable.set(slotBase + DRIVE_OP_ALLOC, allocate);
+            driveTable.set(slotBase + DRIVE_OP_FILL, fill);
           }
           processContinuation.enableModuleReferenceReplay();
         }
