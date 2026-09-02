@@ -32,7 +32,7 @@
 //!                         Backs `./run.sh clean <target>`.
 //!   verify-fresh          Pre-test freshness check: fails loud if the one
 //!                         local kernel artifact (local-binaries/source-only-v1/
-//!                         kandelo-kernel.wasm) declares a stale ABI version
+//!                         kernel.wasm) declares a stale ABI version
 //!                         relative to the source tree. Backs `./run.sh test`.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the

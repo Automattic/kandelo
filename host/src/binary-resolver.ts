@@ -229,9 +229,7 @@ function packagedBinaryCandidates(
 ): string[] {
   const adjusted = applyDefaultArch(relPath);
   const candidates = [join(root, adjusted)];
-  if (relPath === "kernel.wasm") {
-    candidates.push(join(root, "kandelo-kernel.wasm"));
-  } else if (relPath === "rootfs.vfs") {
+  if (relPath === "rootfs.vfs") {
     candidates.push(join(root, "rootfs.vfs"));
   }
   return candidates;
@@ -277,11 +275,9 @@ export class BinaryNotFoundError extends Error {
  *
  * Freshness scope: `tools/xtask`'s `verify-fresh` pre-test check (run from
  * `./run.sh test`) only inspects `kernel.wasm` (the literal filename the
- * engine writes here and this tier's `candidatesFor` resolves unadjusted —
- * not the old `build.sh`-era `kandelo-kernel.wasm` name from the ambient
- * `local-binaries/` tier, which Stage 1 stopped producing), the one artifact
- * here with an ABI to go stale (`__abi_version`). Everything under
- * `programs/` is a content-addressed generation the local-build engine
+ * engine writes here and this tier's `candidatesFor` resolves unadjusted),
+ * the one artifact here with an ABI to go stale (`__abi_version`). Everything
+ * under `programs/` is a content-addressed generation the local-build engine
  * keys by cache key — a stale input there
  * is a cache-key mismatch the engine's normal rebuild path already catches,
  * not a silent-staleness hazard `verify-fresh` needs to separately guard.
