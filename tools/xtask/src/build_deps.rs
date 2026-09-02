@@ -13718,6 +13718,23 @@ fn build_into_cache(
                     target.spec()
                 )
             })?;
+            // Sibling of the build key: the ABI-contract digest
+            // (hash(abi/snapshot.json + ABI_VERSION)) this artifact was built
+            // against. Stamped on EVERY program (kernel, userspace, and every
+            // guest) so the host can compare a guest's stamp against the
+            // running kernel's own kandelo.abi.contract stamp at exec and
+            // refuse a stale guest even when the ABI version numbers coincide.
+            // This is the same digest folded into the SourceOnlyV1 cache key,
+            // so it is reliable, not best-effort: propagate errors like the
+            // build-key stamp.
+            let abi_contract_digest =
+                crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
+                    .map_err(|error| {
+                        format!(
+                            "{}: compute ABI contract digest for stamp: {error}",
+                            target.spec()
+                        )
+                    })?;
             for output in &target.program_outputs {
                 let member = tmp.join(&output.wasm);
                 let bytes = std::fs::read(&member).map_err(|error| {
@@ -13727,9 +13744,33 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
+                // Both the build-key and abi-contract stamps are wasm custom
+                // sections: they only apply to a loadable wasm module. Some
+                // `program` packages declare non-wasm outputs (e.g. a lazy VFS
+                // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
+                // wasm magic; there is nothing to stamp on them, and feeding
+                // them to the wasm stamper would fail on a bad magic header.
+                // Skip those members -- they carry no ABI/build identity and
+                // are never loaded as a module (verify-fresh and the belt
+                // check only ever read `.wasm` members).
+                if !bytes.starts_with(b"\0asm") {
+                    continue;
+                }
                 let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
                     format!(
                         "{}: stamp built wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                let stamped = crate::build_stamp::stamp_named_section(
+                    &stamped,
+                    crate::build_stamp::ABI_CONTRACT_SECTION,
+                    &abi_contract_digest,
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: stamp ABI contract digest on wasm output {}: {error}",
                         target.spec(),
                         member.display()
                     )
@@ -32182,6 +32223,26 @@ revision = 1
                 .is_some(),
             "published wasm must carry a kandelo.build.key stamp"
         );
+        // Every published program also carries the sibling ABI-contract stamp,
+        // equal to hash(abi/snapshot.json + ABI_VERSION) for the repo it was
+        // built against. This resolve runs under `crate::repo_root()` and the
+        // current ABI version, so the stamped digest must equal the same
+        // `local_abi_contract_digest` the host reads from the kernel at exec.
+        let stamped_contract = crate::build_stamp::read_named_section(
+            &published_bytes,
+            crate::build_stamp::ABI_CONTRACT_SECTION,
+        )
+        .unwrap()
+        .expect("published wasm must carry a kandelo.abi.contract stamp");
+        let expected_contract = crate::local_abi_identity::local_abi_contract_digest(
+            &crate::repo_root(),
+            current_abi_version(),
+        )
+        .unwrap();
+        assert_eq!(
+            stamped_contract, expected_contract,
+            "stamped ABI-contract digest must equal local_abi_contract_digest(repo, ABI_VERSION)"
+        );
         assert!(
             std::fs::canonicalize(&published)
                 .unwrap()
@@ -35856,6 +35917,103 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             .unwrap()
             .expect("mirror must still carry its stamp after a cache-hit resolve");
         assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// A `program` package may declare a NON-wasm output (e.g. a lazy VFS
+    /// archive `*.zip`/`*.zst` shipped as a man-page or bundle, like the
+    /// real `lsof-docs.zip`). Those members have no wasm magic, so both the
+    /// `kandelo.build.key` and the sibling `kandelo.abi.contract` stamps --
+    /// which are wasm custom sections -- must SKIP them rather than fail on a
+    /// bad magic header (a cold rebuild otherwise aborts the whole build). A
+    /// real `.wasm` sibling in the same package must still be stamped with
+    /// BOTH sections.
+    #[test]
+    fn non_wasm_program_output_is_left_unstamped() {
+        let repo = tempdir("nonwasm-stamp-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let wasm_bytes = minimal_executable_wasm();
+        // Deliberately NOT a wasm module: no `\0asm` magic.
+        let archive_bytes: Vec<u8> = b"PK\x03\x04 lazy-archive, not a wasm module".to_vec();
+        let escape = |bytes: &[u8]| -> String {
+            bytes.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+        };
+        let build_script = format!(
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '{}' > "$WASM_POSIX_DEP_OUT_DIR/realprog.wasm" && printf '{}' > "$WASM_POSIX_DEP_OUT_DIR/archive.zip""#,
+            escape(&wasm_bytes),
+            escape(&archive_bytes),
+        );
+        write_program(
+            &repo,
+            "mixedout",
+            "1.0.0",
+            &[],
+            &build_script,
+            &[("realprog", "realprog.wasm"), ("archive", "archive.zip")],
+        );
+        write_source_only_repository_inputs(&repo, "mixedout");
+        // Both outputs opt out of fork instrumentation: the wasm fixture has no
+        // fork surface, and the archive is not a module at all (mirrors how
+        // `lsof-docs.zip` declares `fork_instrumentation = "disabled"`).
+        let manifest_path = repo.join("mixedout/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path)
+                .unwrap()
+                .replace(
+                    "wasm = \"realprog.wasm\"",
+                    "wasm = \"realprog.wasm\"\nfork_instrumentation = \"disabled\"",
+                )
+                .replace(
+                    "wasm = \"archive.zip\"",
+                    "wasm = \"archive.zip\"\nfork_instrumentation = \"disabled\"",
+                ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("mixedout").unwrap();
+        let (base, compiled) = source_only_test_roots("nonwasm-stamp-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("nonwasm-stamp-output");
+
+        // The build must materialize WITHOUT error even though one declared
+        // output is not a wasm module.
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let canonical = node
+            .canonical
+            .expect("a materialized program node has a canonical cache entry");
+
+        // The real wasm sibling still carries BOTH stamps.
+        let wasm_member = fs::read(canonical.join("realprog.wasm")).unwrap();
+        assert!(
+            crate::build_stamp::read_build_key(&wasm_member)
+                .unwrap()
+                .is_some(),
+            "the wasm output must carry a kandelo.build.key stamp"
+        );
+        assert!(
+            crate::build_stamp::read_named_section(
+                &wasm_member,
+                crate::build_stamp::ABI_CONTRACT_SECTION,
+            )
+            .unwrap()
+            .is_some(),
+            "the wasm output must carry a kandelo.abi.contract stamp"
+        );
+
+        // The non-wasm archive is copied through verbatim and left unstamped:
+        // its bytes are exactly what the build wrote (no trailing custom
+        // section), and it still has no wasm magic.
+        let archive_member = fs::read(canonical.join("archive.zip")).unwrap();
+        assert_eq!(
+            archive_member, archive_bytes,
+            "the non-wasm output must be left byte-for-byte unstamped"
+        );
+        assert!(
+            !archive_member.starts_with(b"\0asm"),
+            "the non-wasm output must remain a non-wasm artifact"
+        );
     }
 
     /// Task 7 belt-and-suspenders check: the trusted (no-rehash) cache-hit

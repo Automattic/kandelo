@@ -1358,6 +1358,7 @@ async function handleSpawn(msg: SpawnMessage) {
       argv: msg.argv,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     // A constructor may expose Memory to a partially created Worker before it
@@ -1770,6 +1771,7 @@ async function handleVfork(
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2127,6 +2129,7 @@ async function handleOrdinaryFork(
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2462,6 +2465,7 @@ async function handleExec(
         env: envp,
         ptrWidth: newPtrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -2815,6 +2819,7 @@ async function handlePosixSpawn(
       env: envp,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
     newWorker = new DeferredWorkerHandle(
@@ -3022,6 +3027,7 @@ async function handleClone(
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
   };
 
   threadWorker = new DeferredWorkerHandle(
