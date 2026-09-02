@@ -184,14 +184,14 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
     cp -a local-binaries "$stage/local-binaries"
     staged_local_root="$(realpath "$stage/local-binaries")"
     local_generations_rel=".kandelo-local-generations"
-    for package_owned_root in kernel.wasm userspace.wasm; do
+    for package_owned_root in kernel.wasm; do
         root_mirror="$stage/local-binaries/$package_owned_root"
         if { [ -e "$root_mirror" ] || [ -L "$root_mirror" ]; } &&
            [ ! -L "$root_mirror" ]; then
             # WHY: these compatibility paths are package-owned mirrors, not
             # anonymous scalar byte slots. Accepting a regular file would let
-            # a stale or concurrently replaced kernel/userspace artifact enter
-            # the portable workspace without a cache identity or publication
+            # a stale or concurrently replaced kernel artifact enter the
+            # portable workspace without a cache identity or publication
             # claim.
             echo "pack-ci-test-workspace: package-owned root mirror must remain a local-generation symlink: $root_mirror" >&2
             exit 1
@@ -354,8 +354,7 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
                 expected_program_mirror="programs/$arch/$declared_mirror"
                 if [ "$mirror_relative" != "$expected_program_mirror" ]; then
                     case "$package:$mirror_relative:$declared_mirror" in
-                        "kernel:kernel.wasm:kernel.wasm" | \
-                        "userspace:userspace.wasm:userspace.wasm")
+                        "kernel:kernel.wasm:kernel.wasm")
                             ;;
                         *)
                             echo "pack-ci-test-workspace: local generation member $package:$member does not own mirror $mirror_relative" >&2
@@ -370,7 +369,7 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
                 ;;
             *)
                 case "$mirror_relative" in
-                    kernel.wasm | userspace.wasm)
+                    kernel.wasm)
                         echo "pack-ci-test-workspace: package-owned root mirror must select a declared local generation: $mirror -> $target_relative" >&2
                         exit 1
                         ;;

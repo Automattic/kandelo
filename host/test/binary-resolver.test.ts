@@ -1080,7 +1080,7 @@ function makeTempRepo(): string {
 function writeKernelArtifact(dir: string): string {
   return writeCandidate(
     dir,
-    "kandelo-kernel.wasm",
+    "kernel.wasm",
     kernelWasmWithExports(ABI_VERSION),
   );
 }
@@ -1090,13 +1090,13 @@ function writeKernelArtifact(dir: string): string {
  * `readSourceOnlyProjection` in `binary-resolver.ts`) that materializes one
  * root-mirror `kernel` node, mirroring `writeSourceOnlyProjection` in
  * `scripts/build-local-vfs-asset-group.test.ts`. `packages`/`identities` stay
- * empty because a root-mirror node (package name `kernel` or `userspace`,
- * one slash-free member) is not itself a projected program package.
+ * empty because a root-mirror node (package name `kernel`, one slash-free
+ * member) is not itself a projected program package.
  */
 function writeSourceOnlyProjectionWithKernel(root: string): string {
   mkdirSync(root, { recursive: true });
   const kernelBytes = kernelWasmWithExports(ABI_VERSION);
-  const kernelPath = join(root, "kandelo-kernel.wasm");
+  const kernelPath = join(root, "kernel.wasm");
   writeFileSync(kernelPath, kernelBytes, { mode: 0o644 });
   chmodSync(kernelPath, 0o644);
   const metadataDir = join(root, ".kandelo");
@@ -1118,8 +1118,8 @@ function writeSourceOnlyProjectionWithKernel(root: string): string {
           cacheReceiptSha256: "c".repeat(64),
           members: [
             {
-              sourceArtifact: "kandelo-kernel.wasm",
-              mirrorPath: "kandelo-kernel.wasm",
+              sourceArtifact: "kernel.wasm",
+              mirrorPath: "kernel.wasm",
               mode: 0o644,
               size: kernelBytes.byteLength,
               sha256: createHash("sha256").update(kernelBytes).digest("hex"),
@@ -1152,7 +1152,7 @@ describe("binary resolver policy selection (characterization)", () => {
     writeSourceOnlyProjectionWithKernel(root);
     process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
     process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
-    expect(resolveBinary("kandelo-kernel.wasm")).toContain("source-only-v1");
+    expect(resolveBinary("kernel.wasm")).toContain("source-only-v1");
   });
 
   it("throws when source-only policy is on but WASM_POSIX_SOURCE_ONLY_BINARY_ROOT is unset", () => {
@@ -1174,7 +1174,7 @@ describe("binary resolver policy selection (characterization)", () => {
     const repo = makeTempRepo();
     writeKernelArtifact(join(repo, "local-binaries"));
     process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
-    expect(resolveBinary("kandelo-kernel.wasm")).toContain("local-binaries");
+    expect(resolveBinary("kernel.wasm")).toContain("local-binaries");
   });
 });
 
@@ -1184,7 +1184,7 @@ describe("binary resolver unified tier", () => {
     const repo = makeTempRepo();
     writeKernelArtifact(join(repo, "local-binaries/source-only-v1")); // abi-current
     process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
-    expect(resolveBinary("kandelo-kernel.wasm")).toContain(
+    expect(resolveBinary("kernel.wasm")).toContain(
       "local-binaries/source-only-v1",
     );
   });
@@ -1409,8 +1409,8 @@ version = "1.0.0"
     }]);
 
     // The checked-in Default projection carries a complete first-hit registry
-    // context, including root boot artifacts that are not guest programs.
-    fixtureRegistryIdentities.userspace = {
+    // context, including the root boot artifact that is not a guest program.
+    fixtureRegistryIdentities.kernel = {
       manifestSha256: "a".repeat(64),
       cacheKeys: {
         wasm32: "b".repeat(64),

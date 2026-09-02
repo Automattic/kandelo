@@ -14,10 +14,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 echo "=== WordPress on kandelo ==="
 
 # Step 1: Kernel wasm + musl sysroot
-if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1 || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     echo "--- Building kernel + sysroot ---"
-    bash "$REPO_ROOT/build.sh"
+    bash "$REPO_ROOT/run.sh" setup
 else
     echo "--- Kernel + sysroot: OK ---"
 fi

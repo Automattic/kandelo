@@ -1367,12 +1367,11 @@ impl DepsManifest {
     /// Whether this package publishes its sole executable at the binary root
     /// instead of under `programs/<arch>/`.
     ///
-    /// The kernel and userspace adapter are host boot artifacts, not guest
-    /// programs. Keep this predicate shared by publication and projection so
-    /// the program-package index never claims a path the publisher cannot
-    /// create.
+    /// The kernel is a host boot artifact, not a guest program. Keep this
+    /// predicate shared by publication and projection so the program-package
+    /// index never claims a path the publisher cannot create.
     pub fn uses_root_binary_mirror(&self) -> bool {
-        matches!(self.name.as_str(), "kernel" | "userspace")
+        matches!(self.name.as_str(), "kernel")
             && self.program_outputs.len() == 1
             && self.runtime_files.is_empty()
     }
@@ -2722,7 +2721,7 @@ libs = ["lib/libtest.a"]
     #[test]
     fn source_parse_accepts_kernel_abi_absent_when_no_build_block() {
         // Source-only packages (pcre2-source) and metadata-only
-        // packages (kernel, userspace, examples, node, sqlite-cli)
+        // packages (kernel, examples, node, sqlite-cli)
         // don't have a [build] block and aren't subject to the
         // kernel_abi requirement — they don't produce binaries and
         // aren't gated by ABI.
@@ -3442,13 +3441,11 @@ spdx = "TestLicense"
 
     #[test]
     fn root_binary_mirror_is_limited_to_single_output_boot_artifacts() {
-        for name in ["kernel", "userspace"] {
-            let manifest = program_manifest(
-                name,
-                &format!("[[outputs]]\nname = \"{name}\"\nwasm = \"{name}.wasm\"\n"),
-            );
-            assert!(manifest.uses_root_binary_mirror());
-        }
+        let manifest = program_manifest(
+            "kernel",
+            "[[outputs]]\nname = \"kernel\"\nwasm = \"kernel.wasm\"\n",
+        );
+        assert!(manifest.uses_root_binary_mirror());
 
         let ordinary = program_manifest(
             "shell",

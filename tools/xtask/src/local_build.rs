@@ -804,15 +804,12 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// resolves the raw `kernel.wasm` relPath, unadjusted) — `kandelo-kernel.wasm`
 /// was the old `build.sh`-era name in the ambient `local-binaries/` tier,
 /// which Stage 1 stopped producing. The other artifacts the tier's
-/// default-policy priority now covers — `userspace.wasm`
-/// (`crates/userspace/src/lib.rs`, which exports only
-/// `memory`/`__data_end`/`__heap_base`, confirmed with `wasm-objdump -x`
-/// against a real build; it declares no ABI at all) and everything under
-/// `programs/` — are content-addressed generations the local-build engine
-/// keys by cache key derived from their own inputs (ABI included, where an
-/// artifact's build depends on it). A stale input there is a cache-key
-/// mismatch that already forces a rebuild through the normal engine path,
-/// not a silent-staleness hazard this freshness check needs to duplicate.
+/// default-policy priority now covers — everything under `programs/` — are
+/// content-addressed generations the local-build engine keys by cache key
+/// derived from their own inputs (ABI included, where an artifact's build
+/// depends on it). A stale input there is a cache-key mismatch that already
+/// forces a rebuild through the normal engine path, not a silent-staleness
+/// hazard this freshness check needs to duplicate.
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     let kernel_path = repo
         .join("local-binaries")
@@ -4228,9 +4225,9 @@ fn source_only_program_projection_candidate(
         let PlanNodeV1::Package { name, target_arch } = root_node else {
             return Err("source-only root-mirror set contains a product node".to_string());
         };
-        if !matches!(name.as_str(), "kernel" | "userspace") {
+        if !matches!(name.as_str(), "kernel") {
             return Err(format!(
-                "source-only root-mirror package must be only kernel or userspace, got {name:?}/{target_arch}"
+                "source-only root-mirror package must be only kernel, got {name:?}/{target_arch}"
             ));
         }
         if projection.packages.contains_key(name) || ordinary_program_nodes.contains(root_node) {
@@ -6666,7 +6663,7 @@ materialization = "lazy"
             &BTreeSet::from([rogue_node]),
         )
         .unwrap_err();
-        assert!(error.contains("only kernel or userspace"), "{error}");
+        assert!(error.contains("only kernel"), "{error}");
 
         let mut kernel_in_v2 = authority.projection.clone();
         let kernel_package = kernel_in_v2.packages.remove("app").unwrap();

@@ -332,10 +332,6 @@ name = "unzip"
 class = "user-software"
 
 [[packages]]
-name = "userspace"
-class = "platform"
-
-[[packages]]
 name = "vim"
 class = "user-software"
 

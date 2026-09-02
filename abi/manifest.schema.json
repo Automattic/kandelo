@@ -61,8 +61,8 @@
           "description": "Logical program name this asset belongs to. Multiple assets can share a program (e.g. different builds or runtime bundles)."
         },
         "kind": {
-          "enum": ["kernel", "userspace", "program", "vfs-image", "library"],
-          "description": "What kind of asset this is. `kernel`/`userspace` are our own artifacts; `program` is a bundle (zip or .tar.zst) containing a .wasm + any runtime data + LICENSE; `vfs-image` is a pre-built filesystem image, possibly zstd-compressed; `library` is a V2-format wasm32/wasm64 lib bundle (.tar.zst) carrying ABI compatibility metadata."
+          "enum": ["kernel", "program", "vfs-image", "library"],
+          "description": "What kind of asset this is. `kernel` is our own artifact; `program` is a bundle (zip or .tar.zst) containing a .wasm + any runtime data + LICENSE; `vfs-image` is a pre-built filesystem image, possibly zstd-compressed; `library` is a V2-format wasm32/wasm64 lib bundle (.tar.zst) carrying ABI compatibility metadata."
         },
         "arch": {
           "enum": ["wasm32", "wasm64", "any"],
