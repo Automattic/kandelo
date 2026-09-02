@@ -476,6 +476,173 @@ mod wasm {
         ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) == 0
     }
 
+    // -- Per-activation GC codec catalogs (Phase 6 item 3c — real drive plan) --
+    //
+    // The REAL topological GC drive plan (`fm_build_gc_plan`) reproduces the JS
+    // `materializeTypedGraph` order, which needs the per-activation GC-layout
+    // facts the reference-recipe graph does not carry: which of a struct/array's
+    // edges are constructor (allocation-time) dependencies, which layouts are
+    // defaultable shells, and the i31 owner. Those live in each activation's
+    // decoded `kandelo.wpk_fork.gc_codec` catalog. The host decodes the section
+    // for admission already; it seeds the SAME raw section bytes into the module
+    // ONCE per activation per worker via `fm_set_activation_gc_codec(act, ptr,
+    // count)`, and `build_gc_plan_impl` decodes them into a `GcCodec` per
+    // activation to build `fork_codec::GcCodecHints` (the faithful port of the JS
+    // `gcAllocationDependencies` / owner derivation).
+    //
+    // Like the resume catalogs, storage is a fixed BSS byte arena plus a small
+    // index (activation id -> `[offset, byte_len)`), so it survives the per-fork
+    // bump-heap reset. Both are capped; overflow is a truthful `E2BIG` and the
+    // host keeps the JS drive-order for that program. A re-seeded activation is a
+    // truthful `EINVAL`.
+    const ACT_GC_CODEC_BYTES_CAP: usize = 262_144; // total section bytes, all activations
+    const ACT_GC_CODEC_MAX_ACTS: usize = 64; // distinct activations
+
+    #[repr(C, align(8))]
+    struct ActGcCodecBytes(UnsafeCell<[u8; ACT_GC_CODEC_BYTES_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActGcCodecBytes {}
+    static ACT_GC_CODEC_BYTES: ActGcCodecBytes =
+        ActGcCodecBytes(UnsafeCell::new([0u8; ACT_GC_CODEC_BYTES_CAP]));
+
+    /// Each live entry is `[activation_id, offset, byte_len]` into the byte arena.
+    #[repr(C, align(4))]
+    struct ActGcCodecIndex(UnsafeCell<[[u32; 3]; ACT_GC_CODEC_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActGcCodecIndex {}
+    static ACT_GC_CODEC_INDEX: ActGcCodecIndex =
+        ActGcCodecIndex(UnsafeCell::new([[0u32; 3]; ACT_GC_CODEC_MAX_ACTS]));
+
+    static ACT_GC_CODEC_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
+    static ACT_GC_CODEC_BYTES_USED: AtomicU32 = AtomicU32::new(0);
+
+    // The `hostExceptionOwner` the host computed (the smallest activation that
+    // declared an exception descriptor), used to remap a host-exception exnref's
+    // owner, exactly as the JS `directOwner`. `u32::MAX` means "no host-exception
+    // owner" (the JS `null`); `build_gc_plan_impl` then leaves such an exnref
+    // ownerless so `build_drive_plan` fails loudly. Seeded once per worker.
+    static HOST_EXCEPTION_OWNER: AtomicU32 = AtomicU32::new(u32::MAX);
+
+    fn set_activation_gc_codec_impl(activation_id: u32, ptr: u64, byte_len: u64) -> Result<(), Errno> {
+        let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
+        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        let used = ACT_GC_CODEC_BYTES_USED.load(Ordering::Relaxed) as usize;
+        if act_count >= ACT_GC_CODEC_MAX_ACTS {
+            return Err(Errno::E2BIG); // too many distinct activations
+        }
+        let end_used = used.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end_used > ACT_GC_CODEC_BYTES_CAP {
+            return Err(Errno::E2BIG); // combined catalogs exceed the arena
+        }
+        // Reject a re-seeded activation (each is seeded once per worker).
+        // SAFETY: single-threaded; the index is a static buffer read here only.
+        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
+        for entry in index.iter().take(act_count) {
+            if entry[0] == activation_id {
+                return Err(Errno::EINVAL);
+            }
+        }
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // section region past the end of guest memory
+        }
+        // Copy the raw section bytes out of guest memory into the flat static arena
+        // (the same aliasing-safe idiom the resume catalog uses).
+        // SAFETY: `[start, end)` is within guest linear memory (checked above); the
+        // destination is the distinct static byte arena slice `[used, end_used)`.
+        let bytes = unsafe { &mut *ACT_GC_CODEC_BYTES.0.get() };
+        let src = core::hint::black_box(start) as *const u8;
+        unsafe {
+            core::ptr::copy(src, bytes.as_mut_ptr().add(used), byte_len);
+        }
+        // Publish the index entry, then bump the counters.
+        // SAFETY: single-threaded; `act_count < MAX_ACTS` by the check above.
+        let index = unsafe { &mut *ACT_GC_CODEC_INDEX.0.get() };
+        index[act_count] = [activation_id, used as u32, byte_len as u32];
+        ACT_GC_CODEC_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
+        ACT_GC_CODEC_BYTES_USED.store(end_used as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Decode every seeded activation's GC codec catalog into a `GcCodec`, keyed by
+    /// activation id — the per-activation catalog map `GcCodecHints` consumes. A
+    /// section that fails to decode is a truthful `EINVAL` (the host would have
+    /// declined admission; a corrupt seed must not silently build a wrong plan).
+    fn decoded_gc_codecs() -> Result<BTreeMap<u32, fork_codec::GcCodec>, Errno> {
+        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffers outlive every borrow and
+        // every live entry's `[offset, byte_len)` was bounded on seed.
+        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
+        let bytes = unsafe { &*ACT_GC_CODEC_BYTES.0.get() };
+        let mut map = BTreeMap::new();
+        for entry in index.iter().take(act_count) {
+            let offset = entry[1] as usize;
+            let len = entry[2] as usize;
+            let slice = bytes.get(offset..offset + len).ok_or(Errno::EINVAL)?;
+            map.insert(entry[0], fork_codec::decode_gc_codec(slice)?);
+        }
+        Ok(map)
+    }
+
+    fn host_exception_owner() -> Option<u32> {
+        match HOST_EXCEPTION_OWNER.load(Ordering::Relaxed) {
+            u32::MAX => None,
+            owner => Some(owner),
+        }
+    }
+
+    /// Build the REAL topological GC drive plan for the current fork's reference
+    /// graph (Phase 6 item 3c) and serialize it into the module-owned scratch
+    /// buffer, returning its guest address for `fm_drive_execute`.
+    ///
+    /// Reproduces the JS `materializeTypedGraph` drive-order via
+    /// `fork_codec::build_drive_plan` over the resident driver's decoded reference
+    /// graph, with `GcCodecHints` supplying the per-recipe GC-layout facts from the
+    /// seeded per-activation catalogs. Requires `fm_begin_reference_replay` to have
+    /// seeded the driver (its `drive_reconstruction` opened the host generation and
+    /// transit-rooted the reachable externref leaves the guest fill reads). The
+    /// generation `fm_after_alloc`'s R1 read runs under is the one that drive left
+    /// live; if it opened none (a graph with no host-backed references), open one
+    /// here so every typed ALLOC's transit read-back has a scope.
+    fn build_gc_plan_impl(pid: u32) -> Result<usize, Errno> {
+        let driver = reference_state().as_ref().ok_or(Errno::EINVAL)?;
+        let nodes = &driver.transaction().nodes;
+
+        let gc_codecs = decoded_gc_codecs()?;
+        let hints = fork_codec::GcCodecHints::new(nodes, &gc_codecs, host_exception_owner())?;
+        let steps = drive_plan::build_drive_plan(nodes, &hints)?;
+
+        // Seed the R1-assert generation. Prefer the one `fm_begin_reference_replay`
+        // left live (its transit-rooted externref leaves are under it); open a
+        // fresh scope only when the reconstruction needed none.
+        let generation = match reconstruction_state().as_ref().map(|state| state.generation().0) {
+            Some(existing) if existing != 0 => existing,
+            _ => {
+                let mut host = WpkForkHost;
+                host.begin_generation(pid)?.0
+            }
+        };
+        DRIVE_GENERATION.store(generation, Ordering::Relaxed);
+
+        let mut buf = Vec::new();
+        buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
+        drive_plan::serialize_plan(&steps, &mut buf)?;
+        let ptr = buf.as_ptr() as usize;
+        GC_PLAN_COUNT.store(steps.len() as u32, Ordering::Relaxed);
+        // SAFETY: single-threaded per worker; root the backing bytes so the returned
+        // pointer stays valid for the shim's reads (shares the DRIVE_PLAN cell with
+        // the trivial-plan path — only one plan is live at a time).
+        unsafe {
+            *DRIVE_PLAN.0.get() = Some(buf);
+        }
+        Ok(ptr)
+    }
+
+    // The step count of the plan `fm_build_gc_plan` last serialized (the `count`
+    // argument for `fm_drive_execute`).
+    static GC_PLAN_COUNT: AtomicU32 = AtomicU32::new(0);
+
     // Monotonic count of frames the module has committed since worker start.
     // Proof-of-use for the host: after a flag-on fork drives the continuation
     // through this module, the counter has advanced past its pre-fork value. A
@@ -2291,6 +2458,37 @@ mod wasm {
         }
     }
 
+    /// Seed ONE activation's raw `kandelo.wpk_fork.gc_codec` section bytes for this
+    /// worker (Phase 6 item 3c — the real GC drive plan). `ptr`/`byte_len` point at
+    /// the section bytes the host wrote into guest memory; the module copies them
+    /// into its own arena and decodes them (into a `GcCodec`) when
+    /// `fm_build_gc_plan` runs, to supply the per-recipe GC-layout facts the JS
+    /// `materializeTypedGraph` drive-order needs (constructor dependencies,
+    /// defaultable shells, the i31 owner). Called ONCE per activation per worker,
+    /// before any fork drives GC reconstruction, alongside `fm_set_format`. Too
+    /// many activations, or catalogs that jointly exceed the module's arena, fail
+    /// with `E2BIG`; a re-seeded activation fails with `EINVAL` (check
+    /// `fm_last_errno`), and the host keeps the JS drive-order for that program.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_gc_codec(activation_id: u32, ptr: usize, byte_len: usize) {
+        match set_activation_gc_codec_impl(activation_id, ptr as u64, byte_len as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Seed the `hostExceptionOwner` for this worker (Phase 6 item 3c): the
+    /// smallest activation that declared an exception descriptor, which
+    /// `fm_build_gc_plan` uses to remap a HOST-exception exnref's owner exactly as
+    /// the JS `directOwner`. Pass `u32::MAX` (0xffff_ffff) when there is no such
+    /// owner (the JS `null`). Called ONCE per worker; a single-activation program
+    /// with no host exceptions need not call it at all (the default is "none").
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
+        HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
+        set_ok();
+    }
+
     /// Monotonic count of frames this module has committed since worker start.
     /// Proof-of-use: after a flag-on qualifying fork drives the continuation
     /// through the module, this has advanced; a silent JS fallback leaves it
@@ -2536,6 +2734,35 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_trivial_plan_count() -> i32 {
         2
+    }
+
+    /// Build the REAL topological GC drive plan (Phase 6 item 3c) for the fork's
+    /// whole reference graph, reproducing the JS `materializeTypedGraph` order, and
+    /// return its guest address for `fm_drive_execute`. Requires
+    /// `fm_begin_reference_replay` to have seeded the driver and each participating
+    /// activation's `fm_set_activation_gc_codec` to have seeded its layout catalog.
+    /// Returns 0 on failure (check `fm_last_errno`): a missing driver, an un-seeded
+    /// GC activation, a mismatched recipe/layout coordinate, or an unallocatable
+    /// constructor/exception cycle is a truthful failure, never a wrong plan.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_build_gc_plan(pid: u32) -> usize {
+        match build_gc_plan_impl(pid) {
+            Ok(ptr) => {
+                set_ok();
+                ptr
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// The step count of the plan `fm_build_gc_plan` last serialized (the `count`
+    /// argument for `fm_drive_execute`). 0 before the first successful build.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_plan_count() -> i32 {
+        GC_PLAN_COUNT.load(Ordering::Relaxed) as i32
     }
 
     /// The R1 transit-read assert the injected `fm_drive_execute` shim `call`s

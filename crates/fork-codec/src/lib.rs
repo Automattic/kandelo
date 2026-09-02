@@ -26,6 +26,7 @@ extern crate wasm_posix_shared;
 
 pub mod catalogs;
 pub mod drive_plan;
+pub mod drive_plan_hints;
 pub mod dylink_archive;
 pub mod exception_codec;
 pub mod gc_codec;
@@ -62,6 +63,7 @@ pub use dylink_archive::{
 pub use exception_codec::{
     decode_exception_codec, ForkExceptionCodec, ForkExceptionTagLayout,
 };
+pub use drive_plan_hints::{GcCodecHints, FORK_HOST_EXCEPTION_ACTIVATION_ID};
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use host_capabilities::{
     ForkHostCapabilities, ForkLifecycleCapabilities, HostGeneration, HostInstance, HostRef,
