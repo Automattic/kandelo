@@ -3656,6 +3656,41 @@ export async function centralizedWorkerMain(
           );
         }
       }
+      // Phase 6 item 3a (minimize host surface): the RESTORE data-feed FLIP. When
+      // a child's whole reference graph is admitted through the module
+      // (`moduleReferenceKindsSupported`), the guest's typed-GC/exnref codec reads
+      // the decoded reference graph (vector entries, GC/exnref routes, scalar +
+      // edge loads, exnref cache indices) through the module's seven `fm_ref_*`
+      // exports instead of the JS reference provider (`referenceReplay`). The
+      // still-JS drive-order (`materializeTypedGraph`) is UNCHANGED — it now calls
+      // the guest `_gc_allocate`/`_gc_fill` exports, which call back into these
+      // module exports (module->guest->module; safe because the feed only READS
+      // the immutable decoded graph and WRITES guest memory). Flipped alongside
+      // `__wpk_fork_ref_decode_funcref`, per-activation (every activation's codec
+      // reads the SAME whole-graph module feed), and only when the whole graph is
+      // admitted; a flag-off / non-admitted fork keeps the byte-identical JS
+      // reference path (this returns `{}`, leaving the JS provider imports intact).
+      const moduleReferenceFeedFlip = (): Record<
+        string,
+        WebAssembly.ImportValue
+      > =>
+        moduleReferenceKindsSupported && forkModuleInstance
+          ? {
+              __wpk_fork_ref_vector_get:
+                forkModuleInstance.exports.fm_ref_vector_get,
+              __wpk_fork_ref_gc_route:
+                forkModuleInstance.exports.fm_ref_gc_route,
+              __wpk_fork_ref_gc_payload_len:
+                forkModuleInstance.exports.fm_ref_gc_payload_len,
+              __wpk_fork_ref_gc_load: forkModuleInstance.exports.fm_ref_gc_load,
+              __wpk_fork_ref_exn_route:
+                forkModuleInstance.exports.fm_ref_exn_route,
+              __wpk_fork_ref_exn_load:
+                forkModuleInstance.exports.fm_ref_exn_load,
+              __wpk_fork_ref_exn_cache_index:
+                forkModuleInstance.exports.fm_ref_exn_cache_index,
+            }
+          : {};
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
       const forkContinuation = new LinkedForkContinuation(
         memory,
@@ -4103,6 +4138,11 @@ export async function centralizedWorkerMain(
                         __wpk_fork_ref_decode_funcref:
                           forkModuleInstance.exports
                             .__wpk_fork_ref_decode_funcref,
+                        // Phase 6 item 3a: each dlopen'd side activation's guest
+                        // codec also reads the RESTORE data-feed through the SAME
+                        // whole-graph module exports (the feed is activation-
+                        // namespaced by recipe coordinate, not per instance).
+                        ...moduleReferenceFeedFlip(),
                       }
                     : {}
               : undefined,
@@ -4423,6 +4463,12 @@ export async function centralizedWorkerMain(
                 forkModuleInstance.exports.__wpk_fork_ref_decode_funcref,
             }
           : {}),
+        // Phase 6 item 3a REFERENCE DATA-FEED FLIP: replace the seven JS RESTORE
+        // data-feed imports (supplied by `buildForkActivationStateImports` /
+        // `buildForkExceptionImports` above) with the module exports for an
+        // admitted graph. Placed AFTER those builders so these keys win. Flag-off
+        // / non-admitted forks get `{}` and keep the JS reference path.
+        ...moduleReferenceFeedFlip(),
       };
       const importObject = buildImportObject(
         module,

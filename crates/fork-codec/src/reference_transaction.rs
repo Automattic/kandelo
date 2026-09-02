@@ -132,6 +132,15 @@ impl VectorInternIndex {
     pub fn iter(&self) -> impl Iterator<Item = (&VectorInternKey, &[u32])> {
         self.buckets.iter().map(|(key, ords)| (key, ords.as_slice()))
     }
+
+    /// Append `ordinal` to `key`'s bucket (creating it if absent). Mirrors
+    /// `indexForkReferenceVector` in `host/src/fork-reference-segments.ts`: the
+    /// replay data-feed (`reference_feed`) interns a newly appended GC reference
+    /// vector under its canonical hash key so a later identical vector dedups to
+    /// the same ordinal. Ordinals accumulate in append (ascending) order.
+    pub fn push_ordinal(&mut self, key: VectorInternKey, ordinal: u32) {
+        self.buckets.entry(key).or_default().push(ordinal);
+    }
 }
 
 /// The fully decoded LIVE reference transaction. Mirrors the TS

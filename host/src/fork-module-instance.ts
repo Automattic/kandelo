@@ -90,6 +90,24 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_exnrefs_reconstructed",
   // Phase 6 D6.4a typed-GC (struct/array/i31) reconstruction proof-of-use counter.
   "fm_gc_nodes_reconstructed",
+  // Phase 6 item 3a (minimize host surface): the seven RESTORE data-feed exports
+  // the host flips the guest's `__wpk_fork_ref_{vector_get,gc_route,
+  // gc_payload_len,gc_load,exn_route,exn_load,exn_cache_index}` imports to
+  // (per-activation, like `__wpk_fork_ref_decode_funcref`). They serve the
+  // decoded reference graph to the guest's typed-GC/exnref codec during the JS
+  // drive-order, moving that data feed out of the JS reference provider. Pure
+  // i32/i64 signatures (see `host/src/generated/abi.ts`), so plain Rust exports.
+  "fm_ref_vector_get",
+  "fm_ref_gc_route",
+  "fm_ref_gc_payload_len",
+  "fm_ref_gc_load",
+  "fm_ref_exn_route",
+  "fm_ref_exn_load",
+  "fm_ref_exn_cache_index",
+  // Proof-of-use counter: advances once per data-feed read the module served, so
+  // a test can prove the guest codec read the graph THROUGH the module rather
+  // than the JS provider.
+  "fm_ref_feed_reads",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
