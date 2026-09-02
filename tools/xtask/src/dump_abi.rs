@@ -1658,6 +1658,10 @@ fn render_ts_module() -> String {
             "REPLAY_EVENT_SEGMENT",
             shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
         ),
+        (
+            "JOURNAL_IMAGE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+        ),
     ] {
         out.push_str(&format!(
             "export const WPK_FORK_MODULE_STATE_RECORD_KIND_{name} = {value} as const;\n"
@@ -1949,6 +1953,33 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!(
             "export const WPK_FORK_ACTIVATION_CONTINUATIONS_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_JOURNAL_IMAGE_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_JOURNAL_IMAGE_MAGIC,
+    ));
+    for (name, value) in [
+        ("OWNER", shared::abi::WPK_FORK_JOURNAL_IMAGE_OWNER),
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE),
+        ),
+        (
+            "PAYLOAD_SIZE",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_JOURNAL_IMAGE_{name} = {value} as const;\n"
         ));
     }
     out.push_str(&format!(
@@ -8342,7 +8373,7 @@ mod tests {
         let record_kinds = fork["module_state"]["arena"]["record"]["kinds"]
             .as_array()
             .unwrap();
-        assert_eq!(record_kinds.len(), 13);
+        assert_eq!(record_kinds.len(), 14);
         assert_eq!(
             record_kinds[11],
             json!({"name": "reference_recipe_segment", "number": 12})
@@ -8350,6 +8381,10 @@ mod tests {
         assert_eq!(
             record_kinds[12],
             json!({"name": "replay_event_segment", "number": 13})
+        );
+        assert_eq!(
+            record_kinds[13],
+            json!({"name": "journal_image", "number": 14})
         );
         assert_eq!(
             fork["module_state"]["record_payloads"]["mutable_global"]["header_size"],

@@ -43,19 +43,50 @@ const NODE_COMMITTED: u16 = 2;
 ///
 /// Mirrors the `allocate` callback the TS `LinkedForkContinuation` receives: on
 /// each call, hand back the guest byte offset of a fresh `capacity`-byte,
-/// page-aligned anonymous mapping, or `None` when no mapping is available. The
-/// writer validates the returned address and reports `Err(Errno::EINVAL)` on a
-/// bad or absent allocation instead of panicking; it never grows or frees.
+/// page-aligned anonymous mapping, or a TRUTHFUL `Errno` (`ENOMEM`/`EAGAIN`)
+/// when no mapping is available. The writer validates the returned address and
+/// reports `Err(Errno::EINVAL)` only for a structurally invalid address (zero,
+/// misaligned, or out of bounds); an allocation FAILURE propagates the
+/// allocator's own errno unchanged, so a memory-bounded exhaustion surfaces as
+/// `ENOMEM`, never a masked `EINVAL`.
 ///
-/// Any `FnMut(u64) -> Option<u64>` is a `ChunkAllocator`, so tests and callers
-/// can pass a plain closure (e.g. a bump allocator over the byte buffer).
+/// Any `FnMut(u64) -> Result<u64, Errno>` is a `ChunkAllocator`, so tests and
+/// callers can pass a plain closure (e.g. a bump allocator over the byte
+/// buffer).
+///
+/// # Growing allocators (Option B — the channel-mmap allocator)
+///
+/// The module's `ChannelMmapAllocator` issues each chunk's `SYS_MMAP` through
+/// the syscall channel, which GROWS the shared linear memory on demand. A grow
+/// leaves the writer's previously-formed `&mut [u8]` view too short to cover the
+/// freshly mapped high chunk. So after every `allocate`, the writer re-derives
+/// its whole-memory slice from [`current_memory`]; an allocator that never grows
+/// memory (fixed-arena / host-test allocators) returns `None` and the writer
+/// keeps its existing slice. Shared linear memory never relocates its base on a
+/// grow, so re-forming the slice at the same base with the larger length is
+/// sound.
+///
+/// [`current_memory`]: ChunkAllocator::current_memory
 pub trait ChunkAllocator {
-    /// Allocate `capacity` bytes and return the page-aligned guest byte offset.
-    fn allocate(&mut self, capacity: u64) -> Option<u64>;
+    /// Allocate `capacity` bytes and return the page-aligned guest byte offset,
+    /// or a truthful `Errno` on failure.
+    fn allocate(&mut self, capacity: u64) -> Result<u64, Errno>;
+
+    /// The whole guest linear memory as `(base_ptr, len_bytes)` AFTER the most
+    /// recent [`allocate`] may have grown it. `None` (the default) means the
+    /// memory length is stable and the caller's existing slice stays valid —
+    /// fixed-arena and host-test allocators. A GROWING allocator (the module's
+    /// channel-mmap allocator) overrides this so the writer re-forms its slice
+    /// over the grown region instead of wrongly rejecting the new high chunk.
+    ///
+    /// [`allocate`]: ChunkAllocator::allocate
+    fn current_memory(&self) -> Option<(*mut u8, usize)> {
+        None
+    }
 }
 
-impl<F: FnMut(u64) -> Option<u64>> ChunkAllocator for F {
-    fn allocate(&mut self, capacity: u64) -> Option<u64> {
+impl<F: FnMut(u64) -> Result<u64, Errno>> ChunkAllocator for F {
+    fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
         self(capacity)
     }
 }
@@ -105,6 +136,29 @@ fn align_up_to(value: u64, align: u64) -> Result<u64, Errno> {
 /// `addr + size`, rejecting overflow. Mirrors the decoder's `checked_end`.
 fn checked_end(addr: u64, size: u64) -> Result<u64, Errno> {
     addr.checked_add(size).ok_or(Errno::EINVAL)
+}
+
+/// Re-derive the whole-memory slice after an `allocate` may have grown it.
+///
+/// A growing allocator (the module's channel-mmap allocator) reports the fresh
+/// `(base, len)` via [`ChunkAllocator::current_memory`]; the writer re-forms its
+/// slice so a just-mapped high chunk is in bounds. A non-growing allocator
+/// returns `None` and the caller's existing slice stays valid.
+///
+/// This is a FREE FUNCTION returning a bare `&mut [u8]` (not a slice threaded
+/// through a tuple return): returning a re-formed `&mut [u8]` from a
+/// lifetime-parameterized method's tuple result miscompiles a bare-metal
+/// `--pie` wasm side module under release LLVM (the returned slice's fat pointer
+/// is corrupted across the multi-value return), so each caller re-derives its
+/// own slice locally right after the allocating call instead.
+fn resliced<'m, A: ChunkAllocator>(alloc: &A, mem: &'m mut [u8]) -> &'m mut [u8] {
+    match alloc.current_memory() {
+        // SAFETY: the allocator reports the current base + byte length of the
+        // whole guest linear memory it just (possibly) grew; the writer only
+        // ever indexes offsets inside chunks that lie within `[base, base+len)`.
+        Some((base, len)) => unsafe { core::slice::from_raw_parts_mut(base, len) },
+        None => mem,
+    }
 }
 
 /// Bounds-checked little-endian `u16` write.
@@ -184,7 +238,7 @@ impl LinkedFrameWriter {
     /// (fork-continuation.ts:271-299).
     pub fn begin_unwind<A: ChunkAllocator>(
         &mut self,
-        mem: &mut [u8],
+        mut mem: &mut [u8],
         alloc: &mut A,
     ) -> Result<u64, Errno> {
         if self.root != 0 {
@@ -199,10 +253,13 @@ impl LinkedFrameWriter {
         let initial_used = align_up_to(chunk_header.checked_add(prefix).ok_or(Errno::EINVAL)?, ALIGNMENT)?;
         let capacity = align_up_to(initial_used.max(PAGE_SIZE), PAGE_SIZE)?;
 
-        let root = self.allocate_chunk(mem, alloc, capacity, 0, 0)?;
+        let root = self.allocate_chunk(&mut *mem, alloc, capacity, 0, 0)?;
         self.root = root;
         self.active_chunk = root;
 
+        // `allocate_chunk` may have GROWN guest memory (channel-mmap allocator);
+        // re-derive our slice so the prefix write below lands in the grown region.
+        mem = resliced(alloc, mem);
         // Publish the module-reserved prefix as used, matching beginUnwind.
         let pw = p as u64;
         w_ptr(mem, root + 8 + 4 * pw, initial_used, p)?;
@@ -218,7 +275,7 @@ impl LinkedFrameWriter {
     /// `reserveFrame` (fork-continuation.ts:448-509).
     pub fn reserve_frame<A: ChunkAllocator>(
         &mut self,
-        mem: &mut [u8],
+        mut mem: &mut [u8],
         alloc: &mut A,
         payload_size: u64,
     ) -> Result<u64, Errno> {
@@ -244,7 +301,11 @@ impl LinkedFrameWriter {
                 PAGE_SIZE.max(chunk_header.checked_add(node_size).ok_or(Errno::EINVAL)?),
                 PAGE_SIZE,
             )?;
-            let next = self.allocate_chunk(mem, alloc, next_capacity, self.root, chunk)?;
+            // Allocating the fresh chunk may GROW guest memory; re-derive `mem`
+            // to the grown slice so the node/header writes below and the final
+            // bounds check see the new high chunk in bounds.
+            let next = self.allocate_chunk(&mut *mem, alloc, next_capacity, self.root, chunk)?;
+            mem = resliced(alloc, mem);
             // Link the previous active chunk to the new one.
             w_ptr(mem, chunk + 8 + 2 * pw, next, p)?;
             self.active_chunk = next;
@@ -349,7 +410,15 @@ impl LinkedFrameWriter {
         let pw = p as u64;
         let chunk_header = self.format.chunk_header_size as u64;
 
-        let addr = alloc.allocate(capacity).ok_or(Errno::EINVAL)?;
+        // Propagate the allocator's OWN errno on failure (memory-bounded
+        // exhaustion is a truthful `ENOMEM`/`EAGAIN`, never a masked `EINVAL`).
+        let addr = alloc.allocate(capacity)?;
+        // The allocation may have GROWN guest memory. Re-derive the whole-memory
+        // slice so the freshly mapped high chunk is in bounds; a stale pre-grow
+        // slice would wrongly reject it. `None` keeps the caller's slice (fixed
+        // arena / host test). Shared memory never relocates its base on grow, so
+        // re-forming at the same base with the larger length is sound.
+        let mem = resliced(alloc, mem);
         if addr == 0
             || addr % PAGE_SIZE != 0
             || checked_end(addr, capacity)? > mem.len() as u64
@@ -405,14 +474,14 @@ mod tests {
     }
 
     impl ChunkAllocator for Bump {
-        fn allocate(&mut self, capacity: u64) -> Option<u64> {
+        fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
             let addr = self.next;
-            let end = addr.checked_add(capacity)?;
+            let end = addr.checked_add(capacity).ok_or(Errno::ENOMEM)?;
             if end > self.limit {
-                return None;
+                return Err(Errno::ENOMEM);
             }
             self.next = end;
-            Some(addr)
+            Ok(addr)
         }
     }
 
@@ -564,17 +633,19 @@ mod tests {
     fn rejects_misaligned_allocation() {
         let mut mem = alloc::vec![0u8; (PAGE_SIZE * 3) as usize];
         // Allocator hands back a non-page-aligned address.
-        let mut alloc = |_cap: u64| Some(PAGE_SIZE + 1);
+        let mut alloc = |_cap: u64| Ok(PAGE_SIZE + 1);
         let mut w = LinkedFrameWriter::new(wasm32_format());
         assert_eq!(w.begin_unwind(&mut mem, &mut alloc), Err(Errno::EINVAL));
     }
 
     #[test]
-    fn rejects_exhausted_allocator() {
+    fn rejects_exhausted_allocator_with_its_own_errno() {
+        // A memory-bounded allocator that fails with ENOMEM must surface ENOMEM
+        // (its truthful errno), NOT a masked EINVAL — the Option-B contract.
         let mut mem = alloc::vec![0u8; (PAGE_SIZE * 3) as usize];
-        let mut alloc = |_cap: u64| None;
+        let mut alloc = |_cap: u64| Err(Errno::ENOMEM);
         let mut w = LinkedFrameWriter::new(wasm32_format());
-        assert_eq!(w.begin_unwind(&mut mem, &mut alloc), Err(Errno::EINVAL));
+        assert_eq!(w.begin_unwind(&mut mem, &mut alloc), Err(Errno::ENOMEM));
     }
 
     #[test]
@@ -631,5 +702,162 @@ mod tests {
         w.begin_unwind(&mut mem, &mut bump).unwrap();
         let payload = w.reserve_frame(&mut mem, &mut bump, 16).unwrap();
         assert_eq!(w.commit_frame(&mut mem, payload + 8), Err(Errno::EINVAL));
+    }
+
+    // --- Option B: growth beyond the old fixed 4 MiB arena cap -----------
+
+    /// The old MODULE path capped frames at a fixed 4 MiB host-reserved arena.
+    /// Option B is memory-bounded: the writer chains as many page chunks as the
+    /// allocator can supply. Drive one-page frames past 4 MiB of chunk storage
+    /// (past 64 wasm pages) and prove every frame decodes back — the fixed cap
+    /// is gone.
+    #[test]
+    fn grows_past_the_old_four_mib_cap() {
+        const ROOT: u64 = PAGE_SIZE;
+        // 12 MiB backing >> the retired 4 MiB cap; enough for >150 page chunks.
+        const TOTAL: u64 = 12 * 1024 * 1024;
+        let mut mem = alloc::vec![0u8; TOTAL as usize];
+        let mut bump = Bump::new(ROOT, TOTAL);
+        let format = wasm32_format();
+        let mut w = LinkedFrameWriter::new(format);
+
+        let module_buffer = w.begin_unwind(&mut mem, &mut bump).unwrap();
+        // Each frame's payload is ~one page, so each forces a fresh chunk; 150
+        // frames therefore span ~150 pages (~9.4 MiB), well past the 64-page cap.
+        // Payload sized so node_header + payload + chunk_header == one page: each
+        // node exactly fills one fresh 1-page chunk (forcing a chunk per frame).
+        let one_page_payload = PAGE_SIZE - CHUNK_HEADER as u64 - NODE_HEADER as u64;
+        const FRAMES: usize = 150;
+        for i in 0..FRAMES {
+            let payload = w.reserve_frame(&mut mem, &mut bump, one_page_payload).unwrap();
+            write_payload(&mut mem, payload, 500 + i as u32, i as u32, i as u8, 24);
+            w.commit_frame(&mut mem, payload).unwrap();
+        }
+        w.finish_unwind().unwrap();
+        assert_eq!(w.committed().0, FRAMES as u64);
+        // The total chunk storage bumped past the retired 4 MiB cap.
+        assert!(bump.next - ROOT > 4 * 1024 * 1024, "grew past the old 4 MiB cap");
+
+        let decoded = decode_linked_frames(&mem, module_buffer, &format).unwrap();
+        assert_eq!(decoded.nodes.len(), FRAMES);
+        // Tail-first: last committed (frame 149) decodes first.
+        assert_eq!(decoded.nodes[0].header.unwrap().func_index, 500 + (FRAMES as u32 - 1));
+        assert_eq!(decoded.nodes.last().unwrap().header.unwrap().func_index, 500);
+    }
+
+    /// A 5000-frame chain round-trips (the harness stress workload, at the codec
+    /// layer), proving depth is bounded only by available memory, not a cap.
+    #[test]
+    fn chain_of_5000_frames_round_trips() {
+        const ROOT: u64 = PAGE_SIZE;
+        const TOTAL: u64 = 8 * 1024 * 1024;
+        let mut mem = alloc::vec![0u8; TOTAL as usize];
+        let mut bump = Bump::new(ROOT, TOTAL);
+        let format = wasm32_format();
+        let mut w = LinkedFrameWriter::new(format);
+
+        let module_buffer = w.begin_unwind(&mut mem, &mut bump).unwrap();
+        const FRAMES: usize = 5000;
+        for i in 0..FRAMES {
+            let payload = w.reserve_frame(&mut mem, &mut bump, 32).unwrap();
+            write_payload(&mut mem, payload, 1000 + i as u32, i as u32, i as u8, 16);
+            w.commit_frame(&mut mem, payload).unwrap();
+        }
+        w.finish_unwind().unwrap();
+        assert_eq!(w.committed().0, FRAMES as u64);
+
+        let decoded = decode_linked_frames(&mem, module_buffer, &format).unwrap();
+        assert_eq!(decoded.nodes.len(), FRAMES);
+        assert_eq!(decoded.nodes[0].header.unwrap().func_index, 1000 + (FRAMES as u32 - 1));
+        assert_eq!(decoded.nodes.last().unwrap().header.unwrap().func_index, 1000);
+    }
+
+    // --- Option B CRITICAL RISK: memory grows mid-reserve ----------------
+
+    /// A growing allocator that reports an INCREASING whole-memory length after
+    /// each `allocate` — the exact shape of the module's channel-mmap allocator,
+    /// where `SYS_MMAP` grows the shared linear memory. The writer forms its view
+    /// from a slice that is initially TOO SHORT to cover the chunks this
+    /// allocator hands out; only by re-deriving the length from `current_memory`
+    /// after each `allocate` can it write into the freshly grown high region.
+    struct GrowingArena {
+        base: *mut u8,
+        total: u64,
+        reported: core::cell::Cell<usize>,
+        next: u64,
+    }
+
+    impl ChunkAllocator for GrowingArena {
+        fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
+            let addr = self.next;
+            let end = addr.checked_add(capacity).ok_or(Errno::ENOMEM)?;
+            if end > self.total {
+                return Err(Errno::ENOMEM);
+            }
+            self.next = end;
+            // Simulate SYS_MMAP growing shared memory: the addressable length now
+            // reaches the end of the just-mapped chunk (base is unchanged).
+            self.reported.set(end as usize);
+            Ok(addr)
+        }
+
+        fn current_memory(&self) -> Option<(*mut u8, usize)> {
+            Some((self.base, self.reported.get()))
+        }
+    }
+
+    /// The critical-risk proof: memory grows mid-reserve, and the writer
+    /// re-derives its slice so the fresh high chunk is in bounds. Without the
+    /// re-derive, the stale short slice would wrongly reject every chunk.
+    #[test]
+    fn re_derives_slice_after_each_grow() {
+        // A large backing buffer the allocator grows INTO one page at a time.
+        const TOTAL: u64 = 4 * 1024 * 1024;
+        let mut backing = alloc::vec![0u8; TOTAL as usize];
+        let base = backing.as_mut_ptr();
+        // The initial addressable window is a SINGLE page — far shorter than the
+        // chunks the allocator will hand out (which start at page 1).
+        let initial_len = PAGE_SIZE as usize;
+        let format = wasm32_format();
+        let mut w = LinkedFrameWriter::new(format);
+        let mut arena = GrowingArena {
+            base,
+            total: TOTAL,
+            reported: core::cell::Cell::new(initial_len),
+            next: PAGE_SIZE, // first chunk lands AT the end of the initial window
+        };
+
+        // SAFETY: `base` is the live backing buffer; the initial view is one page.
+        let mem0: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, initial_len) };
+        let module_buffer = w.begin_unwind(mem0, &mut arena).unwrap();
+        // The root chunk landed at page 1 — beyond the initial one-page window —
+        // proving begin_unwind re-derived the grown slice.
+        assert_eq!(module_buffer, PAGE_SIZE + CHUNK_HEADER as u64);
+
+        // Drive one-page frames; each forces a fresh chunk that grows memory, so
+        // every reserve_frame must re-derive its slice mid-call. Mirror the
+        // module: hand each call a fresh view of the CURRENT reported length.
+        // One 1-page chunk per node (see grows_past_the_old_four_mib_cap).
+        let one_page_payload = PAGE_SIZE - CHUNK_HEADER as u64 - NODE_HEADER as u64;
+        const FRAMES: usize = 40; // ~40 pages, well past the initial one-page view
+        for i in 0..FRAMES {
+            let cur_len = arena.reported.get();
+            // SAFETY: `base` + current reported length is the grown memory.
+            let mem: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, cur_len) };
+            let payload = w.reserve_frame(mem, &mut arena, one_page_payload).unwrap();
+            let mem: &mut [u8] =
+                unsafe { core::slice::from_raw_parts_mut(base, arena.reported.get()) };
+            write_payload(mem, payload, 700 + i as u32, i as u32, i as u8, 24);
+            w.commit_frame(mem, payload).unwrap();
+        }
+        w.finish_unwind().unwrap();
+        assert_eq!(w.committed().0, FRAMES as u64);
+
+        // Decode over the fully-grown memory: every frame round-trips.
+        let mem: &[u8] = unsafe { core::slice::from_raw_parts(base, arena.reported.get()) };
+        let decoded = decode_linked_frames(mem, module_buffer, &format).unwrap();
+        assert_eq!(decoded.nodes.len(), FRAMES);
+        assert_eq!(decoded.nodes[0].header.unwrap().func_index, 700 + (FRAMES as u32 - 1));
+        assert_eq!(decoded.nodes.last().unwrap().header.unwrap().func_index, 700);
     }
 }

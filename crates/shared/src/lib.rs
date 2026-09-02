@@ -2071,6 +2071,14 @@ pub mod abi {
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS: u16 = 11;
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT: u16 = 12;
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT: u16 = 13;
+    /// Phase 6 (minimize host surface, Option B): a manifest naming WHERE the
+    /// parent channel-mmap'd the serialized replay-event (KFRE) journal image and
+    /// its length. With Option B the module owns its frame allocation via
+    /// in-realm `SYS_MMAP`, so the KFRE image no longer lives at a host-computed
+    /// arena offset; the child instead reads this record to find the inherited
+    /// image and seed its replay. Additive: only a module-backed (flag-on) seal
+    /// writes it, so the flag-off arena is byte-identical.
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE: u16 = 14;
 
     /// One recognized module-state arena record kind.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2131,6 +2139,10 @@ pub mod abi {
         ForkModuleStateRecordKind {
             number: WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
             name: "replay_event_segment",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+            name: "journal_image",
         },
     ];
 
@@ -2204,6 +2216,17 @@ pub mod abi {
     pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE: u16 = 16;
     pub const WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS: u16 = 0;
     pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS: u32 = 0;
+    /// Journal-image manifest payload (Option B). A fixed 32-byte record naming
+    /// the guest offset the parent channel-mmap'd the serialized KFRE journal
+    /// image to (`ptr`, +16) and its byte length (`len`, +24). Layout: magic u32
+    /// (+0), version u16 (+4), header_size u16 (+6), flags u16 (+8), reserved u16
+    /// (+10), reserved u32 (+12), ptr u64 (+16), len u64 (+24).
+    pub const WPK_FORK_JOURNAL_IMAGE_OWNER: u32 = 5;
+    pub const WPK_FORK_JOURNAL_IMAGE_MAGIC: [u8; 4] = *b"KFJI";
+    pub const WPK_FORK_JOURNAL_IMAGE_VERSION: u16 = 1;
+    pub const WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE: u16 = 32;
+    pub const WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS: u16 = 0;
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER: u32 = 4;
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC: [u8; 4] = *b"KFBT";
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION: u16 = 1;

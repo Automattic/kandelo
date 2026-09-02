@@ -134,6 +134,7 @@ export const WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS = 10 as 
 export const WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS = 11 as const;
 export const WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT = 12 as const;
 export const WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT = 13 as const;
+export const WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE = 14 as const;
 export const WPK_FORK_MODULE_STATE_RECORD_KINDS = [
   { number: 1, name: "module" },
   { number: 2, name: "reference_recipe" },
@@ -148,6 +149,7 @@ export const WPK_FORK_MODULE_STATE_RECORD_KINDS = [
   { number: 11, name: "imported_table_bindings" },
   { number: 12, name: "reference_recipe_segment" },
   { number: 13, name: "replay_event_segment" },
+  { number: 14, name: "journal_image" },
 ] as const;
 export const WPK_FORK_MODULE_STATE_POINTER_WIDTHS = [
   { bytes: 4, chunkHeaderSize: 40 },
@@ -213,6 +215,12 @@ export const WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE = 24 as const;
 export const WPK_FORK_ACTIVATION_CONTINUATIONS_ENTRY_SIZE = 16 as const;
 export const WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS = 0 as const;
 export const WPK_FORK_ACTIVATION_CONTINUATIONS_ENTRY_KNOWN_FLAGS = 0 as const;
+export const WPK_FORK_JOURNAL_IMAGE_MAGIC = [75, 70, 74, 73] as const;
+export const WPK_FORK_JOURNAL_IMAGE_OWNER = 5 as const;
+export const WPK_FORK_JOURNAL_IMAGE_VERSION = 1 as const;
+export const WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE = 16 as const;
+export const WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE = 32 as const;
+export const WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS = 0 as const;
 export const WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC = [75, 70, 66, 84] as const;
 export const WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER = 4 as const;
 export const WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION = 1 as const;

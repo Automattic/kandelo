@@ -5926,6 +5926,10 @@
               {
                 "name": "replay_event_segment",
                 "number": 13
+              },
+              {
+                "name": "journal_image",
+                "number": 14
               }
             ],
             "magic_bytes": [

@@ -346,14 +346,14 @@ mod tests {
     }
 
     impl ChunkAllocator for Bump {
-        fn allocate(&mut self, capacity: u64) -> Option<u64> {
+        fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
             let addr = self.next;
-            let end = addr.checked_add(capacity)?;
+            let end = addr.checked_add(capacity).ok_or(Errno::ENOMEM)?;
             if end > self.limit {
-                return None;
+                return Err(Errno::ENOMEM);
             }
             self.next = end;
-            Some(addr)
+            Ok(addr)
         }
     }
 

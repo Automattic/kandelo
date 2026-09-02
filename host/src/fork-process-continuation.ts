@@ -16,6 +16,7 @@ import {
   decodeForkActivationContinuations,
   type ForkModuleStateArena,
   ForkModuleStateRecordKind,
+  journalImageForChild,
   replayEventsForChild,
   writeForkModuleStateRoot,
 } from "./fork-module-state";
@@ -909,10 +910,16 @@ export class ForkProcessContinuationCoordinator {
         this.requireActivationState(activation, WPK_FORK_NORMAL, "end unwind");
       }
       // The module serializes its own journal (every activation's events, tagged)
-      // into activation 0's frame-arena image region, inherited verbatim by the
-      // child copy. No JS-wire REPLAY-EVENT records are written — the module owns
-      // the journal, so `this.events` is idle and there is no double-journal.
-      backend.finishUnwindAndSerialize();
+      // into a chunk it channel-mmaps itself (Option B), inherited verbatim by
+      // the child copy. No JS-wire REPLAY-EVENT records are written — the module
+      // owns the journal, so `this.events` is idle and there is no double-journal.
+      // The image no longer sits at a host-computed arena offset, so record its
+      // (ptr, len) in a `JournalImage` KFMS record for the child to find.
+      const journalImage = backend.finishUnwindAndSerialize();
+      this.registry.currentArena().appendJournalImage({
+        ptr: BigInt(journalImage.ptr),
+        len: BigInt(journalImage.len),
+      });
       // Phase 6 D7a.1a: a multi-activation (dlopen) fork DOES write the
       // activation-continuation manifest so the child can recover EACH side
       // activation's inherited continuation anchor (activation 0's comes from the
@@ -1030,11 +1037,21 @@ export class ForkProcessContinuationCoordinator {
 
       // Seed activation 0's replay from the copied KFRE journal image, then add
       // each side activation at its inherited continuation anchor. All seeding
-      // happens before any guest rewind drives a frame.
+      // happens before any guest rewind drives a frame. Option B: the image was
+      // channel-mmap'd, so its location comes from the inherited `JournalImage`
+      // KFMS record, not a host-computed arena offset.
+      const journalImage = journalImageForChild(
+        this.registry.currentArena().recordViews(),
+        this.getActivation(0).continuation.format.ptrWidth,
+      );
       const act0 = this.getActivation(0);
       act0.root = act0Root;
       act0.replayRoot = act0Root;
-      backend.beginChildReplay(act0Root);
+      backend.beginChildReplay(
+        act0Root,
+        Number(journalImage.ptr),
+        Number(journalImage.len),
+      );
       for (const activation of activations) {
         if (activation.activationId === 0) continue;
         const root = roots.get(activation.activationId);
