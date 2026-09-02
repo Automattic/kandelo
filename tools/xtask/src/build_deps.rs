@@ -13535,6 +13535,12 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
+                // A zip lazy-archive declared as a program output cannot
+                // carry the custom section; its freshness stays bound by the
+                // content-addressed entry name alone.
+                if !crate::build_stamp::is_wasm_module(&bytes) {
+                    continue;
+                }
                 let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
                     format!(
                         "{}: stamp built wasm output {}: {error}",
@@ -15658,6 +15664,11 @@ fn validate_cache_entry_build_key_stamps(canonical: &Path, cache_key_sha: &str) 
     for member in materialized_wasm_members(canonical, cache_key_sha)? {
         let bytes = std::fs::read(&member)
             .map_err(|e| format!("read cached member {}: {e}", member.display()))?;
+        // Zip lazy-archives declared as program outputs are never stamped;
+        // parsing one as wasm would report corruption where there is none.
+        if !crate::build_stamp::is_wasm_module(&bytes) {
+            continue;
+        }
         match crate::build_stamp::read_build_key(&bytes)? {
             Some(stamp) if stamp == expected_key => {}
             Some(stamp) => {
