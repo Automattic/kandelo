@@ -6916,14 +6916,30 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "sdk/src",
 ];
 
-const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
-    "Cargo.toml",
-    "crates/fork-instrument/Cargo.toml",
-    "crates/fork-instrument/src",
-    "scripts/build-fork-instrument-tool.sh",
-    "scripts/fork-instrument-tool-input-hash.sh",
-    "scripts/run-wasm-fork-instrument.sh",
-];
+/// The full input closure of the wasm-fork-instrument tool: the crate's
+/// cargo-derived workspace source closure (crates/fork-instrument, its
+/// workspace path-deps, and .cargo/config.toml) plus the explicit non-crate
+/// tail. Single source of truth shared by the cache-key digest and the
+/// drift-guard test that keeps scripts/fork-instrument-tool-input-hash.sh
+/// from silently diverging. The tail is genuinely non-crate (lockfile/manifest/
+/// toolchain + the build/run/hash harness scripts) and cannot be derived from
+/// cargo.
+fn fork_instrument_tool_input_paths(root: &Path) -> Result<Vec<String>, String> {
+    let mut paths = crate::cargo_closure::cargo_closure_paths(root, "fork-instrument")?;
+    for tail in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "scripts/build-fork-instrument-tool.sh",
+        "scripts/run-wasm-fork-instrument.sh",
+        "scripts/fork-instrument-tool-input-hash.sh",
+    ] {
+        paths.push(tail.to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
 
 type RootDigestCache = OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
@@ -6968,8 +6984,9 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
 fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
     let root = repo_root();
     root_scoped_build_input_digests(&FORK_INSTRUMENT_TOOL_DIGESTS, &root, |root| {
-        let mut digests =
-            global_package_build_input_digests_for(root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+        let paths = fork_instrument_tool_input_paths(root)?;
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut digests = global_package_build_input_digests_for(root, &refs)?;
         digests.push(BuildInputDigest {
             label: "cargo-metadata:fork-instrument-build-deps".to_string(),
             digest: fork_instrument_cargo_dependency_digest(root)?,
@@ -22896,10 +22913,104 @@ allow_uninitialized_gitlinks = true
     }
 
     #[test]
-    fn fork_instrument_tool_inputs_hash_dependency_closure_instead_of_whole_lockfile() {
+    fn fork_instrument_tool_input_paths_include_cargo_config_and_both_crate_dirs() {
+        // This is the exact omission Stage 2 fixes: the old hand-maintained
+        // input list omitted crates/shared AND .cargo/config.toml, so edits
+        // to either could leave a stale cached fork-instrument tool
+        // undetected.
+        let root = repo_root();
+        let paths = fork_instrument_tool_input_paths(&root).expect("closure");
         assert!(
-            !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
-            "raw Cargo.lock changes are too broad for program package cache keys"
+            paths.iter().any(|p| p == "crates/fork-instrument"),
+            "fork-instrument dir missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "crates/shared"),
+            "shared dir missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == ".cargo/config.toml"),
+            "cargo config missing: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "Cargo.lock"),
+            "Cargo.lock missing: {paths:?}"
+        );
+        let mut sorted = paths.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(paths, sorted, "must be sorted and deduped");
+    }
+
+    /// Extracts the whitespace-separated root arguments of the script's
+    /// `find <roots...> -type f -print` invocation.
+    fn fork_instrument_hash_script_find_roots(script: &str) -> BTreeSet<String> {
+        let find_idx = script
+            .find("find ")
+            .expect("scripts/fork-instrument-tool-input-hash.sh must invoke `find`");
+        let rest = &script[find_idx + "find ".len()..];
+        let end = rest.find(" -").unwrap_or(rest.len());
+        rest[..end].split_whitespace().map(str::to_string).collect()
+    }
+
+    /// True if `token` appears in `script` as a standalone path-like word
+    /// (not as a substring of a longer path or filename). Robust to the
+    /// shell script's line-continuation backslashes, trailing `;`, and
+    /// arbitrary whitespace/formatting.
+    fn fork_instrument_hash_script_mentions_path(script: &str, token: &str) -> bool {
+        let is_path_char =
+            |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_');
+        let bytes = script.as_bytes();
+        let mut search_from = 0usize;
+        while let Some(rel) = script[search_from..].find(token) {
+            let start = search_from + rel;
+            let end = start + token.len();
+            let before_ok = start == 0 || !is_path_char(bytes[start - 1] as char);
+            let after_ok = end >= bytes.len() || !is_path_char(bytes[end] as char);
+            if before_ok && after_ok {
+                return true;
+            }
+            search_from = start + 1;
+        }
+        false
+    }
+
+    #[test]
+    fn fork_instrument_tool_input_hash_shell_script_matches_cargo_closure() {
+        // Drift guard: scripts/fork-instrument-tool-input-hash.sh hand-lists
+        // its inputs in pure shell (deliberately, so the per-build staleness
+        // check never shells out to `cargo`). This test is the only thing
+        // keeping that hand list in sync with the cargo-derived closure that
+        // feeds consuming packages' cache keys.
+        let root = repo_root();
+        let paths = fork_instrument_tool_input_paths(&root).expect("closure");
+        let script_path = root.join("scripts/fork-instrument-tool-input-hash.sh");
+        let script = fs::read_to_string(&script_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", script_path.display()));
+
+        let crate_dirs: BTreeSet<String> = paths
+            .iter()
+            .filter(|p| p.starts_with("crates/"))
+            .cloned()
+            .collect();
+        let other_paths: Vec<&String> =
+            paths.iter().filter(|p| !p.starts_with("crates/")).collect();
+
+        for path in other_paths {
+            assert!(
+                fork_instrument_hash_script_mentions_path(&script, path),
+                "scripts/fork-instrument-tool-input-hash.sh is missing input {path:?} that \
+                 fork_instrument_tool_input_paths now covers; add it to the hand-listed \
+                 `for relative_path in ...` loop so the installed-tool staleness hash covers \
+                 the same inputs as the package cache key",
+            );
+        }
+
+        let script_crate_roots = fork_instrument_hash_script_find_roots(&script);
+        assert_eq!(
+            script_crate_roots, crate_dirs,
+            "fork-instrument's workspace deps changed; update the shell script's `find` \
+             roots and re-check the cache-key coverage.",
         );
     }
 
