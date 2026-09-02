@@ -36,6 +36,10 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_begin_child_replay",
   "fm_finish_replay",
   "fm_frames_committed",
+  // Phase 6 D7b: replay-side proof-of-use counter. A replay-only forked child
+  // never commits a frame, so this (not `fm_frames_committed`) is what proves a
+  // fork-from-thread child drove its rewind through the module.
+  "fm_frames_replayed",
   "fm_last_errno",
   // Phase 6 D6.1 reference reconstruction (funcref + null):
   //  - `__wpk_fork_ref_decode_funcref` is the funcref-returning export the

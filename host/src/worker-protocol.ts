@@ -149,6 +149,21 @@ export interface CentralizedThreadInitMessage {
   externrefGenerationId?: number;
   /** Distinct pthread mailbox; side modules in this pthread reuse it. */
   forkHostImports?: ForkHostImportWorkerInit;
+  /**
+   * Phase 6 D7b: same co-resident `fork-module` decision the process worker
+   * receives (gated by `WASM_POSIX_FORK_MODULE` at the kernel host). A fork
+   * issued FROM this pthread must unwind/serialize/parent-replay through the
+   * module — the parent side of a fork-from-thread — so the pthread worker needs
+   * the same flag and pre-compiled module the process worker gets. Absent/false
+   * is the unchanged default path.
+   */
+  forkModuleEnabled?: boolean;
+  /**
+   * Phase 6 D7b: the pre-compiled `fork-module` matching this process's pointer
+   * width, forwarded exactly as for the process worker. Present only when
+   * `forkModuleEnabled` is set.
+   */
+  forkModuleModule?: WebAssembly.Module;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;
@@ -183,6 +198,7 @@ export type WorkerToHostMessage =
   | AlarmSetMessage
   | VmInterruptTimerMessage
   | ForkModuleFramesMessage
+  | ForkModuleChildFramesMessage
   | ForkModuleReferencesMessage
   | ForkHostImportWakeMessage;
 
@@ -194,6 +210,25 @@ export type WorkerToHostMessage =
  */
 export interface ForkModuleFramesMessage {
   type: "fork_module_frames";
+  pid: number;
+  frames: number;
+}
+
+/**
+ * Phase 6 D7b: replay-side proof-of-use for the co-resident fork-module. A
+ * replay-only fork CHILD never commits a frame, so `fork_module_frames` (which
+ * the parent commits) cannot prove the CHILD ran its rewind through the module.
+ * A fork-from-thread child carries no references either, so
+ * `fork_module_references` also stays silent. This distinct message lets a fork
+ * CHILD report how many frames the module replayed (consuming rewind advances),
+ * so the host (and tests) can confirm both SIDES of a fork-from-thread — the
+ * pthread parent (via `fork_module_frames`) and the child (via this) — ran
+ * through the module and did not silently fall back to the JS closures. A
+ * distinct type (not a second `fork_module_frames`) so a consumer waiting on the
+ * parent's committed-frame count is never confused by the child's replay count.
+ */
+export interface ForkModuleChildFramesMessage {
+  type: "fork_module_child_frames";
   pid: number;
   frames: number;
 }

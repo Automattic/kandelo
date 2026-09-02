@@ -3512,7 +3512,17 @@ export async function centralizedWorkerMain(
         //  - the module instantiated and its width matches the guest;
         //  - the program cannot add fork activations at runtime (no dlopen fork
         //    role) => the fork is single-activation (activation 0 only);
-        //  - not a fork-from-thread child (that path replays a thread stack);
+        //  - a fork-from-thread CHILD is admitted (Phase 6 D7b): it is still
+        //    single-activation, so it reuses all the D5/D6 module machinery
+        //    unchanged. It replays through the alternate `wpk_fork_resume_thread`
+        //    entry (selected below at the child-entry site) instead of
+        //    `wpk_fork_resume_start`, and its continuation is rooted in the
+        //    CALLER's channel page (the launch anchor the child wrote under
+        //    activation zero above), which `readProcessLaunchRoot` already
+        //    returns — so `attachModuleChild` seeds the module from that root.
+        //    Require the alternate entry export so a thread child never flips its
+        //    frame imports to the module without a way to resume; if it is
+        //    missing, keep the byte-identical JS path.
         //  - the full resume catalog fits the module's static cap, so the
         //    module can register it and match the JS resume-slot numbering.
         // Single-thread and not-vfork hold by construction here: this is the
@@ -3525,10 +3535,13 @@ export async function centralizedWorkerMain(
         const isForkFromThreadChild =
           initData.isForkChild === true &&
           initData.forkChildThreadFnPtr != null;
+        const hasResumeThreadExport = WebAssembly.Module.exports(module).some(
+          (entry) => entry.name === "wpk_fork_resume_thread",
+        );
         useForkModule =
           ptrWidth === linkedFrameFormat.ptrWidth &&
           !hasDylinkForkRole &&
-          !isForkFromThreadChild &&
+          (!isForkFromThreadChild || hasResumeThreadExport) &&
           catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP;
         if (useForkModule) {
           forkModuleBackend = new ForkModuleContinuationBackend({
@@ -4676,6 +4689,23 @@ export async function centralizedWorkerMain(
             type: "fork_module_references",
             pid,
             references,
+          } satisfies WorkerToHostMessage);
+        }
+        // Phase 6 D7b replay-side proof-of-use: a fork CHILD (crucially a
+        // fork-from-thread child, which carries no references) drives its rewind
+        // through the module's flipped `__wpk_fork_frame_next`, but never commits
+        // a frame — so `framesCommitted()` is 0 on a child and the parent-scoped
+        // `fork_module_frames` above cannot prove the child ran through the
+        // module. Report the module's REPLAYED frame count instead. A nonzero
+        // value is the positive proof the child rewound through the module rather
+        // than the JS fallback; a reference-free non-thread child that fell back
+        // would leave this at 0 and stay silent.
+        const replayed = Number(forkModuleBackend.framesReplayed());
+        if (replayed > 0) {
+          port.postMessage({
+            type: "fork_module_child_frames",
+            pid,
+            frames: replayed,
           } satisfies WorkerToHostMessage);
         }
       }
@@ -5846,6 +5876,87 @@ export async function centralizedThreadWorkerMain(
         },
       });
     }
+    // Phase 6 D7b: wire the co-resident fork-module into the PTHREAD PARENT
+    // worker so a fork issued FROM a thread unwinds/serializes/parent-replays
+    // through the module — the parent SIDE of a fork-from-thread. Without this
+    // the parent would journal through the JS closures while the child (admitted
+    // above on the main worker path) expects to read the MODULE-serialized KFRE
+    // journal image from the frame arena; the two sides must move together. This
+    // mirrors the main process worker's instantiate + backend + enableModuleBacking
+    // block, gated identically (flag on, single-activation via `!hasDylinkForkRole`,
+    // width match, catalog fits the cap). The pthread parent never reconstructs
+    // references (that happens in the child), so it needs no engine-floor host
+    // capabilities: the module instantiates with the inert `wpk_fork_host` stubs.
+    // Flag-off / non-qualifying keeps `threadForkModuleInstance` null and every
+    // fork on the byte-identical JS path.
+    let threadForkModuleInstance: ForkModuleInstance | null = null;
+    let threadForkModuleBackend: ForkModuleContinuationBackend | null = null;
+    if (
+      hasForkInstrumentation &&
+      threadProcessContinuation &&
+      threadForkContinuation &&
+      initData.forkModuleEnabled &&
+      !hasDylinkForkRole
+    ) {
+      const forkModuleModule = initData.forkModuleModule;
+      if (!forkModuleModule) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: forkModuleEnabled but no forkModuleModule was shipped`,
+        );
+      }
+      const linkedFrameFormat = readLinkedFrameFormat(module);
+      if (ptrWidth !== linkedFrameFormat.ptrWidth) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: fork-module width mismatch: process ptrWidth ` +
+            `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
+        );
+      }
+      const catalogOrdinals = readForkResumeCatalog(module).map(
+        (entry) => entry.functionOrdinal,
+      );
+      if (catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP) {
+        threadForkModuleInstance = instantiateForkModule({
+          module: forkModuleModule,
+          memory,
+          ptrWidth,
+          reserve: (size) =>
+            continuationMmap(
+              memory,
+              channelOffset,
+              size,
+              `pid=${pid} tid=${tid}: fork-module`,
+            ),
+          label: `pid=${pid} tid=${tid}: fork-module`,
+        });
+        threadForkModuleBackend = new ForkModuleContinuationBackend({
+          exports: threadForkModuleInstance.exports,
+          memory,
+          ptrWidth,
+          format: linkedFrameFormat,
+          catalogOrdinals,
+          reserveRegion: (size) =>
+            continuationMmap(
+              memory,
+              channelOffset,
+              size,
+              `pid=${pid} tid=${tid}: fork-module arena`,
+            ),
+          releaseRegion: (addr, size) =>
+            continuationMunmap(
+              memory,
+              channelOffset,
+              addr,
+              size,
+              `pid=${pid} tid=${tid}: fork-module arena`,
+            ),
+          frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
+          pid,
+          label: `pid=${pid} tid=${tid}: fork-module`,
+        });
+        threadForkModuleBackend.setup();
+        threadProcessContinuation.enableModuleBacking(threadForkModuleBackend);
+      }
+    }
     const processArchiveHeadOffset =
       ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
     const processArchiveHeadAddr =
@@ -6091,6 +6202,28 @@ export async function centralizedThreadWorkerMain(
             ...threadCoordinator.continuationImports(0, (errno) => {
               threadCoordinator.beginCaptureAbort(errno);
             }),
+            // Phase 6 D7b IMPORT FLIP (mirrors the main worker path): when the
+            // fork-module is wired into this pthread parent, the thread's guest
+            // calls the module's frame/resume exports directly (wasm->wasm over
+            // shared memory), replacing exactly the five per-frame JS closures.
+            // The coordinator's module-backed capture then journals through the
+            // module, and it serializes the KFRE image the fork-from-thread child
+            // reads. Everything else stays JS. Guest ABI names/signatures are
+            // unchanged; no re-instrumentation. Flag-off skips this entirely.
+            ...(threadForkModuleInstance
+              ? {
+                  __wpk_fork_frame_reserve:
+                    threadForkModuleInstance.exports.__wpk_fork_frame_reserve,
+                  __wpk_fork_frame_commit:
+                    threadForkModuleInstance.exports.__wpk_fork_frame_commit,
+                  __wpk_fork_frame_peek:
+                    threadForkModuleInstance.exports.__wpk_fork_frame_peek,
+                  __wpk_fork_frame_next:
+                    threadForkModuleInstance.exports.__wpk_fork_frame_next,
+                  __wpk_fork_resume_peek:
+                    threadForkModuleInstance.exports.__wpk_fork_resume_peek,
+                }
+              : {}),
             ...buildForkActivationStateImports(
               0,
               threadActivationRegistry,
@@ -6346,6 +6479,19 @@ export async function centralizedThreadWorkerMain(
           throw e;
         }
       }
+    }
+
+    // Phase 6 D7b proof-of-use: a pthread PARENT worker that ran a fork through
+    // the co-resident module reports how many frames the module committed during
+    // its unwind. This is the PARENT side of a fork-from-thread; the child posts
+    // its replay-side `fork_module_child_frames`. A silent JS fallback would
+    // leave the counter at zero and fail the flag-on proof.
+    if (threadForkModuleBackend) {
+      port.postMessage({
+        type: "fork_module_frames",
+        pid,
+        frames: Number(threadForkModuleBackend.framesCommitted()),
+      } satisfies WorkerToHostMessage);
     }
 
     // A well-formed replay releases its reader token from the inherited fork

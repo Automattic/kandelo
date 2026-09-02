@@ -219,6 +219,18 @@ mod wasm {
     // silent fallback to the JavaScript path leaves it unchanged.
     static FRAMES_COMMITTED: AtomicU64 = AtomicU64::new(0);
 
+    // Monotonic count of frames the module has REPLAYED (consuming rewind
+    // advances via `__wpk_fork_frame_next`) since worker start. The replay-side
+    // proof-of-use mirror of `FRAMES_COMMITTED`: a replay-only forked CHILD
+    // never commits a frame (`FRAMES_COMMITTED` stays 0 there), so the frame
+    // count alone cannot prove the child drove its rewind through this module.
+    // A fork-from-thread child (Phase 6 D7b) carries no references either, so
+    // `REFERENCES_RECONSTRUCTED` also stays 0. This counter advances once per
+    // consumed frame on any worker that rewinds through the module (parent
+    // replay AND child replay), so the child worker can positively prove module
+    // use; a silent JS fallback leaves it unchanged. Never resets.
+    static FRAMES_REPLAYED: AtomicU64 = AtomicU64::new(0);
+
     // -- Reference reconstruction (Phase 6 D6.1 — funcref + null) -----------
     //
     // The decoded funcref/null reference graph for the current fork, seeded once
@@ -613,7 +625,11 @@ mod wasm {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         let mem = unsafe { mem_ref() };
         let driver = st.driver.as_mut().ok_or(Errno::EINVAL)?;
-        driver.drive_next(mem, &mut st.journal, st.activation_id, size)
+        let payload = driver.drive_next(mem, &mut st.journal, st.activation_id, size)?;
+        // Count only a successful consuming advance: this is the replay-side
+        // proof-of-use a replay-only child (which never commits) reports.
+        FRAMES_REPLAYED.fetch_add(1, Ordering::Relaxed);
+        Ok(payload)
     }
 
     fn resume_peek_impl() -> Result<u32, Errno> {
@@ -1138,6 +1154,17 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_frames_committed() -> i64 {
         FRAMES_COMMITTED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Monotonic count of frames this module has REPLAYED (consuming rewind
+    /// advances) since worker start. Replay-side proof-of-use mirror of
+    /// `fm_frames_committed`: a replay-only forked child never commits a frame,
+    /// so this is the counter the child worker reports to prove it drove its
+    /// rewind through the module rather than a silent JS fallback (Phase 6 D7b).
+    /// Advances on the parent replay too; never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frames_replayed() -> i64 {
+        FRAMES_REPLAYED.load(Ordering::Relaxed) as i64
     }
 
     /// Seed the reference graph for this fork from the KFMS module-state arena

@@ -1097,6 +1097,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: clonePtrWidth,
           externrefGenerationId: processGeneration.id,
           forkHostImports: threadForkHostImports.init,
+          // Phase 6 D7b: ship the fork-module to a pthread so a fork issued from
+          // it unwinds through the module (parent side of a fork-from-thread),
+          // mirroring the process-worker init above.
+          ...centralizedForkModuleFields(options.forkModuleEnabled, clonePtrWidth),
         };
 
         try {

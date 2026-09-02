@@ -411,6 +411,23 @@ function installProcessWorkerListeners(
         "warn",
       );
     } else if (
+      message.type === "fork_module_child_frames" &&
+      message.pid === pid
+    ) {
+      // Surface the co-resident fork-module's REPLAY-side proof-of-use as a host
+      // diagnostic (Phase 6 D7b): a nonzero count confirms a fork CHILD (e.g. a
+      // fork-from-thread child) drove its rewind through the module, not the JS
+      // fallback — the child never commits, so `fork_module_frames` cannot show
+      // this.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_child_frames=${message.frames}`,
+        },
+        "warn",
+      );
+    } else if (
       message.type === "fork_module_references" &&
       message.pid === pid
     ) {
@@ -3273,6 +3290,10 @@ async function handleClone(
     secureExec: processInfo.secureExec,
     externrefGenerationId: processInfo.externrefGeneration.id,
     forkHostImports: forkHostImports.init,
+    // Phase 6 D7b: ship the same co-resident fork-module decision the process
+    // worker receives, so a fork issued FROM this pthread unwinds through the
+    // module (the parent side of a fork-from-thread).
+    ...forkModuleInitFields(processInfo.ptrWidth),
     fnPtr,
     argPtr,
     stackPtr,
@@ -3380,6 +3401,19 @@ async function handleClone(
       }
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(threadWorker, m);
+    } else if (m.type === "fork_module_frames" && m.pid === pid) {
+      // Phase 6 D7b: surface the pthread PARENT worker's fork-module proof-of-use
+      // (the parent side of a fork-from-thread). The process-worker handler above
+      // forwards the same message for the main worker; the pthread worker has its
+      // own handler, so mirror it here or the parent-frame proof is dropped.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_frames=${m.frames}`,
+        },
+        "warn",
+      );
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
