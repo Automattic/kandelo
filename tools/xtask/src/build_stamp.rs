@@ -63,6 +63,28 @@ pub(crate) fn stamp_build_key(wasm: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, St
     Ok(out)
 }
 
+/// Rewrite a stamped member in place, honoring a read-only install mode.
+///
+/// A recipe may install its output read-only (mandoc's Makefile uses
+/// install -m 0444-family modes); unlock the member for the rewrite, then
+/// restore the recipe's mode.
+pub(crate) fn write_preserving_mode(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let permissions = std::fs::metadata(path)?.permissions();
+    if permissions.readonly() {
+        let mut writable = permissions.clone();
+        writable.set_readonly(false);
+        std::fs::set_permissions(path, writable)?;
+    }
+    let written = std::fs::write(path, bytes);
+    if permissions.readonly() {
+        std::fs::set_permissions(path, permissions)?;
+    }
+    written
+}
+
 fn write_uleb128(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -103,6 +125,20 @@ mod tests {
         assert!(is_wasm_module(&empty_module()));
         assert!(!is_wasm_module(b"PK\x03\x04qux"));
         assert!(!is_wasm_module(b""));
+    }
+
+    #[test]
+    fn rewriting_a_read_only_member_keeps_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("qux.wasm");
+        std::fs::write(&path, empty_module()).unwrap();
+        let mut readonly = std::fs::metadata(&path).unwrap().permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        let stamped = stamp_build_key(&empty_module(), &[7u8; 32]).unwrap();
+        write_preserving_mode(&path, &stamped).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), stamped);
+        assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
     }
 
     #[test]

@@ -13548,7 +13548,7 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
-                std::fs::write(&member, stamped).map_err(|error| {
+                crate::build_stamp::write_preserving_mode(&member, &stamped).map_err(|error| {
                     format!(
                         "{}: write stamped wasm output {}: {error}",
                         target.spec(),
