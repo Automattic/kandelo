@@ -1090,8 +1090,8 @@ function writeKernelArtifact(dir: string): string {
  * `readSourceOnlyProjection` in `binary-resolver.ts`) that materializes one
  * root-mirror `kernel` node, mirroring `writeSourceOnlyProjection` in
  * `scripts/build-local-vfs-asset-group.test.ts`. `packages`/`identities` stay
- * empty because a root-mirror node (package name `kernel` or `userspace`,
- * one slash-free member) is not itself a projected program package.
+ * empty because a root-mirror node (package name `kernel`, one slash-free
+ * member) is not itself a projected program package.
  */
 function writeSourceOnlyProjectionWithKernel(root: string): string {
   mkdirSync(root, { recursive: true });
@@ -1409,8 +1409,8 @@ version = "1.0.0"
     }]);
 
     // The checked-in Default projection carries a complete first-hit registry
-    // context, including root boot artifacts that are not guest programs.
-    fixtureRegistryIdentities.userspace = {
+    // context, including the root boot artifact that is not a guest program.
+    fixtureRegistryIdentities.kernel = {
       manifestSha256: "a".repeat(64),
       cacheKeys: {
         wasm32: "b".repeat(64),

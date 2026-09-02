@@ -415,12 +415,11 @@ The program map covers guest programs published under
 `binaries/programs/<arch>/`. A higher first-hit non-program package naturally
 removes a same-named lower program from that map, while the lower physical
 index retains a fail-closed claim against stale flat mirror fallback. The map
-deliberately excludes Kandelo's first-party `kernel` and `userspace` boot
-artifacts: their single outputs publish at `binaries/kernel.wasm` and
-`binaries/userspace.wasm`, and retain their existing root-artifact ABI and
-export validation instead of pretending to be guest program packages. Their
-package identities remain in the all-package identity map so
-dependency-context validation stays complete.
+deliberately excludes Kandelo's first-party `kernel` boot artifact: its
+single output publishes at `binaries/kernel.wasm`, and retains its existing
+root-artifact ABI and export validation instead of pretending to be a guest
+program package. Its package identity remains in the all-package identity map
+so dependency-context validation stays complete.
 
 Generate or verify an index with:
 
@@ -527,17 +526,16 @@ create-once regular files, validates the complete tree, creates a one-shot
 publication claim, and only then swaps the live package directory or scalar
 link. A claimed generation is never recreated after its root disappears.
 One-member packages retain their flat mirror name as a symlink to the
-immutable generation member. The kernel and userspace packages follow the same
-identity contract even though their compatibility mirrors live at
-`local-binaries/kernel.wasm` and `local-binaries/userspace.wasm` instead of
-below `programs/<arch>/`. A later release materialization preserves either a
-complete package-directory closure or a scalar mirror only when every link
-selects one claimed generation with the exact current contextual cache key.
-Identityless regular or non-generation kernel/userspace mirrors, mixed
-sessions, symlinked ownership ancestors, and stale manifest or dependency
-identities fail closed instead of silently replacing the exact local candidate
-with released bytes; rebuild the local package to establish a current
-generation.
+immutable generation member. The kernel package follows the same identity
+contract even though its compatibility mirror lives at
+`local-binaries/kernel.wasm` instead of below `programs/<arch>/`. A later
+release materialization preserves either a complete package-directory closure
+or a scalar mirror only when every link selects one claimed generation with
+the exact current contextual cache key. Identityless regular or
+non-generation kernel mirrors, mixed sessions, symlinked ownership ancestors,
+and stale manifest or dependency identities fail closed instead of silently
+replacing the exact local candidate with released bytes; rebuild the local
+package to establish a current generation.
 
 Scalar replacement and package-directory replacement reserve a unique private
 transaction parent (mode 0700 on Unix), validate filesystem identity and exact
