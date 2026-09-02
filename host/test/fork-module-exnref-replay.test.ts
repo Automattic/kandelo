@@ -120,6 +120,20 @@ interface ForkModuleRefExports {
   fm_externrefs_resolved: () => bigint;
   fm_exnrefs_reconstructed: () => bigint;
   fm_last_errno: () => number;
+  // Phase 6 item 3a RESTORE data-feed exports.
+  fm_ref_feed_reads: () => bigint;
+  fm_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
+  fm_ref_exn_load: (
+    recipeId: number,
+    moduleActivation: number,
+    tagOrdinal: number,
+    layoutId: number,
+    scalarDestination: number,
+    scalarByteLength: number,
+    referenceIdsDestination: number,
+    referenceCount: number,
+  ) => number;
+  fm_ref_exn_cache_index: (recipeId: number) => number;
 }
 
 /** A REAL transit adapter over the production `(ref null any)` table. Mirrors
@@ -232,5 +246,41 @@ describe("fork-module exnref reference reconstruction + transit into production 
     // backing, and fails truthfully — never a silent unrooted payload.
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).not.toBe(0);
+  });
+
+  it("serves the exnref RESTORE data-feed through the module (item 3a): route, cache index, and scalar/reference loads match the decoded graph", () => {
+    // Phase 6 item 3a: the exnref restore imports the guest exception codec used
+    // to call on the JS reference provider now resolve to the module's `fm_ref_*`
+    // exports. Drive them directly against the seeded feed and prove the MODULE
+    // produced JS-identical results, in a real WebAssembly engine.
+    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const tokens = new ForkExternrefTokenCache(GENERATION_ID);
+    const transitTable = new ForkAnyrefTransitTable();
+    const hostCapabilities = createForkModuleHostCapabilities({
+      tokens,
+      generationId: GENERATION_ID,
+      transit: realTransit(transitTable),
+    });
+
+    const root = buildExnrefArena(memory);
+    const x = instantiate(memory, hostCapabilities.imports);
+    x.fm_set_format(PTR_WIDTH, 0);
+    x.fm_begin_reference_replay(root, PID);
+    expect(x.fm_last_errno()).toBe(0);
+
+    const readsBefore = Number(x.fm_ref_feed_reads());
+
+    // exnref id 2: activation 0, tag 0, layout 0, no scalars, payload edge [1].
+    expect(x.fm_ref_exn_route(2, 0)).toBe(0); // layout id
+    expect(x.fm_ref_exn_route(2, 9)).toBe(-1); // wrong activation -> sentinel
+    expect(x.fm_ref_exn_cache_index(2)).toBe(1); // first (only) exnref
+
+    // Load the exnref: no scalar bytes, one reference-payload recipe id (LE u32).
+    const refIdsDst = 13 * 1024 * 1024;
+    expect(x.fm_ref_exn_load(2, 0, 0, 0, refIdsDst, 0, refIdsDst, 1)).toBe(1);
+    expect(new Uint32Array(memory.buffer, refIdsDst, 1)[0]).toBe(1);
+
+    // PROOF OF USE: the module served every one of these feed reads.
+    expect(Number(x.fm_ref_feed_reads()) - readsBefore).toBeGreaterThan(0);
   });
 });

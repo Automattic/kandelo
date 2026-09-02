@@ -40,6 +40,7 @@ pub mod module_state_records;
 /// bodies + a per-method mapping table). See `host_capabilities`.
 #[cfg(feature = "native-sketch")]
 pub mod native_sketch;
+pub mod reference_feed;
 pub mod reference_recipes;
 pub mod reference_replay;
 pub mod reference_segments;
@@ -81,6 +82,7 @@ pub use module_state_records::{
     GlobalSnapshot, ModuleDescriptor, ModuleStateRecordPayload, SegmentBitmap, SparseTablePage,
     SparseTableRun, TableDescriptor,
 };
+pub use reference_feed::ReferenceReplayFeed;
 pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };

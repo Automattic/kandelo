@@ -143,8 +143,8 @@ mod wasm {
     use fork_codec::{
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
         encode_replay_events, ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter,
-        ModuleStateFormat, ReconstructionState, ReferenceReplayDriver, ReferenceTransactionRecord,
-        ReplayEvent, ReplayEventJournal, ResumeSlotTable, RewindDriver,
+        ModuleStateFormat, ReconstructionState, ReferenceReplayDriver, ReferenceReplayFeed,
+        ReferenceTransactionRecord, ReplayEvent, ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, channel, mmap, ChannelStatus, Errno, Syscall};
 
@@ -568,6 +568,41 @@ mod wasm {
         // SAFETY: single-threaded per worker; only one guest drives the imports.
         unsafe { &mut *RECONSTRUCTION_STATE.0.get() }
     }
+
+    // -- Reference RESTORE data-feed (Phase 6 item 3a — minimize host surface)
+    //
+    // The mutable per-fork REPLAY state the seven `fm_ref_*` data-feed exports
+    // accumulate on top of the immutable decoded transaction (the growing
+    // reference-vector overlay + its intern index + the GC-vector ordinal cache
+    // + the exnref cache-index map). Seeded by `fm_begin_reference_replay`
+    // alongside the driver and consulted by the guest's typed-GC/exnref codec
+    // through the flipped `__wpk_fork_ref_{gc,exn,vector}_*` imports during the
+    // JS drive-order's `_gc_allocate`/`_gc_fill` walk. Held in its OWN static so
+    // it is independent of the immutable `REFERENCE_STATE` driver: the driver's
+    // transaction is READ-ONLY here and the feed's mutation is confined to this
+    // cell, so the module->guest->module reentrancy (the still-JS drive calls the
+    // guest `_gc_allocate`, which calls back into these module exports) is
+    // borrow-safe — each export borrows this cell fresh, does its synchronous
+    // work, and returns before the guest can re-enter.
+    struct ReferenceFeedCell(UnsafeCell<Option<ReferenceReplayFeed>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ReferenceFeedCell {}
+    static REFERENCE_FEED: ReferenceFeedCell = ReferenceFeedCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn reference_feed() -> &'static mut Option<ReferenceReplayFeed> {
+        // SAFETY: single-threaded per worker; only one guest drives the imports.
+        unsafe { &mut *REFERENCE_FEED.0.get() }
+    }
+
+    // Monotonic count of RESTORE data-feed reads the module has served since
+    // worker start (Phase 6 item 3a). Proof-of-use: after a flag-on GC/exnref
+    // fork drives its typed-graph reconstruction, the guest codec reads the graph
+    // through the module's `fm_ref_*` feed exports and this advances; a silent JS
+    // fallback (the imports stayed on the JS reference provider) leaves it
+    // unchanged. Bumped by every route/payload-length/load/vector read. Never
+    // resets.
+    static REFERENCE_FEED_READS: AtomicU64 = AtomicU64::new(0);
 
     // The i32 sentinels `fm_funcref_ordinal` returns to the injected wasm shim.
     // A NON-NEGATIVE value is a catalog ordinal for `table.get`; `NULL_ORDINAL`
@@ -1499,6 +1534,7 @@ mod wasm {
         // Reclaim any prior fork's reference state.
         *reference_state() = None;
         *reconstruction_state() = None;
+        *reference_feed() = None;
 
         // Decode the sealed module-state arena from the COPIED guest memory
         // (immutable whole-memory view — only reads, so the release-LLVM
@@ -1525,6 +1561,12 @@ mod wasm {
             &records,
             abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
         )?;
+        // Seed the RESTORE data-feed (Phase 6 item 3a) from the SAME decoded
+        // transaction before it moves into the driver: the feed reproduces the JS
+        // provider's mutable replay state (the reference-vector overlay + intern
+        // index + GC-vector cache + exnref cache-index map) that the guest codec
+        // reads through the flipped `fm_ref_*` imports.
+        let feed = ReferenceReplayFeed::new(&transaction);
         let driver = ReferenceReplayDriver::new(transaction);
 
         // D6.4a gate (defense in depth; the host computes the same predicate,
@@ -1582,7 +1624,134 @@ mod wasm {
 
         *reference_state() = Some(driver);
         *reconstruction_state() = Some(reconstruction);
+        *reference_feed() = Some(feed);
         Ok(())
+    }
+
+    // -- Reference RESTORE data-feed helpers (Phase 6 item 3a) ---------------
+    //
+    // Each helper borrows the immutable transaction from the resident driver and
+    // the mutable feed from its own cell (two disjoint statics -> no aliasing),
+    // then delegates to the field-for-field port in `fork_codec::reference_feed`.
+    // On the `Err` the JS provider body would have THROWN, the export TRAPS
+    // (`wasm_intr::unreachable`), exactly as `fm_funcref_ordinal` does: the host
+    // gate keeps an unadmitted/corrupt graph on the JS reference path, so an Err
+    // here is corruption, never a value the guest codec should read. The
+    // legitimate routing sentinels (`0` for i31, `-1` for a mismatch) are `Ok`
+    // and returned as-is.
+
+    /// The resident transaction (from the driver) and mutable feed, or a trap if
+    /// `fm_begin_reference_replay` did not seed them.
+    #[allow(clippy::mut_from_ref)]
+    fn feed_and_transaction()
+    -> (&'static ReferenceReplayFeed, &'static fork_codec::SegmentedReferenceTransaction) {
+        let transaction = match reference_state().as_ref() {
+            Some(driver) => driver.transaction(),
+            None => wasm_intr::unreachable(),
+        };
+        let feed = match reference_feed().as_ref() {
+            Some(feed) => feed,
+            None => wasm_intr::unreachable(),
+        };
+        (feed, transaction)
+    }
+
+    fn feed_read<T>(result: Result<T, Errno>) -> T {
+        match result {
+            Ok(value) => {
+                REFERENCE_FEED_READS.fetch_add(1, Ordering::Relaxed);
+                value
+            }
+            Err(_) => wasm_intr::unreachable(),
+        }
+    }
+
+    fn ref_vector_get_impl(ordinal: u32, index: u32) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        feed_read(feed.vector_get(transaction, ordinal, index))
+    }
+
+    fn ref_gc_route_impl(recipe_id: u32, expected_activation: u32) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        feed_read(feed.gc_route(transaction, recipe_id, expected_activation))
+    }
+
+    fn ref_gc_payload_len_impl(recipe_id: u32, expected_activation: u32, expected_layout_id: u32) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        feed_read(feed.gc_payload_len(transaction, recipe_id, expected_activation, expected_layout_id))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ref_gc_load_impl(
+        recipe_id: u32,
+        module_activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        kind: u32,
+        scalar_destination: usize,
+        scalar_byte_length: u32,
+    ) -> i32 {
+        // The mutable feed and read-only transaction come from disjoint statics;
+        // `mem_mut` is the guest linear-memory data plane the writer path uses
+        // (frame writes above module data), so the scalar destination never
+        // overlaps the module's BSS-resident feed/transaction.
+        let transaction = match reference_state().as_ref() {
+            Some(driver) => driver.transaction(),
+            None => wasm_intr::unreachable(),
+        };
+        let feed = match reference_feed().as_mut() {
+            Some(feed) => feed,
+            None => wasm_intr::unreachable(),
+        };
+        let mem = unsafe { mem_mut() };
+        feed_read(feed.gc_load(
+            transaction,
+            mem,
+            recipe_id,
+            module_activation,
+            type_ordinal,
+            layout_id,
+            kind,
+            scalar_destination,
+            scalar_byte_length,
+        ))
+    }
+
+    fn ref_exn_route_impl(recipe_id: u32, expected_activation: u32) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        feed_read(feed.exn_route(transaction, recipe_id, expected_activation))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ref_exn_load_impl(
+        recipe_id: u32,
+        module_activation: u32,
+        tag_ordinal: u32,
+        layout_id: u32,
+        scalar_destination: usize,
+        scalar_byte_length: u32,
+        reference_ids_destination: usize,
+        reference_count: u32,
+    ) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        let mem = unsafe { mem_mut() };
+        feed_read(feed.exn_load(
+            transaction,
+            mem,
+            recipe_id,
+            module_activation,
+            tag_ordinal,
+            layout_id,
+            scalar_destination,
+            scalar_byte_length,
+            reference_ids_destination,
+            reference_count,
+        ))
+    }
+
+    fn ref_exn_cache_index_impl(recipe_id: u32) -> i32 {
+        let (feed, transaction) = feed_and_transaction();
+        feed_read(feed.exn_cache_index(transaction, recipe_id))
     }
 
     /// Resolve a funcref recipe to a catalog ordinal for the injected shim.
@@ -2113,6 +2282,112 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_funcref_ordinal(recipe_id: u32) -> i32 {
         funcref_ordinal_impl(recipe_id)
+    }
+
+    // -- Reference RESTORE data-feed exports (Phase 6 item 3a) ---------------
+    //
+    // These seven exports are guest-facing: the host flips the guest's
+    // `__wpk_fork_ref_{vector_get,gc_route,gc_payload_len,gc_load,exn_route,
+    // exn_load,exn_cache_index}` imports to them per-activation (the same
+    // per-activation flip as `__wpk_fork_ref_decode_funcref`). Unlike the funcref
+    // decode (which RETURNS a funcref, so it needs the walrus-injected shim),
+    // these have pure i32/i64 signatures, so plain Rust `#[no_mangle]` exports the
+    // guest imports directly. Signatures match the guest imports in
+    // `host/src/generated/abi.ts` (`ptr` -> `usize`, i32 -> u32/i32).
+
+    /// `__wpk_fork_ref_vector_get(ordinal, index) -> recipe_id`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_vector_get(ordinal: u32, index: u32) -> i32 {
+        ref_vector_get_impl(ordinal, index)
+    }
+
+    /// `__wpk_fork_ref_gc_route(recipe_id, expected_activation) -> layout|0|-1`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_gc_route(recipe_id: u32, expected_activation: u32) -> i32 {
+        ref_gc_route_impl(recipe_id, expected_activation)
+    }
+
+    /// `__wpk_fork_ref_gc_payload_len(recipe_id, activation, layout) -> len`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_gc_payload_len(
+        recipe_id: u32,
+        expected_activation: u32,
+        expected_layout_id: u32,
+    ) -> i32 {
+        ref_gc_payload_len_impl(recipe_id, expected_activation, expected_layout_id)
+    }
+
+    /// `__wpk_fork_ref_gc_load(recipe_id, activation, type, layout, kind, dst,
+    /// len) -> vector_ordinal|0`. `dst` is an absolute guest byte offset (`ptr`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_gc_load(
+        recipe_id: u32,
+        module_activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        kind: u32,
+        scalar_destination: usize,
+        scalar_byte_length: u32,
+    ) -> i32 {
+        ref_gc_load_impl(
+            recipe_id,
+            module_activation,
+            type_ordinal,
+            layout_id,
+            kind,
+            scalar_destination,
+            scalar_byte_length,
+        )
+    }
+
+    /// `__wpk_fork_ref_exn_route(recipe_id, expected_activation) -> layout|-1`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_exn_route(recipe_id: u32, expected_activation: u32) -> i32 {
+        ref_exn_route_impl(recipe_id, expected_activation)
+    }
+
+    /// `__wpk_fork_ref_exn_load(recipe_id, activation, tag, layout, scalar_dst,
+    /// scalar_len, ref_ids_dst, ref_count) -> 1`. Both `dst` args are absolute
+    /// guest byte offsets (`ptr`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_exn_load(
+        recipe_id: u32,
+        module_activation: u32,
+        tag_ordinal: u32,
+        layout_id: u32,
+        scalar_destination: usize,
+        scalar_byte_length: u32,
+        reference_ids_destination: usize,
+        reference_count: u32,
+    ) -> i32 {
+        ref_exn_load_impl(
+            recipe_id,
+            module_activation,
+            tag_ordinal,
+            layout_id,
+            scalar_destination,
+            scalar_byte_length,
+            reference_ids_destination,
+            reference_count,
+        )
+    }
+
+    /// `__wpk_fork_ref_exn_cache_index(recipe_id) -> index`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_exn_cache_index(recipe_id: u32) -> i32 {
+        ref_exn_cache_index_impl(recipe_id)
+    }
+
+    /// Monotonic count of RESTORE data-feed reads this module has served since
+    /// worker start (Phase 6 item 3a). Proof-of-use mirror of
+    /// `fm_gc_nodes_reconstructed` for the data-feed move: after a flag-on
+    /// GC/exnref fork drives its typed-graph reconstruction, the guest codec reads
+    /// the reference graph through this module's `fm_ref_*` exports and this has
+    /// advanced; a silent JS fallback (the imports stayed on the JS reference
+    /// provider) leaves it unchanged. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_ref_feed_reads() -> i64 {
+        REFERENCE_FEED_READS.load(Ordering::Relaxed) as i64
     }
 
     /// Monotonic count of references (funcref or null) this module has

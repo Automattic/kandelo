@@ -133,6 +133,25 @@ interface ForkModuleRefExports {
   fm_exnrefs_reconstructed: () => bigint;
   fm_gc_nodes_reconstructed: () => bigint;
   fm_last_errno: () => number;
+  // Phase 6 item 3a RESTORE data-feed exports (the seven the guest codec's
+  // imports flip to, plus the proof-of-use counter).
+  fm_ref_feed_reads: () => bigint;
+  fm_ref_gc_route: (recipeId: number, expectedActivation: number) => number;
+  fm_ref_gc_payload_len: (
+    recipeId: number,
+    expectedActivation: number,
+    expectedLayoutId: number,
+  ) => number;
+  fm_ref_gc_load: (
+    recipeId: number,
+    moduleActivation: number,
+    typeOrdinal: number,
+    layoutId: number,
+    kind: number,
+    scalarDestination: number,
+    scalarByteLength: number,
+  ) => number;
+  fm_ref_vector_get: (ordinal: number, index: number) => number;
 }
 
 /** A REAL transit adapter over the production `(ref null any)` table. Mirrors
@@ -252,5 +271,67 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
 
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).not.toBe(0);
+  });
+
+  it("serves the typed-GC RESTORE data-feed through the module (item 3a): routes, payload lengths, scalar loads, and edge-vector reads match the decoded graph", () => {
+    // Phase 6 item 3a: the SEVEN restore imports the guest's typed-GC codec used
+    // to call on the JS reference provider now resolve to the module's `fm_ref_*`
+    // exports. Drive them directly against the module's seeded feed (the guest
+    // `_gc_allocate`/`_gc_fill` walk does exactly this at runtime) and prove the
+    // MODULE (not the JS provider) produced JS-identical results, in a real
+    // WebAssembly engine.
+    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const tokens = new ForkExternrefTokenCache(GENERATION_ID);
+    const transitTable = new ForkAnyrefTransitTable();
+    const hostCapabilities = createForkModuleHostCapabilities({
+      tokens,
+      generationId: GENERATION_ID,
+      transit: realTransit(transitTable),
+    });
+
+    const root = buildGcCycleArena(memory);
+    const x = instantiate(memory, hostCapabilities.imports);
+    x.fm_set_format(PTR_WIDTH, 0);
+    x.fm_begin_reference_replay(root, PID);
+    expect(x.fm_last_errno()).toBe(0);
+
+    const readsBefore = Number(x.fm_ref_feed_reads());
+
+    // struct id 1: activation 0, type 1, layout 1, scalars [0x78,0x56,0x34,0x12],
+    // fields [2, 3]. array id 2: activation 0, type 2, layout 2, scalars
+    // [0xaa,0xbb], elements [1, 3].
+    expect(x.fm_ref_gc_route(1, 0)).toBe(1); // struct layout id
+    expect(x.fm_ref_gc_payload_len(1, 0, 1)).toBe(4);
+    expect(x.fm_ref_gc_route(2, 0)).toBe(2); // array layout id
+    expect(x.fm_ref_gc_payload_len(2, 0, 2)).toBe(2);
+    // A mismatched activation routes to the -1 sentinel (a value, not a trap).
+    expect(x.fm_ref_gc_route(1, 9)).toBe(-1);
+
+    // Load the struct scalars into guest memory (well above the module's 4 MiB
+    // heap at the 8 MiB reserve base) and read back its interned edge vector.
+    const structDst = 13 * 1024 * 1024;
+    const structVec = x.fm_ref_gc_load(1, 0, 1, 1, 1 /* struct */, structDst, 4);
+    expect([...new Uint8Array(memory.buffer, structDst, 4)]).toEqual([
+      0x78, 0x56, 0x34, 0x12,
+    ]);
+    // Base vectors = [empty sentinel] (length 1), so the first appended edge
+    // vector takes ordinal 1.
+    expect(structVec).toBe(1);
+    expect(x.fm_ref_vector_get(structVec, 0)).toBe(2); // field -> array
+    expect(x.fm_ref_vector_get(structVec, 1)).toBe(3); // field -> externref
+
+    const arrayDst = structDst + PAGE;
+    const arrayVec = x.fm_ref_gc_load(2, 0, 2, 2, 2 /* array */, arrayDst, 2);
+    expect([...new Uint8Array(memory.buffer, arrayDst, 2)]).toEqual([0xaa, 0xbb]);
+    expect(arrayVec).toBe(2);
+    expect(x.fm_ref_vector_get(arrayVec, 0)).toBe(1); // element -> struct (back-edge)
+    expect(x.fm_ref_vector_get(arrayVec, 1)).toBe(3); // element -> externref (alias)
+
+    // A repeated struct load returns the SAME cached ordinal (no duplicate append).
+    expect(x.fm_ref_gc_load(1, 0, 1, 1, 1, structDst, 4)).toBe(1);
+
+    // PROOF OF USE: the module served every one of these feed reads. A silent JS
+    // fallback (imports left on the reference provider) would leave this at 0.
+    expect(Number(x.fm_ref_feed_reads()) - readsBefore).toBeGreaterThan(0);
   });
 });
