@@ -41,6 +41,30 @@ function sdkSourcePrefixMapFlags(toolchain: Toolchain, arch: WasmArch): string[]
   ];
 }
 
+const STABLE_BUILD_SOURCE_ROOT = '/usr/src/kandelo-build';
+
+// During a package build the local-build engine sets WASM_POSIX_DEP_WORK_DIR
+// to the recipe's per-build work directory. Its absolute path embeds the
+// build scratch location AND a process-PID-suffixed component
+// (`…/.<pkg>-<cachekey>.work-<pid>-<seq>/recipe-work`), so it varies both with
+// the build location and on every rebuild. That path leaks into DWARF,
+// `__FILE__`, assertion strings, and similar, making otherwise-pure builds
+// differ across build paths and reruns — the determinism check flags exactly
+// these (sqlite3, ruby, nethack, dinit, …). Map the work dir to a stable
+// destination so binaries stay path-independent. Doing it here, in the one
+// wrapper every C/C++ compile flows through, covers each package (and each
+// dependency it links) without per-recipe REPRO_FLAGS. Keyed by package name
+// for a stable, collision-free destination when one binary links several deps.
+function recipeWorkPrefixMapFlags(): string[] {
+  const workDir = process.env.WASM_POSIX_DEP_WORK_DIR;
+  if (!workDir || !isAbsolute(workDir)) return [];
+  const name = process.env.WASM_POSIX_DEP_NAME;
+  const destination = name && /^[A-Za-z0-9._+-]+$/.test(name)
+    ? `${STABLE_BUILD_SOURCE_ROOT}/${name}`
+    : STABLE_BUILD_SOURCE_ROOT;
+  return sourcePrefixMapFlags(workDir, destination);
+}
+
 export function decodeLlvmResponseFile(bytes: Uint8Array): string {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
@@ -255,7 +279,7 @@ function buildClangArgsInternal(
   const sdkCompileArgs = (
     hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking ||
     executableLinker?.kind === 'no-link'
-  ) ? sdkSourcePrefixMapFlags(toolchain, arch) : [];
+  ) ? [...sdkSourcePrefixMapFlags(toolchain, arch), ...recipeWorkPrefixMapFlags()] : [];
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object

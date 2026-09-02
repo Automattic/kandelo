@@ -306,6 +306,15 @@ PY
 WASM_RUST_TARGET_FEATURES='-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals'
 GETRANDOM_BACKEND_RUSTFLAG='--cfg=getrandom_backend=\"custom\"'
 WASM_RUSTFLAGS="$WASM_RUST_TARGET_FEATURES $GETRANDOM_BACKEND_RUSTFLAG"
+# Reproducibility: strip the per-build work directory — whose absolute path
+# embeds the build scratch location and a PID-suffixed component — from Rust
+# panic/debug source paths. Without this, js.wasm (and node.wasm, which links
+# SpiderMonkey's Rust objects) vary across build paths and reruns because the
+# vendored crate paths under $WORK_DIR/spidermonkey-source leak in. Mirrors the
+# SDK cc wrapper's -ffile-prefix-map for C/C++.
+if [ -n "${WORK_DIR:-}" ]; then
+    WASM_RUSTFLAGS="$WASM_RUSTFLAGS --remap-path-prefix=$WORK_DIR=/usr/src/kandelo-build/spidermonkey"
+fi
 
 cat > "$MOZCONFIG_PATH" <<EOF
 export RUSTFLAGS="\${RUSTFLAGS:+\$RUSTFLAGS }$WASM_RUSTFLAGS"
