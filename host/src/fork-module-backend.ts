@@ -401,6 +401,23 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Phase 6 D7a.1b: seed ONE activation's function-catalog BASE into the module,
+   * once per worker, before any fork drives reference reconstruction. The host
+   * lays every activation's funcref catalog into ONE merged
+   * `__wpk_fork_function_catalog` table (activation `activationId`'s catalog at
+   * slots `[base, base + len)`); the module's `fm_funcref_ordinal` then returns
+   * the global slot `base(module_activation) + function_ordinal`, so a funcref
+   * minted in one activation but held by another's frame resolves against its own
+   * activation's slice. A single-activation fork seeds NO base (the module
+   * defaults `base = 0`, byte-identical to the D6.1 raw-ordinal mapping).
+   */
+  setActivationCatalogBase(activationId: number, base: number): void {
+    this.requireSetup("set activation catalog base");
+    this.exports.fm_set_activation_catalog_base(activationId, base);
+    this.requireOk("fm_set_activation_catalog_base");
+  }
+
+  /**
    * Parent: add a dlopen fork's SIDE activation to the capture begun by
    * `beginUnwind`. Reserves ITS own host frame arena and calls
    * `fm_add_activation_unwind(act, base, len, fixedPrefix)`. Returns the

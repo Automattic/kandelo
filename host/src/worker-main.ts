@@ -94,7 +94,6 @@ import {
   instantiateForkModule,
 } from "./fork-module-instance";
 import { ForkModuleTrampolines } from "./fork-module-trampoline";
-import { FORK_FUNCTION_CATALOG_EXPORT } from "./fork-function-catalog";
 import {
   FORK_MODULE_FRAME_ARENA_BYTES,
   FORK_MODULE_RESUME_CATALOG_CAP,
@@ -710,6 +709,20 @@ interface ProcessDylinkActivationOwnerOptions {
     readonly trampolines: ForkModuleTrampolines;
     readonly backend: ForkModuleContinuationBackend;
   };
+  /**
+   * Phase 6 D7a.1b: when a dlopen fork's whole reference graph is admitted for
+   * module reconstruction (`moduleReferenceKindsSupported`), every side
+   * activation's `__wpk_fork_ref_decode_funcref` import is flipped to the SAME
+   * shared module export — the merged, activation-namespaced catalog makes one
+   * export correct for every activation. Returns the import override to spread
+   * into each side activation's env, or `{}` to keep the JS reference decode.
+   * Resolved lazily at side-module instantiation (which happens AFTER the
+   * predicate is computed), so it reads the final `moduleReferenceKindsSupported`.
+   */
+  readonly forkModuleReferenceFlip?: () => Record<
+    string,
+    WebAssembly.ImportValue
+  >;
   readonly label: string;
 }
 
@@ -891,6 +904,16 @@ function createProcessDylinkActivationOwner(
           },
           referenceReplay: options.referenceReplay,
         }),
+        // Phase 6 D7a.1b REFERENCE FLIP: for a module-backed dlopen fork whose
+        // whole reference graph is admitted, flip this side activation's
+        // `__wpk_fork_ref_decode_funcref` to the SHARED module export (the same
+        // one every activation uses — the merged, activation-namespaced catalog
+        // resolves each funcref against its own activation's slice). Placed AFTER
+        // `buildForkActivationStateImports` so this key wins over the JS decode.
+        // `{}` (references on the JS path, or no module) leaves it byte-identical.
+        ...(options.forkModuleReferenceFlip
+          ? options.forkModuleReferenceFlip()
+          : {}),
       };
 
       return {
@@ -4065,6 +4088,21 @@ export async function centralizedWorkerMain(
                     backend: forkModuleBackend,
                   }
                 : undefined,
+            // Phase 6 D7a.1b: resolved lazily per side-module instantiation,
+            // AFTER `moduleReferenceKindsSupported` is computed for this child.
+            // When the whole reference graph is admitted, every side activation's
+            // funcref decode flips to the ONE shared module export (correct for
+            // all activations because the merged catalog is activation-namespaced).
+            forkModuleReferenceFlip: forkModuleInstance
+              ? (): Record<string, WebAssembly.ImportValue> =>
+                  moduleReferenceKindsSupported
+                    ? {
+                        __wpk_fork_ref_decode_funcref:
+                          forkModuleInstance.exports
+                            .__wpk_fork_ref_decode_funcref,
+                      }
+                    : {}
+              : undefined,
             label: `pid=${pid}: dylink activations`,
           })
         : undefined;
@@ -4225,11 +4263,17 @@ export async function centralizedWorkerMain(
         moduleReferenceKindsSupported =
           useForkModule &&
           forkModuleInstance !== null &&
-          // Phase 6 D7a.1a: multi-activation (dlopen) REFERENCES stay on the JS
-          // path this slice — only a single-activation child flips its funcref
-          // reconstruction to the module. A dlopen fork drives only its FRAMES
-          // through the module (D7a.1b will bring multi-activation references).
-          modules.size === 1 &&
+          // Phase 6 D7a.1b: multi-activation (dlopen) REFERENCES now reconstruct
+          // through the module via a MERGED, activation-namespaced funcref
+          // catalog (the host lays each activation's catalog at a distinct base
+          // and seeds `fm_set_activation_catalog_base`). The predicate below
+          // iterates EVERY graph node and checks each node's kind against its
+          // OWNING activation's descriptor (`entry.node.moduleActivation`), so it
+          // is already whole-fork and multi-activation aware; the single
+          // `modules.size === 1` gate that kept dlopen references on the JS path
+          // is removed. The whole fork's references still go all-or-nothing (one
+          // flag), so a single unadmitted node keeps the entire fork on the
+          // byte-identical JS reference path.
           [...decodedChildReferences.graph.nodes].every((entry) => {
             switch (entry.node.kind) {
               case "null":
@@ -4550,23 +4594,50 @@ export async function centralizedWorkerMain(
           earlyChildReferences = null;
         };
         if (moduleReferenceKindsSupported && forkModuleInstance) {
-          // Phase 6 D6.1: the guest instance now exists, so mirror its
-          // `__wpk_fork_function_catalog` funcref table into the host-owned table
-          // the fork-module imported at init (the module could not import the
-          // guest export directly — it is instantiated BEFORE the guest to
-          // supply the frame-flip imports). Copying preserves funcref identity
-          // (`table.get` returns the same functions), so the module's
-          // reconstruction matches the JS catalog byte for byte. Then route this
-          // child's funcref reconstruction through the module.
-          const guestCatalog = instance.exports[
-            FORK_FUNCTION_CATALOG_EXPORT
-          ] as WebAssembly.Table;
+          // Phase 6 D6.1/D7a.1b: the guest instances now exist, so mirror every
+          // activation's `__wpk_fork_function_catalog` funcref table into the ONE
+          // host-owned merged table the fork-module imported at init (the module
+          // could not import the guest exports directly — it is instantiated
+          // BEFORE the guests to supply the frame-flip imports). Copying preserves
+          // funcref identity (`table.get` returns the same functions), so the
+          // module's reconstruction matches the JS catalog byte for byte.
+          //
+          // MERGED, ACTIVATION-NAMESPACED CATALOG: each activation `a`'s catalog
+          // occupies slots `[base[a], base[a] + len_a)`, where `base[a]` is the
+          // running sum of every prior (sorted) activation's catalog length. The
+          // module is seeded that base via `setActivationCatalogBase`, and
+          // `fm_funcref_ordinal` then returns the global slot
+          // `base(module_activation) + function_ordinal` — so a funcref minted in
+          // one activation but held by another's frame resolves against its own
+          // activation's slice. A SINGLE-activation fork seeds NO base (the module
+          // defaults base 0), so its mirror + reconstruction is byte-identical to
+          // D6.1. Activation 0 is registered first (sorted), so its base is 0 and
+          // its funcrefs still map to raw ordinals.
+          const sortedActivations = [...activationRegistry.activations()].sort(
+            (left, right) => left.activationId - right.activationId,
+          );
           const mirror = forkModuleInstance.functionCatalog;
-          if (mirror.length < guestCatalog.length) {
-            mirror.grow(guestCatalog.length - mirror.length);
-          }
-          for (let slot = 0; slot < guestCatalog.length; slot += 1) {
-            mirror.set(slot, guestCatalog.get(slot));
+          const multiActivation = sortedActivations.length > 1;
+          let base = 0;
+          for (const activation of sortedActivations) {
+            const guestCatalog = activation.functionCatalog;
+            const needed = base + guestCatalog.length;
+            if (mirror.length < needed) {
+              mirror.grow(needed - mirror.length);
+            }
+            for (let slot = 0; slot < guestCatalog.length; slot += 1) {
+              mirror.set(base + slot, guestCatalog.get(slot));
+            }
+            // Only seed bases for a multi-activation fork; keeping the base map
+            // EMPTY for a single activation makes its funcref mapping provably
+            // byte-identical to D6.1 (base defaults to 0 in the module).
+            if (multiActivation && forkModuleBackend) {
+              forkModuleBackend.setActivationCatalogBase(
+                activation.activationId,
+                base,
+              );
+            }
+            base += guestCatalog.length;
           }
           processContinuation.enableModuleReferenceReplay();
         }

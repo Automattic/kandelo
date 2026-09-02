@@ -44,6 +44,13 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // modules, each with its own catalog table) so each activation's resume-slot
   // numbering matches ITS JS `__wpk_fork_resume_table` by construction.
   "fm_set_activation_resume_catalog",
+  // Phase 6 D7a.1b: seed ONE activation's function-catalog BASE into the merged,
+  // activation-namespaced funcref catalog so `fm_funcref_ordinal` returns the
+  // global slot `base(module_activation) + function_ordinal`. This is what makes
+  // a dlopen fork's multi-activation funcref references reconstruct through the
+  // module (a funcref minted in one activation but held by another's frame
+  // resolves against its own activation's catalog slice).
+  "fm_set_activation_catalog_base",
   "fm_begin_unwind",
   // Phase 6 D7a.1a: add ANOTHER activation (a dlopen fork's side module) to the
   // capture begun by `fm_begin_unwind`, with its own host frame arena + prefix.

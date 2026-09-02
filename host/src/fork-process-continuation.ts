@@ -982,6 +982,26 @@ export class ForkProcessContinuationCoordinator {
       // activation-continuation manifest the parent wrote at seal.
       const act0Root = this.readProcessLaunchRoot();
       this.phase = "child-replay";
+      // Phase 6 D6.1/D7a.1b: seed the module's reference graph from the inherited
+      // KFMS arena BEFORE restoring module state, because `restoreModuleState`
+      // drives the guest's `wpk_fork_module_state_restore`, which reconstructs
+      // GLOBAL/TABLE funcref (and externref) state through the flipped
+      // `__wpk_fork_ref_decode_funcref` import — the module cannot resolve a
+      // recipe until its reference state exists, or it traps. (A single-activation
+      // program whose only references are frame LOCALS reconstructs them during
+      // the later rewind, so it never exercised this order; a dlopen fork whose
+      // side module bakes function pointers into its table does.) This one drive
+      // covers the WHOLE arena: every activation's KMFS records merge into one
+      // `SegmentedReferenceTransaction`, and the merged, activation-namespaced
+      // funcref catalog resolves each funcref against its own activation — so it is
+      // multi-activation (D7a.1b), whereas D7a.1a kept multi-activation references
+      // on the JS path. `enableModuleReferenceReplay` is the single host gate,
+      // set once the whole graph is admitted; externref resolution (PHASE A/B)
+      // must also precede restore so the still-JS externref decode reads the
+      // values the module rooted.
+      if (this.moduleReferenceReplay) {
+        backend.beginReferenceReplay(arena.rootAddress());
+      }
       this.registry.restoreModuleState();
 
       const activations = this.orderedActivations();
@@ -1031,15 +1051,6 @@ export class ForkProcessContinuationCoordinator {
           root,
           activation.continuation.format.fixedPrefixSize,
         );
-      }
-
-      // Phase 6 D6.1: seed the module's funcref/null reference graph from the
-      // inherited KFMS arena BEFORE the guest rewind reconstructs references, so
-      // the flipped `__wpk_fork_ref_decode_funcref` resolves through the module.
-      // Only enabled for a single-activation child (D7a.1a forces multi-activation
-      // references onto the JS path), so this stays off for a dlopen fork.
-      if (this.moduleReferenceReplay) {
-        backend.beginReferenceReplay(arena.rootAddress());
       }
 
       for (const activation of activations) {
