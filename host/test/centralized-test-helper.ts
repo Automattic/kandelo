@@ -587,6 +587,44 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   let pid = 0;
 
+  // Worker-quiescence teardown for non-main child processes (fork/spawn/exec).
+  //
+  // The production Node and browser hosts terminate a child's Worker only after
+  // it becomes QUIESCENT — i.e. after the child Worker has posted its terminal
+  // `exit` message and all of its earlier messages have therefore been drained.
+  // A fork child's fork-module reference proof-of-use (`fork_module_references`)
+  // is posted from the child Worker's tail, AFTER its guest `kernel_exit` — so
+  // the kernel-driven `onExit` fires (and the main thread schedules teardown)
+  // while that tail is still running. Terminating the child Worker on that
+  // `onExit` turn races the tail: the Worker is frequently killed before it runs
+  // the tail at all, dropping the diagnostic (a flaky NULL proof-of-use).
+  //
+  // Mirror production: a child Worker is reaped only once BOTH the kernel has
+  // reported its exit AND the child Worker has posted its own terminal `exit`
+  // message. Because a MessagePort delivers in FIFO order, processing that final
+  // `exit` message guarantees every earlier message (including the reference
+  // proof-of-use) was already delivered and recorded. Abnormal exits never post
+  // `exit` (they post `error`/crash, which `finalize*WorkerError` terminates
+  // directly, and the overall timeout terminates everything), so this path
+  // governs only clean child exits.
+  const childKernelExited = new Set<number>();
+  const childWorkerQuiesced = new Set<number>();
+  const reapChildWorkerIfReady = (childPid: number): void => {
+    if (
+      !childKernelExited.has(childPid) ||
+      !childWorkerQuiesced.has(childPid)
+    ) {
+      return;
+    }
+    childKernelExited.delete(childPid);
+    childWorkerQuiesced.delete(childPid);
+    const worker = workers.get(childPid);
+    if (worker) {
+      worker.terminate().catch(() => {});
+      workers.delete(childPid);
+    }
+  };
+
   const releaseProcessReferenceOwner = (releasePid: number): void => {
     processForkHostImports.get(releasePid)?.close();
     processForkHostImports.delete(releasePid);
@@ -713,6 +751,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             finalizeSpawnWorkerError(message.message);
           } else if (message.type === "fork_host_import") {
             childForkHostImports.dispatch(message.wake);
+          } else if (message.type === "exit" && message.pid === childPid) {
+            childWorkerQuiesced.add(childPid);
+            reapChildWorkerIfReady(childPid);
           }
         });
         return 0;
@@ -877,6 +918,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             m.pid === childPid
           ) {
             recordForkModuleFrames(childPid, m);
+          } else if (m.type === "exit" && m.pid === childPid) {
+            // Worker quiescence: every earlier message from this child (e.g. its
+            // reference proof-of-use) has been drained in FIFO order. Safe to reap.
+            childWorkerQuiesced.add(childPid);
+            reapChildWorkerIfReady(childPid);
           }
         });
         observeForkReplayWorker(
@@ -1065,6 +1111,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 const m = msg as WorkerToHostMessage;
                 if (m.type === "fork_host_import") {
                   replacementForkHostImports?.dispatch(m.wake);
+                } else if (m.type === "exit" && m.pid === execPid) {
+                  childWorkerQuiesced.add(execPid);
+                  reapChildWorkerIfReady(execPid);
                 }
               });
               kernelWorker.finishProcessExecHandoff(execPid);
@@ -1232,11 +1281,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processPtrWidths.delete(exitPid);
               forkReplayContexts.delete(exitPid);
               releaseProcessReferenceOwner(exitPid);
-              const w = workers.get(exitPid);
-              if (w) {
-                w.terminate().catch(() => {});
-                workers.delete(exitPid);
-              }
+              // Do NOT terminate the child Worker here — wait for its terminal
+              // `exit` message (worker quiescence), mirroring the production
+              // hosts, so a fork child's tail-emitted reference proof-of-use is
+              // delivered before teardown.
+              childKernelExited.add(exitPid);
+              reapChildWorkerIfReady(exitPid);
             } catch (error) {
               rejectExit(
                 error instanceof Error ? error : new Error(String(error)),
