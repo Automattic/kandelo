@@ -168,6 +168,17 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of frames the module has REPLAYED (consuming rewind advances) since
+   * worker start (Phase 6 D7b proof-of-use). A replay-only forked child never
+   * commits a frame, so `framesCommitted()` stays 0 on the child; this counter
+   * advances once per consumed frame and is the child worker's positive proof
+   * that its rewind ran through the module, not a silent JS fallback.
+   */
+  framesReplayed(): bigint {
+    return BigInt(this.exports.fm_frames_replayed() as number | bigint);
+  }
+
+  /**
    * Number of references (funcref or null) the module has reconstructed since
    * worker start (Phase 6 D6.1 proof-of-use). Advances only when
    * `__wpk_fork_ref_decode_funcref` runs through the module; a silent JS

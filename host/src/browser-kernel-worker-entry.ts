@@ -1862,6 +1862,20 @@ function installProcessWorkerListeners(
         },
         "warn",
       );
+    } else if (m.type === "fork_module_child_frames" && m.pid === pid) {
+      // Surface the co-resident fork-module's REPLAY-side proof-of-use as a host
+      // diagnostic (Phase 6 D7b): a nonzero count confirms a fork CHILD (e.g. a
+      // fork-from-thread child) drove its rewind through the module, not the JS
+      // fallback — the child never commits, so `fork_module_frames` cannot show
+      // this. Mirrors node-kernel-worker-entry so both hosts report identically.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_child_frames=${m.frames}`,
+        },
+        "warn",
+      );
     } else if (m.type === "fork_module_references" && m.pid === pid) {
       // Surface the co-resident fork-module's REFERENCE proof-of-use as a host
       // diagnostic (Phase 6 D6.5): a nonzero count confirms the child's carried
@@ -3544,6 +3558,10 @@ async function handleClone(
     secureExec: processInfo.secureExec,
     externrefGenerationId: processInfo.externrefGeneration.id,
     forkHostImports: forkHostImports.init,
+    // Phase 6 D7b: ship the same co-resident fork-module decision the process
+    // worker receives, so a fork issued FROM this pthread unwinds through the
+    // module (the parent side of a fork-from-thread). Mirrors the Node host.
+    ...forkModuleInitFields(processInfo.ptrWidth),
     fnPtr,
     argPtr,
     stackPtr,
@@ -3665,6 +3683,20 @@ async function handleClone(
       handleVmInterruptTimer(m, pid, processInfo);
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(threadWorker, m);
+    } else if (m.type === "fork_module_frames" && m.pid === pid) {
+      // Phase 6 D7b: surface the pthread PARENT worker's fork-module proof-of-use
+      // (the parent side of a fork-from-thread). The process-worker handler above
+      // forwards the same message for the main worker; the pthread worker has its
+      // own handler, so mirror it here or the parent-frame proof is dropped.
+      // Mirrors node-kernel-worker-entry so both hosts report identically.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork-module",
+          message: `fork_module_frames=${m.frames}`,
+        },
+        "warn",
+      );
     }
   });
   threadWorker.on("error", (err: Error) => {
