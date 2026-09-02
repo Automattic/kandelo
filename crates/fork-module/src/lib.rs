@@ -132,7 +132,7 @@ mod wasm {
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
         encode_replay_events, ChunkAllocator, LinkedFrameFormat, LinkedFrameWriter,
         ModuleStateFormat, ReconstructionState, ReferenceReplayDriver, ReferenceTransactionRecord,
-        ReplayEventJournal, ResumeSlotTable, RewindDriver,
+        ReplayEvent, ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, Errno};
 
@@ -233,6 +233,158 @@ mod wasm {
         // `set_resume_catalog_impl` bound. The buffer outlives every borrow.
         let all = unsafe { &*RESUME_CATALOG.0.get() };
         &all[..len]
+    }
+
+    // -- Per-activation resume catalogs (Phase 6 D7a.1a — ADDITIVE) ----------
+    //
+    // A `dlopen` multi-activation fork loads N modules, and EACH module ships
+    // its OWN fork-instrumented function catalog (its own imported
+    // `__wpk_fork_resume_table`). The single process-wide `RESUME_CATALOG` above
+    // cannot number every activation's slots by construction: activation 0's
+    // table and activation 1's table are distinct JS `WebAssembly.Table`s with
+    // independent slot spaces. So the host seeds a SEPARATE resume catalog PER
+    // ACTIVATION via `fm_set_activation_resume_catalog(act, ptr, count)`, and the
+    // module registers each activation's `ResumeSlotTable` entry from ITS OWN
+    // catalog (see `register_activation_slots`). The resume-slot PARITY contract
+    // is unchanged (D5 §"Other couplings" 1): both the JS table and the module
+    // sort the identical per-activation ordinal set and assign slots the same
+    // way, so `call_indirect` never targets the wrong thunk.
+    //
+    // Like the global catalog, these live in a fixed BSS region so they survive
+    // the per-fork bump-heap reset (`fm_begin_unwind` / `fm_begin_child_replay`
+    // clear the heap). Storage is a single flat ordinal arena plus a small index
+    // mapping each activation id to its `[offset, len)` slice. Both the ordinal
+    // arena and the index are capped; overflow is a truthful `E2BIG` and the host
+    // keeps the JavaScript continuation for that program.
+    const ACTIVATION_CATALOG_ORD_CAP: usize = 16_384; // total ordinals, all activations
+    const ACTIVATION_CATALOG_MAX_ACTS: usize = 64; // distinct activations
+
+    #[repr(C, align(4))]
+    struct ActivationCatalogOrds(UnsafeCell<[u32; ACTIVATION_CATALOG_ORD_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActivationCatalogOrds {}
+    static ACT_CATALOG_ORDS: ActivationCatalogOrds =
+        ActivationCatalogOrds(UnsafeCell::new([0u32; ACTIVATION_CATALOG_ORD_CAP]));
+
+    /// The index: each entry is `[activation_id, offset, len]` into the ordinal
+    /// arena. Only the first `ACT_CATALOG_ACT_COUNT` entries are live.
+    #[repr(C, align(4))]
+    struct ActivationCatalogIndex(UnsafeCell<[[u32; 3]; ACTIVATION_CATALOG_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActivationCatalogIndex {}
+    static ACT_CATALOG_INDEX: ActivationCatalogIndex =
+        ActivationCatalogIndex(UnsafeCell::new([[0u32; 3]; ACTIVATION_CATALOG_MAX_ACTS]));
+
+    static ACT_CATALOG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
+    static ACT_CATALOG_ORD_USED: AtomicU32 = AtomicU32::new(0);
+
+    fn set_activation_resume_catalog_impl(
+        activation_id: u32,
+        ptr: u64,
+        count: u64,
+    ) -> Result<(), Errno> {
+        let count = usize::try_from(count).map_err(|_| Errno::EINVAL)?;
+        let act_count = ACT_CATALOG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        let ord_used = ACT_CATALOG_ORD_USED.load(Ordering::Relaxed) as usize;
+        if act_count >= ACTIVATION_CATALOG_MAX_ACTS {
+            return Err(Errno::E2BIG); // too many distinct activations
+        }
+        let ord_end = ord_used.checked_add(count).ok_or(Errno::EINVAL)?;
+        if ord_end > ACTIVATION_CATALOG_ORD_CAP {
+            return Err(Errno::E2BIG); // combined catalogs exceed the arena
+        }
+        // Reject a re-seeded activation (each is seeded once per worker), matching
+        // the once-per-worker `fm_set_format` / `fm_set_resume_catalog` contract.
+        // SAFETY: single-threaded; the index is a static buffer read here only.
+        let index = unsafe { &*ACT_CATALOG_INDEX.0.get() };
+        for entry in index.iter().take(act_count) {
+            if entry[0] == activation_id {
+                return Err(Errno::EINVAL);
+            }
+        }
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let byte_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
+        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // catalog region past the end of guest memory
+        }
+        // Copy the little-endian u32 ordinals out of guest memory through raw
+        // pointers into the flat static arena (the same aliasing-safe idiom the
+        // global catalog uses).
+        // SAFETY: `[start, end)` is within guest linear memory (checked above);
+        // the destination is the distinct static ordinal arena, at a slice
+        // `[ord_used, ord_end)` bounded by the cap check above.
+        let ords = unsafe { &mut *ACT_CATALOG_ORDS.0.get() };
+        let src = core::hint::black_box(start) as *const u8;
+        for (index, slot) in ords[ord_used..ord_end].iter_mut().enumerate() {
+            let mut bytes = [0u8; 4];
+            unsafe {
+                core::ptr::copy(src.add(index * 4), bytes.as_mut_ptr(), 4);
+            }
+            *slot = u32::from_le_bytes(bytes);
+        }
+        // Publish the index entry, then bump the counters.
+        // SAFETY: single-threaded; `act_count < MAX_ACTS` by the check above.
+        let index = unsafe { &mut *ACT_CATALOG_INDEX.0.get() };
+        index[act_count] = [activation_id, ord_used as u32, count as u32];
+        ACT_CATALOG_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
+        ACT_CATALOG_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// This activation's seeded resume catalog, or `None` if the host never
+    /// seeded one for it (single-activation / legacy paths fall back to the
+    /// global catalog then the committed ordinals — see
+    /// `register_activation_slots`).
+    fn activation_catalog(activation_id: u32) -> Option<&'static [u32]> {
+        let act_count = ACT_CATALOG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffers outlive every borrow
+        // and every live entry's `[offset, len)` was bounded on seed.
+        let index = unsafe { &*ACT_CATALOG_INDEX.0.get() };
+        let ords = unsafe { &*ACT_CATALOG_ORDS.0.get() };
+        for entry in index.iter().take(act_count) {
+            if entry[0] == activation_id {
+                let offset = entry[1] as usize;
+                let len = entry[2] as usize;
+                return Some(&ords[offset..offset + len]);
+            }
+        }
+        None
+    }
+
+    /// Register `activation_id`'s resume targets into `table`, choosing the
+    /// ordinal source by the resume-slot parity contract, in precedence order:
+    ///
+    /// 1. the activation's OWN seeded catalog (`fm_set_activation_resume_catalog`)
+    ///    — the multi-activation path, each dlopen module's own catalog;
+    /// 2. else the process-wide global catalog (`fm_set_resume_catalog`) —
+    ///    back-compat for a single-activation worker that seeded only the global;
+    /// 3. else the activation's distinct committed ordinals, sorted — the legacy
+    ///    harness path (no catalog seeded at all).
+    ///
+    /// The single-activation numbering is byte-identical to before this slice:
+    /// with no per-activation catalog, precedence falls straight to (2)/(3),
+    /// exactly the previous `begin_replay_impl` / `begin_child_replay_impl` logic.
+    fn register_activation_slots(
+        table: &mut ResumeSlotTable,
+        activation_id: u32,
+        global_catalog: &[u32],
+        committed_ordinals: &[u32],
+    ) -> Result<(), Errno> {
+        if let Some(catalog) = activation_catalog(activation_id) {
+            table.register_activation(activation_id, catalog)
+        } else if !global_catalog.is_empty() {
+            table.register_activation(activation_id, global_catalog)
+        } else {
+            let mut distinct: Vec<u32> = committed_ordinals.to_vec();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if distinct.is_empty() {
+                Ok(())
+            } else {
+                table.register_activation(activation_id, &distinct)
+            }
+        }
     }
 
     // Monotonic count of frames the module has committed since worker start.
@@ -528,6 +680,13 @@ mod wasm {
         journal: ReplayEventJournal,
         /// Process-wide resume-slot table (slots keyed by activation + ordinal).
         table: ResumeSlotTable,
+        /// A forked CHILD's decoded (capture-order) replay events, ALL
+        /// activations, retained from `fm_begin_child_replay` so a later
+        /// `fm_add_activation_child_replay` can rebuild a side activation's
+        /// committed ordinals by filtering on `activation_id` (the journal itself
+        /// is already in the Replay phase and no longer exposes its events).
+        /// Empty on the parent (unwind) path.
+        replay_events: Vec<ReplayEvent>,
     }
 
     struct StateCell(UnsafeCell<Option<ForkModule>>);
@@ -629,6 +788,7 @@ mod wasm {
             activations: BTreeMap::new(),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
+            replay_events: Vec::new(),
         };
         // One capture spans every activation: commits from all activations are
         // recorded in the single process-wide journal in interleaved order.
@@ -712,25 +872,19 @@ mod wasm {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         st.journal.begin_parent_replay()?;
         let mem = unsafe { mem_ref() };
-        // Register each activation's resume targets. When the host has seeded the
-        // FULL resume catalog (`fm_set_resume_catalog`), register from it so the
-        // slot numbering matches the JS `__wpk_fork_resume_table` by construction
-        // (D5 resume-slot parity). Otherwise (legacy harness, no catalog) fall
-        // back to each activation's distinct captured ordinals, sorted.
-        let catalog = resume_catalog();
+        // Register each activation's resume targets by the parity precedence
+        // (per-activation catalog -> global catalog -> distinct committed
+        // ordinals). A multi-activation (dlopen) fork gives each activation its
+        // OWN seeded catalog; a single-activation fork with no catalog falls
+        // straight through to the previous distinct-ordinals numbering, so the
+        // single-activation slot assignment is byte-identical.
+        let global = resume_catalog();
         let ForkModule {
             activations, table, ..
         } = st;
         for (activation_id, act) in activations.iter_mut() {
             let driver = RewindDriver::attach(mem, act.module_buffer, &act.format)?;
-            if catalog.is_empty() {
-                let mut distinct = act.committed_ordinals.clone();
-                distinct.sort_unstable();
-                distinct.dedup();
-                table.register_activation(*activation_id, &distinct)?;
-            } else {
-                table.register_activation(*activation_id, catalog)?;
-            }
+            register_activation_slots(table, *activation_id, global, &act.committed_ordinals)?;
             act.driver = Some(driver);
         }
         Ok(())
@@ -868,49 +1022,47 @@ mod wasm {
         }
         let decoded = decode_replay_events_image(&image_bytes)?;
 
-        // This first slice mirrors the parent's single-activation fork: the
-        // captured events must all belong to one activation. A multi-activation
-        // (cross-module) fork is deferred, so it fails loudly rather than
-        // guessing an activation for the frame gate.
+        // Choose the activation this call SEEDS (the main module). A
+        // single-activation fork seeds its sole activation (byte-identical to
+        // before this slice — the id may be any value, e.g. the harness's act 7).
+        // A multi-activation (dlopen) fork seeds the MAIN module, activation 0,
+        // and the host adds each side activation 1..N with
+        // `fm_add_activation_child_replay`. An empty journal seeds activation 0.
         let activation_id = match decoded.activation_ids.len() {
             0 => 0, // empty journal: no frames to replay
             1 => *decoded.activation_ids.iter().next().ok_or(Errno::EINVAL)?,
-            _ => return Err(Errno::EINVAL),
+            _ => {
+                // Multi-activation: the main module (activation 0) anchors this
+                // seed. Its absence is a malformed image, not a guessable anchor.
+                if !decoded.activation_ids.contains(&0) {
+                    return Err(Errno::EINVAL);
+                }
+                0
+            }
         };
 
-        // Seed the child journal from the decoded (capture-order) events; it
-        // will replay the exact reverse, in lockstep with the frame chain.
+        // Seed the process-wide journal ONCE from ALL decoded events (every
+        // activation, capture order); it will replay the exact global reverse,
+        // in lockstep with each activation's frame chain. The events are already
+        // tagged with their `activation_id`, so one image seeds N activations.
         let mut journal = ReplayEventJournal::new();
         journal.attach_child(&decoded.events)?;
 
-        // Rebuild the resume-slot table with the SAME numbering the parent's
-        // committed order produced: the activation's distinct function ordinals,
-        // sorted (mirrors `begin_replay_impl` / `ForkResumeTable.registerActivation`).
-        // Because the events are the parent's own committed events (serialized
-        // and decoded round-trip), this distinct-sorted set — and therefore the
-        // slot assignment — is identical to the parent's.
-        let mut committed_ordinals: Vec<u32> = decoded
+        // This seed activation's committed ordinals (filter the decoded events).
+        let committed_ordinals: Vec<u32> = decoded
             .events
             .iter()
             .filter(|event| event.activation_id == activation_id)
             .map(|event| event.function_ordinal)
             .collect();
-        // Same resume-slot parity contract as the parent (`begin_replay_impl`):
-        // register from the host-seeded FULL catalog when present so the child's
-        // numbering matches its own JS `__wpk_fork_resume_table`; otherwise fall
-        // back to the distinct decoded ordinals (legacy harness).
-        let catalog = resume_catalog();
+
+        // Register the seed activation's resume slots by the parity precedence
+        // (per-activation catalog -> global catalog -> distinct committed). For a
+        // single-activation fork with no catalog this is byte-identical to the
+        // previous distinct-decoded-ordinals numbering.
+        let global = resume_catalog();
         let mut table = ResumeSlotTable::new();
-        if catalog.is_empty() {
-            let mut distinct = committed_ordinals.clone();
-            distinct.sort_unstable();
-            distinct.dedup();
-            if !distinct.is_empty() {
-                table.register_activation(activation_id, &distinct)?;
-            }
-        } else {
-            table.register_activation(activation_id, catalog)?;
-        }
+        register_activation_slots(&mut table, activation_id, global, &committed_ordinals)?;
 
         // Attach the rewind driver to the continuation the parent published,
         // read from the COPIED arena at the same guest offset the child
@@ -920,14 +1072,10 @@ mod wasm {
             RewindDriver::attach(mem, module_buffer, &fmt)?
         };
 
-        // `committed_ordinals` is retained only for symmetry/diagnostics; the
-        // child drives replay through `driver` + `journal` + `table`.
-        committed_ordinals.shrink_to_fit();
-
-        // Seed the single-activation child into the activation-keyed map. A
-        // multi-activation (cross-module) child replay is deferred to D7a.1 (the
-        // `decoded.activation_ids.len() > 1` case above already fails loudly), so
-        // this fresh child holds exactly one replay-only activation.
+        // Seed the first activation into the activation-keyed map (replay-only).
+        // Side activations are added by `fm_add_activation_child_replay` against
+        // the SAME process-wide journal + table; the decoded events are retained
+        // so each add can rebuild its own activation's committed ordinals.
         let mut activations = BTreeMap::new();
         activations.insert(
             activation_id,
@@ -945,8 +1093,71 @@ mod wasm {
             activations,
             journal,
             table,
+            replay_events: decoded.events,
         });
         PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Add ANOTHER activation (a dlopen fork's side module) to the child replay
+    /// begun by `fm_begin_child_replay` (Phase 6 D7a.1a). `activation_id` is the
+    /// side activation (must not already be seeded); `module_buffer` is ITS
+    /// continuation anchor, inherited at the same guest offset via the fork
+    /// memory copy; `fixed_prefix` is ITS own module-buffer fixed runtime prefix.
+    /// (Side modules carry their own prefix — the direct child-side mirror of
+    /// `fm_add_activation_unwind`'s `fixed_prefix` — and the rewind decode needs
+    /// it to locate the root chunk's first node; the journal image does not carry
+    /// it, so the host supplies it.) The process-wide journal is NOT reseeded:
+    /// this attaches the activation's replay-only frame state, rebuilds its
+    /// committed ordinals from the retained decoded events (filtered by
+    /// `activation_id`), and registers its resume slots against the SAME table.
+    fn add_activation_child_replay_impl(
+        activation_id: u32,
+        module_buffer: u64,
+        fixed_prefix: u32,
+    ) -> Result<(), Errno> {
+        // Derive this activation's format from the seeded pointer width plus its
+        // own fixed prefix (shared pointer width, per-activation prefix), exactly
+        // as the parent's `add_activation_unwind_impl` does.
+        let base = format()?;
+        let fmt = LinkedFrameFormat {
+            fixed_prefix_size: fixed_prefix,
+            ..base
+        };
+
+        // Rebuild this activation's committed ordinals from the retained decoded
+        // events BEFORE taking the mutable field borrows below (the immutable
+        // borrow of `replay_events` ends once collected into an owned `Vec`).
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        if st.activations.contains_key(&activation_id) {
+            return Err(Errno::EINVAL); // activation already seeded in this child
+        }
+        let committed_ordinals: Vec<u32> = st
+            .replay_events
+            .iter()
+            .filter(|event| event.activation_id == activation_id)
+            .map(|event| event.function_ordinal)
+            .collect();
+
+        // Attach the rewind driver to the COPIED continuation at its inherited
+        // anchor, then register the activation's resume slots on the SAME table.
+        let mem = unsafe { mem_ref() };
+        let driver = RewindDriver::attach(mem, module_buffer, &fmt)?;
+        let global = resume_catalog();
+        register_activation_slots(&mut st.table, activation_id, global, &committed_ordinals)?;
+
+        st.activations.insert(
+            activation_id,
+            ActivationFrames {
+                format: fmt,
+                writer: LinkedFrameWriter::new(fmt),
+                arena: ArenaAllocator { next: 0, end: 0 },
+                driver: Some(driver),
+                committed_ordinals,
+                module_buffer,
+                replay_only: true,
+            },
+        );
         Ok(())
     }
 
@@ -1409,6 +1620,30 @@ mod wasm {
         }
     }
 
+    /// Add a dlopen fork's SIDE activation to a child replay begun by
+    /// `fm_begin_child_replay` (Phase 6 D7a.1a — the multi-activation child).
+    /// `activation_id` is the side activation (must not already be seeded);
+    /// `module_buffer` is ITS continuation anchor, inherited at the same guest
+    /// offset via the fork memory copy; `fixed_prefix` is ITS own module-buffer
+    /// fixed runtime prefix (side modules carry their own — the child-side mirror
+    /// of `fm_add_activation_unwind`, and required to decode this activation's
+    /// linked-frame chain). The process-wide journal is NOT reseeded: this
+    /// attaches the activation's replay-only frame state and registers its resume
+    /// slots against the SAME journal + table `fm_begin_child_replay` created.
+    /// On success the guest then drives this activation's per-activation
+    /// trampoline (`fm_frame_peek/next(act, ...)`) in lockstep with the others.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_add_activation_child_replay(
+        activation_id: u32,
+        module_buffer: usize,
+        fixed_prefix: u32,
+    ) {
+        match add_activation_child_replay_impl(activation_id, module_buffer as u64, fixed_prefix) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     /// Seed the FULL resume catalog for this worker: `[ptr, ptr + count*4)` is a
     /// little-endian `u32` array of the fork-instrumented function ordinals (the
     /// same set the host registers into the JS `__wpk_fork_resume_table`). The
@@ -1420,6 +1655,30 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_resume_catalog(ptr: usize, count: usize) {
         match set_resume_catalog_impl(ptr as u64, count as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Seed ONE activation's resume catalog for this worker (Phase 6 D7a.1a — the
+    /// multi-activation path): `[ptr, ptr + count*4)` is a little-endian `u32`
+    /// array of `activation_id`'s OWN fork-instrumented function ordinals (the set
+    /// the host registers into THAT activation's JS `__wpk_fork_resume_table`).
+    /// A dlopen fork loads N modules, each with its own catalog table; the module
+    /// registers each activation's resume slots from ITS catalog so the numbering
+    /// matches that activation's JS table by construction (resume-slot parity).
+    /// Called ONCE per activation per worker, before any fork, alongside
+    /// `fm_set_format`. Too many activations, or catalogs that jointly exceed the
+    /// module's arena, fail with `E2BIG`; a re-seeded activation fails with
+    /// `EINVAL` (check `fm_last_errno`), and the host keeps the JavaScript
+    /// continuation for that program.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_resume_catalog(
+        activation_id: u32,
+        ptr: usize,
+        count: usize,
+    ) {
+        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
