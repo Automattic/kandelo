@@ -231,6 +231,19 @@ export interface RunProgramOptions {
     ppid?: number;
     exitStatus?: number;
   }) => void;
+  /**
+   * Phase 6 D6.5: register owner-side fork host-import handlers (e.g. a
+   * broker-backed `env.get_ext` / `env.check_ext`) before any Worker is created,
+   * so a test-provided HOST externref becomes broker-tracked and survives a real
+   * fork through the `wpk_fork_host` / `host_resolve_externref` seam. Supplying
+   * this forces main-thread mode (the test helper owns the
+   * `ForkHostImportOwnerRuntime` there) and makes the child fork Worker's
+   * `fork_module_references` proof-of-use surface on
+   * `RunProgramResult.hostDiagnostics`, mirroring the Node/browser worker
+   * entries. The registrar runs once, before the process main Worker, while the
+   * catalog is still unsealed.
+   */
+  forkHostImportRegistrar?: (owner: ForkHostImportOwnerRuntime) => void;
 }
 
 export interface RunProgramResult {
@@ -282,7 +295,7 @@ function centralizedForkModuleFields(
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io || options.onKernelReady) {
+  if (options.io || options.onKernelReady || options.forkHostImportRegistrar) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -534,6 +547,31 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const externrefProcessOwner = new ForkExternrefProcessOwner();
   const forkHostImportOwnerRuntime =
     new ForkHostImportOwnerRuntime(externrefProcessOwner);
+  // Phase 6 D6.5: let a test register broker-backed owner host imports (e.g.
+  // `env.get_ext` / `env.check_ext`) while the catalog is still unsealed, before
+  // any Worker is created. This is how a genuine HOST externref becomes
+  // broker-tracked so it survives a real fork through the `host_resolve_externref`
+  // seam.
+  options.forkHostImportRegistrar?.(forkHostImportOwnerRuntime);
+  // Capture the co-resident fork-module's per-kind reference proof-of-use posted
+  // by a fork CHILD Worker, mirroring how the Node/browser worker entries forward
+  // it as a `fork-module` host diagnostic. Main-thread mode otherwise returns no
+  // host diagnostics.
+  const mainThreadHostDiagnostics: HostDiagnostic[] = [];
+  const recordForkModuleReferences = (
+    forPid: number,
+    message: Extract<WorkerToHostMessage, { type: "fork_module_references" }>,
+  ): void => {
+    mainThreadHostDiagnostics.push({
+      pid: forPid,
+      source: "fork-module",
+      message:
+        `fork_module_references=${message.references} ` +
+        `externrefs_resolved=${message.externrefs} ` +
+        `exnrefs_reconstructed=${message.exnrefs} ` +
+        `gc_nodes_reconstructed=${message.gcNodes}`,
+    });
+  };
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
@@ -821,6 +859,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             finalizeChildWorkerError(m.message);
           } else if (m.type === "fork_host_import") {
             childForkHostImports.dispatch(m.wake);
+          } else if (
+            m.type === "fork_module_references" &&
+            m.pid === childPid
+          ) {
+            recordForkModuleReferences(childPid, m);
           }
         });
         observeForkReplayWorker(
@@ -1318,6 +1361,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       rejectExit(new Error(m.message));
     } else if (m.type === "fork_host_import") {
       mainForkHostImports.dispatch(m.wake);
+    } else if (m.type === "fork_module_references" && m.pid === pid) {
+      recordForkModuleReferences(pid, m);
     }
   });
 
@@ -1353,7 +1398,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     exitCode,
     stdout,
     stderr,
-    hostDiagnostics: [],
+    hostDiagnostics: mainThreadHostDiagnostics,
     stdoutBytes,
     forkCount: mainThreadForkCount,
     spawnScratchCapacity,
