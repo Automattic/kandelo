@@ -17,6 +17,27 @@
 //! `ReplayEventJournal` + `ResumeSlotTable` (the load-bearing journal coupling
 //! the design requires to move into the module alongside the allocator).
 //!
+//! ## Multi-activation frames (Phase 6 D7a.2 — ADDITIVE)
+//!
+//! A `dlopen` fork has N ACTIVATIONS: activation 0 is the main module, 1..N are
+//! the dlopen'd side modules, each with its OWN linked-frame writer, frame
+//! arena, fixed runtime prefix, and rewind driver. The module keys those
+//! per-activation writers/drivers in a `BTreeMap` (`ForkModule::activations`),
+//! while the replay JOURNAL and RESUME-SLOT TABLE stay PROCESS-WIDE — the
+//! journal already tags every event with its `activation_id`, so it records the
+//! interleaved commit order across all activations and replays the global
+//! reverse. `fm_begin_unwind` opens the first activation; `fm_add_activation_
+//! unwind` adds the rest to the same fork (no reset). Each activation's guest
+//! reaches its own frame state through the activation-parameterized shared
+//! exports `fm_frame_{reserve,commit,peek,next}(act, ...)` / `fm_resume_peek(act)`
+//! — the targets a per-activation wasm TRAMPOLINE calls with a constant
+//! activation-id immediate (see `tests/fork-trampoline.mjs` /
+//! `tests/harness-multi-activation.mjs`). The FROZEN guest-facing
+//! `__wpk_fork_frame_*` exports remain the single-activation path (they route to
+//! `PRIMARY_ACTIVATION`), so no guest re-instrumentation is required. The LIVE
+//! host wiring of the trampolines, per-activation references, and the KFLA
+//! archive is deferred to D7a.1.
+//!
 //! ## Memory topology chosen (and why) — PIC side module (D5 gating fix)
 //!
 //! SINGLE shared imported memory (the production "single-shared-memory" shape),
@@ -104,6 +125,7 @@ mod wasm {
     use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
+    use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
 
     use fork_codec::{
@@ -470,15 +492,23 @@ mod wasm {
         }
     }
 
-    // -- Per-worker singleton state -----------------------------------------
+    // -- Per-worker state: activation-keyed frames + process-wide journal ----
+    //
+    // Phase 6 D7a.2: a dlopen fork has N ACTIVATIONS (activation 0 = the main
+    // module, 1..N = the dlopen'd side modules). Each activation owns its own
+    // linked-frame writer, frame arena, fixed runtime prefix, rewind driver, and
+    // continuation anchor — its FRAMES are independent. The replay JOURNAL and
+    // the RESUME-SLOT TABLE stay PROCESS-WIDE: the journal already tags every
+    // event with its `activation_id`, so it records the exact interleaved order
+    // frames commit across every activation and replays the reverse; the table
+    // keys slots by `(activation_id, function_ordinal)`. A single-activation fork
+    // is the degenerate case: one entry in the map (`primary_activation`).
 
-    struct ForkModule {
+    /// The per-activation frame state (one entry per activation id).
+    struct ActivationFrames {
         format: LinkedFrameFormat,
-        activation_id: u32,
         writer: LinkedFrameWriter,
         arena: ArenaAllocator,
-        journal: ReplayEventJournal,
-        table: ResumeSlotTable,
         driver: Option<RewindDriver>,
         committed_ordinals: Vec<u32>,
         module_buffer: u64,
@@ -488,6 +518,16 @@ mod wasm {
         /// a stray guest reserve on a replay-only child is a truthful `EINVAL`
         /// rather than a write into an unowned region.
         replay_only: bool,
+    }
+
+    struct ForkModule {
+        /// Per-activation frame state, keyed by activation id.
+        activations: BTreeMap<u32, ActivationFrames>,
+        /// Process-wide replay-event journal (records `(activation_id, ordinal)`
+        /// commits across every activation; replays the global reverse order).
+        journal: ReplayEventJournal,
+        /// Process-wide resume-slot table (slots keyed by activation + ordinal).
+        table: ResumeSlotTable,
     }
 
     struct StateCell(UnsafeCell<Option<ForkModule>>);
@@ -502,6 +542,15 @@ mod wasm {
         unsafe { &mut *STATE.0.get() }
     }
 
+    // The activation the guest-facing `__wpk_fork_frame_*` exports resolve to.
+    // Set by `fm_begin_unwind` / `fm_begin_child_replay`; the legacy
+    // single-activation path uses this so the guest ABI is unchanged.
+    static PRIMARY_ACTIVATION: AtomicU32 = AtomicU32::new(0);
+
+    fn primary_activation() -> u32 {
+        PRIMARY_ACTIVATION.load(Ordering::Relaxed)
+    }
+
     static LAST_ERRNO: AtomicI32 = AtomicI32::new(0);
 
     fn set_ok() {
@@ -514,17 +563,60 @@ mod wasm {
 
     // -- Coordinator (JS→wasm, once per phase, not hot) ---------------------
 
-    fn begin_unwind_impl(activation_id: u32, arena_base: u64, arena_len: u64) -> Result<u64, Errno> {
-        // Option A: the HOST owns the per-fork frame arena and passes its base
-        // and length in (production: a `continuationMmap` of the shared memory).
-        // The module does NOT grow memory. The base must be page-aligned and the
-        // length a non-zero page multiple — exactly what `LinkedFrameWriter`
-        // requires of chunk boundaries, and what a page-rounded host mapping
-        // yields.
+    /// Validate a HOST-supplied frame arena `[base, base+len)` (Option A): the
+    /// base page-aligned, the length a non-zero page multiple. Returns the end.
+    fn validate_arena(arena_base: u64, arena_len: u64) -> Result<u64, Errno> {
         if arena_len == 0 || arena_base % PAGE != 0 || arena_len % PAGE != 0 {
             return Err(Errno::EINVAL);
         }
-        let arena_end = arena_base.checked_add(arena_len).ok_or(Errno::EINVAL)?;
+        arena_base.checked_add(arena_len).ok_or(Errno::EINVAL)
+    }
+
+    /// Register a fresh unwind activation into `module` over its own arena, using
+    /// `fmt` (the activation's own fixed runtime prefix). Publishes the
+    /// activation's module-buffer anchor and returns it. Rejects a duplicate
+    /// activation id with `EINVAL` (each activation is registered once per fork).
+    fn register_unwind_activation(
+        module: &mut ForkModule,
+        activation_id: u32,
+        arena_base: u64,
+        arena_end: u64,
+        fmt: LinkedFrameFormat,
+    ) -> Result<u64, Errno> {
+        if module.activations.contains_key(&activation_id) {
+            return Err(Errno::EINVAL); // activation already open in this fork
+        }
+        let mut writer = LinkedFrameWriter::new(fmt);
+        let mut arena = ArenaAllocator {
+            next: arena_base,
+            end: arena_end,
+        };
+        let mem = unsafe { mem_mut() };
+        let module_buffer = writer.begin_unwind(mem, &mut arena)?;
+        module.activations.insert(
+            activation_id,
+            ActivationFrames {
+                format: fmt,
+                writer,
+                arena,
+                driver: None,
+                committed_ordinals: Vec::new(),
+                module_buffer,
+                replay_only: false,
+            },
+        );
+        Ok(module_buffer)
+    }
+
+    fn begin_unwind_impl(activation_id: u32, arena_base: u64, arena_len: u64) -> Result<u64, Errno> {
+        // Option A: the HOST owns the per-fork frame arena and passes its base
+        // and length in (production: a `continuationMmap` of the shared memory).
+        // The module does NOT grow memory. `fm_begin_unwind` starts a FRESH fork:
+        // it reclaims the previous fork's state + heap and registers this
+        // activation as the first (and, for a single-activation fork, only) one.
+        // Additional activations (a dlopen fork's side modules) are added to the
+        // SAME fork with `fm_add_activation_unwind` — no reset.
+        let arena_end = validate_arena(arena_base, arena_len)?;
 
         // The format must have been seeded (once) via `fm_set_format`.
         let fmt = format()?;
@@ -534,59 +626,84 @@ mod wasm {
         ALLOC.reset();
 
         let mut module = ForkModule {
-            format: fmt,
-            activation_id,
-            writer: LinkedFrameWriter::new(fmt),
-            arena: ArenaAllocator {
-                next: arena_base,
-                end: arena_end,
-            },
+            activations: BTreeMap::new(),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
-            driver: None,
-            committed_ordinals: Vec::new(),
-            module_buffer: 0,
-            replay_only: false,
         };
-
+        // One capture spans every activation: commits from all activations are
+        // recorded in the single process-wide journal in interleaved order.
         module.journal.begin_capture()?;
-        let mem = unsafe { mem_mut() };
-        let module_buffer = module.writer.begin_unwind(mem, &mut module.arena)?;
-        module.module_buffer = module_buffer;
+        let module_buffer =
+            register_unwind_activation(&mut module, activation_id, arena_base, arena_end, fmt)?;
 
         *state() = Some(module);
+        PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
         Ok(module_buffer)
     }
 
-    fn reserve_impl(size: u64) -> Result<u64, Errno> {
+    /// Add ANOTHER activation to the fork already begun by `fm_begin_unwind`
+    /// (Phase 6 D7a.2 — a dlopen fork's side module). `fixed_prefix` is THIS
+    /// activation's own module-buffer fixed runtime prefix (side modules carry
+    /// their own). The pointer width is the guest's, shared across activations
+    /// (seeded once via `fm_set_format`). No reset: the process-wide journal
+    /// stays in its capture phase across every activation.
+    fn add_activation_unwind_impl(
+        activation_id: u32,
+        arena_base: u64,
+        arena_len: u64,
+        fixed_prefix: u32,
+    ) -> Result<u64, Errno> {
+        let arena_end = validate_arena(arena_base, arena_len)?;
+        // Derive this activation's format from the seeded pointer width plus its
+        // own fixed prefix, so a side module with a different prefix is honored.
+        let base = format()?;
+        let fmt = LinkedFrameFormat {
+            fixed_prefix_size: fixed_prefix,
+            ..base
+        };
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
-        if st.replay_only {
-            return Err(Errno::EINVAL); // a forked child never unwinds
-        }
-        let mem = unsafe { mem_mut() };
-        st.writer.reserve_frame(mem, &mut st.arena, size)
+        register_unwind_activation(st, activation_id, arena_base, arena_end, fmt)
     }
 
-    fn commit_impl(payload: u64) -> Result<(), Errno> {
+    fn reserve_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
-        if st.replay_only {
+        let act = st.activations.get_mut(&activation_id).ok_or(Errno::EINVAL)?;
+        if act.replay_only {
             return Err(Errno::EINVAL); // a forked child never unwinds
         }
         let mem = unsafe { mem_mut() };
-        st.writer.commit_frame(mem, payload)?;
+        act.writer.reserve_frame(mem, &mut act.arena, size)
+    }
+
+    fn commit_impl(activation_id: u32, payload: u64) -> Result<(), Errno> {
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        // Split-borrow the disjoint fields: the per-activation writer and the
+        // process-wide journal are borrowed together.
+        let ForkModule {
+            activations, journal, ..
+        } = st;
+        let act = activations.get_mut(&activation_id).ok_or(Errno::EINVAL)?;
+        if act.replay_only {
+            return Err(Errno::EINVAL); // a forked child never unwinds
+        }
+        let mem = unsafe { mem_mut() };
+        act.writer.commit_frame(mem, payload)?;
         // The guest fills the frame header before commit; the function ordinal is
-        // the leading u32 of the payload. Record it for the journal and for the
-        // resume-slot registration (the load-bearing journal coupling).
+        // the leading u32 of the payload. Record it in the process-wide journal
+        // TAGGED with this activation, and for the resume-slot registration.
         let ordinal = RewindDriver::read_function_ordinal(mem, payload)?;
-        st.journal.record_commit(st.activation_id, ordinal)?;
-        st.committed_ordinals.push(ordinal);
+        journal.record_commit(activation_id, ordinal)?;
+        act.committed_ordinals.push(ordinal);
         FRAMES_COMMITTED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     fn finish_unwind_impl() -> Result<(), Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
-        st.writer.finish_unwind()?;
+        // Seal every activation's writer, then the one process-wide journal.
+        for act in st.activations.values() {
+            act.writer.finish_unwind()?;
+        }
         st.journal.seal_capture()?;
         Ok(())
     }
@@ -595,52 +712,77 @@ mod wasm {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         st.journal.begin_parent_replay()?;
         let mem = unsafe { mem_ref() };
-        let driver = RewindDriver::attach(mem, st.module_buffer, &st.format)?;
-        // Register the activation's resume targets. When the host has seeded the
+        // Register each activation's resume targets. When the host has seeded the
         // FULL resume catalog (`fm_set_resume_catalog`), register from it so the
         // slot numbering matches the JS `__wpk_fork_resume_table` by construction
         // (D5 resume-slot parity). Otherwise (legacy harness, no catalog) fall
-        // back to the distinct captured ordinals, sorted — the prior behavior.
+        // back to each activation's distinct captured ordinals, sorted.
         let catalog = resume_catalog();
-        if catalog.is_empty() {
-            let mut distinct = st.committed_ordinals.clone();
-            distinct.sort_unstable();
-            distinct.dedup();
-            st.table.register_activation(st.activation_id, &distinct)?;
-        } else {
-            st.table.register_activation(st.activation_id, catalog)?;
+        let ForkModule {
+            activations, table, ..
+        } = st;
+        for (activation_id, act) in activations.iter_mut() {
+            let driver = RewindDriver::attach(mem, act.module_buffer, &act.format)?;
+            if catalog.is_empty() {
+                let mut distinct = act.committed_ordinals.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                table.register_activation(*activation_id, &distinct)?;
+            } else {
+                table.register_activation(*activation_id, catalog)?;
+            }
+            act.driver = Some(driver);
         }
-        st.driver = Some(driver);
         Ok(())
     }
 
-    fn peek_impl(size: u64) -> Result<u64, Errno> {
+    fn peek_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         let mem = unsafe { mem_ref() };
-        let driver = st.driver.as_ref().ok_or(Errno::EINVAL)?;
-        driver.drive_peek(mem, &mut st.journal, st.activation_id, size)
+        let ForkModule {
+            activations, journal, ..
+        } = st;
+        let act = activations.get_mut(&activation_id).ok_or(Errno::EINVAL)?;
+        let driver = act.driver.as_ref().ok_or(Errno::EINVAL)?;
+        driver.drive_peek(mem, journal, activation_id, size)
     }
 
-    fn next_impl(size: u64) -> Result<u64, Errno> {
+    fn next_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         let mem = unsafe { mem_ref() };
-        let driver = st.driver.as_mut().ok_or(Errno::EINVAL)?;
-        let payload = driver.drive_next(mem, &mut st.journal, st.activation_id, size)?;
+        let ForkModule {
+            activations, journal, ..
+        } = st;
+        let act = activations.get_mut(&activation_id).ok_or(Errno::EINVAL)?;
+        let driver = act.driver.as_mut().ok_or(Errno::EINVAL)?;
+        let payload = driver.drive_next(mem, journal, activation_id, size)?;
         // Count only a successful consuming advance: this is the replay-side
         // proof-of-use a replay-only child (which never commits) reports.
         FRAMES_REPLAYED.fetch_add(1, Ordering::Relaxed);
         Ok(payload)
     }
 
-    fn resume_peek_impl() -> Result<u32, Errno> {
+    /// The resume slot for the currently selected replay event. This is a
+    /// process-wide journal + table concern — the slot is for whichever
+    /// activation's event the global journal currently selects — so the
+    /// `activation_id` argument (which activation's guest asked) is not needed to
+    /// resolve it. It is accepted so the export shape matches the frame ops and
+    /// the trampoline can pass a uniform activation immediate.
+    fn resume_peek_impl(_activation_id: u32) -> Result<u32, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
-        RewindDriver::resume_peek(&mut st.journal, &st.table)
+        let ForkModule {
+            journal, table, ..
+        } = st;
+        RewindDriver::resume_peek(journal, table)
     }
 
     fn finish_replay_impl() -> Result<(), Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
-        let driver = st.driver.as_ref().ok_or(Errno::EINVAL)?;
-        driver.finish_rewind()?;
+        // Every activation's driver must be exhausted, then the one journal.
+        for act in st.activations.values() {
+            let driver = act.driver.as_ref().ok_or(Errno::EINVAL)?;
+            driver.finish_rewind()?;
+        }
         st.journal.finish_replay()?;
         Ok(())
     }
@@ -782,18 +924,29 @@ mod wasm {
         // child drives replay through `driver` + `journal` + `table`.
         committed_ordinals.shrink_to_fit();
 
-        *state() = Some(ForkModule {
-            format: fmt,
+        // Seed the single-activation child into the activation-keyed map. A
+        // multi-activation (cross-module) child replay is deferred to D7a.1 (the
+        // `decoded.activation_ids.len() > 1` case above already fails loudly), so
+        // this fresh child holds exactly one replay-only activation.
+        let mut activations = BTreeMap::new();
+        activations.insert(
             activation_id,
-            writer: LinkedFrameWriter::new(fmt),
-            arena: ArenaAllocator { next: 0, end: 0 },
+            ActivationFrames {
+                format: fmt,
+                writer: LinkedFrameWriter::new(fmt),
+                arena: ArenaAllocator { next: 0, end: 0 },
+                driver: Some(driver),
+                committed_ordinals,
+                module_buffer,
+                replay_only: true,
+            },
+        );
+        *state() = Some(ForkModule {
+            activations,
             journal,
             table,
-            driver: Some(driver),
-            committed_ordinals,
-            module_buffer,
-            replay_only: true,
         });
+        PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
         Ok(())
     }
 
@@ -932,12 +1085,19 @@ mod wasm {
     }
 
     // -- Guest-facing exports (signatures == WPK_FORK_REQUIRED_IMPORTS) ------
+    //
+    // These FROZEN, activation-less names are the single-activation path: they
+    // route to the fork's `primary_activation`. A multi-activation (dlopen) guest
+    // instead reaches its per-activation frame state through a per-activation
+    // TRAMPOLINE that folds in the activation id and calls the shared
+    // `fm_frame_*(act, ...)` exports below — so these exports are unchanged and
+    // no guest re-instrumentation is required.
 
     /// `__wpk_fork_frame_reserve(size) -> payload`. Reserve the next frame node
     /// and return its payload pointer (0 on failure; check `fm_last_errno`).
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_frame_reserve(size: usize) -> usize {
-        match reserve_impl(size as u64) {
+        match reserve_impl(primary_activation(), size as u64) {
             Ok(payload) => {
                 set_ok();
                 payload as usize
@@ -953,7 +1113,7 @@ mod wasm {
     /// record its function ordinal in the replay journal.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_frame_commit(payload: usize) {
-        match commit_impl(payload as u64) {
+        match commit_impl(primary_activation(), payload as u64) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -963,7 +1123,7 @@ mod wasm {
     /// of the current rewind frame (0 on failure; check `fm_last_errno`).
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_frame_peek(size: usize) -> usize {
-        match peek_impl(size as u64) {
+        match peek_impl(primary_activation(), size as u64) {
             Ok(payload) => {
                 set_ok();
                 payload as usize
@@ -979,7 +1139,7 @@ mod wasm {
     /// of the rewind cursor (0 on failure; check `fm_last_errno`).
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_frame_next(size: usize) -> usize {
-        match next_impl(size as u64) {
+        match next_impl(primary_activation(), size as u64) {
             Ok(payload) => {
                 set_ok();
                 payload as usize
@@ -996,7 +1156,92 @@ mod wasm {
     /// check `fm_last_errno`). The diagnostic argument is unused here.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_resume_peek(_type_diagnostic: i32) -> i32 {
-        match resume_peek_impl() {
+        match resume_peek_impl(primary_activation()) {
+            Ok(slot) => {
+                set_ok();
+                slot as i32
+            }
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
+        }
+    }
+
+    // -- Shared activation-parameterized frame exports (trampoline targets) --
+    //
+    // Phase 6 D7a.2 (ADDITIVE): the per-activation TRAMPOLINE for activation
+    // `act` calls these, folding in its constant activation id, so each
+    // activation's frames route to its OWN writer/driver in the map while the
+    // journal + resume table stay process-wide. The single-activation guest-
+    // facing exports above are these with `act == primary_activation`.
+
+    /// `fm_frame_reserve(act, size) -> payload`. Reserve into activation `act`'s
+    /// own writer/arena (0 on failure; check `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frame_reserve(activation_id: u32, size: usize) -> usize {
+        match reserve_impl(activation_id, size as u64) {
+            Ok(payload) => {
+                set_ok();
+                payload as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// `fm_frame_commit(act, payload)`. Commit activation `act`'s pending
+    /// reservation and record its ordinal in the process-wide journal, tagged
+    /// with `act`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frame_commit(activation_id: u32, payload: usize) {
+        match commit_impl(activation_id, payload as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// `fm_frame_peek(act, size) -> payload`. Journal-gated non-consuming peek of
+    /// activation `act`'s current rewind frame (0 on failure).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frame_peek(activation_id: u32, size: usize) -> usize {
+        match peek_impl(activation_id, size as u64) {
+            Ok(payload) => {
+                set_ok();
+                payload as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// `fm_frame_next(act, size) -> payload`. Journal-gated consuming advance of
+    /// activation `act`'s rewind cursor (0 on failure).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_frame_next(activation_id: u32, size: usize) -> usize {
+        match next_impl(activation_id, size as u64) {
+            Ok(payload) => {
+                set_ok();
+                payload as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// `fm_resume_peek(act) -> slot`. Resume-slot for the currently selected
+    /// process-wide replay event (0 = reserved sentinel; -1 on error). The
+    /// `act` argument is accepted for a uniform trampoline shape; the resume slot
+    /// is a process-wide journal concern (see `resume_peek_impl`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_resume_peek(activation_id: u32) -> i32 {
+        match resume_peek_impl(activation_id) {
             Ok(slot) => {
                 set_ok();
                 slot as i32
@@ -1034,6 +1279,39 @@ mod wasm {
         arena_len: usize,
     ) -> usize {
         match begin_unwind_impl(activation_id, arena_base as u64, arena_len as u64) {
+            Ok(module_buffer) => {
+                set_ok();
+                module_buffer as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Add ANOTHER activation to the fork begun by `fm_begin_unwind` (Phase 6
+    /// D7a.2 — a dlopen fork's side module). `activation_id` is the new
+    /// activation (must not already be open); `[arena_base, arena_base +
+    /// arena_len)` is ITS own HOST-allocated frame arena (page-aligned base,
+    /// non-zero page-multiple length); `fixed_prefix` is ITS own module-buffer
+    /// fixed runtime prefix. The guest pointer width is shared (seeded once via
+    /// `fm_set_format`). No reset — the process-wide journal stays capturing
+    /// across every activation. Returns the activation's module-buffer anchor (0
+    /// on failure; check `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_add_activation_unwind(
+        activation_id: u32,
+        arena_base: usize,
+        arena_len: usize,
+        fixed_prefix: u32,
+    ) -> usize {
+        match add_activation_unwind_impl(
+            activation_id,
+            arena_base as u64,
+            arena_len as u64,
+            fixed_prefix,
+        ) {
             Ok(module_buffer) => {
                 set_ok();
                 module_buffer as usize
