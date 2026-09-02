@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
@@ -34,7 +35,6 @@ import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mousetestBinary = join(__dirname, "../wasm/mousetest.wasm");
-const kernelBinary = join(__dirname, "../wasm/kandelo-kernel.wasm");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
@@ -67,7 +67,7 @@ function expectedByte0(dx: number, dy: number, buttons: number): number {
 describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
   it("/dev/input/mice delivers injected PS/2 packets in order", async () => {
     const programBytes = loadProgramWasm(mousetestBinary);
-    const kernelWasmBytes = loadProgramWasm(kernelBinary);
+    const kernelWasmBytes = loadProgramWasm(resolveBinary("kernel.wasm"));
     const ptrWidth = detectPtrWidth(programBytes);
     expect(ptrWidth).toBe(4);
 
