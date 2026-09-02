@@ -6,7 +6,7 @@
 # GL command stream replays onto WebGL2, which only the browser host
 # has, and a renderer one host cannot run would break dual-host parity.
 # The software adaptation rasterises on the CPU into the same wl_shm
-# pools qtdemo paints through. Consumers select it with
+# pools qtgallery paints through. Consumers select it with
 # QT_QUICK_BACKEND=software.
 #
 # qml-network and qml-debug are on — Quickshell's QsIntercept

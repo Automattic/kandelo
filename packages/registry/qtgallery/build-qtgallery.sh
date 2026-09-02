@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Link programs/qtdemo/qtdemo.cpp against the resolved qtbase into qtdemo.wasm.
+# Link programs/qtgallery/qtgallery.cpp against the resolved qtbase into qtgallery.wasm.
 #
 # The link line mirrors packages/registry/qtbase/test/build-gui-smoke.sh,
 # which documents the two properties it has to preserve:
@@ -28,9 +28,9 @@ kandelo_package_select_source_root "$REPO_ROOT"
 SOURCE_ROOT="$KANDELO_PACKAGE_SOURCE_ROOT"
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 
-SOURCE="$SOURCE_ROOT/programs/qtdemo/qtdemo.cpp"
+SOURCE="$SOURCE_ROOT/programs/qtgallery/qtgallery.cpp"
 if [ ! -f "$SOURCE" ] || [ -L "$SOURCE" ]; then
-    echo "ERROR: qtdemo source must be a regular file: $SOURCE" >&2
+    echo "ERROR: qtgallery source must be a regular file: $SOURCE" >&2
     exit 1
 fi
 
@@ -39,7 +39,7 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 
-QTBASE="${WASM_POSIX_DEP_QTBASE_DIR:?WASM_POSIX_DEP_QTBASE_DIR not set (must be invoked via cargo xtask build-deps resolve qtdemo)}"
+QTBASE="${WASM_POSIX_DEP_QTBASE_DIR:?WASM_POSIX_DEP_QTBASE_DIR not set (must be invoked via cargo xtask build-deps resolve qtgallery)}"
 FONTCONFIG="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 FREETYPE="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not set}"
 HARFBUZZ="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
@@ -62,8 +62,8 @@ for tool in wasm32posix-c++ wasm-objdump; do
     }
 done
 
-echo "==> Building qtdemo (QtGui raster client)..."
-RAW="$WORK_DIR/qtdemo.raw.wasm"
+echo "==> Building qtgallery (the Omarchy theme gallery)..."
+RAW="$WORK_DIR/qtgallery.raw.wasm"
 wasm32posix-c++ \
     -O2 -std=c++17 -fwasm-exceptions \
     -D__linux__=1 -DQT_LINUXBASE \
@@ -110,8 +110,8 @@ if [ -n "$UNDEFINED" ]; then
     printf '  %s\n' $UNDEFINED >&2
     exit 1
 fi
-mv "$RAW" "$WORK_DIR/qtdemo.wasm"
+mv "$RAW" "$WORK_DIR/qtgallery.wasm"
 
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary qtdemo "$WORK_DIR/qtdemo.wasm" "qtdemo.wasm"
+install_local_binary qtgallery "$WORK_DIR/qtgallery.wasm" "qtgallery.wasm"

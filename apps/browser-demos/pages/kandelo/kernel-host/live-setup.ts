@@ -95,8 +95,8 @@ import {
   OMARCHY_FONTS_CONF,
   OMARCHY_MAKO_CONFIG,
   OMARCHY_MAKO_CONFIG_PATH,
-  OMARCHY_QUICKSHELL_CONFIG,
-  OMARCHY_QUICKSHELL_CONFIG_PATH,
+  OMARCHY_QUICKSHELL_DIR,
+  OMARCHY_QUICKSHELL_SHELLS,
   OMARCHY_THEME_DIR,
   OMARCHY_THEME_HOOK,
   OMARCHY_THEMES,
@@ -277,10 +277,10 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/foot.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/qtdemo.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/qtgallery.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/qtdemo.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/qtgallery.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../local-binaries/programs/wasm32/quickshell.wasm", {
@@ -2243,14 +2243,14 @@ async function stageWaylandDesktopRuntime(
   if (!profile.omarchyDemo) return;
 
   const [barBytes, launcherBytes, daemonBytes, makoBytes,
-    notifySendBytes, footBytes, qtdemoBytes, quickshellBytes, fontBytes] = await Promise.all([
+    notifySendBytes, footBytes, qtgalleryBytes, quickshellBytes, fontBytes] = await Promise.all([
     fetchBinary("waybar.wasm", "waybar.wasm"),
     fetchBinary("wldesktop/klauncher.wasm", "klauncher.wasm"),
     fetchBinary("dbus/dbus-daemon.wasm", "dbus-daemon.wasm"),
     fetchBinary("mako/mako.wasm", "mako.wasm"),
     fetchBinary("wldesktop/notify-send.wasm", "notify-send.wasm"),
     fetchBinary("foot.wasm", "foot.wasm"),
-    fetchBinary("qtdemo.wasm", "qtdemo.wasm"),
+    fetchBinary("qtgallery.wasm", "qtgallery.wasm"),
     fetchBinary("quickshell.wasm", "quickshell.wasm"),
     fetch(inconsolataFontUrl).then(failOn("Inconsolata-Regular.ttf"))
       .then((r) => r.arrayBuffer()),
@@ -2269,10 +2269,11 @@ async function stageWaylandDesktopRuntime(
   writeVfsBinary(fs, "/usr/local/bin/notify-send", new Uint8Array(notifySendBytes), 0o755);
   writeVfsFile(fs, "/usr/local/bin/omarchy-theme-changed", OMARCHY_THEME_HOOK, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/foot", new Uint8Array(footBytes), 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/qtdemo", new Uint8Array(qtdemoBytes), 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/qtgallery", new Uint8Array(qtgalleryBytes), 0o755);
   writeVfsBinary(fs, "/usr/local/bin/quickshell", new Uint8Array(quickshellBytes), 0o755);
-  ensureDirRecursive(fs, dirname(OMARCHY_QUICKSHELL_CONFIG_PATH));
-  writeVfsFile(fs, OMARCHY_QUICKSHELL_CONFIG_PATH, OMARCHY_QUICKSHELL_CONFIG, 0o644);
+  ensureDirRecursive(fs, OMARCHY_QUICKSHELL_DIR);
+  for (const [file, qml] of Object.entries(OMARCHY_QUICKSHELL_SHELLS))
+    writeVfsFile(fs, `${OMARCHY_QUICKSHELL_DIR}/${file}`, qml, 0o644);
   ensureDirRecursive(fs, "/etc/dbus-1");
   writeVfsFile(fs, "/etc/dbus-1/session.conf", OMARCHY_DBUS_SESSION_CONF, 0o644);
   ensureDirRecursive(fs, dirname(OMARCHY_MAKO_CONFIG_PATH));

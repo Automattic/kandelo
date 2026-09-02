@@ -3,11 +3,12 @@
 
 kind = "program"
 
-# The first Qt client on the Kandelo desktop: a QRasterWindow drawing an
-# animated scene through QtGui's raster engine onto wl_shm. The source
-# stays in programs/ like the wldesktop clients, and the recipe reuses
-# the link line proven by packages/registry/qtbase/test/build-gui-smoke.sh.
-name = "qtdemo"
+# The Omarchy theme gallery: a QRasterWindow listing the installed themes
+# and staged Quickshell shells as clickable cards, applying them through
+# the compositor's kwlctl socket. The source stays in programs/ like the
+# wldesktop clients, and the recipe reuses the link line proven by
+# packages/registry/qtbase/test/build-gui-smoke.sh.
+name = "qtgallery"
 version = "0.1.0"
 kernel_abi = 44
 depends_on = [
@@ -36,8 +37,8 @@ spdx = "GPL-2.0-or-later"
 url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
 
 [build]
-script_path = "packages/registry/qtdemo/build-qtdemo.sh"
+script_path = "packages/registry/qtgallery/build-qtgallery.sh"
 
 [[outputs]]
-name = "qtdemo"
-wasm = "qtdemo.wasm"
+name = "qtgallery"
+wasm = "qtgallery.wasm"

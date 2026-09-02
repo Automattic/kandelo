@@ -201,8 +201,8 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/KLAUNCHER_READY n=10/);
 
   // "te" narrows the ten entries (Bash, Clock, Foot, Nano, NetHack, Paint,
-  // Qt Demo, Quickshell, Terminal, Vim) to Terminal alone — "t" alone still
-  // matches Paint.
+  // Quickshell, Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone
+  // still matches Paint.
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("KeyT");
@@ -278,41 +278,44 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/GLDRAW app_id=foot/);
 
-  // Gate 5d: a Qt application through the same path. "qt" narrows to Qt Demo;
-  // its entry runs qtdemo — QtGui's wayland QPA plugin connecting via
-  // XDG_RUNTIME_DIR, xdg-shell configure, the raster backing store through
-  // wl_shm, fontconfig resolving "sans-serif" through the staged fonts.conf —
-  // and the seventh tile only appears once Qt maps its first frame. The
-  // QTDEMO_FRAME marker proves the frame-callback loop keeps granting Qt new
-  // frames, not just the first paint.
+  // Gate 5d: a Qt application through the same path. "ga" narrows to Theme
+  // Gallery; its entry runs qtgallery — QtGui's wayland QPA plugin connecting
+  // via XDG_RUNTIME_DIR, xdg-shell configure, the raster backing store
+  // through wl_shm, fontconfig resolving "sans-serif" through the staged
+  // fonts.conf — and the seventh tile only appears once Qt maps its first
+  // frame. The gallery reads the same six themes the compositor scanned.
   const beforeQt = await launcherSessions(page);
   await pressCtrl(page, "Space");
   await expect
     .poll(() => launcherSessions(page), { timeout: 60_000 })
     .toBeGreaterThan(beforeQt);
-  await pressKeys(page, ["KeyQ", "KeyT", "Enter"]);
+  await pressKeys(page, ["KeyG", "KeyA", "Enter"]);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtdemo/);
+    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtgallery/);
   await expect
     .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/QTDEMO_PLATFORM=wayland/);
+    .toMatch(/GALLERY_PLATFORM=wayland/);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/GALLERY_THEMES n=6/);
   await expect
     .poll(() => syslogStream(page), { timeout: 120_000 })
     .toMatch(/TILE n=7 i=6 /);
-  await expect
-    .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/QTDEMO_FRAME n=30/);
-  expect(await syslogText(page), "qtdemo binary does not match the kernel ABI")
+  expect(await syslogText(page), "qtgallery binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
   // The invisible-window gate. Qt's stock backing store allocates memfd
   // pools; the GL renderer cannot import those, skips the surface, and
   // every gate above still passes — that is exactly how the invisible
-  // qtdemo shipped. Qt now carries the same gbm-pool patch as foot and
-  // GTK, and GLDRAW only fires once the window's texture was drawn.
+  // first Qt window shipped. Qt now carries the same gbm-pool patch as
+  // foot and GTK, and GLDRAW only fires once the window's texture was drawn.
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/GLDRAW app_id=qtdemo/);
+    .toMatch(/GLDRAW app_id=qtgallery/);
+  // The card→dispatch→theme-switch loop is proven authoritatively by the Node
+  // smoke (host/test/qtgallery-smoke.test.ts injects a real pointer click on a
+  // card and reads the compositor's THEME line back). This browser gate proves
+  // the browser-specific half: Qt maps and its texture reaches the GL renderer.
 
   // Gate 5e: a QtQuick application through the same path. "qu" narrows to
   // Quickshell; its entry runs quickshell with the staged shell.qml. The QML

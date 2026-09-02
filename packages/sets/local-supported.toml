@@ -423,7 +423,7 @@ name = "qtdeclarative"
 class = "platform"
 
 [[packages]]
-name = "qtdemo"
+name = "qtgallery"
 class = "user-software"
 
 [[packages]]

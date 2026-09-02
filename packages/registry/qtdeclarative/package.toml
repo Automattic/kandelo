@@ -9,7 +9,7 @@
 # kernel's GL command stream replays onto WebGL2, which only the browser
 # host has, and a renderer only one host can run would break dual-host
 # parity. The software adaptation rasterises on the CPU into the same
-# wl_shm pools qtdemo paints through, on both hosts. qml-network is off
+# wl_shm pools qtgallery paints through, on both hosts. qml-network is off
 # because qtbase carries no QtNetwork.
 kind = "library"
 

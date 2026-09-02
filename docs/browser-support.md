@@ -325,7 +325,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
-| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + qtdemo + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling, a QtGui client in the launcher. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
+| omarchy | wlcompositor (dwindle) + Waybar + mako + klauncher + qtgallery + themes | `kernel.boot` + spawn | The tiling desktop with its shell: unmodified Waybar on layer shell, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling, a QtGui client in the launcher. Boots to wallpaper + bar with no windows open — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first user process.
@@ -648,10 +648,14 @@ on the compositor's own process rather than on a foreground terminal.
   freetype/fontconfig/fcft rasterizing the staged Inconsolata through
   `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
-  The Qt Demo entry is the first Qt client: a `QRasterWindow` from the
-  `qtdemo` package, drawing an animated wave field, gradient-filled type and
-  a live clock through QtGui's raster engine and the wayland QPA plugin onto
-  `wl_shm` — antialiasing the wpkdraw clients don't have. It reads the same
+  The Theme Gallery entry is the first Qt client: a `QRasterWindow` from
+  the `qtgallery` package, painting one card per installed theme — each a
+  miniature desktop rendered from that theme's own `theme.conf` palette —
+  through QtGui's raster engine and the wayland QPA plugin onto `wl_shm`,
+  antialiased where the wpkdraw clients are not. Clicking a card (or
+  arrows + Enter) writes `dispatch theme <name>` to the compositor's
+  kwlctl socket, and the whole desktop restyles; a second card row swaps
+  the running Quickshell between the staged QML shells. It reads the same
   `/etc/fonts/fonts.conf`, which aliases `sans-serif` alongside `monospace`
   to the staged Inconsolata for it. `Esc` or `Q` closes it. The Quickshell
   entry is the first QtQuick client: **Quickshell 0.3.1** runs the staged
@@ -684,13 +688,48 @@ on the compositor's own process rather than on a foreground terminal.
   bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
   browser, which reserves `SUPER` (see the caveat above).
 
+#### Quickshell QML limits
+
+Two guest-side Qt defects and one host cost bound what the staged shells (and
+any QML a user swaps in through the Theme Gallery) can safely use. All were
+found by exercising the gallery's shell cards; their QML lives in
+`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`. The first
+two were isolated to the guest: a bo-lifecycle trace of the crash showed the
+compositor holding a constant four buffer objects (two 1920x1080 scanout, two
+double-buffered client), so the growth is inside the Quickshell process, not
+in the DRI/gbm/compositor path.
+
+- **A scene that repaints every frame exhausts guest memory.** Qt's QML
+  software renderer allocates without bound when the surface damages on every
+  frame callback (~60/s), and the kernel kills the process (exit 137 on
+  Node, tab crash in the browser) within seconds. Three things force the
+  every-frame repaint: a `PanelWindow` holding more than one item (for
+  example a `Rectangle` wrapping a `Text`); a `Qt.formatDateTime` string with
+  a localized name field (`dddd`, `ddd`, `MMMM`, `MMM`); and `font.bold`,
+  which takes Qt's synthesized-bold path because only a regular face
+  (Inconsolata) is staged. A single-item panel with numeric date fields
+  (`yyyy-MM-dd`, `hh:mm:ss`) at the regular weight repaints only when its
+  text changes and is stable on both hosts. The fix belongs in the Qt QML
+  software-render path, below this demo.
+
+- **Each Quickshell spawn is a full Qt compile, and repeated swaps
+  accumulate.** `quickshell.wasm` is ~93 MB and compiles to roughly 620 MB
+  of executable code. The gallery's shell cards kill the running Quickshell
+  and spawn a fresh one, so a first swap is reliable but a second or third —
+  before the previous module's code memory is reclaimed — pushes the tab over
+  its limit and it crashes. This is the same executable-code cost documented
+  for Firefox in the next section, reached on any browser through repeated
+  spawns rather than through one spawn on a full arena. Reusing a single
+  Quickshell instance and telling it to reload, instead of respawning, is the
+  fix; it needs a Quickshell IPC path this port does not yet carry.
+
 #### Firefox executable-code limit
 
 SpiderMonkey reserves one fixed 2 GiB region per content process for all
 JIT and wasm compiled code (`MaxCodeBytesPerProcess`), shared by every
 worker on the page. Compiled wasm code is several times the module's size:
 the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
-full desktop running — compositor, Waybar, qtdemo, foot, mako, dbus-daemon,
+full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
 klauncher — the region already holds ~1.2 GB of live code. Quickshell's
 launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
 thread-patched module as a second full copy, which cannot fit; the compile
