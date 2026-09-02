@@ -19,28 +19,15 @@ import type { ForkModuleExports } from "./fork-module-instance";
 export const FORK_MODULE_RESUME_CATALOG_CAP = 16_384;
 
 /**
- * Default host frame-arena size for a module-backed fork (Option A). The module
- * cannot grow it, so it is sized to comfortably hold a simple fork's saved
- * frames (thousands of small linked nodes) without ever exhausting; 4 MiB is a
- * page multiple (64 wasm pages).
+ * The guest offset + byte length of the serialized replay-event (KFRE) journal
+ * image the module channel-mmap'd (Option B). `finishUnwindAndSerialize`
+ * returns this; the coordinator records it in a `JournalImage` KFMS record so
+ * the forked child finds the inherited image.
  */
-export const FORK_MODULE_FRAME_ARENA_BYTES = 4 * 1024 * 1024;
-
-/**
- * Bytes carved off the TOP of the frame arena to hold the serialized replay
- * journal (KFRE image) that seeds the forked child. The frames grow from the
- * base upward within the remaining region, so they never reach it. The image
- * region is inside the frame arena precisely so the child inherits it verbatim
- * through the fork memory copy, at the same guest addresses, without needing an
- * ABI-reserved control word or an arena record kind. 512 KiB holds a very large
- * journal (tens of thousands of frame events); a simple fork's is tiny.
- */
-const FORK_MODULE_IMAGE_REGION_BYTES = 512 * 1024;
-
-/** Fixed self-describing header at the start of the image region. */
-const IMAGE_HEADER_BYTES = 16;
-const IMAGE_MAGIC = 0x4d524653; // "SFRM" little-endian
-const IMAGE_VERSION = 1;
+export interface ForkModuleJournalImage {
+  ptr: number;
+  len: number;
+}
 
 export interface ForkModuleBackendOptions {
   /** The co-resident module instance's guest-facing + lifecycle exports. */
@@ -57,17 +44,22 @@ export interface ForkModuleBackendOptions {
    * `__wpk_fork_resume_table` by construction. Must be `<= CAP`.
    */
   readonly catalogOrdinals: readonly number[];
-  /** Reserve a page-aligned guest region (production: channel `continuationMmap`). */
+  /**
+   * The guest syscall channel base (Option B). The module issues each frame
+   * chunk's `SYS_MMAP` through this channel, growing memory on demand — so the
+   * host no longer reserves or threads a per-fork frame arena. Must be
+   * page-aligned and nonzero.
+   */
+  readonly channelBase: number;
+  /**
+   * Reserve a small page-aligned guest region for PRE-FORK CATALOG SCRATCH only
+   * (production: channel `continuationMmap`). This is unrelated to frame
+   * allocation — Option B moved that into the module — and stays only to stage
+   * the resume-catalog ordinals `setup()`/`setActivationResumeCatalog` copy in.
+   */
   readonly reserveRegion: (size: number) => number;
   /** Release a region reserved by `reserveRegion` (production: `continuationMunmap`). */
   readonly releaseRegion: (addr: number, size: number) => void;
-  /**
-   * Bytes for the module's per-fork frame arena (Option A: the HOST owns it).
-   * The module cannot grow it, so it is sized GENEROUSLY: a qualifying simple
-   * fork must never exhaust it (the module's reserve returns ENOMEM without the
-   * JS abort-replay handshake). Must be a non-zero page multiple.
-   */
-  readonly frameArenaBytes: number;
   /**
    * The child process PID. Passed to the module's `fm_begin_reference_replay`
    * so its `drive_reconstruction` opens the host root generation
@@ -92,22 +84,14 @@ export class ForkModuleContinuationBackend {
   private readonly ptrWidth: 4 | 8;
   private readonly format: LinkedFrameFormatDescriptor;
   private readonly catalogOrdinals: readonly number[];
+  private readonly channelBase: number;
   private readonly reserveRegion: (size: number) => number;
   private readonly releaseRegion: (addr: number, size: number) => void;
-  private readonly frameArenaBytes: number;
   private readonly pid: number;
   private readonly label: string;
 
-  /** Activation 0's parent-owned frame arena (0 in a replay-only child). */
-  private frameArenaAddr = 0;
-  /**
-   * Phase 6 D7a.1a: a dlopen fork's SIDE activations each own their own
-   * host frame arena (Option A). Keyed by activation id (side ids only —
-   * activation 0 is `frameArenaAddr`). Only the parent reserves these; a
-   * replay-only child reads each side activation's inherited continuation
-   * anchor and never owns an arena.
-   */
-  private readonly sideArenaAddrs = new Map<number, number>();
+  /** Whether the parent module unwind is active (Option B: no host arena). */
+  private unwindActive = false;
   private moduleBuffer = 0;
   private didSetup = false;
 
@@ -117,19 +101,18 @@ export class ForkModuleContinuationBackend {
     this.ptrWidth = options.ptrWidth;
     this.format = options.format;
     this.catalogOrdinals = options.catalogOrdinals;
+    this.channelBase = options.channelBase;
     this.reserveRegion = options.reserveRegion;
     this.releaseRegion = options.releaseRegion;
-    this.frameArenaBytes = options.frameArenaBytes;
     this.pid = options.pid;
     this.label = options.label;
     if (
-      this.frameArenaBytes <= 0
-      || this.frameArenaBytes % WASM_PAGE_SIZE !== 0
-      || this.frameArenaBytes <= FORK_MODULE_IMAGE_REGION_BYTES
+      !Number.isSafeInteger(this.channelBase)
+      || this.channelBase <= 0
+      || this.channelBase % WASM_PAGE_SIZE !== 0
     ) {
       throw new RangeError(
-        `${this.label}: fork-module frame arena must be a page multiple larger `
-          + `than the ${FORK_MODULE_IMAGE_REGION_BYTES}-byte image region`,
+        `${this.label}: fork-module channel base must be a positive page multiple`,
       );
     }
     if (this.catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
@@ -243,70 +226,55 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Parent: reserve the host frame arena and begin the module unwind. Returns
-   * the module-buffer anchor (the continuation root) the coordinator writes into
-   * the module-state prefix and passes to the guest's `wpk_fork_unwind_begin`.
+   * Parent: begin the module unwind (Option B: the module owns its frame
+   * allocation, mmap'ing chunks through the channel; no host arena to reserve).
+   * Returns the module-buffer anchor (the continuation root) the coordinator
+   * writes into the module-state prefix and passes to `wpk_fork_unwind_begin`.
    */
   beginUnwind(): number {
     this.requireSetup("begin unwind");
-    if (this.frameArenaAddr !== 0) {
+    if (this.unwindActive) {
       throw new Error(`${this.label}: fork-module unwind already active`);
     }
-    const base = this.reserveRegion(this.frameArenaBytes);
-    if (!Number.isSafeInteger(base) || base <= 0 || base % WASM_PAGE_SIZE !== 0) {
-      throw new Error(`${this.label}: fork-module frame arena base is invalid`);
-    }
-    this.frameArenaAddr = base;
-    // Hand the module only the lower frame region; the top image region is
-    // reserved for the serialized journal the child reads.
     const moduleBuffer = this.toNum(
-      this.exports.fm_begin_unwind(
-        0,
-        this.wptr(base),
-        this.wptr(this.frameRegionBytes()),
-      ),
+      this.exports.fm_begin_unwind(0, this.wptr(this.channelBase)),
     );
     this.requireOk("fm_begin_unwind");
     if (!Number.isSafeInteger(moduleBuffer) || moduleBuffer <= 0) {
       throw new Error(`${this.label}: fm_begin_unwind returned invalid anchor`);
     }
+    this.unwindActive = true;
     this.moduleBuffer = moduleBuffer;
     return moduleBuffer;
   }
 
   /**
    * Parent: close the unwind and serialize the sealed journal as a KFRE image
-   * into the TOP (image) region of the frame arena, prefixed by a self-describing
-   * header. The forked child inherits this region verbatim through the fork
-   * memory copy — at the same guest addresses — and decodes it (`beginChildReplay`)
-   * without any arena record or ABI-reserved control word.
+   * into a FRESH chunk the module channel-mmaps itself (Option B). Returns the
+   * image chunk's guest offset and byte length; the coordinator records both in
+   * a `JournalImage` KFMS record so the forked child finds the inherited image
+   * (it no longer sits at a host-computed arena offset). The chunk is released
+   * with the frame chunks on `finishReplay`/`abort`.
    */
-  finishUnwindAndSerialize(): void {
+  finishUnwindAndSerialize(): ForkModuleJournalImage {
     this.exports.fm_finish_unwind();
     this.requireOk("fm_finish_unwind");
-    if (this.frameArenaAddr === 0) {
-      throw new Error(`${this.label}: no frame arena to serialize into`);
-    }
-    const imageRegionBase = this.frameArenaAddr + this.frameRegionBytes();
-    const imageDataPtr = imageRegionBase + IMAGE_HEADER_BYTES;
-    const imageCap = FORK_MODULE_IMAGE_REGION_BYTES - IMAGE_HEADER_BYTES;
-    const len = this.toNum(
-      this.exports.fm_serialize_journal(
-        this.wptr(imageDataPtr),
-        this.wptr(imageCap),
-      ),
+    const ptr = this.toNum(
+      this.exports.fm_serialize_journal_alloc(this.wptr(this.channelBase)),
     );
-    this.requireOk("fm_serialize_journal");
-    if (!Number.isSafeInteger(len) || len <= 0 || len > imageCap) {
+    this.requireOk("fm_serialize_journal_alloc");
+    const len = this.toNum(this.exports.fm_journal_image_len());
+    if (!Number.isSafeInteger(ptr) || ptr <= 0) {
       throw new Error(
-        `${this.label}: fm_serialize_journal produced ${len} bytes`,
+        `${this.label}: fm_serialize_journal_alloc returned invalid image ptr ${ptr}`,
       );
     }
-    const view = new DataView(this.memory.buffer);
-    view.setUint32(imageRegionBase, IMAGE_MAGIC, true);
-    view.setUint32(imageRegionBase + 4, IMAGE_VERSION, true);
-    view.setUint32(imageRegionBase + 8, len, true);
-    view.setUint32(imageRegionBase + 12, 0, true);
+    if (!Number.isSafeInteger(len) || len <= 0) {
+      throw new Error(
+        `${this.label}: fm_journal_image_len returned invalid length ${len}`,
+      );
+    }
+    return { ptr, len };
   }
 
   /** Parent: begin the rewind (attach the driver + register resume slots). */
@@ -316,43 +284,32 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Child: seed replay from the copied guest memory. `root` is the inherited
-   * continuation anchor (the parent's module buffer at the same guest offset).
-   * The frame arena base is `root - chunkHeaderSize`; the KFRE image sits in that
-   * arena's top image region, self-describing, inherited verbatim by the copy.
+   * Child: seed replay from the copied guest memory (Option B). `root` is the
+   * inherited continuation anchor (the parent's module buffer at the same guest
+   * offset); `imagePtr`/`imageLen` come from the inherited `JournalImage` KFMS
+   * record the parent wrote (the image was channel-mmap'd, so there is no
+   * host-computed arena offset to derive it from). Both are inherited verbatim
+   * by the fork memory copy.
    */
-  beginChildReplay(root: number): void {
+  beginChildReplay(root: number, imagePtr: number, imageLen: number): void {
     this.requireSetup("begin child replay");
-    const arenaBase = root - this.format.chunkHeaderSize;
-    if (!Number.isSafeInteger(arenaBase) || arenaBase <= 0
-      || arenaBase % WASM_PAGE_SIZE !== 0) {
-      throw new Error(
-        `${this.label}: inherited continuation root ${root} yields an invalid arena base`,
-      );
+    if (!Number.isSafeInteger(root) || root <= 0) {
+      throw new Error(`${this.label}: inherited continuation root ${root} is invalid`);
     }
-    const imageRegionBase = arenaBase + this.frameRegionBytes();
-    const view = new DataView(this.memory.buffer);
-    if (imageRegionBase + FORK_MODULE_IMAGE_REGION_BYTES > this.memory.buffer.byteLength) {
-      throw new Error(`${this.label}: inherited image region escapes guest memory`);
+    if (!Number.isSafeInteger(imagePtr) || imagePtr <= 0) {
+      throw new Error(`${this.label}: inherited journal image ptr ${imagePtr} is invalid`);
     }
-    const magic = view.getUint32(imageRegionBase, true);
-    const version = view.getUint32(imageRegionBase + 4, true);
-    const len = view.getUint32(imageRegionBase + 8, true);
-    if (magic !== IMAGE_MAGIC || version !== IMAGE_VERSION) {
-      throw new Error(
-        `${this.label}: inherited journal image header is invalid `
-          + `(magic=0x${magic.toString(16)} version=${version})`,
-      );
+    if (!Number.isSafeInteger(imageLen) || imageLen <= 0) {
+      throw new Error(`${this.label}: inherited journal image length ${imageLen} is invalid`);
     }
-    if (len <= 0 || len > FORK_MODULE_IMAGE_REGION_BYTES - IMAGE_HEADER_BYTES) {
-      throw new Error(`${this.label}: inherited journal image length ${len} is invalid`);
+    if (imagePtr + imageLen > this.memory.buffer.byteLength) {
+      throw new Error(`${this.label}: inherited journal image escapes guest memory`);
     }
-    const imageDataPtr = imageRegionBase + IMAGE_HEADER_BYTES;
     this.moduleBuffer = root;
     this.exports.fm_begin_child_replay(
       this.wptr(root),
-      this.wptr(imageDataPtr),
-      this.wptr(len),
+      this.wptr(imagePtr),
+      this.wptr(imageLen),
     );
     this.requireOk("fm_begin_child_replay");
   }
@@ -429,23 +386,12 @@ export class ForkModuleContinuationBackend {
     if (activationId === 0) {
       throw new Error(`${this.label}: activation 0 uses beginUnwind, not addActivationUnwind`);
     }
-    if (this.sideArenaAddrs.has(activationId)) {
-      throw new Error(`${this.label}: activation ${activationId} unwind already active`);
-    }
-    const base = this.reserveRegion(this.frameArenaBytes);
-    if (!Number.isSafeInteger(base) || base <= 0 || base % WASM_PAGE_SIZE !== 0) {
-      throw new Error(
-        `${this.label}: activation ${activationId} frame arena base is invalid`,
-      );
-    }
-    this.sideArenaAddrs.set(activationId, base);
-    // A side arena holds only frames — the KFRE journal image lives in
-    // activation 0's arena (serialized once). So the whole arena is frame region.
+    // Option B: this activation mmaps its own frame chunks through the shared
+    // channel; no host arena to reserve.
     const moduleBuffer = this.toNum(
       this.exports.fm_add_activation_unwind(
         this.wptr(activationId),
-        this.wptr(base),
-        this.wptr(this.frameArenaBytes),
+        this.wptr(this.channelBase),
         this.wptr(fixedPrefix),
       ),
     );
@@ -487,36 +433,27 @@ export class ForkModuleContinuationBackend {
     this.requireOk("fm_add_activation_child_replay");
   }
 
-  /** Bytes of the frame arena the module writes frames into (below the image). */
-  private frameRegionBytes(): number {
-    return this.frameArenaBytes - FORK_MODULE_IMAGE_REGION_BYTES;
-  }
-
-  /** Finish the rewind and release the parent-owned frame arena (if any). */
+  /**
+   * Finish the rewind. Option B: the MODULE owns the frame + image chunks it
+   * mmap'd and releases them itself inside `fm_finish_replay` (a replay-only
+   * child mapped nothing, so it releases nothing).
+   */
   finishReplay(): void {
     this.exports.fm_finish_replay();
     this.requireOk("fm_finish_replay");
-    this.releaseFrameArena();
+    this.unwindActive = false;
     this.moduleBuffer = 0;
   }
 
-  /** Release any parent-held frame arena without asserting module success. */
+  /**
+   * Release every channel-mapped frame/image chunk on the error/abort path
+   * (Option B: the module owns them, so `fm_abort` munmaps them). Best-effort —
+   * does not assert module success. A replay-only child mapped nothing.
+   */
   abort(): void {
-    this.releaseFrameArena();
+    this.exports.fm_abort();
+    this.unwindActive = false;
     this.moduleBuffer = 0;
-  }
-
-  private releaseFrameArena(): void {
-    // Release every side activation's arena (Phase 6 D7a.1a) before activation
-    // 0's, so a failing deallocator still clears the whole map.
-    for (const [activationId, base] of this.sideArenaAddrs) {
-      this.sideArenaAddrs.delete(activationId);
-      this.releaseRegion(base, this.frameArenaBytes);
-    }
-    const addr = this.frameArenaAddr;
-    if (addr === 0) return;
-    this.frameArenaAddr = 0;
-    this.releaseRegion(addr, this.frameArenaBytes);
   }
 
   private requireSetup(operation: string): void {

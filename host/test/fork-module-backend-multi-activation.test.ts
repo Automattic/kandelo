@@ -1,25 +1,55 @@
-// Phase 6 D7a.1a-host: the N-arena backend must drive a dlopen fork's main
-// activation (0) plus its side activations (1..N) through the co-resident
-// module — each with its OWN host frame arena and per-activation resume catalog
-// — and a fresh child must seed every activation's replay from copied memory.
-// This exercises the backend's arena/catalog bookkeeping against the STAGED
-// `fork_module32.wasm`, with the guest frame calls simulated by trampolines.
+// Phase 6 D7a.1a-host (Option B: minimize host surface): the backend must drive
+// a dlopen fork's main activation (0) plus its side activations (1..N) through
+// the co-resident module — now with the MODULE owning its frame allocation via
+// in-realm channel `SYS_MMAP` — and a fresh child must seed every activation's
+// replay from copied memory. Because the module BLOCKS in `memory_atomic_wait32`
+// on each chunk mmap, this test stands up a minimal SYS_MMAP/MUNMAP responder on
+// a worker thread that services the shared syscall channel (grows the shared
+// memory and returns the mapped offset), exactly as the real kernel worker does.
+// This proves, in a real engine: begin/reserve/serialize grow memory on demand
+// (no fixed 4 MiB arena), the parent re-derives its memory view after each grow,
+// the journal image is channel-mmap'd (its (ptr,len) threaded to the child), and
+// the mapped chunks are munmap'd on finish.
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { Worker } from "node:worker_threads";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import {
   type ForkModuleExports,
   instantiateForkModule,
 } from "../src/fork-module-instance";
-import {
-  FORK_MODULE_FRAME_ARENA_BYTES,
-  ForkModuleContinuationBackend,
-} from "../src/fork-module-backend";
+import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
 import { ForkModuleTrampolines } from "../src/fork-module-trampoline";
 import type { LinkedFrameFormatDescriptor } from "../src/fork-continuation";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+} from "../src/generated/abi";
 
 const PAGE = 65536;
 const MiB = 1024 * 1024;
+
+// The syscall channel the module issues its chunk mmaps through. Page-aligned,
+// disjoint from the module placement (bump allocator at 4 MiB) and the frame
+// region the responder hands out (from 48 MiB up).
+const CHANNEL_BASE = 2 * MiB;
+// The responder bump-allocates mmap'd frame/image chunks from here upward. The
+// memory is PRE-SIZED past this so the responder never calls `memory.grow()`: a
+// cross-thread `Atomics.notify` after a shared-memory grow does not reliably
+// wake a main-thread `memory.atomic.wait32`, so this unit test isolates the
+// channel handshake + module-owned allocation from the literal grow. The
+// grow-then-re-derive path itself is proven by the Rust
+// `re_derives_slice_after_each_grow` writer test and, end to end against a real
+// kernel that DOES grow, by the fork-*-e2e worker tests.
+const FRAME_REGION_BASE = 48 * MiB;
+const MEMORY_BYTES = 64 * MiB;
 
 function loadForkModule32(): WebAssembly.Module {
   return new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm")));
@@ -37,12 +67,74 @@ function bumpAllocator(start: number): { reserve: (n: number) => number } {
   };
 }
 
+/**
+ * A minimal syscall-channel responder on a worker thread: it watches the shared
+ * channel status, services SYS_MMAP by growing the shared memory and returning
+ * the old top as the mapped offset, acks SYS_MUNMAP, and pings the blocked
+ * module back — the exact handshake the real kernel worker performs, so the
+ * module's in-realm `memory_atomic_wait32` mmap can complete on the main thread.
+ */
+function startChannelResponder(
+  memory: WebAssembly.Memory,
+  channelBase: number,
+): Worker {
+  const code = `
+    const { workerData } = require("node:worker_threads");
+    const { memory, channelBase, PAGE, FRAME_BASE, STATUS, SYSCALL, ARGS,
+      ARG_SIZE, RETURN, ERRNO, PENDING, IDLE, MMAP, MUNMAP } = workerData;
+    const statusIdx = (channelBase + STATUS) / 4;
+    // The memory is pre-sized, so mmap bump-allocates from FRAME_BASE without
+    // ever growing — see the FRAME_REGION_BASE note in the test.
+    const i32 = new Int32Array(memory.buffer);
+    const dv = new DataView(memory.buffer);
+    let next = FRAME_BASE;
+    for (;;) {
+      // Block until the module publishes a request (status leaves IDLE).
+      Atomics.wait(i32, statusIdx, IDLE);
+      if (Atomics.load(i32, statusIdx) !== PENDING) continue;
+      const nr = dv.getUint32(channelBase + SYSCALL, true);
+      let ret = 0n;
+      let err = 0;
+      if (nr === MMAP) {
+        const size = Number(dv.getBigInt64(channelBase + ARGS + ARG_SIZE, true));
+        ret = BigInt(next);
+        next += Math.ceil(size / PAGE) * PAGE;
+      } else if (nr === MUNMAP) {
+        ret = 0n;
+      } else {
+        err = 22; // EINVAL for anything unexpected
+      }
+      dv.setBigInt64(channelBase + RETURN, ret, true);
+      dv.setUint32(channelBase + ERRNO, err, true);
+      Atomics.store(i32, statusIdx, IDLE);
+      Atomics.notify(i32, statusIdx, 1);
+    }
+  `;
+  return new Worker(code, {
+    eval: true,
+    workerData: {
+      memory,
+      channelBase,
+      PAGE,
+      FRAME_BASE: FRAME_REGION_BASE,
+      STATUS: CH_STATUS,
+      SYSCALL: CH_SYSCALL,
+      ARGS: CH_ARGS,
+      ARG_SIZE: CH_ARG_SIZE,
+      RETURN: CH_RETURN,
+      ERRNO: CH_ERRNO,
+      PENDING: CHANNEL_STATUS_PENDING,
+      IDLE: CHANNEL_STATUS_IDLE,
+      MMAP: ABI_SYSCALLS.Mmap,
+      MUNMAP: ABI_SYSCALLS.Munmap,
+    },
+  });
+}
+
 const format = (fixedPrefixSize: number): LinkedFrameFormatDescriptor =>
   ({
     ptrWidth: 4,
     fixedPrefixSize,
-    // chunkHeaderSize is used by beginChildReplay to derive the arena base from
-    // the inherited root; the module returns roots at arena base + this header.
     chunkHeaderSize: 32,
     alignment: 16,
   }) as unknown as LinkedFrameFormatDescriptor;
@@ -108,13 +200,25 @@ function driveReplay(
 }
 
 describe("ForkModuleContinuationBackend multi-activation", () => {
-  it("drives a two-activation parent unwind + fresh child replay through the module", () => {
+  let responder: Worker | undefined;
+  afterEach(async () => {
+    if (responder) {
+      await responder.terminate();
+      responder = undefined;
+    }
+  });
+
+  it("drives a two-activation parent unwind + fresh child replay through the module", async () => {
     // --- Parent -----------------------------------------------------------
     const parentMemory = new WebAssembly.Memory({
-      initial: Math.ceil((48 * MiB) / PAGE),
+      initial: Math.ceil(MEMORY_BYTES / PAGE),
       maximum: 16384,
       shared: true,
     });
+    // The module maps its own frame chunks through the channel; the worker
+    // responder services those mmaps out of the pre-sized frame region.
+    responder = startChannelResponder(parentMemory, CHANNEL_BASE);
+
     const alloc = bumpAllocator(4 * MiB);
     const fm = instantiateForkModule({
       module: loadForkModule32(),
@@ -132,9 +236,9 @@ describe("ForkModuleContinuationBackend multi-activation", () => {
       ptrWidth: 4,
       format: format(128),
       catalogOrdinals: CATALOG0,
+      channelBase: CHANNEL_BASE,
       reserveRegion: alloc.reserve,
       releaseRegion: () => {},
-      frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
       pid: 1,
       label: "backend-parent",
     });
@@ -148,7 +252,12 @@ describe("ForkModuleContinuationBackend multi-activation", () => {
 
     const parentTrampolines = new ForkModuleTrampolines(px);
     driveUnwind(parentTrampolines, parentMemory, perr);
-    backend.finishUnwindAndSerialize();
+    const image = backend.finishUnwindAndSerialize();
+    // The image was channel-mmap'd out of the frame region (>= 48 MiB), proving
+    // the module owns its allocation via the channel rather than a fixed host
+    // arena the coordinator carved.
+    expect(image.ptr).toBeGreaterThanOrEqual(FRAME_REGION_BASE);
+    expect(image.len).toBeGreaterThan(0);
     expect(Number(backend.framesCommitted())).toBe(COMMITS.length);
 
     backend.beginParentReplay();
@@ -161,9 +270,9 @@ describe("ForkModuleContinuationBackend multi-activation", () => {
       maximum: 16384,
       shared: true,
     });
-    // Simulate the fork address-space copy.
+    // Simulate the fork address-space copy (frame chunks + image included).
     new Uint8Array(childMemory.buffer).set(new Uint8Array(parentMemory.buffer));
-    const childAlloc = bumpAllocator(2 * MiB); // different module placement
+    const childAlloc = bumpAllocator(2.5 * MiB); // different module placement
     const childFm = instantiateForkModule({
       module: loadForkModule32(),
       memory: childMemory,
@@ -179,15 +288,20 @@ describe("ForkModuleContinuationBackend multi-activation", () => {
       ptrWidth: 4,
       format: format(128),
       catalogOrdinals: CATALOG0,
+      // Replay-only child mmaps nothing; a channel base is still required by the
+      // backend contract but is never used for allocation.
+      channelBase: CHANNEL_BASE,
       reserveRegion: childAlloc.reserve,
       releaseRegion: () => {},
-      frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
       pid: 2,
       label: "backend-child",
     });
     childBackend.setup();
     childBackend.setActivationResumeCatalog(1, CATALOG1);
-    childBackend.beginChildReplay(root0);
+    // The child inherits the image at the SAME offset via the memory copy, so it
+    // seeds from the parent's returned (ptr, len) — the JournalImage record's
+    // contents at the coordinator level.
+    childBackend.beginChildReplay(root0, image.ptr, image.len);
     childBackend.addActivationChildReplay(1, root1, PREFIX1);
 
     const childTrampolines = new ForkModuleTrampolines(cx);

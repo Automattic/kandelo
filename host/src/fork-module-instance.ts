@@ -56,7 +56,13 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // capture begun by `fm_begin_unwind`, with its own host frame arena + prefix.
   "fm_add_activation_unwind",
   "fm_finish_unwind",
-  "fm_serialize_journal",
+  // Option B (minimize host surface): serialize the sealed journal into a chunk
+  // the module channel-mmaps itself, returning its guest offset; the host reads
+  // `fm_journal_image_len` and records both in a `JournalImage` KFMS record.
+  "fm_serialize_journal_alloc",
+  "fm_journal_image_len",
+  // Release every channel-mapped frame/image chunk on the host abort path.
+  "fm_abort",
   "fm_begin_replay",
   "fm_begin_child_replay",
   // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay

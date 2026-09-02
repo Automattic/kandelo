@@ -95,7 +95,6 @@ import {
 } from "./fork-module-instance";
 import { ForkModuleTrampolines } from "./fork-module-trampoline";
 import {
-  FORK_MODULE_FRAME_ARENA_BYTES,
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
@@ -3625,12 +3624,17 @@ export async function centralizedWorkerMain(
             ptrWidth,
             format: linkedFrameFormat,
             catalogOrdinals,
+            // Option B: the module mmaps its own frame chunks through the guest
+            // syscall channel; the host reserves no per-fork frame arena. These
+            // reserve/release hooks remain ONLY for the small pre-fork catalog
+            // scratch (setup()/setActivationResumeCatalog).
+            channelBase: channelOffset,
             reserveRegion: (size) =>
               continuationMmap(
                 memory,
                 channelOffset,
                 size,
-                `pid=${pid}: fork-module arena`,
+                `pid=${pid}: fork-module catalog scratch`,
               ),
             releaseRegion: (addr, size) =>
               continuationMunmap(
@@ -3638,9 +3642,8 @@ export async function centralizedWorkerMain(
                 channelOffset,
                 addr,
                 size,
-                `pid=${pid}: fork-module arena`,
+                `pid=${pid}: fork-module catalog scratch`,
               ),
-            frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
             pid,
             label: `pid=${pid}: fork-module`,
           });
@@ -6109,12 +6112,16 @@ export async function centralizedThreadWorkerMain(
           ptrWidth,
           format: linkedFrameFormat,
           catalogOrdinals,
+          // Option B: the module mmaps its own frame chunks through the guest
+          // syscall channel; the host reserves no per-fork frame arena. These
+          // reserve/release hooks remain ONLY for the pre-fork catalog scratch.
+          channelBase: channelOffset,
           reserveRegion: (size) =>
             continuationMmap(
               memory,
               channelOffset,
               size,
-              `pid=${pid} tid=${tid}: fork-module arena`,
+              `pid=${pid} tid=${tid}: fork-module catalog scratch`,
             ),
           releaseRegion: (addr, size) =>
             continuationMunmap(
@@ -6122,9 +6129,8 @@ export async function centralizedThreadWorkerMain(
               channelOffset,
               addr,
               size,
-              `pid=${pid} tid=${tid}: fork-module arena`,
+              `pid=${pid} tid=${tid}: fork-module catalog scratch`,
             ),
-          frameArenaBytes: FORK_MODULE_FRAME_ARENA_BYTES,
           pid,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
