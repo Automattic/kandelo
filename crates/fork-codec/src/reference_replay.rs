@@ -402,33 +402,34 @@ impl ReferenceReplayDriver {
         })
     }
 
-    /// The single activation every Funcref recipe belongs to, if any:
+    /// The distinct set of activations any Funcref recipe in the graph names,
+    /// sorted ascending (empty for a null-only graph).
     ///
-    /// * `Ok(None)` — no Funcref recipes (a null-only graph); no catalog needed.
-    /// * `Ok(Some(activation))` — every Funcref names this one activation, so a
-    ///   single imported function catalog table resolves them all.
-    /// * `Err(EINVAL)` — Funcref recipes span MORE than one activation. D6.1
-    ///   imports exactly one catalog table (the primary activation's), so a
-    ///   multi-activation funcref fork is a deferred case, not a silent
-    ///   mis-resolution against the wrong catalog.
-    ///
-    /// The module requires this to hold before flipping the funcref import: with
-    /// one catalog table it can only reconstruct funcrefs from one activation.
-    pub fn sole_funcref_activation(&self) -> Result<Option<u32>, Errno> {
-        let mut activation: Option<u32> = None;
-        for entry in &self.transaction.nodes {
-            if let ReferenceRecipeNode::Funcref {
-                module_activation, ..
-            } = entry.node
-            {
-                match activation {
-                    None => activation = Some(module_activation),
-                    Some(existing) if existing == module_activation => {}
-                    Some(_) => return Err(Errno::EINVAL),
-                }
-            }
-        }
-        Ok(activation)
+    /// This RETIRES the single-activation `sole_funcref_activation` gate (Phase 6
+    /// D7a.1b). A funcref no longer has to belong to one activation: every funcref
+    /// resolves against a MERGED, activation-namespaced catalog (the host lays
+    /// each activation's function catalog at a distinct base in one imported
+    /// table), so funcrefs may span any number of activations. The module seeds a
+    /// per-activation catalog base for each activation in this set; a funcref
+    /// naming an activation with no seeded base is a truthful failure, never a
+    /// read against the wrong catalog. A funcref minted in module A but held by
+    /// module B's frame still resolves against A (its `module_activation`), not B
+    /// (the caller) — the namespaced catalog is keyed by the recipe's coordinate.
+    pub fn funcref_activations(&self) -> Vec<u32> {
+        let mut activations: Vec<u32> = self
+            .transaction
+            .nodes
+            .iter()
+            .filter_map(|entry| match entry.node {
+                ReferenceRecipeNode::Funcref {
+                    module_activation, ..
+                } => Some(module_activation),
+                _ => None,
+            })
+            .collect();
+        activations.sort_unstable();
+        activations.dedup();
+        activations
     }
 }
 
@@ -537,6 +538,92 @@ mod tests {
         let driver = funcref_only();
         assert_eq!(driver.node_count(), 3);
         assert_eq!(driver.transaction().nodes.len(), 3);
+    }
+
+    // --- D7a.1b: multi-activation funcref graphs (merged catalog) -----------
+
+    /// A graph whose funcrefs span TWO activations (5 and 2), plus a null. This
+    /// is the case the retired `sole_funcref_activation` gate rejected; D7a.1b
+    /// admits it and resolves each funcref against its OWN activation's catalog
+    /// via the merged, activation-namespaced catalog.
+    fn cross_activation_funcref() -> ReferenceReplayDriver {
+        ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::Null),
+            entry(
+                1,
+                ReferenceRecipeNode::Funcref {
+                    module_activation: 5,
+                    function_ordinal: 1,
+                },
+            ),
+            entry(
+                2,
+                ReferenceRecipeNode::Funcref {
+                    module_activation: 2,
+                    function_ordinal: 4,
+                },
+            ),
+            entry(
+                3,
+                ReferenceRecipeNode::Funcref {
+                    module_activation: 5,
+                    function_ordinal: 9,
+                },
+            ),
+        ]))
+    }
+
+    #[test]
+    fn funcref_activations_lists_distinct_sorted_activations() {
+        // Both activations appear once, sorted ascending — the set the module
+        // seeds a per-activation catalog base for.
+        assert_eq!(cross_activation_funcref().funcref_activations(), vec![2, 5]);
+    }
+
+    #[test]
+    fn cross_activation_funcrefs_resolve_against_their_own_activation() {
+        // A funcref minted in activation 5 stays activation 5 even in a graph
+        // that also holds an activation-2 funcref: `funcref_node` resolves each
+        // against its OWN `(module_activation, function_ordinal)`, never the
+        // caller's. The merged catalog namespaces by exactly this coordinate.
+        let driver = cross_activation_funcref();
+        assert_eq!(
+            driver.funcref_node(1),
+            Ok(Some(FuncrefTarget {
+                module_activation: 5,
+                function_ordinal: 1,
+            }))
+        );
+        assert_eq!(
+            driver.funcref_node(2),
+            Ok(Some(FuncrefTarget {
+                module_activation: 2,
+                function_ordinal: 4,
+            }))
+        );
+        assert_eq!(
+            driver.funcref_node(3),
+            Ok(Some(FuncrefTarget {
+                module_activation: 5,
+                function_ordinal: 9,
+            }))
+        );
+    }
+
+    #[test]
+    fn funcref_activations_empty_for_null_only_graph() {
+        let driver = ReferenceReplayDriver::new(transaction(vec![entry(
+            0,
+            ReferenceRecipeNode::Null,
+        )]));
+        assert!(driver.funcref_activations().is_empty());
+    }
+
+    #[test]
+    fn funcref_activations_single_for_one_activation_graph() {
+        // The single-activation graph reports exactly its one activation, so the
+        // module's byte-identical base-empty path (base 0) still applies.
+        assert_eq!(funcref_only().funcref_activations(), vec![0]);
     }
 
     // --- D6.2: externref reconstruction drive through the host seam --------

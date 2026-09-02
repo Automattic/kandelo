@@ -387,6 +387,82 @@ mod wasm {
         }
     }
 
+    // -- Per-activation function-catalog bases (Phase 6 D7a.1b — ADDITIVE) ---
+    //
+    // D6.1 imported ONE funcref catalog table and required every funcref to name
+    // a single activation (`sole_funcref_activation`). D7a.1b lifts that: the host
+    // lays every activation's function catalog into ONE merged imported table,
+    // each activation at a distinct BASE, and seeds the module the
+    // `activation_id -> base` map once per worker via
+    // `fm_set_activation_catalog_base`. `funcref_ordinal_impl` then returns the
+    // GLOBAL slot `base(module_activation) + function_ordinal`, so a funcref
+    // minted in activation A but held by activation B's frame resolves against
+    // A's catalog slice — the coordinate the RECIPE names, never the caller. A
+    // dynamic wasm table cannot be selected per funcref, so the single merged
+    // table with per-activation bases is the mechanism.
+    //
+    // Like the resume catalogs, the map lives in a fixed BSS region so it
+    // survives the per-fork bump-heap reset. The map stays EMPTY for a
+    // single-activation worker (the host seeds no base), and `funcref_ordinal_
+    // impl` then defaults `base = 0` — byte-identical to the D6.1 raw-ordinal
+    // mapping. Too many distinct activations is a truthful `E2BIG`; a re-seeded
+    // activation is a truthful `EINVAL`.
+    const FUNC_CATALOG_BASE_MAX_ACTS: usize = 64;
+
+    #[repr(C, align(4))]
+    struct ActFuncCatalogBase(UnsafeCell<[[u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActFuncCatalogBase {}
+    /// Each live entry is `[activation_id, base]`; only the first
+    /// `ACT_FUNC_CATALOG_BASE_COUNT` entries are live.
+    static ACT_FUNC_CATALOG_BASE: ActFuncCatalogBase =
+        ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
+    static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_activation_catalog_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        if count >= FUNC_CATALOG_BASE_MAX_ACTS {
+            return Err(Errno::E2BIG); // too many distinct activations
+        }
+        // Reject a re-seeded activation (each is seeded once per worker), matching
+        // the once-per-worker `fm_set_activation_resume_catalog` contract.
+        // SAFETY: single-threaded; the map is a static buffer read here only.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id {
+                return Err(Errno::EINVAL);
+            }
+        }
+        // Publish the entry, then bump the count.
+        // SAFETY: single-threaded; `count < MAX_ACTS` by the check above.
+        let map = unsafe { &mut *ACT_FUNC_CATALOG_BASE.0.get() };
+        map[count] = [activation_id, base];
+        ACT_FUNC_CATALOG_BASE_COUNT.store((count + 1) as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The seeded merged-catalog base for `activation_id`, or `None` if the host
+    /// seeded no base for it.
+    fn func_catalog_base(activation_id: u32) -> Option<u32> {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives every borrow.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id {
+                return Some(entry[1]);
+            }
+        }
+        None
+    }
+
+    /// True when the host seeded NO catalog base — the single-activation worker
+    /// path, where `funcref_ordinal_impl` defaults `base = 0` (byte-identical to
+    /// D6.1). Distinguishes that path from a corrupt multi-activation graph whose
+    /// funcref names an un-seeded activation.
+    fn func_catalog_base_map_empty() -> bool {
+        ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) == 0
+    }
+
     // Monotonic count of frames the module has committed since worker start.
     // Proof-of-use for the host: after a flag-on fork drives the continuation
     // through this module, the counter has advanced past its pre-fork value. A
@@ -1238,8 +1314,21 @@ mod wasm {
         if !driver.all_nodes_gc_exnref_externref_funcref_or_null() {
             return Err(Errno::EOPNOTSUPP);
         }
-        // One imported catalog table => funcrefs must share one activation.
-        driver.sole_funcref_activation().map_err(|_| Errno::EOPNOTSUPP)?;
+        // Phase 6 D7a.1b: funcrefs may now span MULTIPLE activations — each
+        // resolves against the MERGED, activation-namespaced catalog. Every
+        // funcref's activation must therefore have a seeded catalog base, UNLESS
+        // the host seeded NO base at all (a single-activation worker, which keeps
+        // the byte-identical base-0 mapping). A funcref naming an un-seeded
+        // activation in a multi-activation worker is a truthful `EOPNOTSUPP` (the
+        // host keeps that fork on the JS reference path), never a silent read
+        // against slot 0 / the wrong activation's catalog.
+        if !func_catalog_base_map_empty() {
+            for activation_id in driver.funcref_activations() {
+                if func_catalog_base(activation_id).is_none() {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+            }
+        }
 
         // Drive the once-per-value host reconstruction: obtain each externref's
         // durable host identity through the `wpk_fork_host` seam (PHASE A) and
@@ -1280,15 +1369,34 @@ mod wasm {
                 REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
                 NULL_ORDINAL
             }
-            Ok(Some(target)) => match i32::try_from(target.function_ordinal) {
-                Ok(ordinal) if ordinal >= 0 => {
-                    REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
-                    ordinal
+            Ok(Some(target)) => {
+                // Merged-catalog GLOBAL slot: `base(module_activation) +
+                // function_ordinal`. The base map is EMPTY for a single-activation
+                // worker, so `base` defaults to 0 and the mapping is the
+                // byte-identical D6.1 raw ordinal. A NON-empty map missing this
+                // funcref's activation is corruption — the host gate seeds a base
+                // for every funcref activation before replay — so it TRAPS rather
+                // than read slot 0 / the wrong activation's catalog.
+                let base = match func_catalog_base(target.module_activation) {
+                    Some(base) => base,
+                    None if func_catalog_base_map_empty() => 0,
+                    None => wasm_intr::unreachable(),
+                };
+                let slot = match base.checked_add(target.function_ordinal) {
+                    Some(slot) => slot,
+                    None => wasm_intr::unreachable(),
+                };
+                match i32::try_from(slot) {
+                    Ok(ordinal) if ordinal >= 0 => {
+                        REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                        ordinal
+                    }
+                    // A global slot that does not fit a non-negative i32 cannot
+                    // index the imported funcref table — a corrupt graph, not a
+                    // value.
+                    _ => wasm_intr::unreachable(),
                 }
-                // A catalog ordinal that does not fit a non-negative i32 cannot
-                // index the imported funcref table — a corrupt graph, not a value.
-                _ => wasm_intr::unreachable(),
-            },
+            }
             // Out-of-range recipe or a kind D6.1 does not admit: the host gate
             // should have kept this fork on JS, so reaching here is corruption.
             Err(_) => wasm_intr::unreachable(),
@@ -1679,6 +1787,27 @@ mod wasm {
         count: usize,
     ) {
         match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Seed ONE activation's function-catalog BASE for this worker (Phase 6
+    /// D7a.1b — the merged-catalog mechanism): the host lays every activation's
+    /// funcref catalog into ONE merged `__wpk_fork_function_catalog` table, with
+    /// `activation_id`'s catalog occupying slots `[base, base + len)`.
+    /// `fm_funcref_ordinal` then returns the GLOBAL slot
+    /// `base(module_activation) + function_ordinal` for the injected funcref shim
+    /// to `table.get`, so a funcref minted in one activation but held by another's
+    /// frame resolves against its OWN activation's slice. Called ONCE per
+    /// activation per worker (like `fm_set_activation_resume_catalog`), before any
+    /// fork drives reference reconstruction. A SINGLE-activation worker seeds no
+    /// base at all; `fm_funcref_ordinal` then defaults `base = 0`, byte-identical
+    /// to the D6.1 raw-ordinal mapping. Too many activations fail with `E2BIG`; a
+    /// re-seeded activation fails with `EINVAL` (check `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_catalog_base(activation_id: u32, base: u32) {
+        match set_activation_catalog_base_impl(activation_id, base) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
