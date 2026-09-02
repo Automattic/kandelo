@@ -45,8 +45,8 @@ node_modules/
 /libc/musl/arch/wasm32posix/
 /libc/musl/arch/wasm64posix/
 
-# Wasm binaries are build artifacts. The kernel/userspace wasms live
-# under binaries/ (fetched) or local-binaries/ (locally built); test
+# Wasm binaries are build artifacts. The kernel wasm lives under
+# binaries/ (fetched) or local-binaries/ (locally built); test
 # fixtures under host/test/fixtures/ are produced by the vitest
 # global-setup from .wat sources. Nothing tracked under git.
 *.wasm
