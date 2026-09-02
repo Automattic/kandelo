@@ -55,14 +55,32 @@ const STABLE_BUILD_SOURCE_ROOT = '/usr/src/kandelo-build';
 // wrapper every C/C++ compile flows through, covers each package (and each
 // dependency it links) without per-recipe REPRO_FLAGS. Keyed by package name
 // for a stable, collision-free destination when one binary links several deps.
+//
+// Two maps, from least to most specific (a later -ffile-prefix-map wins for an
+// overlapping path, matching the SDK-map ordering comment above):
+//   1. the source-only cache root — dependency *install* dirs live under it as
+//      `<root>/source-only-v1/compiled/programs/<dep>-<key>/…`, and a `-I` to a
+//      dep's headers embeds that absolute path (e.g. sqlite3 embeds ncurses's
+//      include dir). The `<dep>-<key>` tail is deterministic; only the root
+//      varies, so mapping the root is enough — and it must NOT win over the
+//      work-dir map, whose path sits under the same root but carries the PID.
+//   2. this package's work dir — see above; keyed by name and mapped last so it
+//      takes precedence and strips the PID-suffixed component.
 function recipeWorkPrefixMapFlags(): string[] {
+  const flags: string[] = [];
+  const cacheRoot = process.env.WASM_POSIX_SOURCE_ONLY_CACHE_ROOT;
+  if (cacheRoot && isAbsolute(cacheRoot)) {
+    flags.push(...sourcePrefixMapFlags(cacheRoot, `${STABLE_BUILD_SOURCE_ROOT}-deps`));
+  }
   const workDir = process.env.WASM_POSIX_DEP_WORK_DIR;
-  if (!workDir || !isAbsolute(workDir)) return [];
-  const name = process.env.WASM_POSIX_DEP_NAME;
-  const destination = name && /^[A-Za-z0-9._+-]+$/.test(name)
-    ? `${STABLE_BUILD_SOURCE_ROOT}/${name}`
-    : STABLE_BUILD_SOURCE_ROOT;
-  return sourcePrefixMapFlags(workDir, destination);
+  if (workDir && isAbsolute(workDir)) {
+    const name = process.env.WASM_POSIX_DEP_NAME;
+    const destination = name && /^[A-Za-z0-9._+-]+$/.test(name)
+      ? `${STABLE_BUILD_SOURCE_ROOT}/${name}`
+      : STABLE_BUILD_SOURCE_ROOT;
+    flags.push(...sourcePrefixMapFlags(workDir, destination));
+  }
+  return flags;
 }
 
 export function decodeLlvmResponseFile(bytes: Uint8Array): string {
