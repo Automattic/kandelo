@@ -13535,6 +13535,16 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
+                // Some packages declare a non-wasm `[[outputs]] wasm = "..."`
+                // artifact (e.g. a `.zip` docs bundle, a `.vfs.zst` image, or
+                // a `.lite` data file) -- the `wasm` field names the primary
+                // build artifact, not necessarily a wasm module. Only a real
+                // wasm module has anywhere to carry a `kandelo.build.key`
+                // custom section, so leave a non-wasm output's bytes
+                // untouched rather than feeding them to `wasmparser`.
+                if !is_wasm_bytes(&bytes) {
+                    continue;
+                }
                 let stamped = crate::build_stamp::stamp_build_key(&bytes, &stamp_key).map_err(|error| {
                     format!(
                         "{}: stamp built wasm output {}: {error}",
@@ -35587,6 +35597,107 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             .unwrap()
             .expect("mirror must still carry its stamp after a cache-hit resolve");
         assert_eq!(stamp_after_hit, expected);
+    }
+
+    /// Regression: some real packages (`lsof-docs`, `kandelo-sdk`,
+    /// `file`, `nethack-browser-bundle`) declare a NON-wasm
+    /// `[[outputs]] wasm = "..."` artifact -- a `.zip`, `.vfs.zst`, or
+    /// `.lite` file, not an actual wasm module. The Stage 1 stamp loop in
+    /// `build_into_cache` unconditionally fed every declared output's
+    /// bytes to `wasmparser` via `stamp_build_key`, so building any of
+    /// those packages aborted cold (`prepare-browser`, etc.) with a wasm
+    /// parse error. A non-wasm output has nowhere to carry a
+    /// `kandelo.build.key` custom section and must be left byte-for-byte
+    /// unchanged; a real `.wasm` sibling output in the same package must
+    /// still be stamped.
+    #[test]
+    fn non_wasm_program_output_is_left_unstamped_while_wasm_sibling_is_stamped() {
+        let repo = tempdir("stamp-mixed-outputs-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let docs_bytes = b"PK\x03\x04 not a wasm module, just a docs archive";
+        write_program(
+            &repo,
+            "mixedout",
+            "1.0.0",
+            &[],
+            &format!(
+                "{}\n{}",
+                emit_wasm_build_script("mixedout.wasm", &minimal_executable_wasm()),
+                emit_wasm_build_script("mixedout-docs.zip", docs_bytes),
+            ),
+            &[
+                ("mixedout", "mixedout.wasm"),
+                ("mixedout-docs", "mixedout-docs.zip"),
+            ],
+        );
+        write_source_only_repository_inputs(&repo, "mixedout");
+        let manifest_path = repo.join("mixedout/package.toml");
+        fs::write(
+            &manifest_path,
+            fs::read_to_string(&manifest_path)
+                .unwrap()
+                .replace(
+                    "wasm = \"mixedout.wasm\"",
+                    "wasm = \"mixedout.wasm\"\nfork_instrumentation = \"disabled\"",
+                )
+                // Real non-wasm-output packages (`lsof-docs`,
+                // `nethack-browser-bundle`) declare
+                // `fork_instrumentation = "disabled"` on their zip
+                // output too; match that here so this fixture doesn't
+                // need the full fork-instrument toolchain inputs.
+                .replace(
+                    "wasm = \"mixedout-docs.zip\"",
+                    "wasm = \"mixedout-docs.zip\"\nfork_instrumentation = \"disabled\"",
+                ),
+        )
+        .unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("mixedout").unwrap();
+        let (base, compiled) = source_only_test_roots("stamp-mixed-outputs-cache");
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("stamp-mixed-outputs-output");
+
+        // RED (pre-fix): this call errors out of `build_into_cache` with
+        // "parse wasm for build key" because the stamp loop tries to run
+        // `wasmparser` over the `.zip` bytes above before this guard
+        // exists.
+        let node = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false)
+            .unwrap();
+        let receipt = node
+            .package_receipt
+            .expect("a materialized program node publishes a receipt");
+
+        // The non-wasm sibling output must be byte-for-byte identical to
+        // what the build script emitted -- untouched by the stamp loop.
+        let docs_mirror = output.join("programs/wasm32/mixedout/mixedout-docs.zip");
+        let docs_mirror_bytes = fs::read(&docs_mirror).unwrap();
+        assert_eq!(
+            docs_mirror_bytes, docs_bytes,
+            "non-wasm output must be left byte-for-byte unchanged (a stamp attempt would \
+             either error on non-wasm bytes or append a trailing custom section, so exact \
+             byte equality is proof the stamp loop skipped this member)"
+        );
+        let docs_canonical = node
+            .canonical
+            .as_ref()
+            .expect("a materialized program node has a canonical cache entry")
+            .join("mixedout-docs.zip");
+        assert_eq!(
+            fs::read(&docs_canonical).unwrap(),
+            docs_bytes,
+            "canonical non-wasm output must be left byte-for-byte unchanged"
+        );
+
+        // The real wasm sibling output in the same package must still be
+        // stamped with the package's own cache key.
+        let wasm_mirror = output.join("programs/wasm32/mixedout/mixedout.wasm");
+        let wasm_mirror_bytes = fs::read(&wasm_mirror).unwrap();
+        let stamp = crate::build_stamp::read_build_key(&wasm_mirror_bytes)
+            .unwrap()
+            .expect("wasm sibling output must carry a kandelo.build.key stamp");
+        let expected = hex_to_32(&receipt.cache_key_sha256).unwrap();
+        assert_eq!(stamp, expected, "wasm sibling must be stamped with its own cache key");
     }
 
     /// Task 7 belt-and-suspenders check: the trusted (no-rehash) cache-hit
