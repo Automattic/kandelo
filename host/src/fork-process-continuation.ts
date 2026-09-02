@@ -13,7 +13,9 @@ import {
 } from "./fork-continuation";
 import {
   activationContinuationsForChild,
+  decodeForkActivationContinuations,
   type ForkModuleStateArena,
+  ForkModuleStateRecordKind,
   replayEventsForChild,
   writeForkModuleStateRoot,
 } from "./fork-module-state";
@@ -140,6 +142,10 @@ export class ForkProcessContinuationCoordinator {
   // and the module-backed branches below drive them. Null on the JavaScript
   // default path, so every other fork is byte-identical to today.
   private moduleBackend: ForkModuleContinuationBackend | null = null;
+  // Phase 6 D7a.1a: evict a per-activation frame trampoline when its activation
+  // is unregistered/cleared. Set alongside `moduleBackend` for a dlopen fork;
+  // null on the JS path and for single-activation module forks.
+  private evictModuleActivation: ((activationId: number) => void) | null = null;
   // Phase 6 D6.1: when true (only via `enableModuleReferenceReplay`, only for a
   // qualifying FUNCREF-ONLY child fork whose guest `__wpk_fork_ref_decode_funcref`
   // import was flipped to the module), the child seeds the module's reference
@@ -165,12 +171,16 @@ export class ForkProcessContinuationCoordinator {
    * the guest's `__wpk_fork_resume_table` funcref import (the module's
    * `resume_peek` returns slots into it, numbered identically by construction).
    */
-  enableModuleBacking(backend: ForkModuleContinuationBackend): void {
+  enableModuleBacking(
+    backend: ForkModuleContinuationBackend,
+    evictModuleActivation?: (activationId: number) => void,
+  ): void {
     this.requireIdle("enable fork-module backing");
     if (this.moduleBackend) {
       throw new Error(`${this.label}: fork-module backing already enabled`);
     }
     this.moduleBackend = backend;
+    this.evictModuleActivation = evictModuleActivation ?? null;
   }
 
   /** Whether the module-backed path is active (proof/diagnostics). */
@@ -193,16 +203,6 @@ export class ForkProcessContinuationCoordinator {
       );
     }
     this.moduleReferenceReplay = true;
-  }
-
-  private requireSingleModuleActivation(operation: string): CompleteForkProcessActivation {
-    if (this.activations.size !== 1) {
-      throw new Error(
-        `${this.label}: fork-module ${operation} requires exactly one activation, `
-          + `found ${this.activations.size}`,
-      );
-    }
-    return this.getActivation(0);
   }
 
   /**
@@ -278,6 +278,7 @@ export class ForkProcessContinuationCoordinator {
     this.resumeTable.unregisterActivation(activationId);
     this.registry.unregisterActivation(activationId);
     this.activations.delete(activationId);
+    this.evictModuleActivation?.(activationId);
   }
 
   discardPreparedActivation(activationId: number): void {
@@ -859,29 +860,41 @@ export class ForkProcessContinuationCoordinator {
 
   private beginModuleCapture(arena: ForkModuleStateArena): void {
     const backend = this.moduleBackend!;
-    const activation = this.requireSingleModuleActivation("capture");
     this.arena = arena;
     this.replayOwnership = "owned";
     try {
       this.publishProcessLaunchRoot(0);
       this.registry.beginCapture(arena);
       this.phase = "capture";
-      const root = backend.beginUnwind();
-      activation.root = root;
-      activation.replayRoot = root;
-      writeForkModuleStateRoot(
-        this.memory,
-        root,
-        activation.continuation.format.ptrWidth,
-        arena.rootAddress(),
-      );
-      invokeForkContinuationBegin(
-        requireExportFunction(activation, "wpk_fork_unwind_begin"),
-        root,
-        activation.continuation.format.ptrWidth,
-        `${this.label}: activation ${activation.activationId} unwind (module)`,
-      );
-      this.requireActivationState(activation, WPK_FORK_UNWINDING, "unwind");
+      // Phase 6 D7a.1a: a dlopen fork has N activations. Activation 0 opens the
+      // module capture (`beginUnwind`); each side activation is added to the SAME
+      // capture with its own host frame arena + prefix (`addActivationUnwind`).
+      // Every activation's root is written into ITS module-state prefix and its
+      // guest instance is put into UNWINDING, exactly mirroring the JS path.
+      for (const activation of this.orderedActivations()) {
+        const root =
+          activation.activationId === 0
+            ? backend.beginUnwind()
+            : backend.addActivationUnwind(
+                activation.activationId,
+                activation.continuation.format.fixedPrefixSize,
+              );
+        activation.root = root;
+        activation.replayRoot = root;
+        writeForkModuleStateRoot(
+          this.memory,
+          root,
+          activation.continuation.format.ptrWidth,
+          arena.rootAddress(),
+        );
+        invokeForkContinuationBegin(
+          requireExportFunction(activation, "wpk_fork_unwind_begin"),
+          root,
+          activation.continuation.format.ptrWidth,
+          `${this.label}: activation ${activation.activationId} unwind (module)`,
+        );
+        this.requireActivationState(activation, WPK_FORK_UNWINDING, "unwind");
+      }
     } catch (error) {
       this.cancelCapture();
       throw error;
@@ -891,17 +904,37 @@ export class ForkProcessContinuationCoordinator {
   private sealModuleCapture(): void {
     const backend = this.moduleBackend!;
     try {
-      const activation = this.requireSingleModuleActivation("seal");
-      requireExportFunction(activation, "wpk_fork_unwind_end")();
-      this.requireActivationState(activation, WPK_FORK_NORMAL, "end unwind");
-      // The module serializes its own journal into the frame arena's image
-      // region (inherited verbatim by the child copy). No JS-wire replay-event
-      // or activation-continuation records are written: the arena would validate
-      // those as JS wire, and the child gets its single continuation root from
-      // the launch anchor, not from a continuation manifest.
+      for (const activation of this.orderedActivations()) {
+        requireExportFunction(activation, "wpk_fork_unwind_end")();
+        this.requireActivationState(activation, WPK_FORK_NORMAL, "end unwind");
+      }
+      // The module serializes its own journal (every activation's events, tagged)
+      // into activation 0's frame-arena image region, inherited verbatim by the
+      // child copy. No JS-wire REPLAY-EVENT records are written — the module owns
+      // the journal, so `this.events` is idle and there is no double-journal.
       backend.finishUnwindAndSerialize();
+      // Phase 6 D7a.1a: a multi-activation (dlopen) fork DOES write the
+      // activation-continuation manifest so the child can recover EACH side
+      // activation's inherited continuation anchor (activation 0's comes from the
+      // launch anchor, but sides have no other authority). The child decodes this
+      // record directly (`activationRootsFromChildArena`) — NOT through
+      // `activationContinuationsForChild`, which cross-checks the JS replay-event
+      // wire the module path deliberately omits. The KFLA dlopen archive stays
+      // the activation-order authority (the child's archived-vs-planner order
+      // assertion), and the module's own `fm_add_activation_child_replay` rebuilds
+      // and re-validates each activation's journal slice. A single-activation
+      // fork writes no manifest (the child reads the launch anchor), so it stays
+      // byte-identical.
+      const activations = this.orderedActivations();
+      if (activations.length > 1) {
+        const continuations = activations.map(({ activationId, root }) => ({
+          activationId,
+          root: BigInt(root),
+        }));
+        this.registry.currentArena().appendActivationContinuations(continuations);
+      }
       this.registry.sealCapture();
-      this.publishProcessLaunchRoot(activation.root);
+      this.publishProcessLaunchRoot(this.getActivation(0).root);
       this.phase = "sealed-parent";
     } catch (error) {
       this.abort();
@@ -915,15 +948,18 @@ export class ForkProcessContinuationCoordinator {
     this.phase = "parent-replay";
     try {
       this.registry.restoreModuleState();
-      const activation = this.requireSingleModuleActivation("parent replay");
+      // One `beginParentReplay` registers every activation's driver + resume
+      // slots; then each activation's guest instance begins its rewind.
       backend.beginParentReplay();
-      invokeForkContinuationBegin(
-        requireExportFunction(activation, "wpk_fork_rewind_begin"),
-        activation.replayRoot,
-        activation.continuation.format.ptrWidth,
-        `${this.label}: activation ${activation.activationId} replay (module)`,
-      );
-      this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+      for (const activation of this.orderedActivations()) {
+        invokeForkContinuationBegin(
+          requireExportFunction(activation, "wpk_fork_rewind_begin"),
+          activation.replayRoot,
+          activation.continuation.format.ptrWidth,
+          `${this.label}: activation ${activation.activationId} replay (module)`,
+        );
+        this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+      }
     } catch (error) {
       this.abort();
       throw error;
@@ -941,32 +977,112 @@ export class ForkProcessContinuationCoordinator {
     try {
       this.registry.attachChild(arena, decodedReferences);
       adoptPreinstantiatedReferences?.();
-      // The single continuation root comes from the inherited launch anchor
-      // (there is no activation-continuation manifest on the module path).
-      const copiedLaunchRoot = this.readProcessLaunchRoot();
+      // Activation 0's continuation root is the inherited launch anchor. Side
+      // activations (a dlopen fork) recover their inherited anchors from the
+      // activation-continuation manifest the parent wrote at seal.
+      const act0Root = this.readProcessLaunchRoot();
       this.phase = "child-replay";
       this.registry.restoreModuleState();
-      const activation = this.requireSingleModuleActivation("child replay");
-      activation.root = copiedLaunchRoot;
-      activation.replayRoot = copiedLaunchRoot;
-      backend.beginChildReplay(copiedLaunchRoot);
+
+      const activations = this.orderedActivations();
+      const roots = new Map<number, number>([[0, act0Root]]);
+      if (activations.length > 1) {
+        for (const continuation of this.activationRootsFromChildArena()) {
+          const root = Number(continuation.root);
+          if (!Number.isSafeInteger(root) || root <= 0) {
+            throw new Error(
+              `${this.label}: module child activation ${continuation.activationId} `
+                + `manifest root ${continuation.root} is invalid`,
+            );
+          }
+          if (continuation.activationId === 0) {
+            if (root !== act0Root) {
+              throw new Error(
+                `${this.label}: module child activation 0 manifest root ${root} `
+                  + `disagrees with launch anchor ${act0Root}`,
+              );
+            }
+            continue;
+          }
+          roots.set(continuation.activationId, root);
+        }
+      }
+
+      // Seed activation 0's replay from the copied KFRE journal image, then add
+      // each side activation at its inherited continuation anchor. All seeding
+      // happens before any guest rewind drives a frame.
+      const act0 = this.getActivation(0);
+      act0.root = act0Root;
+      act0.replayRoot = act0Root;
+      backend.beginChildReplay(act0Root);
+      for (const activation of activations) {
+        if (activation.activationId === 0) continue;
+        const root = roots.get(activation.activationId);
+        if (root === undefined) {
+          throw new Error(
+            `${this.label}: module child activation ${activation.activationId} `
+              + "has no inherited continuation root",
+          );
+        }
+        activation.root = root;
+        activation.replayRoot = root;
+        backend.addActivationChildReplay(
+          activation.activationId,
+          root,
+          activation.continuation.format.fixedPrefixSize,
+        );
+      }
+
       // Phase 6 D6.1: seed the module's funcref/null reference graph from the
       // inherited KFMS arena BEFORE the guest rewind reconstructs references, so
       // the flipped `__wpk_fork_ref_decode_funcref` resolves through the module.
+      // Only enabled for a single-activation child (D7a.1a forces multi-activation
+      // references onto the JS path), so this stays off for a dlopen fork.
       if (this.moduleReferenceReplay) {
         backend.beginReferenceReplay(arena.rootAddress());
       }
-      invokeForkContinuationBegin(
-        requireExportFunction(activation, "wpk_fork_rewind_begin"),
-        copiedLaunchRoot,
-        activation.continuation.format.ptrWidth,
-        `${this.label}: activation ${activation.activationId} child replay (module)`,
-      );
-      this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+
+      for (const activation of activations) {
+        invokeForkContinuationBegin(
+          requireExportFunction(activation, "wpk_fork_rewind_begin"),
+          activation.replayRoot,
+          activation.continuation.format.ptrWidth,
+          `${this.label}: activation ${activation.activationId} child replay (module)`,
+        );
+        this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+      }
     } catch (error) {
       this.abort();
       throw error;
     }
+  }
+
+  /**
+   * Decode the activation-continuation manifest a module-backed multi-activation
+   * parent wrote at seal, read from the child's inherited KFMS arena. This
+   * deliberately decodes the single `ActivationContinuations` record directly
+   * rather than going through `activationContinuationsForChild`, whose
+   * cross-check against the JS replay-event wire the module path omits (the
+   * module owns the journal). The KFLA dlopen archive remains the activation-set
+   * / order authority; the module re-validates each activation's journal slice.
+   */
+  private activationRootsFromChildArena(): ReturnType<
+    typeof decodeForkActivationContinuations
+  > {
+    const records = this.registry.currentArena().recordViews();
+    const matches = records.filter(
+      (record) => record.kind === ForkModuleStateRecordKind.ActivationContinuations,
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `${this.label}: module child expected one activation-continuation record, `
+          + `found ${matches.length}`,
+      );
+    }
+    return decodeForkActivationContinuations(
+      matches[0]!.payload,
+      `${this.label}: module activation continuations`,
+    );
   }
 
   private finishModuleTransaction(abortReplay: boolean): void {
@@ -975,12 +1091,14 @@ export class ForkProcessContinuationCoordinator {
     }
     let failure: unknown;
     const backend = this.moduleBackend!;
-    const activation = this.getActivation(0);
-    try {
-      requireExportFunction(activation, "wpk_fork_rewind_end")();
-      this.requireActivationState(activation, WPK_FORK_NORMAL, "finish replay");
-    } catch (error) {
-      failure ??= error;
+    const activations = this.orderedActivations();
+    for (const activation of activations) {
+      try {
+        requireExportFunction(activation, "wpk_fork_rewind_end")();
+        this.requireActivationState(activation, WPK_FORK_NORMAL, "finish replay");
+      } catch (error) {
+        failure ??= error;
+      }
     }
     try {
       backend.finishReplay();
@@ -992,8 +1110,10 @@ export class ForkProcessContinuationCoordinator {
     } catch (error) {
       failure ??= error;
     }
-    activation.root = 0;
-    activation.replayRoot = 0;
+    for (const activation of activations) {
+      activation.root = 0;
+      activation.replayRoot = 0;
+    }
     try {
       this.publishProcessLaunchRoot(0);
     } catch (error) {

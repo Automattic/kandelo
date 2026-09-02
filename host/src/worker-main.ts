@@ -89,9 +89,11 @@ import {
 } from "./fork-unwind-transport";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
+  type ForkModuleExports,
   type ForkModuleInstance,
   instantiateForkModule,
 } from "./fork-module-instance";
+import { ForkModuleTrampolines } from "./fork-module-trampoline";
 import { FORK_FUNCTION_CATALOG_EXPORT } from "./fork-function-catalog";
 import {
   FORK_MODULE_FRAME_ARENA_BYTES,
@@ -697,6 +699,17 @@ interface ProcessDylinkActivationOwnerOptions {
    */
   readonly isPthreadReplica?: boolean;
   readonly invokeProcessFork: () => number;
+  /**
+   * Phase 6 D7a.1a: when present (a qualifying module-backed dlopen fork), each
+   * side activation's five frozen frame/resume imports are flipped to its own
+   * trampoline (wasm->wasm), and its resume catalog is seeded into the module so
+   * its slot numbering matches its JS `__wpk_fork_resume_table`. Null keeps the
+   * byte-identical JS continuation closures for the activation's frames.
+   */
+  readonly forkModuleFrameFlip?: {
+    readonly trampolines: ForkModuleTrampolines;
+    readonly backend: ForkModuleContinuationBackend;
+  };
   readonly label: string;
 }
 
@@ -824,6 +837,21 @@ function createProcessDylinkActivationOwner(
         throw error;
       }
 
+      // Phase 6 D7a.1a: seed THIS side activation's resume catalog into the
+      // module once, at instantiation (before any fork drives it), so the
+      // module numbers its resume slots from the SAME ordinals as its JS
+      // `__wpk_fork_resume_table`. Done on both the parent (dlopen) and the child
+      // (replayDlopens), each seeding its own module instance.
+      if (options.forkModuleFrameFlip) {
+        const activationOrdinals = readForkResumeCatalog(request.module).map(
+          (entry) => entry.functionOrdinal,
+        );
+        options.forkModuleFrameFlip.backend.setActivationResumeCatalog(
+          activationId,
+          activationOrdinals,
+        );
+      }
+
       const env: Record<string, WebAssembly.ImportValue> = {
         fork: (): number => options.invokeProcessFork(),
         [FORK_UNWIND_TAG_IMPORT_NAME]: requireForkUnwindTag(
@@ -833,6 +861,15 @@ function createProcessDylinkActivationOwner(
         ...options.coordinator.continuationImports(activationId, (errno) =>
           options.coordinator.beginCaptureAbort(errno),
         ),
+        // Phase 6 D7a.1a FRAME FLIP: for a module-backed dlopen fork, this side
+        // activation's five frozen frame/resume imports route through its own
+        // trampoline (folding in the activation id) to the shared module. Placed
+        // AFTER `continuationImports` so these five keys win; everything else it
+        // returns — crucially the JS `__wpk_fork_resume_table` funcref table the
+        // module's `resume_peek` indexes — is kept. References stay JS this slice.
+        ...(options.forkModuleFrameFlip
+          ? options.forkModuleFrameFlip.trampolines.frameImportsFor(activationId)
+          : {}),
         ...buildForkActivationStateImports(
           activationId,
           options.registry,
@@ -3431,6 +3468,12 @@ export async function centralizedWorkerMain(
       // its module-backed branches. Null (non-qualifying / flag-off) => the
       // byte-identical JavaScript continuation.
       let forkModuleBackend: ForkModuleContinuationBackend | null = null;
+      // Phase 6 D7a.1a: per-activation frame trampolines for a dlopen fork. Each
+      // dlopen'd side activation's five frozen frame/resume imports are flipped
+      // to its own trampoline (wasm->wasm), folding in the activation id so its
+      // frames route to its own writer/driver in the shared module. Null unless
+      // the module-backed path is active.
+      let forkModuleTrampolines: ForkModuleTrampolines | null = null;
       let useForkModule = false;
       // Phase 6 D6.1: true only for a CHILD fork whose decoded reference graph is
       // FUNCREF + NULL only (no externref/gc/exnref/static-root to reconstruct).
@@ -3538,9 +3581,18 @@ export async function centralizedWorkerMain(
         const hasResumeThreadExport = WebAssembly.Module.exports(module).some(
           (entry) => entry.name === "wpk_fork_resume_thread",
         );
+        // Phase 6 D7a.1a: POSITIVE multi-activation admission — a dlopen fork
+        // (`hasDylinkForkRole`) is NO LONGER excluded. Activation 0 is admitted
+        // here on width + its own resume-catalog cap; each dlopen'd SIDE
+        // activation seeds its OWN resume catalog through the module at
+        // instantiation (`backend.setActivationResumeCatalog`), which fails loud
+        // if that activation's catalog overflows the module cap. Multi-activation
+        // REFERENCES stay on the JS path this slice (see `moduleReferenceKindsSupported`
+        // below, gated to a single activation), so a dlopen fork drives only its
+        // FRAMES through the module. A single-activation program keeps its
+        // byte-identical behavior.
         useForkModule =
           ptrWidth === linkedFrameFormat.ptrWidth &&
-          !hasDylinkForkRole &&
           (!isForkFromThreadChild || hasResumeThreadExport) &&
           catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP;
         if (useForkModule) {
@@ -3572,6 +3624,10 @@ export async function centralizedWorkerMain(
           // Seed the linked-frame format + full resume catalog once, now, before
           // any fork drives the module. Both are host-known custom sections.
           forkModuleBackend.setup();
+          // Per-activation frame trampolines share this one module instance.
+          forkModuleTrampolines = new ForkModuleTrampolines(
+            forkModuleInstance.exports,
+          );
         }
       }
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
@@ -3684,8 +3740,13 @@ export async function centralizedWorkerMain(
       if (forkModuleBackend) {
         // Route this worker's next fork through the co-resident module. The
         // coordinator's module-backed branches then own the journal/frames/
-        // resume slots; every non-qualifying fork stays on the JS path.
-        processContinuation.enableModuleBacking(forkModuleBackend);
+        // resume slots; every non-qualifying fork stays on the JS path. A dlopen
+        // fork also evicts a side activation's trampoline when it unregisters.
+        const trampolines = forkModuleTrampolines;
+        processContinuation.enableModuleBacking(
+          forkModuleBackend,
+          trampolines ? (id) => trampolines.evict(id) : undefined,
+        );
       }
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
@@ -3997,6 +4058,13 @@ export async function centralizedWorkerMain(
               }
               return Number((fork as () => number)());
             },
+            forkModuleFrameFlip:
+              useForkModule && forkModuleBackend && forkModuleTrampolines
+                ? {
+                    trampolines: forkModuleTrampolines,
+                    backend: forkModuleBackend,
+                  }
+                : undefined,
             label: `pid=${pid}: dylink activations`,
           })
         : undefined;
@@ -4157,6 +4225,11 @@ export async function centralizedWorkerMain(
         moduleReferenceKindsSupported =
           useForkModule &&
           forkModuleInstance !== null &&
+          // Phase 6 D7a.1a: multi-activation (dlopen) REFERENCES stay on the JS
+          // path this slice — only a single-activation child flips its funcref
+          // reconstruction to the module. A dlopen fork drives only its FRAMES
+          // through the module (D7a.1b will bring multi-activation references).
+          modules.size === 1 &&
           [...decodedChildReferences.graph.nodes].every((entry) => {
             switch (entry.node.kind) {
               case "null":
@@ -4624,6 +4697,22 @@ export async function centralizedWorkerMain(
               processContinuation.beginAbortReplay(-childPid);
             } else {
               processContinuation.beginParentReplay();
+              // Phase 6 D5/D7a.1a proof-of-use, emitted from the PARENT's active
+              // run loop (not the worker tail). A fork parent stays alive and its
+              // channel is drained normally, so this reaches the host reliably
+              // even in main-thread hosts where the fork parent's worker tail is
+              // torn down before it runs (the tail-scoped `fork_module_frames`
+              // below is the worker-thread-host mirror). A nonzero committed
+              // count here proves the module drove THIS fork's unwind; a silent
+              // JS fallback (`useForkModule === false`) never constructs the
+              // backend and emits nothing.
+              if (forkModuleBackend && !initData.isForkChild) {
+                port.postMessage({
+                  type: "fork_module_frames",
+                  pid,
+                  frames: Number(forkModuleBackend.framesCommitted()),
+                } satisfies WorkerToHostMessage);
+              }
             }
             continue;
           }

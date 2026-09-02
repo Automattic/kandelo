@@ -2715,14 +2715,18 @@ function validateRecordOwnership(
     throw new Error("module-state arena has no declared module activation");
   }
   if (activationContinuations) {
-    if (!replayActivationIds) {
-      throw new Error(
-        "module-state activation continuations have no replay-event manifest",
-      );
-    }
+    // The JS continuation manifest is cross-checked against the process
+    // replay-event wire (both live in this arena, and the manifest names exactly
+    // the ACTIVE activations the events cover). A Phase 6 D7a.1a module-backed
+    // multi-activation fork instead owns its journal inside the co-resident
+    // module's serialized image (not this arena), so it writes NO replay-event
+    // records; its manifest names EVERY registered activation. When the arena has
+    // no replay-event manifest, cross-check the continuation set against the
+    // module-descriptor set — the authoritative activation set on the module path
+    // — so the manifest is still validated exactly, never silently accepted.
     assertActivationContinuationSet(
       activationContinuations,
-      replayActivationIds,
+      replayActivationIds ?? modules,
       "module-state activation continuations",
     );
     for (const { activationId } of activationContinuations) {

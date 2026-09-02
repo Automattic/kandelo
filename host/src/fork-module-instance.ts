@@ -27,13 +27,34 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "__wpk_fork_frame_peek",
   "__wpk_fork_frame_next",
   "__wpk_fork_resume_peek",
+  // Phase 6 D7a.1a: the activation-parameterized SHARED frame exports the
+  // per-activation trampolines (`fork-module-trampoline.ts`) delegate to. A
+  // dlopen fork has N activations; the frozen guest-facing `__wpk_fork_frame_*`
+  // above are these with `act == primary_activation` (the single-activation
+  // degenerate case). Each activation's frames route to its OWN writer/driver in
+  // the module map while the journal + resume table stay process-wide.
+  "fm_frame_reserve",
+  "fm_frame_commit",
+  "fm_frame_peek",
+  "fm_frame_next",
+  "fm_resume_peek",
   "fm_set_format",
   "fm_set_resume_catalog",
+  // Phase 6 D7a.1a: seed ONE activation's resume catalog (a dlopen fork loads N
+  // modules, each with its own catalog table) so each activation's resume-slot
+  // numbering matches ITS JS `__wpk_fork_resume_table` by construction.
+  "fm_set_activation_resume_catalog",
   "fm_begin_unwind",
+  // Phase 6 D7a.1a: add ANOTHER activation (a dlopen fork's side module) to the
+  // capture begun by `fm_begin_unwind`, with its own host frame arena + prefix.
+  "fm_add_activation_unwind",
   "fm_finish_unwind",
   "fm_serialize_journal",
   "fm_begin_replay",
   "fm_begin_child_replay",
+  // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay
+  // begun by `fm_begin_child_replay`, at its inherited continuation anchor.
+  "fm_add_activation_child_replay",
   "fm_finish_replay",
   "fm_frames_committed",
   // Phase 6 D7b: replay-side proof-of-use counter. A replay-only forked child

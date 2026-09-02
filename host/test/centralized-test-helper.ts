@@ -559,6 +559,26 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         `gc_nodes_reconstructed=${message.gcNodes}`,
     });
   };
+  // Phase 6 D5/D7a.1a: forward the co-resident module's FRAME proof-of-use — the
+  // parent's committed-frame count and a fork child's replayed-frame count — as
+  // `fork-module` host diagnostics, mirroring the Node/browser worker entries so
+  // main-thread tests (which route here via `io`) can assert module drive.
+  const recordForkModuleFrames = (
+    forPid: number,
+    message: Extract<
+      WorkerToHostMessage,
+      { type: "fork_module_frames" | "fork_module_child_frames" }
+    >,
+  ): void => {
+    mainThreadHostDiagnostics.push({
+      pid: forPid,
+      source: "fork-module",
+      message:
+        message.type === "fork_module_frames"
+          ? `fork_module_frames=${message.frames}`
+          : `fork_module_child_frames=${message.frames}`,
+    });
+  };
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
@@ -851,6 +871,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             m.pid === childPid
           ) {
             recordForkModuleReferences(childPid, m);
+          } else if (
+            (m.type === "fork_module_frames" ||
+              m.type === "fork_module_child_frames") &&
+            m.pid === childPid
+          ) {
+            recordForkModuleFrames(childPid, m);
           }
         });
         observeForkReplayWorker(
@@ -1350,6 +1376,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       mainForkHostImports.dispatch(m.wake);
     } else if (m.type === "fork_module_references" && m.pid === pid) {
       recordForkModuleReferences(pid, m);
+    } else if (
+      (m.type === "fork_module_frames" ||
+        m.type === "fork_module_child_frames") &&
+      m.pid === pid
+    ) {
+      recordForkModuleFrames(pid, m);
     }
   });
 
