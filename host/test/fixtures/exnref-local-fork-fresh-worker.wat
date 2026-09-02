@@ -1,10 +1,14 @@
-;; ABI 43 integration fixture for real process workers.
+;; ABI 44 integration fixture that holds a real exnref LIVE across kernel_fork.
 ;;
-;; The parent catches a scalar tag through CatchRef, forks from the handler,
-;; and waits for the child. Rewind can succeed only if the copied continuation
-;; rethrows the tag in the fresh child instance and the original CatchRef clause
-;; creates a new instance-local exnref. The child exits 91 if its scalar payload
-;; was not restored; the parent exits 92 if wait4 observes any failure.
+;; Unlike catch-ref-fresh-worker.wat (which catches an exception, DROPS the
+;; exnref, and forks carrying only the scalar payload), this fixture keeps the
+;; caught `exnref` in a reference LOCAL that is live across `kernel_fork`. The
+;; fresh child therefore has NO way to reconstruct the exnref from copied linear
+;; memory alone: the module (or the JS reference path) must rebuild an
+;; instance-local exnref in the child. The child PROVES the exnref survived by
+;; re-throwing it with `throw_ref` and re-catching it to recover the scalar
+;; payload 42; a wrong or absent reconstruction makes the child exit 91 (bad
+;; payload) or trap (null exnref), which the parent turns into exit 92.
 (module
   (import "env" "memory" (memory 1 16384 shared))
   (import "env" "__channel_base" (global $__channel_base (mut i32)))
@@ -119,17 +123,20 @@
     local.get $result)
 
   (func (export "_start")
-    (local $caught i32)
+    (local $exn exnref)
     (local $pid i32)
+    (local $recovered i32)
 
+    ;; Catch a scalar tag through CatchRef and KEEP the exnref in a local. The
+    ;; exnref (not just its scalar payload) is what must survive the fork.
     (block $handler (result i32 exnref)
       (try_table (result i32 exnref)
           (catch_ref $payload $handler)
         i32.const 42
         throw $payload
         unreachable))
+    local.set $exn
     drop
-    local.set $caught
 
     i32.const 0
     call $kernel_fork
@@ -138,7 +145,17 @@
     local.get $pid
     i32.eqz
     if
-      local.get $caught
+      ;; Child: re-throw the reconstructed exnref and re-catch it to recover the
+      ;; scalar payload. This exercises the exnref VALUE, not just its bytes.
+      (block $rehandler (result i32)
+        (try_table (result i32)
+            (catch $payload $rehandler)
+          local.get $exn
+          throw_ref
+          unreachable))
+      local.set $recovered
+
+      local.get $recovered
       i32.const 42
       i32.ne
       if

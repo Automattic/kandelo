@@ -52,6 +52,10 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_references_reconstructed",
   // Phase 6 D6.2 externref reconstruction proof-of-use counter.
   "fm_externrefs_resolved",
+  // Phase 6 D6.3a exnref reconstruction proof-of-use counter.
+  "fm_exnrefs_reconstructed",
+  // Phase 6 D6.4a typed-GC (struct/array/i31) reconstruction proof-of-use counter.
+  "fm_gc_nodes_reconstructed",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];

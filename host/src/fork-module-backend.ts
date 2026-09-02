@@ -201,6 +201,26 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of exnref nodes the module has admitted and driven since worker start
+   * (Phase 6 D6.3a proof-of-use). Advances only when `fm_begin_reference_replay`
+   * drives an exnref-bearing graph through the module; a silent JS fallback
+   * leaves it unchanged.
+   */
+  exnrefsReconstructed(): bigint {
+    return BigInt(this.exports.fm_exnrefs_reconstructed() as number | bigint);
+  }
+
+  /**
+   * Number of typed-GC nodes (struct + array + i31) the module has admitted and
+   * driven since worker start (Phase 6 D6.4a proof-of-use). Advances only when
+   * `fm_begin_reference_replay` drives a typed-GC graph through the module; a
+   * silent JS fallback leaves it unchanged.
+   */
+  gcNodesReconstructed(): bigint {
+    return BigInt(this.exports.fm_gc_nodes_reconstructed() as number | bigint);
+  }
+
+  /**
    * Seed the module's funcref/null reference graph for this fork from the KFMS
    * module-state arena rooted at `moduleStateRoot` (Phase 6 D6.1). The caller
    * gates this on the funcref-only reference predicate; the module re-checks and

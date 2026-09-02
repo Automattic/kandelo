@@ -234,20 +234,31 @@ export interface ForkModuleChildFramesMessage {
 }
 
 /**
- * Phase 6 D6.5: proof-of-use for the co-resident fork-module's REFERENCE
- * reconstruction. A fresh fork CHILD worker whose carried references were
- * reconstructed through the module (the flipped `__wpk_fork_ref_decode_funcref`
- * and, for externref graphs, `fm_begin_reference_replay`) reports how many
- * references the module reconstructed, so the host (and tests) can confirm the
- * reference decode ran through the module rather than silently falling back to
- * the JS reference path. Reference reconstruction happens in the child, so —
- * unlike `fork_module_frames`, which the parent commits — this is posted by the
- * child worker.
+ * Phase 6 D6.5: PER-KIND proof-of-use for the co-resident fork-module's
+ * REFERENCE reconstruction. A fresh fork CHILD worker whose carried references
+ * were reconstructed through the module (the flipped `__wpk_fork_ref_decode_*`
+ * exports and `fm_begin_reference_replay`) reports one count per reference kind,
+ * so the host (and tests) can confirm the reference decode ran through the
+ * module rather than silently falling back to the JS reference path. A single
+ * message carries every kind because a graph can mix them (an exnref whose
+ * payload is an externref advances both counters). Reference reconstruction
+ * happens in the child, so — unlike `fork_module_frames`, which the parent
+ * commits — this is posted by the child worker.
+ *
+ * Emitted ONLY when at least one kind's count is positive (the D7b lesson: a
+ * `=0` diagnostic broke the `d_01` poll), so a reference-free fork stays silent.
  */
 export interface ForkModuleReferencesMessage {
   type: "fork_module_references";
   pid: number;
+  /** Funcref/null count (`fm_references_reconstructed`). */
   references: number;
+  /** Externref count (`fm_externrefs_resolved`). */
+  externrefs: number;
+  /** Exnref-node count (`fm_exnrefs_reconstructed`). */
+  exnrefs: number;
+  /** Typed-GC node count — struct/array/i31 (`fm_gc_nodes_reconstructed`). */
+  gcNodes: number;
 }
 
 export interface WorkerReadyMessage {

@@ -1876,15 +1876,21 @@ function installProcessWorkerListeners(
         "warn",
       );
     } else if (m.type === "fork_module_references" && m.pid === pid) {
-      // Surface the co-resident fork-module's REFERENCE proof-of-use as a host
-      // diagnostic (Phase 6 D6.5): a nonzero count confirms the child's carried
-      // references were reconstructed through the module, not the JS fallback.
-      // Mirrors node-kernel-worker-entry so both hosts report identically.
+      // Surface the co-resident fork-module's PER-KIND REFERENCE proof-of-use as
+      // a host diagnostic (Phase 6 D6.5): a nonzero count for a kind confirms the
+      // child's carried references of that kind were reconstructed through the
+      // module, not the JS fallback. All kinds ride one diagnostic string so a
+      // reader can extract any of funcref/externref/exnref/typed-GC. Mirrors
+      // node-kernel-worker-entry so both hosts report identically.
       reportHostDiagnostic(
         {
           pid,
           source: "fork-module",
-          message: `fork_module_references=${m.references}`,
+          message:
+            `fork_module_references=${m.references} ` +
+            `externrefs_resolved=${m.externrefs} ` +
+            `exnrefs_reconstructed=${m.exnrefs} ` +
+            `gc_nodes_reconstructed=${m.gcNodes}`,
         },
         "warn",
       );
