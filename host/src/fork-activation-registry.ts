@@ -654,7 +654,7 @@ export class ForkActivationRegistry {
   // `_gc_allocate` published, so the worker can pass it in via the constructor and
   // hand the identical table to `instantiateForkModule`. When not supplied a fresh
   // one is minted, preserving every existing caller.
-  private readonly gcTransit: ForkAnyrefTransitTable;
+  private gcTransit: ForkAnyrefTransitTable;
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
 
   constructor(
@@ -1017,6 +1017,24 @@ export class ForkActivationRegistry {
   /** Host-owned typed scratch table imported by every activation codec. */
   gcTransitTable(): WebAssembly.Table {
     return this.gcTransit.table;
+  }
+
+  /**
+   * Replace this registry's transit table with one that WRAPS an externally
+   * owned table — used on the thread-fork path, where a co-resident
+   * fork-module is instantiated AFTER this registry already exists (the
+   * module's own `enableModuleBacking` gate needs a process-continuation
+   * coordinator built from this registry first). Once adopted, the guest's
+   * `__wpk_fork_ref_gc_transit` import (bound later via
+   * `gcTransitTable()`/`buildForkActivationStateImports`) and the
+   * fork-module's own exported table are the same object, matching the
+   * process path's single-table invariant. Must be called before any
+   * activation import is built and before any fork capture; the mint-time
+   * default remains a self-owned table when this is never called (flag-off
+   * or non-qualifying fork).
+   */
+  adoptGcTransit(table: WebAssembly.Table): void {
+    this.gcTransit = new ForkAnyrefTransitTable(table);
   }
 
   /**

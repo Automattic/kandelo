@@ -6459,12 +6459,20 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
-          // STORE #2: the same transit table the thread registry binds to the
-          // guest, so the module's drive integrity check reads what the guest
-          // published. The registry is created before the fork-module on this
-          // path, so its guest transit table is available here directly.
-          transitTable: threadActivationRegistry!.gcTransitTable(),
         });
+        // STORE #2: on this path the thread registry is created BEFORE the
+        // fork-module (unlike the process path), and its `enableModuleBacking`
+        // gate below requires `threadProcessContinuation` — itself built from
+        // the registry — to already exist, so the registry cannot simply be
+        // constructed after the module. Instead, ADOPT the module's own
+        // exported transit table into the already-built registry so the
+        // guest's `__wpk_fork_ref_gc_transit` import (bound later by
+        // `buildForkActivationStateImports`, well below) and the module's
+        // drive integrity check read the exact same table. This happens
+        // before any activation import is built and before any fork capture.
+        threadActivationRegistry!.adoptGcTransit(
+          threadForkModuleInstance.gcTransitTable,
+        );
         threadForkModuleBackend = new ForkModuleContinuationBackend({
           exports: threadForkModuleInstance.exports,
           memory,
