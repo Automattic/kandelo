@@ -522,6 +522,15 @@ export interface DemoPresentation {
    * unplayable without a physical keyboard.
    */
   touchControls?: boolean;
+  /**
+   * Whether the browser's own pointer stays visible over the display surface.
+   * A KMS scanout shows exactly what the guest renders, so a guest that draws
+   * its own cursor (modeset, ScummVM, a Wayland compositor) must hide the
+   * browser pointer or two arrows stack and drift apart. A guest that draws no
+   * cursor at all needs it, otherwise the user cannot see where they point.
+   * Defaults to hidden.
+   */
+  hostPointer?: boolean;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
