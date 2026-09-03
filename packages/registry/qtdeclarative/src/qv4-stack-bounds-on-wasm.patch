@@ -1,0 +1,37 @@
+Report the linear-memory stack bounds to QV4 on wasm32posix.
+
+QV4 refuses to recurse past the stack limits this file computes. The
+build defines __linux__, so the Linux paths run, and both misreport
+this target: there is no /proc/self/maps, and musl's
+pthread_getattr_np sizes the main thread's stack by probing with
+mremap — which this kernel does not implement — so it reports one
+page at the address of libc.auxv. QV4 then throws
+"Maximum call stack size exceeded" on the first QML document.
+
+wasm-ld brackets the data stack with __stack_low and __stack_high
+whenever they are referenced. The stack grows down, so __stack_high
+is the logical base, as in the Q_OS_WASM branch this mirrors.
+
+--- a/src/qml/memory/qv4stacklimits.cpp
++++ b/src/qml/memory/qv4stacklimits.cpp
+@@ -96,7 +96,19 @@ static qsizetype getMainStackSizeFromRlimit()
+ }
+ #endif
+
+-#if defined(Q_OS_INTEGRITY)
++#if defined(__wasm__) && !defined(Q_OS_WASM)
++
++// The linker brackets the linear-memory data stack with these when
++// they are referenced. The Linux paths below misreport this target.
++extern "C" char __stack_high[];
++extern "C" char __stack_low[];
++
++StackProperties stackProperties()
++{
++    return createStackProperties(__stack_high, __stack_high - __stack_low);
++}
++
++#elif defined(Q_OS_INTEGRITY)
+
+ StackProperties stackProperties()
+ {

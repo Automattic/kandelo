@@ -27,6 +27,7 @@ import {
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
 import {
+  NCURSES_TERMINFO_RUNTIME_FILE,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
@@ -256,6 +257,17 @@ function fixturePaths(root: string) {
       }),
     );
   }
+  writeFileSync(
+    join(
+      dependencyRoots.get(NCURSES_TERMINFO_RUNTIME_FILE.dependency)!,
+      NCURSES_TERMINFO_RUNTIME_FILE.resolverPath.split("/").at(-1)!,
+    ),
+    zipSync({
+      [NCURSES_TERMINFO_RUNTIME_FILE.requiredEntry]: new TextEncoder().encode(
+        "terminfo fixture",
+      ),
+    }),
+  );
   const resolveArtifact: ShellLazyArchiveResolver = (
     resolverPath,
     requestedDependency,
@@ -348,7 +360,7 @@ describe("canonical source-rootfs shell", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*30$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*32$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "packages/registry/shell/source-rootfs-shell-demo.json",

@@ -1,0 +1,30 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# CLI11 command-line parser, header-only with a CMake config package.
+# Quickshell's launcher does find_package(CLI11 CONFIG REQUIRED).
+name = "cli11"
+version = "2.5.0"
+kernel_abi = 44
+depends_on = []
+
+[source]
+url = "https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.5.0.tar.gz"
+sha256 = "17e02b4cddc2fa348e5dbdbb582c59a3486fa2b2433e70a0c3bacb871334fd55"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/CLIUtils/CLI11/blob/v2.5.0/LICENSE"
+
+[build]
+script_path = "packages/registry/cli11/build-cli11.sh"
+
+[outputs]
+headers = ["include/CLI"]
+files = [
+  "share/cmake/CLI11/CLI11Config.cmake",
+  "share/cmake/CLI11/CLI11ConfigVersion.cmake",
+]

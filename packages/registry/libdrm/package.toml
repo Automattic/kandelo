@@ -66,9 +66,10 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 # KMS-only subset; the per-vendor libdrm_* archives (libdrm_amdgpu.a
 # etc.) are deliberately not built.
 libs = ["lib/libdrm.a"]
+pkgconfig = ["lib/pkgconfig/libdrm.pc"]
 # UAPI headers live under include/drm/ (drm.h, drm_mode.h,
 # drm_fourcc.h); libdrm public headers live under include/libdrm/
 # (xf86drm.h, xf86drmMode.h). Consumers link with
 # `-I$prefix/include -I$prefix/include/libdrm` and
 # `#include <xf86drmMode.h>` matches upstream's pkg-config flags.
-headers = ["include/drm", "include/libdrm"]
+headers = ["include/drm", "include/libdrm", "include/linux", "include/asm"]

@@ -36,6 +36,7 @@ export const OMARCHY_WAYBAR_CONFIG_PATH = "/usr/share/kandelo/waybar/config.json
 export const OMARCHY_WAYBAR_STYLE_SEED_PATH = "/usr/share/kandelo/waybar/style.css";
 export const OMARCHY_WAYBAR_STYLE_PATH = "/tmp/waybar-style.css";
 export const OMARCHY_MAKO_CONFIG_PATH = "/usr/share/kandelo/mako/config";
+export const OMARCHY_QUICKSHELL_DIR = "/usr/share/kandelo/quickshell";
 
 /**
  * The compositor config. SUPER is what real Hyprland (and Omarchy) binds, but
@@ -109,22 +110,23 @@ bind = CTRL SHIFT, 3, movetoworkspace, 3
  * and not a list inside the launcher.
  */
 export const OMARCHY_APPS: Record<string, string> = {
-  "terminal.conf": "name = Terminal\nexec = /usr/local/bin/wlterm\n",
   "clock.conf": "name = Clock\nexec = /usr/local/bin/wlclock\n",
   "paint.conf": "name = Paint\nexec = /usr/local/bin/wlpaint\n",
   "vim.conf": "name = Vim\nexec = /usr/local/bin/wlterm /usr/bin/vim\n",
   "nethack.conf": "name = NetHack\nexec = /usr/local/bin/wlterm /usr/bin/nethack\n",
   "nano.conf": "name = Nano\nexec = /usr/local/bin/wlterm /usr/bin/nano\n",
-  "bash.conf": "name = Bash\nexec = /usr/local/bin/wlterm /usr/bin/bash -i\n",
   "foot.conf":
-    "name = Foot\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
+    "name = Terminal\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
+  "qtgallery.conf": "name = Theme Gallery\nexec = /usr/local/bin/qtgallery\n",
+  "quickshell.conf":
+    "name = Quickshell\nexec = /usr/local/bin/quickshell -p /usr/share/kandelo/quickshell/island.qml\n",
 };
 
 /**
- * The fontconfig configuration foot reads at startup. The demo stages one
- * font (Inconsolata) under /usr/share/fonts and aliases the generic
- * "monospace" family to it, so foot's default font pattern resolves without
- * a per-user configuration.
+ * The fontconfig configuration foot and qtgallery read at startup. The demo
+ * stages one font (Inconsolata) under /usr/share/fonts and aliases the
+ * generic "monospace" and "sans-serif" families to it, so both clients'
+ * default font patterns resolve without a per-user configuration.
  */
 export const OMARCHY_FONTS_CONF = `<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
@@ -133,6 +135,10 @@ export const OMARCHY_FONTS_CONF = `<?xml version="1.0"?>
   <cachedir>/tmp/fontconfig</cachedir>
   <alias>
     <family>monospace</family>
+    <prefer><family>Inconsolata</family></prefer>
+  </alias>
+  <alias>
+    <family>sans-serif</family>
     <prefer><family>Inconsolata</family></prefer>
   </alias>
 </fontconfig>
@@ -171,6 +177,102 @@ background-color=#1a1b26
 text-color=#c0caf5
 border-color=#7aa2f7
 `;
+
+/**
+ * The staged Quickshell shells, one QML file each: the shell IS a QML file,
+ * so swapping the file swaps the shell — the demonstration Quickshell exists
+ * for, and what qtgallery's shell cards do. island.qml is the default the
+ * launcher entry runs. All three render through QtQuick's software scenegraph
+ * (QT_QUICK_BACKEND=software comes from the compositor's environment) and
+ * anchor to the bottom edge because Waybar owns the top. The palette is the
+ * tokyo-night the desktop boots with; Quickshell reads QML once at startup,
+ * so like mako it keeps its colours across theme switches.
+ *
+ * The tab's per-worker compiled-code budget bounds these shells (see
+ * docs/browser-support.md#quickshell-qml-limits): each guest thread holds
+ * its own compiled copy of the Qt module, and the QML content decides how
+ * much cold Qt/ICU code each worker compiles. Single-threading the Qt
+ * client roughly halved the baseline, but a shell that touches heavy code
+ * paths still crosses the ceiling. Each shell here stays in the tested
+ * envelope — one item, numeric date fields (no localized dddd/MMMM name
+ * fields), regular weight — which compiles little beyond the base client.
+ */
+export const OMARCHY_QUICKSHELL_SHELLS: Record<string, string> = {
+  "shell.qml": `import Quickshell
+import QtQuick
+
+ShellRoot {
+  SystemClock {
+    id: clock
+    precision: SystemClock.Seconds
+  }
+  PanelWindow {
+    anchors {
+      bottom: true
+      left: true
+      right: true
+    }
+    implicitHeight: 30
+    color: "#1a1b26"
+    Text {
+      anchors.centerIn: parent
+      color: "#c0caf5"
+      text: "Quickshell — " + Qt.formatDateTime(clock.date, "hh:mm:ss")
+    }
+  }
+}
+`,
+  "island.qml": `import Quickshell
+import QtQuick
+
+ShellRoot {
+  SystemClock {
+    id: clock
+    precision: SystemClock.Seconds
+  }
+  PanelWindow {
+    anchors {
+      bottom: true
+    }
+    margins {
+      bottom: 14
+    }
+    implicitWidth: 380
+    implicitHeight: 44
+    color: "#1a1b26"
+    Text {
+      anchors.centerIn: parent
+      color: "#7dcfff"
+      text: "[ island ]   " + Qt.formatDateTime(clock.date, "hh:mm:ss")
+    }
+  }
+}
+`,
+  "status.qml": `import Quickshell
+import QtQuick
+
+ShellRoot {
+  SystemClock {
+    id: clock
+    precision: SystemClock.Seconds
+  }
+  PanelWindow {
+    anchors {
+      bottom: true
+      left: true
+      right: true
+    }
+    implicitHeight: 34
+    color: "#16161e"
+    Text {
+      anchors.centerIn: parent
+      color: "#c0caf5"
+      text: "KANDELO   " + Qt.formatDateTime(clock.date, "yyyy-MM-dd   hh:mm:ss")
+    }
+  }
+}
+`,
+};
 
 /**
  * Waybar config, translated from Omarchy's (config.jsonc): same top bar

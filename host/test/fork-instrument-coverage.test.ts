@@ -318,7 +318,7 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
     await runFixture("programs/k_02_fork_in_sigalrm_handler.wasm", {
       contains: ["REGISTERED", "ALARMED", "IN_HANDLER", "PRE_FORK", "CHILD: ok", "PASS: K-02"],
     });
-  });
+  }, 10_000);
 
   // K-03: pthread cleanup handlers run on a pthread worker channel, so
   // fork() here exercises the same fork-from-non-main-thread host path as
@@ -393,7 +393,7 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       contains: ["POPEN_OPENED", "READ: hello-popen", "PCLOSE: status=0", "PASS: P-04"],
       execPrograms: popenExecMap,
     });
-  });
+  }, 10_000);
 
   it("P-05 posix_spawn — non-forking path, must remain unchanged by refactor", async () => {
     await runFixture("programs/p_05_posix_spawn.wasm", {

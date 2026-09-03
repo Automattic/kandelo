@@ -71,6 +71,67 @@ headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
+**Host code generators**: Some build systems run their own generators on the
+build machine and compile the output for the target — `moc`/`rcc`/`uic` for Qt,
+the same role `wayland-scanner` fills for Wayland. Declare the generator as a
+`[[host_tools]]` entry and take it from `flake.nix`, not from an ambient host
+install. When the generator ships as part of the same project being
+cross-compiled, its version is usually locked to the target version: Qt's CMake
+reads the host tools through `QT_HOST_PATH` and refuses a host/target mismatch,
+so `flake.nix`'s pinned Qt fixes the version the recipe may declare. The
+resolver understands only `>=` constraints, so a recipe needing an exact match
+must check it itself and fail loudly. See
+`packages/registry/qtbase/build-qtbase.sh`.
+
+**A generator the pinned host package does not ship**: A host package built for
+the build machine carries only the generators that machine's platform enables,
+which is not always the set a cross-build needs. nixpkgs' darwin `qtbase` has no
+`qtwaylandscanner`, because qtbase looks for the `Wayland::Scanner` it depends
+on only `if(LINUX)`; a Qt Wayland cross-build on a Mac therefore stops at
+`Failed to find the host tool "Qt6::qtwaylandscanner"`. Build the missing
+generator in `flake.nix` from the same source and version the host package
+pins, and publish the CMake package the cross-build looks for. Gate it on the
+same condition the host package uses, so the platform that already ships the
+generator does not receive a second copy. Keep it out of the recipe's own
+output: a package archive is content-hashed and published, so a host binary
+inside one makes an arm64 Mac and an x86\_64 runner produce different archives
+for the same source. See `nix/qtwaylandscanner/` and
+`host/test/qtwaylandscanner-host-tool.test.ts`.
+
+Write that package's version file by hand, or clear `CMAKE_SIZEOF_VOID_P`
+before `write_basic_package_version_file`. CMake's helper bakes the pointer
+width of the machine that built the tool into a bitness check, and a wasm32
+consumer then rejects the package it just found — reported as
+`version: 6.10.2 (64bit)` under "configuration files were considered but not
+accepted". A test project written in `LANGUAGES NONE` has no pointer width and
+will not reproduce it; set `CMAKE_SIZEOF_VOID_P` to 4 so it does.
+
+**OS detection in headers**: `CMAKE_SYSTEM_NAME=Linux` settles the build
+system only. Source that branches on preprocessor macros still sees a
+toolchain defining `__unix__` and `__wasm32__` but not `__linux__`, which the
+SDK withholds on purpose — Kandelo has no Linux kernel (`sdk/config.site`).
+A port whose headers demand a known OS needs `-D__linux__=1` in its own recipe,
+as `basu`, `erlang`, `spidermonkey` and `qtbase` do. Expect the consequence:
+the source then takes Linux paths, and each one must be backed. Qt needed its
+futex path disabled and an empty `<linux/fs.h>` supplied from the package's own
+include directory.
+
+Every consumer of that library needs the same defines. They are not recorded in
+the archive: a program including `<QGuiApplication>` without `-D__linux__=1`
+stops at the same `qsystemdetection.h` error the recipe hit, and one without
+`-DQT_LINUXBASE` compiles against headers that disagree with the archives about
+the futex. Carry the recipe's target defines into the consumer's compile line —
+see `packages/registry/qtbase/test/build-gui-smoke.sh`.
+
+**Baked install prefixes**: A library that records its configure-time
+`CMAKE_INSTALL_PREFIX` writes the resolver's staging directory — whose name
+carries the builder's PID — into the shipped artifact, so two builds of the
+same source differ. Configure against the guest path the code will run under
+and relocate at install time with `cmake --install --prefix`, then assert the
+staging path is absent before the recipe exits. Qt does this through
+`qt_prfxpath` in `libQt6Core.a`; fontconfig and gdk-pixbuf did it through
+`--with-templatedir` and `--localedir`.
+
 ### OSS playback with `/dev/dsp`
 
 Kandelo's standard low-level audio API is OSS `/dev/dsp`, backed by the generic

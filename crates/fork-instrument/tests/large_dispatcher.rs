@@ -238,6 +238,36 @@ fn collect_br_targets(local: &LocalFunction) -> Vec<InstrSeqId> {
     out
 }
 
+fn collect_catch_labels(local: &LocalFunction) -> Vec<InstrSeqId> {
+    fn walk(local: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId>) {
+        for (instr, _) in &local.block(seq).instrs {
+            if let Instr::TryTable(ir::TryTable { seq, catches }) = instr {
+                for catch in catches {
+                    if let ir::TryTableCatch::Catch { label, .. } = catch {
+                        out.push(*label);
+                    }
+                }
+                walk(local, *seq, out);
+                continue;
+            }
+            let children: Vec<InstrSeqId> = match instr {
+                Instr::Block(ir::Block { seq }) | Instr::Loop(ir::Loop { seq }) => vec![*seq],
+                Instr::IfElse(ir::IfElse {
+                    consequent,
+                    alternative,
+                }) => vec![*consequent, *alternative],
+                _ => Vec::new(),
+            };
+            for child in children {
+                walk(local, child, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(local, local.entry_block(), &mut out);
+    out
+}
+
 /// Project-level structural ceiling for the old single-leaf cases.
 /// The exact engine failure threshold is implementation-dependent; this
 /// test pins the shape that downstream work had to avoid with a skip
@@ -388,12 +418,13 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
     }
 }
 
-/// Every per-call private-tag handler must target `$unwind_save` after a
-/// successful reservation and the live-restart loop after synchronous
+/// Above `SHARED_UNWIND_BOUNDARY_MIN_CALLS`, every per-call `try_table`
+/// must catch the private unwind tag to the one shared catch block, and
+/// exactly one shared handler must branch to `$unwind_save` after a
+/// successful reservation and to the live-restart loop after synchronous
 /// allocation failure. A regression re-pointing a site at a leaf-local
 /// `$child_K` / `$dispatch_normal` would still validate as wasm but scramble
-/// the fork frame on the next REWIND. Exact target counts pin one statically
-/// indexed boundary per lexical call, with no function-wide selector handler.
+/// the fork frame on the next REWIND.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
 /// singleton leaf — exercises both first-leaf and last-leaf paths.
@@ -433,23 +464,30 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
                     .iter()
                     .filter(|&&target| target == unwind_save)
                     .count(),
-                n,
-                "{label} N={n}: each static call boundary must branch to unwind-save after commit",
+                1,
+                "{label} N={n}: only the shared handler branches to unwind-save after commit",
             );
             assert_eq!(
                 targets
                     .iter()
                     .filter(|&&target| target == restart_loop)
                     .count(),
-                n,
-                "{label} N={n}: each static call boundary must branch to restart on allocation failure",
+                1,
+                "{label} N={n}: only the shared handler branches to restart on allocation failure",
             );
+
+            let catch_labels = collect_catch_labels(local);
             assert_eq!(
-                targets.len(),
-                3 * n,
-                "{label} N={n}: expected one normal result-boundary branch, \
-                 one successful-unwind branch, and one abort-restart branch \
-                 per static call",
+                catch_labels.len(),
+                n,
+                "{label} N={n}: one private-tag try_table per static call",
+            );
+            let shared_target = catch_labels[0];
+            assert!(
+                catch_labels
+                    .iter()
+                    .all(|&target| target == shared_target),
+                "{label} N={n}: every call boundary must catch to the one shared block",
             );
         }
     }

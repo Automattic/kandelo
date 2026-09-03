@@ -1,0 +1,68 @@
+# Per-program manifest for Quickshell. See docs/package-management.md.
+#
+# Ports Quickshell 0.3.1, the QtQuick-based Wayland shell toolkit
+# Omarchy's bar and launcher are written in. The build keeps the
+# Wayland window layer (wlr-layer-shell for bars/overlays) and turns
+# off every feature whose dependency this kernel does not carry:
+# NETWORK pulls QtDBus (qtbase does not build it), SOCKETS' QML socket
+# API has no consumer in the Omarchy configs,
+# the SERVICE_* modules speak DBus/PipeWire/PAM/greetd, and X11,
+# Hyprland, i3, screencopy, session-lock and toplevel-management
+# target compositor surfaces wlcompositor does not expose.
+kind = "program"
+name = "quickshell"
+version = "0.3.1"
+kernel_abi = 44
+depends_on = [
+  "qtdeclarative@6.10.2",
+  "qtshadertools@6.10.2",
+  "qtbase@6.10.2",
+  "cli11@2.5.0",
+  "libdrm@2.4.120",
+  "wayland-protocols@1.45",
+  "libwayland@1.24.0",
+  "libxkbcommon@1.7.0",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+  "harfbuzz@10.1.0",
+  "libpng@1.6.43",
+  "libxml2@2.13.8",
+  "libffi@0.1.0",
+  "libiconv@1.17",
+  "zlib@1.3.1",
+  "libcxx@21.1.7",
+]
+
+[[host_tools]]
+name = "qmake"
+version_constraint = ">=6.10.2"
+probe = { args = ["-query", "QT_VERSION"], version_regex = "(\\d+\\.\\d+\\.\\d+)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "spirv-opt"
+version_constraint = ">=2024.1"
+probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.spirv-tools); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.spirv-tools); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.20"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-scanner" }
+
+[source]
+url = "https://github.com/quickshell-mirror/quickshell/archive/refs/tags/v0.3.1.tar.gz"
+sha256 = "218f6327293928bcb1f9b25728b336c4ab125f67fe1babd7d47313f890a16c99"
+provider = "archive"
+
+[license]
+spdx = "LGPL-3.0-only"
+url = "https://github.com/quickshell-mirror/quickshell/blob/v0.3.1/LICENSE"
+
+[build]
+script_path = "packages/registry/quickshell/build-quickshell.sh"
+
+[[outputs]]
+name = "quickshell"
+wasm = "quickshell.wasm"

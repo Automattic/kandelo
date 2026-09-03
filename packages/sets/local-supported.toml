@@ -63,6 +63,10 @@ name = "cairomm"
 class = "platform"
 
 [[packages]]
+name = "cli11"
+class = "platform"
+
+[[packages]]
 name = "coreutils"
 class = "user-software"
 
@@ -408,6 +412,26 @@ class = "platform"
 
 [[packages]]
 name = "posix-utils-lite"
+class = "user-software"
+
+[[packages]]
+name = "qtbase"
+class = "platform"
+
+[[packages]]
+name = "qtdeclarative"
+class = "platform"
+
+[[packages]]
+name = "qtgallery"
+class = "user-software"
+
+[[packages]]
+name = "qtshadertools"
+class = "platform"
+
+[[packages]]
+name = "quickshell"
 class = "user-software"
 
 [[packages]]

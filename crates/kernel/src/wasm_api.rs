@@ -5493,17 +5493,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             kernel_fchmodat(a1, path, channel_cstr_len!(path), a3 as u32, a4 as u32)
         }
 
-        // --- inotify stubs: create eventfd-like fd ---
-        247 | 381 => {
-            // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
-            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            match syscalls::sys_inotify_init(proc) {
-                Ok(fd) => fd,
-                Err(e) => -(e as i32),
-            }
-        }
-        248 => 1, // SYS_INOTIFY_ADD_WATCH: return dummy watch descriptor
-        249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
+        // --- inotify: unimplemented. A fake-success fd never delivers
+        // events, which defeats the polling fallback in Qt's
+        // QFileSystemWatcher and glib's GFileMonitor — both only fall
+        // back when inotify_init fails. ---
+        247 | 381 => -(Errno::ENOSYS as i32), // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
+        248 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_ADD_WATCH
+        249 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_RM_WATCH
 
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node

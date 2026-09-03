@@ -21,10 +21,17 @@ describe("instrumented ABORT_UNWINDING", () => {
       // The outer function has a roughly 72 KiB scalar payload. Its caller
       // (run) first commits a small frame into the root chunk, then outer's
       // reservation requires a second mapping where failure is injected.
+      // Every local is read after the call site: the instrumenter's scalar
+      // liveness filter drops dead locals from the frame, and the fixture
+      // needs the full payload to reach the second mapping.
       const outerLocalCount = 9_000;
       const outerLocalInit = Array.from(
         { length: outerLocalCount },
         (_, index) => `i64.const ${index} local.set ${index}`,
+      ).join("\n");
+      const outerLocalReads = Array.from(
+        { length: outerLocalCount },
+        (_, index) => `local.get ${index} drop`,
       ).join("\n");
       const wat = `(module
         (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -32,7 +39,8 @@ describe("instrumented ABORT_UNWINDING", () => {
         (func $leaf (result i32) call $fork)
         (func $outer (result i32) (local ${"i64 ".repeat(outerLocalCount)})
           ${outerLocalInit}
-          call $leaf)
+          call $leaf
+          ${outerLocalReads})
         (func (export "run") (result i32) (local $saved i32)
           i32.const 7
           local.set $saved
@@ -159,10 +167,16 @@ describe("instrumented ABORT_UNWINDING", () => {
     try {
       const rawPath = join(dir, "abort-catch.wasm");
       const instrumentedPath = join(dir, "abort-catch.instrumented.wasm");
+      // As in the fixture above, every local is read after the call site so
+      // the scalar liveness filter keeps the full payload in the frame.
       const outerLocalCount = 9_000;
       const outerLocalInit = Array.from(
         { length: outerLocalCount },
         (_, index) => `i64.const ${index} local.set ${index}`,
+      ).join("\n");
+      const outerLocalReads = Array.from(
+        { length: outerLocalCount },
+        (_, index) => `local.get ${index} drop`,
       ).join("\n");
       const wat = `(module
         (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -198,6 +212,7 @@ describe("instrumented ABORT_UNWINDING", () => {
           local.set $guard
           i32.const 2
           call $recurse
+          ${outerLocalReads}
           local.get $guard
           i32.add))`;
       const watPath = join(dir, "abort-catch.wat");

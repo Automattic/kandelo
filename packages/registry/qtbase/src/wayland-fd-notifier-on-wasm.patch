@@ -1,0 +1,131 @@
+Pump the wayland display fd from the main loop, not reader threads.
+
+On this wasm port every guest thread is a Web Worker, and Chromium
+compiles the whole program module again for each worker — ~600 MB of
+machine code per thread for a Qt client (see
+docs/browser-support.md#quickshell-qml-limits). Both QPA pump threads go:
+the main thread becomes the display's only reader, woken by a
+QSocketNotifier on the display fd, and it dispatches the default and
+frame event queues itself in flushRequests() — which the dispatcher's
+aboutToBlock/awake hooks already call on every loop turn. The threads
+cannot be removed one at a time: with any second reader thread parked in
+poll() after wl_display_prepare_read(), the main thread's
+wl_display_read_events() blocks on libwayland's reader barrier until
+that thread reads, freezing input. waitForFrameSync() would spin its
+timeout without a dispatcher thread, but only the wayland-egl and Vulkan
+integrations call it and this port renders through wl_shm.
+
+diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
+--- a/src/plugins/platforms/wayland/qwaylanddisplay.cpp	2026-09-02 14:40:42
++++ b/src/plugins/platforms/wayland/qwaylanddisplay.cpp	2026-09-02 15:02:20
+@@ -59,6 +59,7 @@
+ #include <QtWaylandClient/private/qwayland-pointer-warp-v1.h>
+ 
+ #include <QtCore/private/qcore_unix_p.h>
++#include <QtCore/qsocketnotifier.h>
+ 
+ #include <QtCore/QAbstractEventDispatcher>
+ #include <QtGui/qpa/qwindowsysteminterface.h>
+@@ -349,12 +350,6 @@
+ 
+ QWaylandDisplay::~QWaylandDisplay(void)
+ {
+-    if (m_eventThread)
+-        m_eventThread->stop();
+-
+-    if (m_frameEventQueueThread)
+-        m_frameEventQueueThread->stop();
+-
+     if (mSyncCallback)
+         wl_callback_destroy(mSyncCallback);
+ 
+@@ -418,10 +413,8 @@
+ void QWaylandDisplay::reconnect()
+ {
+     qCWarning(lcQpaWayland) << "Attempting wayland reconnect";
+-    m_eventThread->stop();
+-    m_frameEventQueueThread->stop();
+-    m_eventThread->wait();
+-    m_frameEventQueueThread->wait();
++    delete m_readNotifier;
++    m_readNotifier = nullptr;
+ 
+     qDeleteAll(mWaitingScreens);
+     mWaitingScreens.clear();
+@@ -522,27 +515,48 @@
+ 
+ void QWaylandDisplay::flushRequests()
+ {
+-    m_eventThread->readAndDispatchEvents();
++    while (wl_display_prepare_read(mDisplay) != 0) {
++        if (wl_display_dispatch_pending(mDisplay) < 0) {
++            checkWaylandError();
++            return;
++        }
++    }
++    wl_display_read_events(mDisplay);
++
++    if (wl_display_dispatch_pending(mDisplay) < 0) {
++        checkWaylandError();
++        return;
++    }
++
++    if (m_frameEventQueue
++        && wl_display_dispatch_queue_pending(mDisplay, m_frameEventQueue) < 0) {
++        checkWaylandError();
++        return;
++    }
++
++    wl_display_flush(mDisplay);
+ }
+ 
+-// We have to wait until we have an eventDispatcher before creating the eventThread,
+-// otherwise forceRoundTrip() may block inside _events_read() because eventThread is
+-// polling.
++// On this wasm port every guest thread is a Web Worker holding its own
++// compiled copy of the whole program module, so both event pump threads are
++// gone: the main thread is the display's only reader, woken by a
++// QSocketNotifier on the display fd, and it dispatches the default and the
++// frame event queues itself in flushRequests() — which the dispatcher's
++// aboutToBlock/awake hooks already call on every loop turn. A second reader
++// thread would also park the main thread's wl_display_read_events() on
++// libwayland's reader barrier until that thread reads. waitForFrameSync()
++// would spin its timeout without a dispatcher thread, but only the
++// wayland-egl and Vulkan integrations call it and this port renders through
++// wl_shm.
+ void QWaylandDisplay::initEventThread()
+ {
+-    m_eventThread.reset(
+-            new EventThread(mDisplay, /* default queue */ nullptr, EventThread::EmitToDispatch));
+-    connect(m_eventThread.get(), &EventThread::needReadAndDispatch, this,
+-            &QWaylandDisplay::flushRequests, Qt::QueuedConnection);
+-    connect(m_eventThread.get(), &EventThread::waylandError, this,
+-            &QWaylandDisplay::checkWaylandError, Qt::QueuedConnection);
+-    m_eventThread->start();
++    m_readNotifier = new QSocketNotifier(
++            wl_display_get_fd(mDisplay), QSocketNotifier::Read, this);
++    connect(m_readNotifier, &QSocketNotifier::activated, this,
++            &QWaylandDisplay::flushRequests);
+ 
+     // wl_display_disconnect() free this.
+     m_frameEventQueue = wl_display_create_queue(mDisplay);
+-    m_frameEventQueueThread.reset(
+-            new EventThread(mDisplay, m_frameEventQueue, EventThread::SelfDispatch));
+-    m_frameEventQueueThread->start();
+ }
+ 
+ void QWaylandDisplay::checkWaylandError()
+diff -ru a/src/plugins/platforms/wayland/qwaylanddisplay_p.h b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
+--- a/src/plugins/platforms/wayland/qwaylanddisplay_p.h	2026-09-02 14:40:42
++++ b/src/plugins/platforms/wayland/qwaylanddisplay_p.h	2026-09-02 15:02:20
+@@ -304,9 +304,8 @@
+         void *data = nullptr;
+     };
+     struct wl_display *mDisplay = nullptr;
+-    std::unique_ptr<EventThread> m_eventThread;
++    QSocketNotifier *m_readNotifier = nullptr;
+     wl_event_queue *m_frameEventQueue = nullptr;
+-    QScopedPointer<EventThread> m_frameEventQueueThread;
+     QList<QWaylandScreen *> mWaitingScreens;
+     QList<QWaylandScreen *> mScreens;
+     QPlatformPlaceholderScreen *mPlaceholderScreen = nullptr;

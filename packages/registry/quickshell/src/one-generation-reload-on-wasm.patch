@@ -1,0 +1,55 @@
+Destroy the old engine generation before building its replacement.
+
+Upstream builds the new generation first and only destroys the old one
+after a successful load, so a config reload briefly holds two complete
+generations — two QML engines, two window sets, two sets of worker
+threads. On this host every guest pthread is a Web Worker and Chromium
+compiles the whole quickshell module again for each worker, so the
+reload transient roughly doubles the tab's compiled-code footprint
+(measured 5 GB -> 10 GB on a shell swap) and crosses the ~10 GB tab
+ceiling (see docs/browser-support.md#quickshell-qml-limits). Tear the
+old generation down completely, then build the new one from a clean
+event-loop turn. The trade: a config file that fails to load leaves no
+running shell instead of falling back to the old one.
+
+diff -ru a/src/core/rootwrapper.cpp b/src/core/rootwrapper.cpp
+--- a/src/core/rootwrapper.cpp	2026-09-02 17:26:26
++++ b/src/core/rootwrapper.cpp	2026-09-02 17:26:26
+@@ -10,6 +10,7 @@
+ #include <qqmlcomponent.h>
+ #include <qqmlengine.h>
+ #include <qquickitem.h>
++#include <qtimer.h>
+ #include <qtmetamacros.h>
+ #include <qurl.h>
+ 
+@@ -206,7 +207,28 @@
+ 	}
+ }
+ 
+-void RootWrapper::onWatchedFilesChanged() { this->reloadGraph(false); }
++void RootWrapper::onWatchedFilesChanged() {
++	auto* old = this->generation;
++
++	if (old == nullptr) {
++		this->reloadGraph(false);
++		return;
++	}
++
++	// One generation at a time: this host cannot hold the memory of two
++	// live engine generations, so tear the old one down completely before
++	// building its replacement instead of building first and swapping.
++	qInfo() << "Reloading configuration...";
++	QObject::disconnect(old, nullptr, this, nullptr);
++	this->generation = nullptr;
++	QuickshellSettings::reset();
++
++	QObject::connect(old, &QObject::destroyed, this, [this]() {
++		QTimer::singleShot(0, this, [this]() { this->reloadGraph(false); });
++	});
++
++	old->destroy();
++}
+ 
+ void RootWrapper::updateTooling() {
+ 	if (!this->generation) return;
