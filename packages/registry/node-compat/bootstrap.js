@@ -4585,6 +4585,112 @@ globalThis.require = _makeRequire(
         : process.cwd() + '/repl'
 );
 
+// --- Native ESM bare-specifier bridge ---------------------------------------
+// The SpiderMonkey shell module loader resolves every import specifier as a
+// file path. A bare specifier such as `import ... from "fs"` therefore becomes
+// `//fs` and fails with "can't open //fs". Node treats a bare specifier (one
+// that does not start with "./", "../", or "/") as a builtin or a node_modules
+// package. We route those through the existing node-compat resolver so that a
+// natively-loaded ES module receives the same object `require()` would return.
+//
+// The C shell loader (js/src/shell/ModuleLoader.cpp, patched via
+// patches/0015-kandelo-esm-bare-specifier.patch) calls __kandeloResolveBare for
+// any bare specifier. We return a synthetic module *path* (a stable token) and
+// stash the generated ES-module source in __kandeloBareSources under that same
+// token; the loader's fetchSource() serves it instead of reading a file. The
+// synthetic source reads the real module object back out of __kandeloBareModules
+// so the namespace's `default` and named exports are live references to the
+// object require() produced. All namespace generation stays here in JS.
+globalThis.__kandeloBareModules = Object.create(null);
+globalThis.__kandeloBareSources = Object.create(null);
+
+// Identifiers that cannot appear after `export const` (reserved words). Own
+// enumerable keys that collide with these are exposed only via the default
+// export, matching the safe subset Node's ESM interop provides for CJS.
+const _esmReservedNames = new Set([
+    'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
+    'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false',
+    'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new',
+    'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try',
+    'typeof', 'var', 'void', 'while', 'with', 'yield', 'let', 'static',
+    'implements', 'interface', 'package', 'private', 'protected', 'public',
+    'await',
+]);
+
+function _makeBareEsmSource(token, obj) {
+    const keyJson = JSON.stringify(token);
+    let src = 'const __m = globalThis.__kandeloBareModules[' + keyJson + '];\n' +
+        'export default __m;\n';
+    if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
+        const seen = Object.create(null);
+        let keys;
+        try {
+            keys = Object.keys(obj);
+        } catch (_e) {
+            keys = [];
+        }
+        for (const key of keys) {
+            if (key === 'default') continue;
+            if (seen[key]) continue;
+            if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) continue;
+            if (_esmReservedNames.has(key)) continue;
+            seen[key] = true;
+            src += 'export const ' + key + ' = __m[' + JSON.stringify(key) + '];\n';
+        }
+    }
+    return src;
+}
+
+globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
+    if (typeof specifier !== 'string' || specifier.length === 0) return null;
+    // Only bare specifiers reach here, but guard against relative/absolute in
+    // case a caller passes them: those are not our responsibility.
+    if (specifier.startsWith('./') || specifier.startsWith('../') ||
+        specifier.startsWith('/')) {
+        return null;
+    }
+
+    let bareName = specifier;
+    if (bareName.startsWith('node:')) bareName = bareName.slice(5);
+
+    let token;
+    let obj;
+    if (_builtinModules[bareName] !== undefined) {
+        // Node builtin (with or without the `node:` prefix). Dedup `fs` and
+        // `node:fs` onto a single synthetic module.
+        token = '/__kandelo_bare__/builtin/' + bareName;
+        obj = _builtinModules[bareName];
+    } else {
+        // node_modules package. Resolve the concrete file so the token (and the
+        // native loader's module registry) dedups by real path, then load the
+        // object through the ordinary node-compat require so CJS interop and the
+        // process-global module cache apply.
+        const base = (typeof referrerPath === 'string' && referrerPath.length > 0)
+            ? referrerPath
+            : (process.cwd() + '/repl');
+        const basedir = path.dirname(base);
+        let resolvedPath = null;
+        try {
+            resolvedPath = _resolveFile(specifier, basedir);
+        } catch (_e) {
+            resolvedPath = null;
+        }
+        if (!resolvedPath) return null;
+        token = '/__kandelo_bare__/pkg' + resolvedPath;
+        try {
+            obj = _makeRequire(base)(specifier);
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    if (globalThis.__kandeloBareSources[token] === undefined) {
+        globalThis.__kandeloBareModules[token] = obj;
+        globalThis.__kandeloBareSources[token] = _makeBareEsmSource(token, obj);
+    }
+    return token;
+};
+
 // Node.js globals
 globalThis.process = process;
 globalThis.Buffer = Buffer;
