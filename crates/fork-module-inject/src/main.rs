@@ -65,13 +65,18 @@ const DRIVE_EXECUTE_EXPORT: &str = "fm_drive_execute";
 /// plan step it drives (Phase 6 item 3c). Exported by `crates/fork-module/src/
 /// lib.rs`; Rust owns the counter, the injected loop owns the `call_indirect`.
 const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
-/// The shared Wasm-GC transit table (`anyref`) the guest's `_gc_allocate`
-/// publishes every reconstructed struct/array/i31 into at slot `recipe + 1`
-/// (STORE #2). The injected drive loop reads it back with `table.get` +
-/// `ref.is_null` after each ALLOC step to assert the guest published a live
-/// object. MUST match the guest's own import name and element type
-/// (`crates/fork-instrument/src/module_gc_codec.rs`) so the host binds the SAME
-/// table object to both the guest and this module.
+/// The shared Wasm-GC transit table (`(ref null any)`) the guest's
+/// `_gc_allocate` publishes every reconstructed struct/array/i31 into at slot
+/// `recipe + 1` (STORE #2). The injected drive loop reads it back with
+/// `table.get` + `ref.is_null` after each ALLOC step to assert the guest
+/// published a live object.
+///
+/// M1: the fork-module DEFINES this table as a local table and EXPORTS it
+/// under this name — Rust cannot emit an anyref table, so the injector is
+/// where the module acquires ownership of it. The guest imports the
+/// fork-module's export (`crates/fork-instrument/src/module_gc_codec.rs`)
+/// instead of a standalone host-provided table, so this name must still match
+/// the guest's import name/element type exactly.
 const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
@@ -288,17 +293,13 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     // The shared Wasm-GC transit table (STORE #2) the guest's `_gc_allocate`
     // publishes every reconstructed struct/array/i31 into at slot `recipe + 1`.
     // The shim reads it back after each ALLOC to assert a live object survived.
-    // Declared exactly as the guest declares it (`env.__wpk_fork_ref_gc_transit`,
-    // `anyref`, initial 1) so the host binds the SAME table object to both — see
-    // `crates/fork-instrument/src/module_gc_codec.rs`.
-    let (transit_table, _transit_import_id) = module.add_import_table(
-        IMPORT_MODULE,
-        TRANSIT_TABLE_IMPORT,
-        false,
-        1,
-        None,
-        RefType::ANYREF,
-    );
+    //
+    // M1: the fork-module OWNS the (ref null any) GC transit table and EXPORTS it,
+    // so the guest imports the module's table (not a standalone JS provider). Rust
+    // cannot emit an anyref table, so define it here in the injector.
+    let transit_table = module.tables.add_local(false, 1, None, RefType::ANYREF);
+    module.tables.get_mut(transit_table).name = Some(TRANSIT_TABLE_IMPORT.to_string());
+    module.exports.add(TRANSIT_TABLE_IMPORT, transit_table);
 
     // The merged, host-owned static-root catalog (`anyref`) the shim reads with
     // `table.get` on a DRIVE_OP_STATIC_ROOT step. Initial size 0; the host grows
@@ -501,9 +502,118 @@ fn main() -> Result<()> {
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
-         {DRIVE_EXECUTE_EXPORT} + imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, \
-         {DRIVE_TABLE_IMPORT}, {TRANSIT_TABLE_IMPORT}, {STATIC_ROOT_CATALOG_IMPORT}}})",
+         {DRIVE_EXECUTE_EXPORT} + exported {TRANSIT_TABLE_IMPORT} (module-owned, M1) + \
+         imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, {DRIVE_TABLE_IMPORT}, \
+         {STATIC_ROOT_CATALOG_IMPORT}}})",
         out_bytes.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! M1 task 2: the injector must make the fork-module OWN + EXPORT the
+    //! `(ref null any)` GC transit table (`__wpk_fork_ref_gc_transit`) rather
+    //! than import it from a standalone JS-supplied table. This test builds a
+    //! minimal fixture module exposing just the Rust helper exports the two
+    //! `inject*` passes look up (`fm_funcref_ordinal`, `fm_drive_bump`,
+    //! `fm_static_root_slot`) plus a linear memory, runs both injection passes
+    //! against it exactly as `main` does, and re-parses the emitted bytes to
+    //! assert on the resulting import/export sections. A real compiled
+    //! `fork_module.wasm` isn't needed: the fixture only has to satisfy the
+    //! lookups `inject`/`inject_drive_execute` perform.
+
+    use super::*;
+
+    /// Add a stub export `name: (params) -> results` whose body pushes a zero
+    /// constant per result type. The injector never calls into these bodies in
+    /// this test (it only needs the export *shape* to resolve `call`/
+    /// `call_indirect` targets it wires up), so the bodies are placeholders.
+    fn add_stub_export(
+        module: &mut Module,
+        name: &str,
+        params: &[ValType],
+        results: &[ValType],
+    ) {
+        let mut builder = FunctionBuilder::new(&mut module.types, params, results);
+        let args: Vec<_> = params.iter().map(|ty| module.locals.add(*ty)).collect();
+        {
+            let mut body = builder.func_body();
+            for result_ty in results {
+                match result_ty {
+                    ValType::I32 => {
+                        body.i32_const(0);
+                    }
+                    other => panic!("add_stub_export: unsupported result type {other:?}"),
+                }
+            }
+        }
+        let f = builder.finish(args, &mut module.funcs);
+        module.exports.add(name, f);
+    }
+
+    /// A minimal module exposing exactly the surface `inject` and
+    /// `inject_drive_execute` require: the three Rust helper exports they look
+    /// up by name, and a linear memory for `fm_drive_execute`'s address math.
+    fn fixture_module() -> Module {
+        let mut module = Module::default();
+        module.memories.add_local(false, false, 1, None, None);
+
+        add_stub_export(&mut module, ORDINAL_HELPER_EXPORT, &[ValType::I32], &[ValType::I32]);
+        add_stub_export(&mut module, DRIVE_BUMP_HELPER_EXPORT, &[], &[]);
+        add_stub_export(
+            &mut module,
+            STATIC_ROOT_SLOT_HELPER_EXPORT,
+            &[ValType::I32],
+            &[ValType::I32],
+        );
+
+        module
+    }
+
+    #[test]
+    fn transit_table_is_module_owned_export_not_import() {
+        let mut module = fixture_module();
+        inject(&mut module).expect("inject __wpk_fork_ref_decode_funcref");
+        inject_drive_execute(&mut module).expect("inject fm_drive_execute");
+
+        // Round-trip through bytes and re-parse with a fresh walrus `Module`,
+        // so the assertion reflects what actually lands in the wasm binary's
+        // import/export sections, not just in-memory IR state.
+        let out_bytes = module.emit_wasm();
+        let reparsed = Module::from_buffer(&out_bytes).expect("reparse injected module");
+
+        let still_imported = reparsed
+            .imports
+            .iter()
+            .any(|import| import.name == TRANSIT_TABLE_IMPORT);
+        assert!(
+            !still_imported,
+            "{TRANSIT_TABLE_IMPORT} must no longer be an import after injection (M1)"
+        );
+
+        let exported_as_table = reparsed.exports.iter().any(|export| {
+            export.name == TRANSIT_TABLE_IMPORT && matches!(export.item, ExportItem::Table(_))
+        });
+        assert!(
+            exported_as_table,
+            "{TRANSIT_TABLE_IMPORT} must be exported as a table after injection (M1)"
+        );
+
+        // The other imported tables (function catalog, drive table, static-root
+        // catalog) are unaffected by this change and must still be imports.
+        for still_import_name in [
+            FUNCTION_CATALOG_IMPORT,
+            DRIVE_TABLE_IMPORT,
+            STATIC_ROOT_CATALOG_IMPORT,
+        ] {
+            assert!(
+                reparsed
+                    .imports
+                    .iter()
+                    .any(|import| import.name == still_import_name),
+                "{still_import_name} should remain imported"
+            );
+        }
+    }
 }
