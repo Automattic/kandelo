@@ -92,6 +92,7 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       // the browser pointer the user has nothing to aim with.
       return { ...genericDemoPresentation("kms"), hostPointer: true };
     case "modeset":
+    case "scummvm":
       return genericDemoPresentation("kms");
     default:
       return null;

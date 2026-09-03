@@ -56,11 +56,15 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import {
+  KANDELO_DEMO_CONFIG_PATH,
   genericDemoPresentation,
+  parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoIngest,
   resolveDemoPresentation,
+  validateKandeloDemoConfig,
+  type DemoIngestConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
@@ -139,6 +143,10 @@ import {
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
 import { stageConfiguredAssets } from "./configured-assets";
+import {
+  SCUMMVM_RUNTIME_FILES,
+  type PackageRuntimeFile,
+} from "./package-runtime-files";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -289,6 +297,52 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/quickshell.wasm", {
     query: "?url", import: "default",
   }),
+  // scummvm declares [[runtime_files]] alongside its [[outputs]], so the
+  // resolver mirrors the whole package closure under a `scummvm/` directory
+  // instead of at the flat `scummvm.wasm` path (see docs/package-management.md,
+  // "The host resolver applies the same rule automatically ...").
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/scummvm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/scummvm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/share/scummvm/scummremastered.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/share/scummvm/scummremastered.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/share/scummvm/scummmodern.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/share/scummvm/scummmodern.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/unzip.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/unzip.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(
@@ -304,6 +358,41 @@ async function optionalBinaryUrl(
       `or for package-owned binaries: ` +
       `cargo xtask build-deps resolve <package>`,
   );
+}
+
+/** Fetch one member of a program package's resolver mirror closure. A package
+ *  that declares `[[runtime_files]]` has its executable and its data files
+ *  mirrored together under `programs/<arch>/<package>/`, so one artifact path
+ *  addresses both halves. */
+async function fetchPackageArtifact(
+  packageName: string,
+  artifact: string,
+): Promise<ArrayBuffer> {
+  const member = `${packageName}/${artifact}`;
+  const url = await optionalBinaryUrl([
+    `../../../../../local-binaries/programs/wasm32/${member}`,
+    `../../../../../binaries/programs/wasm32/${member}`,
+  ], member);
+  return fetch(url).then(failOn(member)).then((r) => r.arrayBuffer());
+}
+
+/** Install a package's declared runtime files into the VFS image at the guest
+ *  paths and modes its manifest declares. */
+async function stagePackageRuntimeFiles(
+  fs: MemoryFileSystem,
+  packageName: string,
+  runtimeFiles: readonly PackageRuntimeFile[],
+): Promise<void> {
+  for (const runtimeFile of runtimeFiles) {
+    const bytes = await fetchPackageArtifact(packageName, runtimeFile.artifact);
+    ensureDirRecursive(fs, dirname(runtimeFile.guestPath));
+    writeVfsBinary(
+      fs,
+      runtimeFile.guestPath,
+      new Uint8Array(bytes),
+      runtimeFile.mode,
+    );
+  }
 }
 
 const HTTP_PORT = 8080;
@@ -430,6 +519,7 @@ const LIVE_DEMO_IDS = [
   "wayland",
   "hyprland",
   "omarchy",
+  "scummvm",
 ] as const;
 
 type LiveDemoId = (typeof LIVE_DEMO_IDS)[number];
@@ -548,6 +638,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  scummvm: {
+    image: "shell",
+    features: ["kms"],
+  },
 };
 
 const DEFAULT_DEMO_FOR_VFS_IMAGE: Record<LiveVfsImage, LiveDemoId> = {
@@ -629,6 +723,15 @@ interface LiveProfile {
    * to fill them. Browser-only page wiring; runs until the shell exits.
    */
   hyprlandDemo: boolean;
+  /**
+   * Stage ScummVM alone on the display: SDL2's KMSDRM backend takes
+   * /dev/dri/card0 as DRM master and renders GLES2 fullscreen, and
+   * audio flows through SDL2's OSS backend on /dev/dsp into the
+   * machine-level PCM driver. No game is registered: the demo declares a
+   * game-data upload and the user adds what they load from the ScummVM
+   * launcher. Runs until ScummVM exits.
+   */
+  scummvmDemo: boolean;
   /**
    * Like hyprlandDemo, plus the desktop shell Omarchy is made of: Waybar on a
    * wlr-layer-shell surface reserving the top strip, `klauncher` on
@@ -1135,6 +1238,7 @@ function customVfsProfile(
     waylandDemo: false,
     hyprlandDemo: false,
     omarchyDemo: false,
+    scummvmDemo: false,
   };
 }
 
@@ -1187,6 +1291,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     waylandDemo: normalized === "wayland",
     hyprlandDemo: normalized === "hyprland",
     omarchyDemo: normalized === "omarchy",
+    scummvmDemo: normalized === "scummvm",
   };
 }
 
@@ -1485,6 +1590,11 @@ async function bootProfile(
             : "staging wayland binaries...",
       );
       await stageWaylandDesktopRuntime(buildFs, profile);
+      assertCurrent();
+    }
+    if (profile.scummvmDemo) {
+      tick("staging scummvm runtime...");
+      await stageScummvmRuntime(buildFs);
       assertCurrent();
     }
   }
@@ -1851,6 +1961,69 @@ async function bootProfile(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           tick(`wayland failed: ${msg}`);
+        }
+      })();
+    } else if (profile.scummvmDemo) {
+      // ScummVM alone on the display: SDL2's KMSDRM backend takes
+      // /dev/dri/card0 as DRM master and renders GL fullscreen — the same
+      // proven path as programs/sdl2 (see host/test/sdl2.test.ts). No
+      // compositor. Audio needs no demo wiring: SDL2's OSS backend writes
+      // /dev/dsp, which the machine-level PCM driver plays. The pointer is
+      // owned by the Modeset pane (event1) like the other KMS demos; this
+      // source feeds keyboard and wheel.
+      const kernelForScummvm = kernel;
+      void (async () => {
+        try {
+          tick("attaching input source...");
+          kernelForScummvm.attachInputSource(
+            new BrowserInputSource(window, { pointer: false, wheel: true }),
+            { width: 1920, height: 1080 },
+          );
+
+          // Report the pane's DEVICE-pixel size so the connector advertises
+          // it as the mode: SDL2 renders at one guest pixel per physical
+          // pixel instead of at the 1920x1080 default, which a HiDPI panel
+          // would otherwise upscale into a soft image. The GL bridge sizes
+          // the canvas drawing buffer to the same mode (see kernel.ts,
+          // connectorModeSize) so the render covers the whole surface.
+          tick("sizing display mode...");
+          if (!host.getKmsDisplaySize(1)) {
+            const pane = await settledPaneDeviceSize();
+            if (pane) kernelForScummvm.kmsSetDisplaySize(1, pane.width, pane.height);
+          }
+
+          // Seed the config into the live scratch home. The demo user's home
+          // is a scratch mount, so the VFS image cannot carry this file — see
+          // SCUMMVM_INI_PATH. Mode 0666 because the host write does not set an
+          // owner and ScummVM rewrites this file as the demo user whenever the
+          // launcher adds a game.
+          tick("seeding scummvm config...");
+          await kernelForScummvm.writeFileToVfs(
+            SCUMMVM_INI_PATH,
+            new TextEncoder().encode(
+              scummvmIni(Math.round((window.devicePixelRatio || 1) * 100)),
+            ),
+            0o666,
+          );
+
+          tick("running scummvm...");
+          await kernelForScummvm.spawnFromVfs(
+            "/usr/local/bin/scummvm",
+            ["scummvm", `--config=${SCUMMVM_INI_PATH}`],
+            {
+              env: [...SHELL_ENV, ...SCUMMVM_SDL_ENV],
+              cwd: DEMO_HOME,
+              uid: DEMO_UID,
+              gid: DEMO_GID,
+            },
+          ).then(({ exit }) => exit).then(
+            () => tick("scummvm exited"),
+            (err: unknown) =>
+              tick(`scummvm failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          tick(`scummvm demo failed: ${msg}`);
         }
       })();
     } else if (profile.hyprlandDemo || profile.omarchyDemo) {
@@ -2295,6 +2468,123 @@ async function stageWaylandDesktopRuntime(
     writeVfsBinary(fs, `${OMARCHY_THEME_DIR}/${name}/background.kwlp`,
       image ?? renderWallpaperKwlp(theme), 0o644);
   }
+}
+
+/** SDL2 backend selection for an unmodified upstream binary. Kandelo has
+ *  no libudev, and `SDL_evdev.c::SDL_EVDEV_Init`'s no-udev branch leaves
+ *  the device list empty, so SDL finds no keyboard or mouse unless
+ *  `SDL_EVDEV_DEVICES` names them (class 2 = keyboard, 1 = mouse — the
+ *  kernel's two virtual input devices). `programs/sdl2` sets the same
+ *  three variables in-process; ScummVM is upstream source, so the demo
+ *  supplies them through the environment instead. */
+const SCUMMVM_SDL_ENV = [
+  "SDL_VIDEODRIVER=kmsdrm",
+  "SDL_AUDIODRIVER=dsp",
+  "SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1",
+];
+/** ScummVM rewrites its config whenever the user adds a game or changes an
+ *  option, so it is the demo user's state and belongs in the demo user's home.
+ *  `/home/maker` is a scratch mount (host/src/vfs/default-mounts.ts), which
+ *  shadows whatever the VFS image holds at that path — so this file cannot be
+ *  staged into the image and is seeded into the live home at session start
+ *  instead. An /etc path would be root-owned image content and every launcher
+ *  edit would fail with "Unable to write configuration file". */
+const SCUMMVM_INI_PATH = `${DEMO_HOME}/scummvm.ini`;
+/** Where loaded game data lands. The demo registers no game: ScummVM's own
+ *  "Add Game" browser starts here, and the user picks what they loaded. */
+const SCUMMVM_GAMES_DIR = "/usr/share/scummvm-games";
+/** ScummVM lays its GUI out on a grid of `resolution / scaleFactor`, and
+ *  `scaleFactor` starts from `getHiDPIScreenFactor()` — 1.0 on the KMSDRM
+ *  backend, which has no notion of the browser's device-pixel ratio. The
+ *  connector mode is device pixels, so on a HiDPI panel that grid would be
+ *  the full physical resolution and every widget would come out half size.
+ *  `gui_scale` (a percentage) restores it: at the device-pixel ratio the
+ *  GUI is laid out in CSS pixels and rendered at physical ones. */
+function scummvmIni(guiScalePercent: number): string {
+  return `[scummvm]
+gui_scale=${guiScalePercent}
+browser_lastpath=${SCUMMVM_GAMES_DIR}
+`;
+}
+
+/**
+ * Game data is the user's own: no Kandelo package or release carries a
+ * commercial SCUMM game, so the demo takes it as an upload. The archive lands
+ * next to where it will live and `onLoad` extracts it in place — ScummVM's
+ * "Add Game" browser reads the directory when the user opens it, so nothing
+ * has to restart and the launcher stays where it was.
+ */
+const SCUMMVM_GAME_DATA_INGEST: DemoIngestConfig = {
+  accept: [".zip"],
+  targetPath: `${SCUMMVM_GAMES_DIR}/upload.zip`,
+  maxBytes: 64 * 1024 * 1024,
+  label: "Load game data",
+  onLoad: {
+    restart: `unzip -o -q ${SCUMMVM_GAMES_DIR}/upload.zip -d ${SCUMMVM_GAMES_DIR}`
+      + ` && rm -f ${SCUMMVM_GAMES_DIR}/upload.zip`,
+  },
+};
+
+async function stageScummvmRuntime(fs: MemoryFileSystem): Promise<void> {
+  const scummvmBytes = await fetchPackageArtifact("scummvm", "scummvm.wasm");
+  ensureDirRecursive(fs, "/usr/local/bin");
+  writeVfsBinary(fs, "/usr/local/bin/scummvm", new Uint8Array(scummvmBytes), 0o755);
+  await stagePackageRuntimeFiles(fs, "scummvm", SCUMMVM_RUNTIME_FILES);
+
+  // The upload arrives as one archive and the shell extracts it, so the demo
+  // needs an unzip on PATH.
+  const unzipUrl = await optionalBinaryUrl([
+    "../../../../../local-binaries/programs/wasm32/unzip.wasm",
+    "../../../../../binaries/programs/wasm32/unzip.wasm",
+  ], "unzip.wasm");
+  const unzipBytes = await fetch(unzipUrl)
+    .then(failOn("unzip.wasm"))
+    .then((r) => r.arrayBuffer());
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/usr/bin/unzip", new Uint8Array(unzipBytes), 0o755);
+
+  // The extraction runs as the demo user from the demo's shell, so the games
+  // directory is writable session state rather than read-only image content.
+  ensureOwnedDir(fs, SCUMMVM_GAMES_DIR, 0o775, DEMO_UID, DEMO_GID);
+  declareImageDemoIngest(fs, "scummvm", SCUMMVM_GAME_DATA_INGEST);
+}
+
+/**
+ * Declare an ingest capability in the image this demo composes.
+ *
+ * `/etc/kandelo/demo.json` is where a Kandelo image states what its demo can
+ * do, and `resolveDemoIngest` reads it from there. The live demos assemble
+ * their own image instead of downloading a published one, so the declaration
+ * belongs in the same file — merged over the base image's profiles, never
+ * replacing them. Writing it into the image also means a snapshot or a shared
+ * URL of this machine carries the capability with it.
+ */
+function declareImageDemoIngest(
+  fs: MemoryFileSystem,
+  profileId: string,
+  ingest: DemoIngestConfig,
+): void {
+  const existing = readOptionalVfsText(fs, KANDELO_DEMO_CONFIG_PATH);
+  let base: KandeloDemoConfig = { version: 1 };
+  if (existing !== null) {
+    const parsed = parseKandeloDemoConfig(existing);
+    if (parsed === null) {
+      throw new Error(
+        `${KANDELO_DEMO_CONFIG_PATH} declares an unsupported demo config version`,
+      );
+    }
+    base = parsed;
+  }
+  const merged: KandeloDemoConfig = {
+    ...base,
+    profiles: {
+      ...base.profiles,
+      [profileId]: { ...base.profiles?.[profileId], ingest },
+    },
+  };
+  validateKandeloDemoConfig(merged);
+  ensureDirRecursive(fs, dirname(KANDELO_DEMO_CONFIG_PATH));
+  writeVfsFile(fs, KANDELO_DEMO_CONFIG_PATH, JSON.stringify(merged), 0o644);
 }
 
 function ensureDemoHomes(fs: MemoryFileSystem): void {

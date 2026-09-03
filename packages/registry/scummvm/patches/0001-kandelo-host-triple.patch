@@ -1,0 +1,14 @@
+--- a/configure
++++ b/configure
+@@ -1992,6 +1992,11 @@
+ 	_host_cpu=aarch64
+ 	_host_alias=arm64-apple-darwin11
+ 	;;
++wasm32posix)
++	_host_os=linux
++	_host_cpu=wasm32
++	_endian=little
++	;;
+ wasm32-*)
+ 	_endian=little # the endian check below fails, but emscripten is always little endian anyway
+ 	_host_os=emscripten
