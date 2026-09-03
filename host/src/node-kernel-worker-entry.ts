@@ -2042,6 +2042,13 @@ async function handleVfork(
       forkChildThreadArgPtr: forkReplayContext?.argPtr,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+      // Phase 6 item 4: the borrowed (vfork) child now drives its continuation
+      // replay through the co-resident fork-module, so it needs the flag + the
+      // compiled module just like a COW child (`worker-main` relaxed the
+      // `!borrowedForkChild` gate). Without this the child would silently fall
+      // back to the JS engine and fail against the module-backed parent's
+      // Option-B journal image (which has no JS replay-event manifest).
+      ...forkModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
