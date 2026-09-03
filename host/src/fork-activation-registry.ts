@@ -647,7 +647,14 @@ export class ForkActivationRegistry {
   private references: ForkReferenceTransaction | null = null;
   private functions: ForkFunctionCatalog | null = null;
   private readonly staticRoots = new ForkStaticRootCatalog();
-  private readonly gcTransit = new ForkAnyrefTransitTable();
+  // The process-worker-owned Wasm-GC transit table bound to every activation's
+  // guest `__wpk_fork_ref_gc_transit` import (see `bindActivationImports` /
+  // `gcTransitTable()`). The co-resident fork-module's injected `fm_drive_execute`
+  // must read this SAME table object (STORE #2) to see what a guest's
+  // `_gc_allocate` published, so the worker can pass it in via the constructor and
+  // hand the identical table to `instantiateForkModule`. When not supplied a fresh
+  // one is minted, preserving every existing caller.
+  private readonly gcTransit: ForkAnyrefTransitTable;
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
 
   constructor(
@@ -656,7 +663,10 @@ export class ForkActivationRegistry {
     private readonly label: string,
     private readonly allocateScratch?: ForkReferenceScratchAllocate,
     private readonly deallocateScratch?: ForkReferenceScratchDeallocate,
-  ) {}
+    gcTransit?: ForkAnyrefTransitTable,
+  ) {
+    this.gcTransit = gcTransit ?? new ForkAnyrefTransitTable();
+  }
 
   registerActivation(registration: ForkActivationRegistration): void {
     this.requireIdle("register a module activation");

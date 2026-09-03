@@ -119,6 +119,7 @@ import {
   type ForkActivationReferenceReplayImports,
   type ForkActivationRegistration,
 } from "./fork-activation-registry";
+import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 import {
   buildForkExceptionImports,
   ForkExceptionBroker,
@@ -3484,6 +3485,15 @@ export async function centralizedWorkerMain(
       // coordinator through it. Flag-off is byte-identical: this whole branch is
       // skipped, no region is reserved, and no import is flipped.
       let forkModuleInstance: ForkModuleInstance | null = null;
+      // The process worker's single Wasm-GC transit table (STORE #2). It is the
+      // SAME object the guest publishes struct/array/i31 identities into (bound to
+      // every activation's `__wpk_fork_ref_gc_transit` import via the registry
+      // below) AND the object the co-resident fork-module's injected
+      // `fm_drive_execute` reads back after each ALLOC step, so the drive's
+      // post-allocate integrity check sees what the guest published. Created here,
+      // before the fork-module is instantiated (which happens before the registry),
+      // and handed to both.
+      const forkGcTransit = new ForkAnyrefTransitTable();
       // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
       // externref side table + broker token materialization). Null when the
       // fork-module is not instantiated (flag-off / borrowed child).
@@ -3574,6 +3584,9 @@ export async function centralizedWorkerMain(
             continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
           label: `pid=${pid}: fork-module`,
           hostCapabilities: forkModuleHostCapabilities.imports,
+          // STORE #2: the same transit table the registry binds to the guest, so
+          // the module's drive integrity check reads what the guest published.
+          transitTable: forkGcTransit.table,
         });
 
         // QUALIFYING PREDICATE for the module-backed continuation. All of:
@@ -3783,6 +3796,8 @@ export async function centralizedWorkerMain(
             `pid=${pid}: reference scratch`,
           );
         },
+        // Bind the guest's transit table to the SAME object the fork-module reads.
+        forkGcTransit,
       );
       // Every process instance, including a freshly reconstructed child, owns
       // the provenance manifest for any fork it may issue later.
@@ -6192,6 +6207,11 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
+          // STORE #2: the same transit table the thread registry binds to the
+          // guest, so the module's drive integrity check reads what the guest
+          // published. The registry is created before the fork-module on this
+          // path, so its guest transit table is available here directly.
+          transitTable: threadActivationRegistry!.gcTransitTable(),
         });
         threadForkModuleBackend = new ForkModuleContinuationBackend({
           exports: threadForkModuleInstance.exports,

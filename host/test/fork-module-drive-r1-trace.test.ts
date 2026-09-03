@@ -1,5 +1,5 @@
-// Phase 6 item 3c — EMPIRICAL trace + permanent regression cover for the GC
-// DRIVE `fm_after_alloc` R1 transit-read gap.
+// Phase 6 item 3c — EMPIRICAL trace + regression cover for the GC DRIVE
+// post-allocate integrity check, now reading the CORRECT store.
 //
 // WHAT THIS PINS DOWN
 // -------------------
@@ -7,43 +7,44 @@
 // (`fm_build_gc_plan`, crates/fork-codec/src/drive_plan.rs) emits a
 // `DRIVE_OP_ALLOC` step for EVERY typed-GC recipe — struct, array, AND i31 —
 // carrying that recipe's own id. The injected `fm_drive_execute` shim
-// (crates/fork-module-inject) `call`s the module's Rust `fm_after_alloc(recipe)`
-// after each ALLOC step (crates/fork-module/src/lib.rs:2775 -> after_alloc_impl
-// :831). `after_alloc_impl` reads `host_transit_read(generation, recipe + 1)`
-// through the engine-floor seam (host/src/fork-module-host-capabilities.ts:137)
-// and TRAPS (`unreachable`) on any non-success.
+// (crates/fork-module-inject) `call_indirect`s the guest's `_gc_allocate` for
+// each ALLOC step and then verifies the guest published a live GC object.
 //
-// The seam's `host_transit_read` only succeeds for a slot the HOST previously
-// staged via `host_transit_publish` (line 133). The ONLY caller of
-// `host_transit_publish` in the whole drive is PHASE B of the Rust
-// `drive_reconstruction` (crates/fork-codec/src/reference_replay.rs:391), which
-// publishes slots ONLY for `transit_rooted_recipes()` — the externref LEAVES
-// reachable from an aggregate/exnref consumer. It NEVER publishes a slot for a
-// struct/array/i31 AGGREGATE recipe (those aggregates never get a host identity;
-// their identity is a guest GC object).
+// THE FIX (what this file now locks in). The shim's post-ALLOC integrity check
+// reads STORE #2 — the shared Wasm-GC transit table `__wpk_fork_ref_gc_transit`,
+// the table the guest's `allocate` export publishes every struct/array/i31 into
+// at slot `recipe + 1` (crates/fork-instrument/src/module_gc_codec.rs) and that
+// `_gc_fill` consumes — with a wasm `table.get` + `ref.is_null`, trapping only on
+// a genuinely null (never-published) slot.
 //
-// CONSEQUENCE (measured below): for any graph that contains a typed-GC node, the
-// aggregate's ALLOC drives `fm_after_alloc(aggregate_id)` -> `host_transit_read(
-// aggregate_id + 1)`, a slot nobody published, so the seam returns EINVAL and the
-// drive TRAPS. This is why item 3c (the flag flip) is NOT wired: driving a real
-// multi-node typed graph through the module traps today. These tests capture the
-// exact seam trace and lock the shapes so the gap can never again be silently
-// uncovered. When the 3c fix lands (so the aggregate slot is legitimately
-// available at the R1 read, or the R1 assert is scoped to host-rooted leaves),
-// these `THREW`/`MISS` expectations flip to `completes`/`HIT` and the skipped
-// flag-on == flag-off equivalence test at the bottom becomes the gate.
+// Previously the shim `call`ed the module's Rust `fm_after_alloc(recipe)`, which
+// read STORE #1: the HOST-externref transit through `host_transit_read`
+// (host/src/fork-module-host-capabilities.ts), whose slot map is populated ONLY
+// by PHASE B of `drive_reconstruction` (crates/fork-codec/src/reference_replay.rs)
+// for externref LEAVES — NEVER for a struct/array/i31 AGGREGATE. So every typed
+// drive read an unpublished slot and TRAPPED. The commit that added this file
+// (db33d616f) measured that trap for struct→i31, struct↔array, mixed
+// struct+externref, and bare i31. Those `THREW`/`MISS` expectations are the ones
+// that FLIP here: with the store-#2 read, the guest's own `_gc_allocate` publish
+// satisfies the check and the drive COMPLETES.
 //
-// VEHICLE: the same real `fork_module` + real `host_transit_*` seam
-// (`createForkModuleHostCapabilities`) + a controlled mock guest bound into the
-// drive table as `fork-module-drive-shim.test.ts`, but seeding a REAL multi-node
-// reference graph (arena + `fm_begin_reference_replay`, which runs the REAL Rust
-// PHASE A/B and so populates the seam) plus the committed GC-codec fixture, then
-// the REAL `fm_build_gc_plan` + `fm_drive_execute`. `transitSlots` population is
-// done by PHASE B (deterministic Rust), independent of the guest, so the mock
-// guest is faithful for the trap: the gating check is the host-side published-slot
-// map, not anything the guest writes. The seam is INSTRUMENTED by wrapping its
-// import functions in the test only (production is byte-identical; no source or
-// ABI change).
+// In production STORE #1 and STORE #2 are the SAME `(ref null any)` table
+// (`ForkActivationRegistry.gcTransit`): `host_transit_publish` (PHASE B) and the
+// guest's `allocate` both write into it, at different slots. The bug was never
+// two tables — it was the Rust R1 read consulting the HOST's slot MAP (which only
+// tracks host-published externref leaves) instead of the table itself. This test
+// uses ONE `ForkAnyrefTransitTable` for both, exactly like production.
+//
+// VEHICLE: the real `fork_module` + real `host_transit_*` seam
+// (`createForkModuleHostCapabilities`) + a FAITHFUL guest double
+// (`fork-module-faithful-guest.ts`) bound into the drive table, seeding a REAL
+// multi-node reference graph (arena + `fm_begin_reference_replay`, running the
+// REAL Rust PHASE A/B) plus the committed GC-codec fixture, then the REAL
+// `fm_build_gc_plan` + `fm_drive_execute`. The faithful double's `gc_allocate`
+// publishes a live identity into STORE #2 at `recipe + 1` — the store the shim's
+// wasm check reads — mid-drive, mirroring the guest's real `table.set`. The seam
+// is INSTRUMENTED by wrapping its import functions in the test only (production is
+// byte-identical; no source or ABI change).
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -64,6 +65,7 @@ import {
   type ForkReferenceVector,
 } from "../src/fork-reference-segments";
 import { WPK_FORK_REFERENCE_TRANSACTION_OWNER } from "../src/generated/abi";
+import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 
 const PAGE = 65536;
 const PTR_WIDTH = 4 as const;
@@ -89,29 +91,11 @@ const GC_CODEC = new Uint8Array(
   readFileSync(new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url)),
 );
 
-// A mock guest exporting the three drive-table callees, each `(i32) -> ()`:
-// `gc_allocate`, `gc_fill`, `exception_materialize`. Each records its last arg
-// and packs an ordered call trace (alloc=1, fill=2, exn=3 -> `order()`), so the
-// test can prove which guest export ran. Compiled once with wat2wasm; embedded so
-// the test needs no build tooling (mirrors `fork-module-drive-shim.test.ts`).
-// prettier-ignore
-const MOCK_GUEST_BYTES = new Uint8Array([
-  0,97,115,109,1,0,0,0,1,9,2,96,1,127,0,96,0,1,127,3,9,8,0,0,0,1,1,1,1,1,6,26,5,127,1,65,127,11,127,1,65,127,11,127,1,65,127,11,127,1,65,0,11,127,1,65,0,11,7,96,8,11,103,99,95,97,108,108,111,99,97,116,101,0,0,7,103,99,95,102,105,108,108,0,1,21,101,120,99,101,112,116,105,111,110,95,109,97,116,101,114,105,97,108,105,122,101,0,2,9,97,108,108,111,99,95,97,114,103,0,3,8,102,105,108,108,95,97,114,103,0,4,7,101,120,110,95,97,114,103,0,5,3,115,101,113,0,6,5,111,114,100,101,114,0,7,10,98,8,23,0,32,0,36,0,35,3,65,1,106,36,3,35,4,65,10,108,65,1,106,36,4,11,23,0,32,0,36,1,35,3,65,1,106,36,3,35,4,65,10,108,65,2,106,36,4,11,23,0,32,0,36,2,35,3,65,1,106,36,3,35,4,65,10,108,65,3,106,36,4,11,4,0,35,0,11,4,0,35,1,11,4,0,35,2,11,4,0,35,3,11,4,0,35,4,11,
-]);
-
 const MODULE = new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm")));
-const MOCK_GUEST_MODULE = new WebAssembly.Module(MOCK_GUEST_BYTES);
-
-interface MockGuest {
-  gc_allocate: WebAssembly.ExportValue;
-  gc_fill: WebAssembly.ExportValue;
-  exception_materialize: WebAssembly.ExportValue;
-  order: () => number;
-  seq: () => number;
-}
 
 /** A REAL transit adapter over the production `(ref null any)` table (recipeId+1
- *  slot), exactly what `fork-module-gc-replay.test.ts` wires. */
+ *  slot), exactly what `fork-module-gc-replay.test.ts` wires. In production this
+ *  is the SAME table the guest publishes aggregates into and the shim reads. */
 function realTransit(table: ForkAnyrefTransitTable): ForkModuleTransitAdapter {
   return {
     publish: (recipeId, value) => {
@@ -186,16 +170,24 @@ interface ShapeTrace {
   publishes: SeamCall[];
   /** `host_begin_generation` -> ret observed (settles "a generation is opened"). */
   generations: number[];
-  /** `host_transit_read` calls made DURING `fm_drive_execute` (the R1 asserts). */
+  /** `host_transit_read` calls made DURING `fm_drive_execute`. With the store-#2
+   *  fix the drive no longer touches the host seam at all, so this is EMPTY. */
   driveReads: SeamCall[];
   /** `host_transit_read` calls made during PHASE B of `fm_begin_reference_replay`. */
   phaseBReads: SeamCall[];
+  /** Recipe ids the guest's `gc_allocate` published into STORE #2, in order. */
+  published: number[];
+  /** The transit slots (`recipe + 1`) non-null in STORE #2 after the drive. */
+  liveSlots: number[];
   threw: boolean;
   guestOrder: number;
+  guestSeq: number;
 }
 
-/** Drive one graph shape through the real module + real seam and capture the
- *  full trace. The seam is instrumented by wrapping its imports (test only). */
+/** Drive one graph shape through the real module + real seam + faithful guest and
+ *  capture the full trace. The seam is instrumented by wrapping its imports (test
+ *  only). ONE anyref transit table backs both the host seam (STORE #1 externref
+ *  PHASE B) and the guest/shim (STORE #2 aggregates), exactly like production. */
 function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
   const memory = new WebAssembly.Memory({ initial: 512, maximum: 16384, shared: true });
   const tokens = new ForkExternrefTokenCache(GENERATION_ID);
@@ -226,6 +218,9 @@ function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
     reserve: () => 8 * 1024 * 1024,
     label: "r1-trace",
     hostCapabilities: traced,
+    // STORE #2: the SAME table the guest publishes aggregates into. The shim's
+    // post-ALLOC integrity check reads it back with a wasm table.get + ref.is_null.
+    transitTable: transitTable.table,
   });
   const x = fm.exports as unknown as ForkDriveExports;
 
@@ -252,9 +247,11 @@ function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
     });
   }
 
-  // Bind the mock guest exports into the host-owned drive table so the shim's
-  // `call_indirect`s resolve (base+ALLOC, base+FILL, base+EXN).
-  const guest = new WebAssembly.Instance(MOCK_GUEST_MODULE).exports as unknown as MockGuest;
+  // Bind the FAITHFUL guest exports into the host-owned drive table so the shim's
+  // `call_indirect`s resolve (base+ALLOC, base+FILL, base+EXN). The guest's
+  // `gc_allocate` publishes a live identity into STORE #2 (the shared
+  // `transitTable`) at `recipe + 1` mid-drive.
+  const { guest, published } = instantiateFaithfulGuest(transitTable);
   const base = x.fm_drive_table_base(0);
   if (fm.driveTable.length < base + 3) fm.driveTable.grow(base + 3 - fm.driveTable.length);
   fm.driveTable.set(base + DRIVE_OP_ALLOC, guest.gc_allocate);
@@ -272,6 +269,12 @@ function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
   }
   const driveLog = log.slice(preDriveLen);
 
+  // Which STORE #2 slots hold a live (non-null) identity after the drive.
+  const liveSlots: number[] = [];
+  for (let slot = 1; slot < transitTable.table.length; slot++) {
+    if (transitTable.get(slot) !== null) liveSlots.push(slot);
+  }
+
   return {
     replayErr,
     planErr,
@@ -281,8 +284,11 @@ function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
     generations: log.filter((c) => c.name === "host_begin_generation").map((c) => c.ret),
     driveReads: driveLog.filter((c) => c.name === "host_transit_read"),
     phaseBReads,
+    published: [...published],
+    liveSlots,
     threw,
     guestOrder: guest.order(),
+    guestSeq: guest.seq(),
   };
 }
 
@@ -305,14 +311,15 @@ const exnref = (id: number): ForkReferenceRecipeEntry => ({
   node: { kind: "exnref", moduleActivation: 0, tagOrdinal: 0, layoutId: 0, scalars: new Uint8Array(0), payloads: [] },
 });
 
-describe("fork-module GC drive R1 transit-read trace (Phase 6 item 3c gap)", () => {
-  // KNOWN-GAP NOTE (all struct/array/i31 shapes below): the drive TRAPS today
-  // because `fm_after_alloc(aggregate)` reads a transit slot nobody published.
-  // These `expect(trace.threw).toBe(true)` assertions DOCUMENT the current trap;
-  // they are the regression cover that must FLIP (to `false`) when item 3c lands
-  // the fix. See the file header and the skipped equivalence gate at the bottom.
+describe("fork-module GC drive store-#2 integrity check (Phase 6 item 3c)", () => {
+  // FLIPPED FROM THE GAP: each struct/array/i31 shape below now COMPLETES (the
+  // db33d616f trace measured these as trapping). The shim's post-ALLOC check
+  // reads STORE #2 (the guest's transit table), which the faithful guest's
+  // `gc_allocate` publishes into — so the check passes and the drive runs to the
+  // end. The drive touches the host seam ZERO times (driveReads is empty),
+  // proving the read moved off store #1.
 
-  it("Shape 1 — single struct over i31 leaves (typed, NO externref): every ALLOC reads an unpublished slot and the drive TRAPS", () => {
+  it("Shape 1 — single struct over i31 leaves (typed, NO externref): every ALLOC publishes store #2 and the drive COMPLETES", () => {
     // struct(1) [layout 1] fields -> i31(2); no externref anywhere.
     const t = runShape([NULL, struct(1, [2, 2]), i31(2, 7)]);
 
@@ -325,19 +332,22 @@ describe("fork-module GC drive R1 transit-read trace (Phase 6 item 3c gap)", () 
       [DRIVE_OP_ALLOC, 2],
       [DRIVE_OP_FILL, 1],
     ]);
-    // NOTHING is ever published (no externref leaf), so no aggregate slot exists.
+    // The guest's gc_allocate published a live identity into STORE #2 for EACH
+    // ALLOC recipe (struct 1, i31 2), at slots recipe+1 = 2 and 3.
+    expect(t.published).toEqual([1, 2]);
+    expect(t.liveSlots).toEqual([2, 3]);
+    // No externref leaf -> PHASE B published nothing into store #1.
     expect(t.publishes).toHaveLength(0);
-    // A generation IS opened (here by `fm_build_gc_plan`, since the no-externref
-    // reconstruction opened none) — settling that the generation value is not the
-    // blocker.
-    expect(t.generations).toEqual([GENERATION_ID]);
-    // The drive traps: the first ALLOC (struct recipe 1) reads slot recipe+1 = 2,
-    // which returns EINVAL (0 == miss) because it was never published.
-    expect(t.driveReads[0]).toMatchObject({ args: [GENERATION_ID, 2], ret: 0 });
-    expect(t.threw).toBe(true);
+    // The drive reads STORE #2 in wasm, never the host seam: no host_transit_read
+    // happens during the drive.
+    expect(t.driveReads).toHaveLength(0);
+    // Guest ran alloc, alloc, fill (order 1,1,2 -> 112) and did not trap.
+    expect(t.guestSeq).toBe(3);
+    expect(t.guestOrder).toBe(112);
+    expect(t.threw).toBe(false);
   });
 
-  it("Shape 2 — struct<->array cycle (NO externref leaf): the aggregate ALLOC reads an unpublished slot and TRAPS", () => {
+  it("Shape 2 — struct<->array cycle (NO externref leaf): allocate-all-first, both aggregates publish store #2, the drive COMPLETES", () => {
     // struct(1) <-> array(2), no externref leaf.
     const t = runShape([NULL, struct(1, [2, 2]), array(2, [1])]);
 
@@ -351,15 +361,18 @@ describe("fork-module GC drive R1 transit-read trace (Phase 6 item 3c gap)", () 
       [DRIVE_OP_FILL, 1],
       [DRIVE_OP_FILL, 2],
     ]);
+    expect(t.published).toEqual([1, 2]);
+    expect(t.liveSlots).toEqual([2, 3]);
     expect(t.publishes).toHaveLength(0);
-    // Traps on the first aggregate ALLOC (struct recipe 1 -> slot 2, miss).
-    expect(t.driveReads[0]).toMatchObject({ args: [GENERATION_ID, 2], ret: 0 });
-    expect(t.threw).toBe(true);
+    expect(t.driveReads).toHaveLength(0);
+    expect(t.guestSeq).toBe(4);
+    expect(t.guestOrder).toBe(1122); // alloc,alloc,fill,fill
+    expect(t.threw).toBe(false);
   });
 
-  it("Shape 3 — struct with ONE externref-leaf field (MIXED): the LEAF slot is published and reads back HIT, but the AGGREGATE slot is unpublished and TRAPS", () => {
-    // struct(1) [layout 1] fields -> externref(2). This is the diagnostic shape:
-    // the externref leaf DOES get a transit slot; the struct does not.
+  it("Shape 3 — struct with ONE externref-leaf field (MIXED): PHASE B publishes the LEAF into store #1 and the AGGREGATE publishes store #2; the drive COMPLETES", () => {
+    // struct(1) [layout 1] fields -> externref(2). The diagnostic shape: the
+    // externref leaf gets a host-published slot AND the struct publishes its own.
     const t = runShape([NULL, struct(1, [2, 2]), externref(2, LEAF_HANDLE)]);
 
     expect(t.replayErr).toBe(0);
@@ -370,57 +383,90 @@ describe("fork-module GC drive R1 transit-read trace (Phase 6 item 3c gap)", () 
       [DRIVE_OP_FILL, 1],
     ]);
     // PHASE B published EXACTLY the externref leaf's slot: recipe 2 -> slot 3.
-    // NOT the struct's slot (recipe 1 -> slot 2).
     expect(t.publishes.map((c) => c.args[1])).toEqual([3]);
     // PHASE B read the leaf slot back with a HIT (returns the rooted ordinal, !=0).
     expect(t.phaseBReads.map((c) => [c.args[1], c.ret === 0 ? "MISS" : "HIT"])).toEqual([[3, "HIT"]]);
-    // The DRIVE's R1 assert reads the AGGREGATE slot (recipe 1 -> slot 2), a MISS.
-    expect(t.driveReads[0]).toMatchObject({ args: [GENERATION_ID, 2], ret: 0 });
-    expect(t.threw).toBe(true);
+    // The guest published the struct aggregate into store #2 at slot 2.
+    expect(t.published).toEqual([1]);
+    // Both the aggregate (slot 2) and the PHASE-B externref leaf (slot 3) are live
+    // in the SAME table.
+    expect(t.liveSlots).toEqual([2, 3]);
+    // The drive itself never reads the host seam.
+    expect(t.driveReads).toHaveLength(0);
+    expect(t.threw).toBe(false);
   });
 
-  it("Shape 4 — a bare i31 leaf: even a scalar i31 ALLOC reads an unpublished slot and TRAPS", () => {
-    // A pure i31 needs no host identity and no transit at all, yet it still gets
-    // an ALLOC step and so still drives the R1 read — the trap is broader than
-    // struct/array aggregates.
+  it("Shape 4 — a bare i31 leaf: even a scalar i31 ALLOC publishes store #2 and the drive COMPLETES", () => {
+    // A pure i31 needs no host identity, yet it still gets an ALLOC step; the
+    // guest's gc_allocate publishes its store-#2 slot so the shim's check passes.
     const t = runShape([NULL, i31(1, -17)]);
 
     expect(t.replayErr).toBe(0);
     expect(t.planBuilt).toBe(true);
     expect(t.steps.map((s) => [s.op, s.recipe])).toEqual([[DRIVE_OP_ALLOC, 1]]);
+    expect(t.published).toEqual([1]);
+    expect(t.liveSlots).toEqual([2]);
     expect(t.publishes).toHaveLength(0);
-    expect(t.driveReads[0]).toMatchObject({ args: [GENERATION_ID, 2], ret: 0 });
-    expect(t.threw).toBe(true);
+    expect(t.driveReads).toHaveLength(0);
+    expect(t.guestSeq).toBe(1);
+    expect(t.guestOrder).toBe(1);
+    expect(t.threw).toBe(false);
   });
 
-  it("Shape 5 — a program exnref (no externref payload): emits an EXN step, runs NO R1 assert, and the drive COMPLETES (refutes a universal trap)", () => {
+  it("Shape 5 — a program exnref (no externref payload): emits an EXN step, runs NO store-#2 check, and the drive COMPLETES", () => {
     // An exnref materialize is `DRIVE_OP_EXN`, which the shim does NOT follow with
-    // `fm_after_alloc`. So an exnref-only graph drives cleanly — the trap is
-    // specific to ALLOC-emitting (struct/array/i31) recipes.
+    // the store-#2 integrity check. So an exnref-only graph drives cleanly and
+    // publishes nothing — the check is specific to ALLOC-emitting recipes.
     const t = runShape([NULL, exnref(1)]);
 
     expect(t.replayErr).toBe(0);
     expect(t.planBuilt).toBe(true);
     expect(t.steps.map((s) => [s.op, s.recipe])).toEqual([[DRIVE_OP_EXN, 1]]);
-    // No R1 transit read happens during the drive, and it does not trap.
+    // No store-#2 publish (no ALLOC) and no host seam read during the drive.
+    expect(t.published).toHaveLength(0);
     expect(t.driveReads).toHaveLength(0);
     expect(t.threw).toBe(false);
     // The guest exception_materialize (order code 3) actually ran.
     expect(t.guestOrder).toBe(3);
   });
 
-  // GATE the eventual 3c fix must satisfy. A multi-node typed graph driven with
+  // POSITIVE store-#2 invariant. The repoint depends on the guest's `allocate`
+  // publishing a live GC object into the transit table at `recipe + 1` for EVERY
+  // ALLOC-emitting recipe kind (struct, array, i31). A multi-kind graph driven
+  // through the module must leave all three aggregate slots non-null AND complete.
+  // Asserting it here means a future guest-glue change that stops publishing
+  // re-breaks THIS test (the shim would trap), not silently the whole drive.
+  it("POSITIVE — struct, array, and i31 each publish a live store-#2 slot; the module drive completes reading them", () => {
+    // struct(1) -> array(2) -> i31(3): one of each ALLOC-emitting kind.
+    const t = runShape([NULL, struct(1, [2, 2]), array(2, [3]), i31(3, 9)]);
+
+    expect(t.replayErr).toBe(0);
+    expect(t.planBuilt).toBe(true);
+    const allocRecipes = t.steps.filter((s) => s.op === DRIVE_OP_ALLOC).map((s) => s.recipe);
+    // All three kinds allocate.
+    expect(new Set(allocRecipes)).toEqual(new Set([1, 2, 3]));
+    // The guest published a live store-#2 identity for each ALLOC recipe.
+    expect(new Set(t.published)).toEqual(new Set([1, 2, 3]));
+    // Every ALLOC recipe's slot (recipe + 1) is non-null in the transit table.
+    for (const recipe of allocRecipes) {
+      expect(t.liveSlots).toContain(recipe + 1);
+    }
+    // The module drove all three allocates + their fills to completion, reading
+    // store #2 in wasm and never the host seam.
+    expect(t.driveReads).toHaveLength(0);
+    expect(t.threw).toBe(false);
+    // Every plan step ran through a guest export (proof the drive completed).
+    expect(t.guestSeq).toBe(t.steps.length);
+  });
+
+  // GATE for the full 3c PRODUCTION FLIP. A multi-node typed graph driven with
   // the module (flag-on) must reconstruct the SAME references as the proven JS
-  // `materializeTypedGraph` path (flag-off). This CANNOT pass until the R1/transit
-  // gap the shapes above document is fixed (the flag-on drive traps today), so it
-  // is skipped rather than asserted. When 3c lands, replace the body with a real
-  // flag-on/flag-off reconstruction and drop `.skip`.
-  it.skip("EQUIVALENCE GATE (3c): flag-on module drive == flag-off JS drive for a multi-node typed graph", () => {
-    // Intent (see file header): with the fix, `fm_drive_execute` over Shape 2/3's
-    // plan completes without trapping and the resulting struct/array/leaf identities
-    // match the JS `ForkEarlyChildReferenceProvider` reconstruction of the same
-    // graph. Until then the flag-on drive traps (asserted in Shapes 1-4), so the
-    // 3c flip must stay unwired.
+  // `materializeTypedGraph` path (flag-off). That needs the production import flip
+  // (nothing calls `fm_build_gc_plan` + `fm_drive_execute` in prod yet) and a REAL
+  // instrumented guest that builds actual GC objects, both out of scope for this
+  // slice, so it stays skipped. The store-#2 repoint this file proves is the
+  // prerequisite the gate was blocked on.
+  it.skip("EQUIVALENCE GATE (3c prod flip): flag-on module drive == flag-off JS drive for a multi-node typed graph", () => {
     expect(true).toBe(true);
   });
 });

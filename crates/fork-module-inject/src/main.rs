@@ -43,8 +43,17 @@ use walrus::{ExportItem, FunctionBuilder, Module, RefType, ValType};
 // `call_indirect` intrinsic, so this tool injects `fm_drive_execute(plan_ptr,
 // count)` — a wasm loop that strides the serialized drive PLAN
 // (`fork_codec::drive_plan`), `call_indirect`s the table slot for each step, and
-// `call`s the module's Rust `fm_after_alloc(recipe)` after each ALLOC step for
-// the R1 transit-read assert (shim->Rust, like the funcref-decode injection).
+// after each ALLOC step verifies — with a wasm-level `table.get` + `ref.is_null`
+// — that the guest's `_gc_allocate` published a live GC object into the shared
+// Wasm-GC transit table (`env.__wpk_fork_ref_gc_transit`, an `anyref` table) at
+// slot `recipe + 1`. That transit table is STORE #2: the ONE store the guest's
+// `allocate` export actually publishes every struct/array/i31 into (see
+// `crates/fork-instrument/src/module_gc_codec.rs` `emit_allocate_layout` /
+// `emit_allocate_i31`) and the one `_gc_fill` consumes. A missing published
+// object is real GC corruption, so a null slot branches to `unreachable` (a
+// truthful trap). Rust has no `funcref`/`anyref` type and cannot express
+// `table.get`, so this integrity guard, like the drive loop itself, must be
+// injected wasm rather than a Rust export call.
 
 /// The mutable funcref table the host binds guest `_gc_allocate`/`_gc_fill` into
 /// and the injected `fm_drive_execute` `call_indirect`s. Imported (initial size
@@ -52,9 +61,14 @@ use walrus::{ExportItem, FunctionBuilder, Module, RefType, ValType};
 const DRIVE_TABLE_IMPORT: &str = "__wpk_fork_drive_table";
 /// The injected loop export the host calls to run a serialized plan.
 const DRIVE_EXECUTE_EXPORT: &str = "fm_drive_execute";
-/// The Rust R1-assert helper the shim `call`s after each ALLOC step. Exported by
-/// `crates/fork-module/src/lib.rs`.
-const AFTER_ALLOC_EXPORT: &str = "fm_after_alloc";
+/// The shared Wasm-GC transit table (`anyref`) the guest's `_gc_allocate`
+/// publishes every reconstructed struct/array/i31 into at slot `recipe + 1`
+/// (STORE #2). The injected drive loop reads it back with `table.get` +
+/// `ref.is_null` after each ALLOC step to assert the guest published a live
+/// object. MUST match the guest's own import name and element type
+/// (`crates/fork-instrument/src/module_gc_codec.rs`) so the host binds the SAME
+/// table object to both the guest and this module.
+const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 
 // Serialized drive-step layout — MUST match `fork_codec::drive_plan`
 // (`DRIVE_STEP_SIZE`, `DRIVE_STEP_OFF_*`, `DRIVE_OP_ALLOC`). Four little-endian
@@ -149,12 +163,22 @@ fn inject(module: &mut Module) -> Result<()> {
     Ok(())
 }
 
-/// Inject `fm_drive_execute(plan_ptr, count)` (Phase 6 item 3b): a wasm loop that
-/// strides a serialized drive PLAN, `call_indirect`s the host-bound
-/// `__wpk_fork_drive_table` for each step, and `call`s the module's Rust
-/// `fm_after_alloc(recipe)` after each ALLOC step. Rust cannot emit
-/// `call_indirect`, so this static wasm loop is the mechanism the module's Rust
-/// drive planner cannot express itself.
+/// Inject `fm_drive_execute(plan_ptr, count)` (Phase 6 item 3b/3c): a wasm loop
+/// that strides a serialized drive PLAN, `call_indirect`s the host-bound
+/// `__wpk_fork_drive_table` for each step, and after each ALLOC step asserts the
+/// guest's `_gc_allocate` published a live GC object into the shared Wasm-GC
+/// transit table (`env.__wpk_fork_ref_gc_transit`, STORE #2) at slot `recipe + 1`
+/// by reading it back with `table.get` + `ref.is_null`. Rust cannot emit
+/// `call_indirect`, `table.get`, or hold an `anyref`, so this static wasm loop is
+/// the mechanism the module's Rust drive planner cannot express itself.
+///
+/// The store-#2 read replaces the earlier store-#1 read (a `call` into the Rust
+/// `fm_after_alloc`, which read the HOST-externref transit the exnref/externref
+/// PHASE B publishes into): a struct/array/i31 aggregate never gets a HOST
+/// identity, so store #1 was always empty for exactly the recipes the drive
+/// ALLOCs, and every typed drive trapped. Store #2 is the table the guest's
+/// `allocate` export actually publishes into and `_gc_fill` consumes, so a live
+/// slot there is the real post-allocate integrity invariant.
 ///
 /// ```wat
 /// (func (export "fm_drive_execute") (param $plan i32) (param $count i32)
@@ -171,7 +195,12 @@ fn inject(module: &mut Module) -> Result<()> {
 ///           (i32.load offset=12 (local.get $step))          ;; arg
 ///           (i32.load offset=4  (local.get $step)))          ;; slot
 ///         (if (i32.eqz (local.get $op))                       ;; ALLOC?
-///           (then (call $fm_after_alloc (i32.load offset=8 (local.get $step)))))
+///           (then                                             ;; store-#2 R1 guard
+///             (if (ref.is_null
+///                   (table.get $__wpk_fork_ref_gc_transit
+///                     (i32.add (i32.load offset=8 (local.get $step))
+///                              (i32.const 1))))               ;; recipe + 1
+///               (then (unreachable)))))                        ;; missing = GC corruption
 ///         (local.set $i (i32.add (local.get $i) (i32.const 1)))
 ///         (br $lp)))))
 /// ```
@@ -183,17 +212,6 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     {
         bail!("module already exports {DRIVE_EXECUTE_EXPORT}");
     }
-
-    // The Rust R1-assert helper the shim calls after each ALLOC step.
-    let after_alloc = module
-        .exports
-        .iter()
-        .find(|export| export.name == AFTER_ALLOC_EXPORT)
-        .ok_or_else(|| anyhow!("module does not export {AFTER_ALLOC_EXPORT}"))?;
-    let after_alloc_fn = match after_alloc.item {
-        ExportItem::Function(id) => id,
-        _ => bail!("{AFTER_ALLOC_EXPORT} export is not a function"),
-    };
 
     // The guest's single (imported) linear memory the plan bytes live in.
     let memory = module
@@ -210,13 +228,28 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
 
     // The mutable funcref drive table (initial size 0; the host provides a table
     // sized to the fork's activations and binds the guest exports into it).
-    let (drive_table, _import_id) = module.add_import_table(
+    let (drive_table, _drive_import_id) = module.add_import_table(
         IMPORT_MODULE,
         DRIVE_TABLE_IMPORT,
         false,
         0,
         None,
         RefType::FUNCREF,
+    );
+
+    // The shared Wasm-GC transit table (STORE #2) the guest's `_gc_allocate`
+    // publishes every reconstructed struct/array/i31 into at slot `recipe + 1`.
+    // The shim reads it back after each ALLOC to assert a live object survived.
+    // Declared exactly as the guest declares it (`env.__wpk_fork_ref_gc_transit`,
+    // `anyref`, initial 1) so the host binds the SAME table object to both — see
+    // `crates/fork-instrument/src/module_gc_codec.rs`.
+    let (transit_table, _transit_import_id) = module.add_import_table(
+        IMPORT_MODULE,
+        TRANSIT_TABLE_IMPORT,
+        false,
+        1,
+        None,
+        RefType::ANYREF,
     );
 
     // The guest `_gc_allocate`/`_gc_fill` signature the shim `call_indirect`s:
@@ -282,7 +315,11 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                         MemArg { align: 4, offset: DRIVE_STEP_OFF_SLOT },
                     )
                     .instr(CallIndirect { ty: indirect_ty, table: drive_table });
-                // if op == DRIVE_OP_ALLOC: fm_after_alloc(recipe)
+                // if op == DRIVE_OP_ALLOC: assert the guest published a live GC
+                // object into STORE #2 at slot `recipe + 1`.
+                //   if (ref.is_null (table.get $transit (recipe + 1))) unreachable
+                // Table indices are i32 regardless of guest pointer width, so the
+                // `recipe + 1` index math stays i32 on both wasm32 and wasm64.
                 work.local_get(op).i32_const(DRIVE_OP_ALLOC).binop(BinaryOp::I32Eq);
                 work.if_else(
                     None,
@@ -294,7 +331,19 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                                 LoadKind::I32 { atomic: false },
                                 MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
                             )
-                            .call(after_alloc_fn);
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .table_get(transit_table)
+                            .ref_is_null()
+                            .if_else(
+                                None,
+                                // Null slot: the guest never published this
+                                // aggregate — real GC corruption, trap truthfully.
+                                |missing| {
+                                    missing.unreachable();
+                                },
+                                |_| {},
+                            );
                     },
                     |_| {},
                 );
@@ -333,7 +382,7 @@ fn main() -> Result<()> {
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
          {DRIVE_EXECUTE_EXPORT} + imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, \
-         {DRIVE_TABLE_IMPORT}}})",
+         {DRIVE_TABLE_IMPORT}, {TRANSIT_TABLE_IMPORT}}})",
         out_bytes.len()
     );
     Ok(())
