@@ -59,7 +59,13 @@ import {
   beginReplicationReplay,
   beginReplicationStream,
   glQueryRecordTap,
+  httpExchangeRecordTap,
+  ReplayedHttpExchanges,
 } from "./replication/worker";
+import {
+  parseRawRequestLine,
+  type HttpResponse,
+} from "./networking/in-kernel-http";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -4368,6 +4374,24 @@ function applyPushedDecision(decision: ReplicationPushedDecision): void {
     kernelWorker.injectMouseEvent(decision.dx, decision.dy, decision.buttons);
     return;
   }
+  if (decision.kind === "http") {
+    // The injection lands synchronously, at this log position. The response
+    // is this machine's own output; it settles later, into the store a
+    // viewer's fetch is served from.
+    const line = parseRawRequestLine(decision.request);
+    void kernelWorker
+      .replayHttpExchange(decision)
+      .then((response) => {
+        replayedHttpExchanges.deliver(`${line.method} ${line.target}`, response);
+      })
+      .catch((err) => {
+        console.warn(
+          `[replication] replayed ${line.method} ${line.target} failed:`,
+          err,
+        );
+      });
+    return;
+  }
   const ptyIdx = ptsDeviceIndex(decision.device);
   if (ptyIdx === undefined) {
     throw new Error(
@@ -4441,7 +4465,25 @@ function handleInjectConnection(
 
 // --- External HTTP request bridge ---
 
+const replayedHttpExchanges = new ReplayedHttpExchanges<HttpResponse>();
+
 async function handleHttpRequest(msg: HttpRequestMessage) {
+  if (replicationReplay !== null) {
+    // A replaying machine takes its injections from the primary's log; a
+    // fetch here reads the response the replayed injection produced instead
+    // of making an injection of its own.
+    const key = `${msg.request.method} ${msg.request.url}`;
+    const replayed = await replayedHttpExchanges.take(key);
+    if (replayed === null) {
+      respondError(
+        msg.requestId,
+        `the machine being viewed never served ${key}`,
+      );
+      return;
+    }
+    respond(msg.requestId, replayed);
+    return;
+  }
   try {
     const response = await kernelWorker.sendHttpRequest(
       msg.port,
@@ -4806,6 +4848,9 @@ port.on("message", (msg: MainToKernelMessage) => {
         replicationRecorder = new ReplicationLogRecorder();
         io.setTimeProvider(new RecordingTimeProvider(clock, replicationRecorder));
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
+        kernelWorker.setHttpExchangeTap(
+          httpExchangeRecordTap(replicationRecorder),
+        );
       });
       break;
     }
@@ -4816,6 +4861,7 @@ port.on("message", (msg: MainToKernelMessage) => {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
       kernelWorker?.setGlQueryTap(null);
+      kernelWorker?.setHttpExchangeTap(null);
       post({
         type: "response",
         requestId: msg.requestId,
@@ -4845,6 +4891,8 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setReplicationBehindProbe(null);
+      kernelWorker?.setHttpExchangeTap(null);
+      replayedHttpExchanges.drop();
       post({
         type: "response",
         requestId: msg.requestId,
