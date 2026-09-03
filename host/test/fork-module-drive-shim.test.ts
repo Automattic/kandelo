@@ -79,9 +79,10 @@ const MODULE = new WebAssembly.Module(
 );
 const NONPUBLISHING_GUEST_MODULE = new WebAssembly.Module(NONPUBLISHING_GUEST_BYTES);
 
-/** Instantiate the fork-module with `transitTable` (STORE #2) bound so the shim's
- *  post-ALLOC read reaches the same table the guest publishes into. */
-function setup(transitTable: ForkAnyrefTransitTable) {
+/** Instantiate the fork-module and wrap (not mint) its OWN exported transit
+ *  table (STORE #2, M1) so the shim's post-ALLOC read, the guest's publish, and
+ *  this test's read-back all reach the same table. */
+function setup() {
   const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
   const fm = instantiateForkModule({
     module: MODULE,
@@ -89,16 +90,15 @@ function setup(transitTable: ForkAnyrefTransitTable) {
     ptrWidth: PTR_WIDTH,
     reserve: () => 8 * 1024 * 1024,
     label: "drive-shim-test",
-    transitTable: transitTable.table,
   });
   const x = fm.exports as unknown as DriveShimExports;
-  return { fm, x };
+  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  return { fm, x, transitTable };
 }
 
 describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () => {
   it("call_indirects the guest _gc_allocate then _gc_fill via the drive table and passes the store-#2 integrity check", () => {
-    const transitTable = new ForkAnyrefTransitTable();
-    const { fm, x } = setup(transitTable);
+    const { fm, x, transitTable } = setup();
     const recipe = 7;
 
     // Bind the FAITHFUL guest (its `gc_allocate` publishes a live identity into
@@ -140,8 +140,7 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
   });
 
   it("TRAPS when the store-#2 slot is null (integrity check is load-bearing)", () => {
-    const transitTable = new ForkAnyrefTransitTable();
-    const { fm, x } = setup(transitTable);
+    const { fm, x } = setup();
     const recipe = 4;
 
     // A NON-PUBLISHING guest: `gc_allocate` records its call but never publishes
