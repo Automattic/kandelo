@@ -169,11 +169,27 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_static_root_slot",
   "fm_set_activation_static_root_base",
   "fm_static_roots_published",
+  // M1 task 2: the fork-module now DEFINES and EXPORTS the shared Wasm-GC
+  // transit table (STORE #2) instead of importing a host-minted one. The
+  // guest still imports `env.__wpk_fork_ref_gc_transit`; the host binds the
+  // guest import to THIS export (see `gcTransitTable` below), so the
+  // module's own drive-time `table.get` and the guest's `_gc_allocate`
+  // publish agree on a single table.
+  "__wpk_fork_ref_gc_transit",
 ] as const;
+
+/** Required exports whose value is a `WebAssembly.Table`, not a function. */
+const FORK_MODULE_TABLE_EXPORTS: ReadonlySet<string> = new Set([
+  "__wpk_fork_ref_gc_transit",
+]);
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
 
-export type ForkModuleExports = Record<ForkModuleExportName, Function> &
+export type ForkModuleExports = Record<
+  Exclude<ForkModuleExportName, "__wpk_fork_ref_gc_transit">,
+  Function
+> &
+  Record<"__wpk_fork_ref_gc_transit", WebAssembly.Table> &
   WebAssembly.Exports;
 
 export interface InstantiateForkModuleOptions {
@@ -219,20 +235,14 @@ export interface InstantiateForkModuleOptions {
    */
   driveTable?: WebAssembly.Table;
   /**
-   * The shared Wasm-GC transit table (`anyref`) the guest's `_gc_allocate`
-   * publishes every reconstructed struct/array/i31 into at slot `recipe + 1`
-   * (STORE #2), which the module's injected `fm_drive_execute` reads back with
-   * `table.get` + `ref.is_null` after each ALLOC step to assert a live object
-   * survived. For the drive's store-#2 check to see what the guest published,
-   * this MUST be the SAME `WebAssembly.Table` object the guest imports as
-   * `env.__wpk_fork_ref_gc_transit` (in production, the process worker's
-   * `ForkActivationRegistry.gcTransitTable()`). When omitted (tests / forks that
-   * never run the module drive) a fresh host-owned `anyref` table is created via
-   * the ABI-43 Wasm-GC transit provider; the module never reads it unless the
-   * host both binds the guest `_gc_allocate`/`_gc_fill` exports and calls
-   * `fm_drive_execute`, so an unshared default is inert and flag-off
-   * byte-identical. JavaScript cannot construct an `anyref` table directly on
-   * every engine, so the default is minted through `ForkAnyrefTransitTable`.
+   * @deprecated M1 task 2 moved the shared Wasm-GC transit table (STORE #2)
+   * from a host-minted import into a module-DEFINED and EXPORTED table
+   * (`__wpk_fork_ref_gc_transit`, see `ForkModuleInstance.gcTransitTable`).
+   * The injected module no longer imports this table, so any value supplied
+   * here is IGNORED — it is accepted only so existing callers/tests that
+   * still pass it keep working unchanged. Bind the guest's own
+   * `env.__wpk_fork_ref_gc_transit` import to the returned
+   * `gcTransitTable` instead.
    */
   transitTable?: WebAssembly.Table;
   /**
@@ -286,13 +296,15 @@ export interface ForkModuleInstance {
    */
   driveTable: WebAssembly.Table;
   /**
-   * The shared Wasm-GC transit table (`anyref`, STORE #2) the module's injected
-   * `fm_drive_execute` reads after each ALLOC step. Bound to the module's
-   * `env.__wpk_fork_ref_gc_transit` import; in production this is the process
-   * worker's guest transit table so the drive's integrity check sees what the
-   * guest published.
+   * The shared Wasm-GC transit table (`anyref`, STORE #2) the module's
+   * injected `fm_drive_execute` reads after each ALLOC step. M1 task 2: the
+   * module DEFINES and EXPORTS this table (`__wpk_fork_ref_gc_transit`)
+   * instead of importing a host-minted one; this is that export. The guest
+   * still imports `env.__wpk_fork_ref_gc_transit` — the host binds the
+   * guest's import to THIS table so the drive's integrity check sees what
+   * the guest's `_gc_allocate` published.
    */
-  transitTable: WebAssembly.Table;
+  gcTransitTable: WebAssembly.Table;
   /**
    * The merged static-root catalog (`anyref`) the module's injected
    * `fm_drive_execute` reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the
@@ -432,16 +444,12 @@ export function instantiateForkModule(
   const driveTable =
     options.driveTable ??
     new WebAssembly.Table({ element: "anyfunc", initial: 0 });
-  // The shared Wasm-GC transit table (`anyref`, STORE #2) the module's injected
-  // `fm_drive_execute` reads after each ALLOC step. In production the caller
-  // passes the process worker's guest transit table so the drive's integrity
-  // check sees what the guest's `_gc_allocate` published; when omitted (tests /
-  // forks that never run the module drive) a fresh host-owned `anyref` table is
-  // minted through the ABI-43 Wasm-GC transit provider (JavaScript cannot build
-  // an `anyref` table directly on every engine). Inert until the host both binds
-  // the guest exports into the drive table and calls `fm_drive_execute`.
-  const transitTable =
-    options.transitTable ?? new ForkAnyrefTransitTable().table;
+  // The shared Wasm-GC transit table (`anyref`, STORE #2) is now DEFINED and
+  // EXPORTED by the module itself (M1 task 2) rather than imported, so there
+  // is no import to bind or default to mint here. `options.transitTable` is
+  // accepted for backward compatibility but ignored — see the `@deprecated`
+  // note on that option. The module's export is read below, after
+  // instantiation.
   // The merged static-root catalog (`anyref`) the module's injected
   // `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT step (the static-root
   // binder). Default to a fresh host-owned `anyref` table minted through the
@@ -470,7 +478,6 @@ export function instantiateForkModule(
       __indirect_function_table: table,
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
-      __wpk_fork_ref_gc_transit: transitTable,
       __wpk_fork_static_root_catalog: staticRootCatalog,
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
@@ -491,14 +498,20 @@ export function instantiateForkModule(
   }
 
   const exports = instance.exports as ForkModuleExports;
-  const missing = FORK_MODULE_REQUIRED_EXPORTS.filter(
-    (name) => typeof exports[name] !== "function",
+  const missing = FORK_MODULE_REQUIRED_EXPORTS.filter((name) =>
+    FORK_MODULE_TABLE_EXPORTS.has(name)
+      ? !(exports[name] instanceof WebAssembly.Table)
+      : typeof exports[name] !== "function",
   );
   if (missing.length > 0) {
     throw new Error(
       `${label}: fork-module is missing required exports: ${missing.join(", ")}`,
     );
   }
+
+  // The shared Wasm-GC transit table (STORE #2) is now module-owned (M1 task
+  // 2): read it back from the export instead of binding an import.
+  const gcTransitTable = exports.__wpk_fork_ref_gc_transit;
 
   return {
     instance,
@@ -508,7 +521,7 @@ export function instantiateForkModule(
     table,
     functionCatalog,
     driveTable,
-    transitTable,
+    gcTransitTable,
     staticRootCatalog,
   };
 }
