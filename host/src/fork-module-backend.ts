@@ -212,6 +212,17 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of static roots the static-root binder has published into the anyref
+   * transit since worker start (proof-of-use). Advances only when the module's
+   * DRIVE_OP_STATIC_ROOT step resolved + republished an immutable static root
+   * (`fm_static_root_slot`); a silent JS `publishTransit` fallback leaves it
+   * unchanged.
+   */
+  staticRootsPublished(): bigint {
+    return BigInt(this.exports.fm_static_roots_published() as number | bigint);
+  }
+
+  /**
    * Number of typed-GC drive STEPS the module has executed since worker start
    * (Phase 6 item 3c proof-of-use). Distinct from `gcNodesReconstructed`, which
    * `fm_begin_reference_replay` bumps merely by ADMITTING the graph (the item 3a

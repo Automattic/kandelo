@@ -267,6 +267,14 @@ export interface ForkModuleReferencesMessage {
    * fallback — reconstructed the typed graph.
    */
   driveSteps: number;
+  /**
+   * Static-root publish count (`fm_static_roots_published`, the static-root
+   * binder). Advances only when the module's DRIVE_OP_STATIC_ROOT step
+   * republished an immutable static root into the anyref transit, so a nonzero
+   * value proves the module — not the JS `publishTransit` fallback — reconstructed
+   * the static-root identity.
+   */
+  staticRoots: number;
 }
 
 export interface WorkerReadyMessage {

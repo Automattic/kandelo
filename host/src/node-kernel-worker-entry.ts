@@ -445,7 +445,8 @@ function installProcessWorkerListeners(
             `externrefs_resolved=${message.externrefs} ` +
             `exnrefs_reconstructed=${message.exnrefs} ` +
             `gc_nodes_reconstructed=${message.gcNodes} ` +
-            `drive_steps_executed=${message.driveSteps}`,
+            `drive_steps_executed=${message.driveSteps} ` +
+            `static_roots_published=${message.staticRoots}`,
         },
         "warn",
       );
