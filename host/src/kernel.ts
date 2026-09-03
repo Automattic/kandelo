@@ -58,7 +58,8 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { bindForeignTexture } from "./webgl/foreign-texture";
-import { buildVirtualConnectorMode } from "./dri/kms-registry";
+import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
+import { buildVirtualConnectorMode, connectorModeSize } from "./dri/kms-registry";
 import { detectPtrWidth } from "./constants";
 import {
   allocateKernelScratchRegion,
@@ -784,6 +785,19 @@ export interface KernelCallbacks {
    * without letterboxing. `undefined` → the 1920x1080 default.
    */
   getKmsDisplaySize?: () => { width: number; height: number } | undefined;
+  /**
+   * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
+   * are that framebuffer's dimensions. The scanout framebuffer defines
+   * the pointer coordinate space — the embedder maps pointer positions
+   * into framebuffer pixels and `sendPointerAbs` forwards them as
+   * `EV_ABS` — so the worker uses this to keep the pointer device's
+   * advertised `EVIOCGABS` range equal to the space those coordinates
+   * are in for consumers that open the device after the modeset. A
+   * consumer that is already running never re-reads the range (libinput
+   * caches absinfo at device open); open-time correctness comes from
+   * `setKmsDisplaySize` advertising the derived connector mode.
+   */
+  onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -2176,8 +2190,15 @@ export class WasmPosixKernel {
                 // their viewport from CANVAS_W/H (the FB they registered
                 // via drmModeAddFB2) and would otherwise render into a
                 // tiny clipped region of a default-sized canvas.
-                const fb = this.kms.currentFb(crtc);
-                if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+                // With no FB yet (the SDL2 ordering noted above), size the
+                // buffer to the mode the connector advertises — the size
+                // the program is about to render at. Skipping it leaves a
+                // HiDPI pane on the 1920x1080 pane default, so the guest
+                // renders below the panel's device-pixel count and the
+                // browser upscales the result into a soft image.
+                const fb = this.kms.currentFb(crtc)
+                  ?? connectorModeSize(this.callbacks.getKmsDisplaySize?.());
+                if (canvas.width !== fb.width || canvas.height !== fb.height) {
                   canvas.width = fb.width;
                   canvas.height = fb.height;
                 }
@@ -2222,6 +2243,11 @@ export class WasmPosixKernel {
           if (ctx && claimedCrtc != null) {
             b.claimedKmsCrtc = claimedCrtc;
             this.callbacks.markKmsCanvasGlOwned?.(claimedCrtc);
+            // Render offscreen and flip on present, so the browser never
+            // composites a cleared or half-drawn frame (see
+            // present-target.ts). Failure is non-fatal: the session falls
+            // back to drawing straight at the canvas.
+            ensurePresentTarget(b);
           }
         },
         host_gl_destroy_context: (pid: number, _ctxId: number): void => {
@@ -2294,6 +2320,14 @@ export class WasmPosixKernel {
           if (b.renderTargetFbo) {
             b.renderTargetFbo = null;
             b.shadow.fbo = null;
+          }
+          // The canvas-backed present target IS owned by this binding, so
+          // dropping the redirect above has to free it as well; a later
+          // context rebuilds one.
+          if (b.presentTarget) {
+            b.gl?.deleteFramebuffer(b.presentTarget.fbo);
+            b.gl?.deleteTexture(b.presentTarget.tex);
+            b.presentTarget = null;
           }
         },
         host_gl_make_current: (
@@ -2393,6 +2427,29 @@ export class WasmPosixKernel {
           // for free — no explicit sync object in v1). Canvas-backed
           // sessions present via RAF and need no fence here.
           if (b?.renderTargetFbo) b.gl?.flush();
+          // Canvas-backed session: the frame is complete, so flip the
+          // offscreen target onto the default framebuffer. Re-ensure first
+          // so a mode change that resized the canvas rebuilds the target
+          // instead of blitting a stale size.
+          //
+          // Ensure rather than test for one. `host_gl_destroy_surface`
+          // frees the present target, and only the first canvas claim in
+          // `host_gl_create_context` ever built one, so a guest that
+          // recreates its EGL window surface on the context it already has
+          // never got another. ScummVM does exactly that when it leaves the
+          // launcher for a game. Without a target the bind-0 redirect is
+          // gone too, so every clear and half-drawn frame went straight to
+          // the canvas for the browser to composite, and the picture
+          // blinked for the rest of the session. `ensurePresentTarget`
+          // still declines for a GPU-tier producer and for a canvas-less
+          // session, so this widens nothing else.
+          if (b && b.claimedKmsCrtc != null) {
+            // A target this call had to create is empty, and the frame it
+            // would present has already gone to the canvas directly. Blit
+            // only when one was established before the frame.
+            const established = b.presentTarget !== null;
+            if (ensurePresentTarget(b) && established) blitPresentTarget(b);
+          }
           return 0;
         },
         host_gl_query: (
@@ -2580,6 +2637,8 @@ export class WasmPosixKernel {
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
         host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          const fb = this.kms.currentFb(crtc_id);
+          if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
         },
       },
     };

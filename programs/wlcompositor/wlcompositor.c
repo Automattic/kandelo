@@ -3722,15 +3722,6 @@ static void handle_pointer_motion_rel(struct libinput_event_pointer *p) {
     if (g.cursor_y < 0) g.cursor_y = 0;
     if (g.cursor_x > g.width) g.cursor_x = g.width;
     if (g.cursor_y > g.height) g.cursor_y = g.height;
-    /* The browser/node absolute-pointer bridge (kandelo-session
-     * sendPointerAbs) emulates each move as a peg frame (REL −4096 on
-     * BOTH axes → cursor clamps to 0,0) followed by a jump frame to the
-     * target. The peg is only a positioning artifact: acting on it moves
-     * a grabbed window to the top-left corner for a frame and sends
-     * clients a motion to (0,0). Real devices never emit −4096 on both
-     * axes in one event, so treat it as position-only and let the jump
-     * frame deliver the motion at the final coordinates. */
-    if (dx <= -2048.0 && dy <= -2048.0) return;
     pointer_moved();
 }
 

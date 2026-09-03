@@ -98,15 +98,17 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
 
   // Gate 1: the desktop's own config is what drives it — the tiling layout,
   // the staged keybinds, and the theme named in that same file.
+  // WALLPAPER is the last marker the compositor prints during startup;
+  // once it appears the earlier markers are already in the stream.
   await expect
     .poll(() => syslogStream(page), { timeout: 120_000 })
-    .toMatch(/WLC_LAYOUT dwindle/);
+    .toMatch(/WALLPAPER image w=2580 h=1080/);
   expect(await syslogStream(page), "compositor did not load the staged config")
     .toMatch(/BINDS_LOADED n=\d+ source=\/etc\/kandelo\/wlcompositor\.conf/);
   expect(await syslogStream(page), "the configured theme was not loaded")
     .toMatch(/THEME tokyo-night/);
-  expect(await syslogStream(page), "the theme's image wallpaper was not rendered")
-    .toMatch(/WALLPAPER image w=2580 h=1080/);
+  expect(await syslogStream(page), "the compositor did not select the tiler")
+    .toMatch(/WLC_LAYOUT dwindle/);
 
   // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
   // anchored across the top, and its hyprland modules attached to the

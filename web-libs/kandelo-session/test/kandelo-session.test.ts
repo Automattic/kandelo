@@ -1902,6 +1902,35 @@ describe("Kandelo demo config", () => {
     expect(presentation.touchControls).toBe(true);
   });
 
+  it("carries an image-declared hostPointer through profile resolution", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        playground: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            hostPointer: true,
+          },
+        },
+        game: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(resolveDemoPresentation(config!, "playground")?.hostPointer).toBe(true);
+    expect(resolveDemoPresentation(config!, "game")?.hostPointer).toBeUndefined();
+  });
+
   it("throws when profile metadata is incomplete", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
@@ -2083,6 +2112,15 @@ describe("Kandelo demo config", () => {
       expect.objectContaining({ path: "/doom1.wad", devCorsProxy: true }),
     ]);
     expect(builtinDemoAssets("node")).toEqual([]);
+  });
+
+  it("keeps the browser pointer only for a KMS demo that draws no cursor", () => {
+    expect(builtinDemoPresentation("sdl2")).toMatchObject({
+      runningPrimary: ["kms", "terminal", "syslog"],
+      hostPointer: true,
+    });
+    expect(builtinDemoPresentation("scummvm")?.hostPointer).toBeUndefined();
+    expect(builtinDemoPresentation("modeset")?.hostPointer).toBeUndefined();
   });
 
   it("rejects duplicate guide action ids", () => {

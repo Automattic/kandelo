@@ -140,6 +140,17 @@ export const PRESET_LIBRARY: Preset[] = [
     estimatedUrlBytes: 612,
   },
   {
+    id: "scummvm",
+    title: "ScummVM",
+    summary: "ScummVM's SCUMM engine fullscreen on /dev/dri/card0: SDL2's KMSDRM backend takes the display as DRM master and renders GLES2 directly, with OSS audio on /dev/dsp. No game ships with it: upload a zipped SCUMM title with Load game data, then add it from the launcher.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#c46a3c",
+    glyph: "G",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
+  {
     id: "wayland",
     title: "Wayland terminal",
     summary: "A real Wayland stack on /dev/dri/card0: wlcompositor (a wl_shm/xdg_shell server driving KMS) composites wlterm — a VT100 terminal built on the in-tree libkwl toolkit — running a forkpty'd dash shell. Type to drive the shell; output renders through the compositor.",

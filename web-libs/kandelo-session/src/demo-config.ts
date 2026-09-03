@@ -13,6 +13,7 @@ export interface DemoPresentationConfig {
   internalsAccess: DemoPresentation["internalsAccess"];
   autoCommand?: string;
   touchControls?: boolean;
+  hostPointer?: boolean;
 }
 
 export interface DemoAssetConfig {
@@ -349,6 +350,7 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.autoCommand === "string" ? { autoCommand: config.autoCommand } : {}),
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
+    ...(typeof config.hostPointer === "boolean" ? { hostPointer: config.hostPointer } : {}),
   };
 }
 

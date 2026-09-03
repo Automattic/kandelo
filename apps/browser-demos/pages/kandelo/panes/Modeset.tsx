@@ -3,10 +3,14 @@
 // vblank pump. Stats slot layout is set by tickVblank in kernel-worker.ts.
 
 import * as React from "react";
-import { useKernelHost, useStatus } from "../kernel-host/react";
+import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  runDemoIngest,
+  type IngestPhase,
+} from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
-import { DemoSurfaceDockControls } from "./Framebuffer";
+import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
@@ -59,6 +63,11 @@ const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webg
 export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const presentation = usePresentation();
+  const ingest = useDemoIngest();
+  const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
+  const [ingestName, setIngestName] = React.useState<string | null>(null);
+  const [ingestError, setIngestError] = React.useState<string | null>(null);
   const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
@@ -299,18 +308,57 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
 
   const showCanvas = status === "running" && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
-  const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
+  // Fit to the live scanout aspect, not the 16:9 constant: a program that
+  // takes the connector's mode renders at the pane's aspect, and fitting
+  // that into a fixed 16:9 box would letterbox and stretch it. The
+  // constants remain the pre-first-frame fallback.
+  const canvasStyle = useFittedCanvasStyle(
+    stageRef,
+    canvasRef,
+    hasFrame ? stats.width / stats.height : MODESET_FB_W / MODESET_FB_H,
+  );
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
       (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
     : "waiting for PAGE_FLIP";
+
+  const busy = ingestPhase !== null;
+  const ingestFile = React.useCallback(async (file: File) => {
+    if (!ingest || ingestPhase !== null) return;
+    setIngestError(null);
+    setIngestName(file.name);
+    try {
+      // No targetPid: an upload here adds files the running program reads on
+      // its next directory scan. The KMS program holds DRM master for the
+      // whole session, so stopping and relaunching it would cost the user
+      // their place for no gain.
+      await runDemoIngest(host, ingest, file, { onPhase: setIngestPhase });
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIngestPhase(null);
+      setIngestName(null);
+    }
+  }, [host, ingest, ingestPhase]);
+
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
       status={statusLabel}
       active={hasFrame}
-    />
-  ), [crtcId, hasFrame, statusLabel]);
+    >
+      {ingest && status === "running" && (
+        <IngestControl
+          accept={ingest.accept}
+          label={ingest.label ?? "Load file"}
+          busy={busy}
+          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          testIdPrefix="kms"
+          onFile={ingestFile}
+        />
+      )}
+    </DemoSurfaceDockControls>
+  ), [busy, crtcId, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -327,6 +375,13 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
           style={{
             ...canvasStyle,
             display: showCanvas ? "block" : "none",
+            // The guest owns the pointer: motion is forwarded into
+            // /dev/input/mice, and a guest that draws its own cursor
+            // would stack a second arrow under the browser's, the two
+            // drifting apart whenever the guest's cursor estimate and
+            // the OS pointer disagree. A guest that draws no cursor
+            // declares `hostPointer` so the browser keeps drawing one.
+            cursor: presentation.hostPointer ? "default" : "none",
           }}
         />
         {showCanvas && !hasFrame && (
@@ -342,6 +397,29 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
             {error
               ? <>attachKmsDisplay failed: {error}</>
               : <>Waiting for the kernel to reach 'running'.</>}
+          </div>
+        )}
+        {busy && (
+          <div className="kdemo-toast" data-testid="kms-ingest-busy">
+            {ingestName ? `loading ${ingestName}…` : "loading…"}
+          </div>
+        )}
+        {ingestError && !busy && (
+          <div
+            className="kdemo-toast"
+            data-error="true"
+            data-testid="kms-ingest-error"
+            role="alert"
+          >
+            {ingestError}
+            <button
+              type="button"
+              className="kdemo-toast-dismiss"
+              onClick={() => setIngestError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
           </div>
         )}
       </div>

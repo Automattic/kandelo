@@ -26,6 +26,7 @@ import {
   registryPackagesWithoutBuildToml,
 } from "../../scripts/browser-binary-package-roots.mjs";
 import { browserAssetImportsForPolicy } from "../../scripts/ci-check-browser-assets";
+import { SCUMMVM_RUNTIME_FILES } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-runtime-files";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const registryRoot = join(repoRoot, "packages", "registry");
@@ -1587,4 +1588,47 @@ guest_path = "/usr/share/data"
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
+
+  // The browser app cannot run `xtask build-deps runtime-file-metadata`, so it
+  // restates a manifest's [[runtime_files]] in TypeScript. Silent drift would
+  // stage a package's data at the wrong guest path or drop it entirely.
+  it("stages exactly the runtime files the scummvm manifest declares", () => {
+    const declared = parseRuntimeFiles(
+      readFileSync(join(registryRoot, "scummvm", "package.toml"), "utf8"),
+    );
+    expect(declared.length).toBeGreaterThan(0);
+    expect(SCUMMVM_RUNTIME_FILES.map((file) => ({
+      artifact: file.artifact,
+      guestPath: file.guestPath,
+      mode: file.mode,
+    }))).toEqual(declared);
+  });
 });
+
+interface DeclaredRuntimeFile {
+  artifact: string;
+  guestPath: string;
+  mode: number;
+}
+
+/** Read every `[[runtime_files]]` entry out of a package manifest. */
+function parseRuntimeFiles(manifest: string): DeclaredRuntimeFile[] {
+  return manifest
+    .split(/^\[\[runtime_files\]\]$/m)
+    .slice(1)
+    .map((rest) => rest.split(/^\[/m, 1)[0])
+    .map((section) => ({
+      artifact: requireTomlString(section, "artifact"),
+      guestPath: requireTomlString(section, "guest_path"),
+      // `mode` is optional in TOML; the manifest parser defaults it to 0o644.
+      mode: Number(/^mode\s*=\s*(\d+)$/m.exec(section)?.[1] ?? 0o644),
+    }));
+}
+
+function requireTomlString(section: string, key: string): string {
+  const value = new RegExp(`^${key}\\s*=\\s*"([^"]*)"$`, "m").exec(section)?.[1];
+  if (value === undefined) {
+    throw new Error(`a [[runtime_files]] entry declares no ${key}`);
+  }
+  return value;
+}

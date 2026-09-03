@@ -522,6 +522,15 @@ export interface DemoPresentation {
    * unplayable without a physical keyboard.
    */
   touchControls?: boolean;
+  /**
+   * Whether the browser's own pointer stays visible over the display surface.
+   * A KMS scanout shows exactly what the guest renders, so a guest that draws
+   * its own cursor (modeset, ScummVM, a Wayland compositor) must hide the
+   * browser pointer or two arrows stack and drift apart. A guest that draws no
+   * cursor at all needs it, otherwise the user cannot see where they point.
+   * Defaults to hidden.
+   */
+  hostPointer?: boolean;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
@@ -2465,19 +2474,9 @@ export class LiveKernelHost implements KernelHost {
       resizeObserver.observe(canvas);
     }
     // evdev codes for the pointer path (struct input_event).
-    const EV_SYN = 0x00, EV_KEY = 0x01, EV_REL = 0x02;
-    const SYN_REPORT = 0x00, REL_X = 0x00, REL_Y = 0x01;
+    const EV_SYN = 0x00, EV_KEY = 0x01, EV_ABS = 0x03;
+    const SYN_REPORT = 0x00, ABS_X = 0x00, ABS_Y = 0x01;
     const BTN_LEFT = 0x110, BTN_RIGHT = 0x111, BTN_MIDDLE = 0x112;
-    // event1 advertises REL_X+REL_Y, so SDL's evdev backend classifies
-    // it as a *relative* mouse and ignores EV_ABS entirely
-    // (SDL_evdev.c: `relative_mouse = test_bit(REL_X) && test_bit(REL_Y)`,
-    // and the ABS_X handler only stores position when `!relative_mouse`).
-    // To position absolutely we peg the relative integrator into the
-    // top-left corner with an over-large negative delta — SDL clamps the
-    // result to the window — then move to the target. Emulating an
-    // absolute device through relative deltas this way is the only path
-    // that reaches SDL without re-spec'ing the kernel's input device.
-    const PEG = 4096; // larger than any framebuffer axis, so the clamp pegs to 0
     let prevButtons = 0;
     const handle: KmsDisplayHandle = {
       crtcId,
@@ -2489,16 +2488,22 @@ export class LiveKernelHost implements KernelHost {
         const inject = kernel.injectInputEvent;
         if (!inject) return;
         const rx = Math.round(x), ry = Math.round(y);
-        // Frame 1: peg the relative cursor to (0,0).
-        inject.call(kernel, 1, EV_REL, REL_X, -PEG);
-        inject.call(kernel, 1, EV_REL, REL_Y, -PEG);
+        // The position, then the buttons, in that order: a consumer
+        // flushes motion on the SYN, so the cursor is already at (rx, ry)
+        // when a press arrives in the next frame.
+        //
+        // `/dev/input/event1` is an absolute pointer, so this states the
+        // position directly. It used to advertise REL_X and REL_Y as well,
+        // which made SDL classify it as a relative mouse and discard these
+        // records; the host compensated by driving the cursor to the
+        // origin with an over-large negative delta before every event, and
+        // any click that landed before the corrective frame registered at
+        // (0, 0). The axis range comes from `kernel_set_input_canvas_dims`,
+        // which is why these are framebuffer pixels and not a normalised
+        // value.
+        inject.call(kernel, 1, EV_ABS, ABS_X, rx);
+        inject.call(kernel, 1, EV_ABS, ABS_Y, ry);
         inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
-        // Frame 2: move to the absolute target. SDL flushes motion on
-        // this SYN, so its cursor sits at (rx, ry) before any button.
-        inject.call(kernel, 1, EV_REL, REL_X, rx);
-        inject.call(kernel, 1, EV_REL, REL_Y, ry);
-        inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
-        // Frame 3: button transitions — now they register at (rx, ry).
         const changed = buttons ^ prevButtons;
         if (changed) {
           if (changed & 1) inject.call(kernel, 1, EV_KEY, BTN_LEFT, buttons & 1 ? 1 : 0);

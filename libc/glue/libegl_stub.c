@@ -430,14 +430,47 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
     ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
 }
 
-/* eglGetProcAddress: SDL2's LOAD_FUNC_EGLEXT routes extension lookups
- * through this entry point.  We don't expose any of the EGL-side
- * extensions (eglCreateSyncKHR, eglQueryDevicesEXT, …), so returning
- * NULL is the documented "extension not present" answer.  Returning
- * NULL is also fine for the GLES2 entry-point fallback path —
- * libGLESv2.a exports gl* directly, so the program's calls resolve at
- * link time; SDL2 itself never calls a gl* through this pointer. */
+/* eglGetProcAddress: EGL 1.5 lets clients query core client-API entry
+ * points as well as extensions, and GL loaders (ScummVM's glad via
+ * SDL_GL_GetProcAddress) fetch EVERY GL function through this pointer —
+ * a NULL answer for glGetString makes such loaders report "no GL".
+ * Answer with the statically linked libGLESv2.a entry points; unknown
+ * names (EGL-side extensions like eglCreateSyncKHR, GL functions the
+ * cmdbuf encoder doesn't implement) return NULL, the documented
+ * "not present" answer, so feature probes stay truthful. */
+#define WPK_GL_PROC_LIST(X) \
+    X(glActiveTexture) X(glAttachShader) X(glBindAttribLocation) \
+    X(glBindBuffer) X(glBindFramebuffer) X(glBindTexture) \
+    X(glBlendFunc) X(glBufferData) X(glBufferSubData) \
+    X(glCheckFramebufferStatus) X(glClear) X(glClearColor) \
+    X(glCompileShader) X(glCreateProgram) X(glCreateShader) \
+    X(glDeleteBuffers) X(glDeleteFramebuffers) X(glDeleteProgram) \
+    X(glDeleteShader) X(glDeleteTextures) X(glDetachShader) \
+    X(glDisable) X(glDisableVertexAttribArray) X(glDrawArrays) \
+    X(glEnable) X(glEnableVertexAttribArray) X(glFramebufferTexture2D) \
+    X(glGenBuffers) X(glGenFramebuffers) X(glGenTextures) \
+    X(glGenerateMipmap) X(glGetAttribLocation) X(glGetError) \
+    X(glGetIntegerv) X(glGetProgramInfoLog) X(glGetProgramiv) \
+    X(glGetShaderInfoLog) X(glGetShaderPrecisionFormat) X(glGetShaderiv) \
+    X(glGetString) X(glGetUniformLocation) X(glHint) X(glLinkProgram) \
+    X(glPixelStorei) X(glReadPixels) X(glScissor) X(glShaderSource) \
+    X(glTexImage2D) X(glTexParameteri) X(glTexSubImage2D) \
+    X(glUniform1f) X(glUniform1i) X(glUniform2f) X(glUniform3f) \
+    X(glUniform4f) X(glUniformMatrix4fv) X(glUseProgram) \
+    X(glVertexAttrib4fv) X(glVertexAttribPointer) X(glViewport)
+
+#define WPK_GL_PROC_DECL(name) extern void name(void);
+WPK_GL_PROC_LIST(WPK_GL_PROC_DECL)
+
+static const struct { const char *name; void (*fn)(void); } k_gl_procs[] = {
+#define WPK_GL_PROC_ENTRY(name) { #name, name },
+WPK_GL_PROC_LIST(WPK_GL_PROC_ENTRY)
+};
+
 void (*eglGetProcAddress(const char *procname))(void) {
-    (void) procname;
+    if (procname == NULL) return NULL;
+    for (size_t i = 0; i < sizeof k_gl_procs / sizeof k_gl_procs[0]; i++) {
+        if (strcmp(k_gl_procs[i].name, procname) == 0) return k_gl_procs[i].fn;
+    }
     return NULL;
 }

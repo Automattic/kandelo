@@ -65,9 +65,16 @@ pub fn populate_evbit(device: u8, ev_type: u16, buf: &mut [u8]) {
                 set_bit(buf, b);
             }
         }
+        // Wheel axes only. A device that advertises REL_X and REL_Y is a
+        // relative pointer, and consumers classify on exactly those two
+        // bits before looking at anything else — SDL2's evdev backend sets
+        // `relative_mouse = test_bit(REL_X) && test_bit(REL_Y)` and then
+        // ignores every EV_ABS record the device sends. Advertising both
+        // axis families made this device claim to be a mouse and a tablet
+        // at once, which no real Linux device does, and left the host with
+        // no way to state a pointer position. The wheels stay: they are
+        // genuinely relative on an absolute device, as on a real tablet.
         (1, t) if t == EV_REL => {
-            set_bit(buf, REL_X);
-            set_bit(buf, REL_Y);
             set_bit(buf, REL_WHEEL);
             set_bit(buf, REL_HWHEEL);
         }
@@ -138,10 +145,20 @@ mod tests {
     fn evbit_pointer_rel_query_advertises_wheels() {
         let mut buf = [0u8; 4];
         populate_evbit(1, EV_REL, &mut buf);
-        assert_ne!(buf[0] & (1 << REL_X), 0);
-        assert_ne!(buf[0] & (1 << REL_Y), 0);
         assert_ne!(buf[0] & (1 << REL_HWHEEL), 0);
         assert_ne!(buf[1] & (1 << (REL_WHEEL - 8)), 0);
+    }
+
+    /// The pointer is an absolute device. Consumers decide that on REL_X
+    /// and REL_Y alone: SDL2's evdev backend treats a device carrying both
+    /// as a relative mouse and discards its EV_ABS records, which is what
+    /// made the host fake positions by pegging the cursor to the origin.
+    #[test]
+    fn evbit_pointer_rel_query_omits_the_x_and_y_axes() {
+        let mut buf = [0u8; 4];
+        populate_evbit(1, EV_REL, &mut buf);
+        assert_eq!(buf[0] & (1 << REL_X), 0);
+        assert_eq!(buf[0] & (1 << REL_Y), 0);
     }
 
     #[test]

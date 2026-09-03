@@ -86,7 +86,13 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
         autoCommand: DOOM_COMMAND,
         touchControls: true,
       };
+    case "sdl2":
+      // The GLSL playground draws no cursor of its own: it reads the pointer
+      // from SDL events and renders only the editor and the shader. Without
+      // the browser pointer the user has nothing to aim with.
+      return { ...genericDemoPresentation("kms"), hostPointer: true };
     case "modeset":
+    case "scummvm":
       return genericDemoPresentation("kms");
     default:
       return null;
