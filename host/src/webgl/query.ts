@@ -182,6 +182,20 @@ export function runGlQuery(
       return out.byteLength;
     }
 
+    // in: u32 shadertype, u32 precisiontype; out: i32 rangeMin, i32 rangeMax,
+    // i32 precision
+    case O.QOP_GET_SHADER_PRECISION_FORMAT: {
+      if (input.byteLength < 8 || out.byteLength < 12) return -22;
+      const fmt = gl.getShaderPrecisionFormat(
+        inDv.getUint32(0, true),
+        inDv.getUint32(4, true),
+      );
+      outDv.setInt32(0, fmt?.rangeMin ?? 0, true);
+      outDv.setInt32(4, fmt?.rangeMax ?? 0, true);
+      outDv.setInt32(8, fmt?.precision ?? 0, true);
+      return 12;
+    }
+
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;

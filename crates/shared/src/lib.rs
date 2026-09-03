@@ -4480,6 +4480,7 @@ pub mod gl {
     pub const OP_USE_PROGRAM: u16 = 0x0307;
     pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
+    pub const OP_DETACH_SHADER: u16 = 0x030A;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -4497,6 +4498,10 @@ pub mod gl {
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
+    /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
+    /// attribute. ScummVM's shader pipeline feeds the per-draw color
+    /// through this when the attribute array is disabled.
+    pub const OP_VERTEX_ATTRIB_4FV: u16 = 0x0505;
 
     pub const OP_GEN_VERTEX_ARRAYS: u16 = 0x0600;
     pub const OP_DELETE_VERTEX_ARRAYS: u16 = 0x0601;
@@ -4509,6 +4514,7 @@ pub mod gl {
     pub const OP_BIND_RENDERBUFFER: u16 = 0x0704;
     pub const OP_RENDERBUFFER_STORAGE: u16 = 0x0705;
     pub const OP_FRAMEBUFFER_RENDERBUFFER: u16 = 0x0706;
+    pub const OP_DELETE_FRAMEBUFFERS: u16 = 0x0707;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
@@ -4524,6 +4530,7 @@ pub mod gl {
     pub const QOP_GET_PROGRAM_INFO_LOG: u32 = 0x0A;
     pub const QOP_READ_PIXELS: u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS: u32 = 0x0C;
+    pub const QOP_GET_SHADER_PRECISION_FORMAT: u32 = 0x0D;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -5655,6 +5662,7 @@ mod gl_tests {
             OP_USE_PROGRAM,
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
+            OP_DETACH_SHADER,
             OP_UNIFORM1I,
             OP_UNIFORM1F,
             OP_UNIFORM2F,
@@ -5667,6 +5675,7 @@ mod gl_tests {
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
             OP_DRAW_ELEMENTS,
+            OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,
             OP_DELETE_VERTEX_ARRAYS,
             OP_BIND_VERTEX_ARRAY,
@@ -5677,6 +5686,7 @@ mod gl_tests {
             OP_BIND_RENDERBUFFER,
             OP_RENDERBUFFER_STORAGE,
             OP_FRAMEBUFFER_RENDERBUFFER,
+            OP_DELETE_FRAMEBUFFERS,
         ];
         for (i, &a) in ops.iter().enumerate() {
             for &b in &ops[i + 1..] {
@@ -5700,6 +5710,7 @@ mod gl_tests {
             QOP_GET_PROGRAM_INFO_LOG,
             QOP_READ_PIXELS,
             QOP_CHECK_FB_STATUS,
+            QOP_GET_SHADER_PRECISION_FORMAT,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

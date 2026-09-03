@@ -113,6 +113,19 @@ export type GlBinding = GlBindingInput & {
    *  destroy). Null for canvas-backed (master) and CPU-tier sessions. */
   renderTargetFbo: WebGLFramebuffer | null;
 
+  /** Canvas-backed present target: an offscreen FBO the session renders
+   *  into, blitted to the real default framebuffer once per
+   *  `GLIO_PRESENT`. A canvas-backed session draws a frame across many
+   *  syscalls, so it spans many worker tasks, and the browser composites
+   *  an OffscreenCanvas at task end — without this the viewer sees
+   *  cleared and half-drawn frames as the program redraws (a whole-screen
+   *  flicker). Rendering offscreen means every composite shows the last
+   *  COMPLETE frame. Owned by this binding; freed on unbind. Null for
+   *  GPU-tier producers, which already render into a bo FBO. */
+  presentTarget:
+    | { fbo: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number }
+    | null;
+
   /** Target GPU bo_id captured at `GLIO_CREATE_SURFACE` but not yet
    *  applied, because the client created its window surface BEFORE its
    *  GL context (SDL2's Wayland+GLES backend creates the wl_egl_window
@@ -192,6 +205,7 @@ export class GlContextRegistry {
       claimedKmsCrtc: null,
       currentProgram: null,
       renderTargetFbo: null,
+      presentTarget: null,
       pendingRenderTargetBoId: 0,
       shadow: defaultShadow(),
       forward,
@@ -208,6 +222,11 @@ export class GlContextRegistry {
     // textures deterministically instead of leaving them to context GC.
     for (const entry of b.foreignTextures.values()) {
       b.gl?.deleteTexture(entry.tex);
+    }
+    if (b.presentTarget) {
+      b.gl?.deleteFramebuffer(b.presentTarget.fbo);
+      b.gl?.deleteTexture(b.presentTarget.tex);
+      b.presentTarget = null;
     }
     this.bindings.delete(pid);
     for (const l of this.listeners) l(pid, "unbind");
