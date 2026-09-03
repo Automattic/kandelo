@@ -53,7 +53,14 @@ describe("instantiateForkModule", () => {
     );
 
     for (const name of FORK_MODULE_REQUIRED_EXPORTS) {
-      expect(typeof fm.exports[name]).toBe("function");
+      // `__wpk_fork_ref_gc_transit` (M1 task 2) is a module-owned
+      // `WebAssembly.Table` export, not a function; every other required
+      // export is a function.
+      if (name === "__wpk_fork_ref_gc_transit") {
+        expect(fm.exports[name]).toBeInstanceOf(WebAssembly.Table);
+      } else {
+        expect(typeof fm.exports[name]).toBe("function");
+      }
     }
 
     // The instance is live: a trivial exported query runs without trapping.
@@ -64,6 +71,52 @@ describe("instantiateForkModule", () => {
     expect(new DataView(memory.buffer).getUint32(sentinelAddr, true)).toBe(
       0xdeadbeef,
     );
+  });
+
+  it("exposes the module-owned GC transit table without minting a provider", () => {
+    const module = loadForkModule32();
+    const memory = sharedMemory(256); // 16 MiB
+    const reserveBase = 8 * 1024 * 1024;
+    const reserve = (size: number): number => {
+      void size;
+      return reserveBase;
+    };
+
+    const fm = instantiateForkModule({
+      module,
+      memory,
+      ptrWidth: 4,
+      reserve,
+      label: "test",
+    });
+
+    expect(fm.gcTransitTable).toBeInstanceOf(WebAssembly.Table);
+  });
+
+  it("ignores a supplied transitTable option as a harmless no-op (deprecated)", () => {
+    const module = loadForkModule32();
+    const memory = sharedMemory(256); // 16 MiB
+    const reserveBase = 8 * 1024 * 1024;
+    const reserve = (size: number): number => {
+      void size;
+      return reserveBase;
+    };
+    const unusedProvidedTable = new WebAssembly.Table({
+      element: "anyfunc",
+      initial: 0,
+    });
+
+    expect(() =>
+      instantiateForkModule({
+        module,
+        memory,
+        ptrWidth: 4,
+        reserve,
+        label: "test",
+        // Deprecated option; must not throw or otherwise change behavior.
+        transitTable: unusedProvidedTable,
+      }),
+    ).not.toThrow();
   });
 
   it("fails loudly when the module is not a PIC side module", () => {
