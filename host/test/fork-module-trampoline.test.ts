@@ -83,12 +83,20 @@ describe("fork-module trampoline (production TS port)", () => {
     const PREFIX0 = 128;
     const PREFIX1 = 256;
 
+    // Drive the unwind over caller-owned FIXED arenas, NOT the production
+    // channel-mmap growing arena: this is a single-threaded in-process harness
+    // with no worker to service the module's blocking `memory_atomic_wait32`
+    // channel handshake, so the fixed-arena entries bump-allocate within the two
+    // disjoint high regions carved above instead. The journal / writer / resume
+    // table are byte-identical to the channel path, so this still exercises the
+    // exact multi-activation frame routing the production `fm_begin_unwind` does.
     call("fm_set_format", 4, PREFIX0);
     expect(errno()).toBe(0);
-    const mb0 = call("fm_begin_unwind", 0, ARENA0_BASE, ARENA_LEN) >>> 0;
+    const mb0 = call("fm_begin_unwind_fixed_arena", 0, ARENA0_BASE, ARENA_LEN) >>> 0;
     expect(errno()).toBe(0);
     expect(mb0).toBeGreaterThanOrEqual(ARENA0_BASE);
-    const mb1 = call("fm_add_activation_unwind", 1, ARENA1_BASE, ARENA_LEN, PREFIX1) >>> 0;
+    const mb1 =
+      call("fm_add_activation_unwind_fixed_arena", 1, ARENA1_BASE, ARENA_LEN, PREFIX1) >>> 0;
     expect(errno()).toBe(0);
     expect(mb1).toBeGreaterThanOrEqual(ARENA1_BASE);
 
