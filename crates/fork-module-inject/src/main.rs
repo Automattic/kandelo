@@ -61,6 +61,10 @@ use walrus::{ExportItem, FunctionBuilder, Module, RefType, ValType};
 const DRIVE_TABLE_IMPORT: &str = "__wpk_fork_drive_table";
 /// The injected loop export the host calls to run a serialized plan.
 const DRIVE_EXECUTE_EXPORT: &str = "fm_drive_execute";
+/// The Rust drive-step proof-of-use counter the injected shim `call`s once per
+/// plan step it drives (Phase 6 item 3c). Exported by `crates/fork-module/src/
+/// lib.rs`; Rust owns the counter, the injected loop owns the `call_indirect`.
+const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
 /// The shared Wasm-GC transit table (`anyref`) the guest's `_gc_allocate`
 /// publishes every reconstructed struct/array/i31 into at slot `recipe + 1`
 /// (STORE #2). The injected drive loop reads it back with `table.get` +
@@ -213,6 +217,19 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
         bail!("module already exports {DRIVE_EXECUTE_EXPORT}");
     }
 
+    // Locate the Rust drive-step counter the shim `call`s once per driven step
+    // (Phase 6 item 3c proof-of-use). Rust owns the counter; the injected loop
+    // owns the `call_indirect` it counts.
+    let bump = module
+        .exports
+        .iter()
+        .find(|export| export.name == DRIVE_BUMP_HELPER_EXPORT)
+        .ok_or_else(|| anyhow!("module does not export {DRIVE_BUMP_HELPER_EXPORT}"))?;
+    let bump_fn = match bump.item {
+        ExportItem::Function(id) => id,
+        _ => bail!("{DRIVE_BUMP_HELPER_EXPORT} export is not a function"),
+    };
+
     // The guest's single (imported) linear memory the plan bytes live in.
     let memory = module
         .memories
@@ -276,6 +293,10 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
             |_done| {},
             // i < count: drive one step, then re-enter the loop.
             |work| {
+                // Proof-of-use (Phase 6 item 3c): count every step the MODULE
+                // drives. A nonzero `fm_drive_steps_executed` after a flag-on fork
+                // proves the module drove the typed order, not a JS fallback.
+                work.call(bump_fn);
                 // step = plan + i * DRIVE_STEP_SIZE (pointer-width address math).
                 if is64 {
                     work.local_get(i)

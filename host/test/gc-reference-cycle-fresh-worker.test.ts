@@ -75,19 +75,24 @@ describe("Multi-node Wasm GC reference cycle in a fresh process Worker", () => {
     expect(result.stderr).toBe("");
   });
 
-  it("rebuilds the same multi-node graph with the fork-module enabled (parity)", async () => {
-    // PARITY: with the co-resident fork-module ENABLED, the child's ref.eq
-    // alias checks + the cyclic array element + scalar fields + the i31 value
-    // all still hold, so it exits 0 exactly as the flag-off run. PROOF OF USE:
-    // the module advanced its typed-GC node counter (> 0), so the graph was
-    // admitted and reconstructed THROUGH the module (the item 3a data feed).
+  it("rebuilds the same multi-node graph with the fork-module DRIVING the typed order (item 3c)", async () => {
+    // EQUIVALENCE + DRIVE PROOF (Phase 6 item 3c production flip): with the
+    // co-resident fork-module ENABLED, the child's ref.eq alias checks + the
+    // cyclic array element + the scalar struct field + the i31 leaf value all
+    // still hold, so it exits 0 with empty stderr — the SAME child outcome as
+    // the flag-off run above (equivalence). PROOF OF USE has two counters:
     //
-    // NOTE: this counter is the 3a DATA-FEED counter, not the item 3c DRIVE
-    // counter. The production typed-GC drive-ORDER is still the proven JS
-    // `ForkReferenceTransaction` walk; the module `fm_build_gc_plan` /
-    // `fm_drive_execute` drive is built but not yet called on this RESTORE path.
-    // The `.skip`'d EQUIVALENCE GATE in `fork-module-drive-r1-trace.test.ts`
-    // tracks turning this into a distinct drive proof.
+    //   * `gc` (`fm_gc_nodes_reconstructed`): the graph was ADMITTED through the
+    //     module (the item 3a data feed). Advances in `fm_begin_reference_replay`.
+    //   * `drive` (`fm_drive_steps_executed`): the module actually DROVE the
+    //     typed allocate/fill/exn topological order via `fm_build_gc_plan` +
+    //     `fm_drive_execute`, in place of the JS `materializeAllTyped` sub-loop.
+    //     Advances once per `call_indirect` into a guest `_gc_allocate`/`_gc_fill`.
+    //
+    // A nonzero `drive` count is the distinct proof — over and above `gc` — that
+    // the MODULE, not the JS fallback, reconstructed the typed graph on this
+    // RESTORE path. That the child still exits 0 proves the module-driven order
+    // reconstructs the identical references the proven JS order does.
     const result = await runCentralizedProgram({
       programPath,
       argv: ["gc-reference-cycle-fresh-worker"],
@@ -109,5 +114,16 @@ describe("Multi-node Wasm GC reference cycle in a fresh process Worker", () => {
         "not admit the multi-node GC reconstruction",
     ).not.toBeNull();
     expect(gcNodes!).toBeGreaterThan(0);
+
+    // The item 3c DRIVE proof: the module executed the typed-GC drive plan.
+    const driveSteps = moduleReferenceProof(result.hostDiagnostics, "drive");
+    expect(
+      driveSteps,
+      "expected a fork-module DRIVE proof-of-use diagnostic; the module admitted " +
+        "the graph but did not drive the typed allocate/fill order (item 3c)",
+    ).not.toBeNull();
+    // struct ALLOC + array ALLOC + i31 ALLOC + struct FILL + array FILL = 5
+    // drive steps at minimum; assert the drive ran, not an exact plan shape.
+    expect(driveSteps!).toBeGreaterThan(0);
   });
 });

@@ -1271,6 +1271,13 @@ export class ForkReferenceTransaction {
     this.requirePhase("child-replay", "load a Wasm-GC recipe");
     assertRecipeId(recipeId);
     this.assertU32(moduleActivation, "GC load activation");
+    // WHY the coercion: an i31 recipe carries the type ordinal `0xffff_ffff` (the
+    // "no struct/array type" sentinel). A wasm caller that passes it as a signed
+    // i32 delivers `-1` at the wasm->JS boundary, which `assertU32` (value < 0)
+    // would reject BEFORE the i31 branch below could accept the sentinel — so an
+    // i31 load through the module drive would spuriously fail. Coerce to unsigned
+    // first; this is a no-op for the genuine u32 type ordinals struct/array carry.
+    typeOrdinal = typeOrdinal >>> 0;
     this.assertU32(typeOrdinal, "GC load type ordinal");
     this.assertU31(layoutId, "GC load layout id");
     this.assertU32(kind, "GC load kind");
@@ -1353,8 +1360,24 @@ export class ForkReferenceTransaction {
    * then allocated globally, remaining constructors follow their exact
    * dependency edges, exceptions are cached in their owning activation, and
    * mutable fields are filled only after every identity exists.
+   *
+   * Phase 6 item 3c: when `moduleDrive` is supplied (a flag-on qualifying child
+   * whose reference graph was admitted through the co-resident fork-module), the
+   * typed allocate/fill/exn topological SUB-LOOP below is replaced by the module
+   * drive (`fm_build_gc_plan` + `fm_drive_execute`). PHASE A/B — the static-root
+   * transit pin and the externref-leaf publish just above it — still runs on the
+   * JS path: the module drive's guest `_gc_allocate`/`_gc_fill` reads those leaves
+   * and roots out of the SAME shared transit table this transaction publishes
+   * them into. `moduleDrive` calls the guest `_gc_allocate`/`_gc_fill`/
+   * `_exception_materialize` exports (via the module's `call_indirect` drive
+   * table) exactly as the JS sub-loop would through `owner.provider(...)`, so the
+   * guest GC state it publishes into the transit table is equivalent; the JS
+   * `allocated`/`filled`/`completedExceptions` bookkeeping (all function-local)
+   * simply never runs, and no consumer downstream of `restoreModuleState` reads
+   * it. When `moduleDrive` is omitted (flag-off, or a non-qualifying fork) this
+   * is byte-identical to before.
    */
-  materializeAllTyped(): void {
+  materializeAllTyped(moduleDrive?: () => void): void {
     this.requirePhase("child-replay", "materialize typed references");
     if (this.typedMaterialized) {
       throw new Error("typed fork references were materialized twice");
@@ -1428,6 +1451,29 @@ export class ForkReferenceTransaction {
       // only the JavaScript token is insufficient: the shared transit table
       // stores anyref, so a generated Wasm helper performs the conversion.
       owner.publishExternref(entry.id, this.decodeExternref(entry.id));
+    }
+    // Phase 6 item 3c production flip: once PHASE A/B (static-root pin + externref
+    // publish) has seeded the shared transit table, hand the typed allocate/fill/
+    // exn topological order to the co-resident fork-module. The module's
+    // `fm_build_gc_plan` reproduces THIS same walk (allocate-all-shells-first,
+    // dependency-ordered constructors, cycle break, then fills) and drives the
+    // guest exports through its `call_indirect` drive table, publishing each
+    // reconstructed identity into the same transit table the JS sub-loop would.
+    // Only run it when there is actually typed-drive work (struct/array/i31/exnref)
+    // so a funcref/externref-only fork stays on the untouched path and never asks
+    // the module to build an empty plan.
+    if (moduleDrive) {
+      const hasTypedDriveNode = this.decodedNodes.some(({ node }) =>
+        node.kind === "struct"
+        || node.kind === "array"
+        || node.kind === "i31"
+        || node.kind === "exnref"
+      );
+      if (hasTypedDriveNode) {
+        moduleDrive();
+        this.typedMaterialized = true;
+        return;
+      }
     }
     const allocated = new Set(this.adoptedAllocatedTypedRecipes);
     const completedExceptions = new Set(

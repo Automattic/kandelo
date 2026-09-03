@@ -61,6 +61,8 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+  WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
+  WPK_FORK_GC_CODEC_SECTION,
   WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
   WPK_FORK_REFERENCE_EXPORT_GC_FILL,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
@@ -3808,6 +3810,14 @@ export async function centralizedWorkerMain(
       let decodedChildReferences: DecodedSegmentedForkReferenceTransaction | null =
         null;
       let childDylinkState: DylinkForkState | null = null;
+      // Phase 6 item 3c: the raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
+      // per activation and the host-exception owner, captured in the child's
+      // pre-instantiation planning block (where the compiled activation `modules`
+      // are in scope) so the later instantiation/attach block can seed the
+      // co-resident fork-module's typed-GC drive planner. Null until a fork child
+      // computes them.
+      let childGcCodecBytes: Map<number, Uint8Array> | null = null;
+      let childHostExceptionOwner = 0xffff_ffff;
       const referenceReplay = (): ProcessReferenceReplayImports =>
         earlyChildReferences ?? activationRegistry.currentReferences();
       const processContinuation = new ForkProcessContinuationCoordinator(
@@ -4258,6 +4268,33 @@ export async function centralizedWorkerMain(
             exceptionDescriptor:
               readForkExceptionCodecDescriptor(activationModule),
           }));
+        // Phase 6 item 3c: capture each activation's raw KFGC section bytes and
+        // the host-exception owner HERE, where the compiled `modules` (and their
+        // custom sections) are in scope, so the later instantiation/attach block
+        // can seed the co-resident fork-module's drive planner. The
+        // host-exception owner is the smallest activation that declared an
+        // exception codec descriptor — the JS `directOwner` for a host exnref —
+        // or 0xffff_ffff (the JS `null`) if none did.
+        const gcCodecBytes = new Map<number, Uint8Array>();
+        for (const [activationId, activationModule] of modules) {
+          const sections = WebAssembly.Module.customSections(
+            activationModule,
+            WPK_FORK_GC_CODEC_SECTION,
+          );
+          if (sections.length !== 1) {
+            throw new Error(
+              `pid=${pid}: activation ${activationId} has ${sections.length} ` +
+                "GC codec sections; expected exactly one",
+            );
+          }
+          gcCodecBytes.set(activationId, new Uint8Array(sections[0]!));
+        }
+        childGcCodecBytes = gcCodecBytes;
+        childHostExceptionOwner =
+          declarations
+            .filter((entry) => entry.exceptionDescriptor !== undefined)
+            .map((entry) => entry.activationId)
+            .sort((left, right) => left - right)[0] ?? 0xffff_ffff;
         // Phase 6 D6.4a predicate (widened from D6.3a): this child's references
         // can be reconstructed through the module iff EVERY graph node is null,
         // funcref, externref, exnref, or a typed-GC value (struct / array / i31).
@@ -4705,26 +4742,27 @@ export async function centralizedWorkerMain(
             }
             base += guestCatalog.length;
           }
-          // Phase 6 item 3b (minimize host surface): bind each activation's guest
-          // `_gc_allocate`/`_gc_fill` exports into the module's imported drive
-          // table at `fm_drive_table_base(act) + {ALLOC, FILL}`, so the injected
+          // Phase 6 item 3b/3c: bind each activation's guest
+          // `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports into the
+          // module's imported drive table at
+          // `fm_drive_table_base(act) + {ALLOC, FILL, EXN}`, so the injected
           // `fm_drive_execute` shim can `call_indirect` them. The module could not
           // import the guest exports directly — it is instantiated BEFORE the
           // guests to supply the frame-flip imports. The absolute slot numbers
           // match the ones the Rust drive PLAN encodes (`fork_codec::drive_plan`).
           //
-          // ADDITIVE + INERT this slice: nothing calls `fm_drive_execute` yet —
-          // the PROVEN JS `materializeTypedGraph` still drives the GC allocate/fill
-          // topological order (item 3c flips that to the module). Binding an unused
-          // funcref table changes no guest-observable behavior, so a flag-on fork
-          // stays byte-identical until 3c, and a flag-off fork skips this entirely.
+          // Item 3c makes this LIVE: the module now drives the typed
+          // allocate/fill/exn topological order (`fm_build_gc_plan` +
+          // `fm_drive_execute`) in place of the JS `materializeAllTyped` sub-loop
+          // for a flag-on qualifying child. A flag-off fork skips this entirely.
           const driveTable = forkModuleInstance.driveTable;
           const driveTableBase = forkModuleInstance.exports
             .fm_drive_table_base as (activation: number) => number;
           // Op offsets within an activation's drive-table slice (see
-          // `fork_codec::drive_plan` DRIVE_OP_ALLOC / DRIVE_OP_FILL).
+          // `fork_codec::drive_plan` DRIVE_OP_ALLOC / DRIVE_OP_FILL / DRIVE_OP_EXN).
           const DRIVE_OP_ALLOC = 0;
           const DRIVE_OP_FILL = 1;
+          const DRIVE_OP_EXN = 2;
           for (const activation of sortedActivations) {
             const slotBase = driveTableBase(activation.activationId);
             const allocate =
@@ -4736,13 +4774,63 @@ export async function centralizedWorkerMain(
             if (typeof allocate !== "function" || typeof fill !== "function") {
               continue;
             }
-            const needed = slotBase + DRIVE_OP_FILL + 1;
+            // The exnref materialize export is present only when the guest ships
+            // an exception codec; bind it when it exists so an exnref DRIVE step
+            // (`DRIVE_OP_EXN`) resolves. A struct/array/i31-only guest omits it,
+            // and no exnref step is ever emitted for it.
+            const materialize =
+              activation.instance.exports[WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE];
+            const hasExn = typeof materialize === "function";
+            const needed = slotBase + (hasExn ? DRIVE_OP_EXN : DRIVE_OP_FILL) + 1;
             if (driveTable.length < needed) {
               driveTable.grow(needed - driveTable.length);
             }
             driveTable.set(slotBase + DRIVE_OP_ALLOC, allocate);
             driveTable.set(slotBase + DRIVE_OP_FILL, fill);
+            if (hasExn) {
+              driveTable.set(slotBase + DRIVE_OP_EXN, materialize);
+            }
           }
+          // The module-backed reference replay path always carries a backend (it
+          // was set up alongside `forkModuleInstance` and `enableModuleReferenceReplay`
+          // below drives through it). Assert it so the seed calls are well-typed
+          // and a missing backend fails loudly rather than silently skipping the
+          // drive seed.
+          if (!forkModuleBackend) {
+            throw new Error(
+              `pid=${pid}: fork-module reference replay requires a backend`,
+            );
+          }
+          // Phase 6 item 3c: seed the module's typed-GC drive planner from the
+          // raw KFGC section bytes captured in the pre-instantiation planning
+          // block (`childGcCodecBytes`). Each activation's codec supplies the
+          // per-recipe layout facts (constructor deps, defaultable shells, the i31
+          // owner) `fm_build_gc_plan` needs to reproduce the JS drive-order. Seeded
+          // here — once per worker — so the coordinator's per-fork drive seam only
+          // builds + executes the plan. Re-seeding an activation would fail
+          // `EINVAL`, and this worker seeds each exactly once.
+          if (!childGcCodecBytes) {
+            throw new Error(
+              `pid=${pid}: fork-module drive lost the captured GC codec bytes`,
+            );
+          }
+          for (const activation of sortedActivations) {
+            const bytes = childGcCodecBytes.get(activation.activationId);
+            if (!bytes) {
+              throw new Error(
+                `pid=${pid}: fork-module drive seed lost activation ` +
+                  `${activation.activationId}'s GC codec bytes`,
+              );
+            }
+            forkModuleBackend.setActivationGcCodec(
+              activation.activationId,
+              bytes,
+            );
+          }
+          // The host-exception owner (the JS `directOwner` for a host exnref) was
+          // captured alongside the codec bytes: the smallest activation that
+          // declared an exception codec descriptor, or 0xffff_ffff if none.
+          forkModuleBackend.setHostExceptionOwner(childHostExceptionOwner);
           processContinuation.enableModuleReferenceReplay();
         }
         if (borrowedWorkspace) {
@@ -4960,7 +5048,18 @@ export async function centralizedWorkerMain(
         const externrefs = Number(forkModuleBackend.externrefsResolved());
         const exnrefs = Number(forkModuleBackend.exnrefsReconstructed());
         const gcNodes = Number(forkModuleBackend.gcNodesReconstructed());
-        if (references > 0 || externrefs > 0 || exnrefs > 0 || gcNodes > 0) {
+        // Phase 6 item 3c DRIVE proof-of-use: the module executed the typed-GC
+        // drive plan (`fm_drive_execute`) rather than falling back to the JS
+        // `materializeAllTyped` order. Distinct from `gcNodes`, which advances
+        // merely by admitting the graph.
+        const driveSteps = Number(forkModuleBackend.driveStepsExecuted());
+        if (
+          references > 0 ||
+          externrefs > 0 ||
+          exnrefs > 0 ||
+          gcNodes > 0 ||
+          driveSteps > 0
+        ) {
           port.postMessage({
             type: "fork_module_references",
             pid,
@@ -4968,6 +5067,7 @@ export async function centralizedWorkerMain(
             externrefs,
             exnrefs,
             gcNodes,
+            driveSteps,
           } satisfies WorkerToHostMessage);
         }
         // Phase 6 D7b replay-side proof-of-use: a fork CHILD (crucially a

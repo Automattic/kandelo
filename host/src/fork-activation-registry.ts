@@ -1528,7 +1528,7 @@ export class ForkActivationRegistry {
     this.phase = "child-replay";
   }
 
-  restoreModuleState(): void {
+  restoreModuleState(typedDrive?: () => void): void {
     if (this.phase !== "parent-replay" && this.phase !== "child-replay") {
       throw new Error(
         `${this.label}: cannot restore module state while registry is ${this.phase}`,
@@ -1539,7 +1539,11 @@ export class ForkActivationRegistry {
       // the fresh instance's transit table. Publish every reconstructed typed
       // identity first, while passive data/element segments are still intact
       // for array.new_data/array.new_elem constructors.
-      this.currentReferences().materializeAllTyped();
+      //
+      // Phase 6 item 3c: `typedDrive`, when supplied by the module-backed child
+      // coordinator, replaces the JS typed allocate/fill/exn sub-loop with the
+      // co-resident fork-module drive (PHASE A/B still runs on the JS path).
+      this.currentReferences().materializeAllTyped(typedDrive);
     }
     for (const activation of this.activations()) {
       activation.moduleState.restore(activation.activationId);

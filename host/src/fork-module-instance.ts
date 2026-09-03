@@ -129,6 +129,25 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // `materializeTypedGraph` order to the module) is item 3c.
   "fm_drive_execute",
   "fm_drive_table_base",
+  // Phase 6 item 3c (production typed-GC drive flip): the host seeds each
+  // participating activation's raw KFGC codec bytes + the host-exception owner,
+  // then builds the topological drive plan from the decoded reference graph and
+  // executes it through the module — replacing the JS `materializeAllTyped`
+  // typed allocate/fill/exn sub-loop on a flag-on qualifying child.
+  //  - `fm_set_activation_gc_codec` seeds ONE activation's layout catalog.
+  //  - `fm_set_host_exception_owner` seeds the smallest exception-declaring
+  //    activation (the JS `directOwner` for a host exnref).
+  //  - `fm_build_gc_plan` serializes the topological plan; `fm_gc_plan_count`
+  //    is its step count (the `fm_drive_execute` count argument).
+  //  - `fm_drive_bump` / `fm_drive_steps_executed` are the DRIVE proof-of-use
+  //    counter (the walrus-injected shim `call`s `fm_drive_bump` once per driven
+  //    step), distinct from the item-3a `fm_gc_nodes_reconstructed` feed count.
+  "fm_set_activation_gc_codec",
+  "fm_set_host_exception_owner",
+  "fm_build_gc_plan",
+  "fm_gc_plan_count",
+  "fm_drive_bump",
+  "fm_drive_steps_executed",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];

@@ -635,6 +635,18 @@ mod wasm {
     // argument for `fm_drive_execute`).
     static GC_PLAN_COUNT: AtomicU32 = AtomicU32::new(0);
 
+    // Monotonic count of DRIVE STEPS this module has executed since worker start
+    // (Phase 6 item 3c — the production typed-GC drive flip). The injected
+    // `fm_drive_execute` shim calls `fm_drive_bump` once per plan step it drives
+    // (each `call_indirect` into the guest's `_gc_allocate`/`_gc_fill`/
+    // `_exception_materialize`), so a nonzero value is positive proof the MODULE
+    // drove the typed allocate/fill/exn topological order — distinct from
+    // `GC_NODES_RECONSTRUCTED`, which `fm_begin_reference_replay` bumps merely by
+    // ADMITTING a typed-GC graph (the item 3a data feed). A flag-on fork that fell
+    // back to the JS `materializeAllTyped` drive-order leaves this at zero. Never
+    // resets.
+    static DRIVE_STEPS_EXECUTED: AtomicU64 = AtomicU64::new(0);
+
     // Monotonic count of frames the module has committed since worker start.
     // Proof-of-use for the host: after a flag-on fork drives the continuation
     // through this module, the counter has advanced past its pre-fork value. A
@@ -2735,6 +2747,30 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_plan_count() -> i32 {
         GC_PLAN_COUNT.load(Ordering::Relaxed) as i32
+    }
+
+    /// Bump the drive-step proof-of-use counter by one (Phase 6 item 3c). NOT a
+    /// guest-facing import: the walrus-injected `fm_drive_execute` shim
+    /// (crates/fork-module-inject) `call`s this once per plan step it drives, so
+    /// the counter equals the number of `call_indirect`s into the guest's
+    /// `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports. Rust cannot
+    /// express the drive loop (`call_indirect`), but it CAN own the counter the
+    /// loop increments, keeping the proof in one place.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_drive_bump() {
+        DRIVE_STEPS_EXECUTED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Monotonic count of drive steps this module has executed since worker start
+    /// (Phase 6 item 3c). Proof-of-use for the production typed-GC drive flip: a
+    /// nonzero value proves the MODULE drove the typed allocate/fill/exn order via
+    /// `fm_drive_execute`, distinct from `fm_gc_nodes_reconstructed` (which
+    /// advances merely by admitting the graph in `fm_begin_reference_replay`). A
+    /// flag-on fork that fell back to the JS `materializeAllTyped` drive-order
+    /// leaves this at zero. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_drive_steps_executed() -> i64 {
+        DRIVE_STEPS_EXECUTED.load(Ordering::Relaxed) as i64
     }
 
     /// The sticky errno of the most recent export call (0 == success).
