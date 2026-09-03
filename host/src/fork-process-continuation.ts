@@ -1191,46 +1191,99 @@ export class ForkProcessContinuationCoordinator {
       this.registry.restoreModuleState(typedDrive);
 
       const activations = this.orderedActivations();
-      if (activations.length !== 1) {
-        throw new Error(
-          `${this.label}: module-backed borrowed replay supports a single `
-            + `activation this slice; got ${activations.length}`,
-        );
-      }
-      const act0 = this.getActivation(0);
-      const journalImage = journalImageForChild(records, act0.continuation.format.ptrWidth);
-      // Reserve the child-private mutable module prefix. The module copies the
-      // parent's fixed prefix into it (so the guest's rewind writes its
-      // active-frame pointer there, never the parked parent's prefix), and this
-      // becomes the rewind root.
-      const privatePrefix = Number(
-        reservePrefix({
-          activationId: act0.activationId,
-          byteLength: act0.continuation.format.fixedPrefixSize,
-          alignment: act0.continuation.format.alignment,
-        }),
+      const journalImage = journalImageForChild(
+        records,
+        this.getActivation(0).continuation.format.ptrWidth,
       );
-      if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
-        throw new Error(
-          `${this.label}: borrowed activation ${act0.activationId} received an `
-            + "invalid private replay prefix",
-        );
+      // Side activations' borrowed anchors come from the manifest the parent
+      // wrote at seal (activation 0's is the launch root). A single-activation
+      // fork writes no manifest and needs none.
+      const roots = new Map<number, number>([[0, parentLaunchRoot]]);
+      if (activations.length > 1) {
+        for (const continuation of this.activationRootsFromChildArena()) {
+          const root = Number(continuation.root);
+          if (!Number.isSafeInteger(root) || root <= 0) {
+            throw new Error(
+              `${this.label}: borrowed module child activation `
+                + `${continuation.activationId} manifest root ${continuation.root} is invalid`,
+            );
+          }
+          if (continuation.activationId === 0) {
+            if (root !== parentLaunchRoot) {
+              throw new Error(
+                `${this.label}: borrowed module child activation 0 manifest root `
+                  + `${root} disagrees with launch anchor ${parentLaunchRoot}`,
+              );
+            }
+            continue;
+          }
+          roots.set(continuation.activationId, root);
+        }
       }
+      // Reserve each activation's child-private mutable prefix. The module copies
+      // the parent's fixed prefix into it, so the guest's per-activation rewind
+      // writes its active-frame pointer there, never the parked parent's prefix.
+      // Reserve over `orderedActivations()` (every registered activation, roots
+      // not yet assigned at this point) — the same activation SET the parent
+      // sized `borrowedReplayWorkspaceRequirements` over, so the consumed total
+      // matches exactly (`assertAttachComplete`).
+      const privatePrefixes = new Map<number, number>();
+      for (const activation of activations) {
+        const prefix = Number(
+          reservePrefix({
+            activationId: activation.activationId,
+            byteLength: activation.continuation.format.fixedPrefixSize,
+            alignment: activation.continuation.format.alignment,
+          }),
+        );
+        if (!Number.isSafeInteger(prefix) || prefix <= 0) {
+          throw new Error(
+            `${this.label}: borrowed activation ${activation.activationId} received `
+              + "an invalid private replay prefix",
+          );
+        }
+        privatePrefixes.set(activation.activationId, prefix);
+      }
+      // Seed activation 0 from the inherited journal image, then add each side
+      // activation against the SAME journal, each at its own borrowed anchor and
+      // child-private prefix.
+      const act0 = this.getActivation(0);
       act0.root = parentLaunchRoot;
-      act0.replayRoot = privatePrefix;
+      act0.replayRoot = privatePrefixes.get(0)!;
       backend.beginBorrowedChildReplay(
         parentLaunchRoot,
         Number(journalImage.ptr),
         Number(journalImage.len),
-        privatePrefix,
-      );
-      invokeForkContinuationBegin(
-        requireExportFunction(act0, "wpk_fork_rewind_begin"),
         act0.replayRoot,
-        act0.continuation.format.ptrWidth,
-        `${this.label}: activation ${act0.activationId} borrowed child replay (module)`,
       );
-      this.requireActivationState(act0, WPK_FORK_REWINDING, "begin replay");
+      for (const activation of activations) {
+        if (activation.activationId === 0) continue;
+        const root = roots.get(activation.activationId);
+        if (root === undefined) {
+          throw new Error(
+            `${this.label}: borrowed module child activation `
+              + `${activation.activationId} has no inherited continuation root`,
+          );
+        }
+        activation.root = root;
+        activation.replayRoot = privatePrefixes.get(activation.activationId)!;
+        backend.addActivationBorrowedChildReplay(
+          activation.activationId,
+          root,
+          activation.continuation.format.fixedPrefixSize,
+          activation.replayRoot,
+        );
+      }
+      // Begin each activation's rewind at its child-private prefix.
+      for (const activation of activations) {
+        invokeForkContinuationBegin(
+          requireExportFunction(activation, "wpk_fork_rewind_begin"),
+          activation.replayRoot,
+          activation.continuation.format.ptrWidth,
+          `${this.label}: activation ${activation.activationId} borrowed child replay (module)`,
+        );
+        this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+      }
     } catch (error) {
       this.abort();
       throw error;

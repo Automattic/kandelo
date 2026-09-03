@@ -1918,6 +1918,70 @@ mod wasm {
         Ok(())
     }
 
+    /// Add a dlopen-vfork ("mode-1") SIDE activation to a BORROWED child replay
+    /// begun by `fm_begin_borrowed_child_replay` (Phase 6 item 4). The direct
+    /// borrowed sibling of `add_activation_child_replay_impl`: it attaches a
+    /// READ-ONLY rewind driver over the PARENT's borrowed continuation at
+    /// `module_buffer` and rebuilds this activation's committed ordinals + resume
+    /// slots exactly the same way, but additionally copies THIS activation's fixed
+    /// runtime prefix into its own child-private `private_prefix` region (so the
+    /// guest's per-activation rewind writes its active-frame pointer there, never
+    /// the parked parent's prefix). Owns no chunks, so finish/abort release
+    /// nothing. `module_buffer` is the side's borrowed anchor; `fixed_prefix` its
+    /// own runtime-prefix size.
+    fn add_activation_borrowed_child_replay_impl(
+        activation_id: u32,
+        module_buffer: u64,
+        fixed_prefix: u32,
+        private_prefix: u64,
+    ) -> Result<(), Errno> {
+        let base = format()?;
+        let fmt = LinkedFrameFormat {
+            fixed_prefix_size: fixed_prefix,
+            ..base
+        };
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        if st.activations.contains_key(&activation_id) {
+            return Err(Errno::EINVAL); // activation already seeded in this child
+        }
+        let committed_ordinals: Vec<u32> = st
+            .replay_events
+            .iter()
+            .filter(|event| event.activation_id == activation_id)
+            .map(|event| event.function_ordinal)
+            .collect();
+        // Attach the READ-ONLY driver to the parent's BORROWED continuation at
+        // this side's inherited anchor, then register its resume slots.
+        let mem = unsafe { mem_ref() };
+        let driver = RewindDriver::attach(mem, module_buffer, &fmt)?;
+        let global = resume_catalog();
+        register_activation_slots(&mut st.table, activation_id, global, &committed_ordinals)?;
+        st.activations.insert(
+            activation_id,
+            ActivationFrames {
+                format: fmt,
+                writer: LinkedFrameWriter::new(fmt),
+                // Borrowed side activation: mmaps nothing, releases nothing.
+                arena: FrameArena::new_channel(0),
+                driver: Some(driver),
+                committed_ordinals,
+                module_buffer,
+                replay_only: true,
+            },
+        );
+        // Isolate this side's mutable prefix into its child-private region (the
+        // per-activation mirror of the primary borrowed path); validates the
+        // target is in range, aligned, and non-overlapping before copying.
+        copy_borrowed_child_prefix(
+            st,
+            activation_id,
+            module_buffer,
+            private_prefix,
+            fixed_prefix as u64,
+        )?;
+        Ok(())
+    }
+
     /// Add ANOTHER activation (a dlopen fork's side module) to the child replay
     /// begun by `fm_begin_child_replay` (Phase 6 D7a.1a). `activation_id` is the
     /// side activation (must not already be seeded); `module_buffer` is ITS
@@ -2718,6 +2782,30 @@ mod wasm {
             module_buffer as u64,
             image_ptr as u64,
             image_len as u64,
+            private_prefix as u64,
+        ) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Add a dlopen-vfork ("mode-1") SIDE activation to a BORROWED child replay
+    /// begun by `fm_begin_borrowed_child_replay` (Phase 6 item 4). The borrowed
+    /// sibling of `fm_add_activation_child_replay`: read-only rewind over the
+    /// parent's borrowed continuation at `module_buffer`, with this activation's
+    /// fixed prefix copied into its own child-private `private_prefix`. Owns no
+    /// chunks. Check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_add_activation_borrowed_child_replay(
+        activation_id: u32,
+        module_buffer: usize,
+        fixed_prefix: u32,
+        private_prefix: usize,
+    ) {
+        match add_activation_borrowed_child_replay_impl(
+            activation_id,
+            module_buffer as u64,
+            fixed_prefix,
             private_prefix as u64,
         ) {
             Ok(()) => set_ok(),

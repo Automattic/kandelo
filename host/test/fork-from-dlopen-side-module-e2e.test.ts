@@ -318,6 +318,50 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     }
   }, 30_000);
 
+  it("runs mode-1 vfork from a real side-module frame through the fork-module (flag on)", async () => {
+    // Phase 6 item 4: a MULTI-activation dlopen-vfork borrowed child drives its
+    // borrowed replay (main + side activation) through the co-resident module via
+    // fm_begin_borrowed_child_replay + fm_add_activation_borrowed_child_replay.
+    const fixture = buildVforkSideModuleFixture();
+    try {
+      const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
+      const imageOwner = MemoryFileSystem.create(
+        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
+      );
+      imageOwner.mkdir("/lib", 0o755);
+      imageOwner.createFileWithOwner(
+        "/lib/libvforkinside.so",
+        0o755,
+        0,
+        0,
+        libraryBytes,
+      );
+
+      const result = await runCentralizedProgram({
+        programPath: fixture.programPath,
+        argv: ["vfork-from-side-main", "/lib/libvforkinside.so"],
+        timeout: 30_000,
+        rootfsImage: await imageOwner.saveImage(),
+        forkModuleEnabled: true,
+      });
+      expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.match(/PRODUCTION_SIDE_VFORK_ROUND_TRIP/g))
+        .toHaveLength(2);
+      expect(result.stdout).toContain("PRODUCTION_SIDE_VFORK_PASS");
+      // Proof the borrowed child rewound through the module (not a silent JS
+      // fallback): a nonzero replayed-frame count. A multi-activation borrowed
+      // child that failed to add its side activation would crash, not pass.
+      const fm = result.hostDiagnostics.filter((d) => d.source === "fork-module");
+      expect(
+        fm.some((d) => /fork_module_child_frames=\d+/.test(d.message)),
+        `expected a fork-module borrowed proof-of-use; saw: ${JSON.stringify(fm)}`,
+      ).toBe(true);
+    } finally {
+      fixture.cleanup();
+    }
+  }, 30_000);
+
   it("replays a fork issued while dlopen runs a side-module constructor", async () => {
     const libraryPath = buildSharedLibrary(`
       extern int fork(void);
