@@ -911,8 +911,8 @@ no artifact can observe the old semantics under the new number.
 ### ABI 45 the DRI desktop stack
 
 The Hyprland-class compositor, the toolkit ports behind foot, Waybar and
-mako, and the Omarchy desktop shell change the kernel's host-facing
-contract, so they take a new epoch. Every artifact built against ABI 44
+mako, the Omarchy desktop shell, Qt with Quickshell, and ScummVM change
+the kernel's host-facing contract, so they take a new epoch. Every artifact built against ABI 44
 must be rebuilt.
 
 Structural changes (recorded in the snapshot):
@@ -944,6 +944,23 @@ Semantic changes (not visible to the snapshot):
 - **sendmsg and recvmsg gather every iovec,** not only the first.
 - **A new thread's initial stack pointer is 16-byte aligned,** which C++
   and varargs code require.
+- **The GL command stream gains three ops and a query:**
+  `OP_DETACH_SHADER`, `OP_VERTEX_ATTRIB_4FV`, `OP_DELETE_FRAMEBUFFERS` and
+  `QOP_GET_SHADER_PRECISION_FORMAT` (`crates/shared` `gl` module,
+  `libc/glue/gl_abi.h`). A guest GLES library that emits them needs a host
+  that decodes them.
+- **`/dev/input/event1` is an absolute pointer.** It no longer advertises
+  `REL_X`/`REL_Y` (only the wheel axes stay relative), so consumers such as
+  SDL's evdev backend read its `EV_ABS` positions, and its `EVIOCGABS`
+  range follows the connector mode the display advertises. Before, the host
+  faked absolute positions by pegging a relative cursor to the origin.
+- **`inotify_init`, `inotify_add_watch` and `inotify_rm_watch` fail with
+  `ENOSYS`.** They used to succeed with an fd that never delivered events,
+  which kept Qt's and glib's file watchers from taking their polling
+  fallback.
+- **A `MAP_FIXED` mapping inside an existing mapping carves it,** leaving
+  the rest of the old mapping in place, rather than evicting the whole
+  mapping.
 
 These share one epoch because a binary or host built for ABI 44 cannot
 run against an ABI 45 kernel at all.

@@ -58,7 +58,8 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { bindForeignTexture } from "./webgl/foreign-texture";
-import { buildVirtualConnectorMode } from "./dri/kms-registry";
+import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
+import { buildVirtualConnectorMode, connectorModeSize } from "./dri/kms-registry";
 import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth } from "./constants";
 import {
   allocateKernelScratchRegion,
@@ -798,6 +799,19 @@ export interface KernelCallbacks {
    * than running it on every kernel, most of which never touch KMS.
    */
   onKmsScanoutActive?: () => void;
+  /**
+   * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
+   * are that framebuffer's dimensions. The scanout framebuffer defines
+   * the pointer coordinate space — the embedder maps pointer positions
+   * into framebuffer pixels and `sendPointerAbs` forwards them as
+   * `EV_ABS` — so the worker uses this to keep the pointer device's
+   * advertised `EVIOCGABS` range equal to the space those coordinates
+   * are in for consumers that open the device after the modeset. A
+   * consumer that is already running never re-reads the range (libinput
+   * caches absinfo at device open); open-time correctness comes from
+   * `setKmsDisplaySize` advertising the derived connector mode.
+   */
+  onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -957,10 +971,15 @@ export class WasmPosixKernel {
       const canvas = this.callbacks.getKmsCanvas?.(crtc);
       if (!canvas) return;
       // Match the OffscreenCanvas drawing buffer to the kernel-side FB
-      // (when one is bound) so glViewport and gl_FragCoord operate on
-      // the full surface rather than the default 300×150 corner.
-      const fb = this.kms.currentFb(crtc);
-      if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+      // so glViewport and gl_FragCoord operate on the full surface rather
+      // than the default 300×150 corner. With no FB yet (the SDL2
+      // ordering above), size it to the mode the connector advertises —
+      // the size the program is about to render at. Skipping that leaves
+      // a HiDPI pane on the 1920x1080 default, so the guest renders below
+      // the panel's device-pixel count and the browser upscales it.
+      const fb = this.kms.currentFb(crtc)
+        ?? connectorModeSize(this.callbacks.getKmsDisplaySize?.());
+      if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width;
         canvas.height = fb.height;
       }
@@ -983,6 +1002,13 @@ export class WasmPosixKernel {
       ctx.getExtension("EXT_color_buffer_float");
       ctx.getExtension("OES_texture_float_linear");
       ctx.getExtension("EXT_float_blend");
+      // Seed the shadow viewport with the actual WebGL2 default (the
+      // canvas drawing-buffer size). Otherwise `defaultShadow()`'s
+      // [0,0,0,0] reaches the context through `GlMuxer.switchTo` the
+      // first time sessions share it and clobbers the implicit default
+      // viewport, so a program that never calls glViewport (SDL2's
+      // KMSDRM/OpenGLES backend) draws into a 0×0 region.
+      b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
     }
     b.gl = ctx;
     // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
@@ -995,6 +1021,11 @@ export class WasmPosixKernel {
       // that release is a no-op and the canvas freezes on the last GL frame.
       b.claimedKmsCrtc = attachedCrtc;
       this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+      // Render offscreen and flip on present, so the browser never
+      // composites a cleared or half-drawn frame (see present-target.ts).
+      // Failure is non-fatal: the session falls back to drawing straight
+      // at the canvas.
+      ensurePresentTarget(b);
     }
   }
 
@@ -2349,6 +2380,14 @@ export class WasmPosixKernel {
             b.renderTargetFbo = null;
             b.shadow.fbo = null;
           }
+          // The canvas-backed present target IS owned by this binding, so
+          // dropping the redirect above has to free it as well; a later
+          // context rebuilds one.
+          if (b.presentTarget) {
+            b.gl?.deleteFramebuffer(b.presentTarget.fbo);
+            b.gl?.deleteTexture(b.presentTarget.tex);
+            b.presentTarget = null;
+          }
         },
         host_gl_make_current: (
           _pid: number, _ctxId: number, _surfaceId: number,
@@ -2447,6 +2486,29 @@ export class WasmPosixKernel {
           // for free — no explicit sync object in v1). Canvas-backed
           // sessions present via RAF and need no fence here.
           if (b?.renderTargetFbo) b.gl?.flush();
+          // Canvas-backed session: the frame is complete, so flip the
+          // offscreen target onto the default framebuffer. Re-ensure first
+          // so a mode change that resized the canvas rebuilds the target
+          // instead of blitting a stale size.
+          //
+          // Ensure rather than test for one. `host_gl_destroy_surface`
+          // frees the present target, and only the first canvas claim in
+          // `host_gl_create_context` ever built one, so a guest that
+          // recreates its EGL window surface on the context it already has
+          // never got another. ScummVM does exactly that when it leaves the
+          // launcher for a game. Without a target the bind-0 redirect is
+          // gone too, so every clear and half-drawn frame went straight to
+          // the canvas for the browser to composite, and the picture
+          // blinked for the rest of the session. `ensurePresentTarget`
+          // still declines for a GPU-tier producer and for a canvas-less
+          // session, so this widens nothing else.
+          if (b && b.claimedKmsCrtc != null) {
+            // A target this call had to create is empty, and the frame it
+            // would present has already gone to the canvas directly. Blit
+            // only when one was established before the frame.
+            const established = b.presentTarget !== null;
+            if (ensurePresentTarget(b) && established) blitPresentTarget(b);
+          }
           return 0;
         },
         host_gl_query: (
@@ -2645,6 +2707,7 @@ export class WasmPosixKernel {
           this.tryAttachKmsGlCanvas(pid);
           const b = this.gl.get(pid);
           const fb = this.kms.currentFb(crtc_id);
+          if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
           if (
             b?.canvas && fb &&
             (b.canvas.width !== fb.width || b.canvas.height !== fb.height)

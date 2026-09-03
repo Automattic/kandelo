@@ -20,9 +20,9 @@
  *     per frame until gbm_bo_map hit ENOMEM at ~124 flips and the
  *     desktop froze for good.
  *
- * Pointer input uses the browser bridge's exact EV_REL peg(-4096)+jump
- * emulation (kernel-host.ts sendPointerAbs) rather than EV_ABS, so this
- * also exercises the injection pattern real browser users hit.
+ * Pointer input uses the browser bridge's exact EV_ABS injection
+ * (kernel-host.ts sendPointerAbs: ABS_X/ABS_Y + SYN, then button
+ * edges), so this also exercises the pattern real browser users hit.
  *
  * Skips if the binaries aren't built (bare checkout).
  */
@@ -42,12 +42,11 @@ const CANVAS_H = 1080;
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
-const EV_REL = 0x02;
+const EV_ABS = 0x03;
 const SYN_REPORT = 0x00;
-const REL_X = 0x00;
-const REL_Y = 0x01;
+const ABS_X = 0x00;
+const ABS_Y = 0x01;
 const BTN_LEFT = 0x110;
-const PEG = 4096;
 
 // wlpaint at its placement slot; canvas below CSD bar (28) + toolbar (36).
 const PAINT_X = 1080;
@@ -95,13 +94,10 @@ describe("wayland desktop liveness — flips keep flowing across drag strokes", 
       const dump = () =>
         `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
 
-      // Browser sendPointerAbs emulation: peg to (0,0), then one jump.
+      // Browser sendPointerAbs: state the position, then SYN.
       const moveAbs = (x: number, y: number) => {
-        host.injectInputEvent(1, EV_REL, REL_X, -PEG);
-        host.injectInputEvent(1, EV_REL, REL_Y, -PEG);
-        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
-        host.injectInputEvent(1, EV_REL, REL_X, Math.round(x));
-        host.injectInputEvent(1, EV_REL, REL_Y, Math.round(y));
+        host.injectInputEvent(1, EV_ABS, ABS_X, Math.round(x));
+        host.injectInputEvent(1, EV_ABS, ABS_Y, Math.round(y));
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
       };
       // >25 ms between button edges so libinput debounce forwards them.
@@ -114,7 +110,10 @@ describe("wayland desktop liveness — flips keep flowing across drag strokes", 
 
       try {
         await host.init();
-        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+        // The display-size report is what advertises the EVIOCGABS range
+        // before the compositor opens event1 — libinput caches absinfo at
+        // open, so the strokes below only land if this arrived first.
+        host.kmsSetDisplaySize(1, CANVAS_W, CANVAS_H);
 
         const statsSab = new SharedArrayBuffer(8 * 4);
         const stats = new Int32Array(statsSab);

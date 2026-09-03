@@ -51,6 +51,10 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "scummvm"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "wayland"
     },
     {

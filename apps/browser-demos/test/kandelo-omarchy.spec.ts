@@ -134,15 +134,15 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   // the keybinds, and the theme named in that same file. Themes ship
   // gradient wallpapers for now (the theme images are a documented
   // follow-up), so the compositor paints the theme's gradient.
-  await expectTerminal(
-    page,
-    /BINDS_LOADED n=\d+ source=\/usr\/share\/kandelo\/omarchy\/wlcompositor\.conf/,
-    120_000,
-  );
+  // WALLPAPER is the last marker the compositor prints during startup;
+  // once it appears the earlier markers are already on screen.
+  await expectTerminal(page, /WALLPAPER gradient/, 120_000);
   const boot = await terminalText(page);
-  expect(boot, "the compositor is not tiling").toMatch(/WLC_LAYOUT dwindle/);
+  expect(boot, "compositor did not load the image's config").toMatch(
+    /BINDS_LOADED n=\d+ source=\/usr\/share\/kandelo\/omarchy\/wlcompositor\.conf/,
+  );
   expect(boot, "the configured theme was not loaded").toMatch(/THEME tokyo-night/);
-  expect(boot, "the theme's wallpaper was not rendered").toMatch(/WALLPAPER gradient/);
+  expect(boot, "the compositor did not select the tiler").toMatch(/WLC_LAYOUT dwindle/);
 
   // Gate 2: the bar is unmodified Waybar on a real layer-shell surface —
   // anchored across the top, and its hyprland modules attached to the

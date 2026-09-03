@@ -28,6 +28,8 @@ import {
   COREUTILS_NAMES,
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
+  shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
@@ -567,13 +569,13 @@ function populateLazyBinaries(
 ): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
-    const resolved = resolveArtifact(spec.resolverPath, spec.id);
+    const resolved = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
     const size = statSync(resolved).size;
     fs.registerLazyFile(
       spec.vfsPath,
       shellLazyPlaceholderUrl(spec),
       size,
-      0o755,
+      shellLazySpecMode(spec),
     );
   }
 }

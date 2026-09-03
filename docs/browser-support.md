@@ -371,6 +371,7 @@ Located in `apps/browser-demos/pages/`:
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package and is baked into the image with its shader presets before boot. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | espeak | espeak-ng | dinit | Speech synthesis through upstream pcaudiolib's OSS backend, so playback rides the same `/dev/dsp` path as the doom demo. The binary and the voice data both come from the `espeak-ng` package closure — the data as the `espeak-ng-data.zip` runtime file, unpacked into `/usr/share/espeak-ng-data` while the image is composed, because libespeak-ng's `PATH_ESPEAK_DATA` is fixed at build time. |
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
+| scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. No game ships; the profile takes a zipped game as an upload. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. The four binaries come from the `wayland-demo` package and are baked into the image before boot; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | hyprland | wlcompositor (dwindle) + wlclock + wlterm | dinit | Tiling desktop — see [Hyprland tiling demo](#hyprland-tiling-demo). The image declares `/usr/local/bin/hyprdesktop`, which starts the same compositor in dwindle mode with the image's `/usr/share/kandelo/hyprland/wlcompositor.conf` and three clients. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + mako + Waybar + klauncher + qtgallery + Quickshell | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor, mako and Waybar; windows, including the Qt clients, are opened from the launcher and keybinds. |
@@ -874,6 +875,39 @@ backends. That suite also runs SDL_mixer 2.8.2's unmodified `playwave` example
 against deterministic WAVs and compares the Node sink's consumed PCM exactly.
 Browser output remains a manual audible check because the production
 AudioWorklet intentionally exposes transport cursors, not rendered samples.
+
+### ScummVM demo
+
+The ScummVM machine (`?vfs=<shell image>&profile=scummvm`) runs unmodified
+upstream ScummVM's SCUMM engine fullscreen on `/dev/dri/card0`: SDL2's
+KMSDRM backend takes DRM master and renders GLES2 straight to the display,
+and audio goes through OSS on `/dev/dsp`. The engine
+(`/usr/bin/scummvm`) and the GUI data the package declares as runtime files
+(themes, icons and fonts under `/usr/share/scummvm`) are lazy files in the
+shell image, fetched on first use. The machine's command is
+`/usr/local/bin/scummvm`, a small wrapper in the image that:
+
+- names SDL's backends in the environment. Kandelo has no libudev, so
+  SDL's evdev layer only finds the kernel's keyboard and pointer when
+  `SDL_EVDEV_DEVICES` lists them (the libudev gap is in the register in
+  [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
+- seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
+  whenever the user adds a game, so it lives in the writable home rather
+  than in image content. The GUI scale is fixed at 100%, like the
+  desktops' output scale (see the HiDPI note above), so on a HiDPI screen
+  the launcher is drawn small.
+
+No game ships with the machine: no Kandelo package carries a commercial
+SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
+64 MiB), writes it to `/usr/share/scummvm-games/upload.zip`, and the image's
+declared ingest unzips it in place; ScummVM's "Add Game" browser opens in
+that directory. The pointer is a real absolute device (`/dev/input/event1`
+reports `EV_ABS` positions), and the browser hides its own cursor over the
+display because ScummVM draws one.
+
+Gated in the browser by `apps/browser-demos/test/kandelo-scummvm.spec.ts`
+(the GUI data reaches the guest, the config is writable, and an upload is
+extracted where the launcher browses).
 
 ### Kandelo session UI
 

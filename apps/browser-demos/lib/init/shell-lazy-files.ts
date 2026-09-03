@@ -36,6 +36,18 @@ import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
 import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
 import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
+import footWasmUrl from "@binaries/programs/wasm32/foot.wasm?url";
+import waybarWasmUrl from "@binaries/programs/wasm32/waybar.wasm?url";
+import makoWasmUrl from "@binaries/programs/wasm32/mako/mako.wasm?url";
+import dbusDaemonWasmUrl from "@binaries/programs/wasm32/dbus/dbus-daemon.wasm?url";
+import qtgalleryWasmUrl from "@binaries/programs/wasm32/qtgallery.wasm?url";
+import quickshellWasmUrl from "@binaries/programs/wasm32/quickshell.wasm?url";
+import scummvmWasmUrl from "@binaries/programs/wasm32/scummvm/scummvm.wasm?url";
+import scummvmRemasteredUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummremastered.zip?url";
+import scummvmModernUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummmodern.zip?url";
+import scummvmClassicUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/scummclassic.zip?url";
+import scummvmGuiIconsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/gui-icons.dat?url";
+import scummvmFontsUrl from "@binaries/programs/wasm32/scummvm/share/scummvm/fonts.dat?url";
 
 export {
   assertShellLazyUrlsResolved,
@@ -67,6 +79,18 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   "sqlite-cli": sqlite3WasmUrl,
   lhasa: lhaWasmUrl,
   tyrquake: quakeWasmUrl,
+  foot: footWasmUrl,
+  waybar: waybarWasmUrl,
+  mako: makoWasmUrl,
+  dbus: dbusDaemonWasmUrl,
+  qtgallery: qtgalleryWasmUrl,
+  quickshell: quickshellWasmUrl,
+  scummvm: scummvmWasmUrl,
+  "scummvm-theme-remastered": scummvmRemasteredUrl,
+  "scummvm-theme-modern": scummvmModernUrl,
+  "scummvm-theme-classic": scummvmClassicUrl,
+  "scummvm-gui-icons": scummvmGuiIconsUrl,
+  "scummvm-fonts": scummvmFontsUrl,
 };
 
 const SHELL_LAZY_PLACEHOLDER_URLS = new Map(

@@ -5,6 +5,8 @@ import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
+  shellLazySpecMode,
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
@@ -34,12 +36,12 @@ export function populateSourceRootfsShellOverlay(
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {
-      const source = resolveArtifact(spec.resolverPath, spec.id);
+      const source = resolveArtifact(spec.resolverPath, shellLazySpecDependency(spec));
       fs.registerLazyFile(
         spec.vfsPath,
         shellLazyPlaceholderUrl(spec),
         statSync(source).size,
-        0o755,
+        shellLazySpecMode(spec),
       );
     }
     for (const alias of spec.symlinks) {
