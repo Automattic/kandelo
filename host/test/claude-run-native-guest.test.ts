@@ -72,6 +72,7 @@ describe("bun-run: real Claude Code ELF end-to-end on spidermonkey-node", () => 
       // eslint-disable-next-line no-console
       console.log("input bytes:", elfBytes.byteLength);
 
+      expect(result.exitCode).toBe(0);
       expect(result.stdout).toMatch(/2\.1\.\d+ \(Claude Code\)/);
     },
     260_000,

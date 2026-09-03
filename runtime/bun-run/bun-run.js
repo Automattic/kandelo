@@ -14,11 +14,18 @@ const appArgs = process.argv.slice(3);
 // 1. Extract (cache-aware). One-shot; works with synchronous child_process today.
 // NOTE: Kandelo's spidermonkey-node child_process shim ignores the `encoding`
 // option and always hands back Buffers, so decode defensively with String()
-// rather than assuming spawnSync gave us strings.
-const r = cp.spawnSync("/usr/bin/bun-extract", ["--prepare", binary, CACHE_ROOT], { encoding: "utf8" });
+// rather than assuming spawnSync gave us strings. It also never actually
+// captures child stderr into result.stderr (always ''); `stdio: 'inherit'`
+// for stderr makes the shim let bun-extract's own diagnostics (e.g. "not a
+// Bun standalone executable...") flow straight through to our real stderr
+// instead of being redirected to /dev/null, so a malformed-binary failure is
+// not reduced to a bare "exit 1".
+const r = cp.spawnSync("/usr/bin/bun-extract", ["--prepare", binary, CACHE_ROOT], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "inherit"],
+});
 const rStdout = String(r.stdout || "");
-const rStderr = String(r.stderr || "");
-if (r.status !== 0) fail("extract failed: " + (rStderr.trim() || ("exit " + r.status)), 1);
+if (r.status !== 0) fail("extract failed (exit " + r.status + "); see stderr above", 1);
 const entry = (rStdout.match(/^ENTRY=(.+)$/m) || [])[1];
 if (!entry) fail("could not determine entry point (not a Bun executable?)", 1);
 
