@@ -44,14 +44,11 @@ use wasm_posix_shared::Errno;
 unsafe extern "C" {
     fn host_begin_generation(pid: u32) -> u32;
     fn host_resolve_externref(generation: u32, broker_handle: u32) -> u32;
-    fn host_resolve_funcref(module_activation: u32, function_ordinal: u32) -> u32;
-    fn host_resolve_static_root(module_activation: u32, static_root_ordinal: u32) -> u32;
-    fn host_install_reference_global(
-        generation: u32,
-        module_activation: u32,
-        global_ordinal: u32,
-        value: u32,
-    ) -> i32;
+    // Phase 6 item 5: host_resolve_funcref / host_resolve_static_root /
+    // host_install_reference_global were removed — funcref + static-root are wasm
+    // `table.get`/`table.set` (the injected binder), and ref-global install is a
+    // facet of child instantiation (immutable imported ref globals). None was an
+    // engine-floor host capability.
     fn host_transit_publish(generation: u32, slot: u32, value: u32) -> i32;
     fn host_transit_read(generation: u32, slot: u32) -> u32;
     fn host_mint_exception_tag(generation: u32, module_activation: u32, layout_id: u32) -> u32;
@@ -112,36 +109,6 @@ impl ForkHostCapabilities for WpkForkHost {
         broker_handle: u32,
     ) -> Result<HostRef, Errno> {
         handle_or_err(unsafe { host_resolve_externref(generation.0, broker_handle) }).map(HostRef)
-    }
-
-    fn resolve_funcref(
-        &mut self,
-        module_activation: u32,
-        function_ordinal: u32,
-    ) -> Result<HostRef, Errno> {
-        handle_or_err(unsafe { host_resolve_funcref(module_activation, function_ordinal) })
-            .map(HostRef)
-    }
-
-    fn resolve_static_root(
-        &mut self,
-        module_activation: u32,
-        static_root_ordinal: u32,
-    ) -> Result<HostRef, Errno> {
-        handle_or_err(unsafe { host_resolve_static_root(module_activation, static_root_ordinal) })
-            .map(HostRef)
-    }
-
-    fn install_reference_global(
-        &mut self,
-        generation: HostGeneration,
-        module_activation: u32,
-        global_ordinal: u32,
-        value: HostRef,
-    ) -> Result<(), Errno> {
-        status(unsafe {
-            host_install_reference_global(generation.0, module_activation, global_ordinal, value.0)
-        })
     }
 
     fn transit_publish(
@@ -228,13 +195,6 @@ pub extern "C" fn fm_host_capabilities_probe(seed: u32) -> i64 {
     if let Ok(r) = host.resolve_externref(generation, seed | 1) {
         acc ^= (r.0 as i64) << 1;
         let _ = host.transit_publish(generation, seed, r);
-        let _ = host.install_reference_global(generation, seed, seed, r);
-    }
-    if let Ok(r) = host.resolve_funcref(seed, seed) {
-        acc ^= (r.0 as i64) << 2;
-    }
-    if let Ok(r) = host.resolve_static_root(seed, seed) {
-        acc ^= (r.0 as i64) << 3;
     }
     if let Ok(r) = host.transit_read(generation, seed) {
         acc ^= (r.0 as i64) << 4;
