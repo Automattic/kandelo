@@ -1,0 +1,50 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+#
+# Qt 6 QtShaderTools, static, for wasm32. qtdeclarative refuses to
+# configure without it: QtQuick's scenegraph materials are compiled to
+# .qsb at build time, and the module carries the runtime that loads
+# them. The compiler itself (qsb) runs on the build machine from
+# QT_HOST_PATH; this package is the target-side library.
+kind = "library"
+
+name = "qtshadertools"
+version = "6.10.2"
+kernel_abi = 44
+depends_on = [
+  "qtbase@6.10.2",
+  "libcxx@21.1.7",
+  "zlib@1.3.1",
+  "freetype@2.13.3",
+  "fontconfig@2.15.0",
+  "harfbuzz@10.1.0",
+  "libpng@1.6.43",
+  "libxkbcommon@1.7.0",
+  "libwayland@1.24.0",
+]
+
+[source]
+url = "https://download.qt.io/archive/qt/6.10/6.10.2/submodules/qtshadertools-everywhere-src-6.10.2.tar.xz"
+sha256 = "18d9dbbc4f7e6e96e6ed89a9965dc032e2b58158b65156c035537826216716c9"
+provider = "archive"
+
+[license]
+spdx = "LGPL-3.0-only"
+url = "https://code.qt.io/cgit/qt/qtshadertools.git/tree/LICENSES/LGPL-3.0-only.txt?h=v6.10.2"
+
+[build]
+script_path = "packages/registry/qtshadertools/build-qtshadertools.sh"
+
+[[host_tools]]
+name = "qmake"
+version_constraint = ">=6.10.2"
+probe = { args = ["-query", "QT_VERSION"], version_regex = "(\\d+\\.\\d+\\.\\d+)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.qt6.qtbase); enter scripts/dev-shell.sh" }
+
+[outputs]
+libs = [
+  "lib/libQt6ShaderTools.a",
+]
+headers = [
+  "include/QtShaderTools",
+]

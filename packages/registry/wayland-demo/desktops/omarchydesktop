@@ -21,6 +21,9 @@ DATA=/usr/share/kandelo
 # what it execs (notify-send on a theme switch, launched terminals).
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS"
 export FONTCONFIG_FILE="$DATA/fonts/fonts.conf"
+# QtQuick clients (Quickshell) render through the software scenegraph:
+# a Wayland client has no GL surface of its own here.
+export QT_QUICK_BACKEND=software
 
 # Wait for a socket path, failing if the process that should bind it died.
 wait_socket() {

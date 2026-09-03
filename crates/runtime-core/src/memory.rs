@@ -118,7 +118,11 @@ impl MemoryManager {
         };
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
-            // MAP_FIXED: use the exact address, removing any overlapping mappings
+            // MAP_FIXED: use the exact address, carving the range out of any
+            // overlapping mappings. A fixed map over part of a mapping splits
+            // it and keeps the remainder mapped, as munmap does — dropping the
+            // whole mapping would let a later first-fit hand out addresses the
+            // program still uses.
             // Reject if the region extends past max_addr or overlaps
             // host-reserved control pages.
             let end = hint.saturating_add(aligned_len);
@@ -130,11 +134,7 @@ impl MemoryManager {
             {
                 return wasm_posix_shared::mmap::MAP_FAILED;
             }
-            self.mappings.retain(|m| {
-                let m_end = m.addr.saturating_add(m.len);
-                // Keep mappings that don't overlap [hint, end)
-                m_end <= hint || m.addr >= end
-            });
+            self.munmap(hint, aligned_len);
             hint
         } else {
             // A non-null address without MAP_FIXED is a placement hint. Wasm
@@ -1335,6 +1335,26 @@ mod tests {
 
         assert!(!mm.extend_mapping(addr, 0x20000, 0x30000));
         assert_eq!(mm.mappings()[0].len, 0x10000);
+    }
+
+    #[test]
+    fn test_map_fixed_inside_mapping_splits_it() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        let base = mm.mmap_anonymous(0, 0x40000, rw, anon);
+        assert_ne!(base, MAP_FAILED);
+
+        let fixed = mm.mmap_anonymous(base + 0x10000, 0x10000, PROT_NONE, MAP_FIXED | anon);
+        assert_eq!(fixed, base + 0x10000);
+
+        assert!(mm.is_mapped(base));
+        assert!(mm.is_mapped(base + 0x20000));
+        assert!(mm.is_mapped(base + 0x30000));
+
+        let other = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert!(other >= base + 0x40000);
     }
 
     #[test]
