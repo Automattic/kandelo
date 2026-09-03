@@ -143,6 +143,34 @@ impl RewindDriver {
         self.frames.committed_tail
     }
 
+    /// Whether `[start, start + len)` overlaps ANY of the decoded continuation
+    /// chunks or the module-buffer anchor — the borrowed-replay guard a vfork
+    /// child's PRIVATE module prefix must pass so it never aliases (and thus
+    /// never corrupts) the parked parent's continuation storage. Mirrors the
+    /// per-chunk overlap check in `attachForBorrowedReplay`
+    /// (fork-continuation.ts:336-340), extended to the anchor itself because the
+    /// borrowed child reads the parent's fixed prefix FROM `module_buffer` while
+    /// writing its own copy TO `[start, start + len)`. A length that overflows is
+    /// `Err(Errno::EINVAL)`.
+    pub fn borrowed_prefix_conflicts(&self, start: u64, len: u64) -> Result<bool, Errno> {
+        let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+        let anchor_end = self
+            .frames
+            .module_buffer
+            .checked_add(len)
+            .ok_or(Errno::EINVAL)?;
+        if start < anchor_end && end > self.frames.module_buffer {
+            return Ok(true); // aliases the parent's fixed-prefix source region
+        }
+        for chunk in &self.frames.chunks {
+            let chunk_end = chunk.addr.checked_add(chunk.capacity).ok_or(Errno::EINVAL)?;
+            if start < chunk_end && end > chunk.addr {
+                return Ok(true); // aliases borrowed continuation storage
+            }
+        }
+        Ok(false)
+    }
+
     /// Number of frames not yet consumed by `next_frame`.
     pub fn remaining(&self) -> usize {
         self.frames.nodes.len().saturating_sub(self.cursor)
@@ -440,6 +468,49 @@ mod tests {
         table.register_activation(activation_id, &ordinals).unwrap();
 
         (mem, module_buffer, node_addrs, journal, table)
+    }
+
+    // --- Borrowed-replay private-prefix overlap guard ---------------------
+
+    #[test]
+    fn borrowed_prefix_conflicts_flags_anchor_and_chunk_overlap() {
+        const ACT: u32 = 5;
+        let specs = [
+            FrameSpec { func: 101, call: 1, fill: 0xa1, scalar: 24 },
+            FrameSpec { func: 202, call: 2, fill: 0xb2, scalar: 48 },
+        ];
+        let (mem, module_buffer, _node_addrs, _journal, _table) = build_closed_loop(ACT, &specs);
+        let driver = RewindDriver::attach(&mem, module_buffer, &wasm32_format()).unwrap();
+        let decoded = decode_linked_frames(&mem, module_buffer, &wasm32_format()).unwrap();
+        let prefix = wasm32_format().fixed_prefix_size as u64;
+
+        // A private prefix landing ON the source anchor aliases the parent's own
+        // fixed prefix — the exact corruption the guard prevents.
+        assert!(driver.borrowed_prefix_conflicts(module_buffer, prefix).unwrap());
+
+        // A private prefix inside any borrowed continuation chunk aliases live
+        // storage the read-only replay still reads.
+        for chunk in &decoded.chunks {
+            assert!(driver.borrowed_prefix_conflicts(chunk.addr, prefix).unwrap());
+            assert!(driver
+                .borrowed_prefix_conflicts(chunk.addr + chunk.capacity - 1, prefix)
+                .unwrap());
+        }
+
+        // A disjoint region (past every chunk) is accepted.
+        let past = decoded
+            .chunks
+            .iter()
+            .map(|c| c.addr + c.capacity)
+            .max()
+            .unwrap();
+        assert!(!driver.borrowed_prefix_conflicts(past, prefix).unwrap());
+
+        // An overflowing length is a truthful error, not a silent false.
+        assert_eq!(
+            driver.borrowed_prefix_conflicts(u64::MAX, prefix),
+            Err(Errno::EINVAL)
+        );
     }
 
     // --- Closed loop: writer -> reader -> journal all agree ---------------

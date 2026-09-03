@@ -1644,18 +1644,74 @@ mod wasm {
         Ok(addr)
     }
 
+    /// The in-realm, no-servicer sibling of `serialize_journal_alloc_impl`:
+    /// serialize the sealed journal as a KFRE image into a caller-owned FIXED
+    /// region `[base, base + len)` instead of a channel-mmap'd chunk. Used by the
+    /// in-process fixed-arena harness (`fm_begin_unwind_fixed_arena`), which has
+    /// no host servicer for the blocking channel. The region is NOT recorded as
+    /// an owned chunk (no `extra_chunks`), so finish/abort munmap nothing. Returns
+    /// `base`; the byte length is read back via `fm_journal_image_len`.
+    fn serialize_journal_fixed_arena_impl(base: u64, len: u64) -> Result<u64, Errno> {
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let image = encode_replay_events(st.journal.captured_events()?);
+        let image_len = image.len() as u64;
+        if image_len > len {
+            return Err(Errno::ENOMEM); // caller's region is too small for the image
+        }
+        let start = usize::try_from(base).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(image.len()).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // image region past the end of guest memory
+        }
+        // Distinct ranges: module heap `image` vs the caller-owned guest region.
+        let dst = core::hint::black_box(start) as *mut u8;
+        // SAFETY: `[start, end)` is within guest memory (checked); `image` is a
+        // distinct heap allocation. `copy` (memmove) is defensive regardless.
+        unsafe {
+            core::ptr::copy(image.as_ptr(), dst, image.len());
+        }
+        st.journal_image_ptr = base;
+        st.journal_image_len = image_len;
+        Ok(base)
+    }
+
     fn begin_child_replay_impl(
         module_buffer: u64,
         image_ptr: u64,
         image_len: u64,
     ) -> Result<(), Errno> {
+        // Reclaim any prior state and heap before this COW child's replay. A
+        // BORROWED (vfork) child must NOT do this (it shares the parked parent's
+        // memory and its module instance is fresh + single-use), so the reclaim
+        // lives here in the COW entry rather than in the shared builder.
+        *state() = None;
+        ALLOC.reset();
+
+        let (module, activation_id) =
+            build_child_replay_module(module_buffer, image_ptr, image_len)?;
+        *state() = Some(module);
+        PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Seed a replay-only child `ForkModule` from the inherited journal image and
+    /// a READ-ONLY rewind driver over the continuation at `module_buffer`, and
+    /// return it together with the primary activation id — WITHOUT storing it,
+    /// touching `PRIMARY_ACTIVATION`, or reclaiming the heap. Shared by the COW
+    /// child (`begin_child_replay_impl`) and the vfork BORROWED child
+    /// (`begin_borrowed_child_replay_impl`); the caller stores it and, for the
+    /// borrowed path, first isolates its private module prefix. The built module
+    /// owns NO chunks (arena `new_channel(0)`, empty `extra_chunks`,
+    /// `channel_base == 0`), so its finish/abort munmaps nothing — the invariant a
+    /// borrowed child depends on so it never unmaps the parent's live storage.
+    fn build_child_replay_module(
+        module_buffer: u64,
+        image_ptr: u64,
+        image_len: u64,
+    ) -> Result<(ForkModule, u32), Errno> {
         // The format must have been seeded (once) on THIS fresh child instance,
         // exactly as the host seeds every process-worker instance.
         let fmt = format()?;
-
-        // Reclaim any prior state and heap before this child's replay.
-        *state() = None;
-        ALLOC.reset();
 
         // Decode the KFRE image the parent serialized, read from the child's
         // COPIED guest memory. Copy the image bytes out through raw pointers into
@@ -1749,7 +1805,7 @@ mod wasm {
                 replay_only: true,
             },
         );
-        *state() = Some(ForkModule {
+        let module = ForkModule {
             activations,
             channel_base: 0,
             extra_chunks: Vec::new(),
@@ -1758,8 +1814,107 @@ mod wasm {
             journal,
             table,
             replay_events: decoded.events,
-        });
+        };
+        Ok((module, activation_id))
+    }
+
+    // -- vfork BORROWED child replay (shares the parked parent's memory) -----
+    //
+    // A COW fork child inherits a private COPY of the parent's memory, so
+    // `begin_child_replay_impl` may reclaim its heap and (harmlessly) own its
+    // inherited chunks. A vfork BORROWED child instead runs a FRESH module
+    // instance at a DISTINCT `__memory_base` inside the SAME shared memory as the
+    // still-parked parent, whose fork-module instance, continuation storage, and
+    // frame chunks are live there. So the borrowed child must:
+    //   (i)   NOT reclaim the heap (its instance is fresh + single-use, and a
+    //         reset is meaningless; the reclaim stays in the COW entry);
+    //   (ii)  decode the journal image READ-ONLY (the shared builder already
+    //         copies the image bytes out before decoding — no guest write);
+    //   (iii) own NO chunks (the shared builder's `new_channel(0)` arena +
+    //         `channel_base == 0` guarantee finish/abort munmap nothing);
+    //   (iv)  write the guest's mutable fixed runtime prefix (whose offset-0 word
+    //         is the active-frame pointer the guest rewind overwrites) into a
+    //         CHILD-PRIVATE `private_prefix` region, copied from the parent's
+    //         prefix at `module_buffer`, so the parked parent's prefix is never
+    //         touched. The rewind driver still reads the BORROWED frame nodes at
+    //         the parent's addresses (read-only), exactly as the JS
+    //         `attachForBorrowedReplay` does.
+
+    fn begin_borrowed_child_replay_impl(
+        module_buffer: u64,
+        image_ptr: u64,
+        image_len: u64,
+        private_prefix: u64,
+    ) -> Result<(), Errno> {
+        // (i) NO heap reclaim / no `*state() = None` reset here: this is a fresh,
+        // single-use borrowed-child instance sharing the parent's memory.
+        let (mut module, activation_id) =
+            build_child_replay_module(module_buffer, image_ptr, image_len)?;
+
+        // (iv) Isolate the child's mutable module prefix. Copy the parent's fixed
+        // runtime prefix from `module_buffer` into the child-private
+        // `private_prefix`, after proving the target is in range, aligned, and
+        // does NOT overlap the borrowed continuation storage or the source
+        // anchor. The guest's `wpk_fork_rewind_begin` is then handed
+        // `private_prefix`, so every active-frame-pointer write lands in private
+        // scratch, never the parked parent's prefix.
+        let fixed_prefix = module
+            .activations
+            .get(&activation_id)
+            .ok_or(Errno::EINVAL)?
+            .format
+            .fixed_prefix_size as u64;
+        copy_borrowed_child_prefix(&module, activation_id, module_buffer, private_prefix, fixed_prefix)?;
+
+        *state() = Some(module);
         PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Validate and copy the parent's fixed runtime prefix from `source`
+    /// (`module_buffer`) into the child-private `target` (`private_prefix`), the
+    /// module equivalent of `attachForBorrowedReplay`'s prefix copy. Both regions
+    /// live in the shared guest memory; the copy goes through raw pointers (never
+    /// an exclusive whole-memory `&mut [u8]`, which would `noalias`-miscompile),
+    /// and the ranges are proven distinct first, so a bad `private_prefix` fails
+    /// truthfully instead of corrupting the parked parent.
+    fn copy_borrowed_child_prefix(
+        module: &ForkModule,
+        activation_id: u32,
+        source: u64,
+        target: u64,
+        len: u64,
+    ) -> Result<(), Errno> {
+        if len == 0 {
+            return Err(Errno::EINVAL); // a borrowed child always has a runtime prefix
+        }
+        let act = module.activations.get(&activation_id).ok_or(Errno::EINVAL)?;
+        let driver = act.driver.as_ref().ok_or(Errno::EINVAL)?;
+        let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
+        if alignment == 0 || target == 0 || target % alignment != 0 {
+            return Err(Errno::EINVAL); // target must be nonzero + prefix-aligned
+        }
+        let src_end = source.checked_add(len).ok_or(Errno::EINVAL)?;
+        let tgt_end = target.checked_add(len).ok_or(Errno::EINVAL)?;
+        let mem_len = mem_len_bytes() as u64;
+        if src_end > mem_len || tgt_end > mem_len {
+            return Err(Errno::EINVAL); // either range escapes guest memory
+        }
+        // The private prefix must not alias the borrowed continuation storage or
+        // the parent's prefix source (which includes `module_buffer`).
+        if driver.borrowed_prefix_conflicts(target, len)? {
+            return Err(Errno::EINVAL);
+        }
+        let src = usize::try_from(source).map_err(|_| Errno::EINVAL)?;
+        let dst = usize::try_from(target).map_err(|_| Errno::EINVAL)?;
+        // SAFETY: `[source, source+len)` and `[target, target+len)` are both
+        // within guest memory (checked above) and proven non-overlapping by the
+        // conflict guard; `copy` (memmove semantics) is defensive regardless.
+        unsafe {
+            let src_ptr = core::hint::black_box(src) as *const u8;
+            let dst_ptr = core::hint::black_box(dst) as *mut u8;
+            core::ptr::copy(src_ptr, dst_ptr, len as usize);
+        }
         Ok(())
     }
 
@@ -2476,6 +2631,25 @@ mod wasm {
         }
     }
 
+    /// In-realm, no-servicer sibling of `fm_serialize_journal_alloc`: serialize
+    /// the sealed journal into a caller-owned FIXED region `[base, base + len)`
+    /// (no channel-mmap), returning `base` (0 on failure; check `fm_last_errno`).
+    /// Read the byte length back via `fm_journal_image_len`. For the in-process
+    /// fixed-arena harness only.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_serialize_journal_fixed_arena(base: usize, len: usize) -> usize {
+        match serialize_journal_fixed_arena_impl(base as u64, len as u64) {
+            Ok(ptr) => {
+                set_ok();
+                ptr as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
     /// The byte length of the KFRE image the last `fm_serialize_journal_alloc`
     /// wrote (0 if none). The host reads this together with the returned pointer
     /// to write the `JournalImage` KFMS record.
@@ -2516,6 +2690,36 @@ mod wasm {
         image_len: usize,
     ) {
         match begin_child_replay_impl(module_buffer as u64, image_ptr as u64, image_len as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Seed a vfork BORROWED child's replay: like `fm_begin_child_replay`, but
+    /// the child SHARES the parked parent's memory (its own module instance at a
+    /// distinct `__memory_base`) instead of a private copy. `module_buffer` is the
+    /// parent's continuation anchor (borrowed, read-only); `[image_ptr, image_ptr
+    /// + image_len)` is the KFRE image the parent serialized (still live in shared
+    /// memory); `private_prefix` is a CHILD-PRIVATE, pre-reserved region the module
+    /// copies the parent's fixed runtime prefix into, so the guest's rewind writes
+    /// its active-frame pointer there and never touches the parked parent's prefix.
+    /// The built replay owns no chunks, so finish/abort munmap nothing (the
+    /// parent's storage is never unmapped). On success the host hands the guest
+    /// `private_prefix` as the rewind root. Failure is truthful (`fm_last_errno`);
+    /// the parent's address space is left untouched.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_borrowed_child_replay(
+        module_buffer: usize,
+        image_ptr: usize,
+        image_len: usize,
+        private_prefix: usize,
+    ) {
+        match begin_borrowed_child_replay_impl(
+            module_buffer as u64,
+            image_ptr as u64,
+            image_len as u64,
+            private_prefix as u64,
+        ) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
