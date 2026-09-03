@@ -3659,14 +3659,11 @@ export async function centralizedWorkerMain(
         useForkModule =
           ptrWidth === linkedFrameFormat.ptrWidth &&
           (!isForkFromThreadChild || hasResumeThreadExport) &&
-          catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP &&
-          // Phase 6 item 4: a borrowed (vfork) child is admitted only when it is
-          // SINGLE-activation. Multi-activation dlopen-vfork ("mode-1") borrowed
-          // replay through the module (a borrowed `fm_add_activation_*`) is the
-          // next step in this item; until then a dlopen-fork-role borrowed child
-          // keeps the byte-identical JS borrowed path rather than reaching the
-          // single-activation-only `attachBorrowedModuleChild`.
-          (!borrowedForkChild || !hasDylinkForkRole);
+          catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP;
+        // Phase 6 item 4: a borrowed (vfork) child is admitted like any other —
+        // single-activation via `beginBorrowedChildReplay`, and multi-activation
+        // dlopen-vfork ("mode-1") via `addActivationBorrowedChildReplay`. The
+        // coordinator's `attachBorrowedModuleChild` handles both.
         if (useForkModule) {
           forkModuleBackend = new ForkModuleContinuationBackend({
             exports: forkModuleInstance.exports,

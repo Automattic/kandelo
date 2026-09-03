@@ -427,10 +427,13 @@ parent's serialized journal image and drives a read-only rewind over the
 parent's borrowed frame nodes, copying the parent's fixed runtime prefix into a
 child-private region so the guest's rewind writes its active-frame pointer there
 rather than the parent's. It never marks nodes consumed, releases the parent's
-mappings, or writes the process launch anchor. Multi-activation dlopen-vfork
-("mode-1") borrowed replay remains on the JavaScript path for now. The guest
-instrumentation ABI is unchanged either way; the module only changes which host
-provider drives the frames and references.
+mappings, or writes the process launch anchor. A multi-activation dlopen-vfork
+("mode-1") borrowed child — one that issues `vfork` from a dlopened side-module
+frame — drives every activation the same way: the main activation seeds from the
+journal image and each side activation is added against the same borrowed
+continuation with its own child-private prefix. The guest instrumentation ABI is
+unchanged either way; the module only changes which host provider drives the
+frames and references.
 
 Dynamic-linker reconstruction has a matching fail-closed mode. It accepts
 only shared Memory, passive data segments, and a complete loader transaction.

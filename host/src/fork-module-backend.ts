@@ -572,6 +572,46 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * vfork BORROWED child: add a dlopen-vfork ("mode-1") SIDE activation to the
+   * replay begun by `beginBorrowedChildReplay`. Like `addActivationChildReplay`,
+   * but reads the parent's borrowed continuation read-only and copies this side's
+   * fixed prefix into its own child-private `privatePrefix`. Owns no chunks.
+   */
+  addActivationBorrowedChildReplay(
+    activationId: number,
+    root: number,
+    fixedPrefix: number,
+    privatePrefix: number,
+  ): void {
+    this.requireSetup("add activation borrowed child replay");
+    if (!Number.isSafeInteger(root) || root <= 0) {
+      throw new Error(
+        `${this.label}: borrowed activation ${activationId} continuation root `
+          + `${root} is invalid`,
+      );
+    }
+    if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
+      throw new Error(
+        `${this.label}: borrowed activation ${activationId} private prefix `
+          + `${privatePrefix} is invalid`,
+      );
+    }
+    if (privatePrefix + fixedPrefix > this.memory.buffer.byteLength) {
+      throw new Error(
+        `${this.label}: borrowed activation ${activationId} private prefix escapes `
+          + "guest memory",
+      );
+    }
+    this.exports.fm_add_activation_borrowed_child_replay(
+      this.wptr(activationId),
+      this.wptr(root),
+      this.wptr(fixedPrefix),
+      this.wptr(privatePrefix),
+    );
+    this.requireOk("fm_add_activation_borrowed_child_replay");
+  }
+
+  /**
    * Finish the rewind. Option B: the MODULE owns the frame + image chunks it
    * mmap'd and releases them itself inside `fm_finish_replay` (a replay-only
    * child mapped nothing, so it releases nothing).
