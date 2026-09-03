@@ -13,8 +13,12 @@
  *
  * A second row lists the Quickshell shells staged under
  * QTGALLERY_SHELL_DIR (default /usr/share/kandelo/quickshell): activating
- * one restarts the gallery's Quickshell child with that QML file, the
- * swap-the-shell demonstration Quickshell exists for.
+ * one stages that QML file as /tmp/qtgallery-active.qml and the gallery's
+ * single Quickshell child live-reloads it in place — the swap-the-shell
+ * demonstration Quickshell exists for. One child for every swap, never a
+ * respawn: each Quickshell process costs the browser host a fresh compiled
+ * copy of the whole Qt wasm module per worker, and respawn churn at that
+ * size crashes the tab (docs/browser-support.md#quickshell-qml-limits).
  *
  * Cards activate by click (hover highlights) or by arrows + Enter.
  * Escape or Q closes.
@@ -38,6 +42,7 @@
 #include <QPainterPath>
 #include <QProcess>
 #include <QRasterWindow>
+#include <QSaveFile>
 #include <QTextStream>
 #include <QTime>
 #include <QTimer>
@@ -85,6 +90,20 @@ QString shellsRoot()
     const QByteArray env = qgetenv("QTGALLERY_SHELL_DIR");
     return env.isEmpty() ? QStringLiteral("/usr/share/kandelo/quickshell")
                          : QString::fromUtf8(env);
+}
+
+const QString kActiveShellPath = QStringLiteral("/tmp/qtgallery-active.qml");
+
+/* The atomic commit keeps Quickshell's content-hash reload from ever
+ * reading a half-written file. */
+bool stageActiveShell(const QString &file)
+{
+    QFile source(file);
+    if (!source.open(QIODevice::ReadOnly)) return false;
+    QSaveFile active(kActiveShellPath);
+    if (!active.open(QIODevice::WriteOnly)) return false;
+    active.write(source.readAll());
+    return active.commit();
 }
 
 QColor parseColor(const QString &value, const QColor &fallback)
@@ -441,17 +460,21 @@ private:
             std::fflush(stdout);
         } else {
             const QString &file = m_shells[index - (int)m_themes.size()];
-            if (m_quickshell) {
-                m_quickshell->kill();
-                m_quickshell->waitForFinished(3000);
+            if (!stageActiveShell(file)) return;
+            if (m_quickshell
+                && m_quickshell->state() == QProcess::NotRunning) {
                 delete m_quickshell;
+                m_quickshell = nullptr;
             }
-            m_quickshell = new QProcess;
-            m_quickshell->setProgram(
-                QStringLiteral("/usr/local/bin/quickshell"));
-            m_quickshell->setArguments({ QStringLiteral("-p"), file });
-            m_quickshell->start();
-            m_quickshell->waitForStarted(10000);
+            if (!m_quickshell) {
+                m_quickshell = new QProcess;
+                m_quickshell->setProgram(
+                    QStringLiteral("/usr/local/bin/quickshell"));
+                m_quickshell->setArguments(
+                    { QStringLiteral("-p"), kActiveShellPath });
+                m_quickshell->start();
+                m_quickshell->waitForStarted(10000);
+            }
             std::printf("GALLERY_SHELL file=%s pid=%lld\n",
                         file.toUtf8().constData(),
                         (long long)m_quickshell->processId());

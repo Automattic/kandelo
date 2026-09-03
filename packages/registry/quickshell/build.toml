@@ -9,5 +9,7 @@ revision    = 1
 inputs = [
   "packages/registry/quickshell/build-quickshell.sh",
   "packages/registry/quickshell/src/no-wl-proxy-interpose-on-wasm.patch",
+  "packages/registry/quickshell/src/on-thread-logger-on-wasm.patch",
+  "packages/registry/quickshell/src/one-generation-reload-on-wasm.patch",
   "scripts/package-build-roots.sh",
 ]

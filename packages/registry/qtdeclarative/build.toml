@@ -1,7 +1,7 @@
 script_path = "packages/registry/qtdeclarative/build-qtdeclarative.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "9072b5384"
-revision    = 2
+revision    = 3
 
 # The fetched `qtdeclarative-src/` tree is gitignored; the resolver
 # hashes these tracked inputs on a clean checkout. script_path is not

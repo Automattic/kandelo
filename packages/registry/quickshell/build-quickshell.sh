@@ -89,6 +89,8 @@ if [ ! -d "$SRC_DIR" ]; then
     tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "$TARBALL"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/no-wl-proxy-interpose-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/on-thread-logger-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/one-generation-reload-on-wasm.patch"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -144,7 +146,8 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_RANLIB="$(command -v wasm32posix-ranlib)" \
     -DCMAKE_C_FLAGS="$TARGET_DEFINES" \
     -DCMAKE_CXX_FLAGS="$TARGET_DEFINES -fwasm-exceptions" \
-    -DCMAKE_BUILD_TYPE=Release \
+    `# MinSizeRel, not Release: the browser compiles the linked module once per worker thread, so code size multiplies across workers (docs/browser-support.md#quickshell-qml-limits).` \
+    -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_CXX_STANDARD_LIBRARIES="$LIBFFI_PREFIX/lib/libffi.a $LIBXML2_PREFIX/lib/libxml2.a $LIBICONV_PREFIX/lib/libiconv.a $LIBICONV_PREFIX/lib/libcharset.a $SYSROOT/lib/libgbm.a -lc++ -lc++abi" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \

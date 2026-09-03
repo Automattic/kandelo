@@ -1,0 +1,47 @@
+Run the logger on the main thread instead of a dedicated QThread.
+
+On this host every guest pthread is a Web Worker, and Chromium compiles
+the whole 93 MB quickshell module again for each worker (~600 MB of
+machine code per thread — see
+docs/browser-support.md#quickshell-qml-limits). The logger thread exists
+upstream to keep log I/O off the UI thread; here it buys no parallelism
+(one-CPU kernel) and costs a full compiled copy of the module. The
+logMessage -> ThreadLogging::onMessage connection is already direct, so
+only the proxy's home thread and the two blocking init calls change.
+
+diff -ru a/src/core/logging.cpp b/src/core/logging.cpp
+--- a/src/core/logging.cpp	2026-09-02 14:11:30
++++ b/src/core/logging.cpp	2026-09-02 14:11:30
+@@ -335,17 +335,9 @@
+ 
+ 	qInstallMessageHandler(&LogManager::messageHandler);
+ 
+-	qCDebug(logLogging) << "Creating offthread logger...";
+-	auto* thread = new QThread();
+-	instance->threadProxy.moveToThread(thread);
+-	thread->start();
++	qCDebug(logLogging) << "Creating on-thread logger...";
++	instance->threadProxy.initInThread();
+ 
+-	QMetaObject::invokeMethod(
+-	    &instance->threadProxy,
+-	    &LoggingThreadProxy::initInThread,
+-	    Qt::BlockingQueuedConnection
+-	);
+-
+ 	qCDebug(logLogging) << "Logger initialized.";
+ }
+ 
+@@ -354,11 +346,7 @@
+ }
+ 
+ void LogManager::initFs() {
+-	QMetaObject::invokeMethod(
+-	    &LogManager::instance()->threadProxy,
+-	    "initFs",
+-	    Qt::BlockingQueuedConnection
+-	);
++	LogManager::instance()->threadProxy.initFs();
+ }
+ 
+ QString LogManager::rulesString() const { return this->mRulesString; }

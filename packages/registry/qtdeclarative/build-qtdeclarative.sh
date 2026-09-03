@@ -9,6 +9,14 @@
 # pools qtgallery paints through. Consumers select it with
 # QT_QUICK_BACKEND=software.
 #
+# qml-type-loader-thread is off, taking Qt's supported synchronous
+# type-loading path (qqmlthread_stub.cpp — the same shape upstream's
+# single-threaded wasm port uses). On this host every guest pthread is
+# a Web Worker and Chromium compiles the whole program module again per
+# worker, so the loader thread costs a full compiled copy of every QML
+# consumer (~600 MB for quickshell) and its per-reload thread churn
+# spikes tab memory on each Quickshell config reload.
+#
 # qml-network and qml-debug are on — Quickshell's QsIntercept
 # subclasses QQmlNetworkAccessManagerFactory and its launcher calls
 # QQmlDebuggingEnabler, and QtQml only compiles either with its
@@ -160,7 +168,8 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_RANLIB="$(command -v wasm32posix-ranlib)" \
     -DCMAKE_C_FLAGS="$TARGET_DEFINES" \
     -DCMAKE_CXX_FLAGS="$TARGET_DEFINES -fwasm-exceptions" \
-    -DCMAKE_BUILD_TYPE=Release \
+    `# MinSizeRel, not Release: the browser compiles the linked module once per worker thread, so code size multiplies across workers (docs/browser-support.md#quickshell-qml-limits).` \
+    -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_CXX_STANDARD_LIBRARIES="-lc++ -lc++abi" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
@@ -173,7 +182,8 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DQT_BUILD_TESTS=OFF \
     -DCMAKE_DISABLE_FIND_PACKAGE_harfbuzz=ON \
     -DFEATURE_qml_network=ON \
-    -DFEATURE_qml_debug=ON
+    -DFEATURE_qml_debug=ON \
+    -DFEATURE_qml_type_loader_thread=OFF
 
 echo "==> Building qtdeclarative..."
 cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"

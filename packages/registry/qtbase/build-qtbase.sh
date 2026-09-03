@@ -152,6 +152,7 @@ if [ ! -d "$SRC_DIR" ]; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qmutex-honour-qt-linuxbase.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -205,7 +206,8 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_RANLIB="$(command -v wasm32posix-ranlib)" \
     -DCMAKE_C_FLAGS="$TARGET_DEFINES" \
     -DCMAKE_CXX_FLAGS="$TARGET_DEFINES -fwasm-exceptions" \
-    -DCMAKE_BUILD_TYPE=Release \
+    `# MinSizeRel, not Release: the browser compiles the linked module once per worker thread, so code size multiplies across workers (docs/browser-support.md#quickshell-qml-limits).` \
+    -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_PREFIX_PATH="$CMAKE_PREFIXES" \
     -DCMAKE_INSTALL_PREFIX="$GUEST_PREFIX" \
