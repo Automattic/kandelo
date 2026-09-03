@@ -269,6 +269,14 @@ export interface ForkModuleReferencesMessage {
   exnrefs: number;
   /** Typed-GC node count — struct/array/i31 (`fm_gc_nodes_reconstructed`). */
   gcNodes: number;
+  /**
+   * Typed-GC DRIVE step count (`fm_drive_steps_executed`, Phase 6 item 3c).
+   * Distinct from `gcNodes`: this advances only when the module actually drove
+   * the typed allocate/fill/exn order (`fm_build_gc_plan` + `fm_drive_execute`),
+   * so a nonzero value proves the module — not the JS `materializeAllTyped`
+   * fallback — reconstructed the typed graph.
+   */
+  driveSteps: number;
 }
 
 export interface WorkerReadyMessage {

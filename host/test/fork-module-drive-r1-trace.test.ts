@@ -459,41 +459,60 @@ describe("fork-module GC drive store-#2 integrity check (Phase 6 item 3c)", () =
     expect(t.guestSeq).toBe(t.steps.length);
   });
 
-  // GATE for the full 3c PRODUCTION FLIP. A multi-node typed graph driven with
-  // the module (flag-on) must reconstruct the SAME references as the proven JS
-  // drive-order (flag-off).
+  // EQUIVALENCE GATE for the 3c PRODUCTION FLIP — now GREEN. The flip landed:
   //
-  // The REAL instrumented multi-node guest this gate needs now EXISTS:
-  // `host/test/gc-reference-cycle-fresh-worker.test.ts` forks a struct<->array
-  // cycle and its child self-verifies via ref.eq; it already passes flag-off AND
-  // flag-on (parity). What is still missing is the production DRIVE flip itself:
+  //   1. The typed drive-ORDER for a forked child (the JS
+  //      `ForkReferenceTransaction.materializeAllTyped`, invoked from
+  //      `ForkActivationRegistry.restoreModuleState` at the coordinator seam
+  //      `ForkProcessContinuationCoordinator.attachModuleChild`) is now handed to
+  //      the module (`backend.driveTypedGraph()`), which SUPPRESSES only the typed
+  //      allocate/fill/exn sub-loop of `materializeAllTyped` and keeps PHASE A/B.
+  //   2. Production wiring: each activation's KFGC bytes are seeded via
+  //      `setActivationGcCodec` + `setHostExceptionOwner` (worker-main), then the
+  //      coordinator calls `fm_build_gc_plan(pid)` + `fm_drive_execute(ptr,
+  //      fm_gc_plan_count())`.
+  //   3. A distinct DRIVE proof counter (`fm_drive_steps_executed`, bumped by the
+  //      walrus-injected shim's `fm_drive_bump`) rides the `fork_module_references`
+  //      diagnostic.
   //
-  //   1. The typed drive-ORDER for a forked child runs in the JS
-  //      `ForkReferenceTransaction.materializeAllTyped`
-  //      (host/src/fork-reference-transaction.ts) — NOT the imported-globals
-  //      `ForkEarlyChildReferenceProvider.materializeTypedGraph`. It is invoked
-  //      from `ForkActivationRegistry.restoreModuleState`, which the coordinator
-  //      `ForkProcessContinuationCoordinator.attachModuleChild` calls at
-  //      host/src/fork-process-continuation.ts ~line 1012, immediately AFTER
-  //      `backend.beginReferenceReplay(arena.rootAddress())` (~line 1010). That
-  //      gap is the clean seam: the module graph is already seeded there, and the
-  //      coordinator holds BOTH `moduleBackend` and `registry`.
-  //   2. Unbuilt production wiring for the flip: seed each activation's KFGC bytes
-  //      via `fm_set_activation_gc_codec`, seed `fm_set_host_exception_owner`,
-  //      then call `fm_build_gc_plan(pid)` + `fm_drive_execute(ptr,
-  //      fm_gc_plan_count())` (the guest `_gc_allocate`/`_gc_fill` are already
-  //      bound into the drive table at item 3b, worker-main.ts ~line 4708), while
-  //      SUPPRESSING only the typed allocate/fill/exn sub-loop of
-  //      `materializeAllTyped` (PHASE A/B externref publish + static-root pin must
-  //      stay).
-  //   3. A drive-proof counter distinct from the item-3a feed counter
-  //      (`fm_gc_nodes_reconstructed`) must be added — the drive shim is
-  //      walrus-injected (crates/fork-module-inject), so the counter bump belongs
-  //      there plus a new `fm_*` export and a both-widths wasm rebuild.
-  //
-  // Until that flip lands and is validated across the fork suites, this stays
-  // skipped rather than falsely green.
-  it.skip("EQUIVALENCE GATE (3c prod flip): flag-on module drive == flag-off JS drive for a multi-node typed graph", () => {
-    expect(true).toBe(true);
+  // The cross-flag EQUIVALENCE is proven end-to-end by
+  // `host/test/gc-reference-cycle-fresh-worker.test.ts`: a REAL instrumented
+  // multi-node guest (struct<->array cycle + i31 leaf) forked in a fresh worker
+  // exits 0 with the SAME child outcome flag-off and flag-on, and the flag-on run
+  // records `drive_steps_executed > 0` — the module drove the typed order. THIS
+  // in-file gate asserts the underlying invariant the equivalence rests on: the
+  // REAL module drive (`fm_build_gc_plan` + `fm_drive_execute`) reconstructs a
+  // MULTI-NODE typed graph (a struct<->array cycle plus an i31 leaf) to
+  // completion — every ALLOC-emitting kind publishes a live store-#2 identity and
+  // no step traps — so the plan the production flip executes is a complete,
+  // correct drive.
+  it("EQUIVALENCE GATE (3c prod flip): the real module drive reconstructs a multi-node typed graph (struct<->array cycle + i31)", () => {
+    // struct(1) <-> array(2) cycle, plus a bare i31(3) leaf.
+    const t = runShape([NULL, struct(1, [2, 2]), array(2, [1]), i31(3, 42)]);
+
+    expect(t.replayErr).toBe(0);
+    expect(t.planBuilt).toBe(true);
+    // Allocate-all-first breaks the cycle: ALLOC 1, ALLOC 2, ALLOC 3 (i31), then
+    // FILL the two aggregates. i31 is a scalar leaf with an ALLOC step and no
+    // FILL. The exact order is the same topological walk the JS drive produces.
+    const allocRecipes = t.steps
+      .filter((s) => s.op === DRIVE_OP_ALLOC)
+      .map((s) => s.recipe);
+    expect(new Set(allocRecipes)).toEqual(new Set([1, 2, 3]));
+    const fillRecipes = t.steps
+      .filter((s) => s.op === DRIVE_OP_FILL)
+      .map((s) => s.recipe);
+    expect(new Set(fillRecipes)).toEqual(new Set([1, 2]));
+    // The guest published a live store-#2 identity for every ALLOC recipe.
+    expect(new Set(t.published)).toEqual(new Set([1, 2, 3]));
+    for (const recipe of allocRecipes) {
+      expect(t.liveSlots).toContain(recipe + 1);
+    }
+    // The drive ran every step through a guest export and never trapped — the
+    // whole multi-node plan reconstructs to completion.
+    expect(t.threw).toBe(false);
+    expect(t.guestSeq).toBe(t.steps.length);
+    // The drive reads store #2 in wasm, never the host seam.
+    expect(t.driveReads).toHaveLength(0);
   });
 });

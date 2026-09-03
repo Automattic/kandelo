@@ -212,6 +212,97 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Number of typed-GC drive STEPS the module has executed since worker start
+   * (Phase 6 item 3c proof-of-use). Distinct from `gcNodesReconstructed`, which
+   * `fm_begin_reference_replay` bumps merely by ADMITTING the graph (the item 3a
+   * data feed): this advances ONLY when `driveTypedGraph` ran the module's
+   * `fm_build_gc_plan` + `fm_drive_execute`, so a nonzero value proves the module
+   * — not the JS `materializeAllTyped` fallback — drove the typed allocate/fill/
+   * exn topological order. Never resets.
+   */
+  driveStepsExecuted(): bigint {
+    return BigInt(this.exports.fm_drive_steps_executed() as number | bigint);
+  }
+
+  /**
+   * Seed ONE activation's raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
+   * for this worker (Phase 6 item 3c). Staged into guest memory the same way
+   * `setup()` stages the resume catalog; the module copies them into its own
+   * arena, so the scratch is released immediately after. Called ONCE per
+   * participating activation per worker, before any fork drives the GC plan.
+   */
+  setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
+    this.requireSetup("seed activation GC codec");
+    const byteLen = bytes.byteLength;
+    if (byteLen === 0) {
+      throw new RangeError(
+        `${this.label}: activation ${activationId} GC codec is empty`,
+      );
+    }
+    const regionBytes = alignUpPage(byteLen);
+    const scratch = this.reserveRegion(regionBytes);
+    try {
+      new Uint8Array(this.memory.buffer, scratch, byteLen).set(bytes);
+      this.exports.fm_set_activation_gc_codec(
+        activationId,
+        this.wptr(scratch),
+        this.wptr(byteLen),
+      );
+      this.requireOk("fm_set_activation_gc_codec");
+    } finally {
+      this.releaseRegion(scratch, regionBytes);
+    }
+  }
+
+  /**
+   * Seed the host-exception owner for this worker (Phase 6 item 3c): the smallest
+   * activation that declared an exception codec descriptor, which the drive plan
+   * uses to remap a HOST-exception exnref's owner exactly as the JS `directOwner`.
+   * Pass `0xffff_ffff` when there is no such owner (the JS `null`). Called ONCE
+   * per worker, before any fork drives the GC plan.
+   */
+  setHostExceptionOwner(owner: number): void {
+    this.requireSetup("set host exception owner");
+    this.exports.fm_set_host_exception_owner(owner >>> 0);
+    this.requireOk("fm_set_host_exception_owner");
+  }
+
+  /**
+   * Build the topological typed-GC drive plan for this fork's reference graph and
+   * execute it through the module (Phase 6 item 3c). Requires
+   * `beginReferenceReplay` to have seeded the driver and every participating GC
+   * activation's `setActivationGcCodec` to have seeded its layout catalog. The
+   * injected `fm_drive_execute` shim `call_indirect`s the guest's
+   * `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports (host-bound into
+   * the drive table) in the plan order, and traps on a post-allocate integrity
+   * violation rather than reconstructing a wrong object. Returns the executed
+   * step count (0 when the graph has no typed-GC nodes). A failed plan build is a
+   * truthful throw, never a silent wrong drive.
+   */
+  driveTypedGraph(): number {
+    this.requireSetup("drive typed graph");
+    const planPtr = this.toNum(this.exports.fm_build_gc_plan(this.pid));
+    this.requireOk("fm_build_gc_plan");
+    const count = Number(this.exports.fm_gc_plan_count() as number | bigint);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(
+        `${this.label}: fm_gc_plan_count returned invalid count ${count}`,
+      );
+    }
+    if (count === 0) return 0;
+    if (!Number.isSafeInteger(planPtr) || planPtr <= 0) {
+      throw new Error(
+        `${this.label}: fm_build_gc_plan returned invalid plan ptr ${planPtr}`,
+      );
+    }
+    // The injected shim owns its own truthful failure (a post-allocate integrity
+    // violation traps with `unreachable`); it sets no errno, so there is nothing
+    // to `requireOk` after it — completion IS success.
+    this.exports.fm_drive_execute(this.wptr(planPtr), count);
+    return count;
+  }
+
+  /**
    * Seed the module's funcref/null reference graph for this fork from the KFMS
    * module-state arena rooted at `moduleStateRoot` (Phase 6 D6.1). The caller
    * gates this on the funcref-only reference predicate; the module re-checks and

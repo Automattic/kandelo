@@ -17,15 +17,16 @@
 ;; module-instance values survive.
 ;;
 ;; The child self-verifies (ref.eq alias checks + the cyclic array element +
-;; the scalar struct field) and exits 0 on success, mirroring the proven
-;; `$node` fixture's exit-0/stderr-empty contract.
+;; the scalar struct field + a module-owned i31 leaf) and exits 0 on success,
+;; mirroring the proven `$node` fixture's exit-0/stderr-empty contract.
 ;;
-;; (A scalar i31 leaf was deliberately left out: an i31 held in a module-owned
-;; global reconstructs through the co-resident fork-module data feed but trips a
-;; pre-existing, unrelated gap in the JavaScript RESTORE drive —
-;; `ForkReferenceTransaction.loadGc` runs `assertU32` on the i31 sentinel type
-;; ordinal (signed -1 at the import boundary) before its i31 branch coerces it —
-;; so it is not part of this cross-flag equivalence vehicle.)
+;; A scalar i31 leaf held in a module-owned global (`$saved_i31`) is now included
+;; (Phase 6 item 3c piece 0). It reconstructs through the co-resident
+;; fork-module drive as an ALLOC-emitting typed-GC recipe. It was previously left
+;; out because `ForkReferenceTransaction.loadGc` ran `assertU32` on the i31
+;; sentinel type ordinal (signed -1 at the import boundary) BEFORE its i31 branch
+;; could accept the sentinel; that assert now coerces to unsigned first, so an
+;; i31 load succeeds on the JS RESTORE path AND the module drive.
 (module
   (import "env" "memory" (memory 1 16384 shared))
   (import "env" "__channel_base" (global $__channel_base (mut i32)))
@@ -42,6 +43,9 @@
     (type $arr (array (mut (ref null $node)))))
 
   (global $saved (mut (ref null $node)) (ref.null $node))
+  ;; A scalar i31 leaf aliased through a module-owned global (Phase 6 item 3c):
+  ;; an ALLOC-emitting typed-GC recipe the fork drive must reconstruct.
+  (global $saved_i31 (mut (ref null i31)) (ref.null i31))
   (table $saved_table 1 1 (ref null $node))
   (global $__stack_pointer (export "__stack_pointer") (mut i32)
     (i32.const 65536))
@@ -200,6 +204,14 @@
       local.get $node
       ref.eq
       i32.and
+
+      ;; i31 leaf survived with its value (Phase 6 item 3c)
+      global.get $saved_i31
+      ref.as_non_null
+      i31.get_s
+      i32.const 42
+      i32.eq
+      i32.and
       local.set $valid
 
       local.get $valid
@@ -245,6 +257,11 @@
     i32.const 0
     local.get $node
     table.set $saved_table
+
+    ;; alias a scalar i31 (value 42) through a module-owned global
+    i32.const 42
+    ref.i31
+    global.set $saved_i31
 
     local.get $node
     ref.as_non_null

@@ -15,13 +15,22 @@
 
 import type { HostDiagnostic } from "../src/host-diagnostic";
 
-export type ModuleReferenceKind = "funcref" | "externref" | "exnref" | "gc";
+export type ModuleReferenceKind =
+  | "funcref"
+  | "externref"
+  | "exnref"
+  | "gc"
+  | "drive";
 
 const KIND_PATTERNS: Record<ModuleReferenceKind, RegExp> = {
   funcref: /fork_module_references=(\d+)/,
   externref: /externrefs_resolved=(\d+)/,
   exnref: /exnrefs_reconstructed=(\d+)/,
   gc: /gc_nodes_reconstructed=(\d+)/,
+  // Phase 6 item 3c DRIVE proof-of-use (`fm_drive_steps_executed`): the module
+  // executed the typed-GC drive plan rather than the JS `materializeAllTyped`
+  // fallback.
+  drive: /drive_steps_executed=(\d+)/,
 };
 
 export function moduleReferenceProof(

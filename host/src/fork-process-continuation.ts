@@ -1009,7 +1009,23 @@ export class ForkProcessContinuationCoordinator {
       if (this.moduleReferenceReplay) {
         backend.beginReferenceReplay(arena.rootAddress());
       }
-      this.registry.restoreModuleState();
+      // Phase 6 item 3c: when the module reference replay is active, the module's
+      // reference graph is seeded (`beginReferenceReplay` above) and every
+      // participating activation's KFGC codec + the host-exception owner were
+      // seeded at worker init, so hand the typed allocate/fill/exn topological
+      // order to the co-resident module. `restoreModuleState` runs PHASE A/B
+      // (static-root pin + externref publish) on the JS path first, then invokes
+      // this delegate in place of the JS typed sub-loop, then drives each guest's
+      // global/table restore against the reconstructed identities. A funcref/
+      // externref-only child has no typed-drive node, so `materializeAllTyped`
+      // never calls the delegate and the module builds no plan. Flag-off / non-
+      // module children pass no delegate and keep the byte-identical JS drive.
+      const typedDrive = this.moduleReferenceReplay
+        ? (): void => {
+            backend.driveTypedGraph();
+          }
+        : undefined;
+      this.registry.restoreModuleState(typedDrive);
 
       const activations = this.orderedActivations();
       const roots = new Map<number, number>([[0, act0Root]]);
