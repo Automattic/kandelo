@@ -174,7 +174,7 @@ const MODULE = new WebAssembly.Module(
 function instantiate(
   memory: WebAssembly.Memory,
   hostCapabilities: Readonly<Record<string, (...args: number[]) => number>>,
-): ForkModuleRefExports {
+) {
   const reserveBase = 8 * 1024 * 1024;
   const fm = instantiateForkModule({
     module: MODULE,
@@ -184,7 +184,7 @@ function instantiate(
     label: "gc-replay-test",
     hostCapabilities,
   });
-  return fm.exports as unknown as ForkModuleRefExports;
+  return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
 describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting through the module (Phase 6 D6.4a)", () => {
@@ -192,12 +192,18 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
 
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const transitTable = new ForkAnyrefTransitTable();
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-      transit: realTransit(transitTable),
-    });
+    // M1 t6: `createForkModuleHostCapabilities` reads `backing.transit` lazily
+    // (a property lookup made when `host_transit_publish`/`read` actually fire,
+    // not a captured value at construction), so `hostCapabilities` can be built
+    // now and `backing.transit` assigned below once the module — and its
+    // `gcTransitTable` export — exists. Mirrors worker-main.ts's production
+    // wiring, which resolves the same way against `activationRegistry`.
+    const backing: {
+      tokens: ForkExternrefTokenCache;
+      generationId: number;
+      transit?: ForkModuleTransitAdapter;
+    } = { tokens, generationId: GENERATION_ID };
+    const hostCapabilities = createForkModuleHostCapabilities(backing);
 
     // Spy on `host_mint_exception_tag` (inert stub for this seam) to prove the
     // typed-GC drive never mints an exception tag: there is no exnref, and the
@@ -212,7 +218,11 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     };
 
     const root = buildGcCycleArena(memory);
-    const x = instantiate(memory, imports);
+    const { fm, x } = instantiate(memory, imports);
+    // STORE #2: wrap (not mint) the module's own exported transit table (M1) so
+    // this seam's PHASE B publish/read agrees with the module's table.
+    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+    backing.transit = realTransit(transitTable);
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
@@ -264,7 +274,7 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     });
 
     const root = buildGcCycleArena(memory);
-    const x = instantiate(memory, hostCapabilities.imports);
+    const { x } = instantiate(memory, hostCapabilities.imports);
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
@@ -282,15 +292,19 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // WebAssembly engine.
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const transitTable = new ForkAnyrefTransitTable();
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-      transit: realTransit(transitTable),
-    });
+    // M1 t6: build `hostCapabilities` before the module exists (lazy
+    // `backing.transit` read) and wrap the module's own exported table below.
+    const backing: {
+      tokens: ForkExternrefTokenCache;
+      generationId: number;
+      transit?: ForkModuleTransitAdapter;
+    } = { tokens, generationId: GENERATION_ID };
+    const hostCapabilities = createForkModuleHostCapabilities(backing);
 
     const root = buildGcCycleArena(memory);
-    const x = instantiate(memory, hostCapabilities.imports);
+    const { fm, x } = instantiate(memory, hostCapabilities.imports);
+    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+    backing.transit = realTransit(transitTable);
     x.fm_set_format(PTR_WIDTH, 0);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);

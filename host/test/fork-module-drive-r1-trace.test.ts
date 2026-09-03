@@ -191,12 +191,20 @@ interface ShapeTrace {
 function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
   const memory = new WebAssembly.Memory({ initial: 512, maximum: 16384, shared: true });
   const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-  const transitTable = new ForkAnyrefTransitTable();
-  const caps = createForkModuleHostCapabilities({
-    tokens,
-    generationId: GENERATION_ID,
-    transit: realTransit(transitTable),
-  });
+  // M1 t6: the transit adapter must resolve against the fork-module's OWN
+  // exported table (STORE #2), which only exists after `instantiateForkModule`
+  // runs. `createForkModuleHostCapabilities`'s import bodies read `backing.transit`
+  // lazily (a property lookup at call time, not a captured value), so it is safe
+  // to build `caps` now and assign `backing.transit` below once the module (and
+  // its `gcTransitTable` export) exists — mirroring worker-main.ts, whose
+  // `transit: { publish/read -> activationRegistry... }` closure resolves against
+  // the module-owned table wired moments earlier.
+  const backing: {
+    tokens: ForkExternrefTokenCache;
+    generationId: number;
+    transit?: ForkModuleTransitAdapter;
+  } = { tokens, generationId: GENERATION_ID };
+  const caps = createForkModuleHostCapabilities(backing);
 
   const log: SeamCall[] = [];
   const traced: Record<string, (...a: number[]) => number> = {};
@@ -218,10 +226,13 @@ function runShape(nodes: ForkReferenceRecipeEntry[]): ShapeTrace {
     reserve: () => 8 * 1024 * 1024,
     label: "r1-trace",
     hostCapabilities: traced,
-    // STORE #2: the SAME table the guest publishes aggregates into. The shim's
-    // post-ALLOC integrity check reads it back with a wasm table.get + ref.is_null.
-    transitTable: transitTable.table,
   });
+  // STORE #2: wrap the fork-module's OWN exported transit table (M1) — not a
+  // freshly-minted one — so the guest's publish, the shim's post-ALLOC
+  // `table.get`/`ref.is_null` check, and this seam's PHASE B publish/read all
+  // agree on the SAME table object.
+  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  backing.transit = realTransit(transitTable);
   const x = fm.exports as unknown as ForkDriveExports;
 
   x.fm_set_format(PTR_WIDTH, 0);

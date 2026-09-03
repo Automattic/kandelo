@@ -156,7 +156,7 @@ const MODULE = new WebAssembly.Module(
 function instantiate(
   memory: WebAssembly.Memory,
   hostCapabilities: Readonly<Record<string, (...args: number[]) => number>>,
-): ForkModuleRefExports {
+) {
   const reserveBase = 8 * 1024 * 1024;
   const fm = instantiateForkModule({
     module: MODULE,
@@ -166,7 +166,7 @@ function instantiate(
     label: "exnref-replay-test",
     hostCapabilities,
   });
-  return fm.exports as unknown as ForkModuleRefExports;
+  return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
 describe("fork-module exnref reference reconstruction + transit into production (Phase 6 D6.3a)", () => {
@@ -174,12 +174,16 @@ describe("fork-module exnref reference reconstruction + transit into production 
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
 
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const transitTable = new ForkAnyrefTransitTable();
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-      transit: realTransit(transitTable),
-    });
+    // M1 t6: `createForkModuleHostCapabilities` reads `backing.transit` lazily
+    // (a property lookup at call time), so `hostCapabilities` can be built now
+    // and `backing.transit` assigned below, once the module's own exported
+    // `gcTransitTable` exists — mirroring worker-main.ts's production wiring.
+    const backing: {
+      tokens: ForkExternrefTokenCache;
+      generationId: number;
+      transit?: ForkModuleTransitAdapter;
+    } = { tokens, generationId: GENERATION_ID };
+    const hostCapabilities = createForkModuleHostCapabilities(backing);
 
     // Spy on `host_mint_exception_tag` (inert stub in production for this seam)
     // to prove the drive never mints an exception tag: the guest export owns it.
@@ -193,7 +197,10 @@ describe("fork-module exnref reference reconstruction + transit into production 
     };
 
     const root = buildExnrefArena(memory);
-    const x = instantiate(memory, imports);
+    const { fm, x } = instantiate(memory, imports);
+    // STORE #2: wrap (not mint) the module's own exported transit table (M1).
+    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+    backing.transit = realTransit(transitTable);
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
@@ -237,7 +244,7 @@ describe("fork-module exnref reference reconstruction + transit into production 
     });
 
     const root = buildExnrefArena(memory);
-    const x = instantiate(memory, hostCapabilities.imports);
+    const { x } = instantiate(memory, hostCapabilities.imports);
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
@@ -255,15 +262,17 @@ describe("fork-module exnref reference reconstruction + transit into production 
     // produced JS-identical results, in a real WebAssembly engine.
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const transitTable = new ForkAnyrefTransitTable();
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-      transit: realTransit(transitTable),
-    });
+    const backing: {
+      tokens: ForkExternrefTokenCache;
+      generationId: number;
+      transit?: ForkModuleTransitAdapter;
+    } = { tokens, generationId: GENERATION_ID };
+    const hostCapabilities = createForkModuleHostCapabilities(backing);
 
     const root = buildExnrefArena(memory);
-    const x = instantiate(memory, hostCapabilities.imports);
+    const { fm, x } = instantiate(memory, hostCapabilities.imports);
+    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+    backing.transit = realTransit(transitTable);
     x.fm_set_format(PTR_WIDTH, 0);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
