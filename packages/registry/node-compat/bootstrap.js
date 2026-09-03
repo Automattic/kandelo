@@ -4691,6 +4691,32 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
     return token;
 };
 
+// The native ES-module metadata hook (SpiderMonkey shell ModuleLoader.cpp,
+// patches/0016-kandelo-import-meta.patch) calls __kandeloModuleMeta with the
+// resolved module path and copies the returned url/dirname/require onto
+// import.meta. This is the NATIVE import() module system's import.meta — it is
+// distinct from _runEsmMain's regex-based import.meta.url string replacement.
+// Extracted Bun apps read import.meta.require and import.meta.dirname, so
+// populating them here lets those apps run without any source rewriting.
+// Returning null lets the C hook keep its default (url = raw path) behavior so
+// an unresolvable path stays a visible boundary rather than a silent success.
+globalThis.__kandeloModuleMeta = function (resolvedPath) {
+    if (typeof resolvedPath !== 'string' || resolvedPath.length === 0) {
+        return null;
+    }
+    let href;
+    try {
+        href = url.pathToFileURL(resolvedPath).href;
+    } catch (_e) {
+        return null;
+    }
+    return {
+        url: href,
+        dirname: path.dirname(resolvedPath),
+        require: _makeRequire(resolvedPath),
+    };
+};
+
 // Node.js globals
 globalThis.process = process;
 globalThis.Buffer = Buffer;
