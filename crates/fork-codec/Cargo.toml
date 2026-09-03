@@ -76,3 +76,7 @@ required-features = ["gen-fixtures"]
 [[test]]
 name = "gen_resume_catalog_fixture"
 required-features = ["gen-fixtures"]
+
+[[test]]
+name = "gen_gc_reference_cycle_fixture"
+required-features = ["gen-fixtures"]
