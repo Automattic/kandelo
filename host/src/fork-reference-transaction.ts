@@ -1431,18 +1431,27 @@ export class ForkReferenceTransaction {
     }
 
     owner.prepareTransit(Math.max(0, this.decodedNodes.length - 1));
-    for (const entry of this.decodedNodes) {
-      if (entry.node.kind !== "static-root") continue;
-      if (!this.materializedValues.has(entry.id)) {
-        throw new Error(
-          `fork static-root recipe ${entry.id} was not pinned during child attach`,
-        );
+    // PHASE A — static-root transit publish. On the MODULE path (`moduleDrive`
+    // present) each static root is published into the same anyref transit by the
+    // module's DRIVE_OP_STATIC_ROOT step (`table.get` the merged catalog mirror +
+    // `table.set` transit, both wasm — the static-root binder), so the JS
+    // `publishTransit` is skipped to avoid a redundant double-publish. When
+    // `moduleDrive` is omitted (flag-off / non-admitted fork) this is the
+    // byte-identical JS path.
+    if (!moduleDrive) {
+      for (const entry of this.decodedNodes) {
+        if (entry.node.kind !== "static-root") continue;
+        if (!this.materializedValues.has(entry.id)) {
+          throw new Error(
+            `fork static-root recipe ${entry.id} was not pinned during child attach`,
+          );
+        }
+        // WHY: generated GC constructors and field fills decode reference edges
+        // from recipe+1 in the shared anyref table. Instantiation recreated this
+        // identity instead of a codec, so publish the pinned child root before
+        // any dynamic object can consume it.
+        owner.publishTransit(entry.id, this.materializedValues.get(entry.id));
       }
-      // WHY: generated GC constructors and field fills decode reference edges
-      // from recipe+1 in the shared anyref table. Instantiation recreated this
-      // identity instead of a codec, so publish the pinned child root before
-      // any dynamic object can consume it.
-      owner.publishTransit(entry.id, this.materializedValues.get(entry.id));
     }
     for (const entry of this.decodedNodes) {
       if (entry.node.kind !== "externref") continue;
@@ -1459,17 +1468,20 @@ export class ForkReferenceTransaction {
     // dependency-ordered constructors, cycle break, then fills) and drives the
     // guest exports through its `call_indirect` drive table, publishing each
     // reconstructed identity into the same transit table the JS sub-loop would.
-    // Only run it when there is actually typed-drive work (struct/array/i31/exnref)
-    // so a funcref/externref-only fork stays on the untouched path and never asks
+    // Only run it when there is actually module-drive work: struct/array/i31/exnref
+    // (the typed allocate/fill/exn topological order) OR a static-root (the
+    // DRIVE_OP_STATIC_ROOT publish above is emitted first in the same plan). A
+    // funcref/externref/null-only fork stays on the untouched path and never asks
     // the module to build an empty plan.
     if (moduleDrive) {
-      const hasTypedDriveNode = this.decodedNodes.some(({ node }) =>
+      const hasModuleDriveNode = this.decodedNodes.some(({ node }) =>
         node.kind === "struct"
         || node.kind === "array"
         || node.kind === "i31"
         || node.kind === "exnref"
+        || node.kind === "static-root"
       );
-      if (hasTypedDriveNode) {
+      if (hasModuleDriveNode) {
         moduleDrive();
         this.typedMaterialized = true;
         return;

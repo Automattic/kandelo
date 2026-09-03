@@ -157,6 +157,18 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_gc_plan_count",
   "fm_drive_bump",
   "fm_drive_steps_executed",
+  // Static-root binder: admit static-root WasmGC graphs through the module. A
+  // DRIVE_OP_STATIC_ROOT drive step publishes each immutable static root into the
+  // anyref transit at slot `recipe + 1` via a wasm `table.get(static_root_catalog,
+  // fm_static_root_slot(recipe))` + `table.set(transit, recipe+1, v)`.
+  //  - `fm_static_root_slot` maps a recipe to its merged anyref-catalog index
+  //    (per-activation base + ordinal); the injected drive shim `table.get`s it.
+  //  - `fm_set_activation_static_root_base` seeds ONE activation's merged-catalog
+  //    base (the funcref merged-catalog mechanism, for static roots).
+  //  - `fm_static_roots_published` is the DRIVE proof-of-use counter.
+  "fm_static_root_slot",
+  "fm_set_activation_static_root_base",
+  "fm_static_roots_published",
 ] as const;
 
 export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
@@ -224,6 +236,20 @@ export interface InstantiateForkModuleOptions {
    */
   transitTable?: WebAssembly.Table;
   /**
+   * The merged, host-owned static-root catalog (`anyref`) the module's injected
+   * `fm_drive_execute` reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the
+   * static-root binder). The guest's own `__wpk_fork_static_root_catalog` is a
+   * one-shot harvest EXPORT the registry clears after instantiation, so the host
+   * passes a growable mirror here and populates it from the child's live static
+   * roots (`decodeStaticRoot`) at the fork's merged bases before the drive runs.
+   * When omitted (tests / forks with no static root) a fresh host-owned `anyref`
+   * table is minted through the ABI-43 Wasm-GC transit provider (JavaScript cannot
+   * build an `anyref` table directly on every engine); the module never reads it
+   * unless the host both populates it and drives a DRIVE_OP_STATIC_ROOT step, so an
+   * empty default is inert and flag-off byte-identical.
+   */
+  staticRootCatalog?: WebAssembly.Table;
+  /**
    * Real engine-floor `wpk_fork_host.*` import bodies (Phase 6 D6.2). The
    * co-resident module DECLARES the whole engine-floor seam
    * (`crates/fork-module/src/host_capabilities.rs`); its `WpkForkHost` routes
@@ -267,6 +293,13 @@ export interface ForkModuleInstance {
    * guest published.
    */
   transitTable: WebAssembly.Table;
+  /**
+   * The merged static-root catalog (`anyref`) the module's injected
+   * `fm_drive_execute` reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the
+   * static-root binder). The host populates this from the child's live static
+   * roots at the fork's merged bases before the drive runs.
+   */
+  staticRootCatalog: WebAssembly.Table;
 }
 
 /**
@@ -409,6 +442,15 @@ export function instantiateForkModule(
   // the guest exports into the drive table and calls `fm_drive_execute`.
   const transitTable =
     options.transitTable ?? new ForkAnyrefTransitTable().table;
+  // The merged static-root catalog (`anyref`) the module's injected
+  // `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT step (the static-root
+  // binder). Default to a fresh host-owned `anyref` table minted through the
+  // ABI-43 Wasm-GC transit provider (JavaScript cannot build an `anyref` table
+  // directly on every engine); the host grows + populates it from the child's live
+  // static roots before the drive runs. Inert until the host both populates it and
+  // drives a static-root step, so an empty default is flag-off byte-identical.
+  const staticRootCatalog =
+    options.staticRootCatalog ?? new ForkAnyrefTransitTable().table;
 
   // The module DECLARES the `wpk_fork_host.*` engine-floor seam imports (Phase 6
   // D6, `crates/fork-module/src/host_capabilities.rs`). For the externref path
@@ -429,6 +471,7 @@ export function instantiateForkModule(
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
       __wpk_fork_ref_gc_transit: transitTable,
+      __wpk_fork_static_root_catalog: staticRootCatalog,
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
       __stack_pointer: stackPointerGlobal,
@@ -466,5 +509,6 @@ export function instantiateForkModule(
     functionCatalog,
     driveTable,
     transitTable,
+    staticRootCatalog,
   };
 }

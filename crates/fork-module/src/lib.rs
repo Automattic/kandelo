@@ -476,6 +476,74 @@ mod wasm {
         ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) == 0
     }
 
+    // -- Per-activation static-root catalog bases (the static-root binder) ------
+    //
+    // Exactly the funcref merged-catalog mechanism, for static roots. The host
+    // lays every activation's instantiation-time static-root catalog into ONE
+    // merged imported anyref table (`env.__wpk_fork_static_root_catalog`), each
+    // activation at a distinct BASE, and seeds the `activation_id -> base` map
+    // once per worker via `fm_set_activation_static_root_base`.
+    // `static_root_slot_impl` then returns the GLOBAL catalog index
+    // `base(module_activation) + static_root_ordinal`, so a static root minted in
+    // activation A but held by activation B's frame resolves against A's catalog
+    // slice — the coordinate the RECIPE names, never the caller. The map stays
+    // EMPTY for a single-activation worker, and `static_root_slot_impl` then
+    // defaults `base = 0` — byte-identical to the raw-ordinal mapping.
+    const STATIC_ROOT_BASE_MAX_ACTS: usize = 64;
+
+    #[repr(C, align(4))]
+    struct ActStaticRootBase(UnsafeCell<[[u32; 2]; STATIC_ROOT_BASE_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActStaticRootBase {}
+    /// Each live entry is `[activation_id, base]`; only the first
+    /// `ACT_STATIC_ROOT_BASE_COUNT` entries are live.
+    static ACT_STATIC_ROOT_BASE: ActStaticRootBase =
+        ActStaticRootBase(UnsafeCell::new([[0u32; 2]; STATIC_ROOT_BASE_MAX_ACTS]));
+    static ACT_STATIC_ROOT_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_activation_static_root_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
+        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        if count >= STATIC_ROOT_BASE_MAX_ACTS {
+            return Err(Errno::E2BIG); // too many distinct activations
+        }
+        // Reject a re-seeded activation (each is seeded once per worker).
+        // SAFETY: single-threaded; the map is a static buffer read here only.
+        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id {
+                return Err(Errno::EINVAL);
+            }
+        }
+        // Publish the entry, then bump the count.
+        // SAFETY: single-threaded; `count < MAX_ACTS` by the check above.
+        let map = unsafe { &mut *ACT_STATIC_ROOT_BASE.0.get() };
+        map[count] = [activation_id, base];
+        ACT_STATIC_ROOT_BASE_COUNT.store((count + 1) as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The seeded merged-catalog base for `activation_id`, or `None` if the host
+    /// seeded no static-root base for it.
+    fn static_root_catalog_base(activation_id: u32) -> Option<u32> {
+        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives every borrow.
+        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id {
+                return Some(entry[1]);
+            }
+        }
+        None
+    }
+
+    /// True when the host seeded NO static-root base — the single-activation
+    /// worker path, where `static_root_slot_impl` defaults `base = 0`.
+    /// Distinguishes that path from a corrupt multi-activation graph whose static
+    /// root names an un-seeded activation.
+    fn static_root_catalog_base_map_empty() -> bool {
+        ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) == 0
+    }
+
     // -- Per-activation GC codec catalogs (Phase 6 item 3c — real drive plan) --
     //
     // The REAL topological GC drive plan (`fm_build_gc_plan`) reproduces the JS
@@ -722,6 +790,15 @@ mod wasm {
     // struct/array-reachable externref leaves are rooted by the same PHASE B
     // transit path. Never resets.
     static GC_NODES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
+
+    // Monotonic count of static roots the static-root binder has resolved for
+    // publish since worker start. Proof-of-use for the static-root DRIVE step: the
+    // injected `fm_drive_execute` shim calls `fm_static_root_slot` once per
+    // DRIVE_OP_STATIC_ROOT step to get the merged-catalog index it `table.get`s and
+    // publishes into the anyref transit, and that helper bumps this. A nonzero
+    // value after a flag-on static-root fork proves the module — not a silent JS
+    // `publishTransit` fallback — republished the immutable roots. Never resets.
+    static STATIC_ROOTS_PUBLISHED: AtomicU64 = AtomicU64::new(0);
 
     // The host identities the last `fm_begin_reference_replay` drive re-rooted
     // for this fork (the externref `HostRef`s + their owning generation). Held
@@ -2111,22 +2188,23 @@ mod wasm {
         let feed = ReferenceReplayFeed::new(&transaction);
         let driver = ReferenceReplayDriver::new(transaction);
 
-        // D6.4a gate (defense in depth; the host computes the same predicate,
-        // plus a GC-descriptor validity check only the host can see). Widened from
-        // D6.3a's null/funcref/externref/exnref to also admit typed GC (struct /
-        // array / i31). Admitting typed GC adds NO new engine-floor callback and
-        // moves NO drive-order into the module: the fork side module is
-        // instantiated BEFORE the guest exists, so it cannot import the guest's
-        // `_gc_allocate`/`_gc_fill` exports; the PROVEN JS drive-order keeps the
-        // topological allocate/fill walk plus cycle-breaking and aliases. The
-        // module's only GC job is leaf identity + transit rooting — PHASE B roots
-        // every struct/array-reachable externref leaf (`transit_rooted_recipes`
-        // already seeds from Struct/Array edges) with the R1 read-back assert, and
-        // i31 is a scalar leaf. Only static-root remains unadmitted (it needs
-        // `resolve_static_root` + a host static-root catalog seam not wired), so a
-        // static-root graph is a truthful `EOPNOTSUPP` that keeps the fork on the
-        // byte-identical JS reference path.
-        if !driver.all_nodes_gc_exnref_externref_funcref_or_null() {
+        // Module-admissibility gate (defense in depth; the host computes the same
+        // predicate, plus a GC-descriptor validity check only the host can see).
+        // Admits null/funcref/externref/exnref, typed GC (struct / array / i31),
+        // and static-root — the whole reference kind set the module reconstructs.
+        // Admitting typed GC adds NO new engine-floor callback and moves NO
+        // drive-order into the module: the fork side module is instantiated BEFORE
+        // the guest exists, so it cannot import the guest's `_gc_allocate`/
+        // `_gc_fill` exports; the PROVEN JS drive-order (reproduced by
+        // `build_drive_plan`) keeps the topological allocate/fill walk plus
+        // cycle-breaking and aliases. The module's only GC job is leaf identity +
+        // transit rooting — PHASE B roots every struct/array-reachable externref
+        // leaf (`transit_rooted_recipes` seeds from Struct/Array edges) with the R1
+        // read-back assert, and i31 is a scalar leaf. A static-root is published
+        // into the anyref transit by a DRIVE_OP_STATIC_ROOT step (`table.get`
+        // catalog + `table.set` transit, both wasm) — no host seam. An unadmitted
+        // kind is a truthful `EOPNOTSUPP` that keeps the fork on the JS path.
+        if !driver.all_nodes_module_admissible() {
             return Err(Errno::EOPNOTSUPP);
         }
         // Phase 6 D7a.1b: funcrefs may now span MULTIPLE activations — each
@@ -2140,6 +2218,19 @@ mod wasm {
         if !func_catalog_base_map_empty() {
             for activation_id in driver.funcref_activations() {
                 if func_catalog_base(activation_id).is_none() {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+            }
+        }
+        // Static-root binder: every static-root activation must have a seeded
+        // merged-catalog base UNLESS the host seeded none at all (a
+        // single-activation worker keeps the byte-identical base-0 mapping). A
+        // static-root naming an un-seeded activation in a multi-activation worker
+        // is a truthful `EOPNOTSUPP` (the host keeps that fork on the JS reference
+        // path), never a silent read against the wrong catalog slice.
+        if !static_root_catalog_base_map_empty() {
+            for activation_id in driver.static_root_activations() {
+                if static_root_catalog_base(activation_id).is_none() {
                     return Err(Errno::EOPNOTSUPP);
                 }
             }
@@ -2342,6 +2433,52 @@ mod wasm {
             // Out-of-range recipe or a kind D6.1 does not admit: the host gate
             // should have kept this fork on JS, so reaching here is corruption.
             Err(_) => wasm_intr::unreachable(),
+        }
+    }
+
+    /// Resolve a static-root recipe id to a merged anyref-catalog index for the
+    /// injected drive shim (the static-root binder). Returns a NON-NEGATIVE global
+    /// slot `base(module_activation) + static_root_ordinal` for the shim to
+    /// `table.get(static_root_catalog)` and publish into the transit, and TRAPS on
+    /// any inconsistency (missing reference state, out-of-range recipe, a
+    /// non-static-root kind, an un-seeded activation in a multi-activation worker,
+    /// or a slot that does not fit `i32`). Every success bumps
+    /// `STATIC_ROOTS_PUBLISHED`. Mirrors `funcref_ordinal_impl`.
+    fn static_root_slot_impl(recipe_id: u32) -> i32 {
+        let driver = match reference_state().as_ref() {
+            Some(driver) => driver,
+            None => wasm_intr::unreachable(),
+        };
+        let target = match driver.static_root_node(recipe_id) {
+            Ok(target) => target,
+            // Out-of-range recipe or a non-static-root kind: the host gate should
+            // have kept this off the static-root step, so reaching here is
+            // corruption, never a value.
+            Err(_) => wasm_intr::unreachable(),
+        };
+        // Merged-catalog GLOBAL slot: `base(module_activation) +
+        // static_root_ordinal`. The base map is EMPTY for a single-activation
+        // worker, so `base` defaults to 0 (byte-identical raw-ordinal mapping). A
+        // NON-empty map missing this static root's activation is corruption — the
+        // host gate seeds a base for every static-root activation before replay —
+        // so it TRAPS rather than read slot 0 / the wrong activation's catalog.
+        let base = match static_root_catalog_base(target.module_activation) {
+            Some(base) => base,
+            None if static_root_catalog_base_map_empty() => 0,
+            None => wasm_intr::unreachable(),
+        };
+        let slot = match base.checked_add(target.static_root_ordinal) {
+            Some(slot) => slot,
+            None => wasm_intr::unreachable(),
+        };
+        match i32::try_from(slot) {
+            Ok(index) if index >= 0 => {
+                STATIC_ROOTS_PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                index
+            }
+            // A global slot that does not fit a non-negative i32 cannot index the
+            // imported anyref catalog table — a corrupt graph, not a value.
+            _ => wasm_intr::unreachable(),
         }
     }
 
@@ -2898,6 +3035,26 @@ mod wasm {
         }
     }
 
+    /// Seed ONE activation's static-root catalog BASE for this worker (the
+    /// static-root binder — the funcref merged-catalog mechanism, for static
+    /// roots): the host lays every activation's instantiation-time static-root
+    /// catalog into ONE merged `env.__wpk_fork_static_root_catalog` anyref table,
+    /// with `activation_id`'s catalog occupying slots `[base, base + len)`.
+    /// `fm_static_root_slot` then returns the GLOBAL slot
+    /// `base(module_activation) + static_root_ordinal` for the injected drive shim
+    /// to `table.get`. Called ONCE per activation per worker, before any fork
+    /// drives reference reconstruction. A SINGLE-activation worker seeds no base at
+    /// all; `fm_static_root_slot` then defaults `base = 0`. Too many activations
+    /// fail with `E2BIG`; a re-seeded activation fails with `EINVAL` (check
+    /// `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_static_root_base(activation_id: u32, base: u32) {
+        match set_activation_static_root_base_impl(activation_id, base) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     /// Seed ONE activation's raw `kandelo.wpk_fork.gc_codec` section bytes for this
     /// worker (Phase 6 item 3c — the real GC drive plan). `ptr`/`byte_len` point at
     /// the section bytes the host wrote into guest memory; the module copies them
@@ -2982,6 +3139,18 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_funcref_ordinal(recipe_id: u32) -> i32 {
         funcref_ordinal_impl(recipe_id)
+    }
+
+    /// Resolve a static-root recipe id to a merged anyref-catalog index (the
+    /// static-root binder). This is NOT a guest-facing import: it is the helper the
+    /// injected `fm_drive_execute` shim calls on a DRIVE_OP_STATIC_ROOT step to get
+    /// the index it `table.get`s on the imported `env.__wpk_fork_static_root_catalog`
+    /// table (an anyref a Rust function cannot itself return) before publishing the
+    /// value into the transit at slot `recipe + 1`. Returns a non-negative catalog
+    /// index and TRAPS on any inconsistency. See `static_root_slot_impl`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_static_root_slot(recipe_id: u32) -> i32 {
+        static_root_slot_impl(recipe_id)
     }
 
     // -- Reference RESTORE data-feed exports (Phase 6 item 3a) ---------------
@@ -3136,6 +3305,17 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_nodes_reconstructed() -> i64 {
         GC_NODES_RECONSTRUCTED.load(Ordering::Relaxed) as i64
+    }
+
+    /// Monotonic count of static roots the static-root binder has resolved for
+    /// publish since worker start. Proof-of-use for the static-root DRIVE step:
+    /// after a flag-on static-root fork, the injected shim published every
+    /// immutable root into the anyref transit through `fm_static_root_slot`
+    /// (`table.get` catalog + `table.set` transit), and this has advanced; a silent
+    /// JS `publishTransit` fallback leaves it unchanged. Never resets.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_static_roots_published() -> i64 {
+        STATIC_ROOTS_PUBLISHED.load(Ordering::Relaxed) as i64
     }
 
     // -- GC drive-shim exports (Phase 6 item 3b) -----------------------------

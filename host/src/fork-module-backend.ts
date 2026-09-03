@@ -513,6 +513,24 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Seed ONE activation's static-root catalog BASE for this worker (the
+   * static-root binder — the funcref merged-catalog mechanism, for static roots).
+   * Called once per activation, before any fork drives reference reconstruction.
+   * The host lays every activation's instantiation-time static-root catalog into
+   * ONE merged `env.__wpk_fork_static_root_catalog` anyref table (activation
+   * `activationId`'s catalog at slots `[base, base + len)`); the module's
+   * `fm_static_root_slot` then returns the global index `base(module_activation) +
+   * static_root_ordinal` the injected drive shim `table.get`s. A single-activation
+   * fork seeds NO base (the module defaults `base = 0`, byte-identical to the
+   * raw-ordinal mapping).
+   */
+  setActivationStaticRootBase(activationId: number, base: number): void {
+    this.requireSetup("set activation static-root base");
+    this.exports.fm_set_activation_static_root_base(activationId, base);
+    this.requireOk("fm_set_activation_static_root_base");
+  }
+
+  /**
    * Parent: add a dlopen fork's SIDE activation to the capture begun by
    * `beginUnwind`. Reserves ITS own host frame arena and calls
    * `fm_add_activation_unwind(act, base, len, fixedPrefix)`. Returns the

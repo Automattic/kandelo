@@ -60,6 +60,17 @@ pub const DRIVE_OP_FILL: u32 = 1;
 /// `ReferenceReplayDriver::drive_reconstruction` PHASE B). Mirrors the JS
 /// `materializeException` -> `exceptions.materialize(recipeId)` call.
 pub const DRIVE_OP_EXN: u32 = 2;
+/// `op` value: publish an immutable static-root reference into the anyref transit
+/// (the static-root binder). UNLIKE ALLOC/FILL/EXN this drives NO guest export
+/// and uses NO drive-table slot (`slot` is 0/unused): the injected shim reads the
+/// merged static-root catalog with `table.get(static_root_catalog, fm_static_
+/// root_slot(recipe))` and publishes it with `table.set(transit, recipe + 1, v)`,
+/// both wasm. `recipe` names the transit slot (`recipe + 1`); the catalog index is
+/// computed in the module (per-activation base + ordinal) so it is not carried in
+/// the step. Emitted FIRST (before any allocate/fill) so an immutable constructor
+/// or a `_gc_fill` edge sees the activation's canonical static-root identity —
+/// mirroring the JS `materializeTypedGraph` static-root publish (phase 2).
+pub const DRIVE_OP_STATIC_ROOT: u32 = 3;
 
 /// Drive-table slots reserved per activation: one ALLOC + one FILL + one EXN.
 /// Each activation `a` binds its `_gc_allocate` at `base(a)+DRIVE_OP_ALLOC`, its
@@ -244,9 +255,12 @@ impl<'a, H: DrivePlanHints> PlanWalk<'a, H> {
 
     /// Mirror the JS `ensureIdentity`: dispatch by kind. Only the typed-GC
     /// (allocate) and exnref (materialize) arms issue a guest drive step; null /
-    /// funcref / static-root / externref are reconstructed OUTSIDE the drive (the
-    /// funcref shim, the still-JS static-root path, and the Rust
-    /// `drive_reconstruction` externref/transit phases), so they emit nothing.
+    /// funcref / static-root / externref emit nothing HERE. They are reconstructed
+    /// outside the allocate/fill walk: the funcref shim, the Rust
+    /// `drive_reconstruction` externref/transit phases, and — for a static root —
+    /// the DRIVE_OP_STATIC_ROOT step emitted in Phase 0 (before this walk), so the
+    /// static root is already published into the transit by the time an edge reads
+    /// it, exactly as the JS `materializeTypedGraph` publishes it first.
     fn ensure_identity(&mut self, recipe_id: u32) -> Result<(), Errno> {
         match self.node(recipe_id)? {
             ReferenceRecipeNode::Null
@@ -371,6 +385,25 @@ pub fn build_drive_plan<H: DrivePlanHints>(
         visiting: BTreeSet::new(),
         steps: Vec::new(),
     };
+
+    // Phase 0 — static-root publish (id order): the static-root binder publishes
+    // every immutable static root into the anyref transit at slot `recipe + 1`
+    // BEFORE any allocate/fill, so an immutable constructor or a `_gc_fill` edge
+    // that names a static root reads the activation's canonical identity. Mirrors
+    // the JS `materializeTypedGraph` static-root publish (phase 2, before the
+    // allocate walk). A DRIVE_OP_STATIC_ROOT step drives no guest export (slot 0)
+    // and takes no dependency walk — the identity already exists in the guest's
+    // fresh instance; the shim only re-roots it in the transit.
+    for entry in nodes {
+        if matches!(entry.node, ReferenceRecipeNode::StaticRoot { .. }) {
+            walk.steps.push(DriveStep {
+                op: DRIVE_OP_STATIC_ROOT,
+                slot: 0,
+                recipe: entry.id,
+                arg: 0,
+            });
+        }
+    }
 
     // Phase 3 — defaultable-shell pre-allocate (id order, no dependency walk).
     for entry in nodes {
@@ -560,6 +593,53 @@ mod tests {
         );
         // arg mirrors the recipe id for every step.
         assert!(plan.iter().all(|s| s.arg == s.recipe));
+    }
+
+    #[test]
+    fn static_root_steps_are_emitted_first_before_any_allocate() {
+        // A struct(0) whose field is a static root(1). The static-root publish MUST
+        // precede the struct allocate/fill so an immutable constructor / fill edge
+        // reads the activation's canonical static-root identity from the transit.
+        let nodes = vec![
+            struct_node(0, 0, vec![1]),
+            entry(
+                1,
+                ReferenceRecipeNode::StaticRoot {
+                    module_activation: 0,
+                    static_root_ordinal: 7,
+                },
+            ),
+        ];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert_eq!(
+            plan.iter().map(triple).collect::<Vec<_>>(),
+            vec![
+                // Phase 0: static-root publish (slot 0, no drive-table slot).
+                (DRIVE_OP_STATIC_ROOT, 0, 1),
+                // Then the struct allocate + fill.
+                (DRIVE_OP_ALLOC, drive_table_base(0) + DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_FILL, drive_table_base(0) + DRIVE_OP_FILL, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn static_root_only_graph_emits_just_the_publish_step() {
+        // A lone static root (a captured local holds it directly, no aggregate):
+        // one DRIVE_OP_STATIC_ROOT step, nothing else. `recipe` names the transit
+        // slot (recipe + 1); `slot`/`arg` are unused for a static-root step.
+        let nodes = vec![entry(
+            0,
+            ReferenceRecipeNode::StaticRoot {
+                module_activation: 2,
+                static_root_ordinal: 0,
+            },
+        )];
+        let plan = build_drive_plan(&nodes, &MockHints::default()).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].op, DRIVE_OP_STATIC_ROOT);
+        assert_eq!(plan[0].recipe, 0);
+        assert_eq!(plan[0].slot, 0);
     }
 
     #[test]

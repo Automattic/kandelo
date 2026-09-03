@@ -74,8 +74,22 @@ const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
 /// table object to both the guest and this module.
 const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 
+/// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
+/// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
+/// The guest's own `__wpk_fork_static_root_catalog` is a harvest EXPORT cleared
+/// after instantiation, so the host supplies a growable mirror populated from the
+/// child's live static roots (`decodeStaticRoot`) and bound to this import; the
+/// shim `table.get`s the slot `fm_static_root_slot` returns and publishes the
+/// value into the transit at `recipe + 1`. Imported (initial size 0; the host
+/// grows it to the fork's merged catalog).
+const STATIC_ROOT_CATALOG_IMPORT: &str = "__wpk_fork_static_root_catalog";
+/// The Rust helper the shim calls to map a DRIVE_OP_STATIC_ROOT recipe to its
+/// merged anyref-catalog index (per-activation base + ordinal). Exported by
+/// `crates/fork-module/src/lib.rs`; traps on any inconsistency.
+const STATIC_ROOT_SLOT_HELPER_EXPORT: &str = "fm_static_root_slot";
+
 // Serialized drive-step layout — MUST match `fork_codec::drive_plan`
-// (`DRIVE_STEP_SIZE`, `DRIVE_STEP_OFF_*`, `DRIVE_OP_ALLOC`). Four little-endian
+// (`DRIVE_STEP_SIZE`, `DRIVE_STEP_OFF_*`, `DRIVE_OP_*`). Four little-endian
 // u32 fields per 16-byte step.
 const DRIVE_STEP_SIZE: i32 = 16;
 const DRIVE_STEP_OFF_OP: u64 = 0;
@@ -83,6 +97,9 @@ const DRIVE_STEP_OFF_SLOT: u64 = 4;
 const DRIVE_STEP_OFF_RECIPE: u64 = 8;
 const DRIVE_STEP_OFF_ARG: u64 = 12;
 const DRIVE_OP_ALLOC: i32 = 0;
+/// op == publish an immutable static root into the anyref transit (the
+/// static-root binder). MUST match `fork_codec::drive_plan::DRIVE_OP_STATIC_ROOT`.
+const DRIVE_OP_STATIC_ROOT: i32 = 3;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
 /// ordinal (or the null sentinel). Exported by `crates/fork-module/src/lib.rs`.
@@ -230,6 +247,20 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
         _ => bail!("{DRIVE_BUMP_HELPER_EXPORT} export is not a function"),
     };
 
+    // Locate the Rust static-root slot helper the shim `call`s on a
+    // DRIVE_OP_STATIC_ROOT step to map a recipe to its merged anyref-catalog index
+    // (the static-root binder). Rust owns the recipe decode + per-activation base;
+    // the injected shim owns the `table.get`/`table.set` a Rust anyref cannot hold.
+    let slot_helper = module
+        .exports
+        .iter()
+        .find(|export| export.name == STATIC_ROOT_SLOT_HELPER_EXPORT)
+        .ok_or_else(|| anyhow!("module does not export {STATIC_ROOT_SLOT_HELPER_EXPORT}"))?;
+    let slot_helper_fn = match slot_helper.item {
+        ExportItem::Function(id) => id,
+        _ => bail!("{STATIC_ROOT_SLOT_HELPER_EXPORT} export is not a function"),
+    };
+
     // The guest's single (imported) linear memory the plan bytes live in.
     let memory = module
         .memories
@@ -269,6 +300,18 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
         RefType::ANYREF,
     );
 
+    // The merged, host-owned static-root catalog (`anyref`) the shim reads with
+    // `table.get` on a DRIVE_OP_STATIC_ROOT step. Initial size 0; the host grows
+    // + populates it from the child's live static roots before the drive runs.
+    let (static_root_catalog, _static_root_import_id) = module.add_import_table(
+        IMPORT_MODULE,
+        STATIC_ROOT_CATALOG_IMPORT,
+        false,
+        0,
+        None,
+        RefType::ANYREF,
+    );
+
     // The guest `_gc_allocate`/`_gc_fill` signature the shim `call_indirect`s:
     // `(i32) -> ()` (see `WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE` in abi.ts).
     let indirect_ty = module.types.add(&[ValType::I32], &[]);
@@ -280,6 +323,9 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     let i = module.locals.add(ValType::I32);
     let step = module.locals.add(ptr_ty);
     let op = module.locals.add(ValType::I32);
+    // Holds the static-root `anyref` between `table.get(catalog)` and the
+    // null-check / `table.set(transit)` on a DRIVE_OP_STATIC_ROOT step.
+    let sr_val = module.locals.add(ValType::Ref(RefType::ANYREF));
 
     let mut loop_body = builder.dangling_instr_seq(None);
     let loop_id = loop_body.id();
@@ -322,31 +368,45 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                         MemArg { align: 4, offset: DRIVE_STEP_OFF_OP },
                     )
                     .local_set(op);
-                // call_indirect guest[slot](arg): push arg, then slot.
-                work.local_get(step)
-                    .load(
-                        memory,
-                        LoadKind::I32 { atomic: false },
-                        MemArg { align: 4, offset: DRIVE_STEP_OFF_ARG },
-                    )
-                    .local_get(step)
-                    .load(
-                        memory,
-                        LoadKind::I32 { atomic: false },
-                        MemArg { align: 4, offset: DRIVE_STEP_OFF_SLOT },
-                    )
-                    .instr(CallIndirect { ty: indirect_ty, table: drive_table });
-                // if op == DRIVE_OP_ALLOC: assert the guest published a live GC
-                // object into STORE #2 at slot `recipe + 1`.
-                //   if (ref.is_null (table.get $transit (recipe + 1))) unreachable
+                // Branch on the step op: a DRIVE_OP_STATIC_ROOT step drives NO
+                // guest export — it is the static-root binder, a pure `table.get`
+                // catalog + `table.set` transit. Every other op drives a guest
+                // export via `call_indirect` on the host-bound drive table.
+                //   if op == DRIVE_OP_STATIC_ROOT { static-root publish }
+                //   else { call_indirect; if op == ALLOC { store-#2 assert } }
                 // Table indices are i32 regardless of guest pointer width, so the
                 // `recipe + 1` index math stays i32 on both wasm32 and wasm64.
-                work.local_get(op).i32_const(DRIVE_OP_ALLOC).binop(BinaryOp::I32Eq);
+                work.local_get(op)
+                    .i32_const(DRIVE_OP_STATIC_ROOT)
+                    .binop(BinaryOp::I32Eq);
                 work.if_else(
                     None,
-                    |alloc| {
-                        alloc
-                            .local_get(step)
+                    // STATIC_ROOT: publish the immutable static root into the anyref
+                    // transit at slot `recipe + 1`.
+                    //   sr_val = table.get(catalog, fm_static_root_slot(recipe))
+                    //   if (ref.is_null sr_val) unreachable   ;; missing = corruption
+                    //   table.set(transit, recipe + 1, sr_val)
+                    |sr| {
+                        sr.local_get(step)
+                            .load(
+                                memory,
+                                LoadKind::I32 { atomic: false },
+                                MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
+                            )
+                            .call(slot_helper_fn)
+                            .table_get(static_root_catalog)
+                            .local_set(sr_val);
+                        // Null slot: the host mirror never held this static root —
+                        // real corruption, trap truthfully rather than publish null.
+                        sr.local_get(sr_val).ref_is_null().if_else(
+                            None,
+                            |missing| {
+                                missing.unreachable();
+                            },
+                            |_| {},
+                        );
+                        // table.set(transit, recipe + 1, sr_val): push index, value.
+                        sr.local_get(step)
                             .load(
                                 memory,
                                 LoadKind::I32 { atomic: false },
@@ -354,19 +414,58 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                             )
                             .i32_const(1)
                             .binop(BinaryOp::I32Add)
-                            .table_get(transit_table)
-                            .ref_is_null()
-                            .if_else(
-                                None,
-                                // Null slot: the guest never published this
-                                // aggregate — real GC corruption, trap truthfully.
-                                |missing| {
-                                    missing.unreachable();
-                                },
-                                |_| {},
-                            );
+                            .local_get(sr_val)
+                            .table_set(transit_table);
                     },
-                    |_| {},
+                    // Non-static-root: call_indirect guest[slot](arg), then (if
+                    // ALLOC) assert the guest published a live GC object into STORE
+                    // #2 at slot `recipe + 1`.
+                    |drive| {
+                        // call_indirect guest[slot](arg): push arg, then slot.
+                        drive
+                            .local_get(step)
+                            .load(
+                                memory,
+                                LoadKind::I32 { atomic: false },
+                                MemArg { align: 4, offset: DRIVE_STEP_OFF_ARG },
+                            )
+                            .local_get(step)
+                            .load(
+                                memory,
+                                LoadKind::I32 { atomic: false },
+                                MemArg { align: 4, offset: DRIVE_STEP_OFF_SLOT },
+                            )
+                            .instr(CallIndirect { ty: indirect_ty, table: drive_table });
+                        // if op == DRIVE_OP_ALLOC: assert the guest published a live
+                        // GC object into STORE #2 at slot `recipe + 1`.
+                        drive.local_get(op).i32_const(DRIVE_OP_ALLOC).binop(BinaryOp::I32Eq);
+                        drive.if_else(
+                            None,
+                            |alloc| {
+                                alloc
+                                    .local_get(step)
+                                    .load(
+                                        memory,
+                                        LoadKind::I32 { atomic: false },
+                                        MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
+                                    )
+                                    .i32_const(1)
+                                    .binop(BinaryOp::I32Add)
+                                    .table_get(transit_table)
+                                    .ref_is_null()
+                                    .if_else(
+                                        None,
+                                        // Null slot: the guest never published this
+                                        // aggregate — real GC corruption, trap.
+                                        |missing| {
+                                            missing.unreachable();
+                                        },
+                                        |_| {},
+                                    );
+                            },
+                            |_| {},
+                        );
+                    },
                 );
                 // i += 1; br $lp
                 work.local_get(i)
@@ -403,7 +502,7 @@ fn main() -> Result<()> {
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
          {DRIVE_EXECUTE_EXPORT} + imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, \
-         {DRIVE_TABLE_IMPORT}, {TRANSIT_TABLE_IMPORT}}})",
+         {DRIVE_TABLE_IMPORT}, {TRANSIT_TABLE_IMPORT}, {STATIC_ROOT_CATALOG_IMPORT}}})",
         out_bytes.len()
     );
     Ok(())
