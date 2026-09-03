@@ -3492,10 +3492,12 @@ export async function centralizedWorkerMain(
       // every activation's `__wpk_fork_ref_gc_transit` import via the registry
       // below) AND the object the co-resident fork-module's injected
       // `fm_drive_execute` reads back after each ALLOC step, so the drive's
-      // post-allocate integrity check sees what the guest published. Created here,
-      // before the fork-module is instantiated (which happens before the registry),
-      // and handed to both.
-      const forkGcTransit = new ForkAnyrefTransitTable();
+      // post-allocate integrity check sees what the guest published. On flag-on
+      // this WRAPS the fork-module's own exported table (assigned below, once the
+      // module exists) so all three parties — guest import, module export, and
+      // this host seam — share one object; on flag-off (no fork-module) it mints
+      // its own table, exactly as before.
+      let forkGcTransit: ForkAnyrefTransitTable;
       // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
       // externref side table + broker token materialization). Null when the
       // fork-module is not instantiated (flag-off / borrowed child).
@@ -3604,10 +3606,14 @@ export async function centralizedWorkerMain(
             continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
           label: `pid=${pid}: fork-module`,
           hostCapabilities: forkModuleHostCapabilities.imports,
-          // STORE #2: the same transit table the registry binds to the guest, so
-          // the module's drive integrity check reads what the guest published.
-          transitTable: forkGcTransit.table,
         });
+        // STORE #2: wrap the fork-module's OWN exported transit table so the
+        // registry binds the guest's `__wpk_fork_ref_gc_transit` import (and this
+        // host's `host_transit_publish`/`host_transit_read` seam) to the exact
+        // same table the module's drive integrity check reads after each ALLOC
+        // step. Before this, a distinct table was minted here and handed to the
+        // registry while the module used its own — a mismatch on flag-on.
+        forkGcTransit = new ForkAnyrefTransitTable(forkModuleInstance.gcTransitTable);
         if (borrowedForkChild) {
           // Remember the ON-DEMAND region so the child releases it when its one
           // borrowed replay finishes (channel-munmap; see after `finishReplay`).
@@ -3703,6 +3709,10 @@ export async function centralizedWorkerMain(
             forkModuleInstance.exports,
           );
         }
+      } else {
+        // Flag-off: no fork-module exists to own a table, so mint one here,
+        // exactly as before this change.
+        forkGcTransit = new ForkAnyrefTransitTable();
       }
       // Phase 6 item 3a (minimize host surface): the RESTORE data-feed FLIP. When
       // a child's whole reference graph is admitted through the module
