@@ -1061,7 +1061,6 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     //   $unwind_save:
     //     Block($POST_0),
     //     <replay pure i32/f64 constants>, Call,
-    //     GlobalGet, Const, Binop, IfElse,
     //     Return
     //   $POST_0:
     //     Block($dispatch_normal),
@@ -1071,7 +1070,11 @@ fn call_with_pure_args_replays_tail_without_spill_locals() {
     // replaying the pure tail here preserves the call arguments without
     // adding frame-backed arg locals.
     let lexical = sequences_with_direct_call(&module, "caller_with_args", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "one lexical call serves both NORMAL and direct-activation replay",
+    );
     assert!(
         lexical
             .iter()
@@ -1102,7 +1105,11 @@ fn call_with_non_pure_arg_falls_back_to_spill_local() {
     let caller = func_by_name(&module, "caller_with_load_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_load_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "one lexical call serves both NORMAL and direct-activation replay",
+    );
     assert!(
         lexical
             .iter()
@@ -1132,7 +1139,11 @@ fn call_with_i64_shift_arg_replays_shift_tail() {
     let caller = func_by_name(&module, "caller_with_i64_shift_arg");
     let unwind_save = protected_unwind_body_seq(&module, caller);
     let lexical = sequences_with_direct_call(&module, "caller_with_i64_shift_arg", "leaf");
-    assert_eq!(lexical.len(), 2, "NORMAL and direct-replay lexical calls");
+    assert_eq!(
+        lexical.len(),
+        1,
+        "one lexical call serves both NORMAL and direct-activation replay",
+    );
     assert!(lexical.iter().all(|kinds| {
         kinds
             == &vec![

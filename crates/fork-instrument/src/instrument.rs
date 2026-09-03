@@ -953,6 +953,26 @@ struct CatchStateLocals {
     catch_selector: LocalId,
 }
 
+/// From this many fork-path call sites on, a function routes every caught
+/// unwind edge through one shared handler instead of a per-site boundary.
+/// Below the threshold, per-site boundaries keep the zero-extra-local shape
+/// that preserves recursion depth (PR #713); at or above it, one selector
+/// local replaces roughly fifteen boundary instructions per call site —
+/// the term that pushed call-heavy Qt functions past what TurboFan's
+/// register allocator can compile.
+const SHARED_UNWIND_BOUNDARY_MIN_CALLS: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
+struct SharedUnwindBoundary {
+    /// Written with the static call index immediately before every routed
+    /// call; read once by the shared handler after a caught unwind edge.
+    selector: LocalId,
+    /// The block wrapping the whole dispatch cascade. Every per-site
+    /// `try_table` catches the private unwind tag to this label, landing on
+    /// the shared frame-select handler emitted right after the block.
+    catch_target: InstrSeqId,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AbortDispatch {
     /// Partial allocation failure branches back to the dispatch loop after
@@ -966,6 +986,10 @@ struct AbortDispatch {
     /// Cold module helper which reserves/selects the frame and writes the
     /// statically supplied call index, returning one on reservation success.
     frame_select: FunctionId,
+    /// Present when the function uses the shared unwind boundary; per-site
+    /// emitters then set the selector and catch to the shared label instead
+    /// of emitting their own boundary blocks and handler.
+    shared: Option<SharedUnwindBoundary>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1139,6 +1163,8 @@ fn instrument_one_function_switch(
     assert_reference_call_alignment(reference_analysis, &call_sites);
 
     // Allocate per-function synthetic locals.
+    let shared_selector =
+        (n_calls >= SHARED_UNWIND_BOUNDARY_MIN_CALLS).then(|| module.locals.add(ValType::I32));
     let catch_state_locals = if catch_plan.is_empty() && plain_catches.is_empty() {
         None
     } else {
@@ -1158,16 +1184,11 @@ fn instrument_one_function_switch(
             plan_call_arg_materialization(module, &chunks[site_idx], arg_types)
         })
         .collect();
-    let arg_materializations: Vec<CallArgMaterialization> = pending_arg_materializations
-        .into_iter()
-        .map(|pending| allocate_call_arg_materialization(module, pending))
-        .collect();
-    for (site_idx, materialization) in arg_materializations.iter().enumerate() {
-        truncate_materialized_tail(&mut chunks[site_idx], materialization.tail_len());
-    }
 
     // Sub-commit 2.4c: per-call operand-stack carryovers (computed
-    // pre-take, see above). Allocate spill locals for each.
+    // pre-take, see above). Spill locals come from the shared pool,
+    // with each site's args and carryovers drawn from one begin_site
+    // window so they never collide within the site.
     // Length mismatch or None falls back to per-call empty carryovers
     // — matches pre-2.4c switch-dispatch behavior for the no-carryover
     // case. The dispatch decision in `instrument_one_function` only
@@ -1177,21 +1198,49 @@ fn instrument_one_function_switch(
         Some(v) if v.len() == n_calls => v,
         _ => vec![Vec::new(); n_calls],
     };
+    let mut spill_pool = SpillLocalPool::default();
+    let mut arg_materializations: Vec<CallArgMaterialization> = Vec::with_capacity(n_calls);
     let mut carryover_spills: Vec<Vec<TypedSpillLocal>> = Vec::with_capacity(n_calls);
-    for site_carryovers in &carryover_types {
+    for (pending, site_carryovers) in pending_arg_materializations
+        .into_iter()
+        .zip(&carryover_types)
+    {
+        spill_pool.begin_site();
+        arg_materializations.push(allocate_call_arg_materialization(
+            module,
+            &mut spill_pool,
+            pending,
+        ));
         let spills: Vec<TypedSpillLocal> = site_carryovers
             .iter()
-            .map(|&ty| (module.locals.add(spill_storage_type(ty)), ty))
+            .map(|&ty| (spill_pool.take(module, ty), ty))
             .collect();
         carryover_spills.push(spills);
+    }
+    for (site_idx, materialization) in arg_materializations.iter().enumerate() {
+        truncate_materialized_tail(&mut chunks[site_idx], materialization.tail_len());
     }
 
     let plain_catch_state = allocate_plain_catch_state(module, plain_catches);
 
-    // Combined scalar locals for the frame (user locals first, then
+    // Combined scalar locals for the frame (live user locals first, then
     // frame-backed per-call arg spills in call order, then per-call
     // carryover spills in call order — added 2.4c).
-    let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
+    let mut pure_replay_locals = HashSet::new();
+    for materialization in &arg_materializations {
+        let CallArgMaterialization::PureTail { tail, .. } = materialization else {
+            continue;
+        };
+        pure_tail_scalar_locals(module, tail, &mut pure_replay_locals);
+    }
+    let saved_scalars =
+        plan_saved_scalar_locals(module, func_id, reference_analysis, pure_replay_locals);
+    let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals
+        .iter()
+        .copied()
+        .filter(|(lid, _)| saved_scalars.contains(lid))
+        .collect();
+    let mut seen_spills: HashSet<LocalId> = HashSet::new();
     for (site_idx, cs) in call_sites.iter().enumerate() {
         let arg_types = call_arg_types(module, cs);
         for (&lid, &ty) in arg_materializations[site_idx]
@@ -1199,14 +1248,14 @@ fn instrument_one_function_switch(
             .iter()
             .zip(arg_types.iter())
         {
-            if is_scalar(ty) {
+            if is_scalar(ty) && seen_spills.insert(lid) {
                 frame_scalars.push((lid, ty));
             }
         }
     }
     for spills in &carryover_spills {
         for &(lid, ty) in spills {
-            if is_scalar(ty) {
+            if is_scalar(ty) && seen_spills.insert(lid) {
                 frame_scalars.push((lid, ty));
             }
         }
@@ -1284,9 +1333,17 @@ fn instrument_one_function_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let shared_boundary = shared_selector.map(|selector| SharedUnwindBoundary {
+        selector,
+        catch_target: local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id(),
+    });
     let abort = AbortDispatch {
         restart_loop,
         frame_select: unwind_frame_select,
+        shared: shared_boundary,
     };
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
@@ -1322,8 +1379,10 @@ fn instrument_one_function_switch(
         frame_size,
     );
 
+    let cascade_seq = shared_boundary.map_or(unwind_save, |shared| shared.catch_target);
     populate_dispatch_structure(
         local,
+        cascade_seq,
         unwind_save,
         &post_seqs,
         &chunks,
@@ -1338,6 +1397,15 @@ fn instrument_one_function_switch(
         catch_state_locals,
         abort,
     );
+    if let Some(shared) = shared_boundary {
+        push_instr(
+            &mut local.block_mut(unwind_save).instrs,
+            Instr::Block(Block {
+                seq: shared.catch_target,
+            }),
+        );
+        emit_shared_unwind_handler(local, unwind_save, ptr_ty, frame_size, shared, abort);
+    }
 
     // Postamble lives outside $unwind_save, in the entry block, right
     // after the Block($unwind_save) instruction. It commits this
@@ -2589,15 +2657,48 @@ fn plan_call_arg_materialization(
     }
 }
 
+/// One pool of spill locals shared by every fork-path call landing in a
+/// function. A landing's arg/carryover spills are written at its own chunk
+/// tail and read back at its own post-call landing; the window in between
+/// only executes the callee, so two landings' spill windows never overlap
+/// inside one activation. The pool therefore hands the same locals to every
+/// landing, keyed by storage type and per-landing ordinal. This bounds the
+/// instrument-added locals — and their frame bytes and save/restore code —
+/// by the widest single landing instead of the landing count.
+#[derive(Default)]
+struct SpillLocalPool {
+    slots: HashMap<ValType, Vec<LocalId>>,
+    site_counts: HashMap<ValType, usize>,
+}
+
+impl SpillLocalPool {
+    fn begin_site(&mut self) {
+        self.site_counts.clear();
+    }
+
+    fn take(&mut self, module: &mut Module, ty: ValType) -> LocalId {
+        let storage = spill_storage_type(ty);
+        let ordinal = self.site_counts.entry(storage).or_default();
+        let slots = self.slots.entry(storage).or_default();
+        if *ordinal == slots.len() {
+            slots.push(module.locals.add(storage));
+        }
+        let local = slots[*ordinal];
+        *ordinal += 1;
+        local
+    }
+}
+
 fn allocate_call_arg_materialization(
     module: &mut Module,
+    spill_pool: &mut SpillLocalPool,
     pending: PendingCallArgMaterialization,
 ) -> CallArgMaterialization {
     match pending {
         PendingCallArgMaterialization::Spill { arg_types } => {
             let locals = arg_types
                 .iter()
-                .map(|&ty| module.locals.add(spill_storage_type(ty)))
+                .map(|&ty| spill_pool.take(module, ty))
                 .collect();
             CallArgMaterialization::Spill {
                 locals,
@@ -3092,6 +3193,7 @@ fn populate_internal_dispatch(
 #[allow(clippy::too_many_arguments)]
 fn populate_dispatch_structure(
     local: &mut LocalFunction,
+    cascade_seq: InstrSeqId,
     unwind_save: InstrSeqId,
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
@@ -3112,7 +3214,7 @@ fn populate_dispatch_structure(
     // followed by `return`. Should not normally happen for a
     // fork-path function, but keep it validator-clean.
     if n_calls == 0 {
-        let s = &mut local.block_mut(unwind_save).instrs;
+        let s = &mut local.block_mut(cascade_seq).instrs;
         for (instr, loc) in &chunks[0] {
             s.push((instr.clone(), *loc));
         }
@@ -3124,7 +3226,7 @@ fn populate_dispatch_structure(
     emit_dispatch_node(
         local,
         &tree,
-        unwind_save,
+        cascade_seq,
         unwind_save,
         true,
         post_seqs,
@@ -3614,6 +3716,67 @@ fn emit_static_call_unwind_handler(
     }
 }
 
+/// The one handler every shared-boundary catch edge lands on. Emitted into
+/// `unwind_save` right after `Block(catch_target)`; the selector local holds
+/// the call index the active site stored before its routed call.
+fn emit_shared_unwind_handler(
+    local: &mut LocalFunction,
+    unwind_save: InstrSeqId,
+    ptr_ty: ValType,
+    frame_size: u32,
+    shared: SharedUnwindBoundary,
+    abort: AbortDispatch,
+) {
+    let reserve_succeeded = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let reserve_failed = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    {
+        let s = &mut local.block_mut(unwind_save).instrs;
+        push_instr(s, ptr_const(ptr_ty, frame_size as i64));
+        push_instr(
+            s,
+            Instr::LocalGet(LocalGet {
+                local: shared.selector,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::Call(Call {
+                func: abort.frame_select,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::IfElse(IfElse {
+                consequent: reserve_succeeded,
+                alternative: reserve_failed,
+            }),
+        );
+        push_instr(s, Instr::Unreachable(Unreachable {}));
+    }
+
+    {
+        let s = &mut local.block_mut(reserve_failed).instrs;
+        push_instr(
+            s,
+            Instr::Br(Br {
+                block: abort.restart_loop,
+            }),
+        );
+    }
+
+    {
+        let s = &mut local.block_mut(reserve_succeeded).instrs;
+        push_instr(s, Instr::Br(Br { block: unwind_save }));
+    }
+}
+
 // ----------------------------------------------------------------------
 // Preamble / postamble
 // ----------------------------------------------------------------------
@@ -3639,6 +3802,27 @@ fn reference_plan_runs(
         start = end + 1;
     }
     runs
+}
+
+/// Call-index runs that share one (slots, nulls) body, in first-appearance
+/// order. Emitting the body once per distinct set instead of once per run
+/// keeps generated code O(distinct sets × live refs + runs) instead of
+/// O(runs × live refs) — the term that inflated exception-heavy Qt functions
+/// past what TurboFan's register allocator can compile.
+fn reference_plan_groups(
+    plan: &ReferenceFramePlan,
+) -> Vec<(Vec<(usize, usize)>, Vec<usize>, Vec<(LocalId, RefType)>)> {
+    let mut groups: Vec<(Vec<(usize, usize)>, Vec<usize>, Vec<(LocalId, RefType)>)> = Vec::new();
+    for (first, last, slots, nulls) in reference_plan_runs(plan) {
+        let existing = groups
+            .iter_mut()
+            .find(|(_, group_slots, group_nulls)| *group_slots == slots && *group_nulls == nulls);
+        match existing {
+            Some((ranges, _, _)) => ranges.push((first, last)),
+            None => groups.push((vec![(first, last)], slots, nulls)),
+        }
+    }
+    groups
 }
 
 fn push_call_index_in_range(
@@ -3692,6 +3876,26 @@ fn push_call_index_in_range(
     );
 }
 
+fn push_call_index_in_ranges(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    ranges: &[(usize, usize)],
+) {
+    for (position, &(first, last)) in ranges.iter().enumerate() {
+        push_call_index_in_range(out, runtime, memory, ptr_ty, first, last);
+        if position > 0 {
+            push_instr(
+                out,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Or,
+                }),
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_reference_restore_dispatch(
     local: &mut LocalFunction,
@@ -3707,7 +3911,7 @@ fn emit_reference_restore_dispatch(
     let vector_get = runtime
         .reference_vector_get
         .expect("linked fork reference plan requires recipe-vector lookup");
-    for (first, last, slots, nulls) in reference_plan_runs(plan) {
+    for (ranges, slots, nulls) in reference_plan_groups(plan) {
         let then_seq = local
             .builder_mut()
             .dangling_instr_seq(InstrSeqType::Simple(None))
@@ -3745,7 +3949,7 @@ fn emit_reference_restore_dispatch(
             }
         }
         let out = &mut local.block_mut(seq).instrs;
-        push_call_index_in_range(out, runtime, memory, ptr_ty, first, last);
+        push_call_index_in_ranges(out, runtime, memory, ptr_ty, &ranges);
         push_instr(
             out,
             Instr::IfElse(IfElse {
@@ -3783,7 +3987,7 @@ fn build_reference_save_dispatch(
         .builder_mut()
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
-    for (first, last, slots, _nulls) in reference_plan_runs(plan) {
+    for (ranges, slots, _nulls) in reference_plan_groups(plan) {
         if slots.is_empty() {
             continue;
         }
@@ -3841,7 +4045,7 @@ fn build_reference_save_dispatch(
             push_instr(out, store_i32(memory, REFERENCE_VECTOR_OFFSET));
         }
         let out = &mut local.block_mut(root).instrs;
-        push_call_index_in_range(out, runtime, memory, ptr_ty, first, last);
+        push_call_index_in_ranges(out, runtime, memory, ptr_ty, &ranges);
         push_instr(
             out,
             Instr::IfElse(IfElse {
@@ -4152,33 +4356,35 @@ fn emit_replay_routed_call(
     arguments: &CallArgMaterialization,
     runtime: &Runtime,
 ) {
-    let branch_ty = InstrSeqType::MultiValue(resume_ty);
-    let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
-    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
     if direct_activation {
         // WHY: adding a no-argument resume thunk in front of every ordinary
         // recursive activation doubles native rewind depth. A materialized
         // direct callee already owns the selected event; its preamble
         // validates activation/function identity through frame_next before
-        // consuming it. Tail-transparent, indirect, and reference calls still
-        // require the process router because their lexical target need not be
-        // the next materialized activation.
+        // consuming it. NORMAL and replay reissue the identical materialized
+        // call, so one copy serves both states without a dispatch branch.
+        // Tail-transparent, indirect, and reference calls still require the
+        // process router because their lexical target need not be the next
+        // materialized activation.
         debug_assert!(matches!(target, CallTarget::Direct(_)));
-        populate_lexical_call(local, replay, target, sig_ty, location, arguments);
-    } else {
-        emit_resume_selected_call(
-            local,
-            replay,
-            target,
-            sig_ty,
-            resume_ty,
-            location,
-            arguments,
-            runtime,
-            sig_ty.index() as i32,
-        );
+        populate_lexical_call(local, sequence, target, sig_ty, location, arguments);
+        return;
     }
+    let branch_ty = InstrSeqType::MultiValue(resume_ty);
+    let normal = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    let replay = local.builder_mut().dangling_instr_seq(branch_ty).id();
+    populate_lexical_call(local, normal, target, sig_ty, location, arguments);
+    emit_resume_selected_call(
+        local,
+        replay,
+        target,
+        sig_ty,
+        resume_ty,
+        location,
+        arguments,
+        runtime,
+        sig_ty.index() as i32,
+    );
     let out = &mut local.block_mut(sequence).instrs;
     push_instr(
         out,
@@ -4232,11 +4438,6 @@ fn emit_replay_routed_call_with_unwind_boundary(
     abort: AbortDispatch,
 ) {
     let result_ty = InstrSeqType::MultiValue(resume_ty);
-    let result_boundary = local.builder_mut().dangling_instr_seq(result_ty).id();
-    let catch_boundary = local
-        .builder_mut()
-        .dangling_instr_seq(InstrSeqType::Simple(None))
-        .id();
     let call_body = local.builder_mut().dangling_instr_seq(result_ty).id();
 
     emit_replay_routed_call(
@@ -4250,6 +4451,39 @@ fn emit_replay_routed_call_with_unwind_boundary(
         arguments,
         runtime,
     );
+    if let Some(shared) = abort.shared {
+        let out = &mut local.block_mut(sequence).instrs;
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(
+            out,
+            Instr::LocalSet(LocalSet {
+                local: shared.selector,
+            }),
+        );
+        push_instr(
+            out,
+            Instr::TryTable(TryTable {
+                seq: call_body,
+                catches: vec![TryTableCatch::Catch {
+                    tag: runtime
+                        .unwind_tag
+                        .expect("fork call boundary requires private unwind tag"),
+                    label: shared.catch_target,
+                }],
+            }),
+        );
+        return;
+    }
+    let result_boundary = local.builder_mut().dangling_instr_seq(result_ty).id();
+    let catch_boundary = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
     {
         let out = &mut local.block_mut(catch_boundary).instrs;
         push_instr(
@@ -4650,6 +4884,46 @@ fn collect_user_locals(module: &Module, func_id: FunctionId) -> Vec<(LocalId, Va
         .into_iter()
         .map(|id| (id, module.locals.get(id).ty()))
         .collect()
+}
+
+/// Collect the scalar locals a pure-replay tail reads. Replay runs after the
+/// preamble's frame restore, so every scalar `local.get` in a tail must stay
+/// frame-owned even when liveness at the landing would drop it.
+fn pure_tail_scalar_locals(
+    module: &Module,
+    tail: &[(Instr, InstrLocId)],
+    saved: &mut HashSet<LocalId>,
+) {
+    for (instr, _) in tail {
+        let Instr::LocalGet(LocalGet { local }) = instr else {
+            continue;
+        };
+        if !matches!(module.locals.get(*local).ty(), ValType::Ref(_)) {
+            saved.insert(*local);
+        }
+    }
+}
+
+/// The scalar user locals that must round-trip through the fork frame:
+/// locals live on any successor of a fork landing, scalar inputs of
+/// pure-replay tails, and every parameter (the resume thunk reads resumed
+/// parameters by frame offset). Everything else is dead at every resume
+/// point and needs no save/restore code or frame bytes.
+fn plan_saved_scalar_locals(
+    module: &Module,
+    func_id: FunctionId,
+    reference_analysis: &FunctionReferenceAnalysis,
+    pure_replay_locals: HashSet<LocalId>,
+) -> HashSet<LocalId> {
+    let mut saved = pure_replay_locals;
+    for site in &reference_analysis.call_sites {
+        saved.extend(site.live_scalar_locals_on_any_successor.iter().copied());
+    }
+    let FunctionKind::Local(local) = &module.funcs.get(func_id).kind else {
+        return saved;
+    };
+    saved.extend(local.args.iter().copied());
+    saved
 }
 
 fn append_resume_parameter_references(
@@ -7373,26 +7647,15 @@ fn instrument_one_function_nested_switch(
             }
         }
     }
-    let mut arg_materializations: HashMap<u32, CallArgMaterialization> = HashMap::new();
-    for site in &sites {
-        let pending = pending_arg_materializations
-            .remove(&site.call_idx)
-            .unwrap_or_else(|| PendingCallArgMaterialization::Spill {
-                arg_types: nested_call_arg_types(module, site),
-            });
-        arg_materializations.insert(
-            site.call_idx,
-            allocate_call_arg_materialization(module, pending),
-        );
-    }
-
     // Sub-commit 2.5b: per-call operand-stack carryovers at direct
     // fork-path call landings inside any fork-bearing seq. Mirrors
     // 2.4c's carryover_spills wiring at top-level switch-dispatch:
     // at each call site, after popping the args, also pop the
     // carryover values into per-call carryover spill locals. They
     // round-trip through the fork frame so REWIND can reload them
-    // beneath the call's result.
+    // beneath the call's result. Spill locals come from the shared
+    // pool, with each site's args and carryovers drawn from one
+    // begin_site window so they never collide within the site.
     //
     // Classification already proved the exact typed stack model. Do not turn
     // a later analyzer disagreement into empty carryovers: that would silently
@@ -7401,26 +7664,40 @@ fn instrument_one_function_nested_switch(
         compute_nested_carryover_types(module, func_id, fork_path).unwrap_or_else(|| {
             panic!("typed nested carryover analysis changed after classification")
         });
+    let mut spill_pool = SpillLocalPool::default();
+    let mut arg_materializations: HashMap<u32, CallArgMaterialization> = HashMap::new();
     let mut carryover_spills: HashMap<u32, Vec<TypedSpillLocal>> = HashMap::new();
     for site in &sites {
+        spill_pool.begin_site();
+        let pending = pending_arg_materializations
+            .remove(&site.call_idx)
+            .unwrap_or_else(|| PendingCallArgMaterialization::Spill {
+                arg_types: nested_call_arg_types(module, site),
+            });
+        arg_materializations.insert(
+            site.call_idx,
+            allocate_call_arg_materialization(module, &mut spill_pool, pending),
+        );
         let cr_types: &[ValType] = nested_carryover_types
             .get(&site.call_idx)
             .map(Vec::as_slice)
             .unwrap_or_else(|| panic!("typed carryover plan omitted call {}", site.call_idx));
         let spills: Vec<TypedSpillLocal> = cr_types
             .iter()
-            .map(|&ty| (module.locals.add(spill_storage_type(ty)), ty))
+            .map(|&ty| (spill_pool.take(module, ty), ty))
             .collect();
         carryover_spills.insert(site.call_idx, spills);
     }
 
     let plain_catch_state = allocate_plain_catch_state(module, plain_catches);
 
-    // Combined scalar locals for the function frame: existing user
-    // scalars + frame-backed per-call arg-spill locals (in call_idx
-    // order) + per-call carryover-spill locals (in call_idx order;
-    // sub-commit 2.5b).
-    let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
+    // Frame-backed spill locals: per-call arg spills (in call_idx order),
+    // then per-call carryover spills (in call_idx order; sub-commit 2.5b),
+    // then SubRegion carryover spills (appended during plan building
+    // below). Live user scalars are prepended once every pure-replay plan
+    // exists, so the liveness filter can keep their replay inputs.
+    let mut spill_scalars: Vec<(LocalId, ValType)> = Vec::new();
+    let mut seen_spills: HashSet<LocalId> = HashSet::new();
     for site in &sites {
         let arg_types = nested_call_arg_types(module, site);
         for (&lid, &ty) in arg_materializations[&site.call_idx]
@@ -7428,15 +7705,15 @@ fn instrument_one_function_nested_switch(
             .iter()
             .zip(arg_types.iter())
         {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
+            if is_scalar(ty) && seen_spills.insert(lid) {
+                spill_scalars.push((lid, ty));
             }
         }
     }
     for site in &sites {
         for &(lid, ty) in &carryover_spills[&site.call_idx] {
-            if is_scalar(ty) {
-                frame_scalars.push((lid, ty));
+            if is_scalar(ty) && seen_spills.insert(lid) {
+                spill_scalars.push((lid, ty));
             }
         }
     }
@@ -7452,10 +7729,12 @@ fn instrument_one_function_nested_switch(
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
+    let shared_selector =
+        (n_calls >= SHARED_UNWIND_BOUNDARY_MIN_CALLS).then(|| module.locals.add(ValType::I32));
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
     // locals (+ tmp_result_local for blocks producing 1 i32). The
-    // locals are added to `frame_scalars` so they round-trip through
+    // locals are added to `spill_scalars` so they round-trip through
     // the fork frame. They are stored by (seq_id, landing_index) and
     // attached to landings during partition.
     //
@@ -7540,7 +7819,7 @@ fn instrument_one_function_nested_switch(
                     for &ty in &types {
                         let lid = module.locals.add(spill_storage_type(ty));
                         if is_scalar(ty) {
-                            frame_scalars.push((lid, ty));
+                            spill_scalars.push((lid, ty));
                         }
                         spill_locals.push((lid, ty));
                     }
@@ -7600,6 +7879,29 @@ fn instrument_one_function_nested_switch(
             body_param_locals.insert(seq_id, locals);
         }
     }
+
+    let mut pure_replay_locals = HashSet::new();
+    for site in &sites {
+        let CallArgMaterialization::PureTail { tail, .. } = &arg_materializations[&site.call_idx]
+        else {
+            continue;
+        };
+        pure_tail_scalar_locals(module, tail, &mut pure_replay_locals);
+    }
+    for plan in carryover_plans.values() {
+        let CarryoverPlan::PureTail { tail, .. } = plan else {
+            continue;
+        };
+        pure_tail_scalar_locals(module, tail, &mut pure_replay_locals);
+    }
+    let saved_scalars =
+        plan_saved_scalar_locals(module, func_id, reference_analysis, pure_replay_locals);
+    let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals
+        .iter()
+        .copied()
+        .filter(|(lid, _)| saved_scalars.contains(lid))
+        .collect();
+    frame_scalars.extend(spill_scalars);
 
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
@@ -7695,9 +7997,17 @@ fn instrument_one_function_nested_switch(
         .dangling_instr_seq(InstrSeqType::Simple(None))
         .id();
     let restart_loop = local.builder_mut().dangling_instr_seq(restart_loop_ty).id();
+    let shared_boundary = shared_selector.map(|selector| SharedUnwindBoundary {
+        selector,
+        catch_target: local
+            .builder_mut()
+            .dangling_instr_seq(InstrSeqType::Simple(None))
+            .id(),
+    });
     let abort = AbortDispatch {
         restart_loop,
         frame_select: unwind_frame_select,
+        shared: shared_boundary,
     };
     let catch_scalar_restore_dispatch = catch_state_locals.and_then(|catch_state| {
         build_plain_catch_scalar_dispatch(
@@ -7852,7 +8162,16 @@ fn instrument_one_function_nested_switch(
     // unwind_save here, then install the wrapper structure in entry.
     let entry_body: Vec<(Instr, InstrLocId)> =
         std::mem::take(&mut local.block_mut(entry_id).instrs);
-    {
+    if let Some(shared) = shared_boundary {
+        local.block_mut(shared.catch_target).instrs.extend(entry_body);
+        push_instr(
+            &mut local.block_mut(unwind_save).instrs,
+            Instr::Block(Block {
+                seq: shared.catch_target,
+            }),
+        );
+        emit_shared_unwind_handler(local, unwind_save, ptr_ty, frame_size, shared, abort);
+    } else {
         let s = &mut local.block_mut(unwind_save).instrs;
         s.extend(entry_body);
     }

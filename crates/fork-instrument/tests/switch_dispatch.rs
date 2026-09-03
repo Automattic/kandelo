@@ -998,6 +998,34 @@ fn catch_all_forms_use_one_retained_exception_local_and_no_frame_payload() {
     }
 }
 
+#[test]
+fn dead_scalar_local_is_not_frame_saved() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (memory (export "memory") 1)
+          (func $caller (export "dead_local") (result i32)
+            (local $dead i32) (local $live i32)
+            i32.const 7
+            local.set $dead
+            local.get $dead
+            local.set $live
+            call $kernel_fork
+            drop
+            local.get $live))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let frame_sizes = frame_reserve_sizes(&output, "dead_local");
+    assert!(
+        frame_sizes.iter().all(|size| *size == 20),
+        "only the scalar live at the landing joins the 16-byte header; a \
+         local last read before the call must not consume frame bytes: \
+         {frame_sizes:?}",
+    );
+}
+
 // -- Helper predicates ----------------------------------------------
 
 fn find_func(module: &Module, name: &str) -> FunctionId {

@@ -583,7 +583,13 @@ so these historical measurements are constraints on generated shape, not a
 current performance claim.
 
 Synthetic scalar locals include only call arguments and operand-stack
-carryovers that cannot be replayed directly. Catch code uses one exact-arm
+carryovers that cannot be replayed directly, and every direct-call landing
+draws them from one function-wide pool keyed by storage type and per-landing
+ordinal. A landing's spills are written at its own chunk tail and read back
+at its own post-call landing, and only the callee executes in between, so
+two landings' spill windows never overlap inside one activation. The pool
+bounds instrument-added locals and their frame bytes by the widest single
+landing instead of the landing count. Catch code uses one exact-arm
 selector per function and one typed operand-scratch union sized to the maximum
 simultaneously selected payload, not one tuple per static arm or region.
 Reference-bearing and untagged exceptions are retained through the complete
@@ -647,6 +653,24 @@ chosen `POST_K` runs on REWIND, so non-fork-path calls and side-effect ops
 in those chunks never re-execute by construction. The previous Phase 4g
 side-effect gating and Phase 4c non-fork-path call gating are no longer
 needed.
+
+Both shapes also pick a per-function **unwind boundary** by call-site count
+(`SHARED_UNWIND_BOUNDARY_MIN_CALLS`, currently 8). Below the threshold, each
+fork-path call keeps its own result-typed `try_table` boundary and a
+statically indexed frame-select handler — the zero-extra-local shape that
+preserves recursion depth. At or above it, one i32 selector local is written
+with the static call index before every routed call, every per-site
+`try_table` catches the private unwind tag to one block wrapping the whole
+cascade, and a single shared handler runs frame-select from the selector.
+This replaces roughly fifteen boundary instructions per call site — the
+per-site term that made call-heavy Qt functions too large for TurboFan's
+register allocator. Two further emission bounds serve the same goal: a
+direct-activation landing emits its materialized call once, with no
+`state >= REWINDING` branch, because NORMAL and lexical replay reissue the
+identical call; and the per-call reference save/restore dispatch emits one
+body per distinct (live-slot, definitely-null) set, with each body guarded
+by the union of its call-index ranges, instead of one body per coalesced
+run.
 
 The tool's `instrument_one_function` (in `crates/fork-instrument/src/instrument.rs`)
 inspects the original body, runs `classify_nested_pattern` to decide
@@ -1236,8 +1260,12 @@ K-04, and K-07 cover the current behavior.
   serialized as a frame (func_index + call_index) and reconstructed during
   rewind. The child resumes at the exact call site from which the parent
   invoked `fork()`.
-- **Scalar user locals.** All i32, i64, f32, f64, and v128 locals on the
-  fork-path are saved to linear memory at unwind and restored at rewind.
+- **Scalar user locals.** Every i32, i64, f32, f64, and v128 local that is
+  live on any successor of a fork landing — plus function parameters and the
+  scalar inputs of pure-replay tails — is saved to linear memory at unwind
+  and restored at rewind. A local whose value is dead at every resume point
+  consumes no frame bytes and no save/restore code; scalar liveness reuses
+  the reference analysis' structured CFG, including exception edges.
 - **Fresh-instance ownership.** Every accepted replay value is either scalar
   activation state in the linked continuation or state rebuilt by an explicit,
   versioned reconstruction owner. Instrumented modules carry

@@ -9,7 +9,7 @@
 //!
 //! * stable, depth-first call-site identities;
 //! * a structured control-flow graph, including exception edges;
-//! * backward reference-local liveness; and
+//! * backward reference-local and scalar-local liveness; and
 //! * a conservative forward definitely-null analysis.
 //!
 //! `MaybeNonNull` intentionally includes both non-null values and values whose
@@ -123,6 +123,10 @@ pub struct ReferenceCallSite {
     /// separate makes exceptional CFG coverage testable without making a
     /// throwing-only cleanup value look live on deterministic fork replay.
     pub live_ref_locals_on_any_successor: BTreeSet<LocalId>,
+    /// Scalar locals needed on any normal or exceptional successor.  The
+    /// frame planner saves only these (plus parameters and pure-replay
+    /// inputs) instead of every scalar local the function mentions.
+    pub live_scalar_locals_on_any_successor: BTreeSet<LocalId>,
     pub local_nullability_before_call: BTreeMap<LocalId, ReferenceNullability>,
     pub reachable: bool,
 }
@@ -151,8 +155,11 @@ pub fn analyze_function_references(
     };
 
     let reference_locals = collect_reference_locals(module, local);
+    let scalar_locals = collect_scalar_locals(module, local);
     let mut cfg = StructuredCfg::build(module, local, fork_path_targets)?;
-    let (live_in, live_out) = compute_reference_liveness(&cfg, &reference_locals);
+    let tracked_references: BTreeSet<LocalId> = reference_locals.keys().copied().collect();
+    let reference_liveness = compute_local_liveness(&cfg, &tracked_references);
+    let scalar_liveness = compute_local_liveness(&cfg, &scalar_locals);
     let nullability = compute_nullability(module, local, &cfg, &reference_locals);
     annotate_stack_carryovers(module, local, &mut cfg.calls);
 
@@ -180,7 +187,7 @@ pub fn analyze_function_references(
 
         let normal_live = call
             .normal_successor
-            .map(|node| live_in[node].clone())
+            .map(|node| reference_liveness.live_in_set(node))
             .unwrap_or_default();
         let state = nullability[call.node].clone();
         call_sites.push(ReferenceCallSite {
@@ -193,7 +200,8 @@ pub fn analyze_function_references(
             reference_carryovers: call.reference_carryovers,
             carryover_precision: call.carryover_precision,
             live_ref_locals_on_normal_return: normal_live,
-            live_ref_locals_on_any_successor: live_out[call.node].clone(),
+            live_ref_locals_on_any_successor: reference_liveness.live_out_set(call.node),
+            live_scalar_locals_on_any_successor: scalar_liveness.live_out_set(call.node),
             local_nullability_before_call: state.clone().unwrap_or_default(),
             reachable: state.is_some(),
         });
@@ -683,32 +691,115 @@ fn collect_reference_locals(module: &Module, local: &LocalFunction) -> BTreeMap<
         .collect()
 }
 
-fn compute_reference_liveness(
+fn collect_scalar_locals(module: &Module, local: &LocalFunction) -> BTreeSet<LocalId> {
+    struct Collector {
+        locals: BTreeSet<LocalId>,
+    }
+
+    impl<'a> walrus::ir::Visitor<'a> for Collector {
+        fn visit_local_id(&mut self, local: &LocalId) {
+            self.locals.insert(*local);
+        }
+    }
+
+    let mut collector = Collector {
+        locals: local.args.iter().copied().collect(),
+    };
+    walrus::ir::dfs_in_order(&mut collector, local, local.entry_block());
+    collector
+        .locals
+        .into_iter()
+        .filter(|local| !matches!(module.locals.get(*local).ty(), ValType::Ref(_)))
+        .collect()
+}
+
+/// Per-node liveness stored as dense bitsets over the tracked locals.  A
+/// giant function can track thousands of scalar locals across tens of
+/// thousands of CFG nodes; one `BTreeSet<LocalId>` per node at that scale
+/// costs gigabytes, while one bit per tracked local costs megabytes.
+struct LocalLiveness {
+    tracked: Vec<LocalId>,
+    words_per_node: usize,
+    live_in: Vec<u64>,
+    live_out: Vec<u64>,
+}
+
+impl LocalLiveness {
+    fn live_in_set(&self, node: NodeId) -> BTreeSet<LocalId> {
+        self.decode(&self.live_in[node * self.words_per_node..][..self.words_per_node])
+    }
+
+    fn live_out_set(&self, node: NodeId) -> BTreeSet<LocalId> {
+        self.decode(&self.live_out[node * self.words_per_node..][..self.words_per_node])
+    }
+
+    fn decode(&self, words: &[u64]) -> BTreeSet<LocalId> {
+        let mut set = BTreeSet::new();
+        for (word_index, &word) in words.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                set.insert(self.tracked[word_index * 64 + bit]);
+                bits &= bits - 1;
+            }
+        }
+        set
+    }
+}
+
+fn compute_local_liveness(
     cfg: &StructuredCfg<'_>,
-    reference_locals: &BTreeMap<LocalId, RefType>,
-) -> (Vec<BTreeSet<LocalId>>, Vec<BTreeSet<LocalId>>) {
-    let mut live_in = vec![BTreeSet::new(); cfg.nodes.len()];
-    let mut live_out = vec![BTreeSet::new(); cfg.nodes.len()];
+    tracked_locals: &BTreeSet<LocalId>,
+) -> LocalLiveness {
+    let tracked: Vec<LocalId> = tracked_locals.iter().copied().collect();
+    let bit_of: BTreeMap<LocalId, usize> = tracked
+        .iter()
+        .enumerate()
+        .map(|(bit, &local)| (local, bit))
+        .collect();
+    let words_per_node = tracked.len().div_ceil(64);
+    let uses_and_defs: Vec<(Option<usize>, Option<usize>)> = (0..cfg.nodes.len())
+        .map(|node| {
+            let (used, defined) = cfg.nodes[node]
+                .point
+                .map(|point| local_uses_and_defs(cfg.local, point, tracked_locals))
+                .unwrap_or_default();
+            (
+                used.first().map(|local| bit_of[local]),
+                defined.map(|local| bit_of[&local]),
+            )
+        })
+        .collect();
+
+    let mut live_in = vec![0u64; cfg.nodes.len() * words_per_node];
+    let mut live_out = vec![0u64; cfg.nodes.len() * words_per_node];
+    let mut next = vec![0u64; words_per_node];
 
     loop {
         let mut changed = false;
         for node in (0..cfg.nodes.len()).rev() {
-            let mut next_out = BTreeSet::new();
+            next.fill(0);
             for &successor in &cfg.nodes[node].successors {
-                next_out.extend(live_in[successor].iter().copied());
+                let successor_in = &live_in[successor * words_per_node..][..words_per_node];
+                for (word, &successor_word) in next.iter_mut().zip(successor_in) {
+                    *word |= successor_word;
+                }
             }
-            let (used, defined) = cfg.nodes[node]
-                .point
-                .map(|point| local_uses_and_defs(cfg.local, point, reference_locals))
-                .unwrap_or_default();
-            let mut next_in = next_out.clone();
-            if let Some(defined) = defined {
-                next_in.remove(&defined);
+            let out_words = &mut live_out[node * words_per_node..][..words_per_node];
+            if out_words != next.as_slice() {
+                out_words.copy_from_slice(&next);
+                changed = true;
             }
-            next_in.extend(used);
-            if next_in != live_in[node] || next_out != live_out[node] {
-                live_in[node] = next_in;
-                live_out[node] = next_out;
+            let (used, defined) = uses_and_defs[node];
+            if let Some(bit) = defined {
+                next[bit / 64] &= !(1u64 << (bit % 64));
+            }
+            if let Some(bit) = used {
+                next[bit / 64] |= 1u64 << (bit % 64);
+            }
+            let in_words = &mut live_in[node * words_per_node..][..words_per_node];
+            if in_words != next.as_slice() {
+                in_words.copy_from_slice(&next);
                 changed = true;
             }
         }
@@ -716,23 +807,28 @@ fn compute_reference_liveness(
             break;
         }
     }
-    (live_in, live_out)
+    LocalLiveness {
+        tracked,
+        words_per_node,
+        live_in,
+        live_out,
+    }
 }
 
 fn local_uses_and_defs(
     local: &LocalFunction,
     point: OriginalProgramPoint,
-    reference_locals: &BTreeMap<LocalId, RefType>,
+    tracked_locals: &BTreeSet<LocalId>,
 ) -> (BTreeSet<LocalId>, Option<LocalId>) {
     let instruction = &local.block(point.sequence).instrs[point.instruction_index].0;
     match instruction {
-        Instr::LocalGet(get) if reference_locals.contains_key(&get.local) => {
+        Instr::LocalGet(get) if tracked_locals.contains(&get.local) => {
             (BTreeSet::from([get.local]), None)
         }
-        Instr::LocalSet(set) if reference_locals.contains_key(&set.local) => {
+        Instr::LocalSet(set) if tracked_locals.contains(&set.local) => {
             (BTreeSet::new(), Some(set.local))
         }
-        Instr::LocalTee(tee) if reference_locals.contains_key(&tee.local) => {
+        Instr::LocalTee(tee) if tracked_locals.contains(&tee.local) => {
             (BTreeSet::new(), Some(tee.local))
         }
         _ => (BTreeSet::new(), None),
