@@ -67,6 +67,11 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_abort",
   "fm_begin_replay",
   "fm_begin_child_replay",
+  // Phase 6 item 4: seed a vfork BORROWED child's replay from the parked
+  // parent's LIVE shared memory (its own instance at a distinct __memory_base),
+  // copying the parent's fixed prefix into a child-private region and owning no
+  // chunks so finish/abort release nothing.
+  "fm_begin_borrowed_child_replay",
   // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay
   // begun by `fm_begin_child_replay`, at its inherited continuation anchor.
   "fm_add_activation_child_replay",
