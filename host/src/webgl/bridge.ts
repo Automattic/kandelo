@@ -149,6 +149,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_BIND_TEXTURE:
     case O.OP_CREATE_SHADER:
     case O.OP_ATTACH_SHADER:
+    case O.OP_DETACH_SHADER:
     case O.OP_UNIFORM1I:
     case O.OP_UNIFORM1F:
     case O.OP_BIND_FRAMEBUFFER:
@@ -171,6 +172,7 @@ function validPayload(op: number, v: DataView): boolean {
 
     case O.OP_UNIFORM4F:
     case O.OP_FRAMEBUFFER_TEXTURE_2D:
+    case O.OP_VERTEX_ATTRIB_4FV:
       return exact(v, 20);
 
     case O.OP_VERTEX_ATTRIB_POINTER:
@@ -183,6 +185,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_GEN_VERTEX_ARRAYS:
     case O.OP_DELETE_VERTEX_ARRAYS:
     case O.OP_GEN_FRAMEBUFFERS:
+    case O.OP_DELETE_FRAMEBUFFERS:
     case O.OP_GEN_RENDERBUFFERS:
       return u32ArrayPayload(v);
 
@@ -502,6 +505,12 @@ function dispatch(
       b.programs.delete(name);
       return;
     }
+    case O.OP_DETACH_SHADER: {
+      const prog = b.programs.get(v.getUint32(p, true));
+      const sh = b.shaders.get(v.getUint32(p + 4, true));
+      if (prog && sh) gl.detachShader(prog, sh);
+      return;
+    }
 
     // ----- uniforms -------------------------------------------------------
     // Locations are kernel-routed indices issued by `runGlQuery` for
@@ -602,6 +611,16 @@ function dispatch(
         v.getUint32(p + 12, true),
       );
       return;
+    // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
+    case O.OP_VERTEX_ATTRIB_4FV:
+      gl.vertexAttrib4f(
+        v.getUint32(p, true),
+        v.getFloat32(p + 4, true),
+        v.getFloat32(p + 8, true),
+        v.getFloat32(p + 12, true),
+        v.getFloat32(p + 16, true),
+      );
+      return;
 
     // ----- VAOs -----------------------------------------------------------
     case O.OP_GEN_VERTEX_ARRAYS: {
@@ -665,6 +684,16 @@ function dispatch(
       const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
       const level = v.getInt32(p + 16, true);
       gl.framebufferTexture2D(target, attachment, textarget, tex, level);
+      return;
+    }
+    case O.OP_DELETE_FRAMEBUFFERS: {
+      const n = v.getUint32(p, true);
+      for (let i = 0; i < n; i++) {
+        const name = v.getUint32(p + 4 + i * 4, true);
+        const obj = b.fbos.get(name);
+        if (obj) gl.deleteFramebuffer(obj);
+        b.fbos.delete(name);
+      }
       return;
     }
     case O.OP_GEN_RENDERBUFFERS: {

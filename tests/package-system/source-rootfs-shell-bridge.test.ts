@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,7 +25,7 @@ import {
   composeSourceRootfsDemoConfig,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
-import { SHELL_LAZY_BINARY_SPECS } from "../../images/vfs/lib/init/shell-binaries";
+import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
   registerShellProfileScripts,
@@ -295,14 +295,20 @@ function fixturePaths(root: string) {
   }
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (ROOTFS_LAZY_IDS.has(spec.id)) continue;
-    const dependency = spec.id === "git-remote-http" ? "git" : spec.id;
-    writeFileSync(
-      join(
-        dependencyRoots.get(dependency)!,
-        spec.resolverPath.split("/").at(-1)!,
-      ),
-      `${spec.id} fixture`,
+    const dependency = spec.id === "git-remote-http"
+      ? "git"
+      : shellLazySpecDependency(spec);
+    // A runtime file keeps its path under its package's output tree
+    // (programs/<pkg>/share/...); a program is the output root's basename.
+    const packagePrefix = `programs/${dependency}/`;
+    const artifact = join(
+      dependencyRoots.get(dependency)!,
+      spec.resolverPath.startsWith(packagePrefix)
+        ? spec.resolverPath.slice(packagePrefix.length)
+        : spec.resolverPath.split("/").at(-1)!,
     );
+    mkdirSync(dirname(artifact), { recursive: true });
+    writeFileSync(artifact, `${spec.id} fixture`);
   }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     writeFileSync(

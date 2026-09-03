@@ -9,6 +9,23 @@ export type HostFb = {
   pitch: number;
 };
 
+/** The size the virtual connector advertises for a reported display size:
+ *  even-aligned and clamped to the mode range, or the 1920x1080 default
+ *  when the embedder reported nothing. Anything that sizes a drawing
+ *  buffer to the advertised mode derives it here, so the buffer and the
+ *  mode can never disagree by a pixel. */
+export function connectorModeSize(
+  display?: { width: number; height: number },
+): { width: number; height: number } {
+  if (!display || !(display.width >= 1) || !(display.height >= 1)) {
+    return { width: 1920, height: 1080 };
+  }
+  return {
+    width: Math.min(3840, Math.max(640, Math.round(display.width) & ~1)),
+    height: Math.min(2160, Math.max(480, Math.round(display.height) & ~1)),
+  };
+}
+
 /** Build a `struct drm_mode_modeinfo` (68 B) describing the default
  *  videomode the virtual KMS connector advertises. Kandelo's KMS surface
  *  has no real fixed mode — programs render into whatever dumb buffer
@@ -34,12 +51,7 @@ export function buildVirtualConnectorMode(
   _connectorId: number,
   display?: { width: number; height: number },
 ): Uint8Array {
-  let w = 1920;
-  let h = 1080;
-  if (display && display.width >= 1 && display.height >= 1) {
-    w = Math.min(3840, Math.max(640, Math.round(display.width) & ~1));
-    h = Math.min(2160, Math.max(480, Math.round(display.height) & ~1));
-  }
+  const { width: w, height: h } = connectorModeSize(display);
   // Synthetic CVT-ish blanking: consumers here only read
   // hdisplay/vdisplay/vrefresh (and libdrm derives refresh from
   // clock/totals), so the porches just need to be self-consistent.

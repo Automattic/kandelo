@@ -230,6 +230,10 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/quake",
     command: "/usr/local/bin/quake",
   },
+  scummvm: {
+    executable: "/usr/local/bin/scummvm",
+    command: "/usr/local/bin/scummvm",
+  },
 } as const;
 
 /**
@@ -261,6 +265,35 @@ if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
     fi
 fi
 exec /usr/bin/quake -basedir "$BASE" "$@"
+`;
+
+/**
+ * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
+ * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
+ * cannot recurse into this wrapper) after two pieces of setup:
+ *
+ * - SDL's backends are named in the environment. ScummVM is unmodified
+ *   upstream, and Kandelo has no libudev, so SDL's evdev layer finds no input
+ *   devices unless SDL_EVDEV_DEVICES lists the kernel's two virtual ones
+ *   (class 2 = keyboard, 1 = mouse); the video and audio drivers are pinned to
+ *   KMSDRM and OSS so SDL does not probe the Wayland backend first.
+ * - The config lives in the user's home, because ScummVM rewrites it whenever
+ *   the user adds a game or changes an option. The first launch seeds it so
+ *   the launcher's "Add Game" browser opens in the upload directory. The GUI
+ *   scale stays at 100%: the browser's device-pixel ratio does not reach the
+ *   machine (see docs/browser-support.md on HiDPI).
+ */
+const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+GAMES=/usr/share/scummvm-games
+INI="\${HOME:-/home/maker}/scummvm.ini"
+if [ ! -f "$INI" ]; then
+    printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
+fi
+export SDL_VIDEODRIVER=kmsdrm
+export SDL_AUDIODRIVER=dsp
+export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
+exec /usr/bin/scummvm --config="$INI" "$@"
 `;
 
 export function composeSourceRootfsDemoConfig(
@@ -617,7 +650,13 @@ function strictResolverFromDependencyEnvironment(
         `${key} must be a real resolver-owned directory: ${root}`,
       );
     }
-    const artifact = join(root, basename(resolverPath));
+    // A package's program is its output root's basename; a runtime file
+    // keeps its path under the package (programs/<pkg>/share/...), which
+    // mirrors the package's output tree.
+    const packagePrefix = `programs/${dependency}/`;
+    const artifact = resolverPath.startsWith(packagePrefix)
+      ? join(root, resolverPath.slice(packagePrefix.length))
+      : join(root, basename(resolverPath));
     readRegularInput(artifact, `${dependency} dependency output`);
     return artifact;
   };
@@ -898,6 +937,18 @@ export async function buildSourceRootfsShellImage(
   // the extracted pak.
   ensureDirRecursive(fs, "/usr/share");
   ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  // ScummVM: the engine and its GUI data are lazy; only the launch wrapper is
+  // eager. Game data is the user's own (no Kandelo package carries a
+  // commercial SCUMM title), so the profile takes it as an upload into this
+  // directory and the unprivileged demo user unzips it in place — it must be
+  // world-writable, like the Quake basedir above.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/scummvm",
+    new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+    0o755,
+  );
+  ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
   // Create the id1 game dir too: the bring-your-own-pak ingest writes
   // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
   // to exist), and that path must work even offline when no quake106.zip was

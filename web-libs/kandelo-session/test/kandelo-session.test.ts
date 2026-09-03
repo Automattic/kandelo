@@ -1931,9 +1931,23 @@ describe("Kandelo demo config", () => {
             touchControls: true,
           },
         },
+        sdl2: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            hostPointer: true,
+          },
+        },
       },
     }));
     expect(config).not.toBeNull();
+
+    // A KMS guest that draws no cursor keeps the browser pointer; the
+    // default (absent) hides it for guests that draw their own.
+    expect(resolveDemoPresentation(config!, "sdl2")?.hostPointer).toBe(true);
+    expect(resolveDemoPresentation(config!, "doom")?.hostPointer).toBeUndefined();
 
     const presentation = resolveDemoPresentation(config!, "doom");
     expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);

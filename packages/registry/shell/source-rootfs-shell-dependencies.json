@@ -157,6 +157,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "scummvm",
+      "version": "2026.3.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"

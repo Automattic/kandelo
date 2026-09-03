@@ -12,6 +12,7 @@ export interface DemoPresentationConfig {
   terminalAccess: DemoPresentation["terminalAccess"];
   internalsAccess: DemoPresentation["internalsAccess"];
   touchControls?: boolean;
+  hostPointer?: boolean;
 }
 
 /**
@@ -1002,6 +1003,7 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     terminalAccess: accessMode(config.terminalAccess, "terminalAccess"),
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
+    ...(typeof config.hostPointer === "boolean" ? { hostPointer: config.hostPointer } : {}),
   };
 }
 

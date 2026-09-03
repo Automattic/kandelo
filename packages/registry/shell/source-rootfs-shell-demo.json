@@ -172,7 +172,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "hostPointer": true
       }
     },
     "espeak": {
