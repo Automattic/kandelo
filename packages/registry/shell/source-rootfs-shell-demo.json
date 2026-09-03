@@ -274,7 +274,7 @@
     "omarchy": {
       "identity": {
         "title": "Omarchy desktop",
-        "summary": "The tiling desktop with its shell: unmodified upstream Waybar on a wlr-layer-shell surface, mako notifications over a D-Bus session bus, a launcher on CTRL+Space, and six colour themes. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
+        "summary": "The tiling desktop with its shell: unmodified upstream Waybar on a wlr-layer-shell surface, mako notifications over a D-Bus session bus, a launcher on CTRL+Space, and six colour themes. The launcher also runs two Qt clients: Theme Gallery, whose cards restyle the whole desktop, and Quickshell, a QML shell. It starts bare; open clients from the launcher or with CTRL+Return (terminal) and CTRL+K (clock).",
         "accent": "#7aa2f7",
         "glyph": "O",
         "packages": [

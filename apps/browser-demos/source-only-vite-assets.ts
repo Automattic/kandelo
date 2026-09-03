@@ -25,7 +25,7 @@ const MODULE_PREFIX = "virtual:kandelo-source-only-asset:";
 const PUBLIC_PREFIX = "__kandelo_source_only_assets__";
 
 /** Bound the complete Vite snapshot set before the consumer allocates bytes. */
-export const SOURCE_ONLY_VITE_RETAINED_MAX_BYTES = 512 * 1024 * 1024;
+export const SOURCE_ONLY_VITE_RETAINED_MAX_BYTES = 1024 * 1024 * 1024;
 
 interface RetainedSourceOnlyAsset {
   relPath: string;

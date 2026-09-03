@@ -119,7 +119,7 @@ const OPEN_LAUNCHER = /KLAUNCHER_READY n=\d+(?![\s\S]*KLAUNCHER_EXIT)/;
  * piece is driven from the keyboard. Skips (via gotoOrSkip) when the binaries
  * aren't built.
  */
-test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page }) => {
+test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and live theme switching", async ({ page, browserName }) => {
   test.setTimeout(300_000);
 
   await launchOmarchy(page);
@@ -226,20 +226,32 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
   await expectTerminal(page, /KLAUNCHER_READY n=8/, 60_000);
 
-  // "te" narrows the eight entries (Bash, Clock, Foot, Nano, NetHack, Paint,
-  // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
+  // "te" narrows the eight entries (Clock, Nano, NetHack, Paint, Quickshell,
+  // Terminal, Theme Gallery, Vim) to Terminal alone — "t" alone still
+  // matches Paint.
   await pressKeys(page, ["KeyT", "KeyE"]);
   await expectTerminal(page, /KLAUNCHER_FILTER q=te n=1/, 60_000);
 
   // Enter launches the one match (Terminal) through the compositor's kwlctl
-  // socket and dismisses the launcher. The desktop went in with three tiled
-  // windows, so the launched terminal shows up as a fourth tile — the
-  // connection count alone would not prove it, since the launcher's own
-  // session ends at the same moment and frees its slot.
+  // socket and dismisses the launcher. The entry runs an unmodified upstream
+  // client, stock foot 1.17.2 — wl_display_connect via XDG_RUNTIME_DIR,
+  // fontconfig resolving "monospace" through the image's fonts.conf, fcft
+  // rasterizing the image's Inconsolata. The desktop went in with three
+  // tiled windows, so foot shows up as a fourth tile — the connection count
+  // alone would not prove it, since the launcher's own session ends at the
+  // same moment and frees its slot.
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm/, 60_000);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
   await expectTerminal(page, /KLAUNCHER_EXIT/, 60_000);
-  await expectTerminal(page, /TILE n=4 i=3 /, 60_000);
+  await expectTerminal(page, /TILE n=4 i=3 /, 120_000);
+  expect(await syslogText(page), "foot binary does not match the kernel ABI")
+    .not.toMatch(/ABI version mismatch/);
+  // GLDRAW is the compositor's proof that it drew this window's texture.
+  // Every marker above is protocol — map, focus, tile — and all of them
+  // fire for a window whose wl_shm pool the GPU cannot import (a memfd
+  // pool instead of a gbm prime fd). foot carries the gbm-pool patch that
+  // keeps its pools importable; this is the gate that notices if it stops.
+  await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
   // its entry runs unmodified vim inside a wlterm, fetched lazily from
@@ -253,18 +265,47 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   expect(await syslogText(page), "vim binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
 
-  // Gate 5c: an unmodified upstream client through the same path. "fo"
-  // narrows to Foot; its entry runs stock foot 1.17.2 — wl_display_connect
-  // via XDG_RUNTIME_DIR, fontconfig resolving "monospace" through the image's
-  // fonts.conf, fcft rasterizing the bundled Inconsolata — and the sixth tile
-  // only appears once foot maps its first frame through all of it.
+  // Gate 5d: a Qt application through the same path. "ga" narrows to Theme
+  // Gallery; its entry runs qtgallery — QtGui's wayland QPA plugin connecting
+  // via XDG_RUNTIME_DIR, xdg-shell configure, the raster backing store
+  // through wl_shm, fontconfig resolving "sans-serif" through the image's
+  // fonts.conf — and the sixth tile only appears once Qt maps its first
+  // frame. The gallery reads the same six themes the compositor scanned.
   await pressCtrl(page, "Space");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
-  await pressKeys(page, ["KeyF", "KeyO", "Enter"]);
-  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/foot /, 60_000);
+  await pressKeys(page, ["KeyG", "KeyA", "Enter"]);
+  await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/qtgallery/, 60_000);
+  await expectTerminal(page, /GALLERY_PLATFORM=wayland/, 120_000);
+  await expectTerminal(page, /GALLERY_THEMES n=6/, 120_000);
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
-  expect(await syslogText(page), "foot binary does not match the kernel ABI")
+  expect(await syslogText(page), "qtgallery binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
+  // The invisible-window gate. Qt's stock backing store allocates memfd
+  // pools; the GL renderer cannot import those, skips the surface, and
+  // every gate above still passes. Qt carries the same gbm-pool patch as
+  // foot and GTK, and GLDRAW only fires once the window's texture was drawn.
+  // The card→dispatch→theme-switch loop is proven by the Node smoke
+  // (host/test/qtgallery-smoke.test.ts); this gate proves the browser half.
+  await expectTerminal(page, /GLDRAW app_id=qtgallery/, 60_000);
+
+  // Gate 5e: a QtQuick application through the same path. "qu" narrows to
+  // Quickshell; its entry runs quickshell with the image's island.qml. The
+  // QML engine loads, the scenegraph renders through the software
+  // adaptation (QT_QUICK_BACKEND=software from the desktop's environment),
+  // and the PanelWindow maps as a wlr-layer-shell surface under Quickshell's
+  // default namespace — layer surfaces never emit GLDRAW, so the LAYER line
+  // is the mapping proof. Firefox is excluded: the running desktop's wasm
+  // code plus Quickshell's main and pthread modules exceeds SpiderMonkey's
+  // fixed 2 GiB per-process executable-code arena, so Quickshell's first
+  // QThread::start fails — see
+  // docs/browser-support.md#firefox-executable-code-limit.
+  if (browserName !== "firefox") {
+    await pressCtrl(page, "Space");
+    await expectTerminal(page, OPEN_LAUNCHER, 60_000);
+    await pressKeys(page, ["KeyQ", "KeyU", "Enter"]);
+    await expectTerminal(page, /KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/quickshell/, 60_000);
+    await expectTerminal(page, /LAYER ns=quickshell /, 120_000);
+  }
 
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the

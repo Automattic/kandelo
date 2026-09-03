@@ -115,6 +115,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // no other machine sharing this image pays to fetch them.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
   { id: "waybar", resolverPath: "programs/waybar.wasm", vfsPath: "/usr/local/bin/waybar", symlinks: [] },
+  // The Qt clients the launcher offers. quickshell.wasm alone is ~93 MB.
+  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/local/bin/qtgallery", symlinks: [] },
+  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/local/bin/quickshell", symlinks: [] },
   { id: "mako", resolverPath: "programs/mako/mako.wasm", vfsPath: "/usr/local/bin/mako", symlinks: [] },
   {
     id: "dbus",
