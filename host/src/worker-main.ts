@@ -3512,6 +3512,13 @@ export async function centralizedWorkerMain(
       // the module-backed path is active.
       let forkModuleTrampolines: ForkModuleTrampolines | null = null;
       let useForkModule = false;
+      // Phase 6 item 4: a borrowed (vfork) child instantiates its OWN fork-module
+      // at a distinct `__memory_base` by channel-mmapping a fresh region on
+      // demand. Captured here so the child releases it (channel-munmap) the moment
+      // its single replay finishes, instead of leaking ~5.4 MiB into the parked
+      // parent's restored address space (the kernel never shrinks memory —
+      // reclamation is free-list reuse, so an un-munmap'd region persists).
+      let forkModuleBorrowedRegion: { base: number; bytes: number } | null = null;
       // Phase 6 D6.1: true only for a CHILD fork whose decoded reference graph is
       // FUNCREF + NULL only (no externref/gc/exnref/static-root to reconstruct).
       // Gates flipping the guest's `__wpk_fork_ref_decode_funcref` import to the
@@ -3537,11 +3544,22 @@ export async function centralizedWorkerMain(
       const externrefTokens = new ForkExternrefTokenCache(
         initData.externrefGenerationId,
       );
-      // A vfork/borrowed child temporarily shares its parent's memory and must
-      // not reserve or own a co-resident region; it also owns no durable fork
-      // arena. Skip it (it exec()s almost immediately). Every other worker —
-      // the parent, a COW fork child, and a fresh exec image — instantiates.
-      if (initData.forkModuleEnabled && !borrowedForkChild) {
+      // Phase 6 item 4: a vfork/borrowed child now ALSO instantiates the
+      // co-resident module, so its ONE continuation replay runs through the
+      // module (wasm->wasm) instead of the JS engine. The original gate skipped
+      // the borrowed child on two grounds: (1) it execs almost immediately, so a
+      // module was "pointless overhead" — but it still has one real replay to
+      // drive, which is exactly what item 4 moves onto the module; and (2) it
+      // "must not reserve or own a co-resident region" in the parked parent's
+      // shared memory — the real invariant. We honor (2) with an ON-DEMAND
+      // region: `instantiateForkModule` channel-mmaps a FRESH, kernel-allocated,
+      // guaranteed-non-overlapping ~5.4 MiB region (it cannot alias the parent's
+      // live data), and the child channel-munmaps it the moment its replay
+      // finishes (see `forkModuleBorrowedRegion` release after `finishReplay`) so
+      // nothing is durably owned in the parent's restored address space. A
+      // FOLLOW-UP (see ITEMS-4-7-PLAN.md) makes even the parent's instantiation
+      // lazy until first fork so a worker that never forks pays nothing.
+      if (initData.forkModuleEnabled) {
         const forkModuleModule = initData.forkModuleModule;
         if (!forkModuleModule) {
           throw new Error(
@@ -3590,6 +3608,14 @@ export async function centralizedWorkerMain(
           // the module's drive integrity check reads what the guest published.
           transitTable: forkGcTransit.table,
         });
+        if (borrowedForkChild) {
+          // Remember the ON-DEMAND region so the child releases it when its one
+          // borrowed replay finishes (channel-munmap; see after `finishReplay`).
+          forkModuleBorrowedRegion = {
+            base: forkModuleInstance.memoryBase,
+            bytes: forkModuleInstance.regionBytes,
+          };
+        }
 
         // QUALIFYING PREDICATE for the module-backed continuation. All of:
         //  - the module instantiated and its width matches the guest;
@@ -3634,7 +3660,14 @@ export async function centralizedWorkerMain(
         useForkModule =
           ptrWidth === linkedFrameFormat.ptrWidth &&
           (!isForkFromThreadChild || hasResumeThreadExport) &&
-          catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP;
+          catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP &&
+          // Phase 6 item 4: a borrowed (vfork) child is admitted only when it is
+          // SINGLE-activation. Multi-activation dlopen-vfork ("mode-1") borrowed
+          // replay through the module (a borrowed `fm_add_activation_*`) is the
+          // next step in this item; until then a dlopen-fork-role borrowed child
+          // keeps the byte-identical JS borrowed path rather than reaching the
+          // single-activation-only `attachBorrowedModuleChild`.
+          (!borrowedForkChild || !hasDylinkForkRole);
         if (useForkModule) {
           forkModuleBackend = new ForkModuleContinuationBackend({
             exports: forkModuleInstance.exports,
@@ -4050,6 +4083,24 @@ export async function centralizedWorkerMain(
             processContinuation.finishReplay();
           } finally {
             releaseProcessForkArchiveReader();
+          }
+          // Phase 6 item 4: the borrowed (vfork) child's ONE replay is done, so
+          // release its on-demand fork-module region NOW (channel-munmap), before
+          // the child proceeds to exec/_exit. Leaving it mapped would leak
+          // ~5.4 MiB into the parked parent's restored shared address space (the
+          // kernel never shrinks memory). The parent instead keeps its region for
+          // the worker's lifetime (fork is repeated); only the transient borrowed
+          // child releases. Idempotent: cleared so a later path never double-frees.
+          if (borrowedForkChild && forkModuleBorrowedRegion) {
+            const region = forkModuleBorrowedRegion;
+            forkModuleBorrowedRegion = null;
+            continuationMunmap(
+              memory,
+              channelOffset,
+              region.base,
+              region.bytes,
+              `pid=${pid}: borrowed fork-module region`,
+            );
           }
           if (initData.isForkChild) {
             const gate = initData.forkReplayGate;

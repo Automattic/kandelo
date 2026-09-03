@@ -583,6 +583,19 @@ export class ForkProcessContinuationCoordinator {
     adoptPreinstantiatedReferences?: () => void,
     decodedReferences?: DecodedSegmentedForkReferenceTransaction,
   ): void {
+    if (this.moduleBackend) {
+      // Phase 6 item 4: route the vfork BORROWED replay through the co-resident
+      // module (frames + references), exactly as `attachModuleChild` does for a
+      // COW child — but reading the parent's borrowed continuation read-only and
+      // writing the guest's mutable prefix into a child-private region.
+      this.attachBorrowedModuleChild(
+        arena,
+        reservePrefix,
+        adoptPreinstantiatedReferences,
+        decodedReferences,
+      );
+      return;
+    }
     this.requirePhase("idle", "attach borrowed child process replay");
     if (this.prepared.size !== 0) {
       throw new Error(
@@ -1110,6 +1123,120 @@ export class ForkProcessContinuationCoordinator {
    * module owns the journal). The KFLA dlopen archive remains the activation-set
    * / order authority; the module re-validates each activation's journal slice.
    */
+  /**
+   * The module-backed counterpart of `attachBorrowedChild` (Phase 6 item 4).
+   *
+   * A vfork BORROWED child shares the PARKED parent's memory, so unlike
+   * `attachModuleChild` (which reads a private COPY) it drives a READ-ONLY replay
+   * over the parent's live continuation and writes the guest's mutable module
+   * prefix into a CHILD-PRIVATE region from `reservePrefix`. The module owns no
+   * chunks, so `finishReplay`/`abort` release nothing and the parked parent's
+   * storage is never touched or unmapped. References are reconstructed through the
+   * module (not JS), exactly as the COW module path does.
+   *
+   * This slice supports a SINGLE activation (the common vfork case). A
+   * multi-activation borrowed child (dlopen-vfork "mode-1") is admitted only when
+   * the worker keeps it on the JS borrowed path; if one reaches here it fails
+   * loudly rather than silently mis-driving the parent's storage.
+   */
+  private attachBorrowedModuleChild(
+    arena: ForkModuleStateArena,
+    reservePrefix: ForkBorrowedReplayPrefixAllocator,
+    adoptPreinstantiatedReferences?: () => void,
+    decodedReferences?: DecodedSegmentedForkReferenceTransaction,
+  ): void {
+    const backend = this.moduleBackend!;
+    this.requirePhase("idle", "attach borrowed module child process replay");
+    if (this.prepared.size !== 0) {
+      throw new Error(
+        `${this.label}: borrowed child has ${this.prepared.size} incomplete activation(s)`,
+      );
+    }
+    if (arena.ownershipMode() !== "borrowed") {
+      throw new Error(
+        `${this.label}: borrowed child replay requires a borrowed module-state arena`,
+      );
+    }
+    this.arena = arena;
+    this.replayOwnership = "borrowed";
+    try {
+      this.registry.attachChild(arena, decodedReferences);
+      adoptPreinstantiatedReferences?.();
+      // Activation 0's borrowed continuation anchor is the parent's launch root
+      // (the borrowed override returns `forkBufAddr`). Unlike the JS borrowed
+      // path, the module path does NOT cross-check against
+      // `activationContinuationsForChild`: the module owns the journal and omits
+      // the JS replay-event wire that helper reads, so it would find nothing (see
+      // `sealModuleCapture`). This mirrors `attachModuleChild`, which likewise
+      // trusts `readProcessLaunchRoot` for the single (activation 0) anchor.
+      const parentLaunchRoot = this.readProcessLaunchRoot();
+      if (!Number.isSafeInteger(parentLaunchRoot) || parentLaunchRoot <= 0) {
+        throw new Error(
+          `${this.label}: borrowed process launch root ${parentLaunchRoot} is invalid`,
+        );
+      }
+      const records = arena.recordViews();
+      this.phase = "child-replay";
+      // Reference reconstruction runs through the module (never a JS fallback),
+      // mirroring `attachModuleChild`: seed the reference graph BEFORE restoring
+      // module state, then hand the typed allocate/fill/exn order to the module.
+      if (this.moduleReferenceReplay) {
+        backend.beginReferenceReplay(arena.rootAddress());
+      }
+      const typedDrive = this.moduleReferenceReplay
+        ? (): void => {
+            backend.driveTypedGraph();
+          }
+        : undefined;
+      this.registry.restoreModuleState(typedDrive);
+
+      const activations = this.orderedActivations();
+      if (activations.length !== 1) {
+        throw new Error(
+          `${this.label}: module-backed borrowed replay supports a single `
+            + `activation this slice; got ${activations.length}`,
+        );
+      }
+      const act0 = this.getActivation(0);
+      const journalImage = journalImageForChild(records, act0.continuation.format.ptrWidth);
+      // Reserve the child-private mutable module prefix. The module copies the
+      // parent's fixed prefix into it (so the guest's rewind writes its
+      // active-frame pointer there, never the parked parent's prefix), and this
+      // becomes the rewind root.
+      const privatePrefix = Number(
+        reservePrefix({
+          activationId: act0.activationId,
+          byteLength: act0.continuation.format.fixedPrefixSize,
+          alignment: act0.continuation.format.alignment,
+        }),
+      );
+      if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
+        throw new Error(
+          `${this.label}: borrowed activation ${act0.activationId} received an `
+            + "invalid private replay prefix",
+        );
+      }
+      act0.root = parentLaunchRoot;
+      act0.replayRoot = privatePrefix;
+      backend.beginBorrowedChildReplay(
+        parentLaunchRoot,
+        Number(journalImage.ptr),
+        Number(journalImage.len),
+        privatePrefix,
+      );
+      invokeForkContinuationBegin(
+        requireExportFunction(act0, "wpk_fork_rewind_begin"),
+        act0.replayRoot,
+        act0.continuation.format.ptrWidth,
+        `${this.label}: activation ${act0.activationId} borrowed child replay (module)`,
+      );
+      this.requireActivationState(act0, WPK_FORK_REWINDING, "begin replay");
+    } catch (error) {
+      this.abort();
+      throw error;
+    }
+  }
+
   private activationRootsFromChildArena(): ReturnType<
     typeof decodeForkActivationContinuations
   > {
@@ -1159,7 +1286,14 @@ export class ForkProcessContinuationCoordinator {
       activation.replayRoot = 0;
     }
     try {
-      this.publishProcessLaunchRoot(0);
+      // A BORROWED (vfork) module child must NEVER write the process launch-root
+      // word: that word lives in the PARKED parent's memory (the borrowed child
+      // shares it), so publishing 0 here would corrupt the parent's continuation
+      // anchor. The JS borrowed path guards this the same way (`finishTransaction`
+      // and `abort`); the module path must too.
+      if (this.replayOwnership !== "borrowed") {
+        this.publishProcessLaunchRoot(0);
+      }
     } catch (error) {
       failure ??= error;
     }

@@ -2220,6 +2220,12 @@ async function handleVfork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+      // Phase 6 item 4 (browser peer of node-kernel-worker-entry): the borrowed
+      // (vfork) child drives its continuation replay through the co-resident
+      // fork-module, so it needs the flag + compiled module like a COW child.
+      // Without this it would silently fall back to the JS engine and fail
+      // against the module-backed parent's Option-B journal image.
+      ...forkModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(() => {
