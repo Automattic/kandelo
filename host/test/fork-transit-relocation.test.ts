@@ -97,4 +97,64 @@ describe("fork transit table relocation (M1)", () => {
     const imports = buildForkActivationStateImports(0, activationRegistry);
     expect(imports[FORK_ANYREF_TRANSIT_IMPORT]).toBe(fm.gcTransitTable);
   });
+
+  /**
+   * M1 task 5: the thread-fork path cannot use the task 4 constructor-inject
+   * pattern above. There, `threadActivationRegistry` is created BEFORE the
+   * thread fork-module is instantiated, because the module's
+   * `enableModuleBacking` gate needs a process-continuation coordinator
+   * (built from the registry) to already exist. worker-main.ts instead
+   * ADOPTS the module's exported table into the already-built registry via
+   * `ForkActivationRegistry.adoptGcTransit`. This test proves that adoption
+   * — not just construction-time injection — produces the same one-table
+   * identity across the module export, the registry seam, and the guest
+   * import.
+   */
+  it("adopting a fork-module's table into an already-built registry shares ONE "
+    + "WebAssembly.Table object, mirroring the thread-fork wiring order", () => {
+    const module = loadForkModule32();
+    const memory = sharedMemory(256); // 16 MiB
+    const reserveBase = 8 * 1024 * 1024;
+    const reserve = (size: number): number => {
+      void size;
+      return reserveBase;
+    };
+
+    // Mirror worker-main.ts: the thread registry exists first, minting its
+    // own default table (nothing to adopt yet).
+    const activationRegistry = new ForkActivationRegistry(
+      memory,
+      unusedExternrefs(),
+      "test: thread fork activations",
+      () => {
+        throw new Error("fixture does not exercise scratch allocation");
+      },
+      () => {
+        throw new Error("fixture does not exercise scratch deallocation");
+      },
+    );
+    const mintedTable = activationRegistry.gcTransitTable();
+
+    // The thread fork-module is instantiated AFTER the registry.
+    const fm = instantiateForkModule({
+      module,
+      memory,
+      ptrWidth: 4,
+      reserve,
+      label: "test",
+    });
+    expect(fm.gcTransitTable).not.toBe(mintedTable);
+
+    // Adopt the module's own exported table into the already-built registry.
+    activationRegistry.adoptGcTransit(fm.gcTransitTable);
+
+    expect(activationRegistry.gcTransitTable()).toBe(fm.gcTransitTable);
+    expect(activationRegistry.gcTransitTable()).not.toBe(mintedTable);
+
+    // The value actually bound to the guest's `__wpk_fork_ref_gc_transit`
+    // import for a real activation, built AFTER adoption (as worker-main.ts
+    // does — well before `buildForkActivationStateImports` runs).
+    const imports = buildForkActivationStateImports(0, activationRegistry);
+    expect(imports[FORK_ANYREF_TRANSIT_IMPORT]).toBe(fm.gcTransitTable);
+  });
 });
