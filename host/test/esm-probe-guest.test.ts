@@ -16,7 +16,7 @@ const DIR = process.env.ESM_PROBE_DIR ?? "/tmp/cc-inspect/esm_probe";
 function image(): Uint8Array | Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   ensureDirRecursive(fs, "/app");
-  for (const f of ["a.mjs", "b.mjs", "main.cjs", "mainmod.mjs", "a2.mjs", "main2.cjs"]) {
+  for (const f of ["a.mjs", "b.mjs", "main.cjs", "mainmod.mjs", "a2.mjs", "main2.cjs", "meta.mjs", "mainmeta.cjs"]) {
     writeVfsBinary(fs, `/app/${f}`, new Uint8Array(readFileSync(join(DIR, f))), 0o644);
   }
   return fs.saveImage();
@@ -58,6 +58,20 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("BARE STDOUT:", JSON.stringify(r.stdout.trim()), "STDERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("BARE true");
+  }, 90_000);
+
+  it.runIf(ready)("native ESM import.meta is populated (url/dirname/require)", async () => {
+    const img = await image();
+    const r = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      argv: ["node", "/app/mainmeta.cjs"],
+      rootfsImage: img,
+      useDefaultRootfs: false,
+      timeout: 60_000,
+    });
+    // eslint-disable-next-line no-console
+    console.log("META STDOUT:", JSON.stringify(r.stdout.trim()), "STDERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toMatch(/META file:\/\/\/app\/meta\.mjs\|\/app\|function/);
   }, 90_000);
 
   it.runIf(ready)(".mjs main with minified import", async () => {
