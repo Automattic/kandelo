@@ -461,11 +461,38 @@ describe("fork-module GC drive store-#2 integrity check (Phase 6 item 3c)", () =
 
   // GATE for the full 3c PRODUCTION FLIP. A multi-node typed graph driven with
   // the module (flag-on) must reconstruct the SAME references as the proven JS
-  // `materializeTypedGraph` path (flag-off). That needs the production import flip
-  // (nothing calls `fm_build_gc_plan` + `fm_drive_execute` in prod yet) and a REAL
-  // instrumented guest that builds actual GC objects, both out of scope for this
-  // slice, so it stays skipped. The store-#2 repoint this file proves is the
-  // prerequisite the gate was blocked on.
+  // drive-order (flag-off).
+  //
+  // The REAL instrumented multi-node guest this gate needs now EXISTS:
+  // `host/test/gc-reference-cycle-fresh-worker.test.ts` forks a struct<->array
+  // cycle and its child self-verifies via ref.eq; it already passes flag-off AND
+  // flag-on (parity). What is still missing is the production DRIVE flip itself:
+  //
+  //   1. The typed drive-ORDER for a forked child runs in the JS
+  //      `ForkReferenceTransaction.materializeAllTyped`
+  //      (host/src/fork-reference-transaction.ts) — NOT the imported-globals
+  //      `ForkEarlyChildReferenceProvider.materializeTypedGraph`. It is invoked
+  //      from `ForkActivationRegistry.restoreModuleState`, which the coordinator
+  //      `ForkProcessContinuationCoordinator.attachModuleChild` calls at
+  //      host/src/fork-process-continuation.ts ~line 1012, immediately AFTER
+  //      `backend.beginReferenceReplay(arena.rootAddress())` (~line 1010). That
+  //      gap is the clean seam: the module graph is already seeded there, and the
+  //      coordinator holds BOTH `moduleBackend` and `registry`.
+  //   2. Unbuilt production wiring for the flip: seed each activation's KFGC bytes
+  //      via `fm_set_activation_gc_codec`, seed `fm_set_host_exception_owner`,
+  //      then call `fm_build_gc_plan(pid)` + `fm_drive_execute(ptr,
+  //      fm_gc_plan_count())` (the guest `_gc_allocate`/`_gc_fill` are already
+  //      bound into the drive table at item 3b, worker-main.ts ~line 4708), while
+  //      SUPPRESSING only the typed allocate/fill/exn sub-loop of
+  //      `materializeAllTyped` (PHASE A/B externref publish + static-root pin must
+  //      stay).
+  //   3. A drive-proof counter distinct from the item-3a feed counter
+  //      (`fm_gc_nodes_reconstructed`) must be added — the drive shim is
+  //      walrus-injected (crates/fork-module-inject), so the counter bump belongs
+  //      there plus a new `fm_*` export and a both-widths wasm rebuild.
+  //
+  // Until that flip lands and is validated across the fork suites, this stays
+  // skipped rather than falsely green.
   it.skip("EQUIVALENCE GATE (3c prod flip): flag-on module drive == flag-off JS drive for a multi-node typed graph", () => {
     expect(true).toBe(true);
   });
