@@ -13775,6 +13775,45 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
+                // The built member may be read-only: a `make install` binary
+                // is commonly mode 0555, the fork-instrument step deliberately
+                // preserves that mode, and the resolver-scratch copy inherits
+                // it. This stamp is the authoritative writer of the final bytes
+                // into the pre-publication build stage, so overwrite in place
+                // (preserving the inode, which some packages hard-link, e.g.
+                // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
+                // then re-apply the original mode so the published artifact
+                // keeps its executable/read-only bits.
+                #[cfg(unix)]
+                let restore_mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&member)
+                        .map_err(|error| {
+                            format!(
+                                "{}: stat stamped wasm output {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?
+                        .permissions()
+                        .mode();
+                    if mode & 0o200 == 0 {
+                        std::fs::set_permissions(
+                            &member,
+                            std::fs::Permissions::from_mode(mode | 0o200),
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "{}: make stamped wasm output writable {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?;
+                        Some(mode)
+                    } else {
+                        None
+                    }
+                };
                 std::fs::write(&member, stamped).map_err(|error| {
                     format!(
                         "{}: write stamped wasm output {}: {error}",
@@ -13782,6 +13821,18 @@ fn build_into_cache(
                         member.display()
                     )
                 })?;
+                #[cfg(unix)]
+                if let Some(mode) = restore_mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
+                        .map_err(|error| {
+                            format!(
+                                "{}: restore stamped wasm output mode {}: {error}",
+                                target.spec(),
+                                member.display()
+                            )
+                        })?;
+                }
             }
         }
     }
