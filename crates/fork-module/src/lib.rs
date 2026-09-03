@@ -1091,37 +1091,92 @@ mod wasm {
     // never calls `allocate` (its `replay_only` guard rejects reserve/commit), so
     // the child mmaps nothing; its `chunks` stays empty and `release_all` is a
     // no-op there.
-    struct ChannelMmapAllocator {
+    struct FrameArena {
+        /// Channel mode: issue each chunk's `SYS_MMAP` through this guest syscall
+        /// channel base (page-aligned). `0` on a replay-only child (allocates
+        /// nothing) and on a FIXED arena (which never touches the channel).
         channel_base: u64,
         chunks: Vec<(u64, u64)>,
+        /// FIXED mode (in-realm, NO host servicer): bump-allocate each chunk from a
+        /// caller-owned, pre-reserved `[fixed_next, fixed_end)` region instead of
+        /// channel-mmap. Because it never grows memory and never issues a channel
+        /// syscall, a single-threaded in-process harness (which cannot service the
+        /// blocking `memory_atomic_wait32` channel handshake) can drive a full
+        /// unwind → replay cycle. `false` selects channel mode (production).
+        fixed: bool,
+        fixed_next: u64,
+        fixed_end: u64,
     }
 
-    impl ChannelMmapAllocator {
-        fn new(channel_base: u64) -> Self {
-            ChannelMmapAllocator {
+    impl FrameArena {
+        /// The production growing arena: each chunk is `SYS_MMAP`'d through the
+        /// guest syscall channel at `channel_base`, growing shared memory on
+        /// demand. `0` = a replay-only child that allocates nothing.
+        fn new_channel(channel_base: u64) -> Self {
+            FrameArena {
                 channel_base,
                 chunks: Vec::new(),
+                fixed: false,
+                fixed_next: 0,
+                fixed_end: 0,
+            }
+        }
+
+        /// A caller-owned FIXED arena over `[base, base + len)`; allocations bump
+        /// within it and never grow memory or touch the channel, so `release_all`
+        /// is a no-op. The caller guarantees the region is already backed and
+        /// disjoint from every other activation's arena and the module region.
+        fn new_fixed(base: u64, len: u64) -> Self {
+            FrameArena {
+                channel_base: 0,
+                chunks: Vec::new(),
+                fixed: true,
+                fixed_next: base,
+                fixed_end: base.saturating_add(len),
             }
         }
 
         /// Best-effort release of every chunk this allocator mapped. Called after
         /// a successful replay finish and on abort; a `munmap` hiccup does not
-        /// fail an already-complete fork, so errors are ignored here.
+        /// fail an already-complete fork, so errors are ignored here. A FIXED
+        /// arena owns no mappings, so it only drops its bookkeeping.
         fn release_all(&mut self) {
+            if self.fixed {
+                self.chunks.clear();
+                return;
+            }
             for (addr, size) in self.chunks.drain(..) {
                 let _ = channel_munmap(self.channel_base, addr, size);
             }
         }
     }
 
-    impl ChunkAllocator for ChannelMmapAllocator {
+    impl ChunkAllocator for FrameArena {
         fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
+            if self.fixed {
+                // Bump within the fixed region, page-aligning each chunk so the
+                // writer's page-alignment invariant matches the channel path.
+                // Exhaustion is a truthful `ENOMEM`, never a masked `EINVAL`.
+                let addr = self.fixed_next.checked_add(PAGE - 1).ok_or(Errno::ENOMEM)? & !(PAGE - 1);
+                let end = addr.checked_add(capacity).ok_or(Errno::ENOMEM)?;
+                if end > self.fixed_end {
+                    return Err(Errno::ENOMEM);
+                }
+                self.fixed_next = end;
+                self.chunks.push((addr, capacity));
+                return Ok(addr);
+            }
             let addr = channel_mmap(self.channel_base, capacity)?;
             self.chunks.push((addr, capacity));
             Ok(addr)
         }
 
         fn current_memory(&self) -> Option<(*mut u8, usize)> {
+            // A FIXED arena never grows memory, so the writer's existing slice
+            // stays valid — return `None` and keep it (see the trait doc).
+            if self.fixed {
+                return None;
+            }
             // `channel_mmap` grew the shared linear memory; hand the writer a
             // fresh (base, len) so the just-mapped high chunk is in bounds. Base
             // is wasm address 0 (see `mem_mut`); the length is re-queried live.
@@ -1145,7 +1200,7 @@ mod wasm {
     struct ActivationFrames {
         format: LinkedFrameFormat,
         writer: LinkedFrameWriter,
-        arena: ChannelMmapAllocator,
+        arena: FrameArena,
         driver: Option<RewindDriver>,
         committed_ordinals: Vec<u32>,
         module_buffer: u64,
@@ -1231,12 +1286,12 @@ mod wasm {
         module: &mut ForkModule,
         activation_id: u32,
         fmt: LinkedFrameFormat,
+        mut arena: FrameArena,
     ) -> Result<u64, Errno> {
         if module.activations.contains_key(&activation_id) {
             return Err(Errno::EINVAL); // activation already open in this fork
         }
         let mut writer = LinkedFrameWriter::new(fmt);
-        let mut arena = ChannelMmapAllocator::new(module.channel_base);
         // `begin_unwind` channel-mmaps the root chunk, which GROWS shared memory;
         // it re-derives its own memory view via `arena.current_memory`, so the
         // stale pre-grow `mem` slice below is only its entry view.
@@ -1290,11 +1345,66 @@ mod wasm {
         // One capture spans every activation: commits from all activations are
         // recorded in the single process-wide journal in interleaved order.
         module.journal.begin_capture()?;
-        let module_buffer = register_unwind_activation(&mut module, activation_id, fmt)?;
+        let arena = FrameArena::new_channel(channel_base);
+        let module_buffer = register_unwind_activation(&mut module, activation_id, fmt, arena)?;
 
         *state() = Some(module);
         PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
         Ok(module_buffer)
+    }
+
+    // -- In-realm FIXED-arena unwind (in-process test / no-servicer harness) --
+    //
+    // The production `fm_begin_unwind` grows the frame arena by issuing each
+    // chunk's `SYS_MMAP` through the guest syscall channel and blocking in-realm
+    // on `memory_atomic_wait32` until a host servicer wakes it. A single-threaded
+    // in-process harness (no worker) cannot service that blocking wait, so these
+    // sibling entries take a caller-owned, pre-reserved FIXED arena
+    // `[base, base + len)` and bump-allocate chunks within it — no channel, no
+    // memory grow, no servicer. They are otherwise byte-identical to the channel
+    // path (same journal, writer, resume table), so they exercise the exact
+    // multi-activation frame routing the production path does. They never
+    // allocate through the channel, so `channel_base` is left `0`; a fork opened
+    // this way must NOT also call `fm_serialize_journal_alloc` (which needs a
+    // real channel). Used only by host unit harnesses.
+
+    fn begin_unwind_fixed_arena_impl(activation_id: u32, base: u64, len: u64) -> Result<u64, Errno> {
+        let fmt = format()?;
+        // Reclaim the previous fork's state and heap before this fork.
+        *state() = None;
+        ALLOC.reset();
+        let mut module = ForkModule {
+            activations: BTreeMap::new(),
+            channel_base: 0,
+            extra_chunks: Vec::new(),
+            journal_image_ptr: 0,
+            journal_image_len: 0,
+            journal: ReplayEventJournal::new(),
+            table: ResumeSlotTable::new(),
+            replay_events: Vec::new(),
+        };
+        module.journal.begin_capture()?;
+        let arena = FrameArena::new_fixed(base, len);
+        let module_buffer = register_unwind_activation(&mut module, activation_id, fmt, arena)?;
+        *state() = Some(module);
+        PRIMARY_ACTIVATION.store(activation_id, Ordering::Relaxed);
+        Ok(module_buffer)
+    }
+
+    fn add_activation_unwind_fixed_arena_impl(
+        activation_id: u32,
+        base: u64,
+        len: u64,
+        fixed_prefix: u32,
+    ) -> Result<u64, Errno> {
+        let base_fmt = format()?;
+        let fmt = LinkedFrameFormat {
+            fixed_prefix_size: fixed_prefix,
+            ..base_fmt
+        };
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let arena = FrameArena::new_fixed(base, len);
+        register_unwind_activation(st, activation_id, fmt, arena)
     }
 
     /// Add ANOTHER activation to the fork already begun by `fm_begin_unwind`
@@ -1322,7 +1432,8 @@ mod wasm {
         if channel_base != st.channel_base {
             return Err(Errno::EINVAL);
         }
-        register_unwind_activation(st, activation_id, fmt)
+        let arena = FrameArena::new_channel(channel_base);
+        register_unwind_activation(st, activation_id, fmt, arena)
     }
 
     fn reserve_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
@@ -1631,7 +1742,7 @@ mod wasm {
                 // A replay-only child mmaps nothing: `channel_base == 0` and the
                 // `replay_only` guard rejects any reserve/commit, so `allocate`
                 // is never called.
-                arena: ChannelMmapAllocator::new(0),
+                arena: FrameArena::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -1705,7 +1816,7 @@ mod wasm {
                 format: fmt,
                 writer: LinkedFrameWriter::new(fmt),
                 // Replay-only side activation: mmaps nothing (see the primary).
-                arena: ChannelMmapAllocator::new(0),
+                arena: FrameArena::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2234,6 +2345,60 @@ mod wasm {
         fixed_prefix: u32,
     ) -> usize {
         match add_activation_unwind_impl(activation_id, channel_base as u64, fixed_prefix) {
+            Ok(module_buffer) => {
+                set_ok();
+                module_buffer as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Begin a fork unwind for `activation_id` over a caller-owned FIXED arena
+    /// `[base, base + len)` instead of the channel-mmap growing arena — the
+    /// in-realm, no-servicer entry for single-threaded in-process harnesses (see
+    /// `begin_unwind_fixed_arena_impl`). Returns the module-buffer anchor (0 on
+    /// failure; check `fm_last_errno`). NOT a production fork path: the resulting
+    /// fork allocates nothing through the channel and must not serialize its
+    /// journal.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_unwind_fixed_arena(
+        activation_id: u32,
+        base: usize,
+        len: usize,
+    ) -> usize {
+        match begin_unwind_fixed_arena_impl(activation_id, base as u64, len as u64) {
+            Ok(module_buffer) => {
+                set_ok();
+                module_buffer as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Add ANOTHER activation to a FIXED-arena unwind begun by
+    /// `fm_begin_unwind_fixed_arena`, over its own caller-owned FIXED arena
+    /// `[base, base + len)` and its own `fixed_prefix`. The in-realm sibling of
+    /// `fm_add_activation_unwind`. Returns the activation's module-buffer anchor
+    /// (0 on failure; check `fm_last_errno`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_add_activation_unwind_fixed_arena(
+        activation_id: u32,
+        base: usize,
+        len: usize,
+        fixed_prefix: u32,
+    ) -> usize {
+        match add_activation_unwind_fixed_arena_impl(
+            activation_id,
+            base as u64,
+            len as u64,
+            fixed_prefix,
+        ) {
             Ok(module_buffer) => {
                 set_ok();
                 module_buffer as usize
