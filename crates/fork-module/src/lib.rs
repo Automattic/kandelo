@@ -142,7 +142,7 @@ mod wasm {
 
     use fork_codec::{
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
-        drive_plan, encode_replay_events, ChunkAllocator, ForkHostCapabilities, HostGeneration,
+        drive_plan, encode_replay_events, ChunkAllocator,
         LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceReplayDriver, ReferenceReplayFeed, ReferenceTransactionRecord, ReplayEvent,
         ReplayEventJournal, ResumeSlotTable, RewindDriver,
@@ -601,29 +601,21 @@ mod wasm {
     /// graph, with `GcCodecHints` supplying the per-recipe GC-layout facts from the
     /// seeded per-activation catalogs. Requires `fm_begin_reference_replay` to have
     /// seeded the driver (its `drive_reconstruction` opened the host generation and
-    /// transit-rooted the reachable externref leaves the guest fill reads). The
-    /// generation `fm_after_alloc`'s R1 read runs under is the one that drive left
-    /// live; if it opened none (a graph with no host-backed references), open one
-    /// here so every typed ALLOC's transit read-back has a scope.
-    fn build_gc_plan_impl(pid: u32) -> Result<usize, Errno> {
+    /// transit-rooted the reachable externref leaves the guest fill reads).
+    ///
+    /// The post-allocate integrity guard the injected `fm_drive_execute` shim runs
+    /// after each ALLOC step reads STORE #2 — the guest's shared Wasm-GC transit
+    /// table (`__wpk_fork_ref_gc_transit`) at slot `recipe + 1` — which the guest's
+    /// `_gc_allocate` publishes into. That is a pure wasm `table.get` + `ref.is_null`
+    /// in the shim (Rust holds no `anyref`), so this planner opens no host
+    /// generation for it and stores no R1 state.
+    fn build_gc_plan_impl(_pid: u32) -> Result<usize, Errno> {
         let driver = reference_state().as_ref().ok_or(Errno::EINVAL)?;
         let nodes = &driver.transaction().nodes;
 
         let gc_codecs = decoded_gc_codecs()?;
         let hints = fork_codec::GcCodecHints::new(nodes, &gc_codecs, host_exception_owner())?;
         let steps = drive_plan::build_drive_plan(nodes, &hints)?;
-
-        // Seed the R1-assert generation. Prefer the one `fm_begin_reference_replay`
-        // left live (its transit-rooted externref leaves are under it); open a
-        // fresh scope only when the reconstruction needed none.
-        let generation = match reconstruction_state().as_ref().map(|state| state.generation().0) {
-            Some(existing) if existing != 0 => existing,
-            _ => {
-                let mut host = WpkForkHost;
-                host.begin_generation(pid)?.0
-            }
-        };
-        DRIVE_GENERATION.store(generation, Ordering::Relaxed);
 
         let mut buf = Vec::new();
         buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
@@ -785,16 +777,12 @@ mod wasm {
     // The injected `fm_drive_execute(plan_ptr, count)` shim (crates/fork-module-
     // inject) loops a serialized drive PLAN and `call_indirect`s the guest's
     // `_gc_allocate`/`_gc_fill` exports through the host-bound
-    // `env.__wpk_fork_drive_table`, then `call`s `fm_after_alloc(recipe)` after
-    // each ALLOC step for the R1 transit-read assert. This slice proves the
-    // MECHANISM on a trivial single struct; the full topological plan-from-graph
-    // walk (R1/R2 order + cycle breaking) is item 3c.
-
-    // The host generation `fm_build_trivial_plan` opened (PHASE A) so
-    // `fm_after_alloc` can read the transit slot the guest's `_gc_allocate` +
-    // PHASE-B rooting published. 0 == not seeded (fm_after_alloc then traps,
-    // never silently passes an R1 assert with no generation).
-    static DRIVE_GENERATION: AtomicU32 = AtomicU32::new(0);
+    // `env.__wpk_fork_drive_table`, then — after each ALLOC step — reads STORE #2
+    // (the guest's shared Wasm-GC transit table `env.__wpk_fork_ref_gc_transit`)
+    // at slot `recipe + 1` with a wasm `table.get` + `ref.is_null` to assert the
+    // guest's `_gc_allocate` published a live GC object there, trapping otherwise.
+    // That integrity guard lives entirely in the injected wasm (Rust holds no
+    // `anyref`), so the module keeps no host-generation R1 state for it.
 
     // Owns the serialized drive plan's backing bytes so the pointer
     // `fm_build_trivial_plan` returns stays valid while the shim reads it. Held
@@ -805,14 +793,10 @@ mod wasm {
     unsafe impl Sync for DrivePlanCell {}
     static DRIVE_PLAN: DrivePlanCell = DrivePlanCell(UnsafeCell::new(None));
 
-    fn build_trivial_plan_impl(activation: u32, recipe: u32, pid: u32) -> Result<usize, Errno> {
-        // PHASE A: open the host root generation so `fm_after_alloc`'s R1 read has
-        // a generation to read the transit slot under (mirrors what
-        // `fm_begin_reference_replay` does before the real drive).
-        let mut host = WpkForkHost;
-        let generation = host.begin_generation(pid)?;
-        DRIVE_GENERATION.store(generation.0, Ordering::Relaxed);
-
+    fn build_trivial_plan_impl(activation: u32, recipe: u32, _pid: u32) -> Result<usize, Errno> {
+        // The injected shim's post-ALLOC integrity guard reads STORE #2 (the
+        // guest's Wasm-GC transit table) directly, so no host generation is opened
+        // here.
         // Serialize the trivial ALLOC-then-FILL plan into a module-owned buffer;
         // its guest address is what `fm_drive_execute` strides over.
         let steps = drive_plan::trivial_struct_plan(activation, recipe);
@@ -826,19 +810,6 @@ mod wasm {
             *DRIVE_PLAN.0.get() = Some(buf);
         }
         Ok(ptr)
-    }
-
-    fn after_alloc_impl(recipe: u32) -> Result<(), Errno> {
-        let generation = DRIVE_GENERATION.load(Ordering::Relaxed);
-        if generation == 0 {
-            return Err(Errno::EINVAL);
-        }
-        // R1: the transit slot `recipe + 1` must hold a live identity. The seam's
-        // `transit_read` returns `Err` for a null/moved slot, so the export traps
-        // rather than let a corrupt GC graph continue.
-        let mut host = WpkForkHost;
-        host.transit_read(HostGeneration(generation), recipe + 1)?;
-        Ok(())
     }
 
     fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
@@ -2711,10 +2682,11 @@ mod wasm {
 
     /// Serialize a TRIVIAL single-struct drive plan (ALLOC then FILL for one
     /// `recipe` in `activation`) into a module-owned scratch buffer and return its
-    /// guest address for `fm_drive_execute`. Opens a host generation via the
-    /// engine-floor seam so `fm_after_alloc`'s R1 read has a scope. Returns 0 on
-    /// failure (check `fm_last_errno`). This proves the drive MECHANISM; item 3c
-    /// builds the real plan by walking the decoded reference graph.
+    /// guest address for `fm_drive_execute`. The shim's post-ALLOC integrity guard
+    /// reads STORE #2 (the guest's Wasm-GC transit table) directly, so no host
+    /// generation is opened here. Returns 0 on failure (check `fm_last_errno`).
+    /// This proves the drive MECHANISM; item 3c builds the real plan by walking
+    /// the decoded reference graph.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_build_trivial_plan(activation: u32, recipe: u32, pid: u32) -> usize {
         match build_trivial_plan_impl(activation, recipe, pid) {
@@ -2763,19 +2735,6 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_plan_count() -> i32 {
         GC_PLAN_COUNT.load(Ordering::Relaxed) as i32
-    }
-
-    /// The R1 transit-read assert the injected `fm_drive_execute` shim `call`s
-    /// after each ALLOC step (item 3b). Reads the transit slot `recipe + 1`
-    /// through the engine-floor seam and TRAPS (`unreachable`) if it is
-    /// null/moved — the guest's `_gc_allocate` must have published a live
-    /// aggregate identity there. A lost slot is silent GC corruption, so a hard
-    /// trap is the only truthful outcome (same discipline as `fm_funcref_ordinal`).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_after_alloc(recipe: u32) {
-        if after_alloc_impl(recipe).is_err() {
-            wasm_intr::unreachable();
-        }
     }
 
     /// The sticky errno of the most recent export call (0 == success).

@@ -12,8 +12,9 @@
 //! buffer in guest memory; an injected walrus SHIM `fm_drive_execute(plan_ptr,
 //! count)` (see `crates/fork-module-inject`) loops the serialized plan and
 //! `call_indirect`s the table slot for each step, then — after each ALLOC —
-//! `call`s the module's Rust `fm_after_alloc(recipe)` for the R1 transit-read
-//! assert.
+//! reads the guest's shared Wasm-GC transit table (STORE #2) at slot `recipe + 1`
+//! with a wasm `table.get` + `ref.is_null` to assert the guest's `_gc_allocate`
+//! published a live GC object there (trapping otherwise).
 //!
 //! Item 3b built ONLY the mechanism, proven on a TRIVIAL single struct (ALLOC
 //! then FILL for one recipe): [`trivial_struct_plan`]. Item 3c adds the FULL
@@ -29,7 +30,7 @@
 //! ```text
 //!   +0  op      u32   DRIVE_OP_ALLOC (0) | DRIVE_OP_FILL (1) | DRIVE_OP_EXN (2)
 //!   +4  slot    u32   absolute drive-table index = base(activation) + op
-//!   +8  recipe  u32   reference recipe id (fm_after_alloc reads transit slot recipe+1)
+//!   +8  recipe  u32   reference recipe id (shim reads GC transit slot recipe+1)
 //!   +12 arg     u32   the i32 argument passed to the guest export via call_indirect
 //! ```
 
@@ -45,14 +46,15 @@ pub const DRIVE_STEP_OFF_SLOT: usize = 4;
 pub const DRIVE_STEP_OFF_RECIPE: usize = 8;
 pub const DRIVE_STEP_OFF_ARG: usize = 12;
 
-/// `op` value: allocate the aggregate (`_gc_allocate`). The shim calls
-/// `fm_after_alloc(recipe)` after an ALLOC step for the R1 transit-read assert.
+/// `op` value: allocate the aggregate (`_gc_allocate`). After an ALLOC step the
+/// shim reads the guest's Wasm-GC transit table (STORE #2) at slot `recipe + 1`
+/// with `table.get` + `ref.is_null` to assert the guest published a live object.
 pub const DRIVE_OP_ALLOC: u32 = 0;
 /// `op` value: fill the aggregate's scalars/edges (`_gc_fill`).
 pub const DRIVE_OP_FILL: u32 = 1;
 /// `op` value: materialize an exception (`__wpk_fork_exception_materialize`).
 /// Like ALLOC/FILL this is a `(i32) -> ()` guest export the shim
-/// `call_indirect`s; UNLIKE ALLOC it runs NO `fm_after_alloc` R1 assert (the
+/// `call_indirect`s; UNLIKE ALLOC it runs NO store-#2 transit assert (the
 /// guest export throws/`catch_ref`s against its own module-local tag and the
 /// exnref's reachable externref payloads were already transit-rooted by
 /// `ReferenceReplayDriver::drive_reconstruction` PHASE B). Mirrors the JS

@@ -20,6 +20,8 @@
 // guest fork import: the guest still uses the JavaScript `continuationImports`
 // closures. Wiring the import flip is a later D5 step.
 
+import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
+
 /** Exports the guest-facing continuation ABI plus the module lifecycle hooks. */
 export const FORK_MODULE_REQUIRED_EXPORTS = [
   "__wpk_fork_frame_reserve",
@@ -113,16 +115,19 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // from the module.
   //  - `fm_drive_execute` is the walrus-injected wasm loop (Rust cannot emit
   //    `call_indirect`): it strides a serialized drive PLAN, `call_indirect`s the
-  //    host-bound `__wpk_fork_drive_table` slot for each step, and `call`s
-  //    `fm_after_alloc` after each ALLOC step.
-  //  - `fm_after_alloc` is the R1 transit-read assert (traps on a null/moved slot).
+  //    host-bound `__wpk_fork_drive_table` slot for each step, and after each
+  //    ALLOC step reads STORE #2 (the guest's shared Wasm-GC transit table
+  //    `__wpk_fork_ref_gc_transit`) at slot `recipe + 1` with a wasm `table.get` +
+  //    `ref.is_null` to assert the guest's `_gc_allocate` published a live GC
+  //    object there, trapping (`unreachable`) otherwise. That post-allocate
+  //    integrity guard is injected wasm, not a Rust export, because Rust holds no
+  //    `anyref`.
   //  - `fm_drive_table_base` gives the host the first drive-table slot for an
   //    activation, so the host binds `_gc_allocate`/`_gc_fill` at the slots the
   //    Rust plan encodes.
   // The full topological plan-from-graph drive (which flips the JS
   // `materializeTypedGraph` order to the module) is item 3c.
   "fm_drive_execute",
-  "fm_after_alloc",
   "fm_drive_table_base",
 ] as const;
 
@@ -174,6 +179,23 @@ export interface InstantiateForkModuleOptions {
    */
   driveTable?: WebAssembly.Table;
   /**
+   * The shared Wasm-GC transit table (`anyref`) the guest's `_gc_allocate`
+   * publishes every reconstructed struct/array/i31 into at slot `recipe + 1`
+   * (STORE #2), which the module's injected `fm_drive_execute` reads back with
+   * `table.get` + `ref.is_null` after each ALLOC step to assert a live object
+   * survived. For the drive's store-#2 check to see what the guest published,
+   * this MUST be the SAME `WebAssembly.Table` object the guest imports as
+   * `env.__wpk_fork_ref_gc_transit` (in production, the process worker's
+   * `ForkActivationRegistry.gcTransitTable()`). When omitted (tests / forks that
+   * never run the module drive) a fresh host-owned `anyref` table is created via
+   * the ABI-43 Wasm-GC transit provider; the module never reads it unless the
+   * host both binds the guest `_gc_allocate`/`_gc_fill` exports and calls
+   * `fm_drive_execute`, so an unshared default is inert and flag-off
+   * byte-identical. JavaScript cannot construct an `anyref` table directly on
+   * every engine, so the default is minted through `ForkAnyrefTransitTable`.
+   */
+  transitTable?: WebAssembly.Table;
+  /**
    * Real engine-floor `wpk_fork_host.*` import bodies (Phase 6 D6.2). The
    * co-resident module DECLARES the whole engine-floor seam
    * (`crates/fork-module/src/host_capabilities.rs`); its `WpkForkHost` routes
@@ -209,6 +231,14 @@ export interface ForkModuleInstance {
    * `_gc_allocate`/`_gc_fill` exports into it once the guest instances exist.
    */
   driveTable: WebAssembly.Table;
+  /**
+   * The shared Wasm-GC transit table (`anyref`, STORE #2) the module's injected
+   * `fm_drive_execute` reads after each ALLOC step. Bound to the module's
+   * `env.__wpk_fork_ref_gc_transit` import; in production this is the process
+   * worker's guest transit table so the drive's integrity check sees what the
+   * guest published.
+   */
+  transitTable: WebAssembly.Table;
 }
 
 /**
@@ -341,6 +371,16 @@ export function instantiateForkModule(
   const driveTable =
     options.driveTable ??
     new WebAssembly.Table({ element: "anyfunc", initial: 0 });
+  // The shared Wasm-GC transit table (`anyref`, STORE #2) the module's injected
+  // `fm_drive_execute` reads after each ALLOC step. In production the caller
+  // passes the process worker's guest transit table so the drive's integrity
+  // check sees what the guest's `_gc_allocate` published; when omitted (tests /
+  // forks that never run the module drive) a fresh host-owned `anyref` table is
+  // minted through the ABI-43 Wasm-GC transit provider (JavaScript cannot build
+  // an `anyref` table directly on every engine). Inert until the host both binds
+  // the guest exports into the drive table and calls `fm_drive_execute`.
+  const transitTable =
+    options.transitTable ?? new ForkAnyrefTransitTable().table;
 
   // The module DECLARES the `wpk_fork_host.*` engine-floor seam imports (Phase 6
   // D6, `crates/fork-module/src/host_capabilities.rs`). For the externref path
@@ -360,6 +400,7 @@ export function instantiateForkModule(
       __indirect_function_table: table,
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
+      __wpk_fork_ref_gc_transit: transitTable,
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
       __stack_pointer: stackPointerGlobal,
@@ -396,5 +437,6 @@ export function instantiateForkModule(
     table,
     functionCatalog,
     driveTable,
+    transitTable,
   };
 }
