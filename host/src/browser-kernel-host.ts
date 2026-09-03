@@ -28,6 +28,9 @@ import {
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
+import opfsProxyWorkerUrl from "./vfs/opfs-worker.ts?worker&url";
+import { OPFS_CHANNEL_SIZE } from "./vfs/opfs-channel";
+import type { OpfsMountInit } from "./browser-kernel-protocol";
 import {
   DEFAULT_MAX_PAGES,
   DEFAULT_MAX_WORKERS,
@@ -51,6 +54,23 @@ const defaultPcmWorkletUrl = new URL(
   "./audio/pcm-audio-worklet.js",
   import.meta.url,
 );
+
+const OPFS_PROXY_INIT_TIMEOUT_MS = 15_000;
+
+/**
+ * One browser-storage-backed mount request for {@link BrowserKernel.boot} /
+ * {@link BrowserKernel.initFromImage}. The workspace's file data lives in
+ * origin storage (OPFS), not in kernel memory, and persists across boots and
+ * page reloads within the same browser profile and origin. The browser may
+ * still evict best-effort origin storage; this is not a verified or
+ * shareable platform image.
+ */
+export interface BrowserKernelOpfsMount {
+  /** Absolute VFS mount point, e.g. "/persist". */
+  path: string;
+  /** Origin-scoped OPFS workspace name. */
+  name: string;
+}
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -147,6 +167,14 @@ export interface BrowserKernelBootOptions {
   closedLazyAssets?: readonly ClosedLazyAsset[];
   /** Exact image/scratch mount contract for this boot. */
   rootfsMountSpec?: readonly MountSpec[];
+  /**
+   * Browser-storage-backed mounts. Each entry mounts a persistent,
+   * origin-scoped OPFS workspace at `path` through the normal VFS mount
+   * path; file data lives in origin storage rather than kernel memory.
+   * Workspace names are exclusive per origin: a workspace already mounted
+   * by another tab or kernel fails the boot loudly.
+   */
+  opfsMounts?: readonly BrowserKernelOpfsMount[];
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -255,6 +283,8 @@ export class BrowserKernel {
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
+  /** Live OPFS proxy workers plus their per-workspace Web Lock releasers. */
+  private opfsWorkers: Array<{ worker: Worker; releaseLock: () => void }> = [];
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -325,6 +355,7 @@ export class BrowserKernel {
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
+    opfsMounts?: readonly BrowserKernelOpfsMount[];
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -342,6 +373,7 @@ export class BrowserKernel {
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
+      opfsMounts: options.opfsMounts,
       takeVfsImageOwnership: false,
     });
   }
@@ -375,6 +407,140 @@ export class BrowserKernel {
   }
 
   /**
+   * Acquire the exclusive per-origin Web Lock for one OPFS workspace.
+   * Returns a releaser the caller must invoke on teardown. Multiple
+   * concurrent proxy workers over the same workspace are not a supported
+   * coherence model, so a held lock fails the mount loudly instead of
+   * racing another tab's writes.
+   */
+  private async acquireOpfsWorkspaceLock(name: string): Promise<() => void> {
+    const locks: LockManager | undefined = (navigator as Navigator & {
+      locks?: LockManager;
+    }).locks;
+    if (locks === undefined) {
+      throw new Error(
+        "OPFS workspace mounts require the Web Locks API to guarantee a " +
+        "single writer per workspace; this browser does not expose navigator.locks",
+      );
+    }
+    return await new Promise<() => void>((resolve, reject) => {
+      void locks
+        .request(
+          `kandelo-opfs-workspace:${name}`,
+          { ifAvailable: true },
+          (lock) => {
+            if (lock === null) {
+              reject(new Error(
+                `OPFS workspace "${name}" is already mounted by another ` +
+                `kernel or tab on this origin`,
+              ));
+              return;
+            }
+            // The lock is held as long as this callback's promise is
+            // pending; the resolver we hand out is the releaser.
+            return new Promise<void>((release) => resolve(() => release()));
+          },
+        )
+        .catch(reject);
+    });
+  }
+
+  /** Complete one proxy worker's init/ready handshake or fail loudly. */
+  private async initOpfsProxyWorker(
+    worker: Worker,
+    channelSab: SharedArrayBuffer,
+    workspace: string,
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(
+          `OPFS proxy worker for workspace "${workspace}" timed out during init`,
+        ));
+      }, OPFS_PROXY_INIT_TIMEOUT_MS);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        worker.removeEventListener("message", onMessage);
+        worker.removeEventListener("error", onError);
+      };
+      const onMessage = (event: MessageEvent) => {
+        if (event.data?.type === "ready") {
+          cleanup();
+          resolve();
+        } else if (event.data?.type === "error") {
+          cleanup();
+          reject(new Error(
+            `OPFS proxy worker init failed for workspace "${workspace}": ` +
+            `${event.data.error}`,
+          ));
+        }
+      };
+      const onError = (event: ErrorEvent) => {
+        cleanup();
+        reject(new Error(
+          `OPFS proxy worker error for workspace "${workspace}": ` +
+          `${event.message || "worker module failed to load"}`,
+        ));
+      };
+      worker.addEventListener("message", onMessage);
+      worker.addEventListener("error", onError);
+      worker.postMessage({ type: "init", buffer: channelSab, workspace });
+    });
+  }
+
+  private async setUpOpfsMounts(
+    mounts: readonly BrowserKernelOpfsMount[],
+  ): Promise<OpfsMountInit[]> {
+    const inits: OpfsMountInit[] = [];
+    // Validate the whole request before taking any lock or starting any
+    // worker: a duplicate that the kernel worker would reject later must
+    // not leave locks and proxies alive until destroy().
+    const seenNames = new Set<string>();
+    const seenPaths = new Set<string>();
+    for (const mount of mounts) {
+      if (seenNames.has(mount.name)) {
+        throw new Error(`duplicate OPFS workspace name: ${mount.name}`);
+      }
+      if (seenPaths.has(mount.path)) {
+        throw new Error(`duplicate OPFS mount path: ${mount.path}`);
+      }
+      seenNames.add(mount.name);
+      seenPaths.add(mount.path);
+    }
+    for (const mount of mounts) {
+      const releaseLock = await this.acquireOpfsWorkspaceLock(mount.name);
+      let worker: Worker;
+      try {
+        worker = new Worker(opfsProxyWorkerUrl, { type: "module" });
+      } catch (error) {
+        releaseLock();
+        throw error;
+      }
+      this.opfsWorkers.push({ worker, releaseLock });
+      const channelSab = new SharedArrayBuffer(OPFS_CHANNEL_SIZE);
+      await this.initOpfsProxyWorker(worker, channelSab, mount.name);
+      inits.push({ path: mount.path, name: mount.name, channelSab });
+    }
+    return inits;
+  }
+
+  private teardownOpfsMounts(): void {
+    for (const { worker, releaseLock } of this.opfsWorkers) {
+      try {
+        worker.terminate();
+      } catch {
+        // Worker already gone.
+      }
+      try {
+        releaseLock();
+      } catch {
+        // Lock already released.
+      }
+    }
+    this.opfsWorkers.length = 0;
+  }
+
+  /**
    * Internal: set up the kernel worker, attach handlers, send the init
    * message (with the demo's `vfsImage`), and await ready.
    */
@@ -384,6 +550,7 @@ export class BrowserKernel {
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
+    opfsMounts?: readonly BrowserKernelOpfsMount[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
     if (
@@ -402,8 +569,27 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
-    // Create the kernel worker
-    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    // Set up OPFS-backed mounts before the kernel worker exists: each
+    // workspace takes an exclusive Web Lock and completes its proxy-worker
+    // handshake so the kernel never boots against an unbacked channel.
+    let opfsMountInits: OpfsMountInit[] | undefined;
+    if (opts.opfsMounts !== undefined && opts.opfsMounts.length > 0) {
+      try {
+        opfsMountInits = await this.setUpOpfsMounts(opts.opfsMounts);
+      } catch (error) {
+        this.teardownOpfsMounts();
+        throw error;
+      }
+    }
+    // Create the kernel worker. From here on, init failures go through
+    // destroy(), which releases the OPFS proxies and locks; a failure to
+    // construct the worker at all must release them here.
+    try {
+      this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    } catch (error) {
+      this.teardownOpfsMounts();
+      throw error;
+    }
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -480,6 +666,7 @@ export class BrowserKernel {
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
+          opfsMounts: opfsMountInits,
           shmSab: this.shmSab,
           workerEntryUrl,
           config: {
@@ -1245,7 +1432,12 @@ export class BrowserKernel {
 
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
-    if (!this.workerStarted) return;
+    if (!this.workerStarted) {
+      // A boot that failed before the kernel worker existed can still hold
+      // OPFS proxy workers and workspace locks.
+      this.teardownOpfsMounts();
+      return;
+    }
     let gracefulDetachFailure: string | undefined;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
@@ -1274,6 +1466,9 @@ export class BrowserKernel {
         "kernel-worker realm termination failed: " +
         (error instanceof Error ? error.message : String(error));
     }
+    // The kernel worker is gone, so no syscall can still be blocked on an
+    // OPFS channel; release the proxy workers and workspace locks.
+    this.teardownOpfsMounts();
     this.workerStarted = false;
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();

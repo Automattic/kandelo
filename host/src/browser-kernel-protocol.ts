@@ -60,6 +60,22 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
 
 // ── Main Thread → Kernel Worker ──
 
+/**
+ * One browser-storage-backed mount for the kernel worker to resolve through
+ * the `opfs` mount source. The main thread owns the proxy-worker lifecycle:
+ * it spawns the `OpfsProxyWorker` for the named workspace, waits for its
+ * ready/error handshake, and only then passes the channel here. File data
+ * for these mounts lives in origin storage, not in kernel memory.
+ */
+export interface OpfsMountInit {
+  /** Absolute VFS mount point, e.g. "/persist". */
+  path: string;
+  /** Origin-scoped OPFS workspace name backing this mount. */
+  name: string;
+  /** Channel SAB whose OpfsProxyWorker the main thread already initialized. */
+  channelSab: SharedArrayBuffer;
+}
+
 export interface InitMessage {
   type: "init";
   kernelWasmBytes: ArrayBuffer;
@@ -77,6 +93,8 @@ export interface InitMessage {
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
+  /** Browser-storage-backed mounts resolved through the `opfs` mount source. */
+  opfsMounts?: OpfsMountInit[];
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;

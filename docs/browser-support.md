@@ -185,14 +185,25 @@ pipe pair.
   by recreation is a different identity. Device and inode cross the OPFS
   channel as exact unsigned 64-bit integers. A browser that lacks the required
   identity or move primitive reports the unsupported boundary rather than
-  substituting a pathname identity. The OPFS proxy owns namespace mutation for
-  its origin during a session and sweeps its hidden unlink-while-open orphan
-  directory at startup; running multiple independent proxy workers against the
-  same origin concurrently is not a supported coherence model. Regular-file
-  `fsync()` calls the browser's file-handle `flush()` operation. Directory
-  `fsync()` succeeds after already-completed directory operations because the
-  File System API exposes no directory flush primitive; it is not an
-  additional crash-durability barrier.
+  substituting a pathname identity. Each proxy is scoped to one named
+  workspace at `kandelo-opfs/<name>/` under the origin root and owns namespace
+  mutation for that workspace during a session, including the startup sweep of
+  its hidden unlink-while-open orphan directory. Running multiple independent
+  proxy workers against the same workspace concurrently is not a supported
+  coherence model, so the host takes an exclusive Web Lock per workspace and
+  fails a boot that cannot acquire it. Regular-file `fsync()` calls the
+  browser's file-handle `flush()` operation. Directory `fsync()` succeeds after
+  already-completed directory operations because the File System API exposes no
+  directory flush primitive; it is not an additional crash-durability barrier.
+  OPFS stores no permission bits, so the backend synthesizes them the way Linux
+  synthesizes modes for permissionless filesystems such as vfat: `0777` for
+  directories and `0666` for regular files, owned by uid/gid 0. The
+  world-writable bits are what let non-root guest processes use the mount
+  despite that ownership, and `chmod` and `chown` are no-ops against them.
+  OPFS stores no timestamps either, so
+  `utimensat` is a no-op and `stat` reports the time of the call. `link`,
+  `symlink`, and `readlink` return `ENOTSUP`, and readdir entries carry inode
+  number 0 even where `stat` reports the session-scoped token.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
 - Stable-identity regular files, including OPFS regular files on supported
   browsers, can be shared across process memories through the host mapping
@@ -203,6 +214,46 @@ pipe pair.
   backend-qualified identity. If a filesystem backend cannot provide a stable,
   exact identity, locking fails truthfully with `ENOLCK`; it never falls back
   to hashing the remembered path.
+
+### Browser storage persistence (`opfs` mounts)
+
+A boot can mount a named, origin-scoped OPFS workspace at a path of its choice,
+either through `BrowserKernel.boot({ opfsMounts: [{ path, name }] })` or through
+a boot descriptor mount `{ path, source: "opfs", name }`. What such a mount
+promises:
+
+- Files written under it survive kernel destroy, reboot, and full page reloads
+  in the same browser profile on the same origin, short of the browser
+  evicting that origin's storage (see durability below).
+- `statfs` reports the origin quota from `navigator.storage.estimate()`, so
+  `df` on the mount describes the real backing store rather than a memory
+  ceiling.
+
+What it does not promise:
+
+- **Durability.** This is best-effort origin storage. The browser may evict it
+  under storage pressure and the user can clear it with site data; Kandelo does
+  not call `navigator.storage.persist()`.
+- **Portability.** A workspace belongs to one browser profile on one origin. It
+  is not verified, is not exported in a VFS image, and its contents are not
+  carried in a share link. A shared descriptor transports only the mount point
+  and workspace name, so opening it elsewhere resolves to whatever workspace
+  exists locally under that name, usually an empty one.
+- **Concurrency.** One kernel per workspace at a time. The main thread holds the
+  exclusive Web Lock `kandelo-opfs-workspace:<name>` for the machine's lifetime,
+  so a second tab or a second kernel asking for the same workspace fails its
+  boot with an explicit error instead of racing another writer.
+
+Boot-time failures are loud: missing OPFS, a held workspace lock, a malformed
+workspace name, and an uninitialized proxy channel each reject the boot with a
+specific error. A requested workspace is never silently replaced by memory.
+
+Chromium and Firefox pass the mount persistence spec
+(`opfs-mount-boot.spec.ts`, `opfs-mount-cross-browser.spec.ts`). WebKit's OPFS
+surface is unavailable in this repository's Playwright harness, so the boot
+there rejects with an explicit proxy-init error naming the workspace; the
+cross-browser spec pins that as the required failure mode. The older
+per-backend OPFS specs still self-skip outside Chromium.
 
 ### Terminal
 - PTY support with full line discipline

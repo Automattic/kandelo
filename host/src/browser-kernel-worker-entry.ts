@@ -44,6 +44,7 @@ import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
+import { ensureMountPointDirectories } from "./vfs/default-mounts";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
@@ -1051,10 +1052,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const specMounts = await restoreBrowserKernelInitMounts(
     msg.vfsImage,
     msg.rootfsMountSpec,
+    { opfsMounts: msg.opfsMounts },
   );
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
+  if (msg.opfsMounts?.length) {
+    // POSIX mounts sit on existing directories. The opfs backend owns the
+    // subtree, but the mount point itself must exist in whichever mount owns
+    // its parent, so path walks and the parent's listing reflect the real
+    // mount table even when the workspace is nested under a scratch mount.
+    ensureMountPointDirectories(
+      specMounts,
+      msg.opfsMounts.map((m) => m.path),
+    );
+  }
   if (msg.lazyUrlBase) {
     memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
     memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));

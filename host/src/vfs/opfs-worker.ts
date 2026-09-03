@@ -93,6 +93,10 @@ const STATFS_NAME_MAX = 255;
 const OPFS_DEVICE_ID = 0n;
 const MAX_U64 = (1n << 64n) - 1n;
 const OPFS_ORPHAN_DIRECTORY = ".kandelo-opfs-unlinked-v1";
+/** Origin-root container that holds one directory per named workspace. */
+const OPFS_WORKSPACE_CONTAINER = "kandelo-opfs";
+/** Mirrors OPFS_WORKSPACE_NAME_PATTERN in default-mounts.ts. */
+const OPFS_WORKSPACE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 // --- Channel accessor helpers (offsets matching opfs-channel.ts) ---
 
@@ -932,7 +936,7 @@ async function handleFstat(): Promise<void> {
       // Directory opened via open(O_DIRECTORY)
       const now = Date.now();
       channel.writeStatResult({
-        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o777, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
@@ -942,7 +946,7 @@ async function handleFstat(): Promise<void> {
       channel.writeStatResult({
         dev: OPFS_DEVICE_ID,
         ino: identity.ino,
-        mode: S_IFREG | 0o644,
+        mode: S_IFREG | 0o666,
         nlink: identity.publicPath === null ? 0 : 1,
         uid: 0, gid: 0, size,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
@@ -1025,7 +1029,7 @@ async function handleStat(isLstat: boolean): Promise<void> {
       // Root directory
       const now = Date.now();
       channel.writeStatResult({
-        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o777, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
@@ -1042,7 +1046,7 @@ async function handleStat(isLstat: boolean): Promise<void> {
       await dir.getDirectoryHandle(name);
       const now = Date.now();
       channel.writeStatResult({
-        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o755, nlink: 1,
+        dev: OPFS_DEVICE_ID, ino: 0n, mode: S_IFDIR | 0o777, nlink: 1,
         uid: 0, gid: 0, size: 0,
         atimeMs: now, mtimeMs: now, ctimeMs: now,
       });
@@ -1066,7 +1070,7 @@ async function handleStat(isLstat: boolean): Promise<void> {
     channel.writeStatResult({
       dev: OPFS_DEVICE_ID,
       ino: identity.ino,
-      mode: S_IFREG | 0o644,
+      mode: S_IFREG | 0o666,
       nlink: 1,
       uid: 0, gid: 0, size,
       atimeMs: now, mtimeMs: now, ctimeMs: now,
@@ -1427,15 +1431,38 @@ async function pollLoop(): Promise<void> {
 // --- Worker message handler ---
 
 self.onmessage = async (event: MessageEvent) => {
-  const { type, buffer } = event.data;
+  const { type, buffer, workspace } = event.data;
   if (type !== "init") return;
 
   channel = new WorkerChannel(buffer);
-  opfsRoot = await navigator.storage.getDirectory();
-  orphanDirectory = await opfsRoot.getDirectoryHandle(OPFS_ORPHAN_DIRECTORY, {
-    create: true,
-  });
-  await removeStaleOrphans();
+  try {
+    let root = await navigator.storage.getDirectory();
+    if (workspace !== undefined) {
+      // A named workspace scopes the whole proxy (including the orphan
+      // directory and its sweep) to one origin-root subdirectory, so
+      // distinct workspaces never share namespace state.
+      if (typeof workspace !== "string" || !OPFS_WORKSPACE_NAME_RE.test(workspace)) {
+        throw new Error(`invalid OPFS workspace name: ${JSON.stringify(workspace)}`);
+      }
+      const container = await root.getDirectoryHandle(OPFS_WORKSPACE_CONTAINER, {
+        create: true,
+      });
+      root = await container.getDirectoryHandle(workspace, { create: true });
+    }
+    opfsRoot = root;
+    orphanDirectory = await opfsRoot.getDirectoryHandle(OPFS_ORPHAN_DIRECTORY, {
+      create: true,
+    });
+    await removeStaleOrphans();
+  } catch (error) {
+    // Surface OPFS unavailability (or a bad workspace name) as an explicit
+    // init failure instead of an unhandled rejection the parent cannot read.
+    self.postMessage({
+      type: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
 
   // Signal ready
   self.postMessage({ type: "ready" });

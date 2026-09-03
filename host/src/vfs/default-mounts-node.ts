@@ -34,12 +34,26 @@ import {
   type MountSpec,
 } from "./default-mounts";
 
+export interface NodeResolverOptions {
+  /**
+   * Host directory that holds persistent `opfs`-source workspaces
+   * (`<opfsWorkspaceRoot>/<opfsName>`). Unlike scratch mounts under the
+   * ephemeral session dir, this root is expected to outlive the session —
+   * it is the Node peer of the browser's origin-scoped OPFS storage. A spec
+   * with `opfs` mounts fails loudly when this is absent; mapping a
+   * persistent workspace onto an ephemeral directory would misrepresent
+   * durability.
+   */
+  opfsWorkspaceRoot?: string;
+}
+
 /**
  * Materialise `spec` for the Node host. Image mounts get a fresh,
  * cryptographically verified `MemoryFileSystem`; scratch mounts get a
  * `HostFileSystem` rooted at `<sessionDir><spec.path>` (the directory is
  * created with `mkdirSync({recursive:true})` so `safePath` is happy on first
- * access).
+ * access); opfs mounts get a `HostFileSystem` rooted at the named workspace
+ * under {@link NodeResolverOptions.opfsWorkspaceRoot}.
  *
  * The public resolver treats `sessionDir` as caller-owned. Exact native append
  * authority is reserved for the internal resolver whose caller already owns a
@@ -49,9 +63,10 @@ export function resolveForNode(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
   sessionDir: string,
+  options: NodeResolverOptions = {},
 ): Promise<MountConfig[]> {
   validateSpec(spec);
-  return resolveValidatedForNode(spec, rootfsImage, sessionDir, false);
+  return resolveValidatedForNode(spec, rootfsImage, sessionDir, false, [], [], options);
 }
 
 async function resolveValidatedForNode(
@@ -61,6 +76,7 @@ async function resolveValidatedForNode(
   sessionOwned: boolean,
   sessionSeedTrees: readonly NodeSessionSeedTree[] = [],
   shadowingMountPoints: readonly string[] = [],
+  options: NodeResolverOptions = {},
 ): Promise<MountConfig[]> {
   const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
   for (const m of spec) {
@@ -89,6 +105,23 @@ async function resolveValidatedForNode(
       out.push({
         mountPoint: m.path,
         backend,
+        readonly: m.readonly,
+        nosuid: m.nosuid,
+      });
+    } else if (m.source === "opfs") {
+      if (options.opfsWorkspaceRoot === undefined) {
+        throw new Error(
+          `opfs mount ${m.path} requires NodeResolverOptions.opfsWorkspaceRoot: ` +
+          `persistent workspaces must not be materialised inside the ephemeral session dir`,
+        );
+      }
+      // validateSpec already enforced OPFS_WORKSPACE_NAME_PATTERN, which is
+      // path-safe ASCII with no separators — join cannot escape the root.
+      const workspaceDir = join(options.opfsWorkspaceRoot, m.opfsName!);
+      mkdirSync(workspaceDir, { recursive: true });
+      out.push({
+        mountPoint: m.path,
+        backend: new HostFileSystem(workspaceDir),
         readonly: m.readonly,
         nosuid: m.nosuid,
       });
