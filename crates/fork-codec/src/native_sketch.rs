@@ -39,9 +39,6 @@
 //! |---|---|
 //! | `begin_generation` | open a `RootScope<&mut Store>` (or allocate a `GcRootIndex` set); the returned `u32` keys it in `self.generations` |
 //! | `resolve_externref` | look the durable value up by broker handle, `ExternRef::new(&mut store, value)` (or re-root an existing `Rooted<ExternRef>`), store it in the generation's root map |
-//! | `resolve_funcref` | `Instance::get_func(&mut store, name/index)` for the activation, wrap as `Rooted`/`Func`; the "catalog" is just the child `Instance`'s exported/table funcs |
-//! | `resolve_static_root` | index the activation's static-root `Table` via `Table::get(&mut store, idx)`; identical to funcref, no separate engine object |
-//! | `install_reference_global` | `Global::set(&mut store, Val::AnyRef(rooted))` on the child `Instance`'s global |
 //! | `transit_publish` | insert `Rooted<AnyRef>` into the generation root map (NO engine transit table) |
 //! | `transit_read` | read that map entry; `Rooted::rooted` liveness IS the non-null guard |
 //! | `mint_exception_tag` | `Tag::new(&mut store, &TagType::new(params))` for the activation's exception layout |
@@ -53,8 +50,12 @@
 //!
 //! The upshot: the trait's method set is exactly the native primitive set. The
 //! Wasm backend pays the opaque-ordinal + transit-table + JS-import tax to
-//! express these same eleven+two operations; the native backend expresses them
-//! directly. Shrinking this trait shrinks the host API surface for both.
+//! express these same eight+two operations; the native backend expresses them
+//! directly. Shrinking this trait shrinks the host API surface for both —
+//! `resolve_funcref` / `resolve_static_root` / `install_reference_global` were
+//! removed (Phase 6 item 5): the first two are wasm `table.get`/`table.set`
+//! (the injected binder, not a host call) and the third is a facet of
+//! `instantiate_child`'s import-object assembly (immutable imported ref globals).
 
 use wasm_posix_shared::Errno;
 
@@ -100,32 +101,6 @@ impl ForkHostCapabilities for NativeForkHost {
         _broker_handle: u32,
     ) -> Result<HostRef, Errno> {
         Err(Errno::ENOSYS) // ExternRef::new(&mut store, value)
-    }
-
-    fn resolve_funcref(
-        &mut self,
-        _module_activation: u32,
-        _function_ordinal: u32,
-    ) -> Result<HostRef, Errno> {
-        Err(Errno::ENOSYS) // Instance::get_func(&mut store, ..)
-    }
-
-    fn resolve_static_root(
-        &mut self,
-        _module_activation: u32,
-        _static_root_ordinal: u32,
-    ) -> Result<HostRef, Errno> {
-        Err(Errno::ENOSYS) // Table::get(&mut store, idx)
-    }
-
-    fn install_reference_global(
-        &mut self,
-        _generation: HostGeneration,
-        _module_activation: u32,
-        _global_ordinal: u32,
-        _value: HostRef,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS) // Global::set(&mut store, Val::AnyRef(..))
     }
 
     fn transit_publish(

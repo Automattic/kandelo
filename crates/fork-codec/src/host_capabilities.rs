@@ -160,56 +160,22 @@ pub trait ForkHostCapabilities {
         broker_handle: u32,
     ) -> Result<HostRef, Errno>;
 
-    /// Resolve the `funcref` identity for `(module_activation, function_ordinal)`
-    /// from that activation's function catalog.
-    ///
-    /// WHY Wasm can't: a `funcref` identity is an engine `WebAssembly.Table`
-    /// slot; a portable module cannot fabricate a `funcref` value, only NAME the
-    /// slot by ordinal. Backs `ForkFunctionCatalog`'s table identity (the D6
-    /// plan's `host_resolve_funcref`).
-    ///
-    /// When: REPLAY, once per funcref node.
-    fn resolve_funcref(
-        &mut self,
-        module_activation: u32,
-        function_ordinal: u32,
-    ) -> Result<HostRef, Errno>;
-
-    /// Resolve a statically-rooted reference for
-    /// `(module_activation, static_root_ordinal)` from that activation's
-    /// static-root catalog.
-    ///
-    /// WHY Wasm can't: same engine-table-identity reason as
-    /// [`resolve_funcref`](Self::resolve_funcref) — the static-root catalog is a
-    /// host-owned `WebAssembly.Table`. Kept distinct from funcref (rather than
-    /// overfitting to one) because the two catalogs are separate host objects
-    /// with separate ordinal spaces; the D6 plan folds both under
-    /// `host_resolve_funcref`. Backs `ForkStaticRootCatalog`.
-    ///
-    /// When: REPLAY, once per static-root node.
-    fn resolve_static_root(
-        &mut self,
-        module_activation: u32,
-        static_root_ordinal: u32,
-    ) -> Result<HostRef, Errno>;
-
-    /// Install the reconstructed reference `value` into the reference-typed
-    /// global `global_ordinal` of `module_activation`'s instance.
-    ///
-    /// WHY Wasm can't: writing a `(ref …)` global on ANOTHER instance is a host
-    /// `WebAssembly.Global` set (a co-resident module cannot reach a sibling
-    /// instance's globals); the module holds only the ordinal. Backs the
-    /// reference restoration in `imported_globals` (the D6 plan's
-    /// `host_install_reference_global`).
-    ///
-    /// When: REPLAY, once per reference-typed global.
-    fn install_reference_global(
-        &mut self,
-        generation: HostGeneration,
-        module_activation: u32,
-        global_ordinal: u32,
-        value: HostRef,
-    ) -> Result<(), Errno>;
+    // NOTE (Phase 6 item 5 — minimize host surface): `resolve_funcref`,
+    // `resolve_static_root`, and `install_reference_global` were REMOVED from
+    // this trait. None is an engine-floor host capability, and the production
+    // drive (`ReferenceReplayDriver::drive_reconstruction`) never called them:
+    //  - funcref resolution is a wasm `table.get` done by the injected guest
+    //    export `__wpk_fork_ref_decode_funcref` (the binder), not a host call.
+    //  - static-root resolution is likewise `table.get` on the guest's
+    //    static-root catalog + `table.set` into the anyref transit — both wasm
+    //    (binder-expressible). Until a binder drives it, static-root graphs stay
+    //    on the JS reference path (never admitted to the module).
+    //  - reference-global install happens at child INSTANTIATION (an immutable
+    //    imported ref global is fixed from the import object; there is no
+    //    `global.set` hook), so it is a facet of `instantiate_child`, not a
+    //    separate capability.
+    // Removing them shrinks the host contract every host (Node/browser/native)
+    // must implement — the campaign's north star.
 
     /// Publish the reconstructed reference `value` into the Wasm-GC anyref
     /// transit table at `slot` (the canonical `recipe_id + 1`), so the guest
@@ -391,8 +357,6 @@ pub mod mock {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum MockValue {
         Externref { broker_handle: u32 },
-        Funcref { activation: u32, ordinal: u32 },
-        StaticRoot { activation: u32, ordinal: u32 },
     }
 
     #[derive(Default)]
@@ -522,54 +486,6 @@ pub mod mock {
             Ok(host_ref)
         }
 
-        fn resolve_funcref(
-            &mut self,
-            module_activation: u32,
-            function_ordinal: u32,
-        ) -> Result<HostRef, Errno> {
-            // The mock keys the funcref under the process's single active
-            // generation is unavailable here (no generation arg, matching the
-            // engine-table identity that is generation-independent). Root it in
-            // the most-recently-begun active generation for bookkeeping.
-            let generation = self.newest_active_generation()?;
-            self.mint_ref(
-                generation,
-                MockValue::Funcref {
-                    activation: module_activation,
-                    ordinal: function_ordinal,
-                },
-            )
-        }
-
-        fn resolve_static_root(
-            &mut self,
-            module_activation: u32,
-            static_root_ordinal: u32,
-        ) -> Result<HostRef, Errno> {
-            let generation = self.newest_active_generation()?;
-            self.mint_ref(
-                generation,
-                MockValue::StaticRoot {
-                    activation: module_activation,
-                    ordinal: static_root_ordinal,
-                },
-            )
-        }
-
-        fn install_reference_global(
-            &mut self,
-            generation: HostGeneration,
-            _module_activation: u32,
-            _global_ordinal: u32,
-            value: HostRef,
-        ) -> Result<(), Errno> {
-            let g = self.active_gen_mut(generation)?;
-            if !g.refs.contains_key(&value.0) {
-                return Err(Errno::EINVAL); // value not rooted in this generation
-            }
-            Ok(())
-        }
-
         fn transit_publish(
             &mut self,
             generation: HostGeneration,
@@ -648,15 +564,6 @@ pub mod mock {
     }
 
     impl MockForkHost {
-        fn newest_active_generation(&self) -> Result<HostGeneration, Errno> {
-            self.generations
-                .iter()
-                .filter(|(_, g)| g.active)
-                .map(|(id, _)| *id)
-                .max()
-                .map(HostGeneration)
-                .ok_or(Errno::EINVAL)
-        }
     }
 }
 
@@ -725,17 +632,6 @@ mod tests {
             host.transit_publish(generation, 1, HostRef(999)),
             Err(Errno::EINVAL)
         );
-    }
-
-    #[test]
-    fn funcref_and_static_root_resolve_and_release_together() {
-        let mut host = MockForkHost::new();
-        let generation = host.begin_generation(3).expect("begin generation");
-        let _func = host.resolve_funcref(10, 5).expect("resolve funcref");
-        let _root = host.resolve_static_root(10, 2).expect("resolve static root");
-        assert_eq!(host.live_ref_count(generation), 2);
-        host.release_generation(generation).expect("release");
-        assert_eq!(host.live_ref_count(generation), 0);
     }
 
     #[test]
