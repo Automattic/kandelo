@@ -406,6 +406,53 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * vfork BORROWED child: seed replay from the parked parent's LIVE (shared)
+   * memory rather than a private copy. `root` is the parent's continuation anchor
+   * (borrowed, read-only); `imagePtr`/`imageLen` locate the KFRE image the parent
+   * serialized (still live in shared memory); `privatePrefix` is a child-private,
+   * pre-reserved region the module copies the parent's fixed runtime prefix into,
+   * so the guest's rewind writes its active-frame pointer THERE and never touches
+   * the parent's prefix. The built replay owns no chunks, so this backend's
+   * `finishReplay`/`abort` (`fm_finish_replay`/`fm_abort`) munmap nothing — the
+   * parent's storage is never released. On success the host hands the guest
+   * `privatePrefix` as the rewind root.
+   */
+  beginBorrowedChildReplay(
+    root: number,
+    imagePtr: number,
+    imageLen: number,
+    privatePrefix: number,
+  ): void {
+    this.requireSetup("begin borrowed child replay");
+    if (!Number.isSafeInteger(root) || root <= 0) {
+      throw new Error(`${this.label}: borrowed continuation root ${root} is invalid`);
+    }
+    if (!Number.isSafeInteger(imagePtr) || imagePtr <= 0) {
+      throw new Error(`${this.label}: borrowed journal image ptr ${imagePtr} is invalid`);
+    }
+    if (!Number.isSafeInteger(imageLen) || imageLen <= 0) {
+      throw new Error(`${this.label}: borrowed journal image length ${imageLen} is invalid`);
+    }
+    if (imagePtr + imageLen > this.memory.buffer.byteLength) {
+      throw new Error(`${this.label}: borrowed journal image escapes guest memory`);
+    }
+    if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
+      throw new Error(`${this.label}: borrowed private prefix ${privatePrefix} is invalid`);
+    }
+    if (privatePrefix + this.format.fixedPrefixSize > this.memory.buffer.byteLength) {
+      throw new Error(`${this.label}: borrowed private prefix escapes guest memory`);
+    }
+    this.moduleBuffer = root;
+    this.exports.fm_begin_borrowed_child_replay(
+      this.wptr(root),
+      this.wptr(imagePtr),
+      this.wptr(imageLen),
+      this.wptr(privatePrefix),
+    );
+    this.requireOk("fm_begin_borrowed_child_replay");
+  }
+
+  /**
    * Phase 6 D7a.1a: seed ONE side activation's resume catalog once per worker,
    * before any fork (mirrors `setup()`'s global catalog seed for activation 0).
    * A dlopen fork loads N modules, each with its own fork-instrumented function
