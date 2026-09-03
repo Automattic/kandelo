@@ -83,6 +83,7 @@ static struct {
     int match[MAX_APPS];   /* indices of apps matching the query */
     int n_match;
     int selected;          /* index into match[] */
+    int scroll;            /* first visible index into match[] */
     char query[64];
     int menu;              /* --menu: root level with submenus */
     enum level level;
@@ -267,6 +268,7 @@ static void enter_level(enum level lvl) {
     st.n_apps = 0;
     st.query[0] = '\0';
     st.selected = 0;
+    st.scroll = 0;
     if (lvl == L_ROOT) load_root();
     else if (lvl == L_APPS) load_apps();
     else load_themes();
@@ -331,7 +333,16 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
     wpk_text(s, font, 14, baseline, prompt, palette.foreground);
 
     int y = PROMPT_H + 4;
-    for (int i = 0; i < st.n_match && y + ROW_H <= s->h; i++, y += ROW_H) {
+    int visible = (s->h - y) / ROW_H;
+    if (visible < 1) visible = 1;
+    int max_scroll = st.n_match - visible;
+    if (max_scroll < 0) max_scroll = 0;
+    if (st.scroll > max_scroll) st.scroll = max_scroll;
+    if (st.scroll > st.selected) st.scroll = st.selected;
+    if (st.scroll < st.selected - visible + 1)
+        st.scroll = st.selected - visible + 1;
+    for (int i = st.scroll; i < st.n_match && y + ROW_H <= s->h;
+         i++, y += ROW_H) {
         int selected = i == st.selected;
         if (selected) wpk_rect(s, 6, y, s->w - 12, ROW_H, palette.accent);
         const struct app *a = &st.apps[st.match[i]];

@@ -110,18 +110,16 @@ bind = CTRL SHIFT, 3, movetoworkspace, 3
  * and not a list inside the launcher.
  */
 export const OMARCHY_APPS: Record<string, string> = {
-  "terminal.conf": "name = Terminal\nexec = /usr/local/bin/wlterm\n",
   "clock.conf": "name = Clock\nexec = /usr/local/bin/wlclock\n",
   "paint.conf": "name = Paint\nexec = /usr/local/bin/wlpaint\n",
   "vim.conf": "name = Vim\nexec = /usr/local/bin/wlterm /usr/bin/vim\n",
   "nethack.conf": "name = NetHack\nexec = /usr/local/bin/wlterm /usr/bin/nethack\n",
   "nano.conf": "name = Nano\nexec = /usr/local/bin/wlterm /usr/bin/nano\n",
-  "bash.conf": "name = Bash\nexec = /usr/local/bin/wlterm /usr/bin/bash -i\n",
   "foot.conf":
-    "name = Foot\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
+    "name = Terminal\nexec = /usr/local/bin/foot --term=vt100 --override=main.workers=0 /usr/bin/bash -i\n",
   "qtgallery.conf": "name = Theme Gallery\nexec = /usr/local/bin/qtgallery\n",
   "quickshell.conf":
-    "name = Quickshell\nexec = /usr/local/bin/quickshell -p /usr/share/kandelo/quickshell/shell.qml\n",
+    "name = Quickshell\nexec = /usr/local/bin/quickshell -p /usr/share/kandelo/quickshell/island.qml\n",
 };
 
 /**
@@ -183,21 +181,21 @@ border-color=#7aa2f7
 /**
  * The staged Quickshell shells, one QML file each: the shell IS a QML file,
  * so swapping the file swaps the shell — the demonstration Quickshell exists
- * for, and what qtgallery's shell cards do. shell.qml is the default the
+ * for, and what qtgallery's shell cards do. island.qml is the default the
  * launcher entry runs. All three render through QtQuick's software scenegraph
  * (QT_QUICK_BACKEND=software comes from the compositor's environment) and
  * anchor to the bottom edge because Waybar owns the top. The palette is the
  * tokyo-night the desktop boots with; Quickshell reads QML once at startup,
  * so like mako it keeps its colours across theme switches.
  *
- * Guest-side Qt defects constrain these files until fixed (see
- * docs/browser-support.md#quickshell-qml-limits for the repros and the
- * bo-trace that puts the leak inside Qt, not the compositor). Anything that
- * makes the QML software renderer repaint every frame exhausts guest memory
- * and the process dies: a PanelWindow with more than one item, a
- * Qt.formatDateTime name field (dddd, MMMM, ddd, MMM), or font.bold (only a
- * regular face is staged, so bold takes Qt's synthesized path). Each shell
- * is one item, numeric date fields, regular weight — the stable envelope.
+ * The tab's per-worker compiled-code budget bounds these shells (see
+ * docs/browser-support.md#quickshell-qml-limits): each guest thread holds
+ * its own compiled copy of the Qt module, and the QML content decides how
+ * much cold Qt/ICU code each worker compiles. Single-threading the Qt
+ * client roughly halved the baseline, but a shell that touches heavy code
+ * paths still crosses the ceiling. Each shell here stays in the tested
+ * envelope — one item, numeric date fields (no localized dddd/MMMM name
+ * fields), regular weight — which compiles little beyond the base client.
  */
 export const OMARCHY_QUICKSHELL_SHELLS: Record<string, string> = {
   "shell.qml": `import Quickshell

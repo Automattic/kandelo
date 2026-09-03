@@ -642,9 +642,9 @@ on the compositor's own process rather than on a foreground terminal.
   dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
   registry offers real software from the shell image alongside the demo
   clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
-  binaries lazy-fetch from the image's archives on first launch), plus a Bash
-  terminal. The Foot entry is different in kind: stock upstream foot 1.17.2
-  as its own Wayland client on the ported font stack —
+  binaries lazy-fetch from the image's archives on first launch). The
+  Terminal entry is different in kind: stock upstream foot 1.17.2 as its own
+  Wayland client on the ported font stack —
   freetype/fontconfig/fcft rasterizing the staged Inconsolata through
   `/etc/fonts/fonts.conf` — not a `wlterm` wrapper (see
   [architecture.md](architecture.md#stock-upstream-clients-foot--the-font-stack)).
@@ -659,10 +659,10 @@ on the compositor's own process rather than on a foreground terminal.
   `/etc/fonts/fonts.conf`, which aliases `sans-serif` alongside `monospace`
   to the staged Inconsolata for it. `Esc` or `Q` closes it. The Quickshell
   entry is the first QtQuick client: **Quickshell 0.3.1** runs the staged
-  `/usr/share/kandelo/quickshell/shell.qml`, the QML engine renders through
+  `/usr/share/kandelo/quickshell/island.qml`, the QML engine renders through
   the scenegraph's software adaptation (`QT_QUICK_BACKEND=software` from the
   compositor's environ), and its `PanelWindow` maps as a wlr-layer-shell
-  clock bar along the bottom edge — except on Firefox, see
+  clock island floating above the bottom edge — except on Firefox, see
   [the executable-code limit below](#firefox-executable-code-limit).
 - **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
   at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
@@ -690,38 +690,77 @@ on the compositor's own process rather than on a foreground terminal.
 
 #### Quickshell QML limits
 
-Two guest-side Qt defects and one host cost bound what the staged shells (and
-any QML a user swaps in through the Theme Gallery) can safely use. All were
-found by exercising the gallery's shell cards; their QML lives in
-`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`. The first
-two were isolated to the guest: a bo-lifecycle trace of the crash showed the
-compositor holding a constant four buffer objects (two 1920x1080 scanout, two
-double-buffered client), so the growth is inside the Quickshell process, not
-in the DRI/gbm/compositor path.
+One host cost bounds Quickshell in the browser: compiled wasm code.
+`quickshell.wasm` is ~93 MB and Chromium compiles it to hundreds of MB of
+machine code — and it compiles that copy **per Web Worker**, because a
+worker is a separate V8 isolate and isolates do not share a module's
+compiled code even when the same `WebAssembly.Module` is posted to each.
+Every guest pthread is one worker, so each thread Quickshell starts costs
+another compiled copy on top of the running desktop
+(compositor, Waybar, qtgallery, foot, mako, dbus-daemon).
 
-- **A scene that repaints every frame exhausts guest memory.** Qt's QML
-  software renderer allocates without bound when the surface damages on every
-  frame callback (~60/s), and the kernel kills the process (exit 137 on
-  Node, tab crash in the browser) within seconds. Three things force the
-  every-frame repaint: a `PanelWindow` holding more than one item (for
-  example a `Rectangle` wrapping a `Text`); a `Qt.formatDateTime` string with
-  a localized name field (`dddd`, `ddd`, `MMMM`, `MMM`); and `font.bold`,
-  which takes Qt's synthesized-bold path because only a regular face
-  (Inconsolata) is staged. A single-item panel with numeric date fields
-  (`yyyy-MM-dd`, `hh:mm:ss`) at the regular weight repaints only when its
-  text changes and is stable on both hosts. The fix belongs in the Qt QML
-  software-render path, below this demo.
+Two facts about this cost were established by measurement, correcting two
+earlier half-explanations:
 
-- **Each Quickshell spawn is a full Qt compile, and repeated swaps
-  accumulate.** `quickshell.wasm` is ~93 MB and compiles to roughly 620 MB
-  of executable code. The gallery's shell cards kill the running Quickshell
-  and spawn a fresh one, so a first swap is reliable but a second or third —
-  before the previous module's code memory is reclaimed — pushes the tab over
-  its limit and it crashes. This is the same executable-code cost documented
-  for Firefox in the next section, reached on any browser through repeated
-  spawns rather than through one spawn on a full arena. Reusing a single
-  Quickshell instance and telling it to reload, instead of respawning, is the
-  fix; it needs a Quickshell IPC path this port does not yet carry.
+- It is **not** a guest leak. The guest process holds a flat ~55 MB
+  through a 50/s repaint storm on the Node host; only the browser tab's
+  native memory grows.
+- The **worker count multiplies** the cost, and the **QML content decides
+  the per-worker amount**. More workers move the whole tab up (before the
+  thread cuts below, 13→17 workers moved the tab from ~4 GB to its ~10 GB
+  ceiling). Independently, a content-heavy shell compiles more cold Qt/ICU
+  code in every worker: a nested-item panel with localized
+  `Qt.formatDateTime` name fields (`dddd`, `MMMM`) maps at ~9 GB where the
+  single-item numeric shell settles at ~5 GB with the same worker count.
+  Both the worker count and the shell content are real; neither alone is
+  the whole story.
+
+The port cuts the per-worker copies three ways:
+
+- **Fewer threads.** The QML type loader runs synchronously
+  (`FEATURE_qml_type_loader_thread=OFF` in `build-qtdeclarative.sh`, Qt's
+  own single-threaded wasm shape), Quickshell's logger runs on the main
+  thread (`packages/registry/quickshell/src/on-thread-logger-on-wasm.patch`),
+  and the Wayland QPA pumps the display fd from a `QSocketNotifier` on
+  the main loop instead of its two reader threads
+  (`packages/registry/qtbase/src/wayland-fd-notifier-on-wasm.patch`).
+  A Qt client on this port runs single-threaded.
+
+- **One instance across shell swaps.** The gallery's shell cards no
+  longer kill and respawn Quickshell — a respawn recompiles the process
+  module and its thread-patched twin from scratch while the old copies
+  await GC, which is what crashed a second or third swap. qtgallery
+  stages the selected QML as `/tmp/qtgallery-active.qml` once, starts one
+  Quickshell on it, and later cards rewrite the file in place; Quickshell's
+  own file watcher reloads the config inside the running process.
+
+- **A watcher that actually fires.** The kernel used to stub
+  `inotify_init` with a fake-success fd that never delivered events,
+  which silently disabled the file watching that the reload path needs —
+  Qt's `QFileSystemWatcher` (and glib's `GFileMonitor`) only fall back to
+  their polling engines when `inotify_init` *fails*. The stubs now return
+  `ENOSYS` and the pollers work everywhere.
+
+Together these roughly halved the tab baseline (single-item shells that
+crashed at ~10 GB now settle at ~5 GB and survive), which is why the
+staged shells run where they used to die. The ceiling is not gone,
+though. Two cases still cross it and bound what a shell may do:
+
+- **Content-heavy shells.** A panel with more than one item, a localized
+  `Qt.formatDateTime` name field (`dddd`, `ddd`, `MMMM`, `MMM`), or
+  `font.bold` (synthesized, since only a regular Inconsolata face is
+  staged) compiles enough extra cold code per worker to reach the ceiling
+  on its own. The staged shells in
+  `apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts` stay
+  in the tested envelope: one item, numeric date fields, regular weight.
+
+- **The reload transient.** A live config reload briefly holds two engine
+  generations, and its spike still crosses the ceiling on some swaps. The
+  single-instance path removed the far larger respawn recompile, but the
+  reload spike itself is not yet bounded.
+
+Both remain open; the fix belongs in the Qt/Quickshell layer, below this
+demo.
 
 #### Firefox executable-code limit
 
@@ -731,12 +770,14 @@ worker on the page. Compiled wasm code is several times the module's size:
 the 93 MB `quickshell.wasm` alone costs ~620 MB of that region. With the
 full desktop running — compositor, Waybar, qtgallery, foot, mako, dbus-daemon,
 klauncher — the region already holds ~1.2 GB of live code. Quickshell's
-launch compile fits (~1.9 GB), but its first `pthread_create` compiles the
+launch compile fits (~1.9 GB), but any `pthread_create` compiles the
 thread-patched module as a second full copy, which cannot fit; the compile
 throws SpiderMonkey's `InternalError: out of memory`, Qt logs
-`QThread::start: Thread creation error`, and the panel never maps. Chrome
-and WebKit have no fixed per-process code cap, so the same desktop passes
-there. This is an engine limit, not a memory shortage — the process RSS
+`QThread::start: Thread creation error`, and the panel never maps. The
+thread cuts above shrink how many second copies a Qt client makes but do
+not lift the 2 GiB cap, and a single desktop-plus-Quickshell code image
+already exceeds it, so Firefox stays excluded. Chrome and WebKit have no
+fixed per-process code cap, so the same desktop passes there. This is an engine limit, not a memory shortage — the process RSS
 stays far below the machine's capacity when it hits. The omarchy spec
 therefore skips its Quickshell gate (5e) on Firefox; everything up to and
 after it runs on all three engines.
