@@ -1322,7 +1322,11 @@ mkdir -p "$RUNTIME_STAGE/usr/lib"
 # still retain the selected guest prefix.
 cp -R "$RUBY_INSTALL_ROOT/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
 cp -R "$RUBY_INSTALL_ROOT/bin" "$RUNTIME_STAGE/usr/bin"
-(cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
+# Produce a byte-reproducible archive: plain `zip -r` embeds each member's
+# wall-clock mtime, so two builds minutes apart differ even with identical
+# contents. The shared helper normalizes mtimes, entry order, and modes.
+bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
+    "$RUNTIME_STAGE" "$RUNTIME_ZIP"
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 
 echo ""
