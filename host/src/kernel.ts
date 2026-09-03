@@ -784,6 +784,19 @@ export interface KernelCallbacks {
    * without letterboxing. `undefined` → the 1920x1080 default.
    */
   getKmsDisplaySize?: () => { width: number; height: number } | undefined;
+  /**
+   * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
+   * are that framebuffer's dimensions. The scanout framebuffer defines
+   * the pointer coordinate space — the embedder maps pointer positions
+   * into framebuffer pixels and `sendPointerAbs` forwards them as
+   * `EV_ABS` — so the worker uses this to keep the pointer device's
+   * advertised `EVIOCGABS` range equal to the space those coordinates
+   * are in for consumers that open the device after the modeset. A
+   * consumer that is already running never re-reads the range (libinput
+   * caches absinfo at device open); open-time correctness comes from
+   * `setKmsDisplaySize` advertising the derived connector mode.
+   */
+  onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -2580,6 +2593,8 @@ export class WasmPosixKernel {
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
         host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          const fb = this.kms.currentFb(crtc_id);
+          if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
         },
       },
     };

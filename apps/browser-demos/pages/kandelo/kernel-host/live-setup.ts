@@ -1734,12 +1734,11 @@ async function bootProfile(
           // correct ones). WHEEL stays enabled: REL_WHEEL carries no
           // absolute coordinates, so it doesn't fight the pane, and it
           // drives the editor's mouse-scroll (SDL_MOUSEWHEEL).
-          // The dims set EVIOCGABS's ABS_X/Y.maximum. SDL treats event1
-          // as a relative mouse (it advertises REL_X/Y) and clamps the
-          // cursor to the window rather than this range, but the
-          // framebuffer size (1920×1080, matching
-          // host/src/dri/kms-registry.ts and the Modeset canvas) keeps
-          // the bounds sane for any ABS-aware consumer.
+          // The dims set EVIOCGABS's ABS_X/Y.maximum, but only as a
+          // placeholder: the worker rekeys the range from the reported
+          // display size (setKmsDisplaySize) and again at SETCRTC, so
+          // this 1920×1080 (matching host/src/dri/kms-registry.ts) only
+          // covers the window before either fires.
           const SDL2_FB_W = 1920;
           const SDL2_FB_H = 1080;
           kernelForSdl2.attachInputSource(
@@ -1779,9 +1778,11 @@ async function bootProfile(
           // wlterm → dash. The POINTER is owned by the Modeset pane
           // (sendPointerAbs → event1), so disable this source's pointer
           // feed (its window-relative coords would fight the pane's). A
-          // terminal has no wheel use, so wheel is off too. The dims are
-          // only consumed by pointer/ABS scaling, which this source has
-          // disabled — the 1080p defaults are inert here.
+          // terminal has no wheel use, so wheel is off too. The dims set
+          // EVIOCGABS's ABS_X/Y.maximum — libinput normalizes the pane's
+          // ABS coords by this range — but only as a placeholder: the
+          // kmsSetDisplaySize call below rekeys the range to the derived
+          // connector mode before the compositor opens the device.
           tick("attaching input source...");
           const WL_FB_W = 1920;
           const WL_FB_H = 1080;

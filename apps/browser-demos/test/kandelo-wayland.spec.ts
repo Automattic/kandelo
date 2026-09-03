@@ -187,9 +187,9 @@ async function readDesktopDims(page: Page): Promise<void> {
  *      edges are spaced >25 ms apart so libinput's debounce treats them as
  *      intentional clicks, not switch bounce. During the drag, the desktop's
  *      top-left corner is sampled per step and must stay pixel-stable —
- *      the EV_REL peg-and-jump pointer emulation must never render a frame
- *      with the grabbed window pegged at (0,0) (compositor input-batch
- *      repaint coalescing + peg suppression).
+ *      the pointer bridge sends true EV_ABS coordinates, so no frame may
+ *      ever show the grabbed window pegged at (0,0) (regression guard for
+ *      the retired EV_REL peg-and-jump emulation).
  *   4. Drag-painting a stroke in wlpaint does not freeze the desktop:
  *      the stroke registers (WLPAINT_STROKE) and the Modeset pane's
  *      PAGE_FLIP counter keeps advancing afterwards (wlclock animates at
@@ -322,10 +322,11 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   await page.waitForTimeout(60);
   await page.mouse.down();
   await page.waitForTimeout(250);
-  // Teleport guard: the browser bridge emulates absolute pointer moves
-  // as an EV_REL peg-to-(0,0) + jump pair; if the compositor repaints
-  // between the two, the grabbed window flashes in the top-left corner.
-  // Sample that corner between drag steps — it must stay pixel-stable
+  // Teleport guard: the browser bridge sends true EV_ABS moves, so the
+  // pointer must never pass through (0,0). A regression to the retired
+  // EV_REL peg-and-jump emulation would flash the grabbed window in the
+  // top-left corner between repaints. Sample that corner between drag
+  // steps — it must stay pixel-stable
   // (reference AFTER mouse.down: pressing wlclock legitimately removes
   // wlterm's focus border, which lives inside the region).
   const cTl = await desktopPoint(page, 0, 0);

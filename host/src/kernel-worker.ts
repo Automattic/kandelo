@@ -32,6 +32,7 @@ import {
   type KernelPointer,
 } from "./kernel";
 import { resolveIoctlContract } from "./ioctl-contract";
+import { connectorModeSize } from "./dri/kms-registry";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -3543,6 +3544,19 @@ export class CentralizedKernelWorker {
       firstKmsCanvasCrtc: () => {
         for (const id of this.kmsCanvases.keys()) return id;
         return undefined;
+      },
+      // The scanout framebuffer defines the pointer coordinate space:
+      // the pane maps pointer positions into framebuffer pixels and
+      // `sendPointerAbs` forwards them as EV_ABS, so EVIOCGABS on the
+      // pointer device must advertise exactly this framebuffer's size.
+      // This SETCRTC hook keeps the range truthful for consumers that
+      // open the device later and for mid-session modesets (SDL reads
+      // raw values, so ScummVM survives either way). It cannot reach a
+      // libinput consumer that is already running — libinput caches
+      // absinfo at device open — which is why `setKmsDisplaySize`
+      // advertises the derived connector mode before the guest starts.
+      onKmsScanoutFb: (_crtcId: number, width: number, height: number) => {
+        this.setInputCanvasDims(width, height);
       },
       markKmsCanvasGlOwned: (crtcId: number) => {
         // A program GL context now owns the canvas (fires only after the
@@ -33805,20 +33819,30 @@ export class CentralizedKernelWorker {
   }
 
   /** Report the embedder-side display size (device pixels) for a CRTC's
-   *  canvas. Only the `"webgl2-scanout"` presenter consumes it: the
+   *  canvas. The `"webgl2-scanout"` presenter consumes it: the
    *  drawing buffer is resized to match and the scanout texture is
    *  GPU-scaled into it, so the page compositor never rescales an
    *  fb-sized bitmap. Callers typically feed this from a ResizeObserver
    *  with `devicePixelContentBoxSize`. Zero/negative dims are ignored
-   *  (a hidden pane reports 0×0 — keep the last real size). */
+   *  (a hidden pane reports 0×0 — keep the last real size).
+   *
+   *  It also keys the EVIOCGABS range on `/dev/input/event1` to the
+   *  connector mode this size derives (`connectorModeSize`, which the
+   *  compositor's framebuffer will match). It must land here, not only
+   *  at SETCRTC: libinput caches absinfo when it opens the device, and
+   *  a compositor opens `event1` before it presents its first frame —
+   *  a range corrected at SETCRTC is a range libinput never sees. */
   setKmsDisplaySize(crtc_id: number, width: number, height: number): void {
     if (!(width >= 1) || !(height >= 1)) return;
     // Sanity cap: a bogus resize report must not allocate an absurd
     // drawing buffer.
-    this.kmsDisplaySizes.set(crtc_id, {
+    const display = {
       width: Math.min(Math.round(width), 4096),
       height: Math.min(Math.round(height), 4096),
-    });
+    };
+    this.kmsDisplaySizes.set(crtc_id, display);
+    const mode = connectorModeSize(display);
+    this.setInputCanvasDims(mode.width, mode.height);
   }
 
   /** Attach a stats SAB for a CRTC without registering a scanout canvas.
