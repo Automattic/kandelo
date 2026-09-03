@@ -2,7 +2,7 @@ kind = "program"
 name = "coreutils-docs"
 version = "9.6"
 kernel_abi = 7
-depends_on = ["coreutils@9.6"]
+depends_on = ["coreutils@9.6", "kernel@0.1.0"]
 
 # coreutils-docs has no upstream man pages to vendor: GNU coreutils
 # generates its own man pages from `--help`/`--version` output via

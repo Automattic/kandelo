@@ -23,6 +23,9 @@ WORK="$KANDELO_PACKAGE_WORK_DIR"
 COREUTILS_DIR="${WASM_POSIX_DEP_COREUTILS_DIR:?coreutils dependency dir required}"
 COREUTILS_WASM="$COREUTILS_DIR/coreutils.wasm"
 [ -f "$COREUTILS_WASM" ] || { echo "coreutils.wasm not found under $COREUTILS_DIR" >&2; exit 2; }
+KERNEL_DIR="${WASM_POSIX_DEP_KERNEL_DIR:?kernel dependency dir required}"
+KERNEL_WASM="$KERNEL_DIR/kandelo-kernel.wasm"
+[ -f "$KERNEL_WASM" ] || { echo "kandelo-kernel.wasm not found under $KERNEL_DIR" >&2; exit 2; }
 command -v help2man >/dev/null || { echo "help2man not on PATH (add pkgs.help2man to flake.nix)" >&2; exit 2; }
 
 CAP="$WORK/help-capture"; rm -rf "$CAP"
@@ -33,7 +36,7 @@ TSX_TMP="$(mktemp -d /tmp/kandelo-coreutils-docs.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 # Capture --help/--version from the real wasm binary running inside Kandelo.
 TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" "$COREUTILS_WASM" "$CAP"
+    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" "$COREUTILS_WASM" "$CAP" "$KERNEL_WASM"
 
 STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/share/man/man1"
 WRAP="$WORK/wrap"; rm -rf "$WRAP"; mkdir -p "$WRAP"

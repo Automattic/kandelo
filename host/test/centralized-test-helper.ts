@@ -128,6 +128,9 @@ export interface RunProgramOptions {
   programPath: string;
   /** Optional pre-compiled module for programPath. */
   programModule?: WebAssembly.Module;
+  /** Kernel wasm bytes (defaults to resolving `kernel.wasm` via the
+   *  binary resolver). */
+  kernelWasmBytes?: ArrayBuffer;
   /** Environment variables as KEY=VALUE strings */
   env?: string[];
   /** Program arguments */
@@ -303,7 +306,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     },
   });
 
-  await host.init();
+  await host.init(options.kernelWasmBytes);
 
   // Capture the spawned pid so child process events can sample its
   // kernel-side fork_count. The user-supplied onStarted (if any) still runs.
@@ -431,7 +434,7 @@ interface ForkReplayContext {
 }
 
 async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramResult> {
-  const kernelWasmBytes = loadKernelWasm();
+  const kernelWasmBytes = options.kernelWasmBytes ?? loadKernelWasm();
   const programBytes = loadProgramWasm(options.programPath);
   const timeout = options.timeout ?? 30_000;
   const ptrWidth = detectPtrWidth(programBytes);

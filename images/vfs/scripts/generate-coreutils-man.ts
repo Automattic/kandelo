@@ -16,9 +16,14 @@
  * If a tool prints empty --help inside Kandelo, that tool is logged and
  * skipped — a missing page is an honest gap, never a fabricated one.
  *
- * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir>
+ * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir> <kernel.wasm>
+ *
+ * The kernel wasm is a declared build dependency passed in explicitly: a
+ * package build must not resolve the kernel through the checkout-wide
+ * source-only projection authority, which the aggregate build only
+ * finalizes after every package (including this one) has succeeded.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
@@ -44,27 +49,39 @@ const TOOLS = [
   "chroot", "cksum", "install", "kill", "runcon", "tail",
 ];
 
-async function capture(bin: string, tool: string, flag: string): Promise<string> {
+async function capture(
+  bin: string,
+  kernelWasmBytes: ArrayBuffer,
+  tool: string,
+  flag: string,
+): Promise<string> {
   const { stdout } = await runCentralizedProgram({
     programPath: bin,
+    kernelWasmBytes,
     argv: [tool, flag],
     env: ["PATH=/usr/bin:/bin", "POSIXLY_CORRECT=1"],
   });
   return stdout;
 }
 
+function loadKernelWasm(path: string): ArrayBuffer {
+  const buf = readFileSync(path);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
 async function main() {
-  const [bin, outDir] = process.argv.slice(2);
-  if (!bin || !outDir) {
-    console.error("usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir>");
+  const [bin, outDir, kernelWasm] = process.argv.slice(2);
+  if (!bin || !outDir || !kernelWasm) {
+    console.error("usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir> <kernel.wasm>");
     process.exit(2);
   }
+  const kernelWasmBytes = loadKernelWasm(kernelWasm);
   mkdirSync(outDir, { recursive: true });
   const uniq = Array.from(new Set(TOOLS)).sort();
   const skipped: string[] = [];
   for (const tool of uniq) {
-    const help = await capture(bin, tool, "--help");
-    const version = await capture(bin, tool, "--version");
+    const help = await capture(bin, kernelWasmBytes, tool, "--help");
+    const version = await capture(bin, kernelWasmBytes, tool, "--version");
     if (!help.trim()) {
       console.error(`skip ${tool}: empty --help from Kandelo`);
       skipped.push(tool);
