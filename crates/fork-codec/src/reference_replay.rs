@@ -40,6 +40,17 @@ pub struct FuncrefTarget {
     pub function_ordinal: u32,
 }
 
+/// The resolved static-root recipe for one node: the activation whose
+/// instantiation-time static-root catalog holds the target and the ordinal
+/// within it. The static-root binder maps this to a merged anyref-catalog slot
+/// (`base(module_activation) + static_root_ordinal`) for a wasm `table.get`,
+/// mirroring [`FuncrefTarget`] for the funcref path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaticRootTarget {
+    pub module_activation: u32,
+    pub static_root_ordinal: u32,
+}
+
 /// The result of one reference-reconstruction drive: the host identities the
 /// module re-rooted for this fork, the host generation that owns them, and how
 /// many references it reconstructed. `host_refs` is indexed by recipe id; a slot
@@ -132,6 +143,44 @@ impl ReferenceReplayDriver {
         }
     }
 
+    /// Resolve a static-root recipe to its `(activation, ordinal)`:
+    ///
+    /// * `Ok(target)` — a StaticRoot naming the activation whose static-root
+    ///   catalog holds the value and the ordinal within it. The static-root
+    ///   binder maps this to a merged anyref-catalog slot (`base(activation) +
+    ///   ordinal`) via `fm_static_root_slot` for a wasm `table.get`.
+    /// * `Err(EINVAL)` — the recipe id is out of range, the graph is internally
+    ///   inconsistent, or the node is not a StaticRoot. The caller must NOT
+    ///   fabricate a value; a mismatched kind is a truthful failure.
+    ///
+    /// Unlike a funcref, a static root is NOT decoded on a guest import: it is
+    /// published into the anyref transit at slot `recipe_id + 1` by a
+    /// [`DRIVE_OP_STATIC_ROOT`](crate::drive_plan::DRIVE_OP_STATIC_ROOT) drive
+    /// step before any `_gc_fill` consumes it, so this accessor answers only the
+    /// slot query the injected drive shim needs.
+    pub fn static_root_node(&self, recipe_id: u32) -> Result<StaticRootTarget, Errno> {
+        let entry = self
+            .transaction
+            .nodes
+            .get(recipe_id as usize)
+            .ok_or(Errno::EINVAL)?;
+        // The decoder guarantees canonical id == index; assert it so a corrupt
+        // graph reaching here is a loud failure, not a silent mis-resolution.
+        if entry.id != recipe_id {
+            return Err(Errno::EINVAL);
+        }
+        match &entry.node {
+            ReferenceRecipeNode::StaticRoot {
+                module_activation,
+                static_root_ordinal,
+            } => Ok(StaticRootTarget {
+                module_activation: *module_activation,
+                static_root_ordinal: *static_root_ordinal,
+            }),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
     /// True when EVERY node in the graph is Null or Funcref — the exact kind set
     /// D6.1 reconstructs through the module. The module gates
     /// `begin_reference_replay` on this so a disagreeing host can never drive an
@@ -201,25 +250,31 @@ impl ReferenceReplayDriver {
             .count() as u32
     }
 
-    /// True when EVERY node is Null, Funcref, Externref, Exnref, or a typed-GC
-    /// value (Struct / Array / I31) — the widened kind set D6.4a admits through
-    /// the module. Admitting typed GC adds NO new engine-floor callback and moves
-    /// NO drive-order into the module: the fork side module is instantiated BEFORE
+    /// True when EVERY node is a kind the module admits: Null, Funcref,
+    /// Externref, Exnref, a typed-GC value (Struct / Array / I31), or a
+    /// StaticRoot. This is the whole set reference reconstruction drives through
+    /// the co-resident module — no kind remains on the JS reference path.
+    ///
+    /// Admitting typed GC adds NO new engine-floor callback and moves NO
+    /// drive-order into the module: the fork side module is instantiated BEFORE
     /// the guest exists, so it cannot import the guest's `_gc_allocate`/`_gc_fill`
-    /// exports, and the PROVEN JS drive-order (`materializeTypedGraph`) keeps the
-    /// topological allocate/fill walk plus cycle-breaking and aliases. The
-    /// module's only GC job is leaf-identity + transit rooting: `transit_rooted_
-    /// recipes` already seeds its reachability walk from Struct/Array edges, so
-    /// PHASE B roots every struct/array-reachable externref leaf with the R1
-    /// read-back assert before the guest fill consumes it. An i31 is a scalar leaf
-    /// (no host call, no transit). StaticRoot STAYS EXCLUDED: it needs
-    /// `resolve_static_root` + a host static-root catalog seam that is not wired,
-    /// so a static-root graph keeps the byte-identical JS reference path. The host
+    /// exports, and the PROVEN JS drive-order (`materializeTypedGraph`) is
+    /// reproduced by `build_drive_plan`. The module's only GC job is leaf-identity
+    /// + transit rooting: `transit_rooted_recipes` seeds its reachability walk
+    /// from Struct/Array edges, so PHASE B roots every struct/array-reachable
+    /// externref leaf with the R1 read-back assert before the guest fill consumes
+    /// it. An i31 is a scalar leaf (no host call, no transit).
+    ///
+    /// A StaticRoot is an IMMUTABLE, `ref.eq`-capable WasmGC reference the module
+    /// statically initializes; it too adds NO new engine-floor callback. It is
+    /// published into the anyref transit at slot `recipe + 1` by a
+    /// [`DRIVE_OP_STATIC_ROOT`](crate::drive_plan::DRIVE_OP_STATIC_ROOT) step
+    /// (`table.set(transit, recipe+1, table.get(static_root_catalog, base+ord))`,
+    /// both wasm) before any consumer reads it — the static-root binder. The host
     /// computes the same KIND predicate (plus a GC-descriptor validity check only
     /// it can see) before flipping the reference path; the module re-checks so a
-    /// disagreeing host can never drive an unadmitted kind (static-root) through
-    /// the seam.
-    pub fn all_nodes_gc_exnref_externref_funcref_or_null(&self) -> bool {
+    /// disagreeing host can never drive an unadmitted kind through the seam.
+    pub fn all_nodes_module_admissible(&self) -> bool {
         self.transaction.nodes.iter().all(|entry| {
             matches!(
                 entry.node,
@@ -230,8 +285,32 @@ impl ReferenceReplayDriver {
                     | ReferenceRecipeNode::Struct { .. }
                     | ReferenceRecipeNode::Array { .. }
                     | ReferenceRecipeNode::I31 { .. }
+                    | ReferenceRecipeNode::StaticRoot { .. }
             )
         })
+    }
+
+    /// The distinct set of activations any StaticRoot recipe in the graph names,
+    /// sorted ascending (empty when the graph has no static root). The static-root
+    /// binder seeds a per-activation merged-catalog base for each activation in
+    /// this set (mirroring [`funcref_activations`](Self::funcref_activations)); a
+    /// StaticRoot naming an activation with no seeded base is a truthful failure,
+    /// never a read against the wrong catalog slice.
+    pub fn static_root_activations(&self) -> Vec<u32> {
+        let mut activations: Vec<u32> = self
+            .transaction
+            .nodes
+            .iter()
+            .filter_map(|entry| match entry.node {
+                ReferenceRecipeNode::StaticRoot {
+                    module_activation, ..
+                } => Some(module_activation),
+                _ => None,
+            })
+            .collect();
+        activations.sort_unstable();
+        activations.dedup();
+        activations
     }
 
     /// The number of typed-GC nodes (Struct + Array + I31) in the graph — the
@@ -359,8 +438,10 @@ impl ReferenceReplayDriver {
                     reconstructed = reconstructed.checked_add(1).ok_or(Errno::ENOSPC)?;
                 }
                 // Funcref stays the wasm→wasm table.get path (D6.1); i31 is a
-                // scalar leaf (no host call, no transit); static-root is excluded
-                // by the gate. None need host identity in this phase.
+                // scalar leaf (no host call, no transit); a static-root is
+                // published into the anyref transit by a DRIVE_OP_STATIC_ROOT step
+                // (`table.get` catalog + `table.set` transit, both wasm), not
+                // through the host seam. None need host identity in this phase.
                 ReferenceRecipeNode::Null
                 | ReferenceRecipeNode::Funcref { .. }
                 | ReferenceRecipeNode::StaticRoot { .. }
@@ -854,28 +935,28 @@ mod tests {
     }
 
     #[test]
-    fn widened_gc_gate_admits_struct_array_i31_but_d6_3a_predicate_does_not() {
+    fn module_gate_admits_struct_array_i31_but_d6_3a_predicate_does_not() {
         let driver = struct_array_cycle_over_externref();
-        // The D6.4a predicate admits the typed-GC cycle; the D6.3a predicate does
-        // not (struct/array are not exnref/externref/funcref/null).
-        assert!(driver.all_nodes_gc_exnref_externref_funcref_or_null());
+        // The module-admissibility predicate admits the typed-GC cycle; the D6.3a
+        // predicate does not (struct/array are not exnref/externref/funcref/null).
+        assert!(driver.all_nodes_module_admissible());
         assert!(!driver.all_nodes_exnref_externref_funcref_or_null());
 
-        // i31 is a scalar leaf admitted by the widened gate.
+        // i31 is a scalar leaf admitted by the module gate.
         let i31_graph = ReferenceReplayDriver::new(transaction(vec![
             entry(0, ReferenceRecipeNode::I31 { value: -17 }),
             entry(1, ReferenceRecipeNode::I31 { value: 42 }),
         ]));
-        assert!(i31_graph.all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(i31_graph.all_nodes_module_admissible());
         assert!(!i31_graph.all_nodes_exnref_externref_funcref_or_null());
 
-        // The widened gate still admits every previously-admitted graph.
-        assert!(exnref_over_externref().all_nodes_gc_exnref_externref_funcref_or_null());
-        assert!(plain_externref().all_nodes_gc_exnref_externref_funcref_or_null());
-        assert!(funcref_only().all_nodes_gc_exnref_externref_funcref_or_null());
+        // The gate still admits every previously-admitted graph.
+        assert!(exnref_over_externref().all_nodes_module_admissible());
+        assert!(plain_externref().all_nodes_module_admissible());
+        assert!(funcref_only().all_nodes_module_admissible());
 
-        // static-root STAYS EXCLUDED (needs resolve_static_root + a host catalog
-        // seam not wired): even the widened D6.4a gate rejects it.
+        // static-root is NOW ADMITTED (the static-root binder publishes it into the
+        // anyref transit via a DRIVE_OP_STATIC_ROOT step — no host seam).
         let static_root = ReferenceReplayDriver::new(transaction(vec![entry(
             0,
             ReferenceRecipeNode::StaticRoot {
@@ -883,7 +964,62 @@ mod tests {
                 static_root_ordinal: 0,
             },
         )]));
-        assert!(!static_root.all_nodes_gc_exnref_externref_funcref_or_null());
+        assert!(static_root.all_nodes_module_admissible());
+        assert!(!static_root.all_nodes_exnref_externref_funcref_or_null());
+    }
+
+    #[test]
+    fn static_root_node_resolves_target_and_activations() {
+        // A mixed graph: null, a static root in activation 3, a static root in
+        // activation 1, and a funcref (a non-static kind) — the accessor resolves
+        // only the static roots and lists their distinct activations sorted.
+        let driver = ReferenceReplayDriver::new(transaction(vec![
+            entry(0, ReferenceRecipeNode::Null),
+            entry(
+                1,
+                ReferenceRecipeNode::StaticRoot {
+                    module_activation: 3,
+                    static_root_ordinal: 5,
+                },
+            ),
+            entry(
+                2,
+                ReferenceRecipeNode::StaticRoot {
+                    module_activation: 1,
+                    static_root_ordinal: 2,
+                },
+            ),
+            entry(
+                3,
+                ReferenceRecipeNode::Funcref {
+                    module_activation: 0,
+                    function_ordinal: 0,
+                },
+            ),
+        ]));
+        assert_eq!(
+            driver.static_root_node(1),
+            Ok(StaticRootTarget {
+                module_activation: 3,
+                static_root_ordinal: 5,
+            })
+        );
+        assert_eq!(
+            driver.static_root_node(2),
+            Ok(StaticRootTarget {
+                module_activation: 1,
+                static_root_ordinal: 2,
+            })
+        );
+        // A non-static kind, an out-of-range id, and the null node are truthful
+        // EINVALs — the accessor never fabricates a slot.
+        assert_eq!(driver.static_root_node(0), Err(Errno::EINVAL));
+        assert_eq!(driver.static_root_node(3), Err(Errno::EINVAL));
+        assert_eq!(driver.static_root_node(99), Err(Errno::EINVAL));
+        // Distinct activations, sorted ascending (the base-seed set).
+        assert_eq!(driver.static_root_activations(), vec![1, 3]);
+        // A graph with no static root reports an empty activation set.
+        assert!(funcref_only().static_root_activations().is_empty());
     }
 
     #[test]

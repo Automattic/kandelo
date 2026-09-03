@@ -4367,10 +4367,11 @@ export async function centralizedWorkerMain(
         // node's layout — defenses the module cannot see, so the host adds them
         // here (mirroring the JS drive-order's `validateGcRecipe`, which requires
         // the same layout before materializing).
-        // Only static-root still needs a JS engine-floor drive this slice does not
-        // move (it is NOT transit-free: it publishes into the anyref transit, which
-        // needs `resolve_static_root` wired), so it keeps the byte-identical JS
-        // reference path. The module re-checks the same KIND predicate in
+        // static-root is now admitted too: the static-root binder publishes each
+        // immutable root into the anyref transit via a DRIVE_OP_STATIC_ROOT step
+        // (`table.get` the merged catalog mirror + `table.set` transit, both wasm)
+        // — no host seam. So no reference kind remains on the JS path. The module
+        // re-checks the same KIND predicate (and per-activation base seeding) in
         // `fm_begin_reference_replay`, so a host/module disagreement fails loud
         // (`EOPNOTSUPP`), never silently.
         const exceptionDescriptorAdmitsExnref = (
@@ -4438,8 +4439,15 @@ export async function centralizedWorkerMain(
                   entry.node.moduleActivation,
                   entry.node.layoutId ?? 0,
                 );
-              // static-root (and any future kind) stays on the byte-identical JS
-              // reference path.
+              // static-root: the binder publishes each immutable root into the
+              // anyref transit via a DRIVE_OP_STATIC_ROOT step (`table.get` the
+              // merged catalog mirror + `table.set` transit, both wasm) — no host
+              // seam. Admitted whole-fork like every other kind; the module
+              // re-checks (`fm_static_root_slot`) so a disagreeing host can never
+              // drive an un-seeded activation's catalog slice.
+              case "static-root":
+                return true;
+              // Any future kind stays on the byte-identical JS reference path.
               default:
                 return false;
             }
@@ -4880,6 +4888,75 @@ export async function centralizedWorkerMain(
           // captured alongside the codec bytes: the smallest activation that
           // declared an exception codec descriptor, or 0xffff_ffff if none.
           forkModuleBackend.setHostExceptionOwner(childHostExceptionOwner);
+          // Static-root binder: populate the merged anyref catalog mirror the
+          // module's injected `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT
+          // step. The child's static roots were harvested + registered during
+          // activation registration (above), so `decodeStaticRoot` derefs the live
+          // child root here; publishing it into the transit stays in wasm (the
+          // binder), replacing the JS `publishTransit` for static roots. Only the
+          // REFERENCED ordinals are pinned into the mirror, so an unreferenced
+          // (and possibly collected) root is never derefed. Each static-root-
+          // bearing activation gets a contiguous slice `[base, base + width)`
+          // (`width` = its max referenced ordinal + 1); the module's
+          // `fm_static_root_slot` returns `base(activation) + ordinal`. A single
+          // static-root activation seeds NO base (module defaults base 0),
+          // byte-identical to the raw-ordinal mapping. The mirror is cleared right
+          // after the attach drives the plan so it never pins a child root past
+          // replay.
+          // `moduleReferenceKindsSupported` (this block's guard) is only true when
+          // the gate iterated `decodedChildReferences.graph.nodes`, so it is
+          // non-null here (the GC-codec seeding above assumes the same fork state).
+          const staticRootNodes = [
+            ...decodedChildReferences!.graph.nodes,
+          ].filter((entry) => entry.node.kind === "static-root");
+          if (staticRootNodes.length > 0) {
+            const mirror = forkModuleInstance.staticRootCatalog;
+            const maxOrdinalByActivation = new Map<number, number>();
+            for (const entry of staticRootNodes) {
+              if (entry.node.kind !== "static-root") continue;
+              const activation = entry.node.moduleActivation;
+              maxOrdinalByActivation.set(
+                activation,
+                Math.max(
+                  maxOrdinalByActivation.get(activation) ?? 0,
+                  entry.node.staticRootOrdinal,
+                ),
+              );
+            }
+            const staticRootActivations = [
+              ...maxOrdinalByActivation.keys(),
+            ].sort((left, right) => left - right);
+            const staticRootBase = new Map<number, number>();
+            let staticRootWidth = 0;
+            for (const activation of staticRootActivations) {
+              staticRootBase.set(activation, staticRootWidth);
+              staticRootWidth += maxOrdinalByActivation.get(activation)! + 1;
+            }
+            if (mirror.length < staticRootWidth) {
+              mirror.grow(staticRootWidth - mirror.length, null);
+            }
+            for (const entry of staticRootNodes) {
+              if (entry.node.kind !== "static-root") continue;
+              const activation = entry.node.moduleActivation;
+              mirror.set(
+                staticRootBase.get(activation)! + entry.node.staticRootOrdinal,
+                activationRegistry.decodeStaticRoot(
+                  activation,
+                  entry.node.staticRootOrdinal,
+                ),
+              );
+            }
+            // Seed bases only for a multi-activation static-root fork; a single
+            // static-root activation keeps the empty base map (module base 0).
+            if (staticRootActivations.length > 1) {
+              for (const activation of staticRootActivations) {
+                forkModuleBackend.setActivationStaticRootBase(
+                  activation,
+                  staticRootBase.get(activation)!,
+                );
+              }
+            }
+          }
           processContinuation.enableModuleReferenceReplay();
         }
         if (borrowedWorkspace) {
@@ -4896,6 +4973,18 @@ export async function centralizedWorkerMain(
             adoptEarlyReferences,
             decodedChildReferences ?? undefined,
           );
+        }
+        // Static-root binder: the attach synchronously drove the plan, so the
+        // static roots are now rooted in the anyref transit (and the child
+        // instance holds them as immutable roots). Null the merged catalog mirror
+        // so it never extends a child root's lifetime past replay — the same
+        // no-leak contract the harvest-table clear and `finishReplay` transit
+        // clear keep for the JS path.
+        if (moduleReferenceKindsSupported && forkModuleInstance) {
+          const mirror = forkModuleInstance.staticRootCatalog;
+          for (let slot = 0; slot < mirror.length; slot += 1) {
+            mirror.set(slot, null);
+          }
         }
         decodedChildReferences = null;
         importedStatePlanner.clear();
