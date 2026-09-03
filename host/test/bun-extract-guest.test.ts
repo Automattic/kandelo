@@ -103,6 +103,8 @@ describe("bun-extract guest program", () => {
       expect(entry).toBeTruthy();
       // Entry lives under the cache dir and its specifiers are remapped.
       expect(entry!.startsWith(cache!)).toBe(true);
+      // Entry is renamed to .mjs so spidermonkey-node loads it as ESM.
+      expect(entry!.endsWith(".mjs")).toBe(true);
       // Prove remap by having the program cat the entry back (self-check line):
       expect(r1.stdout).toContain(`REMAP_OK ${cache}`);
 

@@ -64,13 +64,38 @@ static int ends_with(const char *s, const char *suf) {
     return ls >= lsuf && strcmp(s + ls - lsuf, suf) == 0;
 }
 
-/* Replace all occurrences of `from` with `to` in text; returns malloc'd result, sets *outlen. */
+/* Reject a stripped module-relative path that could escape the extraction
+ * root via ".." path segments. Untrusted input (a crafted/corrupt Bun
+ * executable) must not be able to write outside outdir/cachedir. */
+static int has_dotdot_segment(const char *rel) {
+    size_t n = strlen(rel);
+    if (n == 2 && rel[0] == '.' && rel[1] == '.') return 1;
+    if (n >= 3 && rel[0] == '.' && rel[1] == '.' && rel[2] == '/') return 1;
+    if (n >= 3 && rel[n - 1] == '.' && rel[n - 2] == '.' && rel[n - 3] == '/') return 1;
+    if (strstr(rel, "/../")) return 1;
+    return 0;
+}
+
+/* Reject bytes that would produce invalid/unsafe JSON when embedded
+ * unescaped in a "..."-quoted manifest string. */
+static int has_json_unsafe_byte(const char *s) {
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '"' || *p == '\\' || *p < 0x20) return 1;
+    }
+    return 0;
+}
+
+/* Replace all occurrences of `from` with `to` in text; returns malloc'd result, sets *outlen.
+ * Returns NULL (with *outlen = 0) on allocation failure; callers must treat that as fatal,
+ * not fall back to writing the unremapped text. */
 static char *replace_all(const char *text, size_t tlen, const char *from, const char *to, size_t *outlen) {
     size_t flen = strlen(from), tolen = strlen(to);
     size_t count = 0; const char *s = text;
     while ((s = memmem(s, (size_t)(text + tlen - s), from, flen))) { count++; s += flen; }
     size_t cap = tlen + count * (tolen > flen ? tolen - flen : 0) + 1;
-    char *out = malloc(cap); size_t o = 0; s = text; const char *end = text + tlen;
+    char *out = malloc(cap);
+    if (!out) { *outlen = 0; return NULL; }
+    size_t o = 0; s = text; const char *end = text + tlen;
     while (s < end) {
         const char *m = memmem(s, (size_t)(end - s), from, flen);
         if (!m) { memcpy(out + o, s, (size_t)(end - s)); o += (size_t)(end - s); break; }
@@ -252,6 +277,7 @@ int main(int argc, char **argv) {
     uint32_t esm = 0, written = 0;
     char entry_rel[4200] = "";
     int entry_fmt = 0;
+    int entry_found = 0;
 
     for (uint32_t i = 0; i < count; i++) {
         if (pread_all(fd, rec, REC, base + modules_off + (off_t)i * REC) != 0) { fprintf(stderr, "read rec %u\n", i); return 1; }
@@ -262,8 +288,10 @@ int main(int argc, char **argv) {
         if (name_len > 4096) { fprintf(stderr, "name too long at %u\n", i); return 1; }
         if (pread_all(fd, nm, name_len, base + name_off) != 0) { fprintf(stderr, "read name %u\n", i); return 1; }
         nm[name_len] = 0;
+        if (has_json_unsafe_byte(nm)) { fprintf(stderr, "bun-extract: unsafe module name at %u\n", i); return 1; }
 
         const char *rel = strip_prefix(nm);
+        if (has_dotdot_segment(rel)) { fprintf(stderr, "bun-extract: unsafe module path: %s\n", nm); return 1; }
         int is_entry = (i == entry_id);
         /* spidermonkey-node only reliably loads ".mjs" as ESM. The entry is
          * not imported by any other module (only the bootstrap loads it
@@ -278,12 +306,24 @@ int main(int argc, char **argv) {
         }
 
         if (fmt == 1) esm++;
-        if (is_entry) { snprintf(entry_rel, sizeof(entry_rel), "%s", rel_out); entry_fmt = fmt; }
+        if (is_entry) { snprintf(entry_rel, sizeof(entry_rel), "%s", rel_out); entry_fmt = fmt; entry_found = 1; }
         written++;
 
         if (prepare && is_hit) continue; /* cache already populated */
 
-        if (cont_len + 1 > cbuf_cap) { cbuf_cap = cont_len + 1; cbuf = realloc(cbuf, cbuf_cap); if (!cbuf) { fprintf(stderr, "oom\n"); return 1; } }
+        /* Widen the comparison: cont_len is attacker-controlled and, at
+         * UINT32_MAX, "cont_len + 1" wraps to 0 in 32-bit arithmetic, which
+         * would satisfy "> cbuf_cap" as false and skip the realloc — leaving
+         * cbuf undersized (or NULL) before the pread_all below. size_t is
+         * also 32 bits on this target, so also reject a size that would
+         * itself overflow size_t rather than silently truncating it. */
+        uint64_t need = (uint64_t)cont_len + 1;
+        if (need > (uint64_t)SIZE_MAX) { fprintf(stderr, "bun-extract: implausible content length at %u\n", i); return 1; }
+        if (need > (uint64_t)cbuf_cap) {
+            cbuf_cap = (size_t)need;
+            cbuf = realloc(cbuf, cbuf_cap);
+            if (!cbuf) { fprintf(stderr, "oom\n"); return 1; }
+        }
         if (cont_len && pread_all(fd, cbuf, cont_len, base + cont_off) != 0) { fprintf(stderr, "read contents %u\n", i); return 1; }
 
         int dn = snprintf(dest, sizeof(dest), "%s/%s", outdir, rel_out);
@@ -304,8 +344,15 @@ int main(int argc, char **argv) {
             snprintf(to, sizeof(to), "%s/", cachedir);
             size_t outlen;
             char *remapped = replace_all(text, tlen, "/$bunfs/root/", to, &outlen);
-            if (remapped) { fwrite(remapped, 1, outlen, f); free(remapped); }
-            else fwrite(text, 1, tlen, f);
+            if (!remapped) {
+                /* Never fall back to writing the unremapped text: that would
+                 * silently ship "/$bunfs/root/" specifiers the cache dir
+                 * can't resolve, i.e. a fake success. */
+                fclose(f); free(utf8);
+                fprintf(stderr, "bun-extract: out of memory remapping %s\n", nm);
+                return 1;
+            }
+            fwrite(remapped, 1, outlen, f); free(remapped);
         } else {
             fwrite(text, 1, tlen, f);
         }
@@ -314,6 +361,13 @@ int main(int argc, char **argv) {
     }
 
     if (prepare) {
+        if (!entry_found) {
+            /* entry_id came from the (untrusted) binary's Offsets struct and
+             * did not match any module in the table: never print a CACHE=/
+             * ENTRY= pair pointing at a nonexistent entry file. */
+            fprintf(stderr, "bun-extract: entry module id %u out of range (%u modules)\n", entry_id, count);
+            return 1;
+        }
         if (!is_hit) {
             snprintf(dest, sizeof(dest), "%s/manifest.json", cachedir);
             FILE *mf = fopen(dest, "wb");
