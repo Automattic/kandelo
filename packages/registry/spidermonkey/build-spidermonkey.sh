@@ -321,6 +321,7 @@ ac_add_options --with-intl-api
 ac_add_options --enable-icu4x
 ac_add_options --disable-shared-js
 ac_add_options --enable-shared-memory
+ac_add_options --enable-explicit-resource-management
 ac_add_options --disable-clang-plugin
 ac_add_options --disable-tests
 ac_add_options --disable-debug-symbols
