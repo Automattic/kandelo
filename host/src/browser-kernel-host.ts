@@ -26,8 +26,7 @@ import {
 } from "./networking/browser-cors-proxy";
 
 export type { HttpRequest, HttpResponse };
-import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
-import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
+import { BROWSER_KERNEL_ASSETS } from "./browser-kernel-assets";
 import {
   DEFAULT_MAX_PAGES,
   DEFAULT_MAX_WORKERS,
@@ -51,6 +50,24 @@ const defaultPcmWorkletUrl = new URL(
   "./audio/pcm-audio-worklet.js",
   import.meta.url,
 );
+
+/** Vite injects `import.meta.env`; plain bundlers (tsdown/rolldown) do not. */
+function importMetaBaseUrl(): string | undefined {
+  return (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL;
+}
+
+/**
+ * The worker-entry URLs BrowserKernel spawns from. Declared here — not in
+ * `browser-kernel-assets.ts`, which provides the default value — so importing
+ * the type never drags that module's Vite-only `?worker&url` imports into a
+ * type graph (`.d.ts` bundling).
+ */
+export interface BrowserKernelAssets {
+  /** Per-process worker entry, spawned as a `{ type: "module" }` Worker. */
+  processWorkerUrl: string;
+  /** Dedicated kernel worker entry, spawned as a `{ type: "module" }` Worker. */
+  kernelWorkerUrl: string;
+}
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -119,6 +136,27 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
+  /**
+   * Override the URLs BrowserKernel spawns its kernel and process workers
+   * from. Any subset may be given; the rest fall back to
+   * {@link BROWSER_KERNEL_ASSETS}. Consumers of `@kandelo/web` normally do not
+   * need this — the package ships resolved defaults — but it is the escape
+   * hatch for hosting the worker entries on a custom origin.
+   */
+  assets?: Partial<BrowserKernelAssets>;
+  /**
+   * Expose the kernel-owned VFS to the main thread as {@link
+   * BrowserKernel.hostFs}. Off by default, and deliberately so: it makes the
+   * main thread a co-owner of the VFS SharedArrayBuffer, which on WebKit is
+   * then reclaimed only when the page drops it rather than by
+   * `Worker.terminate()` — the accumulation this kernel avoids by keeping the
+   * VFS worker-owned (see {@link kernelOwnedFs}).
+   *
+   * Enable it for an embedder that must read or write the live filesystem from
+   * the main thread. {@link BrowserKernel.destroy} releases the reference. A
+   * host that switches images repeatedly should leave it off.
+   */
+  exposeHostFs?: boolean;
   /** Browser pages that are not controlled by Kandelo's service worker can
    *  use this to route guest HTTP(S) and external lazy VFS downloads through
    *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
@@ -212,6 +250,16 @@ export class BrowserKernel {
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
+  /** Worker-entry URLs: defaults merged with `options.assets`. */
+  private readonly assets: BrowserKernelAssets;
+  /**
+   * The VFS SharedArrayBuffer the kernel worker reports in its `ready`
+   * message. It lets the main thread build a synchronous
+   * {@link BrowserKernel.hostFs} view over the worker-owned filesystem.
+   */
+  private workerFsSab?: SharedArrayBuffer;
+  /** Lazily-built main-thread view over {@link workerFsSab}. */
+  private hostFsView?: MemoryFileSystem;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
@@ -259,6 +307,7 @@ export class BrowserKernel {
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
     const corsProxy = validateBrowserCorsProxyConfig(options.corsProxy);
+    this.assets = { ...BROWSER_KERNEL_ASSETS, ...options.assets };
     this.options = {
       maxWorkers: DEFAULT_MAX_WORKERS,
       env: [
@@ -280,6 +329,42 @@ export class BrowserKernel {
     // nothing large accumulates on the main thread across image switches.
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+  }
+
+  /**
+   * Host-side VFS, readable and writable **synchronously from the main
+   * thread**.
+   *
+   * The runtime filesystem is owned by the kernel worker, but it is backed by
+   * a `SharedArrayBuffer`. The worker reports that SAB at boot, so this view
+   * operates on the exact same bytes the running processes see, with no
+   * message round-trip. Kandelo already requires cross-origin isolation
+   * (COOP/COEP) for `SharedArrayBuffer` + `Atomics`, so the synchronous path
+   * is always available and there is no async fallback to reason about.
+   *
+   * The returned {@link MemoryFileSystem} implements the full host
+   * `FileSystemBackend` surface. Concurrent access is coordinated by the
+   * SharedFS lock table, exactly as it is between the kernel worker and its
+   * process workers.
+   *
+   * Requires `exposeHostFs: true` in the constructor options, and is available
+   * once the kernel is booted.
+   */
+  get hostFs(): MemoryFileSystem {
+    if (!this.options.exposeHostFs) {
+      throw new Error(
+        "hostFs requires exposeHostFs: true in the BrowserKernel options. It is " +
+          "off by default because it makes the main thread a co-owner of the VFS " +
+          "SharedArrayBuffer.",
+      );
+    }
+    if (!this.workerFsSab) {
+      throw new Error(
+        "hostFs is unavailable until the kernel is booted. Call boot() first.",
+      );
+    }
+    this.hostFsView ??= MemoryFileSystem.fromExisting(this.workerFsSab);
+    return this.hostFsView;
   }
 
   /**
@@ -339,7 +424,7 @@ export class BrowserKernel {
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage,
-      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlBase: options.lazyUrlBase ?? importMetaBaseUrl(),
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
@@ -367,7 +452,7 @@ export class BrowserKernel {
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage: new Uint8Array(options.vfsImage),
-      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlBase: options.lazyUrlBase ?? importMetaBaseUrl(),
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: true,
@@ -403,7 +488,7 @@ export class BrowserKernel {
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
     // Create the kernel worker
-    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    this.kernelWorkerHandle = new Worker(this.assets.kernelWorkerUrl, { type: "module" });
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -452,6 +537,11 @@ export class BrowserKernel {
         };
         const readyHandler = (e: MessageEvent) => {
           if (e.data?.type === "ready") {
+            // Present only under `exposeHostFs`: the SAB backing the worker's
+            // VFS, which backs the synchronous view in {@link hostFs}.
+            if (e.data.fsSab instanceof SharedArrayBuffer) {
+              this.workerFsSab = e.data.fsSab;
+            }
             settleResolve();
           } else if (e.data?.type === "init_error") {
             settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
@@ -481,7 +571,8 @@ export class BrowserKernel {
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           shmSab: this.shmSab,
-          workerEntryUrl,
+          workerEntryUrl: this.assets.processWorkerUrl,
+          reportFsSab: this.options.exposeHostFs,
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
@@ -666,6 +757,11 @@ export class BrowserKernel {
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
     const spawnStartedBeforeExitSequence = this.exitSequence;
+    // Non-PTY spawns without an explicit stdin get an immediate EOF, matching
+    // boot(), spawn(), and NodeKernelHost.spawnProgram(). Without it a program
+    // that reads stdin (php does at startup) retries readv(0) forever.
+    const stdin =
+      options?.stdin ?? (!options?.pty ? new Uint8Array() : undefined);
     const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
@@ -678,7 +774,7 @@ export class BrowserKernel {
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxPages: this.maxPages,
     }) as number;
 
@@ -1296,6 +1392,11 @@ export class BrowserKernel {
     this.pendingPtyOutputBytes = 0;
     this.pendingPtyOutputChunks = 0;
     this.pendingPtyOutputFailure = undefined;
+    // `hostFs` (opt-in) makes the main thread a co-owner of the VFS SAB, so it
+    // belongs to the same release set: without this the VFS would outlive
+    // Worker.terminate() and accumulate across image switches.
+    this.workerFsSab = undefined;
+    this.hostFsView = undefined;
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,

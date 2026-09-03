@@ -15,7 +15,8 @@
     "bench:php-mariadb": "npx tsx benchmarks/php-mariadb-transport.ts",
     "pack:host": "npm --prefix host pack",
     "pack:sdk": "npm --prefix sdk pack",
-    "pack:packages": "npm run pack:host && npm run pack:sdk"
+    "pack:web": "npm --prefix web-libs/kandelo-web pack",
+    "pack:packages": "npm run pack:host && npm run pack:sdk && npm run pack:web"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

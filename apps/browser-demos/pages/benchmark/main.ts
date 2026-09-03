@@ -12,7 +12,7 @@
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
-import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserKernel } from "@kandelo/web";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
 import {
