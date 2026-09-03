@@ -5191,12 +5191,17 @@ export async function centralizedWorkerMain(
         // `materializeAllTyped` order. Distinct from `gcNodes`, which advances
         // merely by admitting the graph.
         const driveSteps = Number(forkModuleBackend.driveStepsExecuted());
+        // Static-root binder proof-of-use: the module republished an immutable
+        // static root into the anyref transit (`fm_static_root_slot`) rather than
+        // the JS `publishTransit` fallback.
+        const staticRoots = Number(forkModuleBackend.staticRootsPublished());
         if (
           references > 0 ||
           externrefs > 0 ||
           exnrefs > 0 ||
           gcNodes > 0 ||
-          driveSteps > 0
+          driveSteps > 0 ||
+          staticRoots > 0
         ) {
           port.postMessage({
             type: "fork_module_references",
@@ -5206,6 +5211,7 @@ export async function centralizedWorkerMain(
             exnrefs,
             gcNodes,
             driveSteps,
+            staticRoots,
           } satisfies WorkerToHostMessage);
         }
         // Phase 6 D7b replay-side proof-of-use: a fork CHILD (crucially a

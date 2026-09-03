@@ -20,7 +20,8 @@ export type ModuleReferenceKind =
   | "externref"
   | "exnref"
   | "gc"
-  | "drive";
+  | "drive"
+  | "static-root";
 
 const KIND_PATTERNS: Record<ModuleReferenceKind, RegExp> = {
   funcref: /fork_module_references=(\d+)/,
@@ -31,6 +32,10 @@ const KIND_PATTERNS: Record<ModuleReferenceKind, RegExp> = {
   // executed the typed-GC drive plan rather than the JS `materializeAllTyped`
   // fallback.
   drive: /drive_steps_executed=(\d+)/,
+  // Static-root binder proof-of-use (`fm_static_roots_published`): the module
+  // republished an immutable static root into the anyref transit rather than the
+  // JS `publishTransit` fallback.
+  "static-root": /static_roots_published=(\d+)/,
 };
 
 export function moduleReferenceProof(
