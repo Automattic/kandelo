@@ -325,6 +325,17 @@ export class ForkReferenceTransaction {
     });
     this.capturedValues.push(value);
     this.rememberId(value, id);
+    // Publish the static root into the transit at `id + 1` so PARENT replay's
+    // `decode_anyref` (a pure `table.get(transit, recipe + 1)`) reads it. A
+    // captured i31 / struct is grown+published for the parent by
+    // `encodeI31` / `claimGcSlot`; the static-root lookup path did neither, so a
+    // static root held as a bare operand-stack / local value across fork left the
+    // parent's transit slot unsized and the resume trapped out of bounds. (The
+    // CHILD re-publishes every static root via `materializeAllTyped` PHASE A.)
+    if (id + 2 > table.length) {
+      table.grow(id + 2 - table.length, null);
+    }
+    table.set(id + 1, value);
     return id;
   }
 
