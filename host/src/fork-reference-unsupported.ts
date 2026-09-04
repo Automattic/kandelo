@@ -9,7 +9,11 @@
  * `fm_begin_reference_replay`. See docs/fork-reference-support.md.
  */
 export class ForkReferenceUnsupportedError extends Error {
-  readonly errno = "EOPNOTSUPP" as const;
+  // Numeric errno matching the real control path: the parent run loop aborts a
+  // gated fork with `-FORK_REFERENCE_EOPNOTSUPP` (95) and the kernel/guest use
+  // `Errno::EOPNOTSUPP` (95). Keep this the same numeric convention rather than
+  // a symbolic string so a caller comparing against a raw errno matches.
+  readonly errno = 95 as const;
   constructor(readonly kind: string) {
     super(
       `fork carries a live '${kind}' reference across the fork boundary, `

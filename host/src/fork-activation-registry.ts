@@ -528,7 +528,17 @@ export function buildForkActivationStateImports(
     [WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP]: (
       _slot: number,
     ): number => {
-      registry.markUnsupportedReferenceKind("static-root/gc");
+      // `gc_lookup` is the anyref-transit dedup entry: the guest routes EVERY
+      // anyref-lineage value through it (an internalized host externref held in
+      // a local/global/table, a static root, or a typed Wasm-GC struct/array/
+      // i31), and it observes only the transit slot, not the referent's
+      // concrete kind. It cannot honestly claim "gc" (the externref fixture
+      // holds a plain host externref in a LOCAL and still reaches here) nor
+      // "externref" (a real GC value reaches here too). Report the honest
+      // undistinguished umbrella; the gc-structure imports below (claim /
+      // define / broker / i31 / provenance) report the specific typed-GC kind
+      // on the fresh-node walk that a nonzero `lookup` short-circuits.
+      registry.markUnsupportedReferenceKind("externref or Wasm-GC (anyref)");
       return registry.reserveGatedTransitPlaceholder();
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_CLAIM]: (

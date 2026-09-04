@@ -5120,6 +5120,18 @@ export async function centralizedWorkerMain(
             const unsupportedKind =
               activationRegistry.takeUnsupportedReferenceKind();
             if (unsupportedKind !== null) {
+              // Make the platform boundary VISIBLE to a developer (Platform
+              // Values: truthful failure over silent illusion). Marker-gated:
+              // this fires ONLY when a capture-side record-stub marked an
+              // unsupported reference kind, never on a supported (funcref /
+              // exnref / simple) fork. One concise line per aborted fork.
+              console.warn(
+                `[worker] pid=${pid}: fork aborted with EOPNOTSUPP — carried a ` +
+                  `live '${unsupportedKind}' reference across the fork boundary, ` +
+                  `which the platform cannot reconstruct in a fresh child yet. ` +
+                  `No child was spawned; the parent continues. ` +
+                  `See docs/fork-reference-support.md.`,
+              );
               forkResult = -FORK_REFERENCE_EOPNOTSUPP;
               processContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
               continue;
@@ -7042,6 +7054,17 @@ export async function centralizedThreadWorkerMain(
           const unsupportedKind =
             threadActivationRegistry?.takeUnsupportedReferenceKind() ?? null;
           if (unsupportedKind !== null) {
+            // Make the platform boundary VISIBLE to a developer (Platform
+            // Values: truthful failure over silent illusion). Marker-gated:
+            // fires ONLY when a capture-side record-stub marked an unsupported
+            // reference kind, never on a supported fork. One line per abort.
+            console.warn(
+              `[worker] pid=${pid} tid=${tid}: fork aborted with EOPNOTSUPP — ` +
+                `carried a live '${unsupportedKind}' reference across the fork ` +
+                `boundary, which the platform cannot reconstruct in a fresh ` +
+                `child yet. No child was spawned; the parent continues. ` +
+                `See docs/fork-reference-support.md.`,
+            );
             forkResult = -FORK_REFERENCE_EOPNOTSUPP;
             threadProcessContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
             continue;

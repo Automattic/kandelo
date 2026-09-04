@@ -8,7 +8,7 @@ describe("ForkReferenceUnsupportedError", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe("ForkReferenceUnsupportedError");
     expect(err.kind).toBe("externref");
-    expect(err.errno).toBe("EOPNOTSUPP");
+    expect(err.errno).toBe(95);
     expect(err.message).toContain("externref");
     expect(err.message).toContain("fork-reference-support");
   });
