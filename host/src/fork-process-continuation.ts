@@ -137,6 +137,11 @@ export class ForkProcessContinuationCoordinator {
   private phase: ProcessContinuationPhase = "idle";
   private arena: ForkModuleStateArena | null = null;
   private replayOwnership: ProcessReplayOwnership | null = null;
+  // F1: the errno recorded when abort-replay began. On the module path the JS
+  // `LinkedForkContinuation` is unrooted and cannot hold it, so it is stored
+  // here instead (populated on both the module and JS branches). Valid only
+  // while `phase === "abort-replay"`; cleared whenever phase resets to idle.
+  #abortErrno: number | null = null;
   // Phase 6 D5 step 4b/5: when set (only by `enableModuleBacking`, only for a
   // QUALIFYING single-activation fork behind `WASM_POSIX_FORK_MODULE`), the
   // journal + frame storage + resume slots live in the co-resident fork-module
@@ -675,6 +680,18 @@ export class ForkProcessContinuationCoordinator {
   }
 
   /**
+   * The errno recorded when abort-replay began (module path: the JS
+   * continuation is unrooted and cannot hold it). Valid only in the
+   * "abort-replay" phase.
+   */
+  abortErrno(): number {
+    if (this.#abortErrno === null) {
+      throw new Error(`${this.label}: no abort errno recorded`);
+    }
+    return this.#abortErrno;
+  }
+
+  /**
    * Switch a sealed parent transaction to allocation-failure replay.
    *
    * The caller first seals capture so every already-committed frame and
@@ -684,6 +701,11 @@ export class ForkProcessContinuationCoordinator {
     this.requirePhase("sealed-parent", "begin process abort replay");
     if (!Number.isInteger(errno) || errno <= 0) {
       throw new RangeError(`${this.label}: invalid fork abort errno ${errno}`);
+    }
+    this.#abortErrno = errno;
+    if (this.moduleBackend) {
+      this.beginModuleAbortReplay(errno);
+      return;
     }
     this.registry.beginParentReplay();
     this.events.beginParentReplay();
@@ -979,6 +1001,38 @@ export class ForkProcessContinuationCoordinator {
           `${this.label}: activation ${activation.activationId} replay (module)`,
         );
         this.requireActivationState(activation, WPK_FORK_REWINDING, "begin replay");
+      }
+    } catch (error) {
+      this.abort();
+      throw error;
+    }
+  }
+
+  /**
+   * Module abort-replay begin (mirror of `beginModuleParentReplay`,
+   * abort-tagged). Abort replays the parent's already-committed frames from
+   * `activation.root` (not `replayRoot`, which only exists for a fresh
+   * child), matching the JS `beginAbortReplay` above.
+   */
+  private beginModuleAbortReplay(errno: number): void {
+    const backend = this.moduleBackend!;
+    this.registry.beginParentReplay();
+    this.phase = "abort-replay";
+    try {
+      this.registry.restoreModuleState();
+      backend.beginAbort();
+      for (const activation of this.orderedActivations()) {
+        invokeForkContinuationBegin(
+          requireExportFunction(activation, "wpk_fork_abort_begin"),
+          activation.root,
+          activation.continuation.format.ptrWidth,
+          `${this.label}: activation ${activation.activationId} abort replay (module)`,
+        );
+        this.requireActivationState(
+          activation,
+          WPK_FORK_ABORT_UNWINDING,
+          "begin abort replay",
+        );
       }
     } catch (error) {
       this.abort();
@@ -1310,22 +1364,27 @@ export class ForkProcessContinuationCoordinator {
   }
 
   private finishModuleTransaction(abortReplay: boolean): void {
-    if (abortReplay) {
-      throw new Error(`${this.label}: fork-module path does not own abort replay`);
+    // vfork/borrowed abort stays unsupported on the module path too (mirrors
+    // the JS-path guard in `finishTransaction`, which never reaches this
+    // method's body because it dispatches here first).
+    if (abortReplay && this.replayOwnership === "borrowed") {
+      throw new Error(`${this.label}: borrowed child cannot own abort replay`);
     }
     let failure: unknown;
     const backend = this.moduleBackend!;
     const activations = this.orderedActivations();
+    const endExport = abortReplay ? "wpk_fork_abort_end" : "wpk_fork_rewind_end";
     for (const activation of activations) {
       try {
-        requireExportFunction(activation, "wpk_fork_rewind_end")();
+        requireExportFunction(activation, endExport)();
         this.requireActivationState(activation, WPK_FORK_NORMAL, "finish replay");
       } catch (error) {
         failure ??= error;
       }
     }
     try {
-      backend.finishReplay();
+      if (abortReplay) backend.finishAbort();
+      else backend.finishReplay();
     } catch (error) {
       failure ??= error;
     }
@@ -1357,6 +1416,7 @@ export class ForkProcessContinuationCoordinator {
     }
     this.replayOwnership = null;
     this.phase = "idle";
+    this.#abortErrno = null;
     if (failure !== undefined) throw failure;
   }
 
@@ -1443,6 +1503,7 @@ export class ForkProcessContinuationCoordinator {
     }
     this.replayOwnership = null;
     this.phase = "idle";
+    this.#abortErrno = null;
     if (failure !== undefined) throw failure;
   }
 
