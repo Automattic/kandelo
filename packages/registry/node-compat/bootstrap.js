@@ -4829,6 +4829,20 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
             resolvedPath = null;
         }
         if (!resolvedPath) return null;
+
+        // ESM target: hand the real path back to the native loader so it
+        // CompileModules the file (dedup-safe via the native per-path module
+        // registry) instead of CJS-wrapping it as a classic script. A CJS
+        // wrapper (`_makeRequire`) evaluates the file body as a plain
+        // function, so a top-level `import` declaration inside it throws
+        // "import declarations may only appear at top level of a module".
+        // Returning an absolute path here is handled natively by
+        // ModuleLoader.cpp (confirmed: absolute paths bypass the bare-token
+        // synthesis below and are read + compiled as a module directly).
+        if (resolvedPath.endsWith('.mjs') || _nearestPackageType(resolvedPath) === 'module') {
+            return resolvedPath;
+        }
+
         token = '/__kandelo_bare__/pkg' + resolvedPath;
         try {
             obj = _makeRequire(base)(specifier);
