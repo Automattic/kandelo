@@ -111,10 +111,16 @@ describe("externref fork through the co-resident module (Phase 6 D6.5)", () => {
     // spawned and nothing is reconstructed.
     //
     // The fixture guest does not branch on a negative fork() return, so
-    // -EOPNOTSUPP (-95) drives it into its parent/wait path, which fails to reap
-    // a never-spawned child and exits 92. The load-bearing signals are that the
-    // gate is CLEAN: no worker crash (stderr empty) and no reconstruction (the
-    // externref proof-of-use is null — neither the JS path nor the module ran a
+    // -EOPNOTSUPP (-95) drives it into its parent path. Before the never-reaped
+    // wait, the PARENT re-checks its carried externref: it asserts the reference
+    // survived the aborted capture/restore intact (still non-null and still the
+    // SAME owner-minted host identity through the broker), exiting 96/97 on
+    // divergence. Only when the parent's reference is intact does it fall
+    // through to the wait path, which fails to reap the never-spawned child and
+    // exits 92 — so an exit of 92 proves BOTH the clean abort AND that the
+    // parent continued unaffected. The load-bearing signals are that the gate is
+    // CLEAN: no worker crash (stderr empty) and no reconstruction (the externref
+    // proof-of-use is null — neither the JS path nor the module ran a
     // reconstruction).
     const result = await runCentralizedProgram({
       programPath,
@@ -148,21 +154,18 @@ describe("externref fork through the co-resident module (Phase 6 D6.5)", () => {
       forkModuleEnabled: true,
       forkHostImportRegistrar: registerHostReferenceImports,
     });
-    // (a) CORRECTNESS: the child's check_ext confirmed the SAME host identity
-    // survived and it exited 0 — identical to the flag-off run.
+    // TARGET STATE once module-mode abort-replay lands (M8): the flag-on path
+    // must reach the SAME clean-abort outcome as the flag-off test above — a
+    // gated externref is not reconstructed under either flag. No child is
+    // spawned, so the guest exits 92; the gate is clean (stderr empty) and
+    // nothing reconstructed the reference (the externref proof-of-use is null).
     expect(
       result.exitCode,
       `flag-on externref fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    ).toBe(0);
+    ).toBe(92);
     expect(result.stderr).toBe("");
-    // (b) PROOF OF USE: the module re-rooted the carried externref through the
-    // `host_resolve_externref` broker seam.
-    const externrefs = moduleReferenceProof(result.hostDiagnostics, "externref");
     expect(
-      externrefs,
-      "expected a fork-module externref proof-of-use diagnostic; the module " +
-        "did not drive the externref reconstruction",
-    ).not.toBeNull();
-    expect(externrefs!).toBeGreaterThan(0);
+      moduleReferenceProof(result.hostDiagnostics, "externref"),
+    ).toBeNull();
   });
 });

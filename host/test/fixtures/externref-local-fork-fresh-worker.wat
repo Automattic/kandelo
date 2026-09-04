@@ -193,6 +193,33 @@
       unreachable
     end
 
+    ;; PARENT post-abort assertion (delete-and-gate slice, 2026-09-04).
+    ;; When the fork carries a gated externref, capture marks it unsupported and
+    ;; the parent run loop aborts the fork with -EOPNOTSUPP after seal: control
+    ;; returns HERE in the parent with no child spawned. The headline claim is
+    ;; that the parent continues UNAFFECTED — its carried reference survives the
+    ;; aborted capture/restore. Prove it directly: the parent's `$ref` must still
+    ;; be non-null and still resolve to the SAME owner-minted host identity
+    ;; through the broker. A lost or divergent parent reference exits with a
+    ;; DISTINCT nonzero code (96 = null, 97 = identity divergence) so the test's
+    ;; exit-92 assertion is load-bearing for parent-reference survival, not just
+    ;; for the never-reaped child.
+    local.get $ref
+    ref.is_null
+    if
+      i32.const 96
+      call $kernel_exit
+      unreachable
+    end
+    local.get $ref
+    call $check_ext
+    i32.eqz
+    if
+      i32.const 97
+      call $kernel_exit
+      unreachable
+    end
+
     local.get $pid
     call $wait_child
     local.get $pid

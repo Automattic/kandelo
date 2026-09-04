@@ -104,6 +104,18 @@ hidden defects:
   both files remain wired into the still-supported `exnref`
   reconstruction path. Keeping them is a host-surface-minimization
   residual, not a correctness gap.
+- **The child-side reference provider retains parallel GC/externref
+  reconstruction.** `host/src/fork-early-reference-provider.ts` still
+  carries the restore-side JS reconstruction for the gated kinds
+  (`decodeExternref`, `loadGc`, `replayGcVectors`, and the
+  `forkReferenceVectorFrom` GC-vector rebuild). This slice gated the
+  gated kinds on the **capture** side (the fork aborts before a child
+  exists), so on a flag-off abort this code is unreachable for those
+  kinds — no child ever calls it. It was not deleted because it is
+  structurally shared with the still-supported reconstruction paths and
+  will be the natural home for the future in-child reconstruction (see
+  "Future work" below). This is an incomplete-deletion residual, not a
+  correctness gap.
 
 ## Future work: re-enabling the gated kinds
 
