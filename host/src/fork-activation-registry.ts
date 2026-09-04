@@ -69,6 +69,7 @@ import {
   FORK_STATIC_ROOT_HARVEST_EXPORT,
   ForkStaticRootCatalog,
 } from "./fork-static-root-catalog";
+import { ForkReferenceUnsupportedError } from "./fork-reference-unsupported";
 
 export const FORK_MODULE_BOOTSTRAP_EXPORT = "wpk_fork_module_bootstrap";
 export const FORK_MODULE_STATE_SAVE_EXPORT = "wpk_fork_module_state_save";
@@ -193,21 +194,6 @@ export interface ForkActivationReferenceReplayImports {
   decodeFuncref(recipeId: number): CallableFunction | null;
   decodeExternref(recipeId: number): unknown;
   getReferenceVector(ordinal: number, index: number): number;
-  routeGc(recipeId: number, expectedActivation: number): number;
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number;
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number;
 }
 
 type RegistryPhase =
@@ -495,9 +481,21 @@ export function buildForkActivationStateImports(
       registry.markUnsupportedReferenceKind("externref");
       return registry.reserveGatedLeafPlaceholder(value);
     },
+    // RESTORE-side raise-stub (delete-and-gate slice, 2026-09-04). This guest
+    // import is only driven while a fresh child rebuilds a plain externref
+    // reference local/global/table entry. externref is a GATED capture kind:
+    // `ENCODE_EXTERNREF` above marks it unsupported and the parent aborts the
+    // fork with EOPNOTSUPP after seal, so no child ever restores one. It is kept
+    // BOUND (the instrumented guest still declares the import at ABI 44) but is
+    // unreachable; if it is ever reached it must fail loud, not silently
+    // reconstruct. The host-exception externref payload is decoded through the
+    // INTERNAL `ForkReferenceTransaction.materializeHostException`, not this
+    // guest import, so this stub does not touch the exnref path.
     [WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF]: (
-      recipeId: number,
-    ): unknown => referenceReplay().decodeExternref(recipeId >>> 0),
+      _recipeId: number,
+    ): unknown => {
+      throw new ForkReferenceUnsupportedError("externref");
+    },
     [WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN]: (
       expectedLength: number,
     ): number => references().beginReferenceVector(expectedLength >>> 0),
@@ -558,39 +556,39 @@ export function buildForkActivationStateImports(
     ): void => {
       registry.markUnsupportedReferenceKind("struct/array");
     },
+    // RESTORE-side raise-stubs (delete-and-gate slice, 2026-09-04). The GC
+    // route/payload-length/load imports are only driven while a fresh child
+    // rebuilds a typed Wasm-GC (struct/array/i31) reference. Those are GATED
+    // capture kinds (the GC lookup/claim/i31/broker imports above mark them
+    // unsupported and the parent aborts the fork with EOPNOTSUPP after seal), so
+    // no child ever restores one. Kept BOUND at ABI 44 (the instrumented guest
+    // still declares the imports) but unreachable; a reached path must fail loud
+    // rather than silently reconstruct. exnref restore keeps its own live
+    // route/load imports (`ROUTE_EXCEPTION`/`LOAD_EXCEPTION`), untouched here.
     [WPK_FORK_REFERENCE_IMPORT_GC_ROUTE]: (
-      recipeId: number,
-      expectedActivation: number,
-    ): number => referenceReplay().routeGc(
-      recipeId >>> 0,
-      expectedActivation >>> 0,
-    ),
+      _recipeId: number,
+      _expectedActivation: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN]: (
-      recipeId: number,
-      expectedActivation: number,
-      expectedLayoutId: number,
-    ): number => referenceReplay().gcPayloadLength(
-      recipeId >>> 0,
-      expectedActivation >>> 0,
-      expectedLayoutId,
-    ),
+      _recipeId: number,
+      _expectedActivation: number,
+      _expectedLayoutId: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_LOAD]: (
-      recipeId: number,
-      moduleActivation: number,
-      typeOrdinal: number,
-      layoutId: number,
-      kind: number,
-      scalarDestination: number | bigint,
-      scalarByteLength: number,
-    ): number => referenceReplay().loadGc(
-      recipeId >>> 0,
-      moduleActivation >>> 0,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarDestination,
-      scalarByteLength,
-    ),
+      _recipeId: number,
+      _moduleActivation: number,
+      _typeOrdinal: number,
+      _layoutId: number,
+      _kind: number,
+      _scalarDestination: number | bigint,
+      _scalarByteLength: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
     // GATED (typed Wasm-GC capture, continued): broker encode, layout capture,
     // and constructor-provenance recording all observe engine-internal GC
     // values. Record the kind so the fork aborts cleanly with EOPNOTSUPP after
@@ -1171,42 +1169,6 @@ export class ForkActivationRegistry {
     const recipeId = this.currentReferences().reserveGatedPlaceholder(value);
     this.gcTransit.ensureRecipeSlot(recipeId);
     return recipeId;
-  }
-
-  routeGc(recipeId: number, expectedActivation: number): number {
-    return this.currentReferences().routeGc(recipeId, expectedActivation);
-  }
-
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number {
-    return this.currentReferences().gcPayloadLength(
-      recipeId,
-      expectedActivation,
-      expectedLayoutId,
-    );
-  }
-
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number {
-    return this.currentReferences().loadGc(
-      recipeId,
-      moduleActivation,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarDestination,
-      scalarByteLength,
-    );
   }
 
   /**

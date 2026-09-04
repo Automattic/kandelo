@@ -9,7 +9,6 @@ import {
   appendSegmentedForkReferenceTransaction,
   decodeSegmentedForkReferenceTransaction,
   findForkReferenceVectorOrdinal,
-  forkReferenceVectorFrom,
   ForkReferenceDirectoryOverlay,
   ForkReferenceVectorBuilder,
   indexForkReferenceVector,
@@ -197,7 +196,6 @@ export class ForkReferenceTransaction {
     new PagedForkReferenceDirectory();
   private readonly materializedValues = new Map<number, unknown>();
   private readonly pendingExceptions = new Set<number>();
-  private readonly pendingGc = new Set<number>();
   private readonly exceptionCacheIndexes = new Map<number, number>();
   private exceptionSlots: ForkExceptionSlotProvider | undefined;
   private readonly scratchChunks: ScratchChunk[] = [];
@@ -217,9 +215,6 @@ export class ForkReferenceTransaction {
     MutableForkReferenceVectorInternIndex = new Map();
   private readonly decodedReferenceVectors =
     new ForkReferenceDirectoryOverlay<ForkReferenceVector>();
-  private readonly decodedReferenceVectorIntern:
-    MutableForkReferenceVectorInternIndex = new Map();
-  private readonly replayGcVectors = new Map<number, number>();
   private typedMaterialized = false;
   private childTransaction: DecodedSegmentedForkReferenceTransaction | null = null;
   private childReplayAdopted = false;
@@ -316,11 +311,6 @@ export class ForkReferenceTransaction {
         `cannot seal ${this.pendingExceptions.size} incomplete exception recipe(s)`,
       );
     }
-    if (this.pendingGc.size !== 0) {
-      throw new Error(
-        `cannot seal ${this.pendingGc.size} incomplete Wasm-GC recipe(s)`,
-      );
-    }
     if (this.pendingReferenceVectors.size !== 0) {
       throw new Error(
         `cannot seal ${this.pendingReferenceVectors.size} unfinished reference vector(s)`,
@@ -374,7 +364,6 @@ export class ForkReferenceTransaction {
     // transaction-wide index. The immutable decoded directory remains the
     // shared base used by both early and ordinary replay.
     this.decodedReferenceVectors.reset(decoded.vectors);
-    this.decodedReferenceVectorIntern.clear();
     for (const entry of graph.nodes) {
       if (entry.node.kind === "exnref") {
         this.exceptionCacheIndexes.set(
@@ -1010,144 +999,6 @@ export class ForkReferenceTransaction {
     return 1;
   }
 
-  routeGc(recipeId: number, expectedActivation: number): number {
-    assertRecipeId(recipeId);
-    this.assertU32(expectedActivation, "GC route activation");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") return 0;
-    if (
-      (node?.kind !== "struct" && node?.kind !== "array")
-      || node.moduleActivation !== expectedActivation
-    ) {
-      return -1;
-    }
-    const layoutId = node.layoutId ?? 0;
-    this.assertU31(layoutId, `fork Wasm-GC recipe ${recipeId} layout`, false);
-    return layoutId;
-  }
-
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number {
-    assertRecipeId(recipeId);
-    this.assertU32(expectedActivation, "GC payload activation");
-    this.assertU31(expectedLayoutId, "GC payload layout");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") {
-      if (expectedLayoutId !== 0) {
-        throw new Error(`fork i31 recipe ${recipeId} has a nonzero layout`);
-      }
-      return 4;
-    }
-    if (
-      (node?.kind !== "struct" && node?.kind !== "array")
-      || node.moduleActivation !== expectedActivation
-      || (node.layoutId ?? 0) !== expectedLayoutId
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} does not match payload route `
-        + `${expectedActivation}:${expectedLayoutId}`,
-      );
-    }
-    return (node.scalars ?? new Uint8Array()).byteLength;
-  }
-
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number {
-    this.requirePhase("child-replay", "load a Wasm-GC recipe");
-    assertRecipeId(recipeId);
-    this.assertU32(moduleActivation, "GC load activation");
-    // WHY the coercion: an i31 recipe carries the type ordinal `0xffff_ffff` (the
-    // "no struct/array type" sentinel). A wasm caller that passes it as a signed
-    // i32 delivers `-1` at the wasm->JS boundary, which `assertU32` (value < 0)
-    // would reject BEFORE the i31 branch below could accept the sentinel — so an
-    // i31 load through the module drive would spuriously fail. Coerce to unsigned
-    // first; this is a no-op for the genuine u32 type ordinals struct/array carry.
-    typeOrdinal = typeOrdinal >>> 0;
-    this.assertU32(typeOrdinal, "GC load type ordinal");
-    this.assertU31(layoutId, "GC load layout id");
-    this.assertU32(kind, "GC load kind");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") {
-      if (
-        layoutId !== 0
-        || typeOrdinal !== 0xffff_ffff
-        || kind !== 0
-        || scalarByteLength !== 4
-      ) {
-        throw new Error(`fork i31 recipe ${recipeId} has an invalid load coordinate`);
-      }
-      const bytes = new Uint8Array(4);
-      new DataView(bytes.buffer).setInt32(0, node.value, true);
-      this.writeBytes(
-        scalarDestination,
-        bytes,
-        "fork i31 scalar destination",
-      );
-      return 0;
-    }
-    if (node?.kind !== "struct" && node?.kind !== "array") {
-      throw new Error(`fork recipe ${recipeId} is not a Wasm-GC aggregate`);
-    }
-    const nodeKind = node.kind === "struct" ? 1 : 2;
-    const scalars = node.scalars ?? new Uint8Array();
-    if (
-      node.moduleActivation !== moduleActivation
-      || node.typeOrdinal !== typeOrdinal
-      || (node.layoutId ?? 0) !== layoutId
-      || nodeKind !== kind
-      || scalars.byteLength !== scalarByteLength
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} payload does not match `
-        + `the generated codec`,
-      );
-    }
-    this.writeBytes(
-      scalarDestination,
-      scalars,
-      "fork Wasm-GC scalar destination",
-    );
-    const edges = node.kind === "struct" ? node.fields : node.elements;
-    if (edges.length === 0) return 0;
-    const known = this.replayGcVectors.get(recipeId);
-    if (known !== undefined) return known;
-    const existing = findForkReferenceVectorOrdinal(
-      [
-        this.childTransaction!.vectorIntern,
-        this.decodedReferenceVectorIntern,
-      ],
-      this.decodedReferenceVectors,
-      forkReferenceVectorFrom(edges, edges.length),
-    );
-    if (existing !== undefined) {
-      this.replayGcVectors.set(recipeId, existing);
-      return existing;
-    }
-    const ordinal = this.decodedReferenceVectors.length;
-    if (ordinal > MAX_REFERENCE_VECTOR_ORDINAL) {
-      throw new RangeError("fork reference vector ordinal space exhausted");
-    }
-    const canonical = forkReferenceVectorFrom(edges, edges.length);
-    this.decodedReferenceVectors.push(canonical);
-    indexForkReferenceVector(
-      this.decodedReferenceVectorIntern,
-      canonical,
-      ordinal,
-    );
-    this.replayGcVectors.set(recipeId, ordinal);
-    return ordinal;
-  }
-
   /**
    * Eager fresh-child barrier for all Wasm-only reference identities.
    *
@@ -1734,20 +1585,6 @@ export class ForkReferenceTransaction {
     }
   }
 
-  private assertU31(
-    value: number,
-    context: string,
-    allowZero = true,
-  ): void {
-    if (
-      !Number.isInteger(value)
-      || value < (allowZero ? 0 : 1)
-      || value > 0x7fff_ffff
-    ) {
-      throw new RangeError(`${context} is not ${allowZero ? "a" : "a nonzero"} u31`);
-    }
-  }
-
   private requireActivePhase(operation: string): void {
     if (
       this.phase !== "capture"
@@ -1913,7 +1750,6 @@ export class ForkReferenceTransaction {
       }
     }
     this.pendingExceptions.clear();
-    this.pendingGc.clear();
     this.exceptionCacheIndexes.clear();
     this.nodes.clear();
     this.capturedValues.clear();
@@ -1926,8 +1762,6 @@ export class ForkReferenceTransaction {
     this.nextReferenceVectorHandle = 1;
     this.referenceVectorIntern.clear();
     this.decodedReferenceVectors.clear();
-    this.decodedReferenceVectorIntern.clear();
-    this.replayGcVectors.clear();
     this.typedMaterialized = false;
     this.childTransaction = null;
     this.childReplayAdopted = false;
