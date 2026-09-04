@@ -58,12 +58,18 @@ classify it and act accordingly:
    off and is already reimplemented in Rust/injected-wasm. Deleted at the
    flip, not preserved.
 
-4. **ABI is not a constraint right now.** ABI 44 is in development on this
-   branch; shape it freely (fork-module exports, host-adapter trait, kernel
-   plumbing) to best serve the purpose. Reconcile `abi/snapshot.json` at the
-   epoch's end like the rest of the 44 work. The **one heavy lever** is
-   guest **re-instrumentation** (it forces a full package rebuild); pull it
-   only when logic genuinely cannot move without it, and document why.
+4. **ABI is not a constraint, and neither is build cost.** ABI 44 is in
+   development on this branch; shape it freely (fork-module exports,
+   host-adapter trait, kernel plumbing) to best serve the purpose, and
+   reconcile `abi/snapshot.json` at the epoch's end like the rest of the 44
+   work. **Guest re-instrumentation is a first-class tool, chosen on
+   engineering soundness — not avoided for build cost.** The ABI-44 epoch
+   already forces a full rebuild of every package, so re-instrumentation's
+   marginal cost is ~zero; do not treat it as a "last resort" or dodge it to
+   save a build. When re-instrumenting is the soundest design (e.g. recording
+   funcref/externref provenance at production sites, inline GC provenance),
+   prefer it over a thinner-but-weaker host residue. Momentary build cost
+   never outranks the most sound engineering.
 
 5. **Truthful failure over illusion.** A shape we cannot migrate yet is
    gated as a loud, defined `EOPNOTSUPP` (per the census), never faked.
@@ -167,15 +173,26 @@ Each item is tagged with its Bar class and grounded in current code.
   table generations entirely in JS. Route it through the module drive like
   the main child path.
 
-- **F5 — funcref-capture floor. [documented boundary]**
+- **F5 — funcref-capture residue → eliminate via re-instrumentation.
+  [MIGRATE-TO-RUST, re-instrument]**
   The capture/encode/seal reference seam — including funcref capture via
   `ForkFunctionCatalog.encode` (`fork-activation-registry.ts:463-507`,
-  `fork-function-catalog.ts`) — stays in JS. Full elimination needs guest
-  **re-instrumentation** (record `(activation, ordinal)` at every funcref
-  production site) = the heavy ABI lever. The census proved no shipped
-  package needs the *other* gated kinds, so this remains a documented
-  boundary + census-gated unsupported set, and its true elimination folds
-  into the native backend (§6/N). Do **not** attempt the re-instrument now.
+  `fork-function-catalog.ts`) — is the one reference residue on the
+  *supported* fork path (dlopen packages: php/php-fpm/redis-server). Sound
+  elimination = guest **re-instrumentation** to record `(activation, ordinal)`
+  provenance at funcref production sites (the E1 "FLOOR-1-funcref" design), so
+  capture reads a recorded value instead of a host reverse-lookup. Per the
+  recalibrated Bar (§2.4), re-instrumentation is now chosen on soundness, not
+  deferred for build cost — the ABI-44 epoch already rebuilds every package.
+  So F5 is a real migration slice, not a permanent boundary. **Decision to
+  confirm with the user (see the note below):** whether to do F5 in this
+  campaign (recommended, since it removes the last supported-path reference
+  residue) vs. fold it into the native backend (§6/N).
+  The *other*, currently-gated kinds (externref / struct / array / i31 /
+  static-root) are **census-unused** by every shipped package, so re-enabling
+  them via full wasm-native reconstruction may be YAGNI — build it only when a
+  real wasm-GC/externref-across-fork workload appears. (Their loud-`EOPNOTSUPP`
+  gate stays truthful in the meantime, §2.5.)
 
 ### Workstream H — Small host-surface migrations (independent, per Bar)
 
