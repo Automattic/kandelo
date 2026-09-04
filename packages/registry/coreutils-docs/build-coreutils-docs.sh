@@ -25,6 +25,20 @@ COREUTILS_WASM="$COREUTILS_DIR/coreutils.wasm"
 [ -f "$COREUTILS_WASM" ] || { echo "coreutils.wasm not found under $COREUTILS_DIR" >&2; exit 2; }
 command -v help2man >/dev/null || { echo "help2man not on PATH (add pkgs.help2man to flake.nix)" >&2; exit 2; }
 
+# The generator boots a real Kandelo kernel over the base rootfs to run the
+# coreutils binary. Both are declared dependencies (see package.toml), so
+# pass their exact built artifacts explicitly instead of resolving them
+# through the source-only program projection: that projection only exists
+# once a whole build finalizes, so a build-time kernel boot cannot rely on
+# it. Injecting the declared kernel/rootfs keeps the capture faithful (same
+# artifacts the platform ships) while making this package self-contained.
+KERNEL_DIR="${WASM_POSIX_DEP_KERNEL_DIR:?kernel dependency dir required}"
+KERNEL_WASM="$KERNEL_DIR/kandelo-kernel.wasm"
+[ -f "$KERNEL_WASM" ] || { echo "kandelo-kernel.wasm not found under $KERNEL_DIR" >&2; exit 2; }
+ROOTFS_DIR="${WASM_POSIX_DEP_ROOTFS_DIR:?rootfs dependency dir required}"
+ROOTFS_VFS="$ROOTFS_DIR/rootfs.vfs"
+[ -f "$ROOTFS_VFS" ] || { echo "rootfs.vfs not found under $ROOTFS_DIR" >&2; exit 2; }
+
 CAP="$WORK/help-capture"; rm -rf "$CAP"
 # Point TMPDIR at a short /tmp scratch dir so tsx's IPC socket path stays
 # under the macOS unix-socket limit (the resolver's own work dir is a long,
@@ -33,7 +47,8 @@ TSX_TMP="$(mktemp -d /tmp/kandelo-coreutils-docs.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 # Capture --help/--version from the real wasm binary running inside Kandelo.
 TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" "$COREUTILS_WASM" "$CAP"
+    "$REPO_ROOT/images/vfs/scripts/generate-coreutils-man.ts" \
+    "$COREUTILS_WASM" "$CAP" "$KERNEL_WASM" "$ROOTFS_VFS"
 
 STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/share/man/man1"
 WRAP="$WORK/wrap"; rm -rf "$WRAP"; mkdir -p "$WRAP"

@@ -185,6 +185,11 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Exact kernel wasm to boot (worker-thread mode). Omitted resolves the
+   * kernel through the normal binary resolver. A caller that already holds
+   * the kernel artifact — e.g. a build-time step that cannot rely on the
+   * source-only program projection — passes it here to avoid resolution. */
+  kernelWasmBytes?: ArrayBuffer | Uint8Array;
   /** Observe process lifecycle events emitted by NodeKernelHost. Worker-thread mode only. */
   onProcessEvent?: (event: {
     kind: "spawn" | "exec" | "exit";
@@ -303,7 +308,21 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     },
   });
 
-  await host.init();
+  let kernelInitBytes: ArrayBuffer | undefined;
+  if (options.kernelWasmBytes !== undefined) {
+    const src = options.kernelWasmBytes;
+    if (src instanceof Uint8Array) {
+      // Copy into a fresh, non-shared ArrayBuffer: the source may be a Buffer
+      // view over a larger/pooled (or shared) allocation, which the worker
+      // init protocol does not accept.
+      const out = new ArrayBuffer(src.byteLength);
+      new Uint8Array(out).set(src);
+      kernelInitBytes = out;
+    } else {
+      kernelInitBytes = src;
+    }
+  }
+  await host.init(kernelInitBytes);
 
   // Capture the spawned pid so child process events can sample its
   // kernel-side fork_count. The user-supplied onStarted (if any) still runs.
