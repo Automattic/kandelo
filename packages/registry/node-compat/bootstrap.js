@@ -207,6 +207,15 @@ function _checkErrno(errno, syscall, path) {
     if (errno !== 0) _throwErrno(errno, syscall, path);
 }
 
+// Honest throwing stub for builtin surface we expose for link-time
+// completeness but have not implemented. Calling it fails loudly instead
+// of silently succeeding — see docs/posix-status.md for the tracked gap.
+function _notImpl(mod, name) {
+    return function () {
+        throw new Error(mod + '.' + name + ' is not implemented on spidermonkey-node');
+    };
+}
+
 // ============================================================
 // path module
 // ============================================================
@@ -471,6 +480,16 @@ const events = (() => {
     };
     return EventEmitter;
 })();
+
+// events.setMaxListeners(n, ...emitters) — Claude Code's undici transport
+// calls this at startup to raise the default cap; forward it to each
+// target emitter (or is a no-op for the process-wide default we don't
+// track separately).
+events.setMaxListeners = function (n, ...emitters) {
+    for (const em of emitters) {
+        if (em && typeof em.setMaxListeners === 'function') em.setMaxListeners(n);
+    }
+};
 
 // ============================================================
 // Buffer class
@@ -1733,6 +1752,10 @@ const fs = (() => {
         fchmodSync,
         fchownSync,
         futimesSync,
+        // No fsync/ftruncate primitive in the qjs:os native module (see
+        // truncateSync above) — honest throwing stubs, not silent no-ops.
+        fsyncSync: _notImpl('fs', 'fsyncSync'),
+        ftruncateSync: _notImpl('fs', 'ftruncateSync'),
         FileHandle,
         mkdtempSync,
 
@@ -1879,6 +1902,13 @@ const fs = (() => {
     mod.promises.fchown = async (fd, u, g) => fchownSync(fd, u, g);
     mod.promises.futimes = async (fd, a, m) => futimesSync(fd, a, m);
     mod.promises.open = async (p, flags, mode) => new FileHandle(openSync(p, flags, mode), _pathToString(p));
+    mod.promises.constants = constants;
+    // Throwing stubs: link-time completeness for the Claude Code import
+    // surface without a real implementation. See docs/posix-status.md.
+    mod.promises.link = _notImpl('fs/promises', 'link');
+    mod.promises.lutimes = _notImpl('fs/promises', 'lutimes');
+    mod.promises.opendir = _notImpl('fs/promises', 'opendir');
+    mod.promises.statfs = _notImpl('fs/promises', 'statfs');
 
     return mod;
 })();
@@ -1943,6 +1973,15 @@ const nodeOs = (() => {
         },
     };
 })();
+
+nodeOs.availableParallelism = function () {
+    try { return Math.max(1, (nodeOs.cpus && nodeOs.cpus().length) || 1); }
+    catch (_) { return 1; }
+};
+nodeOs.devNull = '/dev/null';
+nodeOs.version = function () { return ''; };
+nodeOs.getPriority = function () { return 0; };
+nodeOs.setPriority = function () { /* no-op */ };
 
 // ============================================================
 // util module
@@ -2109,6 +2148,19 @@ const util = (() => {
         isRegExp: v => v instanceof RegExp,
     };
 })();
+
+util.stripVTControlCharacters = function (s) {
+    return String(s).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+};
+util.getSystemErrorName = function (err) {
+    const e = Math.abs(err | 0);
+    try {
+        const t = (nodeOs.constants && nodeOs.constants.errno) || {};
+        for (const k in t) if (Math.abs(t[k]) === e) return k;
+    } catch (_) { /* fall through to generic name */ }
+    return 'Unknown system error ' + err;
+};
+util.types.isProxy = function () { return false; };
 
 // ============================================================
 // assert module
@@ -2544,6 +2596,8 @@ const url = (() => {
     };
 })();
 
+url.domainToASCII = function (d) { return String(d); };
+
 // ============================================================
 // querystring module
 // ============================================================
@@ -2758,6 +2812,16 @@ const child_process = (() => {
     return { execSync, execFileSync, spawnSync, exec, execFile, spawn };
 })();
 
+// child_process.ChildProcess — spawn() above already returns an
+// EventEmitter-shaped object; this class exists for code that does
+// `instanceof ChildProcess` or subclasses it directly.
+child_process.ChildProcess = (function () {
+    function ChildProcess() { events.EventEmitter.call(this); }
+    ChildProcess.prototype = Object.create(events.EventEmitter.prototype);
+    ChildProcess.prototype.constructor = ChildProcess;
+    return ChildProcess;
+})();
+
 // ============================================================
 // crypto module (minimal)
 // ============================================================
@@ -2822,6 +2886,33 @@ const crypto = (() => {
             return buf;
         },
     };
+})();
+
+crypto.timingSafeEqual = function (a, b) {
+    a = Buffer.from(a);
+    b = Buffer.from(b);
+    if (a.length !== b.length) throw new RangeError('Input buffers must have the same byte length');
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    return diff === 0;
+};
+// Throwing stubs: no libcrypto cipher/asymmetric-key surface wired through
+// the wasm sysroot yet. See docs/posix-status.md.
+crypto.randomFillSync = _notImpl('crypto', 'randomFillSync');
+crypto.createCipheriv = _notImpl('crypto', 'createCipheriv');
+crypto.createDecipheriv = _notImpl('crypto', 'createDecipheriv');
+crypto.createPrivateKey = _notImpl('crypto', 'createPrivateKey');
+crypto.createPublicKey = _notImpl('crypto', 'createPublicKey');
+crypto.generateKeyPairSync = _notImpl('crypto', 'generateKeyPairSync');
+crypto.sign = _notImpl('crypto', 'sign');
+crypto.verify = _notImpl('crypto', 'verify');
+// Constructable class stub: throws only when actually instantiated, so
+// `import { X509Certificate } from "crypto"` still links.
+crypto.X509Certificate = (function () {
+    function X509Certificate() {
+        throw new Error('crypto.X509Certificate is not implemented on spidermonkey-node');
+    }
+    return X509Certificate;
 })();
 
 // ============================================================
@@ -2980,6 +3071,17 @@ const net = (() => {
     };
 })();
 
+// net.BlockList — no-op class stub (used with `new net.BlockList()` and
+// instanceof checks); check() always reports "not blocked".
+net.BlockList = (function () {
+    function BlockList() {}
+    BlockList.prototype.addAddress = function () {};
+    BlockList.prototype.addRange = function () {};
+    BlockList.prototype.addSubnet = function () {};
+    BlockList.prototype.check = function () { return false; };
+    return BlockList;
+})();
+
 // ============================================================
 // tls module — TLSSocket via libssl in the wasm sysroot
 // ============================================================
@@ -3115,6 +3217,12 @@ const tls = (() => {
 
     return { connect, TLSSocket };
 })();
+
+// No bundled CA store or pluggable SecureContext surface — tlsConnect
+// (libssl in the wasm sysroot) manages certificate verification itself.
+tls.rootCertificates = [];
+tls.checkServerIdentity = function () { return undefined; };
+tls.createSecureContext = _notImpl('tls', 'createSecureContext');
 
 // ============================================================
 // http / https modules — real HTTP/1.1 over net.Socket (http) and tls.TLSSocket (https)
@@ -4159,6 +4267,51 @@ const _builtinModules = {
         },
     },
 };
+
+// ------------------------------------------------------------
+// Post-registration: builtin exports added for the Claude Code link
+// surface (Milestone 2 Phase A, task 1). These mutate the module
+// objects/registry entries built above rather than restructure the
+// `_builtinModules` object literal, mirroring the `stream/web` patch
+// further down (search for `_builtinModules['stream/web']`).
+// ------------------------------------------------------------
+_builtinModules['path/posix'] = path.posix;
+
+const _dnsPromises = { lookup: util.promisify(_builtinModules['dns'].lookup) };
+_builtinModules['dns'].promises = _dnsPromises;
+_builtinModules['dns/promises'] = _dnsPromises;
+
+_builtinModules['perf_hooks'].monitorEventLoopDelay = function () {
+    return {
+        enable() {}, disable() {}, reset() {},
+        percentile() { return 0; },
+        get min() { return 0; },
+        get max() { return 0; },
+        get mean() { return 0; },
+        get stddev() { return 0; },
+        get exceeds() { return 0; },
+    };
+};
+
+// zlib: async callback wrappers over the existing *Sync implementations,
+// plus throwing stubs for the raw-inflate and zstd codecs (not wired
+// through the wasm sysroot's libz binding).
+_builtinModules['zlib'].deflate = function (buf, opts, cb) {
+    if (typeof opts === 'function') { cb = opts; opts = undefined; }
+    try {
+        const out = _builtinModules['zlib'].deflateSync(buf, opts);
+        queueMicrotask(() => cb(null, out));
+    } catch (e) { queueMicrotask(() => cb(e)); }
+};
+_builtinModules['zlib'].inflate = function (buf, opts, cb) {
+    if (typeof opts === 'function') { cb = opts; opts = undefined; }
+    try {
+        const out = _builtinModules['zlib'].inflateSync(buf);
+        queueMicrotask(() => cb(null, out));
+    } catch (e) { queueMicrotask(() => cb(e)); }
+};
+_builtinModules['zlib'].inflateRawSync = _notImpl('zlib', 'inflateRawSync');
+_builtinModules['zlib'].createZstdDecompress = _notImpl('zlib', 'createZstdDecompress');
 
 // Node exposes `node:module` as the CJS Module class itself: a
 // constructor that doubles as the namespace for createRequire / _cache
