@@ -559,20 +559,29 @@ pub struct GuestOptions {
     /// no real host directory is ever reachable — matching T1's behavior
     /// exactly.
     pub mounts: Vec<NativeMount>,
+    /// An in-memory base VFS image (N1-I2) to load into the rootfs overlay's
+    /// `/` before rootfs authority is enabled. `None` (the default) keeps
+    /// N1-I1a's behavior exactly: the overlay's `/` starts and stays empty,
+    /// with no manifest loaded and the `host_blob_read` import unreachable.
+    pub base_image: Option<BaseImage>,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
-/// real channel, with `options` controlling its argv/env and mounts. Before
-/// dispatch, it enables the in-kernel rootfs overlay (`/`) and tmpfs (`/tmp`)
-/// with no manifest and no blob provider, so the guest gets a **sandboxed
-/// in-memory VFS** by default (N1-I1a) — writable, but backed by nothing on
-/// the host filesystem. `host_blob_read`/`host_fetch_archive` and the
-/// host-FS `host_open` family are never called for any path the overlay
-/// still owns (see `define_kernel_host_imports`). `options.mounts` (N1-I1b,
-/// empty by default) opts specific top-level subtrees back into the real host
-/// filesystem via the rootfs foreign-prefix mechanism — the only way to reach
-/// it. Returns the guest's exit code, captured stdout/stderr, and the
-/// syscall trace.
+/// real channel, with `options` controlling its argv/env, mounts, and base
+/// image. Before dispatch, it enables the in-kernel rootfs overlay (`/`) and
+/// tmpfs (`/tmp`). With `options.base_image == None` (the default), no
+/// manifest is loaded and no blob is ever reachable, so the guest gets a
+/// **sandboxed in-memory VFS** (N1-I1a) — writable, but backed by nothing on
+/// the host filesystem. With `options.base_image == Some(..)` (N1-I2), that
+/// image's RTFS manifest is loaded into the overlay before rootfs authority
+/// is enabled, so `/` starts with real base-file content instead, served
+/// through `host_blob_read` from the image's blob map. `host_fetch_archive`
+/// and the host-FS `host_open` family are never called for any path the
+/// overlay still owns (see `define_kernel_host_imports`). `options.mounts`
+/// (N1-I1b, empty by default) opts specific top-level subtrees back into the
+/// real host filesystem via the rootfs foreign-prefix mechanism — the only
+/// way to reach it. Returns the guest's exit code, captured stdout/stderr,
+/// and the syscall trace.
 pub fn run_guest(
     kernel_wasm: &Path,
     guest_wasm: &[u8],
@@ -604,12 +613,18 @@ pub fn run_guest(
     // `options.mounts` names (empty by default — T1's sandboxed path).
     let fs = Arc::new(HostFs::new(&options.mounts));
 
-    // N1-I2: the base-image blob map `host_blob_read` serves reads from.
-    // Task 1 wires the import; no `BaseImage` is threaded through
-    // `GuestOptions` yet (Task 2), so this is always empty here — the import
-    // is live but unreachable until a manifest with `BaseRegular` entries is
-    // loaded.
-    let base_blobs: Arc<BTreeMap<u64, Vec<u8>>> = Arc::new(BTreeMap::new());
+    // N1-I2: the base-image blob map `host_blob_read` serves reads from,
+    // populated from `options.base_image` when the caller supplies one.
+    // Empty (the default, `options.base_image == None`) keeps the import
+    // live but unreachable, exactly like N1-I1a: with no manifest loaded, the
+    // overlay has no `BaseRegular` entries to read.
+    let base_blobs: Arc<BTreeMap<u64, Vec<u8>>> = Arc::new(
+        options
+            .base_image
+            .as_ref()
+            .map(|image| image.blobs.clone())
+            .unwrap_or_default(),
+    );
 
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
@@ -662,6 +677,10 @@ pub fn run_guest(
     // prefixes, so the overlay disowns them (see the call site below).
     let set_foreign_prefixes = kernel
         .get_typed_func::<(i32, u32), i32>(&mut kernel_store, "kernel_rootfs_set_foreign_prefixes")?;
+    // N1-I2: replace the overlay's (empty) base layer from `options.base_image`'s
+    // RTFS manifest, if one was supplied (see the call site below).
+    let rootfs_load_manifest = kernel
+        .get_typed_func::<(i32, u32), i32>(&mut kernel_store, "kernel_rootfs_load_manifest")?;
 
     // --- Kernel-side process setup ------------------------------------------
     let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
@@ -696,12 +715,16 @@ pub fn run_guest(
     // --- Sandboxed in-memory VFS: enable the overlay + tmpfs, before dispatch --
     // (N1-I1a). Publish the wall clock first (the overlay stamps mutation
     // metadata with it — see `kernel_set_rootfs_now`'s doc comment), then hand
-    // scratch-mount (`/tmp`, ...) authority to the kernel. No manifest is
-    // loaded and no blob provider is installed, so the overlay's `/` starts
-    // empty and every overlay-created file is stored inline
-    // (`rootfs::Entry::Regular(Vec<u8>)`) — `host_blob_read`/`host_fetch_archive`
-    // are never called and `host_open` is never reached for any path the
-    // overlay still owns.
+    // scratch-mount (`/tmp`, ...) authority to the kernel. With no
+    // `options.base_image` (the default), no manifest is loaded and no blob
+    // provider is reachable, so the overlay's `/` starts empty and every
+    // overlay-created file is stored inline (`rootfs::Entry::Regular(Vec<u8>)`)
+    // — `host_blob_read`/`host_fetch_archive` are never called and
+    // `host_open` is never reached for any path the overlay still owns. When
+    // `options.base_image` IS supplied (N1-I2, see the call site below), its
+    // manifest is loaded before rootfs authority is enabled, so `/` starts
+    // with that real base tree instead, and `host_blob_read` serves its
+    // `BaseRegular` entries' bytes from the blob map already wired above.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let now_sec = now.as_secs();
     set_rootfs_now.call(
@@ -709,6 +732,39 @@ pub fn run_guest(
         (now_sec as u32, (now_sec >> 32) as u32, now.subsec_nanos()),
     )?;
     set_tmpfs_enabled.call(&mut kernel_store, 1)?;
+    // N1-I2: load `options.base_image`'s manifest into the overlay, mirroring
+    // `kernel-worker.ts`'s `#maybeLoadKernelRootfs` ordering (publish the wall
+    // clock, THEN load the manifest, THEN register foreign prefixes, THEN
+    // enable rootfs authority). `options.base_image` is `None` by default, so
+    // this block is skipped entirely and the overlay's `/` stays empty exactly
+    // like N1-I1a. The manifest bytes are staged into a fresh KERNEL-memory
+    // scratch allocation (the main channel scratch allocated above is a
+    // distinct, already-spoken-for region), then handed to
+    // `kernel_rootfs_load_manifest` — the same alloc-then-write-then-call
+    // pattern the foreign-prefixes block below uses.
+    if let Some(base_image) = &options.base_image {
+        let manifest_len = base_image.manifest.len() as u32;
+        let manifest_ptr = alloc_scratch.call(&mut kernel_store, manifest_len)?;
+        if manifest_ptr <= 0 {
+            anyhow::bail!(
+                "kernel_alloc_scratch({manifest_len}) for the base image manifest returned {manifest_ptr}"
+            );
+        }
+        unsafe { write_bytes(&kernel_mem, manifest_ptr as u32 as usize, &base_image.manifest) };
+        let loaded = rootfs_load_manifest.call(&mut kernel_store, (manifest_ptr, manifest_len))?;
+        if loaded < 0 {
+            // Malformed manifest: leave `/` empty (the N1-I1a default) rather
+            // than proceed with a partial tree — a truthful failure, mirroring
+            // `#maybeLoadKernelRootfs`'s early return on a negative `load()`
+            // result. `kernel_rootfs_load_manifest`/`rootfs::load_manifest`
+            // already reset the overlay to empty on this path, so nothing
+            // further to undo here.
+            eprintln!(
+                "[host-native] kernel_rootfs_load_manifest({manifest_len} bytes) failed: {loaded}; \
+                 leaving / empty"
+            );
+        }
+    }
     // N1-I1b: register `options.mounts`' VFS paths as rootfs foreign prefixes
     // BEFORE enabling rootfs authority (`kernel_rootfs_set_foreign_prefixes`'s
     // doc comment requires this ordering), so the overlay never claims those
@@ -813,9 +869,10 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
 // host-side encoder `host/src/vfs/rootfs-manifest.ts`'s `emitRootfsManifest`),
 // and wires the `host_blob_read` import (below) to serve file bytes from an
 // in-memory `blob_id -> Vec<u8>` map, where `blob_id == ino` for a file (the
-// same convention `rootfs-manifest.ts` documents). This task (Task 1) only
-// builds the manifest/map and wires the import; Task 2 threads a `BaseImage`
-// through `GuestOptions` and loads it at boot via `kernel_rootfs_load_manifest`.
+// same convention `rootfs-manifest.ts` documents). Task 1 built the
+// manifest/map and wired the import; Task 2 threads a `BaseImage` through
+// `GuestOptions.base_image` and loads it at boot (see `run_guest`) via
+// `kernel_rootfs_load_manifest`, before rootfs authority is enabled.
 
 /// RTFS wire-format magic ("RTFS" little-endian) and version this builder
 /// emits. Must match `MANIFEST_MAGIC`/`MANIFEST_VERSION_V3` in
@@ -913,7 +970,13 @@ pub fn build_base_image(entries: &[BaseEntrySpec]) -> BaseImage {
             Some(bytes) => (RTFS_KIND_FILE, e.ino, bytes.len() as u64),
         };
         buf.push(kind);
-        buf.extend_from_slice(&e.mode.to_le_bytes());
+        // Mask to the permission bits, mirroring `emitRootfsManifest`'s
+        // `mode & 0o7777` (`host/src/vfs/rootfs-manifest.ts`). The kernel
+        // re-masks on insert (`insert_base_dir`/`insert_base_file`) either
+        // way, but masking here removes a footgun for a caller that passes
+        // a raw `std::fs::Metadata::mode()` (which carries `S_IFMT` file-type
+        // bits) straight through.
+        buf.extend_from_slice(&(e.mode & 0o7777).to_le_bytes());
         buf.extend_from_slice(&e.uid.to_le_bytes());
         buf.extend_from_slice(&e.gid.to_le_bytes());
         buf.extend_from_slice(&e.ino.to_le_bytes());
@@ -1061,6 +1124,26 @@ mod base_image_tests {
             Some(b"hi from base\n".as_slice()),
             "the blob map must be keyed by ino for a file"
         );
+    }
+
+    /// Task-1-review fix: a caller that passes a raw `mode` carrying `S_IFMT`
+    /// file-type bits (e.g. straight from `std::fs::Metadata::mode()`) must
+    /// not have those bits leak into the emitted manifest — `build_base_image`
+    /// must mask to `& 0o7777` itself, mirroring `emitRootfsManifest`'s
+    /// `mode & 0o7777` (`host/src/vfs/rootfs-manifest.ts`), rather than
+    /// relying solely on the kernel's own re-mask on insert.
+    #[test]
+    fn build_base_image_masks_file_type_bits_out_of_mode() {
+        const S_IFDIR: u32 = 0o040000;
+        const S_IFREG: u32 = 0o100000;
+        let image = build_base_image(&[
+            BaseEntrySpec::dir("/", 1, S_IFDIR | 0o755),
+            BaseEntrySpec::file("/hello", 2, S_IFREG | 0o644, b"hi\n".to_vec()),
+        ]);
+
+        let (_, _, entries, _) = parse_rtfs(&image.manifest);
+        assert_eq!(entries[0].mode, 0o755, "directory entry mode must be masked to 0o7777");
+        assert_eq!(entries[1].mode, 0o644, "file entry mode must be masked to 0o7777");
     }
 }
 

@@ -557,6 +557,7 @@ mod tests {
             argv: vec!["prog".to_string(), "hello".to_string()],
             env: vec![],
             mounts: vec![],
+            base_image: None,
         };
         let outcome = guest::run_guest(&path, guest, &options)?;
 
@@ -571,6 +572,44 @@ mod tests {
             outcome.stdout,
             b"hello-data\nhello-tmp\nargc:2\nhello\n".as_slice(),
             "expected the / overlay + /tmp tmpfs round-trip and argv[1] via kernel_argv_read"
+        );
+        Ok(())
+    }
+
+    /// N1-I2: the native host loads a real, hand-built in-memory `BaseImage`
+    /// into the rootfs overlay's `/` before rootfs authority is enabled, and a
+    /// guest reads a real base file through it. Unlike `smoke_runs_inmemory_vfs`
+    /// (which only ever exercises overlay-CREATED files with no manifest
+    /// loaded), this proves the boot-time `kernel_rootfs_load_manifest` call
+    /// and the `host_blob_read` import (wired in Task 1, unreachable until
+    /// this load) both work end-to-end on a non-JS engine: `open("/etc/hello")`
+    /// resolves against a `BaseRegular` entry the manifest describes, and its
+    /// content comes back byte-for-byte from the image's blob map.
+    #[test]
+    fn smoke_reads_base_file() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_base_read.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/etc", 2, 0o755),
+            guest::BaseEntrySpec::file("/etc/hello", 3, 0o644, b"hi from base\n".to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
+        let outcome = guest::run_guest(&path, guest, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"hi from base\n".as_slice(),
+            "expected the base file's real content, served via host_blob_read"
         );
         Ok(())
     }
