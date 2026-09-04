@@ -631,6 +631,70 @@ mod tests {
         Ok(())
     }
 
+    /// N1-I1 final review: a non-canonical `mount_point` (here, `"host"` with
+    /// no leading slash) must still work, because the foreign-prefix
+    /// registration in `run_guest` and the mount-path stripping in `HostFs`
+    /// must agree on the SAME normalized path. Before the fix, `run_guest`
+    /// sent the raw `"host"` to `kernel_rootfs_set_foreign_prefixes`, which
+    /// silently drops any non-absolute entry (see
+    /// `runtime_core::rootfs::set_foreign_prefixes`) — so the overlay kept
+    /// claiming `/host`, `open("/host/greeting.txt")` never fell through to
+    /// `HostFs`, and the guest exited 10 (ENOENT). This asserts the mount
+    /// works anyway: the guest, unaware of the raw config string, still
+    /// reads `/host/greeting.txt` (the normalized path `HostFs` serves it
+    /// at) successfully.
+    #[test]
+    fn smoke_runs_native_dir_mount_with_non_canonical_mount_point() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_mount.wasm");
+
+        let host_dir = std::env::temp_dir().join(format!(
+            "kandelo-host-native-mount-noncanon-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&host_dir)?;
+        let contents = b"hello from a non-canonically-mounted native directory\n";
+        std::fs::write(host_dir.join("greeting.txt"), contents)?;
+
+        let options = guest::GuestOptions {
+            // No leading slash: `HostFs` still normalizes this to `/host`
+            // (see `normalize_mount_point`), so the guest's fixed
+            // `open("/host/greeting.txt")` must still resolve into
+            // `host_dir` if the foreign-prefix registration agrees.
+            mounts: vec![guest::NativeMount {
+                mount_point: "host".to_string(),
+                host_dir: host_dir.clone(),
+                readonly: false,
+            }],
+            ..Default::default()
+        };
+        let outcome = guest::run_guest(&path, guest, &options);
+        let _ = std::fs::remove_dir_all(&host_dir);
+        let outcome = outcome?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?}) — a non-canonical \
+             mount_point (\"host\", no leading slash) must still work: the foreign-prefix \
+             registration must use the same normalized path HostFs serves",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout,
+            contents.as_slice(),
+            "expected the mounted file's real contents via host_open/host_pread"
+        );
+        Ok(())
+    }
+
     /// Phase 4, epoll readiness. The browser/Node host is the one place epoll
     /// readiness is still reimplemented in TypeScript: epoll_pwait is converted
     /// to a host-built poll and never reaches the kernel's sys_epoll_pwait (a

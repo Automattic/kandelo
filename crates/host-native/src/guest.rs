@@ -715,7 +715,15 @@ pub fn run_guest(
     if !options.mounts.is_empty() {
         let mut prefixes = Vec::new();
         for mount in &options.mounts {
-            prefixes.extend_from_slice(mount.mount_point.as_bytes());
+            // Register the SAME normalized path `HostFs::new` derives from
+            // `mount.mount_point` (see `normalize_mount_point`), so the
+            // overlay disowns exactly the subtree `HostFs` serves. Using the
+            // raw `mount_point` here would silently diverge from `HostFs` for
+            // a non-canonical value (e.g. `"host"` with no leading slash is
+            // dropped entirely by `kernel_rootfs_set_foreign_prefixes`, since
+            // it ignores non-absolute prefixes) even though `HostFs` still
+            // serves it at `/host`.
+            prefixes.extend_from_slice(normalize_mount_point(&mount.mount_point).as_bytes());
             prefixes.push(0);
         }
         let prefixes_ptr = alloc_scratch.call(&mut kernel_store, prefixes.len() as u32)?;
