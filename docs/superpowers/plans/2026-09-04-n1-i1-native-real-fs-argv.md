@@ -1,3 +1,9 @@
+> **SUPERSEDED (2026-09-04).** This plan's real-host-directory-as-default
+> approach was wrong (the native host must default to a sandboxed in-memory
+> VFS). Its Task 1 was implemented (commit 0a1fd735a) and then REVERTED
+> (84d3b4894). Replaced by
+> `2026-09-04-n1-i1-native-inmemory-vfs.md`. Kept for history only.
+
 # N1-I1: Native host real filesystem + argv/env — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.

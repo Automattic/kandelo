@@ -404,12 +404,30 @@ is 5 methods (3 tag + 2 lifecycle) in `ForkHostCapabilities`/`ForkLifecycleCapab
 **N1 increment roadmap** (I1–I3 = predictable breadth on the proven spine;
 I4–I5 = the deep research where the co-resident-module-vs-direct-drive question
 is answered empirically and where the plan CHECKPOINTS with the user):
-- **I1** — real host-dir FS (`host_opendir`/`readdir`/`closedir`/`seek`/`readlink`
-  + generalize the FS methods off the single fake file) + argv/env wiring
-  (`kernel_get_argc`/`argv_read`/`environ_*`, drop the argc=0 fallback) → run an
-  UNMODIFIED shipped coreutils binary natively. Additive; no kernel/ABI change.
-- **I2** — in-kernel rootfs overlay via `blob_read`/`fetch_archive` (serve the
-  real VFS image natively).
+- **I1** — **sandboxed in-memory VFS as the native default** (CORRECTED
+  2026-09-04 per user: the native host is a VIRTUAL FS, it must NOT reach the
+  real host FS by default). Two host-side-only sub-parts, no kernel change:
+  - **I1a** — enable the in-kernel overlay + tmpfs at boot
+    (`kernel_set_rootfs_enabled(1)` + `kernel_set_tmpfs_enabled(1)` +
+    `kernel_set_rootfs_now`): the overlay creates `/` lazily and stores
+    overlay-created files INLINE (`Regular(Vec)`), so `host_blob_read`/
+    `host_fetch_archive` are NEVER called (stay trap-stubbed) and `host_open` is
+    never reached → fully sandboxed empty writable `/` + tmpfs scratch. No
+    manifest, no blob provider. + argv/env wiring (`kernel_get_argc`/`argv_read`/
+    `environ_*`, drop the argc=0 fallback).
+  - **I1b** — explicit native-dir MOUNT at a VFS point, **at parity with the
+    Node host** (which ALREADY does this: `host/src/vfs/host-fs.ts`
+    `HostFileSystem` via `extraMounts` + a rootfs foreign prefix). Host-side-only:
+    register the mount point via `kernel_rootfs_set_foreign_prefixes` (overlay
+    disowns that subtree → routes to `host_open`), reuse a mount-prefix-aware
+    `HostFs` (the reverted real-dir FS impls, re-added correctly-scoped as a
+    mount backend — commit 0a1fd735a has them). Top-level mount (`/host`) needs
+    no seeding; a nested mount needs a dir-only manifest for the parent chain.
+  (The reverted commit 0a1fd735a made a real dir the DEFAULT `/` — wrong; I1
+  makes the in-memory VFS the default and native dirs an explicit mount.)
+- **I2** — serve a real VFS IMAGE natively via `blob_read`/`fetch_archive` (the
+  heavy alternative to I1a's empty overlay) — needed to run a shipped binary that
+  reads real base files from the image.
 - **I3** — process spawn/exec/`host_waitpid` (multi-instance, argv hand-off,
   the ABI-44 exec-authority path).
 - **I4** — fork frames natively (no refs): drive `fork-codec`
