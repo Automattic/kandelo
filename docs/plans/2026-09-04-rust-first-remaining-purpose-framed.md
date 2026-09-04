@@ -71,8 +71,13 @@ classify it and act accordingly:
    prefer it over a thinner-but-weaker host residue. Momentary build cost
    never outranks the most sound engineering.
 
-5. **Truthful failure over illusion.** A shape we cannot migrate yet is
-   gated as a loud, defined `EOPNOTSUPP` (per the census), never faked.
+5. **Truthful failure over illusion — and gates are temporary.** A shape not
+   yet implemented is gated as a loud, defined `EOPNOTSUPP`, never faked. But
+   a gate is a temporary truthful state, not a target end-state: the goal is
+   the most complete platform (YAGNI deprioritized, user directive
+   2026-09-04), so every gated fork reference kind is targeted for real
+   implementation (see F6), not left unsupported because "no package needs it
+   today."
 
 ---
 
@@ -189,10 +194,34 @@ Each item is tagged with its Bar class and grounded in current code.
   campaign (recommended, since it removes the last supported-path reference
   residue) vs. fold it into the native backend (§6/N).
   The *other*, currently-gated kinds (externref / struct / array / i31 /
-  static-root) are **census-unused** by every shipped package, so re-enabling
-  them via full wasm-native reconstruction may be YAGNI — build it only when a
-  real wasm-GC/externref-across-fork workload appears. (Their loud-`EOPNOTSUPP`
-  gate stays truthful in the meantime, §2.5.)
+  static-root) are **targeted for full implementation** — the goal is the most
+  complete platform, so their `EOPNOTSUPP` gate is a **temporary** truthful
+  state (§2.5), not a permanent boundary, and YAGNI is explicitly
+  deprioritized here (user directive 2026-09-04). See **F6** for how they get
+  implemented; the gate stays loud only until that lands.
+
+- **F6 — Full reference-kind reconstruction (remove every `EOPNOTSUPP` gate).
+  [MIGRATE-TO-RUST, native + re-instrument]**
+  Implement fork reconstruction for all remaining reference kinds — externref
+  (broker-held *and* GC-derived), struct, array, i31, static-root — so no fork
+  reference shape is unsupported. This is the completeness goal, enabled by two
+  tools now both in-scope (cost is no longer a blocker):
+  - **The native wasmtime backend (N1) is the substrate.** Native host code
+    holds `Func`/`ExternRef`/`AnyRef` in the wasmtime `Store` and can
+    deref/compare/root them directly — no instrumentation shadows, no JS
+    `WeakMap`, no inline-provenance hack, no weak-ref leak. Per the E1
+    feasibility analysis this "beats what re-instrumentation can reach" and is
+    the natural home for externref-identity and GC-array provenance (the cases
+    pure re-instrumentation cannot reach: a wasm-GC array can't carry inline
+    provenance, and a `(ref eq)→provenance` side table is program-lifetime =
+    leak).
+  - **Re-instrumentation supplies production-site provenance** where it is the
+    sound path (funcref = F5; GC struct inline provenance; externref
+    shadow-discipline).
+  Sequencing: F6 depends on **N1** for the hard GC/externref-identity cases, so
+  it lands with/after the native backend; the funcref half (F5) can precede it.
+  The delete-and-gate pass removed the *old JS* reconstruction — F6 rebuilds it
+  the sound way (native `Store` + recorded provenance), not the JS way.
 
 ### Workstream H — Small host-surface migrations (independent, per Bar)
 
@@ -375,15 +404,21 @@ N0 (reconcile the two ABI-44 lines into one canonical tree)   ← DO FIRST
      │  (its own scoping pass + approved strategy before any
      │   history-rewriting git op; user is sole merger)
      ▼
-Fork work on the reconciled tree (if it is the last remaining feature work):
+Fork work on the reconciled tree:
      F1 (abort-replay) → F2 (flip + delete twins) → F3 (externref transit)
                                                    → F4 (pthread table-journal)
+                                                   → F5 (funcref re-instrument)
      After F1 → F2 the module path is the default and fork is dogfoodable
-     (`./run.sh browser` IS the campaign). F5 = documented boundary (folds
-     into N1). H1–H4 = independent small wins, any time.
+     (`./run.sh browser` IS the campaign). F5 (funcref via recorded ordinals)
+     is in-campaign. H1–H4 = independent small wins, any time.
      ▼
-N1 (real native wasmtime backend — completes the host-native impl; also the
-     true home for the F5 funcref floor + H3 errno artifact)
+N1 (real native wasmtime backend — completes the host-native impl; the
+     substrate for F6; also folds in the H3 errno artifact)
+     ▼
+F6 (full reference-kind reconstruction — remove every EOPNOTSUPP gate:
+     externref incl. GC-derived, struct, array, i31, static-root — via the
+     native Store + re-instrumented provenance). Depends on N1 for the hard
+     GC/externref-identity cases. This is the completeness goal.
      ▼
 N2 (ABI-44 finalization: snapshot + ABI_VERSION in one commit; rebuild all
      binaries; cut binaries-abi-v44 release; fix docs/abi-versioning.md)
