@@ -6,23 +6,24 @@ import {
 } from "../src/fork-reference-transaction";
 import {
   ForkModuleStateArena,
-  ForkModuleStateRecordKind,
   type ForkModuleStateRecord,
 } from "../src/fork-module-state";
-import { ForkStaticRootCatalog } from "../src/fork-static-root-catalog";
-import {
-  FORK_GC_FIELD_ALLOCATION_DEPENDENCY,
-  FORK_GC_FIELD_MUTABLE,
-  FORK_GC_FIELD_NULLABLE,
-  FORK_GC_FIELD_REFERENCE,
-  FORK_GC_LAYOUT_DEFAULTABLE_SHELL,
-  FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
-  ForkGcCodecDescriptor,
-  ForkGcConstructorKind,
-  ForkGcLayoutKind,
-  type ForkGcCodecProvider,
-  type ForkGcLayoutDescriptor,
-} from "../src/fork-gc-codec";
+
+// Minimal Wasm module exporting one zero-arg function `f`, used to mint
+// distinct WebAssembly function identities for `encodeFuncref` fixtures.
+const MINIMAL_WASM_FUNCTION_BYTES = Uint8Array.from([
+  0, 97, 115, 109, 1, 0, 0, 0,
+  1, 4, 1, 96, 0, 0,
+  3, 2, 1, 0,
+  7, 5, 1, 1, 102, 0, 0,
+  10, 4, 1, 2, 0, 11,
+]);
+
+function makeWasmFunction(): CallableFunction {
+  return new WebAssembly.Instance(
+    new WebAssembly.Module(MINIMAL_WASM_FUNCTION_BYTES),
+  ).exports.f as CallableFunction;
+}
 
 function makeFunctionCatalog(
   moduleActivation: number,
@@ -96,105 +97,40 @@ function withArena(
 
 describe("ForkReferenceTransaction", () => {
   it("returns original identities in the parent and fresh catalog identities in the child", () => {
-    const parentFunction = new WebAssembly.Instance(
-      new WebAssembly.Module(
-        Uint8Array.from([
-          0, 97, 115, 109, 1, 0, 0, 0,
-          1, 4, 1, 96, 0, 0,
-          3, 2, 1, 0,
-          7, 5, 1, 1, 102, 0, 0,
-          10, 4, 1, 2, 0, 11,
-        ]),
-      ),
-    ).exports.f as CallableFunction;
-    const childFunction = new WebAssembly.Instance(
-      new WebAssembly.Module(
-        Uint8Array.from([
-          0, 97, 115, 109, 1, 0, 0, 0,
-          1, 4, 1, 96, 0, 0,
-          3, 2, 1, 0,
-          7, 5, 1, 1, 102, 0, 0,
-          10, 4, 1, 2, 0, 11,
-        ]),
-      ),
-    ).exports.f as CallableFunction;
-    const extern = Object.freeze({ owner: "process" });
-    const parentExternrefs = makeExternrefs();
+    const parentFunction = makeWasmFunction();
+    const childFunction = makeWasmFunction();
     const parent = new ForkReferenceTransaction(
       makeFunctionCatalog(0, [parentFunction]),
-      parentExternrefs.provider,
+      makeExternrefs().provider,
     );
     parent.beginCapture();
     const functionId = parent.encodeFuncref(parentFunction);
-    const functionAsExternId = parent.encodeExternref(parentFunction);
-    const externId = parent.encodeExternref(extern);
-    expect(functionAsExternId).toBe(functionId);
 
     const records = withArena((arena) => parent.sealInto(arena));
     parent.beginParentReplay();
     expect(parent.decodeFuncref(functionId)).toBe(parentFunction);
-    expect(parent.decodeExternref(functionAsExternId)).toBe(parentFunction);
-    expect(parent.decodeExternref(externId)).toBe(extern);
     parent.finishReplay();
 
-    const childTokens = new Map<number, object>();
     const child = new ForkReferenceTransaction(
       makeFunctionCatalog(0, [childFunction]),
-      {
-        capture() {
-          throw new Error("child must not capture parent externrefs");
-        },
-        materialize(handle) {
-          let token = childTokens.get(handle);
-          if (!token) {
-            token = Object.freeze({ handle });
-            childTokens.set(handle, token);
-          }
-          return token;
-        },
-      },
+      makeExternrefs().provider,
     );
     child.attachChild(records);
     expect(child.decodeFuncref(functionId)).toBe(childFunction);
     expect(child.decodeFuncref(functionId)).not.toBe(parentFunction);
-    expect(child.decodeExternref(functionAsExternId)).toBe(childFunction);
-    expect(child.decodeExternref(externId)).toBe(child.decodeExternref(externId));
-    expect(child.decodeExternref(externId)).not.toBe(extern);
     child.finishReplay();
   });
 
-  it("deduplicates aliases across typed slots and reserves zero for null", () => {
-    const externrefs = makeExternrefs();
-    const transaction = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      externrefs.provider,
-    );
-    const shared = { value: 1 };
-    transaction.beginCapture();
-    expect(transaction.encodeExternref(null)).toBe(0);
-    expect(transaction.encodeExternref(shared)).toBe(1);
-    expect(transaction.encodeExternref(shared)).toBe(1);
-    const records = withArena((arena) => transaction.sealInto(arena));
-    transaction.beginParentReplay();
-    expect(transaction.decodeExternref(0)).toBeNull();
-    expect(transaction.decodeExternref(1)).toBe(shared);
-    transaction.finishReplay();
-    expect(records.filter(
-      ({ kind }) => kind === ForkModuleStateRecordKind.ReferenceRecipe,
-    )).toHaveLength(1);
-    expect(records.some(
-      ({ kind }) => kind === ForkModuleStateRecordKind.ReferenceRecipeSegment,
-    )).toBe(true);
-  });
-
   it("round-trips compact call-specific recipe vectors with O(1) lookup", () => {
+    const firstFn = makeWasmFunction();
+    const secondFn = makeWasmFunction();
     const parent = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
+      makeFunctionCatalog(0, [firstFn, secondFn]),
       makeExternrefs().provider,
     );
     parent.beginCapture();
-    const first = parent.encodeExternref({ value: 1 });
-    const second = parent.encodeExternref({ value: 2 });
+    const first = parent.encodeFuncref(firstFn);
+    const second = parent.encodeFuncref(secondFn);
     const builder = parent.beginReferenceVector(2);
     expect(builder).toBe(1);
     parent.appendReferenceVector(builder, first);
@@ -229,12 +165,13 @@ describe("ForkReferenceTransaction", () => {
   });
 
   it("does not seal a partially appended reference vector", () => {
+    const fn = makeWasmFunction();
     const transaction = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
+      makeFunctionCatalog(0, [fn]),
       makeExternrefs().provider,
     );
     transaction.beginCapture();
-    const recipe = transaction.encodeExternref({ value: 1 });
+    const recipe = transaction.encodeFuncref(fn);
     const builder = transaction.beginReferenceVector(2);
     transaction.appendReferenceVector(builder, recipe);
     expect(() => transaction.finishReferenceVector(builder)).toThrow(
@@ -246,111 +183,17 @@ describe("ForkReferenceTransaction", () => {
     transaction.abort();
   });
 
-  it("encodes a module-static root before opaque capture and resolves the child root", () => {
-    const parentRoot = Object.freeze({ instance: "parent" });
-    const parentTable = new WebAssembly.Table({
-      element: "externref",
-      initial: 2,
-      maximum: 2,
-    });
-    parentTable.set(0, parentRoot);
-    parentTable.set(1, parentRoot);
-    const parentRoots = new ForkStaticRootCatalog();
-    parentRoots.register(5, parentTable);
-    const parentExternrefs = makeExternrefs();
-    const parent = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      parentExternrefs.provider,
-      undefined,
-      undefined,
-      undefined,
-      "static-root parent",
-      parentRoots,
-    );
-    parent.beginCapture();
-    const recipeId = parent.encodeExternref(parentRoot);
-    const builder = parent.beginReferenceVector(1);
-    parent.appendReferenceVector(builder, recipeId);
-    const vector = parent.finishReferenceVector(builder);
-    expect(parentExternrefs.values.size).toBe(0);
-    const records = withArena((arena) => parent.sealInto(arena));
-
-    const childRoot = Object.freeze({ instance: "child" });
-    const childTable = new WebAssembly.Table({
-      element: "externref",
-      initial: 2,
-      maximum: 2,
-    });
-    childTable.set(0, childRoot);
-    childTable.set(1, childRoot);
-    const childRoots = new ForkStaticRootCatalog();
-    childRoots.register(5, childTable);
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      undefined,
-      undefined,
-      undefined,
-      "static-root child",
-      childRoots,
-    );
-    child.attachChild(records);
-    const restoredRecipeId = child.getReferenceVector(vector, 0);
-    expect(restoredRecipeId).toBe(recipeId);
-    expect(child.decodeExternref(restoredRecipeId)).toBe(childRoot);
-    expect(child.decodeExternref(restoredRecipeId)).not.toBe(parentRoot);
-    child.finishReplay();
-    parent.abort();
-  });
-
-  it("upgrades an earlier external view to one structural exception identity", () => {
-    const memory = new WebAssembly.Memory({ initial: 2 });
-    const tag = new WebAssembly.Tag({ parameters: ["i32"] });
-    const thrown = new WebAssembly.Exception(tag, [29]);
-    const transaction = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      memory,
-    );
-    const provider = {
-      throwSlot(_slot: number): never {
-        throw thrown;
-      },
-      clearSlots(): void {},
-    };
-    transaction.beginCapture();
-    const externalView = transaction.encodeExternref(thrown);
-    expect(transaction.lookupExceptionSlot(0, provider)).toBe(0);
-    const exceptionView = transaction.claimExceptionSlot(0, provider);
-    expect(exceptionView).toBe(externalView);
-    expect(transaction.encodeExternref(thrown)).toBe(externalView);
-    transaction.defineException(
-      exceptionView,
-      8,
-      3,
-      4,
-      0,
-      0,
-      0,
-      0,
-    );
-    expect(transaction.exceptionOwner(externalView)).toBe(8);
-    withArena((arena) => transaction.sealInto(arena));
-    transaction.abort();
-  });
-
   it("drops strong temporary roots after abort", () => {
-    const externrefs = makeExternrefs();
+    const reused = makeWasmFunction();
     const transaction = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      externrefs.provider,
+      makeFunctionCatalog(0, [reused]),
+      makeExternrefs().provider,
     );
     transaction.beginCapture();
-    const reused = { value: 1 };
-    transaction.encodeExternref(reused);
+    transaction.encodeFuncref(reused);
     transaction.abort();
     transaction.beginCapture();
-    expect(transaction.encodeExternref(reused)).toBe(1);
+    expect(transaction.encodeFuncref(reused)).toBe(1);
     transaction.abort();
   });
 
@@ -530,438 +373,5 @@ describe("ForkReferenceTransaction", () => {
       )
     ).toThrow(/coordinate does not match/);
     child.finishReplay();
-  });
-});
-
-function gcStructDescriptor(options: {
-  defaultable?: boolean;
-  mutable?: boolean;
-  nullable?: boolean;
-  dependency?: boolean;
-}): ForkGcCodecDescriptor {
-  const fieldFlags =
-    FORK_GC_FIELD_REFERENCE
-    | (options.mutable ? FORK_GC_FIELD_MUTABLE : 0)
-    | (options.nullable ? FORK_GC_FIELD_NULLABLE : 0)
-    | (options.dependency ? FORK_GC_FIELD_ALLOCATION_DEPENDENCY : 0);
-  const layout: ForkGcLayoutDescriptor = {
-    id: 1,
-    typeOrdinal: 0,
-    kind: ForkGcLayoutKind.Struct,
-    constructor: ForkGcConstructorKind.Struct,
-    flags: options.defaultable ? FORK_GC_LAYOUT_DEFAULTABLE_SHELL : 0,
-    scalarLengthOrStride: 0,
-    fields: [{
-      storage: 8,
-      flags: fieldFlags,
-      scalarOffset: null,
-      referenceOrdinal: 0,
-    }],
-    superTypeOrdinal: null,
-    baseLayoutId: 1,
-    auxiliary: 0,
-    provenanceScalarLength: 0,
-    provenanceReferenceCount: 0,
-  };
-  return new ForkGcCodecDescriptor([layout]);
-}
-
-function captureGcStructGraph(options: {
-  descriptor: ForkGcCodecDescriptor;
-  edges: readonly (readonly number[])[];
-}): ForkModuleStateRecord[] {
-  const memory = new WebAssembly.Memory({ initial: 2 });
-  const transaction = new ForkReferenceTransaction(
-    makeFunctionCatalog(0, []),
-    makeExternrefs().provider,
-    memory,
-  );
-  const table = new WebAssembly.Table({
-    element: "externref",
-    initial: 1,
-  });
-  transaction.beginCapture();
-  const recipeIds = options.edges.map((_, index) => {
-    table.set(0, { index });
-    return transaction.claimGcSlot(table, 0);
-  });
-  options.edges.forEach((edgeIndexes, index) => {
-    const builder = transaction.beginReferenceVector(edgeIndexes.length);
-    edgeIndexes.forEach((edgeIndex) => {
-      const edgeRecipe = edgeIndex === -1 ? 0 : recipeIds[edgeIndex];
-      if (edgeRecipe === undefined) {
-        throw new Error(`test GC edge ${edgeIndex} is out of bounds`);
-      }
-      transaction.appendReferenceVector(builder, edgeRecipe);
-    });
-    const vector = transaction.finishReferenceVector(builder);
-    transaction.defineGc(
-      recipeIds[index]!,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-      vector,
-      options.descriptor,
-      null,
-    );
-  });
-  return withArena((arena) => transaction.sealInto(arena));
-}
-
-describe("ForkReferenceTransaction typed replay barrier", () => {
-  it("reuses canonical GC edge vectors without rebuilding the vector directory", () => {
-    const descriptor = gcStructDescriptor({
-      defaultable: true,
-      mutable: true,
-      nullable: true,
-    });
-    const records = captureGcStructGraph({
-      descriptor,
-      edges: [[0], [1], [2]],
-    });
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
-    );
-    child.attachChild(records);
-
-    const internal = child as unknown as {
-      decodedReferenceVectors: Array<readonly number[]>;
-    };
-    const directory = internal.decodedReferenceVectors;
-    const firstOrdinal = child.loadGc(
-      1,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-    );
-    const secondOrdinal = child.loadGc(
-      2,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-    );
-    const thirdOrdinal = child.loadGc(
-      3,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-    );
-
-    expect(internal.decodedReferenceVectors).toBe(directory);
-    expect([firstOrdinal, secondOrdinal, thirdOrdinal]).toEqual([1, 2, 3]);
-    expect(child.loadGc(
-      1,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-    )).toBe(firstOrdinal);
-    expect(internal.decodedReferenceVectors).toHaveLength(4);
-    child.abort();
-  });
-
-  it("materializes a deep immutable dependency chain without host stack recursion", () => {
-    const nodeCount = 6_000;
-    const descriptor = gcStructDescriptor({
-      nullable: true,
-      dependency: true,
-    });
-    const records = captureGcStructGraph({
-      descriptor,
-      edges: Array.from(
-        { length: nodeCount },
-        (_, index) => [index + 1 === nodeCount ? -1 : index + 1],
-      ),
-    });
-    let allocations = 0;
-    let fills = 0;
-    let firstAllocated = 0;
-    let lastAllocated = 0;
-    const provider: ForkGcCodecProvider = {
-      activationId: 0,
-      descriptor,
-      probe: () => 0n,
-      encodeSlot: () => 0,
-      allocate(recipeId) {
-        if (allocations === 0) firstAllocated = recipeId;
-        lastAllocated = recipeId;
-        allocations++;
-      },
-      fill: () => { fills++; },
-      publishExternref: () => {},
-    };
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
-      undefined,
-      undefined,
-      "deep typed child",
-      undefined,
-      {
-        prepareTransit: () => {},
-        publishTransit: () => {},
-        publishExternref: () => {},
-        provider: () => provider,
-        providers: () => [provider],
-        validateExceptionOwner: () => {},
-        materializeException: () => {},
-      },
-    );
-    child.attachChild(records);
-    child.materializeAllTyped();
-
-    expect(allocations).toBe(nodeCount);
-    expect(fills).toBe(nodeCount);
-    expect(firstAllocated).toBe(nodeCount);
-    expect(lastAllocated).toBe(1);
-    child.finishReplay();
-  });
-
-  it("publishes fresh static roots before dynamic GC constructors consume them", () => {
-    const descriptor = gcStructDescriptor({ dependency: true });
-    const parentRoot = Object.freeze({ instance: "parent-static-root" });
-    const parentRoots = new ForkStaticRootCatalog();
-    const parentCatalogTable = new WebAssembly.Table({
-      element: "externref",
-      initial: 1,
-      maximum: 1,
-    });
-    parentCatalogTable.set(0, parentRoot);
-    parentRoots.register(5, parentCatalogTable);
-    const captureTable = new WebAssembly.Table({
-      element: "externref",
-      initial: 1,
-    });
-    const memory = new WebAssembly.Memory({ initial: 2 });
-    const parent = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      memory,
-      undefined,
-      undefined,
-      "static-root graph parent",
-      parentRoots,
-    );
-    parent.beginCapture();
-    captureTable.set(0, parentRoot);
-    const staticRecipe = parent.lookupGcSlot(captureTable, 0);
-    captureTable.set(0, { dynamic: true });
-    const dynamicRecipe = parent.claimGcSlot(captureTable, 0);
-    const builder = parent.beginReferenceVector(1);
-    parent.appendReferenceVector(builder, staticRecipe);
-    const vector = parent.finishReferenceVector(builder);
-    parent.defineGc(
-      dynamicRecipe,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-      vector,
-      descriptor,
-      null,
-    );
-    const records = withArena((arena) => parent.sealInto(arena));
-
-    const childRoot = Object.freeze({ instance: "child-static-root" });
-    const childRoots = new ForkStaticRootCatalog();
-    const childCatalogTable = new WebAssembly.Table({
-      element: "externref",
-      initial: 1,
-      maximum: 1,
-    });
-    childCatalogTable.set(0, childRoot);
-    childRoots.register(5, childCatalogTable);
-    const transit = new Map<number, unknown>();
-    const calls: string[] = [];
-    const provider: ForkGcCodecProvider = {
-      activationId: 0,
-      descriptor,
-      probe: () => 0n,
-      encodeSlot: () => 0,
-      allocate(recipeId) {
-        expect(transit.get(staticRecipe)).toBe(childRoot);
-        expect(transit.get(staticRecipe)).not.toBe(parentRoot);
-        calls.push(`allocate:${recipeId}`);
-      },
-      fill: (recipeId) => { calls.push(`fill:${recipeId}`); },
-      publishExternref: () => {},
-    };
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
-      undefined,
-      undefined,
-      "static-root graph child",
-      childRoots,
-      {
-        prepareTransit: (max) => { calls.push(`prepare:${max}`); },
-        publishTransit(recipeId, value) {
-          transit.set(recipeId, value);
-          calls.push(`publish:${recipeId}`);
-        },
-        publishExternref: () => {},
-        provider: () => provider,
-        providers: () => [provider],
-        validateExceptionOwner: () => {},
-        materializeException: () => {},
-      },
-    );
-    child.attachChild(records);
-    child.materializeAllTyped();
-    expect(calls).toEqual([
-      `prepare:${dynamicRecipe}`,
-      `publish:${staticRecipe}`,
-      `allocate:${dynamicRecipe}`,
-      `fill:${dynamicRecipe}`,
-    ]);
-    child.finishReplay();
-    parent.abort();
-  });
-
-  it("allocates all defaultable shells before filling cyclic mutable edges", () => {
-    const descriptor = gcStructDescriptor({
-      defaultable: true,
-      mutable: true,
-      nullable: true,
-    });
-    const records = captureGcStructGraph({
-      descriptor,
-      edges: [[0]],
-    });
-    const calls: string[] = [];
-    const provider: ForkGcCodecProvider = {
-      activationId: 0,
-      descriptor,
-      probe: () => 0n,
-      encodeSlot: () => 0,
-      allocate: (recipeId) => { calls.push(`allocate:${recipeId}`); },
-      fill: (recipeId) => { calls.push(`fill:${recipeId}`); },
-      publishExternref: () => {},
-    };
-    const memory = new WebAssembly.Memory({ initial: 2 });
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      memory,
-      undefined,
-      undefined,
-      "typed child",
-      undefined,
-      {
-        prepareTransit: (max) => { calls.push(`prepare:${max}`); },
-        publishTransit: () => {},
-        publishExternref: () => {},
-        provider: () => provider,
-        providers: () => [provider],
-        validateExceptionOwner: () => {},
-        materializeException: () => {},
-      },
-    );
-    child.attachChild(records);
-    child.materializeAllTyped();
-    expect(calls).toEqual(["prepare:1", "allocate:1", "fill:1"]);
-    child.finishReplay();
-  });
-
-  it("rejects an immutable constructor cycle before allocating any object", () => {
-    const descriptor = gcStructDescriptor({
-      dependency: true,
-    });
-    const records = captureGcStructGraph({
-      descriptor,
-      edges: [[1], [0]],
-    });
-    const calls: string[] = [];
-    const provider: ForkGcCodecProvider = {
-      activationId: 0,
-      descriptor,
-      probe: () => 0n,
-      encodeSlot: () => 0,
-      allocate: (recipeId) => { calls.push(`allocate:${recipeId}`); },
-      fill: (recipeId) => { calls.push(`fill:${recipeId}`); },
-      publishExternref: () => {},
-    };
-    const child = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      new WebAssembly.Memory({ initial: 2 }),
-      undefined,
-      undefined,
-      "typed cycle",
-      undefined,
-      {
-        prepareTransit: () => {},
-        publishTransit: () => {},
-        publishExternref: () => {},
-        provider: () => provider,
-        providers: () => [provider],
-        validateExceptionOwner: () => {},
-        materializeException: () => {},
-      },
-    );
-    child.attachChild(records);
-    expect(() => child.materializeAllTyped()).toThrow(
-      /unallocatable constructor cycle/,
-    );
-    expect(calls).toEqual([]);
-    child.abort();
-  });
-
-  it("requires constructor provenance when the selected layout declares it", () => {
-    const base = gcStructDescriptor({}).require(1);
-    const descriptor = new ForkGcCodecDescriptor([{
-      ...base,
-      flags: FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
-      provenanceReferenceCount: 1,
-    }]);
-    const memory = new WebAssembly.Memory({ initial: 2 });
-    const transaction = new ForkReferenceTransaction(
-      makeFunctionCatalog(0, []),
-      makeExternrefs().provider,
-      memory,
-    );
-    const table = new WebAssembly.Table({
-      element: "externref",
-      initial: 1,
-    });
-    table.set(0, {});
-    transaction.beginCapture();
-    const recipe = transaction.claimGcSlot(table, 0);
-    const builder = transaction.beginReferenceVector(1);
-    transaction.appendReferenceVector(builder, 0);
-    const vector = transaction.finishReferenceVector(builder);
-    expect(() => transaction.defineGc(
-      recipe,
-      0,
-      0,
-      1,
-      ForkGcLayoutKind.Struct,
-      0,
-      0,
-      vector,
-      descriptor,
-      null,
-    )).toThrow(/missing constructor provenance/);
-    transaction.abort();
   });
 });

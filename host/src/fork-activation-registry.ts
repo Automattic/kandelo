@@ -49,7 +49,6 @@ import type {
   DylinkForkTablePatchRun,
 } from "./dylink-fork-archive";
 import {
-  FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
   ForkGcProvenanceRegistry,
   forkGcCodecProviderFromInstance,
   type ForkGcCodecProvider,
@@ -57,7 +56,6 @@ import {
 import {
   FORK_HOST_EXCEPTION_ACTIVATION_ID,
   ForkReferenceTransaction,
-  type ForkGcDefinitionProvenance,
   type ForkExternrefRecipeProvider,
   type ForkReferenceScratchAllocate,
   type ForkReferenceScratchDeallocate,
@@ -1138,26 +1136,6 @@ export class ForkActivationRegistry {
     });
   }
 
-  lookupGcSlot(requestingActivation: number, slot: number): number {
-    const provenance = this.gcProvenance.find(this.gcTransit.get(slot));
-    if (provenance && provenance.activationId !== requestingActivation) {
-      // Canonically equivalent recursive types can test true in more than one
-      // instance. Constructor/segment provenance decides the reconstruction
-      // owner before the requesting codec claims graph identity.
-      return this.requireTypedProvider(provenance.activationId).encodeSlot(slot);
-    }
-    return this.currentReferences().lookupGcSlot(this.gcTransit.table, slot);
-  }
-
-  claimGcSlot(slot: number): number {
-    const recipeId = this.currentReferences().claimGcSlot(
-      this.gcTransit.table,
-      slot,
-    );
-    this.gcTransit.ensureRecipeSlot(recipeId);
-    return recipeId;
-  }
-
   /**
    * Reserve a gated placeholder recipe for an anyref value that the module GC
    * codec has already published into transit slot 0 (`lookup` / `claim` /
@@ -1195,83 +1173,6 @@ export class ForkActivationRegistry {
     return recipeId;
   }
 
-  encodeI31(value: number): number {
-    const recipeId = this.currentReferences().encodeI31(value);
-    this.gcTransit.ensureRecipeSlot(recipeId);
-    return recipeId;
-  }
-
-  captureGcLayout(
-    activationId: number,
-    slot: number,
-    baseLayoutId: number,
-  ): number {
-    const provider = this.requireTypedProvider(activationId);
-    const base = provider.descriptor.require(baseLayoutId);
-    const object = this.gcTransit.get(slot);
-    const provenance = this.gcProvenance.lookup(
-      object,
-      activationId,
-      provider.descriptor,
-      baseLayoutId,
-    );
-    if (provenance) return provenance.layoutId;
-    if ((base.flags & FORK_GC_LAYOUT_REQUIRES_PROVENANCE) !== 0) {
-      throw new Error(
-        `${this.label}: GC layout ${activationId}:${baseLayoutId} `
-        + "requires constructor provenance",
-      );
-    }
-    return base.id;
-  }
-
-  defineGc(
-    activationId: number,
-    recipeId: number,
-    recordActivationId: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarPointer: number | bigint,
-    scalarByteLength: number,
-    referenceVectorOrdinal: number,
-  ): void {
-    if (recordActivationId !== activationId) {
-      throw new Error(
-        `activation ${activationId} cannot define GC state for `
-        + `activation ${recordActivationId}`,
-      );
-    }
-    const provider = this.requireTypedProvider(activationId);
-    const layout = provider.descriptor.require(layoutId);
-    const source = this.currentReferences().capturedGcValue(recipeId);
-    const record = this.gcProvenance.lookup(
-      source,
-      activationId,
-      provider.descriptor,
-      layout.baseLayoutId,
-    );
-    let provenance: ForkGcDefinitionProvenance | null = null;
-    if (record) {
-      const recipeIds = record.references.map((reference) =>
-        reference === null ? 0 : this.encodeGcObject(reference)
-      );
-      provenance = { record, recipeIds };
-    }
-    this.currentReferences().defineGc(
-      recipeId,
-      recordActivationId,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarPointer,
-      scalarByteLength,
-      referenceVectorOrdinal,
-      provider.descriptor,
-      provenance,
-    );
-  }
-
   routeGc(recipeId: number, expectedActivation: number): number {
     return this.currentReferences().routeGc(recipeId, expectedActivation);
   }
@@ -1306,87 +1207,6 @@ export class ForkActivationRegistry {
       scalarDestination,
       scalarByteLength,
     );
-  }
-
-  encodeGcFromSlot(sourceActivation: number, slot: number): number {
-    const provenance = this.gcProvenance.find(this.gcTransit.get(slot));
-    if (
-      provenance
-      && provenance.activationId !== sourceActivation
-    ) {
-      return this.requireTypedProvider(provenance.activationId).encodeSlot(slot);
-    }
-    const candidates = this.activations().filter(
-      ({ activationId, typedReferenceProvider }) =>
-        activationId !== sourceActivation && typedReferenceProvider !== undefined,
-    );
-    for (const activation of candidates) {
-      const provider = this.requireTypedProvider(activation.activationId);
-      const packed = provider.probe(slot);
-      if (packed === 0n) continue;
-      const baseLayoutId = Number(packed & 0xffff_ffffn);
-      const typeOrdinal = Number(packed >> 32n);
-      const base = provider.descriptor.require(baseLayoutId);
-      if (
-        base.baseLayoutId !== base.id
-        || base.typeOrdinal !== typeOrdinal
-      ) {
-        throw new Error(
-          `${this.label}: activation ${activation.activationId} returned `
-          + "an invalid GC probe coordinate",
-        );
-      }
-      return provider.encodeSlot(slot);
-    }
-    // No module codec recognized the internal value, so it is a hostref made
-    // by `any.convert_extern`. Its worker-local token names a process-owned
-    // broker handle; retain that handle as an externref leaf in the same graph.
-    const recipeId = this.currentReferences().encodeExternref(
-      this.gcTransit.get(slot),
-    );
-    this.gcTransit.ensureRecipeSlot(recipeId);
-    return recipeId;
-  }
-
-  beginGcProvenance(
-    expectedActivationId: number,
-    slot: number,
-    activationId: number,
-    baseLayoutId: number,
-    specializedLayoutId: number,
-    scalarLo: bigint,
-    scalarHi: bigint,
-    referenceCount: number,
-  ): number {
-    return this.gcProvenance.begin(
-      this.gcTransit.table,
-      this.requireTypedProvider(expectedActivationId).descriptor,
-      expectedActivationId,
-      slot,
-      activationId,
-      baseLayoutId,
-      specializedLayoutId,
-      scalarLo,
-      scalarHi,
-      referenceCount,
-    );
-  }
-
-  appendGcProvenanceReference(
-    token: number,
-    index: number,
-    slot: number,
-  ): void {
-    this.gcProvenance.appendReference(
-      this.gcTransit.table,
-      token,
-      index,
-      slot,
-    );
-  }
-
-  endGcProvenance(token: number): void {
-    this.gcProvenance.end(token);
   }
 
   /**
@@ -1825,15 +1645,6 @@ export class ForkActivationRegistry {
       );
     }
     return provider as ForkGcCodecProvider & ForkActivationTypedReferenceProvider;
-  }
-
-  private encodeGcObject(value: object): number {
-    this.gcTransit.set(0, value);
-    try {
-      return this.encodeGcFromSlot(-1, 0);
-    } finally {
-      this.gcTransit.clearSlot(0);
-    }
   }
 
   private typedReplayOwner() {
