@@ -26,11 +26,9 @@ import {
   FORK_GC_FIELD_MUTABLE,
   FORK_GC_FIELD_REFERENCE,
   FORK_GC_LAYOUT_DEFAULTABLE_SHELL,
-  FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
   ForkGcConstructorKind,
   type ForkGcCodecDescriptor,
   type ForkGcCodecProvider,
-  type ForkGcConstructorProvenance,
   type ForkGcLayoutDescriptor,
 } from "./fork-gc-codec";
 import { ForkStaticRootCatalog } from "./fork-static-root-catalog";
@@ -125,11 +123,6 @@ export interface ForkReferenceChildReplayAdoption {
   readonly materializedExceptionRecipes: ReadonlySet<number>;
 }
 
-export interface ForkGcDefinitionProvenance {
-  readonly record: ForkGcConstructorProvenance;
-  readonly recipeIds: readonly number[];
-}
-
 interface ScratchChunk {
   readonly addr: number;
   readonly size: number;
@@ -205,7 +198,6 @@ export class ForkReferenceTransaction {
   private readonly materializedValues = new Map<number, unknown>();
   private readonly pendingExceptions = new Set<number>();
   private readonly pendingGc = new Set<number>();
-  private readonly i31Ids = new Map<number, number>();
   private readonly exceptionCacheIndexes = new Map<number, number>();
   private exceptionSlots: ForkExceptionSlotProvider | undefined;
   private readonly scratchChunks: ScratchChunk[] = [];
@@ -280,30 +272,6 @@ export class ForkReferenceTransaction {
     });
   }
 
-  encodeExternref(value: unknown): number {
-    this.requirePhase("capture", "encode an externref");
-    if (value === null) return 0;
-    return this.intern(value, () => {
-      // A WebAssembly function can cross an externref conversion. Keep one
-      // node for it so converting back in the child observes the same fresh
-      // function identity as a funcref slot.
-      if (typeof value === "function") {
-        const recipe = this.functions.encode(value);
-        if (recipe) {
-          return {
-            kind: "funcref",
-            moduleActivation: recipe.moduleActivation,
-            functionOrdinal: recipe.ordinal,
-          };
-        }
-      }
-      return {
-        kind: "externref",
-        handle: this.externrefs.capture(value),
-      };
-    });
-  }
-
   /**
    * Reserve one placeholder recipe for a GATED capture kind (externref / i31 /
    * typed Wasm-GC / static-root), keeping the LIVE captured value so the PARENT
@@ -334,222 +302,6 @@ export class ForkReferenceTransaction {
     this.nodes.push({ id, node: { kind: "i31", value: 0 } });
     this.capturedValues.push(value);
     return id;
-  }
-
-  lookupGcSlot(table: WebAssembly.Table, slot: number): number {
-    this.requirePhase("capture", "look up a Wasm-GC identity");
-    const value = this.gcSlotValue(table, slot);
-    const known = this.lookupId(value);
-    if (known !== undefined) return known;
-    const staticRoot = this.staticRoots?.encode(value);
-    if (!staticRoot) return 0;
-    const id = this.nodes.length;
-    if (id > 0xffff_ffff) {
-      throw new RangeError("fork reference recipe id space exhausted");
-    }
-    this.nodes.push({
-      id,
-      node: {
-        kind: "static-root",
-        moduleActivation: staticRoot.moduleActivation,
-        staticRootOrdinal: staticRoot.ordinal,
-      },
-    });
-    this.capturedValues.push(value);
-    this.rememberId(value, id);
-    // Publish the static root into the transit at `id + 1` so PARENT replay's
-    // `decode_anyref` (a pure `table.get(transit, recipe + 1)`) reads it. A
-    // captured i31 / struct is grown+published for the parent by
-    // `encodeI31` / `claimGcSlot`; the static-root lookup path did neither, so a
-    // static root held as a bare operand-stack / local value across fork left the
-    // parent's transit slot unsized and the resume trapped out of bounds. (The
-    // CHILD re-publishes every static root via `materializeAllTyped` PHASE A.)
-    if (id + 2 > table.length) {
-      table.grow(id + 2 - table.length, null);
-    }
-    table.set(id + 1, value);
-    return id;
-  }
-
-  claimGcSlot(table: WebAssembly.Table, slot: number): number {
-    this.requirePhase("capture", "claim a Wasm-GC identity");
-    const value = this.gcSlotValue(table, slot);
-    const known = this.lookupId(value);
-    if (known !== undefined) return known;
-    const id = this.nodes.length;
-    if (id > 0xffff_ffff) {
-      throw new RangeError("fork reference recipe id space exhausted");
-    }
-    // WHY: publish graph identity before recursively encoding fields. The
-    // placeholder is never serializable; `sealInto` rejects it via pendingGc
-    // unless the generated codec completes `defineGc`.
-    this.nodes.push({
-      id,
-      node: {
-        kind: "struct",
-        moduleActivation: 0,
-        typeOrdinal: 0,
-        layoutId: 0,
-        scalars: new Uint8Array(),
-        fields: [],
-      },
-    });
-    this.capturedValues.push(value);
-    this.rememberId(value, id);
-    this.pendingGc.add(id);
-    return id;
-  }
-
-  encodeI31(value: number): number {
-    this.requirePhase("capture", "encode an i31ref");
-    if (
-      !Number.isInteger(value)
-      || value < -0x4000_0000
-      || value > 0x3fff_ffff
-    ) {
-      throw new RangeError(`invalid signed i31 payload ${value}`);
-    }
-    const known = this.i31Ids.get(value);
-    if (known !== undefined) return known;
-    const id = this.nodes.length;
-    if (id > 0xffff_ffff) {
-      throw new RangeError("fork reference recipe id space exhausted");
-    }
-    this.nodes.push({ id, node: { kind: "i31", value } });
-    // i31 identity is defined by its 31-bit payload. Keep a scalar here so
-    // parent replay and graph aliases use the same canonical recipe id.
-    this.capturedValues.push(value);
-    this.i31Ids.set(value, id);
-    return id;
-  }
-
-  capturedGcValue(recipeId: number): unknown {
-    this.requirePhase("capture", "read a captured Wasm-GC identity");
-    assertRecipeId(recipeId);
-    if (recipeId === 0 || recipeId >= this.capturedValues.length) {
-      throw new Error(`fork Wasm-GC recipe ${recipeId} is out of bounds`);
-    }
-    return this.capturedValues.get(recipeId);
-  }
-
-  defineGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarPointer: number | bigint,
-    scalarByteLength: number,
-    referenceVectorOrdinal: number,
-    descriptor: ForkGcCodecDescriptor,
-    provenance: ForkGcDefinitionProvenance | null,
-  ): void {
-    this.requirePhase("capture", "define a Wasm-GC recipe");
-    assertRecipeId(recipeId);
-    this.assertU32(moduleActivation, "GC module activation");
-    this.assertU32(typeOrdinal, "GC type ordinal");
-    this.assertU31(layoutId, "GC layout id", false);
-    this.assertU32(referenceVectorOrdinal, "GC reference vector ordinal");
-    if (!this.pendingGc.has(recipeId)) {
-      throw new Error(`fork Wasm-GC recipe ${recipeId} is not pending definition`);
-    }
-    const layout = descriptor.require(layoutId);
-    if (
-      layout.typeOrdinal !== typeOrdinal
-      || layout.kind !== kind
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} coordinate does not match `
-        + `${moduleActivation}:${typeOrdinal}:${layoutId}:${kind}`,
-      );
-    }
-    const snapshotScalars = this.readBytes(
-      scalarPointer,
-      scalarByteLength,
-      "fork Wasm-GC scalar payload",
-    );
-    const vector = this.referenceVectors.get(referenceVectorOrdinal);
-    if (!vector) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} names an unavailable reference vector`,
-      );
-    }
-    this.validateGcSnapshot(
-      layout,
-      snapshotScalars,
-      vector,
-      `fork Wasm-GC recipe ${recipeId}`,
-    );
-
-    const requiresProvenance =
-      (layout.flags & FORK_GC_LAYOUT_REQUIRES_PROVENANCE) !== 0;
-    if (requiresProvenance !== (provenance !== null)) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} has `
-        + `${provenance ? "unexpected" : "missing"} constructor provenance`,
-      );
-    }
-    let provenanceScalars: Uint8Array = new Uint8Array();
-    let provenanceIds: readonly number[] = [];
-    if (provenance) {
-      const selected = descriptor.requireCaptureLayout(
-        layout.baseLayoutId,
-        provenance.record.layoutId,
-      );
-      if (
-        selected.id !== layout.id
-        || provenance.record.activationId !== moduleActivation
-        || provenance.record.baseLayoutId !== layout.baseLayoutId
-        || provenance.record.scalars.byteLength
-          !== layout.provenanceScalarLength
-        || provenance.record.references.length
-          !== layout.provenanceReferenceCount
-        || provenance.recipeIds.length
-          !== layout.provenanceReferenceCount
-      ) {
-        throw new Error(
-          `fork Wasm-GC recipe ${recipeId} provenance does not match `
-          + `layout ${layout.id}`,
-        );
-      }
-      provenance.recipeIds.forEach((id, index) => {
-        assertRecipeId(id);
-        if (id >= this.nodes.length) {
-          throw new Error(
-            `fork Wasm-GC provenance ${index} names missing recipe ${id}`,
-          );
-        }
-      });
-      provenanceScalars = provenance.record.scalars;
-      provenanceIds = provenance.recipeIds;
-    }
-
-    const scalars = new Uint8Array(
-      provenanceScalars.byteLength + snapshotScalars.byteLength,
-    );
-    scalars.set(provenanceScalars);
-    scalars.set(snapshotScalars, provenanceScalars.byteLength);
-    const references = [...provenanceIds, ...vector];
-    const node: ForkReferenceRecipeNode =
-      layout.kind === 1
-        ? {
-            kind: "struct",
-            moduleActivation,
-            typeOrdinal,
-            layoutId,
-            scalars,
-            fields: references,
-          }
-        : {
-            kind: "array",
-            moduleActivation,
-            typeOrdinal,
-            layoutId,
-            scalars,
-            elements: references,
-          };
-    this.nodes.set(recipeId, { id: recipeId, node });
-    this.pendingGc.delete(recipeId);
   }
 
   sealInto(arena: ForkModuleStateArena): Uint8Array {
@@ -1775,21 +1527,6 @@ export class ForkReferenceTransaction {
     }
   }
 
-  private gcSlotValue(table: WebAssembly.Table, slot: number): unknown {
-    this.assertU32(slot, "Wasm-GC transit slot");
-    if (slot >= table.length) {
-      throw new RangeError(`Wasm-GC transit slot ${slot} is out of bounds`);
-    }
-    const value = table.get(slot);
-    if (
-      (typeof value !== "object" || value === null)
-      && typeof value !== "function"
-    ) {
-      throw new TypeError("Wasm-GC transit slot is not a non-null reference");
-    }
-    return value;
-  }
-
   private validateGcSnapshot(
     layout: ForkGcLayoutDescriptor,
     scalars: Uint8Array,
@@ -2177,7 +1914,6 @@ export class ForkReferenceTransaction {
     }
     this.pendingExceptions.clear();
     this.pendingGc.clear();
-    this.i31Ids.clear();
     this.exceptionCacheIndexes.clear();
     this.nodes.clear();
     this.capturedValues.clear();
