@@ -167,6 +167,13 @@
             # coreutils.wasm running inside Kandelo — help2man only
             # reformats already-faithful text into troff.
             pkgs.help2man
+            # libfaketime provides `faketime`, which the determinism check
+            # (scripts/check-determinism.sh → xtask check-determinism) uses to
+            # run its two builds under distinct wall clocks. Without it the two
+            # builds still differ by a few real seconds, but that weaker clock
+            # variation can miss timestamp-embedding non-determinism; faketime
+            # forces a large, deterministic clock skew so those gaps surface.
+            pkgs.libfaketime
             # Mozilla CA bundle — Nix's curl is built against
             # cacert and looks up its bundle via SSL_CERT_FILE /
             # NIX_SSL_CERT_FILE / GIT_SSL_CAINFO. Pure-shell
