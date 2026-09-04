@@ -192,7 +192,6 @@ export interface ForkActivationRegistration {
  */
 export interface ForkActivationReferenceReplayImports {
   decodeFuncref(recipeId: number): CallableFunction | null;
-  decodeExternref(recipeId: number): unknown;
   getReferenceVector(ordinal: number, index: number): number;
 }
 
