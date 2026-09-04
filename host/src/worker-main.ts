@@ -3574,29 +3574,22 @@ export async function centralizedWorkerMain(
               `${ptrWidth} vs linked frames ${linkedFrameFormat.ptrWidth}`,
           );
         }
-        // Phase 6 D6.2/D6.3a: the REAL engine-floor `wpk_fork_host.*` bodies
-        // backing the module's `WpkForkHost` seam. They close over this worker's
-        // externref token cache so `host_resolve_externref` re-roots the SAME
-        // canonical token the still-JS `__wpk_fork_ref_decode_externref` returns
-        // (identity parity). D6.3a brings the anyref transit into PRODUCTION: an
-        // exnref's reachable externref payload must be rooted in the real
-        // `(ref null any)` table before the guest codec's exception materialize
-        // consumes it, so `host_transit_publish` / `host_transit_read` route
-        // through this worker's early-GC transit (the same table the JS reference
-        // path uses via `publishEarlyGcTransit` / `readEarlyGcTransit`). A plain
-        // externref/funcref/null fork has no transit-reachable node, so PHASE B
-        // never calls the adapter — the wiring is inert for those graphs and
-        // flag-off. `activationRegistry` is created later in this worker's setup;
-        // the adapter closes over it and is only invoked during
-        // `fm_begin_reference_replay`, long after it exists.
+        // M2: the single REAL `env.resolve_externref(handle) -> externref`
+        // import body backing the module's externref reconstruction. It
+        // closes over this worker's externref token cache so
+        // `resolve_externref` re-roots the SAME canonical token the still-JS
+        // `__wpk_fork_ref_decode_externref` returns (identity parity;
+        // `ForkExternrefTokenCache.materialize` is idempotent). The FIVE old
+        // `wpk_fork_host` externref/transit imports (`host_begin_generation`,
+        // the 2-arg `host_resolve_externref`, `host_transit_publish`,
+        // `host_transit_read`, `host_release_generation`) are gone from the
+        // rebuilt module (M2 t1-t4): the injected binder now performs the
+        // decode + anyref-transit `table.set` itself
+        // (`__wpk_fork_ref_decode_externref` export, flipped in below), so
+        // this host seam no longer routes through `activationRegistry`'s
+        // early-GC transit at all.
         forkModuleHostCapabilities = createForkModuleHostCapabilities({
           tokens: externrefTokens,
-          generationId: initData.externrefGenerationId,
-          transit: {
-            publish: (recipeId, value) =>
-              activationRegistry.publishEarlyGcTransit(recipeId, value),
-            read: (recipeId) => activationRegistry.readEarlyGcTransit(recipeId),
-          },
         });
         forkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
@@ -3605,7 +3598,7 @@ export async function centralizedWorkerMain(
           reserve: (size) =>
             continuationMmap(memory, channelOffset, size, `pid=${pid}: fork-module`),
           label: `pid=${pid}: fork-module`,
-          hostCapabilities: forkModuleHostCapabilities.imports,
+          resolveExternref: forkModuleHostCapabilities.imports.resolve_externref,
         });
         // STORE #2: wrap the fork-module's OWN exported transit table so the
         // registry binds the guest's `__wpk_fork_ref_gc_transit` import (and this
@@ -4224,6 +4217,13 @@ export async function centralizedWorkerMain(
                         __wpk_fork_ref_decode_funcref:
                           forkModuleInstance.exports
                             .__wpk_fork_ref_decode_funcref,
+                        // M2: mirror the funcref flip for externref decode —
+                        // every side activation's codec reads the SAME
+                        // whole-graph module export (activation-namespaced by
+                        // recipe coordinate, not per instance).
+                        __wpk_fork_ref_decode_externref:
+                          forkModuleInstance.exports
+                            .__wpk_fork_ref_decode_externref,
                         // Phase 6 item 3a: each dlopen'd side activation's guest
                         // codec also reads the RESTORE data-feed through the SAME
                         // whole-graph module exports (the feed is activation-
@@ -4578,10 +4578,18 @@ export async function centralizedWorkerMain(
         // `table.get`. Placed AFTER `buildForkActivationStateImports` so this
         // key wins. Every other reference import stays JS (unused for a
         // funcref/null graph). Flag-off / non-funcref forks skip this entirely.
+        //
+        // M2: `__wpk_fork_ref_decode_externref` flips alongside it, to the
+        // module's own injected decode export (calls the single
+        // `env.resolve_externref` host import instead of the JS
+        // `referenceReplay().decodeExternref`). Same gate, same "every other
+        // reference import stays JS" scoping.
         ...(moduleReferenceKindsSupported && forkModuleInstance
           ? {
               __wpk_fork_ref_decode_funcref:
                 forkModuleInstance.exports.__wpk_fork_ref_decode_funcref,
+              __wpk_fork_ref_decode_externref:
+                forkModuleInstance.exports.__wpk_fork_ref_decode_externref,
             }
           : {}),
         // Phase 6 item 3a REFERENCE DATA-FEED FLIP: replace the seven JS RESTORE
@@ -6418,8 +6426,9 @@ export async function centralizedThreadWorkerMain(
     // mirrors the main process worker's instantiate + backend + enableModuleBacking
     // block, gated identically (flag on, single-activation via `!hasDylinkForkRole`,
     // width match, catalog fits the cap). The pthread parent never reconstructs
-    // references (that happens in the child), so it needs no engine-floor host
-    // capabilities: the module instantiates with the inert `wpk_fork_host` stubs.
+    // references (that happens in the child), so `resolve_externref` is wired
+    // (below, for identity parity) but expected to stay idle here; every other
+    // `wpk_fork_host` import instantiates with the inert stub loop.
     // Flag-off / non-qualifying keeps `threadForkModuleInstance` null and every
     // fork on the byte-identical JS path.
     let threadForkModuleInstance: ForkModuleInstance | null = null;
@@ -6448,6 +6457,15 @@ export async function centralizedThreadWorkerMain(
         (entry) => entry.functionOrdinal,
       );
       if (catalogOrdinals.length <= FORK_MODULE_RESUME_CATALOG_CAP) {
+        // M2: wire the same `resolve_externref` body as the process/parent
+        // path (using this pthread's own externref token cache, established
+        // above alongside `threadHostImportRuntime`). The pthread-parent
+        // module never actually reconstructs references (that happens on the
+        // fork CHILD side, in the process worker's module instance) — it only
+        // drives the frame/KFRE journal — so this seam is expected to stay
+        // idle here, but it is wired for real rather than left on the
+        // fail-loud default so identity stays consistent if that ever
+        // changes.
         threadForkModuleInstance = instantiateForkModule({
           module: forkModuleModule,
           memory,
@@ -6460,6 +6478,8 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
+          resolveExternref: (handle) =>
+            threadExternrefTokens!.materialize(handle),
         });
         // STORE #2: on this path the thread registry is created BEFORE the
         // fork-module (unlike the process path), and its `enableModuleBacking`
