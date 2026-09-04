@@ -282,6 +282,30 @@ module abort-replay is still the next port, then F3 externref-transit and A5
 pthread-table-journal, with the A1 funcref-capture floor needing the guest
 re-instrument.
 
+**STATUS 2026-09-04 (later) — N0 CLOSED. Next step = F1 (module abort-replay).**
+The reconciled branch was pushed to PR #1350 (force-updated
+`origin/brandonpayton/epoll-kernel-route`; pre-reconciliation tip preserved as
+tag `pre-m8-fork-flip`; PR retitled + described). Validation done at the agreed
+level ("decision B" — sufficient-for-reconciliation, defer heavy end-to-end):
+- Merged Rust compiles; full Rust suite **2604 pass / 0 fail** (33 binaries).
+- One failure found + fixed (`bce056261`): the `WPK_FORK_MODULE_STATE_RECORD_KINDS`
+  count assertion was stale at 13 vs the real 14 (JOURNAL_IMAGE #14) — a
+  PRE-EXISTING fork-line bug, not a merge artifact, surfaced by running the suite.
+- Native `host-native` (wasmtime) crate compiles + tests pass.
+- ABI 44 snapshot regenerates byte-identical from merged source (coherent).
+- `HOST_RAW_SYSCALLS` × in-kernel-VFS audit: safe (byte-serving FS syscalls are
+  RAW → stay off the opaque-record fast-path → keep the blob_read/EAGAIN path).
+- `host/src` TypeScript typechecks with zero errors (worker-entry + kernel-worker
+  unions are type-clean).
+DEFERRED to the next build (decision B — run when F1 needs a build anyway): host
+Vitest behavior + the `centralized-test-helper.ts` coherence check, and browser
+Playwright. These need a full cold ABI-44 package projection on the isolated
+`KANDELO_SOURCE_CACHE_ROOT` (~1-2h), not worth the wall-clock purely to reconfirm
+a merge that already passes Rust tests + typecheck.
+So the campaign sequence now advances to **F1 module abort-replay** on this
+reconciled tree (worktree `/Users/brandon/kandelo-abi44-reconcile`, branch
+`brandonpayton/rust-first-abi44-reconcile` = PR #1350 content), per §4/F and §8.
+
 ---
 
 ## 6. Native wasmtime backend (campaign item 7 / Phase 3 completion)
