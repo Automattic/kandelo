@@ -31,7 +31,7 @@
 //! HOST-ONLY: build/test with an explicit host target (see `Cargo.toml`).
 
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write as _};
 use std::os::unix::fs::{DirEntryExt, FileExt, MetadataExt, OpenOptionsExt};
@@ -604,10 +604,17 @@ pub fn run_guest(
     // `options.mounts` names (empty by default — T1's sandboxed path).
     let fs = Arc::new(HostFs::new(&options.mounts));
 
+    // N1-I2: the base-image blob map `host_blob_read` serves reads from.
+    // Task 1 wires the import; no `BaseImage` is threaded through
+    // `GuestOptions` yet (Task 2), so this is always empty here — the import
+    // is live but unreachable until a manifest with `BaseRegular` entries is
+    // loaded.
+    let base_blobs: Arc<BTreeMap<u64, Vec<u8>>> = Arc::new(BTreeMap::new());
+
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
     klinker.define(&mut kernel_store, "env", "memory", kernel_mem.clone())?;
-    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &guest_mem)?;
+    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &guest_mem, &base_blobs)?;
     // Everything else the kernel imports (the ~78 unused host_* capabilities)
     // traps: a trivial no-VFS program touches none of them, and a trap is a
     // truthful boundary that surfaces any surprise syscall loudly.
@@ -796,6 +803,267 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     run_guest(kernel_wasm, guest_wasm, &GuestOptions::default())
 }
 
+// --- N1-I2: in-memory base VFS image (RTFS manifest + blob map) ------------
+//
+// N1-I1 enables an EMPTY in-kernel rootfs overlay `/` (no manifest, no blob
+// provider — see `run_guest`'s "Sandboxed in-memory VFS" section above). N1-I2
+// lets the native host serve REAL base-file content instead: it builds a
+// small in-memory tree, emits it as an RTFS-v3 manifest (the exact wire format
+// `crates/runtime-core/src/rootfs.rs`'s `load_manifest` parses, mirroring the
+// host-side encoder `host/src/vfs/rootfs-manifest.ts`'s `emitRootfsManifest`),
+// and wires the `host_blob_read` import (below) to serve file bytes from an
+// in-memory `blob_id -> Vec<u8>` map, where `blob_id == ino` for a file (the
+// same convention `rootfs-manifest.ts` documents). This task (Task 1) only
+// builds the manifest/map and wires the import; Task 2 threads a `BaseImage`
+// through `GuestOptions` and loads it at boot via `kernel_rootfs_load_manifest`.
+
+/// RTFS wire-format magic ("RTFS" little-endian) and version this builder
+/// emits. Must match `MANIFEST_MAGIC`/`MANIFEST_VERSION_V3` in
+/// `crates/runtime-core/src/rootfs.rs` and `RTFS_MAGIC`/`RTFS_VERSION` in
+/// `host/src/vfs/rootfs-manifest.ts`.
+pub const RTFS_MAGIC: u32 = 0x5346_5452;
+pub const RTFS_VERSION: u32 = 3;
+
+/// RTFS entry `kind` byte values the kernel parser understands
+/// (`rootfs.rs::load_manifest_inner`). This builder only ever emits
+/// `RTFS_KIND_DIR`/`RTFS_KIND_FILE` — a small hand-built base image has no
+/// symlinks or lazy (archive-backed) files; those two kinds are out of scope
+/// for N1-I2 (deferred, not silently unsupported: the kernel parser still
+/// understands kind 3/4, this builder just never emits them).
+const RTFS_KIND_DIR: u8 = 1;
+const RTFS_KIND_FILE: u8 = 2;
+
+/// One directory or regular-file entry in a small, hand-built base tree.
+/// `contents: None` is a directory; `Some(bytes)` is a regular file whose
+/// `blob_id` (in the emitted manifest) equals `ino`, per the shared
+/// "`blob_id = ino`" convention (see `host/src/vfs/rootfs-manifest.ts`'s
+/// module doc comment).
+#[derive(Debug, Clone)]
+pub struct BaseEntrySpec {
+    /// Absolute, kernel-facing path (e.g. `"/"`, `"/etc"`, `"/etc/hello"`).
+    pub path: String,
+    pub ino: u64,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mtime_sec: u64,
+    pub mtime_nsec: u32,
+    /// `None` for a directory; `Some(bytes)` for a regular file's content.
+    pub contents: Option<Vec<u8>>,
+}
+
+impl BaseEntrySpec {
+    /// A directory entry (uid/gid/mtime all zero — a caller needing specific
+    /// ownership or timestamps constructs the struct directly).
+    pub fn dir(path: impl Into<String>, ino: u64, mode: u32) -> Self {
+        Self { path: path.into(), ino, mode, uid: 0, gid: 0, mtime_sec: 0, mtime_nsec: 0, contents: None }
+    }
+
+    /// A regular-file entry (uid/gid/mtime all zero).
+    pub fn file(path: impl Into<String>, ino: u64, mode: u32, contents: Vec<u8>) -> Self {
+        Self {
+            path: path.into(),
+            ino,
+            mode,
+            uid: 0,
+            gid: 0,
+            mtime_sec: 0,
+            mtime_nsec: 0,
+            contents: Some(contents),
+        }
+    }
+}
+
+/// An in-memory base VFS image: an RTFS-v3 manifest plus the `blob_id -> file
+/// bytes` map its file entries reference. Built entirely in memory from a
+/// small hand-written tree spec — never from `rootfs.vfs`/SFFS
+/// (`crates/runtime-core/src/sffs.rs`), which stays out of scope for N1-I2.
+#[derive(Debug, Clone, Default)]
+pub struct BaseImage {
+    /// The RTFS-v3 buffer, ready for `kernel_rootfs_load_manifest`.
+    pub manifest: Vec<u8>,
+    /// `blob_id (== ino for a file) -> file content`, the map `host_blob_read`
+    /// (below) serves reads from.
+    pub blobs: BTreeMap<u64, Vec<u8>>,
+}
+
+/// Build a `BaseImage` from `entries`. `entries` MUST be parent-first (a
+/// directory's entry before any of its children) — the same pre-order-walk
+/// invariant `emitRootfsManifest` guarantees by construction; this builder
+/// trusts the caller's order instead of re-deriving it from paths, since
+/// N1-I2's images are small and hand-built (never walked from a real
+/// filesystem).
+///
+/// Emits exactly the wire format `rootfs.rs::load_manifest_inner` parses:
+/// header (`magic`/`version`/`entry_count`), per entry
+/// `kind/mode/uid/gid/ino/blob_id/size/mtime_sec/mtime_nsec/path[/target]`
+/// (`target_len` always 0 — this builder emits no symlinks), and a trailing
+/// archive table (`archive_count = 0` — no lazy archives in this builder's
+/// scope).
+pub fn build_base_image(entries: &[BaseEntrySpec]) -> BaseImage {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&RTFS_MAGIC.to_le_bytes());
+    buf.extend_from_slice(&RTFS_VERSION.to_le_bytes());
+    buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+
+    let mut blobs = BTreeMap::new();
+    for e in entries {
+        let (kind, blob_id, size) = match &e.contents {
+            None => (RTFS_KIND_DIR, 0u64, 0u64),
+            Some(bytes) => (RTFS_KIND_FILE, e.ino, bytes.len() as u64),
+        };
+        buf.push(kind);
+        buf.extend_from_slice(&e.mode.to_le_bytes());
+        buf.extend_from_slice(&e.uid.to_le_bytes());
+        buf.extend_from_slice(&e.gid.to_le_bytes());
+        buf.extend_from_slice(&e.ino.to_le_bytes());
+        buf.extend_from_slice(&blob_id.to_le_bytes());
+        buf.extend_from_slice(&size.to_le_bytes());
+        buf.extend_from_slice(&e.mtime_sec.to_le_bytes());
+        buf.extend_from_slice(&e.mtime_nsec.to_le_bytes());
+        let path_bytes = e.path.as_bytes();
+        buf.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(path_bytes);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // target_len = 0: no symlinks.
+        if let Some(bytes) = &e.contents {
+            blobs.insert(e.ino, bytes.clone());
+        }
+    }
+    // Trailing archive table: always present in v3, empty (no lazy archives
+    // in this builder's scope).
+    buf.extend_from_slice(&0u32.to_le_bytes());
+
+    BaseImage { manifest: buf, blobs }
+}
+
+#[cfg(test)]
+mod base_image_tests {
+    use super::*;
+
+    /// One RTFS entry as parsed back by `parse_rtfs` below.
+    struct ParsedEntry {
+        kind: u8,
+        #[allow(dead_code)]
+        mode: u32,
+        #[allow(dead_code)]
+        uid: u32,
+        #[allow(dead_code)]
+        gid: u32,
+        ino: u64,
+        blob_id: u64,
+        size: u64,
+        #[allow(dead_code)]
+        mtime_sec: u64,
+        #[allow(dead_code)]
+        mtime_nsec: u32,
+        path: String,
+        #[allow(dead_code)]
+        target: Vec<u8>,
+    }
+
+    /// A from-scratch RTFS-v3 reader, deliberately independent of both
+    /// `build_base_image`'s writer above and `rootfs.rs::load_manifest`'s
+    /// parser, so this test locks the wire format on its own terms (mirrors
+    /// the brief's instruction to verify the format "independent of the
+    /// kernel"). Panics on any malformed input — test-only, not
+    /// production-hardened.
+    fn parse_rtfs(buf: &[u8]) -> (u32, u32, Vec<ParsedEntry>, u32) {
+        let mut pos = 0usize;
+        fn u8_at(buf: &[u8], pos: &mut usize) -> u8 {
+            let v = buf[*pos];
+            *pos += 1;
+            v
+        }
+        fn u32_at(buf: &[u8], pos: &mut usize) -> u32 {
+            let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
+            *pos += 4;
+            v
+        }
+        fn u64_at(buf: &[u8], pos: &mut usize) -> u64 {
+            let v = u64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
+            *pos += 8;
+            v
+        }
+        let magic = u32_at(buf, &mut pos);
+        let version = u32_at(buf, &mut pos);
+        let count = u32_at(buf, &mut pos);
+        let mut entries = Vec::new();
+        for _ in 0..count {
+            let kind = u8_at(buf, &mut pos);
+            let mode = u32_at(buf, &mut pos);
+            let uid = u32_at(buf, &mut pos);
+            let gid = u32_at(buf, &mut pos);
+            let ino = u64_at(buf, &mut pos);
+            let blob_id = u64_at(buf, &mut pos);
+            let size = u64_at(buf, &mut pos);
+            let mtime_sec = u64_at(buf, &mut pos);
+            let mtime_nsec = u32_at(buf, &mut pos);
+            let path_len = u32_at(buf, &mut pos) as usize;
+            let path = String::from_utf8(buf[pos..pos + path_len].to_vec()).unwrap();
+            pos += path_len;
+            let target_len = u32_at(buf, &mut pos) as usize;
+            let target = buf[pos..pos + target_len].to_vec();
+            pos += target_len;
+            entries.push(ParsedEntry {
+                kind,
+                mode,
+                uid,
+                gid,
+                ino,
+                blob_id,
+                size,
+                mtime_sec,
+                mtime_nsec,
+                path,
+                target,
+            });
+        }
+        let archive_count = u32_at(buf, &mut pos);
+        assert_eq!(pos, buf.len(), "trailing bytes after the (empty) archive table");
+        (magic, version, entries, archive_count)
+    }
+
+    #[test]
+    fn build_base_image_round_trips_a_tiny_tree() {
+        let image = build_base_image(&[
+            BaseEntrySpec::dir("/", 1, 0o755),
+            BaseEntrySpec::dir("/etc", 2, 0o755),
+            BaseEntrySpec::file("/etc/hello", 3, 0o644, b"hi from base\n".to_vec()),
+        ]);
+
+        // Header bytes, checked directly first (the brief's exact assertion).
+        assert_eq!(&image.manifest[0..4], &RTFS_MAGIC.to_le_bytes(), "magic");
+        assert_eq!(&image.manifest[4..8], &RTFS_VERSION.to_le_bytes(), "version");
+        assert_eq!(&image.manifest[8..12], &3u32.to_le_bytes(), "entry count");
+
+        let (magic, version, entries, archive_count) = parse_rtfs(&image.manifest);
+        assert_eq!(magic, RTFS_MAGIC);
+        assert_eq!(version, RTFS_VERSION);
+        assert_eq!(archive_count, 0, "no lazy archives in this builder's scope");
+        assert_eq!(entries.len(), 3);
+
+        assert_eq!(entries[0].kind, RTFS_KIND_DIR);
+        assert_eq!(entries[0].path, "/");
+        assert_eq!(entries[0].ino, 1);
+
+        assert_eq!(entries[1].kind, RTFS_KIND_DIR);
+        assert_eq!(entries[1].path, "/etc");
+        assert_eq!(entries[1].ino, 2);
+
+        assert_eq!(entries[2].kind, RTFS_KIND_FILE);
+        assert_eq!(entries[2].path, "/etc/hello");
+        assert_eq!(entries[2].ino, 3);
+        assert_eq!(entries[2].blob_id, entries[2].ino, "blob_id must equal ino for a file");
+        assert_eq!(entries[2].size, 13);
+
+        assert_eq!(
+            image.blobs.get(&3).map(Vec::as_slice),
+            Some(b"hi from base\n".as_slice()),
+            "the blob map must be keyed by ino for a file"
+        );
+    }
+}
+
 /// Define the minimal native `host_*` capabilities the boot + trivial path
 /// needs; every other host import is left to `define_unknown_imports_as_traps`.
 fn define_kernel_host_imports(
@@ -804,6 +1072,7 @@ fn define_kernel_host_imports(
     captured: &Arc<Mutex<CapturedIo>>,
     fs: &Arc<HostFs>,
     guest_mem: &SharedMemory,
+    base_blobs: &Arc<BTreeMap<u64, Vec<u8>>>,
 ) -> anyhow::Result<()> {
     // host_futex_wake(addr, count) -> i32: wake up to `count` waiters parked on
     // the futex word at process address `addr` (in GUEST memory). musl's
@@ -1221,6 +1490,51 @@ fn define_kernel_host_imports(
                 0
             })?;
         }
+    }
+    // host_blob_read(blob_id_lo, blob_id_hi, buf_ptr, buf_len, offset_lo,
+    // offset_hi) -> i32 (N1-I2): the rootfs overlay's content byte-leaf read
+    // for a `BaseRegular` entry loaded from a `BaseImage` manifest (see the
+    // "in-memory base VFS image" section above). blob_id/offset are 64-bit
+    // values split into lo/hi 32-bit words for the (JS-shaped) ABI, matching
+    // `host_pread`'s offset convention — mirrors `wasm_api.rs:79-86` exactly.
+    // Returns bytes written into `buf_ptr` (0 at EOF), or a negated errno:
+    // ENOENT for a blob_id with no entry in the map (never expected once a
+    // manifest has been loaded correctly, since every `BaseRegular` entry's
+    // blob_id came from this same map — but a real, truthful boundary if it
+    // ever happens). With no `BaseImage` loaded (`base_blobs` empty, T1's and
+    // N1-I1's default), this import is simply never reached: the overlay has
+    // no `BaseRegular` entries to read.
+    {
+        let mem = kernel_mem.clone();
+        let blobs = base_blobs.clone();
+        linker.func_wrap(
+            "env",
+            "host_blob_read",
+            move |_c: Caller<'_, ()>,
+                  blob_id_lo: u32,
+                  blob_id_hi: u32,
+                  buf_ptr: i32,
+                  buf_len: i32,
+                  offset_lo: u32,
+                  offset_hi: u32|
+                  -> i32 {
+                if buf_len < 0 {
+                    return -libc_errno::EINVAL;
+                }
+                let blob_id = ((blob_id_hi as u64) << 32) | (blob_id_lo as u64);
+                let Some(bytes) = blobs.get(&blob_id) else {
+                    return -libc_errno::ENOENT;
+                };
+                let offset = (((offset_hi as u64) << 32) | (offset_lo as u64)) as usize;
+                if offset >= bytes.len() {
+                    return 0; // EOF
+                }
+                let remaining = &bytes[offset..];
+                let n = remaining.len().min(buf_len as usize);
+                unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &remaining[..n]) };
+                n as i32
+            },
+        )?;
     }
     // host_is_thread_worker() -> i32: 0 — the single guest is the process
     // leader (tid == pid), not a pthread worker, so exit_group takes the full
