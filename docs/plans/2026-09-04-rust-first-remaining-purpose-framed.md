@@ -251,6 +251,37 @@ is the agreed next focus. The reconciliation strategy itself gets its own
 scoping pass + approval before any history-rewriting git operation runs
 (§8).
 
+**STATUS 2026-09-04 — N0 rebase DONE (validation pending).** Reconciliation was
+executed as two rebases on the isolated branch
+`brandonpayton/rust-first-abi44-reconcile` (worktree
+`/Users/brandon/kandelo-abi44-reconcile`; `epoll-kernel-route` + the
+`pre-m8-fork-flip` tag left intact):
+1. **Transport reconciliation** — rebased the 213-commit fork line onto the
+   transport tip (`rust-first-phase4-blocking`: opaque transport + native
+   `host-native` + blocking). One real conflict (an `ABI_VERSION` doc comment,
+   resolved as the superset) + 5 stale-ABI-43 test fixtures (`rerere` replayed).
+2. **Rebase onto latest `origin/main`** — pulled in main's 48 build-fix
+   commits. Six conflict stops; resolutions were heterogeneous: main superseded
+   the fork's coreutils-docs prototype (took main's merged #1352; the fork
+   commit dropped as empty), `.gitignore` union, a genuine merge of main's
+   #1358 fail-loud kernel resolution with the fork's tar→ZIP test migration,
+   and additive unions in the two worker entries + `centralized-test-helper.ts`.
+Result: linear history on `origin/main`, `ABI_VERSION = 44` kept (main is still
+43 → 44 is unreleased, so this tree IS the canonical 44), union of both lines
+verified present, no stray conflict markers.
+
+REMAINING before N0 is truly closed: regenerate ABI artifacts
+(`abi/snapshot.json`, `abi.ts`, `abi_constants.h`, `Cargo.lock`) from merged
+source; `HOST_RAW_SYSCALLS` classification audit; `centralized-test-helper.ts`
+coherence check (deferred redundancy pass); build + validate on the isolated
+worktree, provisioned with its own `KANDELO_SOURCE_CACHE_ROOT` so no stale
+ABI-44 artifacts leak in from the machine-wide cache. Main added no new
+fork-continuation TS (only a #1359 ABI-mismatch guard and a Ctrl-D EOF fix), so
+the fork-TS porting inventory (§4/F) is unchanged by the reconciliation: F1
+module abort-replay is still the next port, then F3 externref-transit and A5
+pthread-table-journal, with the A1 funcref-capture floor needing the guest
+re-instrument.
+
 ---
 
 ## 6. Native wasmtime backend (campaign item 7 / Phase 3 completion)
