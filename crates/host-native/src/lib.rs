@@ -32,7 +32,7 @@ use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMem
 /// Increment 2: boot the kernel and run a trivial guest through the real
 /// channel. See [`guest::run_trivial_guest`].
 pub mod guest;
-pub use guest::{run_guest, run_trivial_guest, GuestOptions, RunOutcome};
+pub use guest::{run_guest, run_trivial_guest, GuestOptions, NativeMount, RunOutcome};
 
 /// ABI version this native host expects the kernel to advertise. Must match
 /// `wasm_posix_shared::ABI_VERSION` (currently 44). A kernel built for a
@@ -439,7 +439,7 @@ mod tests {
     // above), so `host_open` is never reached on the default path and the fake
     // HostFs no longer serves files. The same host_open/host_lstat/host_read
     // capability plumbing is restored, correctly scoped to an explicit native
-    // directory mount, by N1-I1b's `smoke_runs_native_dir_mount`.
+    // directory mount, by N1-I1b's `smoke_runs_native_dir_mount` below.
 
     /// Phase 4, increment 1: the native host's blocking wait capability. A
     /// blocking syscall (poll with a timeout, no fds) returns EAGAIN; the host
@@ -556,6 +556,7 @@ mod tests {
         let options = guest::GuestOptions {
             argv: vec!["prog".to_string(), "hello".to_string()],
             env: vec![],
+            mounts: vec![],
         };
         let outcome = guest::run_guest(&path, guest, &options)?;
 
@@ -570,6 +571,62 @@ mod tests {
             outcome.stdout,
             b"hello-data\nhello-tmp\nargc:2\nhello\n".as_slice(),
             "expected the / overlay + /tmp tmpfs round-trip and argv[1] via kernel_argv_read"
+        );
+        Ok(())
+    }
+
+    /// N1-I1b: an explicit native host-directory mount is the ONLY way to
+    /// reach the real host filesystem on this host, at parity with Node's
+    /// `extraMounts`/`HostFileSystem`. A top-level mount point (`/host`, so no
+    /// overlay parent-dir seeding is needed) is registered as a rootfs
+    /// foreign prefix, so the overlay disowns that subtree and the kernel's
+    /// path resolution falls through to the native host's mount-aware
+    /// `HostFs`. The guest opens/reads a real file under the mounted temp
+    /// directory; a byte-exact round-trip proves the whole mechanism: the
+    /// foreign-prefix registration, the mount-point-prefix strip, and the
+    /// real `host_open`/`host_pread`/`host_close` FS syscalls.
+    #[test]
+    fn smoke_runs_native_dir_mount() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_mount.wasm");
+
+        let host_dir = std::env::temp_dir().join(format!(
+            "kandelo-host-native-mount-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&host_dir)?;
+        let contents = b"hello from a mounted native directory\n";
+        std::fs::write(host_dir.join("greeting.txt"), contents)?;
+
+        let options = guest::GuestOptions {
+            mounts: vec![guest::NativeMount {
+                mount_point: "/host".to_string(),
+                host_dir: host_dir.clone(),
+                readonly: false,
+            }],
+            ..Default::default()
+        };
+        let outcome = guest::run_guest(&path, guest, &options);
+        let _ = std::fs::remove_dir_all(&host_dir);
+        let outcome = outcome?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout,
+            contents.as_slice(),
+            "expected the mounted file's real contents via host_open/host_pread"
         );
         Ok(())
     }

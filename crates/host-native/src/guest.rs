@@ -31,9 +31,11 @@
 //! HOST-ONLY: build/test with an explicit host target (see `Cargo.toml`).
 
 use std::cell::UnsafeCell;
-use std::fs::File;
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write as _};
-use std::path::Path;
+use std::os::unix::fs::{DirEntryExt, FileExt, MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,9 +52,11 @@ use wasm_posix_shared::channel::{
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
+use wasm_posix_shared::flags as open_flags;
 use wasm_posix_shared::host_abi::{
     SyscallArgDesc, SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS,
 };
+use wasm_posix_shared::seek::SEEK_END;
 use wasm_posix_shared::Syscall;
 
 // --- Channel status word values --------------------------------------------
@@ -153,20 +157,67 @@ struct CapturedIo {
     stderr: Vec<u8>,
 }
 
-// --- Minimal host capabilities -----------------------------------------
+// --- Host capabilities: sandboxed default + opt-in native-directory mount --
 //
 // N1-I1a: the native host's default `/` and `/tmp` are the in-kernel rootfs
 // overlay and tmpfs (see the `kernel_set_rootfs_now`/`kernel_set_tmpfs_enabled`/
 // `kernel_set_rootfs_enabled` calls in `run_guest`), a sandboxed in-memory VFS
-// that never touches the host. `host_lstat`/`host_stat`/`host_open`/
-// `host_pread`/`host_fstat` are consequently left to `define_unknown_imports_
-// as_traps` — a truthful boundary, since the overlay claims all of `/` (no
-// foreign prefixes are registered) and so these imports must never fire on
-// this path. A later increment restores real host-directory access, scoped to
-// an explicit mount, and re-adds them for that mount's paths only.
+// that never touches the host.
 //
-// `HostFs` is reduced to its one remaining duty: serving fd 0 (stdin, a
-// HostPipe) as a deterministic blocking source.
+// N1-I1b adds the only way to reach the real host filesystem: an explicit
+// [`NativeMount`] registered as a rootfs *foreign prefix*
+// (`kernel_rootfs_set_foreign_prefixes`, called in `run_guest` before rootfs
+// authority is enabled — see `crates/kernel/src/wasm_api.rs`). The overlay
+// disowns a foreign-prefixed subtree (`rootfs::owns_path` returns false under
+// it), so the kernel's path resolution falls through to `host_lstat`/
+// `host_stat`/`host_open`/`host_pread`/`host_fstat`/`host_seek`/
+// `host_opendir`/`host_readdir`/`host_closedir`/`host_readlink` for paths
+// under the mount — exactly like Node's `HostFileSystem`/`extraMounts` (see
+// `host/src/vfs/host-fs.ts`, `host/src/node-kernel-worker-entry.ts`). With no
+// mount configured, those imports stay trapped
+// (`define_unknown_imports_as_traps`) — a truthful boundary, since the
+// overlay claims all of `/` and they must never fire.
+
+/// An explicit native host-directory mount into the guest's VFS (N1-I1b), at
+/// parity with Node's `extraMounts`/`HostFileSystem(hostPath, mountPoint)`.
+/// `mount_point` must be a top-level absolute path (e.g. `/host`) for this
+/// increment — no nested-parent seeding of the overlay is performed, so a
+/// mount point nested under an existing overlay directory is not supported.
+#[derive(Debug, Clone)]
+pub struct NativeMount {
+    /// The absolute VFS path this mount is visible at.
+    pub mount_point: String,
+    /// The real host directory backing it.
+    pub host_dir: PathBuf,
+    /// Mirrors Node's `MountConfig.readonly`. **Not enforced** by this
+    /// increment: `VirtualPlatformIO` does not check `readonly` for
+    /// `HostFileSystem` mounts either (only `MemoryFileSystem.mount()` does —
+    /// see `host/src/vfs/vfs.ts` / `host/src/vfs/memory-fs.ts`), so leaving it
+    /// unenforced here matches the platform's actual behavior rather than
+    /// claiming a guarantee neither host currently provides for this mount
+    /// kind.
+    pub readonly: bool,
+}
+
+/// One registered mount's VFS-path prefix and its real host root directory.
+struct MountPoint {
+    /// Normalized: no trailing slash (this increment's mount points are
+    /// top-level, so never literally `"/"`).
+    prefix: String,
+    root: PathBuf,
+}
+
+/// `WasmDirent::d_type` values (crates/shared), a subset of Linux's `DT_*`.
+const DT_UNKNOWN: u32 = 0;
+const DT_DIR: u32 = 4;
+const DT_REG: u32 = 8;
+const DT_LNK: u32 = 10;
+/// Size of the `repr(C)` `WasmStat` the kernel reads back (crates/shared).
+const WASM_STAT_SIZE: usize = 88;
+/// First host handle the FS hands out; kept clear of the 0/1/2 stdio range.
+/// Shared by both the file-handle and directory-handle tables — they are
+/// disjoint maps, so overlapping numbers between them are harmless.
+const HOST_FS_FIRST_HANDLE: i64 = 1000;
 
 /// A blocking stdin (fd 0, a HostPipe) whose data is not ready on the first
 /// read. `host_read(0)` returns EAGAIN once — forcing the kernel to block and
@@ -175,17 +226,188 @@ struct CapturedIo {
 /// just makes it deterministic for the test.
 const HOST_STDIN_LINE: &[u8] = b"stdin via blocking read\n";
 
-/// The blocking-stdin delivery counter (the only host-FS-shaped duty left once
-/// the in-kernel overlay/tmpfs own `/` and `/tmp` by default).
+/// fd 0 (stdin, always present) plus, when one or more [`NativeMount`]s are
+/// configured, real host-directory file/dir/symlink access scoped to them.
+///
+/// Path containment for a mount is enforced *lexically*: a guest path (with
+/// the owning mount's prefix stripped) is split into components, `..` pops
+/// the last pushed component (never below that mount's root), and the
+/// remainder is joined onto `root`. This is a scoped boundary, not a
+/// symlink-escape-proof sandbox — a symlink placed *inside* the mounted tree
+/// that points outside it is still followed by the real filesystem, exactly
+/// like any other host-directory passthrough (mirrors Node's
+/// `HostFileSystem.safePath`). That lexical guard is defense in depth, since
+/// the kernel already normalizes guest-visible paths before calling into
+/// these capabilities.
+///
+/// Unix-only (`std::os::unix::fs::*`): this workspace has no Windows CI
+/// target for the native host.
 struct HostFs {
     /// Number of host_read(0) calls so far (drives the EAGAIN-then-data stdin).
     stdin_reads: Mutex<u32>,
+    /// Registered mounts, longest-prefix-first (mirrors `VirtualPlatformIO`'s
+    /// mount sort in `host/src/vfs/vfs.ts`), so a nested mount would win over
+    /// a shorter enclosing one — though this increment only exercises a
+    /// single top-level mount. Empty by default (T1's sandboxed path).
+    mounts: Vec<MountPoint>,
+    /// Open regular-file (or O_DIRECTORY-opened directory) handles from
+    /// `host_open`, shared across all mounts — a handle alone identifies its
+    /// `File`, so no further mount lookup is needed once open.
+    files: Mutex<HashMap<i64, File>>,
+    /// Open directory-iteration handles from `host_opendir`.
+    dirs: Mutex<HashMap<i64, fs::ReadDir>>,
+    next_handle: Mutex<i64>,
 }
 
 impl HostFs {
-    fn new() -> Self {
-        Self { stdin_reads: Mutex::new(0) }
+    fn new(mounts: &[NativeMount]) -> Self {
+        let mut mount_points: Vec<MountPoint> = mounts
+            .iter()
+            .map(|m| MountPoint {
+                prefix: normalize_mount_point(&m.mount_point),
+                root: m.host_dir.clone(),
+            })
+            .collect();
+        // Longest prefix first, so `resolve`'s first match is the most
+        // specific mount.
+        mount_points.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        Self {
+            stdin_reads: Mutex::new(0),
+            mounts: mount_points,
+            files: Mutex::new(HashMap::new()),
+            dirs: Mutex::new(HashMap::new()),
+            next_handle: Mutex::new(HOST_FS_FIRST_HANDLE),
+        }
     }
+
+    fn alloc_handle(&self) -> i64 {
+        let mut next = self.next_handle.lock().unwrap();
+        let h = *next;
+        *next += 1;
+        h
+    }
+
+    /// Resolve a full guest VFS path to a real host path: find the owning
+    /// mount (longest-prefix match, mirroring `VirtualPlatformIO.resolve` in
+    /// `host/src/vfs/vfs.ts`), strip its prefix (mirroring
+    /// `HostFileSystem.guestAbsoluteToMountRelative`), then lexically join the
+    /// remainder onto that mount's root (mirroring `HostFileSystem.safePath`'s
+    /// component walk — see the struct doc comment for the exact containment
+    /// guarantee this collapses to). Returns a positive errno on failure,
+    /// including when no mount claims the path — never expected in practice,
+    /// since the kernel only calls these imports for paths a registered
+    /// foreign prefix has disowned from the overlay.
+    fn resolve(&self, guest_path: &[u8]) -> Result<PathBuf, i32> {
+        let s = std::str::from_utf8(guest_path).map_err(|_| libc_errno::EINVAL)?;
+        if !s.starts_with('/') {
+            return Err(libc_errno::EINVAL);
+        }
+        let Some(mount) = self.mounts.iter().find(|m| {
+            s == m.prefix.as_str()
+                || (s.len() > m.prefix.len()
+                    && s.as_bytes()[m.prefix.len()] == b'/'
+                    && s.starts_with(m.prefix.as_str()))
+        }) else {
+            return Err(libc_errno::ENOENT);
+        };
+        let rel = if s.len() == mount.prefix.len() { "" } else { &s[mount.prefix.len() + 1..] };
+        let mut stack: Vec<&str> = Vec::new();
+        for component in rel.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    stack.pop();
+                }
+                other => stack.push(other),
+            }
+        }
+        let mut resolved = mount.root.clone();
+        resolved.extend(stack);
+        Ok(resolved)
+    }
+}
+
+/// Normalize a mount point the way `VirtualPlatformIO.normalizeMountPoint`
+/// does (`host/src/vfs/vfs.ts`): ensure a leading `/`, drop a trailing `/`
+/// (unless it is exactly `/`).
+fn normalize_mount_point(mount_point: &str) -> String {
+    let mp =
+        if mount_point.starts_with('/') { mount_point.to_string() } else { format!("/{mount_point}") };
+    if mp != "/" && mp.ends_with('/') { mp[..mp.len() - 1].to_string() } else { mp }
+}
+
+/// Translate the guest's Linux-numbered `O_*` open flags (`wasm_posix_shared::
+/// flags`) into `std::fs::OpenOptions`, mirroring `translateOpenFlags` in
+/// `host/src/vfs/host-fs.ts`.
+fn open_options_from_flags(flags: u32, mode: u32) -> OpenOptions {
+    let mut opts = OpenOptions::new();
+    let accmode = flags & open_flags::O_ACCMODE;
+    opts.read(accmode != open_flags::O_WRONLY);
+    opts.write(accmode == open_flags::O_WRONLY || accmode == open_flags::O_RDWR);
+    if flags & open_flags::O_CREAT != 0 {
+        if flags & open_flags::O_EXCL != 0 {
+            opts.create_new(true);
+        } else {
+            opts.create(true);
+        }
+        opts.mode(mode & 0o7777);
+    }
+    if flags & open_flags::O_TRUNC != 0 {
+        opts.truncate(true);
+    }
+    if flags & open_flags::O_APPEND != 0 {
+        opts.append(true);
+    }
+    opts
+}
+
+/// Map an `io::Error` from a real filesystem call to a Linux-numbered errno.
+///
+/// `raw_os_error()` is deliberately not used as a general fallback: this host
+/// process may run on macOS, whose errno numbering diverges from Linux's past
+/// the handful of very old, universally-shared POSIX codes (e.g. `ENAMETOOLONG`,
+/// `ELOOP`, and `ENOTEMPTY` all have different numbers on macOS than on Linux).
+/// Passing a raw macOS errno through would silently forge a wrong Linux errno
+/// for the guest. `ErrorKind` is portable, so match on it and collapse anything
+/// it doesn't cover to `EIO` — a truthful "something failed" instead of a
+/// possibly-wrong specific errno.
+fn errno_from_io(e: &std::io::Error) -> i32 {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        K::NotFound => libc_errno::ENOENT,
+        K::PermissionDenied => libc_errno::EACCES,
+        K::AlreadyExists => libc_errno::EEXIST,
+        K::NotADirectory => libc_errno::ENOTDIR,
+        K::IsADirectory => libc_errno::EISDIR,
+        K::InvalidInput => libc_errno::EINVAL,
+        _ => libc_errno::EIO,
+    }
+}
+
+/// Combine two 32-bit words into a signed 64-bit value (high word first),
+/// mirroring `signedI64FromWords` in `host/src/kernel.ts` — the same
+/// low/high-word convention `host_pread`/`host_seek` use throughout this file.
+fn combine_i64(lo: i32, hi: i32) -> i64 {
+    ((hi as i64) << 32) | (lo as u32 as i64)
+}
+
+/// Serialize a `WasmStat` (mode + size, other fields zero) into kernel memory at
+/// `stat_ptr`, matching the field offsets the kernel's `repr(C)` struct expects
+/// (see host/src/kernel.ts `#writeStatToMemory`).
+unsafe fn write_wasm_stat(mem: &SharedMemory, stat_ptr: usize, mode: u32, size: u64, nlink: u32) {
+    let mut b = [0u8; WASM_STAT_SIZE];
+    b[16..20].copy_from_slice(&mode.to_le_bytes()); // st_mode
+    b[20..24].copy_from_slice(&nlink.to_le_bytes()); // st_nlink
+    b[32..40].copy_from_slice(&size.to_le_bytes()); // st_size
+    unsafe { write_bytes(mem, stat_ptr, &b) };
+}
+
+/// Serialize a real `std::fs::Metadata` into a `WasmStat`. `Metadata::mode()`
+/// already carries the `S_IFMT` file-type bits (`S_IFDIR`/`S_IFREG`/`S_IFLNK`
+/// etc.), which are numerically identical between Linux and the BSD/macOS
+/// heritage `st_mode` encoding, so no translation is needed.
+unsafe fn write_wasm_stat_from_metadata(mem: &SharedMemory, stat_ptr: usize, meta: &fs::Metadata) {
+    unsafe { write_wasm_stat(mem, stat_ptr, meta.mode(), meta.size(), meta.nlink() as u32) };
 }
 
 /// The result of running a trivial guest to completion.
@@ -322,8 +544,8 @@ fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemor
 
 /// The guest's launch environment: argv and environment variables, encoded as
 /// raw UTF-8 bytes (no NUL terminator — the guest CRT appends its own,
-/// mirroring `host/src/worker-main.ts`'s `encodeStartupMetadata`). A later
-/// increment adds an optional native-directory mount here.
+/// mirroring `host/src/worker-main.ts`'s `encodeStartupMetadata`), plus any
+/// explicit native-directory mounts (N1-I1b).
 #[derive(Debug, Clone, Default)]
 pub struct GuestOptions {
     /// `argv[0]`, `argv[1]`, ... delivered via `kernel_get_argc`/`kernel_argv_read`.
@@ -332,17 +554,25 @@ pub struct GuestOptions {
     pub argv: Vec<String>,
     /// `NAME=value` entries delivered via `kernel_environ_count`/`kernel_environ_get`.
     pub env: Vec<String>,
+    /// Explicit native host-directory mounts, at parity with Node's
+    /// `extraMounts`. Empty (the default) keeps the guest fully sandboxed —
+    /// no real host directory is ever reachable — matching T1's behavior
+    /// exactly.
+    pub mounts: Vec<NativeMount>,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
-/// real channel, with `options` controlling its argv/env. This is the native
-/// host's default run path (N1-I1a): before dispatch, it enables the
-/// in-kernel rootfs overlay (`/`) and tmpfs (`/tmp`) with no manifest and no
-/// blob provider, so the guest gets a **sandboxed in-memory VFS** — writable,
-/// but backed by nothing on the host filesystem. `host_blob_read`/
-/// `host_fetch_archive` and the host-FS `host_open` family are never called on
-/// this path (see `define_kernel_host_imports`). Returns the guest's exit
-/// code, captured stdout/stderr, and the syscall trace.
+/// real channel, with `options` controlling its argv/env and mounts. Before
+/// dispatch, it enables the in-kernel rootfs overlay (`/`) and tmpfs (`/tmp`)
+/// with no manifest and no blob provider, so the guest gets a **sandboxed
+/// in-memory VFS** by default (N1-I1a) — writable, but backed by nothing on
+/// the host filesystem. `host_blob_read`/`host_fetch_archive` and the
+/// host-FS `host_open` family are never called for any path the overlay
+/// still owns (see `define_kernel_host_imports`). `options.mounts` (N1-I1b,
+/// empty by default) opts specific top-level subtrees back into the real host
+/// filesystem via the rootfs foreign-prefix mechanism — the only way to reach
+/// it. Returns the guest's exit code, captured stdout/stderr, and the
+/// syscall trace.
 pub fn run_guest(
     kernel_wasm: &Path,
     guest_wasm: &[u8],
@@ -370,8 +600,9 @@ pub fn run_guest(
     let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES)?;
     let captured = Arc::new(Mutex::new(CapturedIo::default()));
 
-    // The native host's only remaining host-FS-shaped duty: fd 0 (stdin).
-    let fs = Arc::new(HostFs::new());
+    // fd 0 (stdin) always; real host-directory access only for the mounts
+    // `options.mounts` names (empty by default — T1's sandboxed path).
+    let fs = Arc::new(HostFs::new(&options.mounts));
 
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
@@ -420,6 +651,10 @@ pub fn run_guest(
         kernel.get_typed_func::<i32, i32>(&mut kernel_store, "kernel_set_tmpfs_enabled")?;
     let set_rootfs_enabled =
         kernel.get_typed_func::<i32, i32>(&mut kernel_store, "kernel_set_rootfs_enabled")?;
+    // N1-I1b: register any explicit native-directory mounts as rootfs foreign
+    // prefixes, so the overlay disowns them (see the call site below).
+    let set_foreign_prefixes = kernel
+        .get_typed_func::<(i32, u32), i32>(&mut kernel_store, "kernel_rootfs_set_foreign_prefixes")?;
 
     // --- Kernel-side process setup ------------------------------------------
     let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
@@ -454,12 +689,12 @@ pub fn run_guest(
     // --- Sandboxed in-memory VFS: enable the overlay + tmpfs, before dispatch --
     // (N1-I1a). Publish the wall clock first (the overlay stamps mutation
     // metadata with it — see `kernel_set_rootfs_now`'s doc comment), then hand
-    // scratch-mount (`/tmp`, ...) and `/` authority to the kernel. No manifest
-    // is loaded and no blob provider is installed, so the overlay's `/` starts
+    // scratch-mount (`/tmp`, ...) authority to the kernel. No manifest is
+    // loaded and no blob provider is installed, so the overlay's `/` starts
     // empty and every overlay-created file is stored inline
     // (`rootfs::Entry::Regular(Vec<u8>)`) — `host_blob_read`/`host_fetch_archive`
-    // are never called and `host_open` is never reached; this is a fully
-    // sandboxed, writable, in-memory default with no host directory mounted.
+    // are never called and `host_open` is never reached for any path the
+    // overlay still owns.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let now_sec = now.as_secs();
     set_rootfs_now.call(
@@ -467,6 +702,35 @@ pub fn run_guest(
         (now_sec as u32, (now_sec >> 32) as u32, now.subsec_nanos()),
     )?;
     set_tmpfs_enabled.call(&mut kernel_store, 1)?;
+    // N1-I1b: register `options.mounts`' VFS paths as rootfs foreign prefixes
+    // BEFORE enabling rootfs authority (`kernel_rootfs_set_foreign_prefixes`'s
+    // doc comment requires this ordering), so the overlay never claims those
+    // subtrees in the first place. The prefixes are NUL-separated bytes staged
+    // into the KERNEL's own memory (the export's `ptr` is a kernel-memory
+    // address, like every other kernel export pointer argument) via a second
+    // `kernel_alloc_scratch` allocation — the main channel scratch allocated
+    // above is a distinct, already-spoken-for region. Empty `options.mounts`
+    // (the default) skips this entirely, leaving the overlay as the sole `/`
+    // authority exactly like T1.
+    if !options.mounts.is_empty() {
+        let mut prefixes = Vec::new();
+        for mount in &options.mounts {
+            prefixes.extend_from_slice(mount.mount_point.as_bytes());
+            prefixes.push(0);
+        }
+        let prefixes_ptr = alloc_scratch.call(&mut kernel_store, prefixes.len() as u32)?;
+        if prefixes_ptr <= 0 {
+            anyhow::bail!(
+                "kernel_alloc_scratch({}) for foreign prefixes returned {prefixes_ptr}",
+                prefixes.len()
+            );
+        }
+        unsafe { write_bytes(&kernel_mem, prefixes_ptr as u32 as usize, &prefixes) };
+        let n = set_foreign_prefixes.call(&mut kernel_store, (prefixes_ptr, prefixes.len() as u32))?;
+        if n < 0 {
+            anyhow::bail!("kernel_rootfs_set_foreign_prefixes failed: {n}");
+        }
+    }
     set_rootfs_enabled.call(&mut kernel_store, 1)?;
 
     // --- Guest instance on its own OS thread --------------------------------
@@ -607,24 +871,28 @@ fn define_kernel_host_imports(
             },
         )?;
     }
-    // host_close(handle) -> i32: no-op success. Nothing in this host holds a
-    // real host-FS cursor to release (the overlay/tmpfs own `/` and `/tmp`
-    // in-kernel; a host_open handle is never issued on this path) and the
-    // stdio HostPipes 0/1/2 need nothing released.
-    linker.func_wrap("env", "host_close", |_c: Caller<'_, ()>, _handle: i64| -> i32 { 0 })?;
-    // host_lstat / host_stat / host_open / host_pread / host_fstat are
-    // deliberately NOT wired here. With the in-kernel rootfs overlay owning
-    // `/` and no foreign mount prefixes registered (see `run_guest`), the
-    // kernel's path resolution never falls through to these host FS
-    // capabilities — `define_unknown_imports_as_traps` below makes that a
-    // loud trap if it ever did, rather than silently serving a host file this
-    // sandboxed default must not expose.
-    // host_read(handle, buf_ptr, len) -> i32: fd 0 (stdin, a HostPipe) is a
-    // blocking source — EAGAIN on the first read (so the kernel blocks and the
-    // pump parks it), then one line, then EOF. This is how a real host pipe
-    // behaves when input arrives on a later poll; the call counter just makes
-    // it deterministic. Every other handle is a bug (no other host-FS handle
-    // exists) and reports EBADF.
+    // host_close(handle) -> i32: releases an open host-FS file handle if this
+    // is one (only possible when a mount is configured); otherwise a no-op
+    // success (the stdio HostPipes 0/1/2 need nothing released).
+    {
+        let fs = fs.clone();
+        linker.func_wrap("env", "host_close", move |_c: Caller<'_, ()>, handle: i64| -> i32 {
+            fs.files.lock().unwrap().remove(&handle);
+            0
+        })?;
+    }
+    // host_read(handle, buf_ptr, len) -> i32:
+    //   - handle 0 (stdin, a HostPipe): a blocking source — EAGAIN on the
+    //     first read (so the kernel blocks and the pump parks it), then one
+    //     line, then EOF. This is how a real host pipe behaves when input
+    //     arrives on a later poll; the call counter just makes it
+    //     deterministic.
+    //   - an open host-FS handle (only possible when a mount is configured):
+    //     read from the real file's current OS cursor. Regular-file reads
+    //     normally arrive via host_pread instead (the kernel owns their
+    //     offset); this path exists for parity/defensiveness if a
+    //     non-regular host-backed handle ever reaches it.
+    //   - anything else: EBADF (no other host-FS handle exists).
     {
         let fs = fs.clone();
         let mem = kernel_mem.clone();
@@ -635,22 +903,316 @@ fn define_kernel_host_imports(
                 if len < 0 {
                     return -libc_errno::EINVAL;
                 }
-                if handle != 0 {
-                    return -libc_errno::EBADF;
+                if handle == 0 {
+                    let mut calls = fs.stdin_reads.lock().unwrap();
+                    *calls += 1;
+                    return match *calls {
+                        1 => -libc_errno::EAGAIN, // not ready yet: block
+                        2 => {
+                            let n = HOST_STDIN_LINE.len().min(len as usize);
+                            unsafe {
+                                write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n])
+                            };
+                            n as i32
+                        }
+                        _ => 0, // EOF
+                    };
                 }
-                let mut calls = fs.stdin_reads.lock().unwrap();
-                *calls += 1;
-                match *calls {
-                    1 => -libc_errno::EAGAIN, // not ready yet: block
-                    2 => {
-                        let n = HOST_STDIN_LINE.len().min(len as usize);
-                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n]) };
+                let mut files = fs.files.lock().unwrap();
+                let Some(file) = files.get_mut(&handle) else {
+                    return -libc_errno::EBADF;
+                };
+                let mut tmp = vec![0u8; len as usize];
+                match file.read(&mut tmp) {
+                    Ok(n) => {
+                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
                         n as i32
                     }
-                    _ => 0, // EOF
+                    Err(e) => -errno_from_io(&e),
                 }
             },
         )?;
+    }
+    // N1-I1b: real host-directory FS syscalls, wired ONLY when at least one
+    // mount is configured. With no mount, these stay to
+    // `define_unknown_imports_as_traps` below — a truthful boundary, since
+    // the overlay claims all of `/` and the kernel's path resolution can
+    // never reach them.
+    if !fs.mounts.is_empty() {
+        // host_lstat / host_stat(path, len, stat_ptr) -> i32: real metadata
+        // from the mounted host directory tree. `lstat` does not follow a
+        // final symlink; `stat` does.
+        for (name, follow_final) in [("host_lstat", false), ("host_stat", true)] {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                name,
+                move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32, stat_ptr: i32| -> i32 {
+                    if path_len < 0 {
+                        return -libc_errno::EINVAL;
+                    }
+                    let raw = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
+                    let resolved = match fs.resolve(&raw) {
+                        Ok(p) => p,
+                        Err(e) => return -e,
+                    };
+                    let meta =
+                        if follow_final { fs::metadata(&resolved) } else { fs::symlink_metadata(&resolved) };
+                    match meta {
+                        Ok(m) => {
+                            unsafe { write_wasm_stat_from_metadata(&mem, stat_ptr as u32 as usize, &m) };
+                            0
+                        }
+                        Err(e) => -errno_from_io(&e),
+                    }
+                },
+            )?;
+        }
+        // host_open(path, len, flags, mode) -> i64: open a real file (or,
+        // with O_DIRECTORY, a real directory — used only for its
+        // fstat/close identity; actual iteration goes through host_opendir)
+        // under the mounted tree. Returns a handle or a negated errno.
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_open",
+                move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32, flags: i32, mode: i32| -> i64 {
+                    if path_len < 0 {
+                        return -(libc_errno::EINVAL as i64);
+                    }
+                    let raw = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
+                    let resolved = match fs.resolve(&raw) {
+                        Ok(p) => p,
+                        Err(e) => return -(e as i64),
+                    };
+                    let opts = open_options_from_flags(flags as u32, mode as u32);
+                    match opts.open(&resolved) {
+                        Ok(file) => {
+                            let handle = fs.alloc_handle();
+                            fs.files.lock().unwrap().insert(handle, file);
+                            handle
+                        }
+                        Err(e) => -(errno_from_io(&e) as i64),
+                    }
+                },
+            )?;
+        }
+        // host_pread(handle, buf_ptr, len, offset_lo, offset_hi) -> i32: the
+        // kernel owns the file offset for host-backed regular files and reads
+        // at an explicit position, so this is the read path that actually
+        // fires (not host_read). Reads at `offset` without disturbing the
+        // file's OS cursor.
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_pread",
+                move |_c: Caller<'_, ()>, handle: i64, buf_ptr: i32, len: i32, off_lo: i32, off_hi: i32| -> i32 {
+                    if len < 0 {
+                        return -libc_errno::EINVAL;
+                    }
+                    let files = fs.files.lock().unwrap();
+                    let Some(file) = files.get(&handle) else {
+                        return -libc_errno::EBADF;
+                    };
+                    let offset = combine_i64(off_lo, off_hi) as u64;
+                    let mut tmp = vec![0u8; len as usize];
+                    match file.read_at(&mut tmp, offset) {
+                        Ok(n) => {
+                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
+                            n as i32
+                        }
+                        Err(e) => -errno_from_io(&e),
+                    }
+                },
+            )?;
+        }
+        // host_seek(handle, offset_lo, offset_hi, whence) -> i64: the kernel
+        // owns the OFD offset for host-backed files and computes
+        // SEEK_SET/SEEK_CUR's new position itself, consulting this return
+        // value only for SEEK_END (where only the host knows the real file
+        // size); see crates/runtime-core/src/syscalls.rs sys_lseek. So this
+        // need not reposition any host-side cursor — it only has to answer
+        // "what position does this offset/whence resolve to", which for
+        // SEEK_SET/SEEK_CUR the caller already computed into `offset` itself.
+        {
+            let fs = fs.clone();
+            linker.func_wrap(
+                "env",
+                "host_seek",
+                move |_c: Caller<'_, ()>, handle: i64, off_lo: i32, off_hi: i32, whence: i32| -> i64 {
+                    let files = fs.files.lock().unwrap();
+                    let Some(file) = files.get(&handle) else {
+                        return -(libc_errno::EBADF as i64);
+                    };
+                    let offset = combine_i64(off_lo, off_hi);
+                    let result = if whence as u32 == SEEK_END {
+                        match file.metadata() {
+                            Ok(m) => (m.len() as i64).saturating_add(offset),
+                            Err(e) => return -(errno_from_io(&e) as i64),
+                        }
+                    } else {
+                        offset
+                    };
+                    if result < 0 {
+                        -(libc_errno::EIO as i64)
+                    } else {
+                        result
+                    }
+                },
+            )?;
+        }
+        // host_fstat(handle, stat_ptr) -> i32: real metadata for an open
+        // host-FS handle (file or O_DIRECTORY-opened directory).
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_fstat",
+                move |_c: Caller<'_, ()>, handle: i64, stat_ptr: i32| -> i32 {
+                    let files = fs.files.lock().unwrap();
+                    let Some(file) = files.get(&handle) else {
+                        return -libc_errno::EBADF;
+                    };
+                    match file.metadata() {
+                        Ok(m) => {
+                            unsafe { write_wasm_stat_from_metadata(&mem, stat_ptr as u32 as usize, &m) };
+                            0
+                        }
+                        Err(e) => -errno_from_io(&e),
+                    }
+                },
+            )?;
+        }
+        // host_readlink(path, len, buf_ptr, buf_len) -> i32: the raw symlink
+        // target (not translated or re-rooted), truncated to `buf_len`,
+        // matching `host_readlink` in host/src/kernel.ts.
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_readlink",
+                move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32, buf_ptr: i32, buf_len: i32| -> i32 {
+                    if path_len < 0 || buf_len < 0 {
+                        return -libc_errno::EINVAL;
+                    }
+                    let raw = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
+                    let resolved = match fs.resolve(&raw) {
+                        Ok(p) => p,
+                        Err(e) => return -e,
+                    };
+                    match fs::read_link(&resolved) {
+                        Ok(target) => {
+                            let target_bytes = target.into_os_string().into_encoded_bytes();
+                            let n = target_bytes.len().min(buf_len as usize);
+                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &target_bytes[..n]) };
+                            n as i32
+                        }
+                        Err(e) => -errno_from_io(&e),
+                    }
+                },
+            )?;
+        }
+        // host_opendir(path, len) -> i64: a fresh directory-iteration handle
+        // over the mounted host directory, or a negated errno.
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_opendir",
+                move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32| -> i64 {
+                    if path_len < 0 {
+                        return -(libc_errno::EINVAL as i64);
+                    }
+                    let raw = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
+                    let resolved = match fs.resolve(&raw) {
+                        Ok(p) => p,
+                        Err(e) => return -(e as i64),
+                    };
+                    match fs::read_dir(&resolved) {
+                        Ok(rd) => {
+                            let handle = fs.alloc_handle();
+                            fs.dirs.lock().unwrap().insert(handle, rd);
+                            handle
+                        }
+                        Err(e) => -(errno_from_io(&e) as i64),
+                    }
+                },
+            )?;
+        }
+        // host_readdir(dir_handle, dirent_ptr, name_ptr, name_len) -> i32:
+        // writes one `WasmDirent` (16 bytes: d_ino u64 @0, d_type u32 @8,
+        // d_namlen u32 @12 — see crates/shared `WasmDirent`) plus the raw
+        // entry name, matching `#hostReaddir` in host/src/kernel.ts. Returns 1
+        // (entry written), 0 (end of directory), or a negated errno.
+        //
+        // A name that does not fit `name_len` fails ERANGE, but — unlike the
+        // TS host's `#hostReaddir`, which buffers the oversized entry in
+        // `pendingDirectoryEntries` so a larger-buffer retry sees the same
+        // entry again — this call has already consumed it from
+        // `std::fs::ReadDir`, which offers no peek/pushback: `rd.next()` has
+        // already advanced past it by the time its name is measured. The
+        // entry is silently skipped, not retried. This is a real, narrow
+        // divergence from Node (a single oversized directory entry can go
+        // missing from a listing), not a claim this host doesn't actually
+        // meet; closing it would need a one-entry lookahead buffer, which is
+        // out of scope for this increment.
+        {
+            let fs = fs.clone();
+            let mem = kernel_mem.clone();
+            linker.func_wrap(
+                "env",
+                "host_readdir",
+                move |_c: Caller<'_, ()>, dir_handle: i64, dirent_ptr: i32, name_ptr: i32, name_len: i32| -> i32 {
+                    if name_len < 0 {
+                        return -libc_errno::EINVAL;
+                    }
+                    let mut dirs = fs.dirs.lock().unwrap();
+                    let Some(rd) = dirs.get_mut(&dir_handle) else {
+                        return -libc_errno::EBADF;
+                    };
+                    match rd.next() {
+                        None => 0,
+                        Some(Err(e)) => -errno_from_io(&e),
+                        Some(Ok(entry)) => {
+                            let name = entry.file_name().into_encoded_bytes();
+                            if name.len() > name_len as usize {
+                                return -libc_errno::ERANGE;
+                            }
+                            let d_type = match entry.file_type() {
+                                Ok(ft) if ft.is_dir() => DT_DIR,
+                                Ok(ft) if ft.is_file() => DT_REG,
+                                Ok(ft) if ft.is_symlink() => DT_LNK,
+                                _ => DT_UNKNOWN,
+                            };
+                            unsafe {
+                                let dp = dirent_ptr as u32 as usize;
+                                write_bytes(&mem, dp, &entry.ino().to_le_bytes());
+                                write_bytes(&mem, dp + 8, &d_type.to_le_bytes());
+                                write_bytes(&mem, dp + 12, &(name.len() as u32).to_le_bytes());
+                                write_bytes(&mem, name_ptr as u32 as usize, &name);
+                            }
+                            1
+                        }
+                    }
+                },
+            )?;
+        }
+        // host_closedir(dir_handle) -> i32.
+        {
+            let fs = fs.clone();
+            linker.func_wrap("env", "host_closedir", move |_c: Caller<'_, ()>, dir_handle: i64| -> i32 {
+                fs.dirs.lock().unwrap().remove(&dir_handle);
+                0
+            })?;
+        }
     }
     // host_is_thread_worker() -> i32: 0 — the single guest is the process
     // leader (tid == pid), not a pthread worker, so exit_group takes the full
@@ -1525,11 +2087,16 @@ fn copy_launch_entry(
 }
 
 /// Minimal errno values the native host returns from `host_*`/`kernel_*`
-/// capabilities. Pinned here to avoid a `libc` dependency for six constants.
+/// capabilities. Pinned here to avoid a `libc` dependency for these constants.
 mod libc_errno {
+    pub const ENOENT: i32 = 2;
     pub const EIO: i32 = 5;
     pub const EBADF: i32 = 9;
     pub const EAGAIN: i32 = 11;
+    pub const EACCES: i32 = 13;
+    pub const EEXIST: i32 = 17;
+    pub const ENOTDIR: i32 = 20;
+    pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
     pub const EFAULT: i32 = 14;
     pub const ERANGE: i32 = 34;
