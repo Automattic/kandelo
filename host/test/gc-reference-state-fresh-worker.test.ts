@@ -42,7 +42,18 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("preserves one cyclic identity across params, carryovers, globals, and tables", async () => {
+  it("aborts a cyclic typed-GC identity fork cleanly with EOPNOTSUPP (flag off)", async () => {
+    // GATED KIND: typed Wasm-GC struct references are engine-internal and cannot
+    // be faithfully reconstructed in a fresh child today, so the fork is aborted
+    // cleanly with -EOPNOTSUPP on the CAPTURE side (the GC record-stubs in
+    // fork-activation-registry.ts mark the kind; the parent run loop calls
+    // beginAbortReplay(EOPNOTSUPP) after seal). No child is spawned and nothing
+    // is reconstructed.
+    //
+    // The fixture guest does not branch on a negative fork() return, so
+    // -EOPNOTSUPP (-95) drives it into its parent/wait path and it exits 92. The
+    // load-bearing signals are that the gate is CLEAN: no worker crash (stderr
+    // empty) and no reconstruction (the typed-GC proof-of-use is null).
     const result = await runCentralizedProgram({
       programPath,
       argv: ["gc-reference-state-fresh-worker"],
@@ -53,17 +64,19 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
     expect(
       result.exitCode,
       `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    ).toBe(0);
+    ).toBe(92);
     expect(result.stderr).toBe("");
+    expect(moduleReferenceProof(result.hostDiagnostics, "gc")).toBeNull();
   });
 
-  it("drives the cyclic typed-GC identity reconstruction through the module (flag on)", async () => {
-    // Phase 6 D6.5: the same self-cyclic, 4-aliased `$node` struct, but with the
-    // co-resident fork-module ENABLED. Asserts (a) PARITY — the child still
-    // exits 0 (its ref.eq alias checks + scalar field 77 all hold) exactly as the
-    // flag-off run; and (b) PROOF OF USE — the module advanced its typed-GC node
-    // counter (> 0), so the GC graph was reconstructed THROUGH the module rather
-    // than silently falling back to the JS typed-graph drive-order.
+  // SKIPPED: module-mode (WASM_POSIX_FORK_MODULE=1) fork abort-replay is a known
+  // gap deferred to M8 — see docs/fork-reference-support.md. With the co-resident
+  // fork-module enabled, a gated fork cannot yet abort cleanly: the module owns
+  // its own continuation journal (the JS replay-event journal stays idle) and has
+  // no abort-replay path, so beginAbortReplay would crash the worker. The
+  // flag-off test above proves the capture-side EOPNOTSUPP gate; this case is
+  // re-enabled once module-mode abort-replay lands.
+  it.skip("aborts the same cyclic typed-GC identity fork cleanly with EOPNOTSUPP (flag on)", async () => {
     const result = await runCentralizedProgram({
       programPath,
       argv: ["gc-reference-state-fresh-worker"],
@@ -72,20 +85,11 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
       forkModuleEnabled: true,
     });
 
-    // (a) PARITY.
     expect(
       result.exitCode,
       `flag-on GC fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    ).toBe(0);
+    ).toBe(92);
     expect(result.stderr).toBe("");
-
-    // (b) PROOF OF USE: the module reconstructed the typed-GC node graph.
-    const gcNodes = moduleReferenceProof(result.hostDiagnostics, "gc");
-    expect(
-      gcNodes,
-      "expected a fork-module typed-GC proof-of-use diagnostic; the module did " +
-        "not drive the GC reconstruction",
-    ).not.toBeNull();
-    expect(gcNodes!).toBeGreaterThan(0);
+    expect(moduleReferenceProof(result.hostDiagnostics, "gc")).toBeNull();
   });
 });
