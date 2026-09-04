@@ -43,9 +43,11 @@ pub mod module_state_records;
 #[cfg(feature = "native-sketch")]
 pub mod native_sketch;
 pub mod reference_feed;
+pub mod reference_graph_builder;
 pub mod reference_recipes;
 pub mod reference_replay;
 pub mod reference_segments;
+pub mod reference_segments_writer;
 pub mod reference_transaction;
 pub mod replay_events;
 pub mod replay_journal;
@@ -86,11 +88,13 @@ pub use module_state_records::{
     SparseTableRun, TableDescriptor,
 };
 pub use reference_feed::ReferenceReplayFeed;
+pub use reference_graph_builder::{AggregateKind, GcProvenance, ReferenceGraphBuilder};
 pub use reference_recipes::{
     decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
 };
 pub use reference_replay::{FuncrefTarget, ReconstructionState, ReferenceReplayDriver};
 pub use reference_segments::ReferenceTransactionRecord;
+pub use reference_segments_writer::{ReferenceRecordSink, ReferenceSegmentsWriter};
 pub use reference_transaction::{
     decode_segmented_reference_transaction, vector_intern_key, SegmentedReferenceTransaction,
     VectorInternIndex, VectorInternKey,
