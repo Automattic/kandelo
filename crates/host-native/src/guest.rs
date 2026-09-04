@@ -592,17 +592,7 @@ pub fn run_guest(
     // --- Guest module, layout, and memory (created first so kernel host imports
     // that touch process memory — e.g. host_futex_wake — can reference it) -----
     let guest_module = Module::new(&engine, guest_wasm)?;
-    let imported_min_pages = guest_module
-        .imports()
-        .find_map(|i| match i.ty() {
-            wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => {
-                Some(m.minimum() as usize)
-            }
-            _ => None,
-        })
-        .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
-    let layout = ProcessLayout::compute(imported_min_pages);
-    let guest_mem = new_shared(&engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+    let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module)?;
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
     let kernel_module = Module::from_file(&engine, kernel_wasm)?;
@@ -682,13 +672,12 @@ pub fn run_guest(
     let rootfs_load_manifest = kernel
         .get_typed_func::<(i32, u32), i32>(&mut kernel_store, "kernel_rootfs_load_manifest")?;
 
-    // --- Kernel-side process setup ------------------------------------------
-    let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
-    if scratch_ptr <= 0 {
-        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
-    }
-    let scratch_ptr_u = scratch_ptr as u32 as usize;
-
+    // --- Kernel-side process setup -------------------------------------------
+    // Only the pid is created here; the rest of this process's launch (scratch
+    // allocation, brk/mmap/max-addr, spawning its guest thread) is
+    // [`launch_process`]'s job, called below after the kernel-wide rootfs/tmpfs
+    // setup — the same reusable step Task 2 will call again for a spawned
+    // child's pid (created via a different kernel export, `kernel_spawn_process`).
     let pid_i = create_process.call(
         &mut kernel_store,
         (
@@ -701,16 +690,6 @@ pub fn run_guest(
         anyhow::bail!("kernel_create_process_with_stdio returned {pid_i}");
     }
     let pid = pid_i as u32;
-
-    for (name, val) in [
-        ("kernel_set_brk_base", set_brk_base.call(&mut kernel_store, (pid, layout.brk_base as i32))?),
-        ("kernel_set_mmap_base", set_mmap_base.call(&mut kernel_store, (pid, layout.brk_base as i32))?),
-        ("kernel_set_max_addr", set_max_addr.call(&mut kernel_store, (pid, layout.max_addr as i32))?),
-    ] {
-        if val < 0 {
-            anyhow::bail!("{name} failed: {val}");
-        }
-    }
 
     // --- Sandboxed in-memory VFS: enable the overlay + tmpfs, before dispatch --
     // (N1-I1a). Publish the wall clock first (the overlay stamps mutation
@@ -813,27 +792,30 @@ pub fn run_guest(
         Arc::new(options.argv.iter().map(|s| s.as_bytes().to_vec()).collect());
     let launch_env: Arc<Vec<Vec<u8>>> =
         Arc::new(options.env.iter().map(|s| s.as_bytes().to_vec()).collect());
-    spawn_guest_thread(
+    let process = launch_process(
         &engine,
-        guest_module.clone(),
-        guest_mem.clone(),
+        &mut kernel_store,
+        &alloc_scratch,
+        &set_brk_base,
+        &set_mmap_base,
+        &set_max_addr,
+        guest_module,
+        guest_mem,
         layout,
+        pid,
         import_exit_status.clone(),
         launch_argv,
         launch_env,
-    );
+    )?;
+    let mut processes = vec![process];
 
     // --- The channel pump ---------------------------------------------------
     let mut syscall_trace = Vec::new();
     let exit_code = run_pump(
         &mut kernel_store,
         &engine,
-        &guest_module,
-        &guest_mem,
         &kernel_mem,
-        scratch_ptr_u,
-        pid,
-        layout,
+        &mut processes,
         &set_current_tid,
         &handle_channel,
         &get_exit_status,
@@ -1647,6 +1629,106 @@ fn define_kernel_host_imports(
     Ok(())
 }
 
+/// Compute a guest module's process memory layout and allocate the shared
+/// memory backing it, mirroring the TS host's `computeProcessMemoryLayout`.
+/// Split out of [`launch_process`] (rather than folded into it) because the
+/// FIRST process's memory must exist BEFORE the kernel instance is even
+/// created: `define_kernel_host_imports` wires `host_futex_wake` directly to
+/// that memory at kernel-instantiation time, so `run_guest` must call this
+/// before instantiating the kernel. A later increment's spawned child has no
+/// such ordering constraint (the kernel instance already exists), but calls
+/// this same helper first for consistency, then [`launch_process`] with the
+/// result.
+fn compute_guest_memory(engine: &Engine, guest_module: &Module) -> anyhow::Result<(SharedMemory, ProcessLayout)> {
+    let imported_min_pages = guest_module
+        .imports()
+        .find_map(|i| match i.ty() {
+            wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => {
+                Some(m.minimum() as usize)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
+    let layout = ProcessLayout::compute(imported_min_pages);
+    let memory = new_shared(engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+    Ok((memory, layout))
+}
+
+/// Launch one guest process instance and return the [`GuestProcess`] the pump
+/// then services: push its brk/mmap/max-addr into the kernel, spawn its guest
+/// OS thread over `memory`, and register its main channel.
+///
+/// `pid` must already exist as a kernel-side process record — this helper
+/// does not create it, since the two callers use different kernel entry
+/// points for that (the boot path uses `kernel_create_process_with_stdio`;
+/// a spawned child, Task 2, will use `kernel_spawn_process`), and `memory`/
+/// `layout` must already be computed (see [`compute_guest_memory`]'s doc
+/// comment for why memory creation cannot always happen inside this
+/// function). This is exactly the "instance launch" logic `spawn_guest_thread`
+/// and `run_guest` used to inline for the single hard-coded process; Task 2
+/// reuses it verbatim to launch a `posix_spawn`ed child's process instance.
+///
+/// Deliberately NOT included here: the kernel-wide rootfs overlay/tmpfs/
+/// base-image enablement (`kernel_set_rootfs_now`/`kernel_set_tmpfs_enabled`/
+/// `kernel_set_rootfs_enabled`/`kernel_rootfs_load_manifest`) and foreign-
+/// prefix registration in `run_guest`. Those are one-time, kernel-instance-
+/// wide toggles (no `pid` parameter in their signatures), not per-process
+/// launch state, so a spawned child must NOT re-run them — they stay in
+/// `run_guest`'s boot sequence, executed once before any process (including
+/// the first) is launched.
+#[allow(clippy::too_many_arguments)]
+fn launch_process(
+    engine: &Engine,
+    kernel_store: &mut Store<()>,
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    guest_module: Module,
+    memory: SharedMemory,
+    layout: ProcessLayout,
+    pid: u32,
+    import_exit_status: Arc<Mutex<Option<i32>>>,
+    launch_argv: Arc<Vec<Vec<u8>>>,
+    launch_env: Arc<Vec<Vec<u8>>>,
+) -> anyhow::Result<GuestProcess> {
+    let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
+    if scratch_ptr <= 0 {
+        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
+    }
+    let scratch_base = scratch_ptr as u32 as usize;
+
+    for (name, val) in [
+        ("kernel_set_brk_base", set_brk_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
+        ("kernel_set_mmap_base", set_mmap_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
+        ("kernel_set_max_addr", set_max_addr.call(&mut *kernel_store, (pid, layout.max_addr as i32))?),
+    ] {
+        if val < 0 {
+            anyhow::bail!("{name} failed: {val}");
+        }
+    }
+
+    spawn_guest_thread(
+        engine,
+        guest_module.clone(),
+        memory.clone(),
+        layout,
+        import_exit_status,
+        launch_argv,
+        launch_env,
+    );
+
+    Ok(GuestProcess {
+        pid,
+        module: guest_module,
+        memory,
+        scratch_base,
+        layout,
+        channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
+        next_thread_slot: 0,
+    })
+}
+
 /// Instantiate the guest on a fresh OS thread and run it to `_start`. The
 /// thread blocks inside `_start` on each syscall's `wait32`; the pump on the
 /// kernel thread services them. It never returns for a normal exit (the guest
@@ -1946,11 +2028,46 @@ struct PumpChannel {
     is_main: bool,
 }
 
+/// One process the pump manages: its own compiled guest module, shared
+/// memory, kernel-scratch region, pid, process memory layout, and its live
+/// channels (the main channel plus any worker-thread channels sharing this
+/// process's memory).
+///
+/// N1-I3a Task 1 generalizes the pump from a single hard-coded process to a
+/// `Vec<GuestProcess>` so a later increment (posix_spawn, Task 2) can push
+/// additional entries — one per spawned child, each with its OWN memory —
+/// without restructuring the pump loop again. This task keeps exactly one
+/// entry and preserves the prior single-process behavior exactly; nothing
+/// here yet creates a second process.
+struct GuestProcess {
+    pid: u32,
+    /// The compiled module this process's main thread and any of its worker
+    /// (pthread) threads instantiate from. Kept per-process (rather than a
+    /// single pump-wide module) so a future spawned child can run a
+    /// different program than its parent.
+    module: Module,
+    memory: SharedMemory,
+    scratch_base: usize,
+    layout: ProcessLayout,
+    channels: Vec<PumpChannel>,
+    /// Next unused slot index in this process's reserved thread-slot arena
+    /// (`layout.first_thread_slot_page`); each `pthread_create` (SYS_CLONE)
+    /// consumes one. Per-process because the arena itself is carved out of
+    /// this process's own memory layout.
+    next_thread_slot: usize,
+}
+
 /// A blocking syscall parked awaiting readiness (or its timeout deadline). The
 /// pump re-dispatches it under `token` on later iterations instead of looping in
 /// place, so one channel's blocked op never starves another channel.
 #[derive(Clone, Copy)]
 struct BlockedOp {
+    /// Index into the pump's `processes` vec that owns `channel` — needed to
+    /// find the right memory/pid/scratch on a later retry pass, since a
+    /// channel's byte offset alone is not process-unique (two processes'
+    /// deterministically computed `ProcessLayout`s can share the same
+    /// channel offset in their own, distinct memories).
+    process_index: usize,
     channel: PumpChannel,
     syscall_nr: u32,
     /// `> 0` pins a stable OFD target that must be released on completion; `0`
@@ -2110,21 +2227,27 @@ fn complete_channel(
     Ok(())
 }
 
-/// The channel pump: a single-threaded event loop that services every live guest
-/// channel and parks blocking syscalls in a table (re-dispatching them across
-/// iterations) rather than looping in place — so a blocked op on one channel
-/// never starves another. Returns the process exit code when the main channel
-/// posts exit/exit_group.
+/// The channel pump: a single-threaded event loop that services every live
+/// channel of every live process and parks blocking syscalls in a table
+/// (re-dispatching them across iterations) rather than looping in place — so
+/// a blocked op on one channel never starves another. Returns the exit code
+/// of the FIRST process's (`processes[0]`) main channel when it posts
+/// exit/exit_group.
+///
+/// N1-I3a Task 1: `processes` is a `Vec` so a future increment (posix_spawn,
+/// Task 2) can push additional entries here; this task's only caller
+/// (`run_guest`) always passes exactly one, so this refactor changes no
+/// observable behavior. The "return on `processes[0]`'s main-channel exit"
+/// rule is itself a single-process assumption Task 2/3 will need to revisit
+/// (a real parent+child run must not end the whole pump when a spawned
+/// child's main channel exits — only `waitpid`-style reaping should), but
+/// widening that rule is explicitly out of scope here.
 #[allow(clippy::too_many_arguments)]
 fn run_pump(
     kernel_store: &mut Store<()>,
     engine: &Engine,
-    guest_module: &Module,
-    guest_mem: &SharedMemory,
     kernel_mem: &SharedMemory,
-    scratch_ptr: usize,
-    pid: u32,
-    layout: ProcessLayout,
+    processes: &mut Vec<GuestProcess>,
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     get_exit_status: &wasmtime::TypedFunc<u32, i32>,
@@ -2133,17 +2256,15 @@ fn run_pump(
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
-    let mut channels = vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }];
     let mut blocked: Vec<BlockedOp> = Vec::new();
-    // Index of the next thread slot to hand out from the reserved arena.
-    let mut next_thread_slot = 0usize;
     let hard_cap = Instant::now() + Duration::from_secs(30);
 
     loop {
         if Instant::now() > hard_cap {
+            let total_channels: usize = processes.iter().map(|p| p.channels.len()).sum();
             anyhow::bail!(
-                "pump timed out after 30s ({} channel(s), {} blocked op(s))",
-                channels.len(),
+                "pump timed out after 30s ({} process(es), {total_channels} channel(s), {} blocked op(s))",
+                processes.len(),
                 blocked.len()
             );
         }
@@ -2155,10 +2276,14 @@ fn run_pump(
         let mut i = 0;
         while i < blocked.len() {
             let op = blocked[i];
-            let mut args = read_channel_args(guest_mem, op.channel.offset);
+            let proc = &processes[op.process_index];
+            let guest_mem = proc.memory.clone();
+            let scratch_ptr = proc.scratch_base;
+            let pid = proc.pid;
+            let mut args = read_channel_args(&guest_mem, op.channel.offset);
             let deadline_passed = op.deadline.is_some_and(|d| Instant::now() >= d);
 
-            let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, op.syscall_nr, &mut args)?;
+            let staged = stage_raw(kernel_mem, &guest_mem, scratch_ptr, op.syscall_nr, &mut args)?;
             if deadline_passed {
                 force_zero_timeout(kernel_mem, scratch_ptr, op.syscall_nr);
             }
@@ -2178,7 +2303,7 @@ fn run_pump(
                 continue; // still blocked
             }
             complete_channel(
-                guest_mem, kernel_mem, scratch_ptr, op.channel, op.syscall_nr, &args, &staged, ret, errno,
+                &guest_mem, kernel_mem, scratch_ptr, op.channel, op.syscall_nr, &args, &staged, ret, errno,
             )?;
             if op.token > 0 {
                 blocking_retry_release.call(&mut *kernel_store, (pid, op.channel.tid, op.token))?;
@@ -2187,148 +2312,165 @@ fn run_pump(
             progressed = true;
         }
 
-        // 2) Service each live channel's newly posted request.
-        let mut ci = 0;
-        while ci < channels.len() {
-            let ch = channels[ci];
-            // A channel whose request is already parked stays PENDING until the
-            // op completes; the retry loop owns it, so do not re-dispatch it here
-            // (that would double-process and leak a second retry token).
-            if blocked.iter().any(|op| op.channel.offset == ch.offset) {
-                ci += 1;
-                continue;
-            }
-            let status = unsafe { atomic_u32(guest_mem, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
-            if status != STATUS_PENDING {
-                ci += 1;
-                continue;
-            }
-            progressed = true;
-            let (syscall_nr, mut args, is_record) = read_channel_request(guest_mem, ch.offset);
-            trace.push(syscall_nr);
+        // 2) Service each live process's live channels' newly posted requests.
+        for pi in 0..processes.len() {
+            let pid = processes[pi].pid;
+            let scratch_ptr = processes[pi].scratch_base;
+            let layout = processes[pi].layout;
+            let guest_mem = processes[pi].memory.clone();
+            let guest_module = processes[pi].module.clone();
 
-            // Process exit on the MAIN channel: the kernel commits the status
-            // then traps via kernel_exit's `unreachable`; read the status and
-            // end the run.
-            if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
-                let _ = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut args)?;
-                let _ = bind_and_dispatch(
-                    kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
-                );
-                let code = get_exit_status
-                    .call(&mut *kernel_store, pid)
-                    .unwrap_or(args[0] as i32 & 0xff);
-                return Ok(code);
-            }
-
-            // Worker-thread exit on a NON-main channel: route to
-            // kernel_thread_exit (which keeps the shared process — fds, pipes —
-            // alive), clear the child-tid futex word for any joiner, then
-            // complete and drop the channel so it is no longer polled. This must
-            // NOT go to the process-exit path, or it would tear the shared pipe
-            // out from under a still-blocked reader.
-            if !ch.is_main && syscall_nr == Syscall::Exit as u32 {
-                let ctid = thread_exit.call(&mut *kernel_store, (pid, ch.tid))?;
-                if ctid > 0 {
-                    unsafe { write_bytes(guest_mem, ctid as u32 as usize, &0i32.to_le_bytes()) };
-                    let _ = guest_mem.atomic_notify(ctid as u64, 1);
+            let mut ci = 0;
+            while ci < processes[pi].channels.len() {
+                let ch = processes[pi].channels[ci];
+                // A channel whose request is already parked stays PENDING until
+                // the op completes; the retry loop owns it, so do not
+                // re-dispatch it here (that would double-process and leak a
+                // second retry token).
+                if blocked.iter().any(|op| op.process_index == pi && op.channel.offset == ch.offset) {
+                    ci += 1;
+                    continue;
                 }
-                complete_channel(
-                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
-                )?;
-                channels.remove(ci);
-                continue; // the vec shifted; do not advance ci
-            }
+                let status =
+                    unsafe { atomic_u32(&guest_mem, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                if status != STATUS_PENDING {
+                    ci += 1;
+                    continue;
+                }
+                progressed = true;
+                let (syscall_nr, mut args, is_record) = read_channel_request(&guest_mem, ch.offset);
+                trace.push(syscall_nr);
 
-            // Thread creation on the MAIN channel: dispatch clone so the kernel
-            // allocates the child tid, carve a slot from the reserved arena,
-            // launch the worker OS thread, register its channel, and return the
-            // tid to the caller.
-            if ch.is_main && syscall_nr == SYS_CLONE {
-                let fn_ptr = unsafe { read_u32(guest_mem, ch.offset + DATA_OFFSET) };
-                let arg = unsafe { read_u32(guest_mem, ch.offset + DATA_OFFSET + 4) };
-                let stack_ptr = args[1] as u32;
-                let tls_ptr = args[3] as u32;
+                // Process exit on the MAIN channel: the kernel commits the
+                // status then traps via kernel_exit's `unreachable`; read the
+                // status and end the run. See this function's doc comment: this
+                // "end the whole pump" behavior is a `processes[0]`-only
+                // assumption Task 1 preserves unchanged (there is only ever one
+                // process today).
+                if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
+                    let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args)?;
+                    let _ = bind_and_dispatch(
+                        kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
+                    );
+                    let code = get_exit_status
+                        .call(&mut *kernel_store, pid)
+                        .unwrap_or(args[0] as i32 & 0xff);
+                    return Ok(code);
+                }
 
-                let mut clone_args = args;
-                let _ = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
-                bind_and_dispatch(
-                    kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
-                )?;
-                let (tid, errno) = read_ret_errno(kernel_mem, scratch_ptr);
-                if tid < 0 {
+                // Worker-thread exit on a NON-main channel: route to
+                // kernel_thread_exit (which keeps the shared process — fds,
+                // pipes — alive), clear the child-tid futex word for any
+                // joiner, then complete and drop the channel so it is no
+                // longer polled. This must NOT go to the process-exit path, or
+                // it would tear the shared pipe out from under a still-blocked
+                // reader.
+                if !ch.is_main && syscall_nr == Syscall::Exit as u32 {
+                    let ctid = thread_exit.call(&mut *kernel_store, (pid, ch.tid))?;
+                    if ctid > 0 {
+                        unsafe { write_bytes(&guest_mem, ctid as u32 as usize, &0i32.to_le_bytes()) };
+                        let _ = guest_mem.atomic_notify(ctid as u64, 1);
+                    }
                     complete_channel(
-                        guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, errno,
+                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
+                    )?;
+                    processes[pi].channels.remove(ci);
+                    continue; // the vec shifted; do not advance ci
+                }
+
+                // Thread creation on the MAIN channel: dispatch clone so the
+                // kernel allocates the child tid, carve a slot from this
+                // process's reserved arena, launch the worker OS thread,
+                // register its channel, and return the tid to the caller.
+                if ch.is_main && syscall_nr == SYS_CLONE {
+                    let fn_ptr = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET) };
+                    let arg = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 4) };
+                    let stack_ptr = args[1] as u32;
+                    let tls_ptr = args[3] as u32;
+
+                    let mut clone_args = args;
+                    let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
+                    bind_and_dispatch(
+                        kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
+                    )?;
+                    let (tid, errno) = read_ret_errno(kernel_mem, scratch_ptr);
+                    if tid < 0 {
+                        complete_channel(
+                            &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, errno,
+                        )?;
+                        ci += 1;
+                        continue;
+                    }
+                    let next_thread_slot = processes[pi].next_thread_slot;
+                    if next_thread_slot >= RESERVED_THREAD_SLOTS {
+                        anyhow::bail!("out of reserved thread slots ({RESERVED_THREAD_SLOTS})");
+                    }
+                    let slot_page = layout.first_thread_slot_page + next_thread_slot * PAGES_PER_THREAD_SLOT;
+                    processes[pi].next_thread_slot += 1;
+                    let thread_channel_offset =
+                        (slot_page + THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
+                    let tls_offset = (slot_page + THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
+                    // Materialize + zero the whole slot (TLS, fork-save, channel).
+                    grow_to_cover(&guest_mem, (slot_page + PAGES_PER_THREAD_SLOT) * WASM_PAGE_SIZE)?;
+                    unsafe {
+                        write_bytes(
+                            &guest_mem,
+                            slot_page * WASM_PAGE_SIZE,
+                            &vec![0u8; PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE],
+                        );
+                    }
+                    spawn_worker_thread(
+                        engine,
+                        &guest_module,
+                        guest_mem.clone(),
+                        thread_channel_offset,
+                        tls_offset,
+                        stack_ptr,
+                        tls_ptr,
+                        fn_ptr,
+                        arg,
+                    );
+                    processes[pi].channels.push(PumpChannel {
+                        offset: thread_channel_offset,
+                        tid: tid as u32,
+                        is_main: false,
+                    });
+                    complete_channel(
+                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, 0,
                     )?;
                     ci += 1;
                     continue;
                 }
-                if next_thread_slot >= RESERVED_THREAD_SLOTS {
-                    anyhow::bail!("out of reserved thread slots ({RESERVED_THREAD_SLOTS})");
-                }
-                let slot_page = layout.first_thread_slot_page + next_thread_slot * PAGES_PER_THREAD_SLOT;
-                next_thread_slot += 1;
-                let thread_channel_offset = (slot_page + THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
-                let tls_offset = (slot_page + THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
-                // Materialize + zero the whole slot (TLS, fork-save, channel).
-                grow_to_cover(guest_mem, (slot_page + PAGES_PER_THREAD_SLOT) * WASM_PAGE_SIZE)?;
-                unsafe {
-                    write_bytes(
-                        guest_mem,
-                        slot_page * WASM_PAGE_SIZE,
-                        &vec![0u8; PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE],
-                    );
-                }
-                spawn_worker_thread(
-                    engine,
-                    guest_module,
-                    guest_mem.clone(),
-                    thread_channel_offset,
-                    tls_offset,
-                    stack_ptr,
-                    tls_ptr,
-                    fn_ptr,
-                    arg,
-                );
-                channels.push(PumpChannel {
-                    offset: thread_channel_offset,
-                    tid: tid as u32,
-                    is_main: false,
-                });
-                complete_channel(
-                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, 0,
+
+                let (ret, errno, staged) = dispatch_once(
+                    kernel_store, &guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
+                    &mut args, 0, set_current_tid, handle_channel,
                 )?;
+
+                if !is_record
+                    && ret == -1
+                    && errno == libc_errno::EAGAIN as u32
+                    && syscall_can_block(syscall_nr)
+                {
+                    let token = blocking_retry_token.call(&mut *kernel_store, (pid, ch.tid, syscall_nr))?;
+                    if token < 0 {
+                        anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
+                    }
+                    blocked.push(BlockedOp {
+                        process_index: pi,
+                        channel: ch,
+                        syscall_nr,
+                        token,
+                        deadline: blocking_deadline(syscall_nr, &args),
+                    });
+                    // Leave the guest parked; do not complete.
+                } else {
+                    complete_channel(
+                        &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &staged, ret, errno,
+                    )?;
+                }
                 ci += 1;
-                continue;
             }
-
-            let (ret, errno, staged) = dispatch_once(
-                kernel_store, guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
-                &mut args, 0, set_current_tid, handle_channel,
-            )?;
-
-            if !is_record
-                && ret == -1
-                && errno == libc_errno::EAGAIN as u32
-                && syscall_can_block(syscall_nr)
-            {
-                let token = blocking_retry_token.call(&mut *kernel_store, (pid, ch.tid, syscall_nr))?;
-                if token < 0 {
-                    anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
-                }
-                blocked.push(BlockedOp {
-                    channel: ch,
-                    syscall_nr,
-                    token,
-                    deadline: blocking_deadline(syscall_nr, &args),
-                });
-                // Leave the guest parked; do not complete.
-            } else {
-                complete_channel(
-                    guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &staged, ret, errno,
-                )?;
-            }
-            ci += 1;
         }
 
         // Idle only when nothing was ready this pass, to keep latency low while
