@@ -129,6 +129,9 @@ for (const name of [
   "fm_finish_unwind",
   "fm_begin_replay",
   "fm_finish_replay",
+  // F1: module-driven abort-replay (mirrors fm_begin_replay/fm_finish_replay).
+  "fm_begin_abort",
+  "fm_finish_abort",
   "fm_serialize_journal",
   "fm_begin_child_replay",
   "fm_last_errno",
@@ -446,6 +449,60 @@ function runStress(N) {
   console.log(`  ok: ${N}-frame stress fork over host arena, module reused`);
 }
 
+// --- Case 3: abort-replay cycle (module-driven abort path) -------------------
+// `fm_begin_abort`/`fm_finish_abort` mirror `fm_begin_replay`/`fm_finish_replay`
+// exactly — same frame/journal mechanics — but tag the fork as in-abort so
+// `fm_finish_abort` can assert the pairing. Modeled on `runMultiChunk`'s
+// unwind -> replay drive, swapping in the abort exports.
+function runAbortCycle() {
+  const ACT = 9;
+  const specs = [
+    { func: 501, call: 1, fill: 0xe1, size: 40 },
+    { func: 502, call: 2, fill: 0xe2, size: 64 },
+  ];
+
+  beginUnwind(ACT);
+
+  for (const s of specs) {
+    const payload = x.__wpk_fork_frame_reserve(s.size) >>> 0;
+    assert.equal(errno(), 0, `abort reserve errno for func ${s.func}`);
+    writePayload(payload, s.func, s.call, s.fill, s.size);
+    x.__wpk_fork_frame_commit(payload);
+    assert.equal(errno(), 0, `abort commit errno for func ${s.func}`);
+  }
+
+  x.fm_finish_unwind();
+  assert.equal(errno(), 0, "abort fm_finish_unwind errno");
+
+  // Negative case: fm_finish_abort without a preceding fm_begin_abort is a
+  // loud EINVAL, not a silent no-op and not a fall-through into a bare
+  // fm_finish_replay's bookkeeping.
+  x.fm_finish_abort();
+  assert.equal(errno(), EINVAL, "fm_finish_abort without fm_begin_abort sets EINVAL");
+
+  x.fm_begin_abort();
+  assert.equal(errno(), 0, "fm_begin_abort errno");
+
+  const replayOrder = [...specs].reverse();
+  for (let i = 0; i < replayOrder.length; i++) {
+    const s = replayOrder[i];
+    const peeked = x.__wpk_fork_frame_peek(s.size) >>> 0;
+    assert.equal(errno(), 0, `abort peek errno for func ${s.func}`);
+    assert.equal(readU32(peeked), s.func, `abort peeked frame func at step ${i}`);
+
+    const advanced = x.__wpk_fork_frame_next(s.size) >>> 0;
+    assert.equal(errno(), 0, `abort next errno for func ${s.func}`);
+    assert.equal(advanced, peeked, `abort next returns the same payload as peek at step ${i}`);
+    assert.equal(readByte(advanced + 16), s.fill, `abort payload fill round-trips at step ${i}`);
+  }
+
+  assert.equal(x.__wpk_fork_resume_peek(0), 0, "abort sentinel slot after exhaustion");
+
+  x.fm_finish_abort();
+  assert.equal(errno(), 0, "fm_finish_abort errno");
+  console.log("  ok: abort-replay cycle (fm_begin_abort/fm_finish_abort mirror fm_begin_replay/fm_finish_replay) + EINVAL pairing guard");
+}
+
 console.log("fork-module co-residency harness (Node/V8, live imported memory, PIC placement):");
 
 // Prime the low region with guest data BEFORE instantiating anything into it.
@@ -463,6 +520,10 @@ console.log("  ok: SENTINEL SURVIVED multi-chunk fork — module data/stack are 
 runStress(5000);
 assertSentinelIntact("after 5000-frame stress fork");
 console.log("  ok: SENTINEL SURVIVED 5000-frame stress fork — no low-memory corruption across reuse");
+
+runAbortCycle();
+assertSentinelIntact("after abort-replay cycle");
+console.log("  ok: SENTINEL SURVIVED abort-replay cycle");
 
 // ===========================================================================
 // HEADLINE: parent -> address-space copy -> child replay seeding (Phase 6 D5)

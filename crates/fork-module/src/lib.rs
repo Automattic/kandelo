@@ -1324,6 +1324,14 @@ mod wasm {
         /// is already in the Replay phase and no longer exposes its events).
         /// Empty on the parent (unwind) path.
         replay_events: Vec<ReplayEvent>,
+        /// Set by `fm_begin_abort`, asserted by `fm_finish_abort`, cleared by
+        /// `fm_finish_abort`/`fm_abort`. Abort-replay drives the exact same
+        /// frame/journal mechanics as parent replay (`begin_replay_impl`/
+        /// `finish_replay_impl` are delegated to, not duplicated); this flag
+        /// only tags the drive so a stray `fm_finish_abort` without a matching
+        /// `fm_begin_abort` is a loud `EINVAL` rather than a silent pairing
+        /// with `fm_finish_replay`'s bookkeeping.
+        in_abort: bool,
     }
 
     struct StateCell(UnsafeCell<Option<ForkModule>>);
@@ -1423,6 +1431,7 @@ mod wasm {
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
+            in_abort: false,
         };
         // One capture spans every activation: commits from all activations are
         // recorded in the single process-wide journal in interleaved order.
@@ -1464,6 +1473,7 @@ mod wasm {
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
+            in_abort: false,
         };
         module.journal.begin_capture()?;
         let arena = FrameArena::new_fixed(base, len);
@@ -1653,12 +1663,39 @@ mod wasm {
         Ok(())
     }
 
+    fn begin_abort_impl() -> Result<(), Errno> {
+        // Abort replay drives the exact same frames/journal as parent replay;
+        // the only difference is the guest export the host calls
+        // (wpk_fork_abort_begin vs wpk_fork_rewind_begin). Record the abort state
+        // so finish_abort_impl can assert the pairing is honored.
+        begin_replay_impl()?;
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        st.in_abort = true;
+        Ok(())
+    }
+
+    fn finish_abort_impl() -> Result<(), Errno> {
+        {
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            if !st.in_abort {
+                // fm_finish_abort without a matching fm_begin_abort: loud, not silent.
+                return Err(Errno::EINVAL);
+            }
+        }
+        finish_replay_impl()?;
+        if let Some(st) = state().as_mut() {
+            st.in_abort = false;
+        }
+        Ok(())
+    }
+
     /// Release every channel-mapped chunk WITHOUT requiring the replay to have
     /// finished (the abort path). Idempotent: draining leaves the allocators
     /// empty, so a later finish/abort maps nothing.
     fn abort_impl() -> Result<(), Errno> {
         if let Some(st) = state().as_mut() {
             release_fork_chunks(st);
+            st.in_abort = false;
         }
         Ok(())
     }
@@ -1896,6 +1933,7 @@ mod wasm {
             journal,
             table,
             replay_events: decoded.events,
+            in_abort: false,
         };
         Ok((module, activation_id))
     }
@@ -2862,6 +2900,25 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_finish_replay() {
         match finish_replay_impl() {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Begin an abort-replay: identical frame/journal mechanics to fm_begin_replay,
+    /// tagged so fm_finish_abort can assert the pairing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_begin_abort() {
+        match begin_abort_impl() {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Finish an abort-replay: require it was begun as an abort, then finish + release.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_finish_abort() {
+        match finish_abort_impl() {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
