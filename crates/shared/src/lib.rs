@@ -3898,7 +3898,7 @@ pub mod abi {
                 assert!(!kind.name.is_empty());
                 previous_number = kind.number;
             }
-            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_KINDS.len(), 13);
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_KINDS.len(), 14);
 
             assert_eq!(WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE, 32);
             assert_eq!(WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE, 40);
