@@ -4132,7 +4132,7 @@ export async function centralizedWorkerMain(
               `pid=${pid}: fork abort mode ${mode} does not match captured mode ${forkMode}`,
             );
           }
-          const errno = forkContinuation.abortErrno();
+          const errno = processContinuation.abortErrno();
           try {
             processContinuation.finishAbortReplay();
           } finally {
@@ -6669,7 +6669,7 @@ export async function centralizedThreadWorkerMain(
                 `match captured mode ${forkMode}`,
             );
           }
-          const errno = threadForkContinuation!.abortErrno();
+          const errno = threadProcessContinuation.abortErrno();
           try {
             threadProcessContinuation.finishAbortReplay();
           } finally {

@@ -139,8 +139,11 @@ export class ForkProcessContinuationCoordinator {
   private replayOwnership: ProcessReplayOwnership | null = null;
   // F1: the errno recorded when abort-replay began. On the module path the JS
   // `LinkedForkContinuation` is unrooted and cannot hold it, so it is stored
-  // here instead (populated on both the module and JS branches). Valid only
-  // while `phase === "abort-replay"`; cleared whenever phase resets to idle.
+  // here instead (populated on both the module and JS branches). Only cleared
+  // on the successful-finish idle resets in `finishModuleTransaction` /
+  // `finishTransaction`; a failed `beginCapture` leaves a stale value behind.
+  // `abortErrno()` guards against reading that stale value by asserting
+  // `phase === "abort-replay"` before returning it.
   #abortErrno: number | null = null;
   // Phase 6 D5 step 4b/5: when set (only by `enableModuleBacking`, only for a
   // QUALIFYING single-activation fork behind `WASM_POSIX_FORK_MODULE`), the
@@ -685,6 +688,7 @@ export class ForkProcessContinuationCoordinator {
    * "abort-replay" phase.
    */
   abortErrno(): number {
+    this.requirePhase("abort-replay", "read abort errno");
     if (this.#abortErrno === null) {
       throw new Error(`${this.label}: no abort errno recorded`);
     }
