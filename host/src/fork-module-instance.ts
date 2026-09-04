@@ -66,6 +66,13 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // Release every channel-mapped frame/image chunk on the host abort path.
   "fm_abort",
   "fm_begin_replay",
+  // F1: parent abort-replay begin/finish. Mirror `fm_begin_replay`/
+  // `fm_finish_replay` exactly (same frame/journal mechanics), tagging the
+  // drive as an abort so `fm_finish_abort` can assert a matching
+  // `fm_begin_abort` ran first (a stray call is a loud `EINVAL`, not a
+  // silent no-op).
+  "fm_begin_abort",
+  "fm_finish_abort",
   "fm_begin_child_replay",
   // Phase 6 item 4: seed a vfork BORROWED child's replay from the parked
   // parent's LIVE shared memory (its own instance at a distinct __memory_base),

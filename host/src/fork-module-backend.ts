@@ -386,6 +386,17 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Parent abort-replay: begin (mirror of `beginParentReplay`, abort-tagged).
+   * Drives the exact same frame/journal mechanics as `beginParentReplay` —
+   * the module records the drive as an abort internally so `finishAbort` can
+   * assert the pairing (F1).
+   */
+  beginAbort(): void {
+    this.exports.fm_begin_abort();
+    this.requireOk("fm_begin_abort");
+  }
+
+  /**
    * Child: seed replay from the copied guest memory (Option B). `root` is the
    * inherited continuation anchor (the parent's module buffer at the same guest
    * offset); `imagePtr`/`imageLen` come from the inherited `JournalImage` KFMS
@@ -648,6 +659,18 @@ export class ForkModuleContinuationBackend {
   finishReplay(): void {
     this.exports.fm_finish_replay();
     this.requireOk("fm_finish_replay");
+    this.unwindActive = false;
+    this.moduleBuffer = 0;
+  }
+
+  /**
+   * Finish an abort-replay (mirror of `finishReplay`). A stray call without a
+   * matching `beginAbort()` is a loud throw (`requireOk` surfaces the
+   * module's `EINVAL` pairing guard), never a silent no-op (F1).
+   */
+  finishAbort(): void {
+    this.exports.fm_finish_abort();
+    this.requireOk("fm_finish_abort");
     this.unwindActive = false;
     this.moduleBuffer = 0;
   }
