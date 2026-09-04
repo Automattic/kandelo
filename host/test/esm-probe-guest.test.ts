@@ -71,6 +71,13 @@ const FIXTURES: Record<string, string> = {
   "counter.js": 'let n=0;export function inc(){return ++n;}',
   "maindedup.cjs":
     '(async()=>{try{const a=require("/app/counter.js");const b=await import("/app/counter.js");console.log("DEDUP",a.inc(),b.inc(),a===b);}catch(e){console.log("DEDUPERR",(e&&e.message)||e);}})();',
+  // Reverse order: import() first, THEN require() the same path. This is the
+  // dominant real ordering (import() is the common route, require(esm) rare),
+  // so lock the symmetry — both directions must hit the one native-registry
+  // instance (shared counter, a===b), not just require-then-import.
+  "counter2.js": 'let n=0;export function inc(){return ++n;}',
+  "maindedup2.cjs":
+    '(async()=>{try{const b=await import("/app/counter2.js");const a=require("/app/counter2.js");console.log("DEDUPREV",b.inc(),a.inc(),a===b);}catch(e){console.log("DEDUPREVERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -220,5 +227,12 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("DEDUP OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("DEDUP 1 2 true");
+  }, 90_000);
+
+  it.runIf(ready)("import() then require() of the same path share one instance", async () => {
+    const r = await runOne("/app/maindedup2.cjs");
+    // eslint-disable-next-line no-console
+    console.log("DEDUPREV OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("DEDUPREV 1 2 true");
   }, 90_000);
 });
