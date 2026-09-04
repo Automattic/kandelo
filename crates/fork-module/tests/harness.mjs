@@ -102,19 +102,16 @@ for (const need of [
 // DECLARES the `wpk_fork_host.*` imports (see src/host_capabilities.rs). Assert
 // the whole seam is exposed so the artifact carries the eventual host API
 // surface, even though this harness — which exercises only the reference-free
-// frame/continuation path — never calls them.
+// frame/continuation path — never calls them. Item 5 (funcref/static-root/
+// ref-global-install are wasm `table.get`/`table.set`, not host calls) and M2
+// (begin_generation/resolve_externref/transit_publish/transit_read/
+// release_generation collapsed into the injected binder calling the single
+// residual `resolve_externref` import directly) shrank this list; see the
+// NOTE on the extern block in `src/host_capabilities.rs`.
 for (const need of [
-  "wpk_fork_host.host_begin_generation",
-  "wpk_fork_host.host_resolve_externref",
-  "wpk_fork_host.host_resolve_funcref",
-  "wpk_fork_host.host_resolve_static_root",
-  "wpk_fork_host.host_install_reference_global",
-  "wpk_fork_host.host_transit_publish",
-  "wpk_fork_host.host_transit_read",
   "wpk_fork_host.host_mint_exception_tag",
   "wpk_fork_host.host_provide_unwind_transport_tag",
   "wpk_fork_host.host_recognize_unwind_transport",
-  "wpk_fork_host.host_release_generation",
   "wpk_fork_host.host_last_errno",
 ]) {
   assert.ok(imports.includes(need), `module must import ${need}, got ${imports}`);
@@ -141,6 +138,9 @@ for (const name of [
   "fm_references_reconstructed",
   // Phase 6 D6.2 externref reconstruction proof-of-use + the seam anchor.
   "fm_externrefs_resolved",
+  // M2: the injected binder's helper for the externref recipe -> broker handle
+  // lookup (mirrors fm_funcref_ordinal/fm_static_root_slot).
+  "fm_externref_handle",
   // Phase 6 D6.3a exnref reconstruction proof-of-use counter.
   "fm_exnrefs_reconstructed",
   // Phase 6 D6.4a typed-GC (struct/array/i31) reconstruction proof-of-use counter.
@@ -150,60 +150,33 @@ for (const name of [
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
 
-// REAL (not inert) engine-floor host-capability bodies (Phase 6 D6.2). The
-// frame/continuation path under test never calls these, but the
-// `fm_host_capabilities_probe` retention anchor drives the WHOLE seam once, so
-// give it functioning bodies backed by a JS token map + a fake anyref transit.
-// This proves, in a real engine, that the module's `WpkForkHost` routes the
-// seam's opaque `u32` ordinals across the import boundary end to end. Every
-// handle-returning body returns a NON-ZERO ordinal (0 == failure); status
-// bodies return 0 (success). `hostCalls` records that the drive actually
-// invoked resolve/publish.
-const hostCalls = { resolveExternref: 0, transitPublish: 0, transitRead: 0 };
-const hostState = {
-  nextRef: 0,
-  tokens: new Map(), // ordinal -> broker handle (proxy for the real externref)
-  transit: new Map(), // slot -> ordinal
-  nextTag: 0,
-  generation: 0,
-};
+// REAL (not inert) engine-floor host-capability bodies. The frame/continuation
+// path under test never calls these, but the `fm_host_capabilities_probe`
+// retention anchor drives the WHOLE (post-M2, shrunk) seam once, so give it
+// functioning bodies. This proves, in a real engine, that the module's
+// `WpkForkHost` routes the seam's opaque `u32` ordinals across the import
+// boundary end to end. Every handle-returning body returns a NON-ZERO ordinal
+// (0 == failure). `hostCalls` records that the drive actually invoked the
+// tag/lifecycle imports (M2 retired resolve_externref/transit_publish/
+// transit_read/begin_generation/release_generation from this Rust seam — the
+// injected binder calls the single residual `resolve_externref` import
+// directly, validated in Task 3/6, not here).
+const hostCalls = { mintExceptionTag: 0, provideUnwindTransportTag: 0, recognizeUnwindTransport: 0 };
+const hostState = { nextTag: 0 };
 const forkHostStubs = {
-  host_begin_generation: (_pid) => {
-    hostState.generation += 1;
-    return hostState.generation;
-  },
-  host_resolve_externref: (_generation, brokerHandle) => {
-    hostCalls.resolveExternref += 1;
-    hostState.nextRef += 1;
-    hostState.tokens.set(hostState.nextRef, brokerHandle);
-    return hostState.nextRef;
-  },
-  host_resolve_funcref: (_activation, _ordinal) => {
-    hostState.nextRef += 1;
-    return hostState.nextRef;
-  },
-  host_resolve_static_root: (_activation, _ordinal) => {
-    hostState.nextRef += 1;
-    return hostState.nextRef;
-  },
-  host_install_reference_global: () => 0,
-  host_transit_publish: (_generation, slot, value) => {
-    hostCalls.transitPublish += 1;
-    hostState.transit.set(slot, value);
-    return 0;
-  },
-  host_transit_read: (_generation, slot) => {
-    hostCalls.transitRead += 1;
-    // Fake transit: hand back exactly what was published (identity preserved).
-    return hostState.transit.get(slot) ?? 0;
-  },
   host_mint_exception_tag: () => {
+    hostCalls.mintExceptionTag += 1;
     hostState.nextTag += 1;
     return hostState.nextTag;
   },
-  host_provide_unwind_transport_tag: () => 0xffffffff,
-  host_recognize_unwind_transport: () => 1,
-  host_release_generation: () => 0,
+  host_provide_unwind_transport_tag: () => {
+    hostCalls.provideUnwindTransportTag += 1;
+    return 0xffffffff;
+  },
+  host_recognize_unwind_transport: () => {
+    hostCalls.recognizeUnwindTransport += 1;
+    return 1;
+  },
   host_instantiate_child: () => 1,
   host_spawn_thread: () => 1,
   host_last_errno: () => 0,
@@ -228,22 +201,45 @@ const writeU32 = (off, val) => view().setUint32(off, val >>> 0, true);
 const readByte = (off) => u8()[off];
 const errno = () => x.fm_last_errno();
 
-// -- Phase 6 D6.2: drive the engine-floor seam end to end via the anchor -------
+// -- Drive the (post-M2, shrunk) engine-floor seam end to end via the anchor ---
 //
-// `fm_host_capabilities_probe` exercises every `WpkForkHost` method once. With
-// the REAL host bodies above (token map + fake transit), driving it proves the
-// module routes the seam across the wasm→JS import boundary and that
-// resolve_externref + transit_publish were actually invoked (not optimized out).
+// `fm_host_capabilities_probe` exercises every remaining `WpkForkHost` method
+// once (mint/provide/recognize the exception + unwind-transport tags, plus the
+// lifecycle instantiate/spawn pair). With the REAL host bodies above, driving
+// it proves the module routes the seam across the wasm→JS import boundary end
+// to end (not optimized out).
 {
   const acc = x.fm_host_capabilities_probe(0x1234);
   assert.equal(typeof acc, "bigint", "probe returns an i64");
-  assert.ok(hostCalls.resolveExternref > 0, "seam drove host_resolve_externref");
-  assert.ok(hostCalls.transitPublish > 0, "seam drove host_transit_publish");
-  assert.ok(hostCalls.transitRead > 0, "seam drove host_transit_read");
+  assert.ok(hostCalls.mintExceptionTag > 0, "seam drove host_mint_exception_tag");
+  assert.ok(hostCalls.provideUnwindTransportTag > 0, "seam drove host_provide_unwind_transport_tag");
+  assert.ok(hostCalls.recognizeUnwindTransport > 0, "seam drove host_recognize_unwind_transport");
   console.log(
-    `  ok: engine-floor seam driven — resolve_externref x${hostCalls.resolveExternref}, `
-      + `transit_publish x${hostCalls.transitPublish}, transit_read x${hostCalls.transitRead}`,
+    `  ok: engine-floor seam driven — mint_exception_tag x${hostCalls.mintExceptionTag}, `
+      + `provide_unwind_transport_tag x${hostCalls.provideUnwindTransportTag}, `
+      + `recognize_unwind_transport x${hostCalls.recognizeUnwindTransport}`,
   );
+}
+
+// -- M2: fm_externref_handle traps outside a seeded reference replay -----------
+//
+// `fm_externref_handle` is the helper the INJECTED binder (Task 3) calls to get
+// the broker handle for an externref recipe, keyed off the reference-replay
+// driver `fm_begin_reference_replay` seeds. This harness never seeds one (it
+// exercises only the reference-free frame/continuation path), so calling it
+// must TRAP (`wasm_intr::unreachable`) rather than silently return a value —
+// the same truthful-corruption contract `fm_funcref_ordinal`/
+// `fm_static_root_slot` uphold. The full recipe -> captured-handle round trip
+// (a real KFMS arena with an Externref node) is validated end to end via the
+// injected binder + the production TS encoder in
+// `host/test/fork-module-externref-replay.test.ts` (Task 6), not here.
+{
+  assert.throws(
+    () => x.fm_externref_handle(0),
+    /unreachable/i,
+    "fm_externref_handle traps with no reference state seeded",
+  );
+  console.log("  ok: fm_externref_handle traps outside a seeded reference replay (no silent value)");
 }
 
 // -- Phase 6 D6.3a: the exnref proof-of-use counter is present and inert here --

@@ -144,12 +144,10 @@ mod wasm {
         decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
         drive_plan, encode_replay_events, ChunkAllocator,
         LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
-        ReferenceReplayDriver, ReferenceReplayFeed, ReferenceTransactionRecord, ReplayEvent,
-        ReplayEventJournal, ResumeSlotTable, RewindDriver,
+        ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed, ReferenceTransactionRecord,
+        ReplayEvent, ReplayEventJournal, ResumeSlotTable, RewindDriver,
     };
     use wasm_posix_shared::{abi, channel, mmap, ChannelStatus, Errno, Syscall};
-
-    use crate::host_capabilities::WpkForkHost;
 
     // The wasm memory/trap intrinsics live in an arch-specific module. Alias the
     // correct one so the same code builds for a wasm32 (`pointer_width = 4`) and
@@ -668,8 +666,11 @@ mod wasm {
     /// `fork_codec::build_drive_plan` over the resident driver's decoded reference
     /// graph, with `GcCodecHints` supplying the per-recipe GC-layout facts from the
     /// seeded per-activation catalogs. Requires `fm_begin_reference_replay` to have
-    /// seeded the driver (its `drive_reconstruction` opened the host generation and
-    /// transit-rooted the reachable externref leaves the guest fill reads).
+    /// seeded the driver. Since M2 the externref-transit rooting for reachable
+    /// leaves is a `DRIVE_OP_EXTERNREF_TRANSIT` step THIS function's
+    /// `build_drive_plan` call emits (Phase 0, before any allocate/fill) — not
+    /// something `drive_reconstruction` does at seed time; `drive_reconstruction`
+    /// is now a host-free bookkeeping pass (see its doc).
     ///
     /// The post-allocate integrity guard the injected `fm_drive_execute` shim runs
     /// after each ALLOC step reads STORE #2 — the guest's shared Wasm-GC transit
@@ -758,13 +759,17 @@ mod wasm {
     // advanced; a silent JS fallback leaves it unchanged. Never resets.
     static REFERENCES_RECONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 
-    // Monotonic count of externrefs the module has re-rooted through the
-    // `wpk_fork_host` engine-floor seam since worker start (Phase 6 D6.2).
-    // Proof-of-use mirror of `REFERENCES_RECONSTRUCTED` for the externref path:
-    // `fm_begin_reference_replay` drives `resolve_externref` once per externref
-    // node and bumps this by that count; a silent JS fallback (the module was
-    // never asked to drive the reference reconstruction) leaves it unchanged.
-    // Never resets.
+    // Monotonic count of externrefs this fork's graph reconstructs since worker
+    // start (Phase 6 D6.2, host seam retired M2). Proof-of-use mirror of
+    // `REFERENCES_RECONSTRUCTED` for the externref path: `fm_begin_reference_
+    // replay` bumps this by `drive_reconstruction`'s graph-derived externref-node
+    // count — the GRAPH'S expectation of how many externrefs get resolved, not a
+    // live host round trip (since M2 no Rust `wpk_fork_host` seam performs that
+    // resolve/publish; it is injected wasm: a directly held externref decodes
+    // lazily via `__wpk_fork_ref_decode_externref`, and a GC/exnref-reachable one
+    // is resolved+published by a `DRIVE_OP_EXTERNREF_TRANSIT` step through
+    // `fm_externref_handle`). A silent JS fallback (the module was never asked to
+    // drive the reference reconstruction) leaves this unchanged. Never resets.
     static EXTERNREFS_RESOLVED: AtomicU64 = AtomicU64::new(0);
 
     // Monotonic count of exnref nodes the module has admitted and driven through
@@ -800,12 +805,12 @@ mod wasm {
     // `publishTransit` fallback — republished the immutable roots. Never resets.
     static STATIC_ROOTS_PUBLISHED: AtomicU64 = AtomicU64::new(0);
 
-    // The host identities the last `fm_begin_reference_replay` drive re-rooted
-    // for this fork (the externref `HostRef`s + their owning generation). Held
-    // alongside `REFERENCE_STATE` so the once-per-value roots outlive the drive:
-    // the still-JS `__wpk_fork_ref_decode_externref` import returns the value the
-    // module caused the host to resolve, and fork teardown releases the
-    // generation. Independent of the frame `ForkModule` lifecycle.
+    // The bookkeeping result of the last `fm_begin_reference_replay` drive for
+    // this fork. Since M2 `ReconstructionState` carries NO host identities and NO
+    // host generation (that seam retired — see its doc): it is just the
+    // graph-derived externref count already folded into `EXTERNREFS_RESOLVED`.
+    // Held alongside `REFERENCE_STATE`, independent of the frame `ForkModule`
+    // lifecycle, as a diagnostic anchor for the last drive.
     struct ReconstructionStateCell(UnsafeCell<Option<ReconstructionState>>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ReconstructionStateCell {}
@@ -2136,7 +2141,11 @@ mod wasm {
     /// than one activation, is a truthful `EOPNOTSUPP` — the host predicate keeps
     /// such a fork on the JS path, and this re-check means a disagreeing host can
     /// never drive an unsupported reference through the funcref import.
-    fn begin_reference_replay_impl(module_state_root: u64, pid: u32) -> Result<(), Errno> {
+    // `pid` (the child process image) is retained in the export signature for the
+    // host call site's contract, but M2 no longer opens a host root generation
+    // scoped by it — the externref host seam retired (see `ReconstructionState`'s
+    // doc) — so it is unused inside this impl.
+    fn begin_reference_replay_impl(module_state_root: u64, _pid: u32) -> Result<(), Errno> {
         // The pointer width was seeded once (with the linked-frame format) via
         // `fm_set_format`; the module-state chunk header size derives from it.
         let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
@@ -2198,12 +2207,16 @@ mod wasm {
         // `_gc_fill` exports; the PROVEN JS drive-order (reproduced by
         // `build_drive_plan`) keeps the topological allocate/fill walk plus
         // cycle-breaking and aliases. The module's only GC job is leaf identity +
-        // transit rooting — PHASE B roots every struct/array-reachable externref
-        // leaf (`transit_rooted_recipes` seeds from Struct/Array edges) with the R1
-        // read-back assert, and i31 is a scalar leaf. A static-root is published
-        // into the anyref transit by a DRIVE_OP_STATIC_ROOT step (`table.get`
-        // catalog + `table.set` transit, both wasm) — no host seam. An unadmitted
-        // kind is a truthful `EOPNOTSUPP` that keeps the fork on the JS path.
+        // transit rooting — a `DRIVE_OP_EXTERNREF_TRANSIT` step (`fm_build_gc_plan`
+        // / `build_drive_plan`, Phase 0) roots every struct/array-reachable
+        // externref leaf (`transit_rooted_recipes` seeds from Struct/Array edges)
+        // with the non-null R1 assert, both wasm (`fm_externref_handle` +
+        // `resolve_externref` + `any.convert_extern` + `table.set`, injected in
+        // Task 3) — no host seam beyond the single `resolve_externref` import, and
+        // i31 is a scalar leaf. A static-root is published into the anyref transit
+        // by a DRIVE_OP_STATIC_ROOT step (`table.get` catalog + `table.set`
+        // transit, both wasm) — no host seam. An unadmitted kind is a truthful
+        // `EOPNOTSUPP` that keeps the fork on the JS path.
         if !driver.all_nodes_module_admissible() {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -2236,15 +2249,18 @@ mod wasm {
             }
         }
 
-        // Drive the once-per-value host reconstruction: obtain each externref's
-        // durable host identity through the `wpk_fork_host` seam (PHASE A) and
-        // root the transit-reachable ones (PHASE B). The MODULE owns the order;
-        // the HOST owns identity behind opaque `u32` ordinals — no live reference
-        // crosses into the module. A funcref/null graph opens no host generation
-        // and never consults the (possibly inert) host, preserving the D6.1 path.
-        // The still-JS `__wpk_fork_ref_decode_externref` import then returns the
-        // value the module caused the host to resolve.
-        let reconstruction = driver.drive_reconstruction(&mut WpkForkHost, pid)?;
+        // Bookkeeping pass (M2): count the externref nodes this fork's graph
+        // reconstructs. This is now a host-free pass over the decoded graph — it
+        // calls no `wpk_fork_host` import and opens no host generation (that seam
+        // retired; see `ReconstructionState`'s doc). The actual resolve + transit
+        // publish happen later, in injected wasm: a directly held externref is
+        // decoded lazily by the guest import `__wpk_fork_ref_decode_externref`
+        // (calling the single residual host import `resolve_externref` directly),
+        // and a GC/exnref-reachable externref is published into the anyref
+        // transit by a `DRIVE_OP_EXTERNREF_TRANSIT` drive step (via
+        // `fm_externref_handle`), both driven by the injected `fm_drive_execute`
+        // shim (Task 3), not by this function.
+        let reconstruction = driver.drive_reconstruction()?;
         EXTERNREFS_RESOLVED.fetch_add(reconstruction.reconstructed() as u64, Ordering::Relaxed);
         // D6.3a proof-of-use: the drive's Exnref arm is inert (the guest export
         // materializes the exception), so count the admitted exnref nodes here.
@@ -2478,6 +2494,49 @@ mod wasm {
             }
             // A global slot that does not fit a non-negative i32 cannot index the
             // imported anyref catalog table — a corrupt graph, not a value.
+            _ => wasm_intr::unreachable(),
+        }
+    }
+
+    /// Resolve an externref recipe id to its captured broker handle (M2 — the
+    /// externref host seam shrunk to a single `resolve_externref(handle) ->
+    /// externref` import). This is NOT a guest-facing import: it is the helper
+    /// the injected `fm_drive_execute` shim calls on a DRIVE_OP_EXTERNREF_TRANSIT
+    /// step (and the injected `__wpk_fork_ref_decode_externref` export calls for a
+    /// directly held externref) to get the `u32` handle it passes to the host
+    /// `resolve_externref` import — a Rust function cannot itself return an
+    /// `externref`, exactly why `fm_funcref_ordinal`/`fm_static_root_slot` hand
+    /// back an index rather than a `funcref`/`anyref`. Returns the recipe's
+    /// captured broker handle (the same handle a live host-import adapter minted
+    /// into the broker before the fork) and TRAPS on any inconsistency (missing
+    /// reference state, out-of-range recipe, a non-externref kind, or a handle
+    /// that does not fit a non-negative `i32`) — the host gate should have kept an
+    /// unadmitted/corrupt graph off the module path, so reaching here is
+    /// corruption, never a value the shim should resolve. Mirrors
+    /// `funcref_ordinal_impl`/`static_root_slot_impl`.
+    fn externref_handle_impl(recipe_id: u32) -> i32 {
+        let driver = match reference_state().as_ref() {
+            Some(driver) => driver,
+            None => wasm_intr::unreachable(),
+        };
+        let entry = match driver.transaction().nodes.get(recipe_id as usize) {
+            // The decoder guarantees canonical id == index; assert it so a corrupt
+            // graph reaching here is a loud failure, not a silent mis-resolution.
+            Some(entry) if entry.id == recipe_id => entry,
+            _ => wasm_intr::unreachable(),
+        };
+        let handle = match entry.node {
+            ReferenceRecipeNode::Externref { handle } => handle,
+            // Out-of-range recipe or a non-externref kind: the host gate should
+            // have kept this off the externref-transit step, so reaching here is
+            // corruption, never a value.
+            _ => wasm_intr::unreachable(),
+        };
+        match i32::try_from(handle) {
+            Ok(value) if value >= 0 => value,
+            // A handle that does not fit a non-negative i32 cannot cross the
+            // `resolve_externref` import boundary as this ABI defines it — a
+            // corrupt graph, not a value.
             _ => wasm_intr::unreachable(),
         }
     }
@@ -3107,20 +3166,24 @@ mod wasm {
     }
 
     /// Seed the reference graph for this fork from the KFMS module-state arena
-    /// rooted at `module_state_root` and drive its once-per-value host
-    /// reconstruction (Phase 6 D6.2, widened from D6.1). The host calls this once
-    /// on a qualifying fork whose graph is null / funcref / externref only, after
-    /// `fm_begin_child_replay`, before the guest rewind reconstructs references.
-    /// `pid` names the child process image; it opens the host root generation
-    /// (`begin_generation`) that owns the re-rooted externref identities.
+    /// rooted at `module_state_root` and run its bookkeeping reconstruction pass
+    /// (Phase 6 D6.2, widened from D6.1). The host calls this once on a qualifying
+    /// fork after `fm_begin_child_replay`, before the guest rewind reconstructs
+    /// references. `pid` names the child process image; retained in this export's
+    /// signature for the host call site, but unused since M2 — the reconstruction
+    /// no longer opens a host root generation (that seam retired, see
+    /// `ReconstructionState`'s doc).
     ///
-    /// On success the module has already driven `resolve_externref` (+ any
-    /// transit rooting) through the `wpk_fork_host` seam, the guest's
-    /// `__wpk_fork_ref_decode_funcref` is served by this module, and the still-JS
-    /// `__wpk_fork_ref_decode_externref` returns the value the module resolved.
-    /// Failure (check `fm_last_errno`: `EOPNOTSUPP` for an unadmitted kind,
-    /// `EINVAL` for a malformed arena or a lost transit identity) means the host
-    /// must keep the byte-identical JS reference path for this fork.
+    /// On success the guest's `__wpk_fork_ref_decode_funcref` is served by this
+    /// module; a directly held externref is decoded lazily by the guest import
+    /// `__wpk_fork_ref_decode_externref` (calling the single residual host import
+    /// `resolve_externref` directly, injected in Task 3), and a GC/exnref-reachable
+    /// externref is published into the anyref transit by a
+    /// `DRIVE_OP_EXTERNREF_TRANSIT` drive step (via `fm_externref_handle`) when
+    /// `fm_drive_execute` runs the plan `fm_build_gc_plan` built. Failure (check
+    /// `fm_last_errno`: `EOPNOTSUPP` for an unadmitted kind, `EINVAL` for a
+    /// malformed arena) means the host must keep the byte-identical JS reference
+    /// path for this fork.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_begin_reference_replay(module_state_root: usize, pid: u32) {
         match begin_reference_replay_impl(module_state_root as u64, pid) {
@@ -3151,6 +3214,21 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_static_root_slot(recipe_id: u32) -> i32 {
         static_root_slot_impl(recipe_id)
+    }
+
+    /// Resolve an externref recipe id to its captured broker handle (M2 — the
+    /// externref host seam). This is NOT a guest-facing import: it is the helper
+    /// the injected binder calls to get the `u32` handle it passes to the single
+    /// residual host import `resolve_externref(handle) -> externref` (an
+    /// `externref` a Rust function cannot itself return), either directly for the
+    /// injected `__wpk_fork_ref_decode_externref` export (a lazily decoded,
+    /// directly held externref) or on a DRIVE_OP_EXTERNREF_TRANSIT step before
+    /// `any.convert_extern` + `table.set`-ing the result into the anyref transit
+    /// at slot `recipe + 1`. Returns a non-negative broker handle and TRAPS on any
+    /// inconsistency. See `externref_handle_impl`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_externref_handle(recipe_id: u32) -> i32 {
+        externref_handle_impl(recipe_id)
     }
 
     // -- Reference RESTORE data-feed exports (Phase 6 item 3a) ---------------
