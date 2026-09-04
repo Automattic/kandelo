@@ -31,8 +31,10 @@
 //! import it reads.
 
 use anyhow::{anyhow, bail, Context, Result};
-use walrus::ir::{BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
-use walrus::{ExportItem, FunctionBuilder, Module, RefType, ValType};
+use walrus::ir::{AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
+use walrus::{
+    ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
+};
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
 //
@@ -105,6 +107,13 @@ const DRIVE_OP_ALLOC: i32 = 0;
 /// op == publish an immutable static root into the anyref transit (the
 /// static-root binder). MUST match `fork_codec::drive_plan::DRIVE_OP_STATIC_ROOT`.
 const DRIVE_OP_STATIC_ROOT: i32 = 3;
+/// op == materialize + publish a GC/exnref-reachable externref into the anyref
+/// transit at slot `recipe + 1` (the externref binder — M2). Like
+/// DRIVE_OP_STATIC_ROOT it drives NO guest export: the injected shim resolves the
+/// externref through the residual `env.resolve_externref` host import, internalizes
+/// it with `any.convert_extern`, and `table.set`s it into the transit. MUST match
+/// `fork_codec::drive_plan::DRIVE_OP_EXTERNREF_TRANSIT`.
+const DRIVE_OP_EXTERNREF_TRANSIT: i32 = 4;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
 /// ordinal (or the null sentinel). Exported by `crates/fork-module/src/lib.rs`.
@@ -124,6 +133,27 @@ const IMPORT_MODULE: &str = "env";
 /// The `NULL_ORDINAL` sentinel `fm_funcref_ordinal` returns for a Null recipe;
 /// must stay in sync with `crates/fork-module/src/lib.rs`.
 const NULL_ORDINAL: i32 = -1;
+
+/// The single residual externref host import (M2). `resolve_externref(handle:i32)
+/// -> externref` materializes a captured broker handle into its canonical host
+/// token. It is reference-RETURNING, so Rust cannot declare or call it — both the
+/// injected `__wpk_fork_ref_decode_externref` export and the
+/// DRIVE_OP_EXTERNREF_TRANSIT branch of `fm_drive_execute` call it from wasm. The
+/// host materialize cache is idempotent, so a direct per-reference resolve yields
+/// the same canonical token every time (identity at the source, not by compare).
+const RESOLVE_EXTERNREF_IMPORT: &str = "resolve_externref";
+
+/// The Rust helper the injected binder calls to map an externref recipe id to its
+/// captured broker `handle` (`i32`), which it then feeds to `resolve_externref`.
+/// Exported by `crates/fork-module/src/lib.rs`; traps on any inconsistency.
+const EXTERNREF_HANDLE_HELPER_EXPORT: &str = "fm_externref_handle";
+
+/// The frozen guest import this tool makes the module export (see
+/// `host/src/generated/abi.ts` `WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF`). Its
+/// body is a DIRECT `resolve_externref(fm_externref_handle(recipe))` — no table,
+/// no null branch: a valid recipe always resolves to the canonical token and the
+/// helper traps on any inconsistency.
+const DECODE_EXTERNREF_EXPORT: &str = "__wpk_fork_ref_decode_externref";
 
 fn inject(module: &mut Module) -> Result<()> {
     // Idempotency / sanity: never double-inject.
@@ -186,6 +216,98 @@ fn inject(module: &mut Module) -> Result<()> {
     }
     let shim = builder.finish(vec![recipe], &mut module.funcs);
     module.exports.add(DECODE_FUNCREF_EXPORT, shim);
+    Ok(())
+}
+
+/// Find or add the single residual externref host import
+/// `env.resolve_externref(handle:i32) -> externref`. Both injection sites — the
+/// `__wpk_fork_ref_decode_externref` decode export and the
+/// DRIVE_OP_EXTERNREF_TRANSIT branch of `fm_drive_execute` — call it, so this
+/// find-or-add (mirroring `fork-instrument/src/legacy_dlopen.rs`) keeps the two
+/// passes order-independent and declares the import exactly once. Rust cannot
+/// declare a reference-returning import, which is exactly why it lives here.
+fn import_resolve_externref(module: &mut Module) -> FunctionId {
+    let params = [ValType::I32];
+    let results = [ValType::Ref(RefType::EXTERNREF)];
+    if let Some(function) = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != RESOLVE_EXTERNREF_IMPORT {
+            return None;
+        }
+        let ImportKind::Function(function) = import.kind else {
+            return None;
+        };
+        let signature = module.types.get(module.funcs.get(function).ty());
+        (signature.params() == params && signature.results() == results).then_some(function)
+    }) {
+        return function;
+    }
+    let ty = module.types.add(&params, &results);
+    module.add_import_func(IMPORT_MODULE, RESOLVE_EXTERNREF_IMPORT, ty).0
+}
+
+/// Inject the fork-module's `__wpk_fork_ref_decode_externref` export (M2).
+///
+/// The frozen guest import `__wpk_fork_ref_decode_externref(recipeId) ->
+/// externref` must RETURN a real `externref`. A WebAssembly module can only
+/// produce one by reading an imported externref `table` or by CALLING an import
+/// whose result is `externref` — it cannot fabricate one from an integer. Rust
+/// has no `externref` type, so the fork-module (a Rust cdylib) cannot itself
+/// export this function.
+///
+/// This shim closes that gap. Unlike the funcref decode (which `table.get`s a
+/// catalog), the externref decode is a DIRECT call chain — the design ruling
+/// removed the module-owned extern table because the host materialize cache is
+/// idempotent, so resolving per reference always yields the same canonical token:
+///
+/// ```wat
+/// (func (export "__wpk_fork_ref_decode_externref") (param $recipe i32) (result externref)
+///   (call $resolve_externref (call $fm_externref_handle (local.get $recipe))))
+/// ```
+///
+/// The real work — decoding the reference graph, mapping a recipe to a captured
+/// broker handle, admitting only externref/null, trapping on corruption — lives
+/// in the module's Rust `fm_externref_handle` helper; this tool only adds the
+/// externref-returning wrapper Rust cannot express and the residual
+/// `env.resolve_externref` import it calls.
+fn inject_decode_externref(module: &mut Module) -> Result<()> {
+    // Idempotency / sanity: never double-inject.
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == DECODE_EXTERNREF_EXPORT)
+    {
+        bail!("module already exports {DECODE_EXTERNREF_EXPORT}");
+    }
+
+    // Locate the Rust helper export the shim will call to map a recipe to its
+    // captured broker handle.
+    let helper = module
+        .exports
+        .iter()
+        .find(|export| export.name == EXTERNREF_HANDLE_HELPER_EXPORT)
+        .ok_or_else(|| anyhow!("module does not export {EXTERNREF_HANDLE_HELPER_EXPORT}"))?;
+    let helper_fn = match helper.item {
+        ExportItem::Function(id) => id,
+        _ => bail!("{EXTERNREF_HANDLE_HELPER_EXPORT} export is not a function"),
+    };
+
+    // The single residual externref host import (find-or-add; the drive-execute
+    // pass shares it).
+    let resolve_fn = import_resolve_externref(module);
+
+    // Build `(i32) -> externref`.
+    let externref = ValType::Ref(RefType::EXTERNREF);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[externref]);
+    let recipe = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        // resolve_externref(fm_externref_handle(recipe)): DIRECT, no table, no
+        // null branch — a valid recipe resolves to the canonical token and the
+        // helper traps on any inconsistency.
+        body.local_get(recipe).call(helper_fn).call(resolve_fn);
+    }
+    let shim = builder.finish(vec![recipe], &mut module.funcs);
+    module.exports.add(DECODE_EXTERNREF_EXPORT, shim);
     Ok(())
 }
 
@@ -265,6 +387,24 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
         ExportItem::Function(id) => id,
         _ => bail!("{STATIC_ROOT_SLOT_HELPER_EXPORT} export is not a function"),
     };
+
+    // Locate the Rust externref-handle helper the shim `call`s on a
+    // DRIVE_OP_EXTERNREF_TRANSIT step to map a recipe to its captured broker
+    // handle. Rust owns the recipe decode; the injected shim owns the
+    // `resolve_externref` call + `any.convert_extern` + `table.set` a Rust
+    // externref/anyref cannot hold.
+    let externref_helper = module
+        .exports
+        .iter()
+        .find(|export| export.name == EXTERNREF_HANDLE_HELPER_EXPORT)
+        .ok_or_else(|| anyhow!("module does not export {EXTERNREF_HANDLE_HELPER_EXPORT}"))?;
+    let externref_helper_fn = match externref_helper.item {
+        ExportItem::Function(id) => id,
+        _ => bail!("{EXTERNREF_HANDLE_HELPER_EXPORT} export is not a function"),
+    };
+    // The single residual externref host import (find-or-add; shared with the
+    // decode-export pass).
+    let resolve_externref_fn = import_resolve_externref(module);
 
     // The guest's single (imported) linear memory the plan bytes live in.
     let memory = module
@@ -418,10 +558,77 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                             .local_get(sr_val)
                             .table_set(transit_table);
                     },
-                    // Non-static-root: call_indirect guest[slot](arg), then (if
-                    // ALLOC) assert the guest published a live GC object into STORE
-                    // #2 at slot `recipe + 1`.
-                    |drive| {
+                    // Non-static-root: either a DRIVE_OP_EXTERNREF_TRANSIT publish
+                    // (op 4 — the externref binder, which also drives NO guest
+                    // export) or a real guest-export drive via `call_indirect`.
+                    //   if op == DRIVE_OP_EXTERNREF_TRANSIT { externref publish }
+                    //   else { call_indirect; if op == ALLOC { store-#2 assert } }
+                    |other| {
+                        other
+                            .local_get(op)
+                            .i32_const(DRIVE_OP_EXTERNREF_TRANSIT)
+                            .binop(BinaryOp::I32Eq);
+                        other.if_else(
+                            None,
+                            // EXTERNREF_TRANSIT: materialize the externref through the
+                            // residual `resolve_externref` host import, internalize it
+                            // with `any.convert_extern`, and publish it into the anyref
+                            // transit at slot `recipe + 1`.
+                            //   table.set(transit, recipe + 1,
+                            //     any.convert_extern(
+                            //       resolve_externref(fm_externref_handle(recipe))))
+                            //   if (ref.is_null (table.get transit recipe+1)) unreachable
+                            // Identity is guaranteed at the SOURCE (idempotent host
+                            // materialize); this NON-NULL check only verifies the slot
+                            // survived (the M2 R1 guard — an internalized externref is
+                            // not `ref.eq`-comparable on any engine).
+                            |ext| {
+                                // Push the transit index (recipe + 1) first...
+                                ext.local_get(step)
+                                    .load(
+                                        memory,
+                                        LoadKind::I32 { atomic: false },
+                                        MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
+                                    )
+                                    .i32_const(1)
+                                    .binop(BinaryOp::I32Add)
+                                    // ...then the value: internalize the resolved
+                                    // externref into an anyref for the transit table.
+                                    .local_get(step)
+                                    .load(
+                                        memory,
+                                        LoadKind::I32 { atomic: false },
+                                        MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
+                                    )
+                                    .call(externref_helper_fn)
+                                    .call(resolve_externref_fn)
+                                    .instr(AnyConvertExtern {})
+                                    .table_set(transit_table);
+                                // NON-NULL structural check: read the slot back and
+                                // trap if the publish did not survive.
+                                ext.local_get(step)
+                                    .load(
+                                        memory,
+                                        LoadKind::I32 { atomic: false },
+                                        MemArg { align: 4, offset: DRIVE_STEP_OFF_RECIPE },
+                                    )
+                                    .i32_const(1)
+                                    .binop(BinaryOp::I32Add)
+                                    .table_get(transit_table)
+                                    .ref_is_null()
+                                    .if_else(
+                                        None,
+                                        // Empty slot: publish failed — trap truthfully.
+                                        |missing| {
+                                            missing.unreachable();
+                                        },
+                                        |_| {},
+                                    );
+                            },
+                            // Real guest drive: call_indirect guest[slot](arg), then
+                            // (if ALLOC) assert the guest published a live GC object
+                            // into STORE #2 at slot `recipe + 1`.
+                            |drive| {
                         // call_indirect guest[slot](arg): push arg, then slot.
                         drive
                             .local_get(step)
@@ -466,6 +673,8 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                             },
                             |_| {},
                         );
+                            },
+                        );
                     },
                 );
                 // i += 1; br $lp
@@ -497,14 +706,15 @@ fn main() -> Result<()> {
     let bytes = std::fs::read(&input).with_context(|| format!("reading {input}"))?;
     let mut module = Module::from_buffer(&bytes).context("parsing fork-module wasm")?;
     inject(&mut module).context("injecting __wpk_fork_ref_decode_funcref")?;
+    inject_decode_externref(&mut module).context("injecting __wpk_fork_ref_decode_externref")?;
     inject_drive_execute(&mut module).context("injecting fm_drive_execute")?;
     let out_bytes = module.emit_wasm();
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
-         {DRIVE_EXECUTE_EXPORT} + exported {TRANSIT_TABLE_IMPORT} (module-owned, M1) + \
-         imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, {DRIVE_TABLE_IMPORT}, \
-         {STATIC_ROOT_CATALOG_IMPORT}}})",
+         {DECODE_EXTERNREF_EXPORT} + {DRIVE_EXECUTE_EXPORT} + exported {TRANSIT_TABLE_IMPORT} \
+         (module-owned, M1) + imported {IMPORT_MODULE}.{{{FUNCTION_CATALOG_IMPORT}, \
+         {DRIVE_TABLE_IMPORT}, {STATIC_ROOT_CATALOG_IMPORT}, {RESOLVE_EXTERNREF_IMPORT}}})",
         out_bytes.len()
     );
     Ok(())
@@ -567,8 +777,131 @@ mod tests {
             &[ValType::I32],
             &[ValType::I32],
         );
+        // M2: the externref decode export + the DRIVE_OP_EXTERNREF_TRANSIT branch
+        // both look up the guest `fm_externref_handle(recipe) -> handle` helper.
+        add_stub_export(
+            &mut module,
+            EXTERNREF_HANDLE_HELPER_EXPORT,
+            &[ValType::I32],
+            &[ValType::I32],
+        );
 
         module
+    }
+
+    /// Count every `any.convert_extern` instruction in a local function body.
+    /// The externref-transit drive branch is the only place the injector emits
+    /// one (the funcref/externref decode exports never do), so a nonzero count in
+    /// `fm_drive_execute` is proof the DRIVE_OP_EXTERNREF_TRANSIT path was built.
+    #[derive(Default)]
+    struct AnyConvertExternCounter {
+        count: usize,
+    }
+    impl<'instr> walrus::ir::Visitor<'instr> for AnyConvertExternCounter {
+        fn visit_instr(
+            &mut self,
+            instr: &'instr walrus::ir::Instr,
+            _loc: &'instr walrus::InstrLocId,
+        ) {
+            if matches!(instr, walrus::ir::Instr::AnyConvertExtern(_)) {
+                self.count += 1;
+            }
+        }
+    }
+
+    fn any_convert_extern_count(module: &Module, export_name: &str) -> usize {
+        let export = module
+            .exports
+            .iter()
+            .find(|export| export.name == export_name)
+            .expect("export present");
+        let ExportItem::Function(id) = export.item else {
+            panic!("{export_name} is not a function export");
+        };
+        let local = module.funcs.get(id).kind.unwrap_local();
+        let mut counter = AnyConvertExternCounter::default();
+        walrus::ir::dfs_in_order(&mut counter, local, local.entry_block());
+        counter.count
+    }
+
+    #[test]
+    fn injects_externref_decode_export_and_resolve_import() {
+        let mut module = fixture_module();
+        inject(&mut module).expect("inject __wpk_fork_ref_decode_funcref");
+        inject_decode_externref(&mut module).expect("inject __wpk_fork_ref_decode_externref");
+        inject_drive_execute(&mut module).expect("inject fm_drive_execute");
+
+        let out_bytes = module.emit_wasm();
+        let reparsed = Module::from_buffer(&out_bytes).expect("reparse injected module");
+
+        // (a) The output IMPORTS env.resolve_externref : (i32) -> externref.
+        let resolve_import = reparsed
+            .imports
+            .iter()
+            .find(|import| {
+                import.module == IMPORT_MODULE && import.name == RESOLVE_EXTERNREF_IMPORT
+            })
+            .expect("resolve_externref must be imported after injection");
+        let ImportKind::Function(resolve_fn) = resolve_import.kind else {
+            panic!("resolve_externref import must be a function");
+        };
+        let resolve_sig = reparsed.types.get(reparsed.funcs.get(resolve_fn).ty());
+        assert_eq!(resolve_sig.params(), &[ValType::I32]);
+        assert_eq!(
+            resolve_sig.results(),
+            &[ValType::Ref(RefType::EXTERNREF)],
+            "resolve_externref must return an externref"
+        );
+        // find-or-add must never double-declare the import.
+        assert_eq!(
+            reparsed
+                .imports
+                .iter()
+                .filter(|import| import.module == IMPORT_MODULE
+                    && import.name == RESOLVE_EXTERNREF_IMPORT)
+                .count(),
+            1,
+            "resolve_externref must be imported exactly once"
+        );
+
+        // (b) The output EXPORTS __wpk_fork_ref_decode_externref : (i32) -> externref.
+        let decode = reparsed
+            .exports
+            .iter()
+            .find(|export| export.name == DECODE_EXTERNREF_EXPORT)
+            .expect("must export the externref decode shim");
+        let ExportItem::Function(decode_fn) = decode.item else {
+            panic!("{DECODE_EXTERNREF_EXPORT} export must be a function");
+        };
+        let decode_sig = reparsed.types.get(reparsed.funcs.get(decode_fn).ty());
+        assert_eq!(decode_sig.params(), &[ValType::I32]);
+        assert_eq!(
+            decode_sig.results(),
+            &[ValType::Ref(RefType::EXTERNREF)],
+            "the decode export must return an externref"
+        );
+
+        // (c) The fm_drive_execute body contains the op-4 externref-transit path:
+        // exactly one `any.convert_extern` (extern -> any) lives in the drive loop;
+        // the decode export never emits one. Re-parse above already re-validated the
+        // whole module, so a live count here proves the branch encodes correctly.
+        assert!(
+            reparsed
+                .exports
+                .iter()
+                .any(|export| export.name == DRIVE_EXECUTE_EXPORT),
+            "fm_drive_execute must still be exported"
+        );
+        assert_eq!(
+            any_convert_extern_count(&reparsed, DRIVE_EXECUTE_EXPORT),
+            1,
+            "fm_drive_execute must contain exactly one any.convert_extern (the op-4 branch)"
+        );
+        assert_eq!(
+            any_convert_extern_count(&reparsed, DECODE_EXTERNREF_EXPORT),
+            0,
+            "the externref decode shim must be a direct resolve call, no any.convert_extern"
+        );
     }
 
     #[test]
