@@ -708,7 +708,7 @@ export class ForkProcessContinuationCoordinator {
     }
     this.#abortErrno = errno;
     if (this.moduleBackend) {
-      this.beginModuleAbortReplay(errno);
+      this.beginModuleAbortReplay();
       return;
     }
     this.registry.beginParentReplay();
@@ -752,6 +752,7 @@ export class ForkProcessContinuationCoordinator {
     if (!Number.isInteger(errno) || errno <= 0) {
       throw new RangeError(`${this.label}: invalid fork abort errno ${errno}`);
     }
+    this.#abortErrno = errno;
     try {
       this.events.sealCapture();
       this.registry.currentArena().appendReplayEvents(this.events);
@@ -1018,7 +1019,7 @@ export class ForkProcessContinuationCoordinator {
    * `activation.root` (not `replayRoot`, which only exists for a fresh
    * child), matching the JS `beginAbortReplay` above.
    */
-  private beginModuleAbortReplay(errno: number): void {
+  private beginModuleAbortReplay(): void {
     const backend = this.moduleBackend!;
     this.registry.beginParentReplay();
     this.phase = "abort-replay";
