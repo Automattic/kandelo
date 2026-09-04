@@ -51,6 +51,7 @@ mod build_deps;
 mod build_stamp;
 mod bundle_program;
 mod cargo_closure;
+mod determinism_check;
 mod dump_abi;
 mod host_tool_probe;
 mod local_abi_identity;
@@ -72,7 +73,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, bootstrap, clean, verify-fresh"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -92,6 +93,7 @@ fn main() -> ExitCode {
         "archive-extract-member" => archive_extract_member::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
+        "check-determinism" => determinism_check::run(rest),
         "bootstrap" => local_build::run_bootstrap(rest),
         "clean" => local_build::run_clean(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
