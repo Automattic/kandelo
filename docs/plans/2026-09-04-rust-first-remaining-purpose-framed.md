@@ -164,19 +164,49 @@ Each item is tagged with its Bar class and grounded in current code.
   abort works when the module path is unconditional). Both-host validation +
   conformance.
 
-- **F3 — Plain-local externref transit seeding → Rust. [MIGRATE-TO-RUST]**
-  The unconditional PHASE-B loop `owner.publishExternref(...)`
-  (`fork-reference-transaction.ts:1127-1134`) still runs in JS on the module
-  path (a directly-held externref carried as a plain local is not covered by
-  the module's transit drive step). Move the seeding into the injected
-  drive / `fork-codec`, keeping only `resolve_externref` on the host seam.
+- **F3 — Plain-local externref transit seeding. [FOLDED INTO F6 — ruling 2026-09-04]**
+  ~~Move the PHASE-B `owner.publishExternref(...)` seeding into the injected
+  drive.~~ **Grounding (post-delete-and-gate) found this premature:** plain-local
+  externref is now GATED AT CAPTURE (`fork-activation-registry.ts:477-482` marks
+  it unsupported; `worker-main.ts:5121-5138` aborts the fork with `EOPNOTSUPP`
+  before any child restore — the F1-proven path). So the transit seeding F3
+  targeted is **dead on the flag-on path**, and the surviving PHASE-B loop
+  (`fork-reference-transaction.ts:1127-1134`) is live *only* for host-exception
+  externref payloads on the **JS** path (not module-driven, not the F3 case).
+  The module already carries the externref decode + `DRIVE_OP_EXTERNREF_TRANSIT`
+  machinery; the one missing piece (plain-local transit publish) is only
+  meaningful once the capture gate is lifted — which is **F6's** charter
+  (native backend removes the gate + rebuilds reconstruction). Doing F3 now
+  would migrate an aborted-before-it-runs case, untestable end-to-end, and be
+  rewritten by F6. **Ruling: F3 is a sub-task of F6, not a standalone slice.**
+  (Optional, separate: a truth-in-gating tidy-up of the now-inconsistent
+  "admit externref" arms the delete-and-gate left behind — `worker-main.ts:4444`
+  `case "externref": return true`, `crates/fork-module/src/lib.rs:2258` — which
+  are unreachable-but-untruthful; F6 rewrites them anyway, so this is a small
+  optional consistency fix, not F3.)
 
-- **F4 — pthread table-journal reference replay → module. [MIGRATE-TO-RUST]**
-  `restoreTableState → materializeAllTyped()` with no module drive
-  (`fork-activation-registry.ts:1292-1354`, via `DylinkForkTableReplica`)
-  reconstructs references for separately-instantiated pthread workers / later
-  table generations entirely in JS. Route it through the module drive like
-  the main child path.
+- **F4 — pthread table-journal reference replay. [FOLDED — ruling 2026-09-04]**
+  ~~Route `restoreTableState`'s `materializeAllTyped()` through the module
+  drive.~~ **Grounding found no live target for this.** `restoreTableState`
+  (`fork-activation-registry.ts:1292-1354`, via `DylinkForkTableReplica`,
+  `worker-main.ts:2962-2990`) runs live for cross-Worker table replication
+  (dlopen funcref tables + pthread table growth), and its live content is
+  **funcref/null** — but the `moduleDrive` seam explicitly does **not** touch
+  funcref (`fork-reference-transaction.ts:1071-1075,1145-1146`); funcref goes
+  through `ForkFunctionCatalog` + `applyFuncrefTablePatch`, never the module
+  drive. So "route it through the module drive" would accomplish nothing for
+  its live content; the drive only handles the gated GC/exnref/static-root
+  kinds (dead at capture, rebuilt by the native backend). **Ruling:** F4 folds
+  into **F6/N1** (the native backend rebuilds the gated-kind reconstruction and
+  replaces the transitional `moduleDrive` seam), and its one sound-suspect
+  residue — the funcref **capture** reverse-lookup (`ForkFunctionCatalog.encode`
+  via `captureTableState → saveTables`) — is **already owned by F5**. The
+  restore-side forward funcref decode + table write is correct as-is.
+  **Latent gap for F6/N1** (flagged by grounding): if a program mutates an
+  externref/anyref table, `captureTableState` publishes gated *placeholder*
+  nodes instead of aborting — a truthfulness gap the delete-and-gate left on
+  the table-journal path (unlike the fork path, which aborts). Close it in F6/N1
+  (or as part of the truth-in-gating tidy-up).
 
 - **F5 — funcref-capture residue → eliminate via re-instrumentation.
   [MIGRATE-TO-RUST, re-instrument]**
@@ -400,20 +430,30 @@ Per the 2026-09-04 decision, the work is **serial**, not two parallel tracks:
 reconcile first, establish the single tree, then everything else lands on it.
 
 ```
-N0 (reconcile the two ABI-44 lines into one canonical tree)   ← DO FIRST
-     │  (its own scoping pass + approved strategy before any
-     │   history-rewriting git op; user is sole merger)
+N0 (reconcile the two ABI-44 lines into one canonical tree)   ← DONE
      ▼
-Fork work on the reconciled tree:
-     F1 (abort-replay) → F2 (flip + delete twins) → F3 (externref transit)
-                                                   → F4 (pthread table-journal)
-                                                   → F5 (funcref re-instrument)
-     After F1 → F2 the module path is the default and fork is dogfoodable
-     (`./run.sh browser` IS the campaign). F5 (funcref via recorded ordinals)
-     is in-campaign. H1–H4 = independent small wins, any time.
+F1 (module abort-replay)                                       ← DONE (on PR)
+     ▼
+[RESHAPED 2026-09-04 after grounding F3/F4]
+     F3 (externref transit) and F4 (pthread table-journal) are NO LONGER
+     standalone slices — the delete-and-gate already did their *deletion* half
+     (the gated kinds abort at capture); their *rebuild* half is F6/N1's, and
+     F4's funcref-capture residue is F5's. So the "quick testable migrations
+     before the flip" have evaporated. What actually remains before the flip:
+       • F5 (funcref-capture re-instrument) — the ONE live supported-path
+         reference residue, but HEAVY + ABI-affecting (guest re-instrument =
+         rebuild all fork packages) + strategically entangled with N1 (native
+         host holds Func directly, so funcref-capture is also a native-backend
+         candidate; re-instrument only helps Node/browser).
+       • Truth-in-gating tidy-up (small, sound): tighten the delete-and-gate's
+         leftover untruthful "admit externref" arms (worker-main.ts:4444,
+         lib.rs:2258) + make the table-journal path abort truthfully on gated
+         kinds instead of publishing placeholders (F4 §latent-gap).
+     F2 (flip default-on + delete dead frame/journal JS engine) is HELD for the
+     user (dogfood + full browser/conformance validation).
      ▼
 N1 (real native wasmtime backend — completes the host-native impl; the
-     substrate for F6; also folds in the H3 errno artifact)
+     substrate for F6; also folds in the H3 errno artifact). Absorbs F3 + F4.
      ▼
 F6 (full reference-kind reconstruction — remove every EOPNOTSUPP gate:
      externref incl. GC-derived, struct, array, i31, static-root — via the
