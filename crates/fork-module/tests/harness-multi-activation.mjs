@@ -90,9 +90,19 @@ function instantiateShared() {
       __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      // M2: the merged, host-owned static-root catalog (anyref) the injected
+      // drive shim reads on a DRIVE_OP_STATIC_ROOT step. This reference-free
+      // frame-routing harness never drives a reference replay, so an empty
+      // table is inert here.
+      __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
       __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
+      // M2: the single residual externref host import,
+      // `resolve_externref(handle) -> externref`. Never exercised here; a
+      // stub returning a fresh unique object per call satisfies the
+      // reference-returning import signature.
+      resolve_externref: (_handle) => ({}),
     },
     wpk_fork_host: forkHostStubs,
   });
@@ -156,12 +166,17 @@ const PREFIX1 = 256;
 x.fm_set_format(4, PREFIX0);
 assert.equal(errno(), 0, "fm_set_format");
 
-const mb0 = x.fm_begin_unwind(0, ARENA0_BASE, ARENA0_LEN) >>> 0;
-assert.equal(errno(), 0, "fm_begin_unwind(act 0)");
+// fm_begin_unwind_fixed_arena / fm_add_activation_unwind_fixed_arena are the
+// in-realm, no-servicer siblings of fm_begin_unwind / fm_add_activation_unwind
+// (Option B, channel-based) — the latter block forever in
+// memory_atomic_wait32 waiting for a host syscall-channel servicer this bare
+// Node harness does not provide.
+const mb0 = x.fm_begin_unwind_fixed_arena(0, ARENA0_BASE, ARENA0_LEN) >>> 0;
+assert.equal(errno(), 0, "fm_begin_unwind_fixed_arena(act 0)");
 assert.ok(mb0 >= ARENA0_BASE && mb0 < ARENA0_BASE + ARENA0_LEN, "act0 module buffer in arena 0");
 
-const mb1 = x.fm_add_activation_unwind(1, ARENA1_BASE, ARENA1_LEN, PREFIX1) >>> 0;
-assert.equal(errno(), 0, "fm_add_activation_unwind(act 1)");
+const mb1 = x.fm_add_activation_unwind_fixed_arena(1, ARENA1_BASE, ARENA1_LEN, PREFIX1) >>> 0;
+assert.equal(errno(), 0, "fm_add_activation_unwind_fixed_arena(act 1)");
 assert.ok(mb1 >= ARENA1_BASE && mb1 < ARENA1_BASE + ARENA1_LEN, "act1 module buffer in arena 1");
 console.log(`  ok: opened activation 0 (arena 0, prefix ${PREFIX0}) + activation 1 (arena 1, prefix ${PREFIX1})`);
 

@@ -75,9 +75,21 @@ const importObject = {
     // reconstructs references, so an empty funcref table is inert here.
     __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    // M2: the merged, host-owned static-root catalog (anyref) the injected
+    // drive shim reads on a DRIVE_OP_STATIC_ROOT step (see
+    // fork-module-inject/src/main.rs STATIC_ROOT_CATALOG_IMPORT). This
+    // reference-free frame/continuation harness never drives a reference
+    // replay, so an empty table is inert here.
+    __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, STACK_TOP),
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
+    // M2: the single residual externref host import,
+    // `resolve_externref(handle) -> externref` (see
+    // fork-module-inject/src/main.rs RESOLVE_EXTERNREF_IMPORT). Never
+    // exercised by this frame-drive harness; a stub returning a fresh unique
+    // object per call satisfies the reference-returning import signature.
+    resolve_externref: (_handle) => ({}),
   },
 };
 
@@ -132,7 +144,7 @@ for (const name of [
   // F1: module-driven abort-replay (mirrors fm_begin_replay/fm_finish_replay).
   "fm_begin_abort",
   "fm_finish_abort",
-  "fm_serialize_journal",
+  "fm_serialize_journal_fixed_arena",
   "fm_begin_child_replay",
   "fm_last_errno",
   // Phase 6 D6.1 reference reconstruction (funcref + null).
@@ -353,10 +365,14 @@ function setFormat() {
 }
 
 // Begin a fork with a HOST-allocated arena (Option A): the host owns [base,len).
+// `fm_begin_unwind_fixed_arena` is the in-realm, no-servicer sibling of
+// `fm_begin_unwind` (Option B, channel-based) — the latter blocks forever in
+// `memory_atomic_wait32` waiting for a host syscall-channel servicer this bare
+// Node harness does not provide.
 function beginUnwind(act) {
-  const moduleBuffer = x.fm_begin_unwind(act, ARENA_BASE, ARENA_LEN) >>> 0;
-  assert.equal(errno(), 0, "fm_begin_unwind errno");
-  assert.notEqual(moduleBuffer, 0, "fm_begin_unwind returned a module buffer");
+  const moduleBuffer = x.fm_begin_unwind_fixed_arena(act, ARENA_BASE, ARENA_LEN) >>> 0;
+  assert.equal(errno(), 0, "fm_begin_unwind_fixed_arena errno");
+  assert.notEqual(moduleBuffer, 0, "fm_begin_unwind_fixed_arena returned a module buffer");
   // The arena the module wrote into must be entirely inside the host region.
   assert.ok(moduleBuffer >= ARENA_BASE && moduleBuffer < ARENA_END, "module buffer in host arena");
   return moduleBuffer;
@@ -585,9 +601,11 @@ function instantiateAt(mem, moduleBase, stackTop) {
       __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
       __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, stackTop),
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
+      resolve_externref: (_handle) => ({}),
     },
     // Inert engine-floor stubs (never called by the reference-free frame path).
     wpk_fork_host: forkHostStubs,
@@ -623,7 +641,7 @@ function forkRoundTrip(act, frames, label) {
   P.fm_set_format(4, 128);
   assert.equal(perr(), 0, `${label}: parent set_format`);
 
-  const moduleBuffer = P.fm_begin_unwind(act, FR_ARENA_BASE, FR_ARENA_LEN) >>> 0;
+  const moduleBuffer = P.fm_begin_unwind_fixed_arena(act, FR_ARENA_BASE, FR_ARENA_LEN) >>> 0;
   assert.equal(perr(), 0, `${label}: parent begin_unwind`);
   assert.ok(moduleBuffer >= FR_ARENA_BASE && moduleBuffer < FR_ARENA_END, `${label}: buffer in arena`);
 
@@ -644,8 +662,13 @@ function forkRoundTrip(act, frames, label) {
   assert.equal(perr(), 0, `${label}: parent finish_unwind`);
 
   // Parent serializes its sealed journal as a KFRE image INTO guest memory.
-  const imageLen = P.fm_serialize_journal(FR_IMAGE_BASE, FR_IMAGE_CAP) >>> 0;
+  // fm_serialize_journal_fixed_arena is the in-realm, no-servicer sibling of
+  // fm_serialize_journal_alloc; it returns the BASE pointer (not the length —
+  // read that back separately via fm_journal_image_len, an i64/BigInt export).
+  const imagePtr = P.fm_serialize_journal_fixed_arena(FR_IMAGE_BASE, FR_IMAGE_CAP) >>> 0;
   assert.equal(perr(), 0, `${label}: parent serialize_journal`);
+  assert.equal(imagePtr, FR_IMAGE_BASE, `${label}: serialize_journal returns the base pointer`);
+  const imageLen = Number(P.fm_journal_image_len());
   // KFRE = 40-byte manifest + one 24-byte header per segment + N * 8-byte
   // entries. Segments hold up to SEGMENT_CAPACITY (4080) events each.
   const SEGMENT_CAPACITY = 4080;

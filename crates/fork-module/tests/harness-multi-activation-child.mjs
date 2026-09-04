@@ -54,7 +54,7 @@ for (const need of [
   // D7a.2 surface these build on.
   "fm_add_activation_unwind",
   "fm_begin_child_replay",
-  "fm_serialize_journal",
+  "fm_serialize_journal_fixed_arena",
   "fm_frame_reserve",
   "fm_frame_commit",
   "fm_frame_peek",
@@ -79,9 +79,19 @@ function instantiateAt(mem, moduleBase, stackTop) {
       __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
       __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+      // M2: the merged, host-owned static-root catalog (anyref) the injected
+      // drive shim reads on a DRIVE_OP_STATIC_ROOT step. This reference-free
+      // frame-routing harness never drives a reference replay, so an empty
+      // table is inert here.
+      __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
       __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, stackTop),
       __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, moduleBase),
       __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
+      // M2: the single residual externref host import,
+      // `resolve_externref(handle) -> externref`. Never exercised here; a
+      // stub returning a fresh unique object per call satisfies the
+      // reference-returning import signature.
+      resolve_externref: (_handle) => ({}),
     },
     wpk_fork_host: forkHostStubs,
   });
@@ -209,11 +219,16 @@ assert.equal(perr(), 0, "parent set_format");
 for (const a of ACTS) seedCatalog(P, pm, a);
 
 // Open activation 0, then add activations 1..N (each own arena + prefix).
+// fm_begin_unwind_fixed_arena / fm_add_activation_unwind_fixed_arena are the
+// in-realm, no-servicer siblings of fm_begin_unwind / fm_add_activation_unwind
+// (Option B, channel-based) — the latter block forever in
+// memory_atomic_wait32 waiting for a host syscall-channel servicer this bare
+// Node harness does not provide.
 const mb = {};
-mb[0] = P.exports.fm_begin_unwind(0, ACTS[0].arenaBase, ARENA_LEN) >>> 0;
+mb[0] = P.exports.fm_begin_unwind_fixed_arena(0, ACTS[0].arenaBase, ARENA_LEN) >>> 0;
 assert.equal(perr(), 0, "parent begin_unwind act 0");
 for (const a of ACTS.slice(1)) {
-  mb[a.id] = P.exports.fm_add_activation_unwind(a.id, a.arenaBase, ARENA_LEN, a.prefix) >>> 0;
+  mb[a.id] = P.exports.fm_add_activation_unwind_fixed_arena(a.id, a.arenaBase, ARENA_LEN, a.prefix) >>> 0;
   assert.equal(perr(), 0, `parent add_activation_unwind act ${a.id}`);
   assert.ok(mb[a.id] >= a.arenaBase && mb[a.id] < a.arenaBase + ARENA_LEN, `act ${a.id} buffer in arena`);
 }
@@ -232,8 +247,13 @@ for (const c of commits) {
 P.exports.fm_finish_unwind();
 assert.equal(perr(), 0, "parent finish_unwind");
 
-const imageLen = P.exports.fm_serialize_journal(IMAGE_BASE, IMAGE_CAP) >>> 0;
+// fm_serialize_journal_fixed_arena is the in-realm, no-servicer sibling of
+// fm_serialize_journal_alloc; it returns the BASE pointer (not the length —
+// read that back separately via fm_journal_image_len, an i64/BigInt export).
+const imagePtr = P.exports.fm_serialize_journal_fixed_arena(IMAGE_BASE, IMAGE_CAP) >>> 0;
 assert.equal(perr(), 0, "parent serialize_journal");
+assert.equal(imagePtr, IMAGE_BASE, "serialize_journal returns the base pointer");
+const imageLen = Number(P.exports.fm_journal_image_len());
 assert.ok(imageLen <= IMAGE_CAP, "KFRE image fits region");
 console.log(`  ok: parent unwound ${commits.length} interleaved frames across ${ACTS.length} activations; serialized ${imageLen}-byte KFRE image`);
 
