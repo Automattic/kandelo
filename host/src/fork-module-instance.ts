@@ -97,6 +97,11 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_references_reconstructed",
   // Phase 6 D6.2 externref reconstruction proof-of-use counter.
   "fm_externrefs_resolved",
+  // M2 task 3: the walrus-injected externref decode export — mirrors
+  // `__wpk_fork_ref_decode_funcref` but calls the host `env.resolve_externref`
+  // import instead of `table.get` (a Wasm module cannot hold a live
+  // `externref`, so it cannot decode one without asking the host for it).
+  "__wpk_fork_ref_decode_externref",
   // Phase 6 D6.3a exnref reconstruction proof-of-use counter.
   "fm_exnrefs_reconstructed",
   // Phase 6 D6.4a typed-GC (struct/array/i31) reconstruction proof-of-use counter.
@@ -260,18 +265,34 @@ export interface InstantiateForkModuleOptions {
    */
   staticRootCatalog?: WebAssembly.Table;
   /**
-   * Real engine-floor `wpk_fork_host.*` import bodies (Phase 6 D6.2). The
-   * co-resident module DECLARES the whole engine-floor seam
-   * (`crates/fork-module/src/host_capabilities.rs`); its `WpkForkHost` routes
-   * the seam's opaque `u32` ordinals across these imports to re-root externref
-   * identity (through the broker token cache) and stage the anyref transit
-   * during `fm_begin_reference_replay`. When provided, the named bodies back the
-   * seam; when omitted (frame-only / funcref-only forks, and tests) every
-   * `wpk_fork_host` import defaults to an inert `() => 0` stub. A funcref/null
-   * graph opens no host generation and never calls them, so the inert default
-   * keeps the D6.1 path and flag-off byte-identical.
+   * Real engine-floor `wpk_fork_host.*` import bodies for the capabilities the
+   * co-resident module still routes as opaque `u32` ordinals — exception-tag
+   * minting, unwind-transport recognition, and child instantiate/spawn
+   * (`crates/fork-module/src/host_capabilities.rs`). Since M2, externref
+   * reconstruction is NOT one of these: it is the single reference-returning
+   * `env.resolve_externref` import (see `resolveExternref` below), because the
+   * injected binder can call a reference-typed import directly and a Rust
+   * function cannot itself return an `externref`. When a name here is omitted
+   * (frame-only / funcref-only forks, and tests) it defaults to an inert
+   * `() => 0` stub, which fits every remaining `wpk_fork_host` signature (all
+   * return i32/u32) and is never called unless that capability is exercised, so
+   * the inert default keeps flag-off byte-identical.
    */
   hostCapabilities?: Readonly<Record<string, (...args: number[]) => number>>;
+  /**
+   * The `env.resolve_externref(handle: i32) -> externref` body (M2). The
+   * module DECLARES this as a plain (non-`wpk_fork_host`) import because it
+   * returns a live reference, which the `wpk_fork_host` stub loop below cannot
+   * express (every stub there returns `i32`). The injected
+   * `__wpk_fork_ref_decode_externref` export and the externref-transit drive
+   * step both call it directly with `fm_externref_handle(recipe)`; production
+   * backs it with `createForkModuleHostCapabilities` (a `ForkExternrefTokenCache`
+   * lookup). When omitted (frame-only / funcref-only forks, and tests that never
+   * drive externref reconstruction) it defaults to a body that throws loudly if
+   * actually called — there is no legitimate "empty" externref resolution, so a
+   * silent stub would hide a real gap rather than fail truthfully.
+   */
+  resolveExternref?: (handle: number) => unknown;
 }
 
 export interface ForkModuleInstance {
@@ -472,6 +493,21 @@ export function instantiateForkModule(
     forkHostStubs[imp.name] = options.hostCapabilities?.[imp.name] ?? (() => 0);
   }
 
+  // `env.resolve_externref` (M2): a plain `env` import, not a `wpk_fork_host`
+  // ordinal stub, because it returns a live reference. Default to a body that
+  // fails loud if actually invoked — a funcref/null-only fork never decodes an
+  // externref, so the default is inert (never called) on that path, and any
+  // path that DOES reach it without a real body is a genuine caller bug, not a
+  // "nothing to resolve" case.
+  const resolveExternref: (handle: number) => unknown =
+    options.resolveExternref ??
+    ((handle: number) => {
+      throw new Error(
+        `${label}: fork-module called resolve_externref(${handle}) but no ` +
+          `resolveExternref body was supplied`,
+      );
+    });
+
   const imports: WebAssembly.Imports = {
     env: {
       memory,
@@ -482,6 +518,7 @@ export function instantiateForkModule(
       __memory_base: memoryBaseGlobal,
       __table_base: tableBaseGlobal,
       __stack_pointer: stackPointerGlobal,
+      resolve_externref: resolveExternref,
     },
     wpk_fork_host: forkHostStubs,
   };
