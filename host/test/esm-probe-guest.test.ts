@@ -6,9 +6,9 @@
  * resolution), 0016 (import.meta population), and 0017 (`using` / Explicit
  * Resource Management support).
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -37,12 +37,31 @@ const FIXTURES: Record<string, string> = {
     "export function run(){class R{[Symbol.dispose](){globalThis.__d=(globalThis.__d||0)+1;}}{using r=new R();}return globalThis.__d;}",
   "mainusing.cjs":
     '(async()=>{try{const m=await import("/app/using.mjs");console.log("USING",m.run());}catch(e){console.log("USINGERR",(e&&e.message)||e);}})();',
+  "dep.mjs": "export const v=41;",
+  "node_modules/epkg/package.json": '{"type":"module","main":"index.js"}',
+  "node_modules/epkg/index.js": 'import{v}from"/app/dep.mjs";export const w=v+1;export default "epkgdefault";',
+  // The bare dynamic import() lives in a genuine native ES module
+  // (dynhost.mjs), not directly in the CJS main: only a referrer compiled by
+  // the native module loader (CompileModule) carries the script-path private
+  // data __kandeloResolveBare needs to walk node_modules from the right
+  // directory. A classic/CJS script executed via the shell's
+  // evalScriptAsFunction helper never registers that private data (only the
+  // shell's own top-level RunFile path does), so a bare specifier dynamically
+  // imported directly from CJS always resolves with a null referrer. This
+  // mirrors the real Claude Code shape: a lazily-loaded ESM chunk performing
+  // `import()` of a bare specifier from within already-native ESM code.
+  "dynhost.mjs":
+    '(async()=>{try{const m=await import("epkg");console.log("DYN",m.w,m.default);}catch(e){console.log("DYNERR",(e&&e.message)||e);}})();',
+  "maindyn.cjs":
+    '(async()=>{try{await import("/app/dynhost.mjs");}catch(e){console.log("DYNERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
   const dir = mkdtempSync(join(tmpdir(), "esm-probe-"));
   for (const [name, content] of Object.entries(FIXTURES)) {
-    writeFileSync(join(dir, name), content, "utf8");
+    const dest = join(dir, name);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, content, "utf8");
   }
   return dir;
 }
@@ -53,6 +72,8 @@ function image(): Uint8Array | Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   ensureDirRecursive(fs, "/app");
   for (const f of Object.keys(FIXTURES)) {
+    const sub = dirname(f);
+    if (sub !== ".") ensureDirRecursive(fs, `/app/${sub}`);
     writeVfsBinary(fs, `/app/${f}`, new Uint8Array(readFileSync(join(DIR, f))), 0o644);
   }
   return fs.saveImage();
@@ -135,5 +156,20 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("USING STDOUT:", JSON.stringify(r.stdout.trim()), "STDERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("USING 1");
+  }, 90_000);
+
+  it.runIf(ready)("dynamic import() of a bare ESM package loads as a module", async () => {
+    const img = await image();
+    const r = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      argv: ["node", "/app/maindyn.cjs"],
+      rootfsImage: img,
+      useDefaultRootfs: false,
+      timeout: 60_000,
+    });
+    // eslint-disable-next-line no-console
+    console.log("DYN OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("DYN 42 epkgdefault");
+    expect(r.stdout).not.toContain("DYNERR");
   }, 90_000);
 });
