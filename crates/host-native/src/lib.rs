@@ -32,7 +32,7 @@ use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMem
 /// Increment 2: boot the kernel and run a trivial guest through the real
 /// channel. See [`guest::run_trivial_guest`].
 pub mod guest;
-pub use guest::{run_trivial_guest, RunOutcome};
+pub use guest::{run_guest, run_trivial_guest, GuestOptions, RunOutcome};
 
 /// ABI version this native host expects the kernel to advertise. Must match
 /// `wasm_posix_shared::ABI_VERSION` (currently 44). A kernel built for a
@@ -432,42 +432,14 @@ mod tests {
         Ok(())
     }
 
-    /// Increment 5: the host-backed filesystem. The kernel uses the host's
-    /// host_lstat/host_open/host_read capabilities as its root filesystem, so
-    /// opening and reading a path exercises that whole capability path — the
-    /// first fixture to reach a real (host-backed) file rather than staying
-    /// kernel-internal. It also covers the RAW CString path arg (open) end to
-    /// end through host resolution. The native host serves "/native.txt"; a
-    /// correct echo proves open()/read() route through the FS capabilities.
-    #[test]
-    fn smoke_runs_host_fs_open_read() -> anyhow::Result<()> {
-        let Some(path) = kernel_path_or_skip() else {
-            return Ok(());
-        };
-        let guest = include_bytes!("../fixtures/native_hostfs.wasm");
-
-        let outcome = run_trivial_guest(&path, guest)?;
-
-        assert_eq!(
-            outcome.exit_code, 0,
-            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
-            String::from_utf8_lossy(&outcome.stdout),
-            String::from_utf8_lossy(&outcome.stderr),
-            outcome.syscall_trace,
-        );
-        assert_eq!(
-            outcome.stdout, b"hello from the host filesystem\n",
-            "the guest must open and read the host-served file via host_open/host_read"
-        );
-        // open (CString path -> host resolution) and read (RAW Out -> host_read)
-        // are the coverage this adds.
-        assert!(
-            outcome.syscall_trace.contains(&(Syscall::Open as u32)),
-            "expected an open syscall in the trace: {:?}",
-            outcome.syscall_trace
-        );
-        Ok(())
-    }
+    // Increment 5's `smoke_runs_host_fs_open_read` (native_hostfs.c/.wasm)
+    // exercised host_lstat/host_open/host_read serving a fixed single-file
+    // fake host filesystem as the default `/`. N1-I1a retires that default:
+    // the in-kernel rootfs overlay now owns `/` (see `smoke_runs_inmemory_vfs`
+    // above), so `host_open` is never reached on the default path and the fake
+    // HostFs no longer serves files. The same host_open/host_lstat/host_read
+    // capability plumbing is restored, correctly scoped to an explicit native
+    // directory mount, by N1-I1b's `smoke_runs_native_dir_mount`.
 
     /// Phase 4, increment 1: the native host's blocking wait capability. A
     /// blocking syscall (poll with a timeout, no fds) returns EAGAIN; the host
@@ -562,6 +534,42 @@ mod tests {
         assert_eq!(
             outcome.stdout, b"woken by thread\n",
             "the blocked read must complete with the bytes the writer thread sent"
+        );
+        Ok(())
+    }
+
+    /// N1-I1a: the native host defaults to a **sandboxed in-memory VFS** — the
+    /// in-kernel rootfs overlay owns `/` and tmpfs owns `/tmp`, both empty and
+    /// writable, with no manifest loaded and no blob provider installed. A
+    /// `mkdir`/`open(O_CREAT)`/`write`/`lseek`/`read` round-trip under both `/`
+    /// and `/tmp` proves the guest gets a real writable filesystem with no host
+    /// directory ever mounted. It also proves argv/env are now real (not the
+    /// historical `argc == 0` "a.out" fallback): `kernel_get_argc` /
+    /// `kernel_argv_read` deliver `argv[1]` to the guest.
+    #[test]
+    fn smoke_runs_inmemory_vfs() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_vfs.wasm");
+
+        let options = guest::GuestOptions {
+            argv: vec!["prog".to_string(), "hello".to_string()],
+            env: vec![],
+        };
+        let outcome = guest::run_guest(&path, guest, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout,
+            b"hello-data\nhello-tmp\nargc:2\nhello\n".as_slice(),
+            "expected the / overlay + /tmp tmpfs round-trip and argv[1] via kernel_argv_read"
         );
         Ok(())
     }

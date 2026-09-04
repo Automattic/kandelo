@@ -31,7 +31,6 @@
 //! HOST-ONLY: build/test with an explicit host target (see `Cargo.toml`).
 
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write as _};
 use std::path::Path;
@@ -154,25 +153,20 @@ struct CapturedIo {
     stderr: Vec<u8>,
 }
 
-// --- Minimal host-backed filesystem -----------------------------------------
+// --- Minimal host capabilities -----------------------------------------
 //
-// The kernel uses the host's host_lstat/host_open/host_read capabilities as its
-// root filesystem: path resolution probes the host, and a process with no VFS
-// image reaches its files this way. This serves a fixed single-file tree —
-// root `/` and one regular file — which is enough to prove open()/read() route
-// through the host FS capabilities on the native host. A full VFS image is a
-// later increment.
-
-const S_IFDIR: u32 = 0o040000;
-const S_IFREG: u32 = 0o100000;
-/// Size of the `repr(C)` `WasmStat` the kernel reads back (crates/shared).
-const WASM_STAT_SIZE: usize = 88;
-/// First host handle the FS hands out; kept clear of the 0/1/2 stdio range.
-const HOST_FS_FIRST_HANDLE: i64 = 1000;
-
-/// The single file the native host's root filesystem serves, and its contents.
-const HOST_FS_FILE_PATH: &[u8] = b"/native.txt";
-const HOST_FS_FILE_CONTENTS: &[u8] = b"hello from the host filesystem\n";
+// N1-I1a: the native host's default `/` and `/tmp` are the in-kernel rootfs
+// overlay and tmpfs (see the `kernel_set_rootfs_now`/`kernel_set_tmpfs_enabled`/
+// `kernel_set_rootfs_enabled` calls in `run_guest`), a sandboxed in-memory VFS
+// that never touches the host. `host_lstat`/`host_stat`/`host_open`/
+// `host_pread`/`host_fstat` are consequently left to `define_unknown_imports_
+// as_traps` — a truthful boundary, since the overlay claims all of `/` (no
+// foreign prefixes are registered) and so these imports must never fire on
+// this path. A later increment restores real host-directory access, scoped to
+// an explicit mount, and re-adds them for that mount's paths only.
+//
+// `HostFs` is reduced to its one remaining duty: serving fd 0 (stdin, a
+// HostPipe) as a deterministic blocking source.
 
 /// A blocking stdin (fd 0, a HostPipe) whose data is not ready on the first
 /// read. `host_read(0)` returns EAGAIN once — forcing the kernel to block and
@@ -181,39 +175,17 @@ const HOST_FS_FILE_CONTENTS: &[u8] = b"hello from the host filesystem\n";
 /// just makes it deterministic for the test.
 const HOST_STDIN_LINE: &[u8] = b"stdin via blocking read\n";
 
-/// The single file this host filesystem serves, plus its open-handle read
-/// cursors and the blocking-stdin delivery counter.
+/// The blocking-stdin delivery counter (the only host-FS-shaped duty left once
+/// the in-kernel overlay/tmpfs own `/` and `/tmp` by default).
 struct HostFs {
-    path: Vec<u8>,
-    contents: Vec<u8>,
-    /// Open host handle -> current read offset.
-    cursors: Mutex<HashMap<i64, usize>>,
-    next_handle: Mutex<i64>,
     /// Number of host_read(0) calls so far (drives the EAGAIN-then-data stdin).
     stdin_reads: Mutex<u32>,
 }
 
 impl HostFs {
-    fn new(path: &[u8], contents: &[u8]) -> Self {
-        Self {
-            path: path.to_vec(),
-            contents: contents.to_vec(),
-            cursors: Mutex::new(HashMap::new()),
-            next_handle: Mutex::new(HOST_FS_FIRST_HANDLE),
-            stdin_reads: Mutex::new(0),
-        }
+    fn new() -> Self {
+        Self { stdin_reads: Mutex::new(0) }
     }
-}
-
-/// Serialize a `WasmStat` (mode + size, other fields zero) into kernel memory at
-/// `stat_ptr`, matching the field offsets the kernel's `repr(C)` struct expects
-/// (see host/src/kernel.ts `#writeStatToMemory`).
-unsafe fn write_wasm_stat(mem: &SharedMemory, stat_ptr: usize, mode: u32, size: u64, nlink: u32) {
-    let mut b = [0u8; WASM_STAT_SIZE];
-    b[16..20].copy_from_slice(&mode.to_le_bytes()); // st_mode
-    b[20..24].copy_from_slice(&nlink.to_le_bytes()); // st_nlink
-    b[32..40].copy_from_slice(&size.to_le_bytes()); // st_size
-    unsafe { write_bytes(mem, stat_ptr, &b) };
 }
 
 /// The result of running a trivial guest to completion.
@@ -348,10 +320,34 @@ fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemor
     Ok(SharedMemory::new(engine, MemoryType::shared(min, max))?)
 }
 
-/// Boot the real `kernel.wasm` and run `guest_wasm` (a trivial, non-forking,
-/// no-VFS program) to completion through the real channel. Returns its exit
+/// The guest's launch environment: argv and environment variables, encoded as
+/// raw UTF-8 bytes (no NUL terminator — the guest CRT appends its own,
+/// mirroring `host/src/worker-main.ts`'s `encodeStartupMetadata`). A later
+/// increment adds an optional native-directory mount here.
+#[derive(Debug, Clone, Default)]
+pub struct GuestOptions {
+    /// `argv[0]`, `argv[1]`, ... delivered via `kernel_get_argc`/`kernel_argv_read`.
+    /// Empty means `argc == 0`, which the guest CRT's historical "a.out"
+    /// fallback serves (see `libc/musl-overlay/crt/crt1.c`).
+    pub argv: Vec<String>,
+    /// `NAME=value` entries delivered via `kernel_environ_count`/`kernel_environ_get`.
+    pub env: Vec<String>,
+}
+
+/// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
+/// real channel, with `options` controlling its argv/env. This is the native
+/// host's default run path (N1-I1a): before dispatch, it enables the
+/// in-kernel rootfs overlay (`/`) and tmpfs (`/tmp`) with no manifest and no
+/// blob provider, so the guest gets a **sandboxed in-memory VFS** — writable,
+/// but backed by nothing on the host filesystem. `host_blob_read`/
+/// `host_fetch_archive` and the host-FS `host_open` family are never called on
+/// this path (see `define_kernel_host_imports`). Returns the guest's exit
 /// code, captured stdout/stderr, and the syscall trace.
-pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Result<RunOutcome> {
+pub fn run_guest(
+    kernel_wasm: &Path,
+    guest_wasm: &[u8],
+    options: &GuestOptions,
+) -> anyhow::Result<RunOutcome> {
     let engine = crate::kernel_engine()?;
 
     // --- Guest module, layout, and memory (created first so kernel host imports
@@ -374,9 +370,8 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES)?;
     let captured = Arc::new(Mutex::new(CapturedIo::default()));
 
-    // The native host serves a minimal single-file root filesystem so a guest
-    // can open()/read() a real host-backed file through the FS host capabilities.
-    let fs = Arc::new(HostFs::new(HOST_FS_FILE_PATH, HOST_FS_FILE_CONTENTS));
+    // The native host's only remaining host-FS-shaped duty: fd 0 (stdin).
+    let fs = Arc::new(HostFs::new());
 
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
@@ -416,6 +411,15 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
     // the thread's clear-child-tid pointer for the pump to clear + notify.
     let thread_exit =
         kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_exit")?;
+    // The sandboxed in-memory VFS toggles (crates/kernel/src/wasm_api.rs). No
+    // manifest is loaded and no blob/archive provider is installed here — see
+    // the call site below.
+    let set_rootfs_now =
+        kernel.get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_set_rootfs_now")?;
+    let set_tmpfs_enabled =
+        kernel.get_typed_func::<i32, i32>(&mut kernel_store, "kernel_set_tmpfs_enabled")?;
+    let set_rootfs_enabled =
+        kernel.get_typed_func::<i32, i32>(&mut kernel_store, "kernel_set_rootfs_enabled")?;
 
     // --- Kernel-side process setup ------------------------------------------
     let scratch_ptr = alloc_scratch.call(&mut kernel_store, MIN_CHANNEL_SIZE as u32)?;
@@ -447,17 +451,41 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
         }
     }
 
+    // --- Sandboxed in-memory VFS: enable the overlay + tmpfs, before dispatch --
+    // (N1-I1a). Publish the wall clock first (the overlay stamps mutation
+    // metadata with it — see `kernel_set_rootfs_now`'s doc comment), then hand
+    // scratch-mount (`/tmp`, ...) and `/` authority to the kernel. No manifest
+    // is loaded and no blob provider is installed, so the overlay's `/` starts
+    // empty and every overlay-created file is stored inline
+    // (`rootfs::Entry::Regular(Vec<u8>)`) — `host_blob_read`/`host_fetch_archive`
+    // are never called and `host_open` is never reached; this is a fully
+    // sandboxed, writable, in-memory default with no host directory mounted.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now_sec = now.as_secs();
+    set_rootfs_now.call(
+        &mut kernel_store,
+        (now_sec as u32, (now_sec >> 32) as u32, now.subsec_nanos()),
+    )?;
+    set_tmpfs_enabled.call(&mut kernel_store, 1)?;
+    set_rootfs_enabled.call(&mut kernel_store, 1)?;
+
     // --- Guest instance on its own OS thread --------------------------------
     // Records the status the guest requests if it ever calls the `kernel_exit`
     // import directly (the SIGKILL fast-path); the normal exit path is
     // `SYS_exit_group` over the channel, handled by the pump.
     let import_exit_status = Arc::new(Mutex::new(None::<i32>));
+    let launch_argv: Arc<Vec<Vec<u8>>> =
+        Arc::new(options.argv.iter().map(|s| s.as_bytes().to_vec()).collect());
+    let launch_env: Arc<Vec<Vec<u8>>> =
+        Arc::new(options.env.iter().map(|s| s.as_bytes().to_vec()).collect());
     spawn_guest_thread(
         &engine,
         guest_module.clone(),
         guest_mem.clone(),
         layout,
         import_exit_status.clone(),
+        launch_argv,
+        launch_env,
     );
 
     // --- The channel pump ---------------------------------------------------
@@ -487,6 +515,13 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
         stderr: io.stderr.clone(),
         syscall_trace,
     })
+}
+
+/// [`run_guest`] with no argv/env (`argc == 0`, the guest CRT's historical
+/// "a.out" fallback). Kept for the pre-N1-I1a fixtures/tests that predate
+/// caller-supplied launch metadata and never touch argv/env.
+pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Result<RunOutcome> {
+    run_guest(kernel_wasm, guest_wasm, &GuestOptions::default())
 }
 
 /// Define the minimal native `host_*` capabilities the boot + trivial path
@@ -572,76 +607,24 @@ fn define_kernel_host_imports(
             },
         )?;
     }
-    // host_close(handle) -> i32: releases a host-FS read cursor if this is one
-    // of its handles; otherwise a no-op success (the stdio HostPipes 0/1/2 need
-    // nothing released and their captured buffers persist).
-    {
-        let fs = fs.clone();
-        linker.func_wrap("env", "host_close", move |_c: Caller<'_, ()>, handle: i64| -> i32 {
-            fs.cursors.lock().unwrap().remove(&handle);
-            0
-        })?;
-    }
-    // host_lstat / host_stat(path, len, stat_ptr) -> i32: serve the host FS.
-    // The kernel's path resolution probes the host, so `/` must exist as a
-    // directory (else no path resolves) and the served file must stat as a
-    // regular file; every other path is absent (-ENOENT), which sends the kernel
-    // to its internal namespaces (devfs, procfs).
-    for name in ["host_lstat", "host_stat"] {
-        let fs = fs.clone();
-        let mem = kernel_mem.clone();
-        linker.func_wrap(
-            "env",
-            name,
-            move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32, stat_ptr: i32| -> i32 {
-                if path_len < 0 {
-                    return -libc_errno::EINVAL;
-                }
-                let path = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
-                let sp = stat_ptr as u32 as usize;
-                if path == b"/" {
-                    unsafe { write_wasm_stat(&mem, sp, S_IFDIR | 0o755, 0, 2) };
-                    0
-                } else if path == fs.path {
-                    unsafe { write_wasm_stat(&mem, sp, S_IFREG | 0o644, fs.contents.len() as u64, 1) };
-                    0
-                } else {
-                    -libc_errno::ENOENT
-                }
-            },
-        )?;
-    }
-    // host_open(path, len, flags, mode) -> i64: open the one served file; every
-    // other path is absent. Hands out a fresh host handle with a zero read
-    // cursor. Signature returns i64 (a handle or negated errno).
-    {
-        let fs = fs.clone();
-        let mem = kernel_mem.clone();
-        linker.func_wrap(
-            "env",
-            "host_open",
-            move |_c: Caller<'_, ()>, path_ptr: i32, path_len: i32, _flags: i32, _mode: i32| -> i64 {
-                if path_len < 0 {
-                    return -(libc_errno::EINVAL as i64);
-                }
-                let path = unsafe { read_bytes(&mem, path_ptr as u32 as usize, path_len as usize) };
-                if path != fs.path {
-                    return -(libc_errno::ENOENT as i64);
-                }
-                let mut next = fs.next_handle.lock().unwrap();
-                let handle = *next;
-                *next += 1;
-                fs.cursors.lock().unwrap().insert(handle, 0);
-                handle
-            },
-        )?;
-    }
-    // host_read(handle, buf_ptr, len) -> i32:
-    //   - fd 0 (stdin, a HostPipe): a blocking source — EAGAIN on the first read
-    //     (so the kernel blocks and the pump parks it), then one line, then EOF.
-    //     This is how a real host pipe behaves when input arrives on a later
-    //     poll; the call counter just makes it deterministic.
-    //   - an open host-FS handle: serve the served file from its read cursor.
+    // host_close(handle) -> i32: no-op success. Nothing in this host holds a
+    // real host-FS cursor to release (the overlay/tmpfs own `/` and `/tmp`
+    // in-kernel; a host_open handle is never issued on this path) and the
+    // stdio HostPipes 0/1/2 need nothing released.
+    linker.func_wrap("env", "host_close", |_c: Caller<'_, ()>, _handle: i64| -> i32 { 0 })?;
+    // host_lstat / host_stat / host_open / host_pread / host_fstat are
+    // deliberately NOT wired here. With the in-kernel rootfs overlay owning
+    // `/` and no foreign mount prefixes registered (see `run_guest`), the
+    // kernel's path resolution never falls through to these host FS
+    // capabilities — `define_unknown_imports_as_traps` below makes that a
+    // loud trap if it ever did, rather than silently serving a host file this
+    // sandboxed default must not expose.
+    // host_read(handle, buf_ptr, len) -> i32: fd 0 (stdin, a HostPipe) is a
+    // blocking source — EAGAIN on the first read (so the kernel blocks and the
+    // pump parks it), then one line, then EOF. This is how a real host pipe
+    // behaves when input arrives on a later poll; the call counter just makes
+    // it deterministic. Every other handle is a bug (no other host-FS handle
+    // exists) and reports EBADF.
     {
         let fs = fs.clone();
         let mem = kernel_mem.clone();
@@ -652,76 +635,20 @@ fn define_kernel_host_imports(
                 if len < 0 {
                     return -libc_errno::EINVAL;
                 }
-                if handle == 0 {
-                    let mut calls = fs.stdin_reads.lock().unwrap();
-                    *calls += 1;
-                    return match *calls {
-                        1 => -libc_errno::EAGAIN, // not ready yet: block
-                        2 => {
-                            let n = HOST_STDIN_LINE.len().min(len as usize);
-                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n]) };
-                            n as i32
-                        }
-                        _ => 0, // EOF
-                    };
-                }
-                let mut cursors = fs.cursors.lock().unwrap();
-                let Some(off) = cursors.get_mut(&handle) else {
-                    return -libc_errno::EBADF;
-                };
-                let remaining = fs.contents.len().saturating_sub(*off);
-                let n = remaining.min(len as usize);
-                unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &fs.contents[*off..*off + n]) };
-                *off += n;
-                n as i32
-            },
-        )?;
-    }
-    // host_pread(handle, buf_ptr, len, offset_lo, offset_hi) -> i32: the kernel
-    // owns the file offset for host-backed files and reads at an explicit
-    // position, so this is the read path that actually fires (not host_read).
-    // Serve the file contents from the given offset.
-    {
-        let fs = fs.clone();
-        let mem = kernel_mem.clone();
-        linker.func_wrap(
-            "env",
-            "host_pread",
-            move |_c: Caller<'_, ()>, handle: i64, buf_ptr: i32, len: i32, off_lo: i32, off_hi: i32| -> i32 {
-                if len < 0 {
-                    return -libc_errno::EINVAL;
-                }
-                if !fs.cursors.lock().unwrap().contains_key(&handle) {
+                if handle != 0 {
                     return -libc_errno::EBADF;
                 }
-                let offset = ((off_hi as u32 as u64) << 32 | off_lo as u32 as u64) as usize;
-                let remaining = fs.contents.len().saturating_sub(offset);
-                let n = remaining.min(len as usize);
-                if n > 0 {
-                    unsafe {
-                        write_bytes(&mem, buf_ptr as u32 as usize, &fs.contents[offset..offset + n])
-                    };
+                let mut calls = fs.stdin_reads.lock().unwrap();
+                *calls += 1;
+                match *calls {
+                    1 => -libc_errno::EAGAIN, // not ready yet: block
+                    2 => {
+                        let n = HOST_STDIN_LINE.len().min(len as usize);
+                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n]) };
+                        n as i32
+                    }
+                    _ => 0, // EOF
                 }
-                n as i32
-            },
-        )?;
-    }
-    // host_fstat(handle, stat_ptr) -> i32: an open host-FS handle stats as the
-    // served regular file.
-    {
-        let fs = fs.clone();
-        let mem = kernel_mem.clone();
-        linker.func_wrap(
-            "env",
-            "host_fstat",
-            move |_c: Caller<'_, ()>, handle: i64, stat_ptr: i32| -> i32 {
-                if !fs.cursors.lock().unwrap().contains_key(&handle) {
-                    return -libc_errno::EBADF;
-                }
-                unsafe {
-                    write_wasm_stat(&mem, stat_ptr as u32 as usize, S_IFREG | 0o644, fs.contents.len() as u64, 1)
-                };
-                0
             },
         )?;
     }
@@ -764,6 +691,8 @@ fn spawn_guest_thread(
     guest_mem: SharedMemory,
     layout: ProcessLayout,
     import_exit_status: Arc<Mutex<Option<i32>>>,
+    launch_argv: Arc<Vec<Vec<u8>>>,
+    launch_env: Arc<Vec<Vec<u8>>>,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     thread::spawn(move || {
@@ -780,12 +709,51 @@ fn spawn_guest_thread(
         .unwrap();
         linker.define(&mut store, "env", "__channel_base", channel_base).unwrap();
 
-        // Host-provided launch metadata. argc/envc = 0 takes crt1.c's "a.out"
-        // fallback, so kernel_argv_read / kernel_environ_get are never called
-        // and are left to trap. secure_exec = 0 skips the fd-securing path;
-        // is_fork_child = 0 runs main rather than the exec path.
-        linker.func_wrap("kernel", "kernel_get_argc", || -> i32 { 0 }).unwrap();
-        linker.func_wrap("kernel", "kernel_environ_count", || -> i32 { 0 }).unwrap();
+        // Host-provided launch metadata: real argv/env from the caller's
+        // `GuestOptions`, matching the copy contract `host/src/worker-main.ts`'s
+        // `copyEntry` uses (a zero-capacity call is a side-effect-free length
+        // query; the CRT always makes one before its one exact-capacity copy —
+        // see `libc/musl-overlay/crt/crt1.c`). Empty argv/env (`argc/envc == 0`,
+        // `run_trivial_guest`'s default) still takes the CRT's "a.out" fallback,
+        // and `kernel_argv_read`/`kernel_environ_get` are simply never called
+        // (the CRT's per-index loop does not execute). secure_exec = 0 skips the
+        // fd-securing path; is_fork_child = 0 runs main rather than the exec path.
+        {
+            let argv = launch_argv.clone();
+            linker.func_wrap("kernel", "kernel_get_argc", move || -> i32 { argv.len() as i32 }).unwrap();
+        }
+        {
+            let env = launch_env.clone();
+            linker
+                .func_wrap("kernel", "kernel_environ_count", move || -> i32 { env.len() as i32 })
+                .unwrap();
+        }
+        {
+            let argv = launch_argv.clone();
+            let mem = guest_mem.clone();
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_argv_read",
+                    move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
+                        copy_launch_entry(&mem, &argv, index, buf_ptr, buf_max)
+                    },
+                )
+                .unwrap();
+        }
+        {
+            let env = launch_env.clone();
+            let mem = guest_mem.clone();
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_environ_get",
+                    move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
+                        copy_launch_entry(&mem, &env, index, buf_ptr, buf_max)
+                    },
+                )
+                .unwrap();
+        }
         linker.func_wrap("kernel", "kernel_get_secure_exec", || -> i32 { 0 }).unwrap();
         linker.func_wrap("kernel", "kernel_is_fork_child", || -> i32 { 0 }).unwrap();
         // The SIGKILL-only fast-path import. A normal exit never calls it; if it
@@ -854,8 +822,8 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
-        // argv_read / environ_get / the fork-exec set are imported but never
-        // reached on this path; a trap is the truthful boundary.
+        // The fork-exec import set is imported but never reached on this
+        // (non-forking) path; a trap is the truthful boundary.
         linker.define_unknown_imports_as_traps(&module).unwrap();
 
         let instance = match linker.instantiate(&mut store, &module) {
@@ -1524,12 +1492,45 @@ fn marshal_in(
     Ok(staged)
 }
 
-/// Minimal errno values the native host returns from `host_*` capabilities.
-/// Pinned here to avoid a `libc` dependency for four constants.
+/// Read one argv/environ entry for `kernel_argv_read`/`kernel_environ_get`,
+/// mirroring the TS host's `copyEntry` contract (`host/src/worker-main.ts`):
+/// an out-of-range `index` is `-EINVAL`; `buf_max == 0` is a side-effect-free
+/// length query (the CRT always probes once before allocating its lifetime
+/// region, then makes one exact-capacity copy); a `buf_max` too small for the
+/// entry is `-ERANGE`; a null destination with a nonzero capacity is
+/// `-EFAULT`. `entries` holds raw UTF-8 bytes with no NUL — the CRT appends
+/// its own after the copy.
+fn copy_launch_entry(
+    guest_mem: &SharedMemory,
+    entries: &[Vec<u8>],
+    index: u32,
+    buf_ptr: i32,
+    buf_max: u32,
+) -> i32 {
+    let Some(entry) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
+        return -libc_errno::EINVAL;
+    };
+    let len = entry.len();
+    if buf_max == 0 {
+        return len as i32;
+    }
+    if (buf_max as usize) < len {
+        return -libc_errno::ERANGE;
+    }
+    if buf_ptr == 0 {
+        return -libc_errno::EFAULT;
+    }
+    unsafe { write_bytes(guest_mem, buf_ptr as u32 as usize, entry) };
+    len as i32
+}
+
+/// Minimal errno values the native host returns from `host_*`/`kernel_*`
+/// capabilities. Pinned here to avoid a `libc` dependency for six constants.
 mod libc_errno {
-    pub const ENOENT: i32 = 2;
     pub const EIO: i32 = 5;
     pub const EBADF: i32 = 9;
     pub const EAGAIN: i32 = 11;
     pub const EINVAL: i32 = 22;
+    pub const EFAULT: i32 = 14;
+    pub const ERANGE: i32 = 34;
 }
