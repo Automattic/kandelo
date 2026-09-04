@@ -7,18 +7,25 @@
 //! journal, and the rewind driver. All of that is pure `&[u8] -> struct` /
 //! integer arithmetic — it needs no host reference identity.
 //!
-//! The parts Wasm genuinely CANNOT do are a small, sharply bounded set:
+//! The parts Wasm genuinely CANNOT do have shrunk to a sharply bounded set as
+//! each has been pushed into the injected binder (which, unlike this `no_std`
+//! Rust core, CAN hold a reference value). What REMAINS on this trait:
 //!
-//!   * hold / root a live `externref` (a JavaScript object or a native
-//!     `Rooted<ExternRef>`) so a garbage collector cannot free it mid-replay,
-//!   * resolve a `funcref` / static-root identity out of an engine
-//!     `WebAssembly.Table`,
-//!   * publish a reconstructed reference into the Wasm-GC anyref transit
-//!     `(ref null any)` table and read it back to verify it is non-null,
 //!   * mint / recognize a `WebAssembly.Tag` (for an activation's exceptions and
-//!     for the process-owned fork unwind transport),
-//!   * install a reference value into a reference-typed instance global,
-//!   * release every host root minted for one fork generation.
+//!     for the process-owned fork unwind transport).
+//!
+//! What was REMOVED (now injected wasm, see the removal NOTEs on the trait):
+//!
+//!   * resolve a `funcref` / static-root identity out of an engine
+//!     `WebAssembly.Table` (item 5: a wasm `table.get`),
+//!   * install a reference value into a reference-typed instance global (item 5:
+//!     a facet of child instantiation),
+//!   * hold / root a live `externref`, publish it into the Wasm-GC anyref
+//!     transit `(ref null any)` table, read it back to verify non-null, and
+//!     begin / release the per-fork host root generation (M2: the injected
+//!     `__wpk_fork_ref_decode_externref` import + a `DRIVE_OP_EXTERNREF_TRANSIT`
+//!     drive step; the single residual host externref import returns an
+//!     `externref`, not a `u32` ordinal — M2 Task 4).
 //!
 //! Today those live behind JavaScript closures on the host
 //! (`host/src/fork-reference-broker.ts`, `host/src/fork-anyref-transit.ts`,
@@ -128,38 +135,6 @@ pub struct HostThread(pub u32);
 /// the sibling [`ForkLifecycleCapabilities`] trait a host may implement
 /// independently.
 pub trait ForkHostCapabilities {
-    /// Establish a fresh host root scope for one child process image and return
-    /// its opaque [`HostGeneration`].
-    ///
-    /// WHY Wasm can't: the generation owns host-side GC roots (a strong `Map`
-    /// of externrefs, the anyref transit table, minted `Tag`s) whose lifetimes
-    /// only the host can manage; the module holds only the ordinal.
-    ///
-    /// When: at the start of a fork's replay, before any reference is resolved.
-    /// In production the host mints this at process spawn (mirroring
-    /// `ForkExternrefBroker.createGeneration(pid)`) and may seed the ordinal
-    /// into the module; exposing it here lets a table-owning backend (native /
-    /// mock) create it directly. `pid` is the child PID (`1..=0xffff_ffff`).
-    fn begin_generation(&mut self, pid: u32) -> Result<HostGeneration, Errno>;
-
-    /// Re-root the durable host `externref` named by `broker_handle` under
-    /// `generation` and return an opaque [`HostRef`] the module can publish into
-    /// the transit table.
-    ///
-    /// WHY Wasm can't: the value is a host-owned opaque identity (a JavaScript
-    /// object, or a native `Rooted<ExternRef>`); Wasm has no representation for
-    /// it beyond the integer handle the recipe carries. Backs
-    /// `ForkExternrefBroker.authorize` / `acquireFork` (the D6 plan's
-    /// `host_decode_externref`).
-    ///
-    /// When: REPLAY, once per externref node. `broker_handle` is the recipe's
-    /// `1..=0xffff_ffff` handle (see `reference_recipes::ReferenceRecipeNode`).
-    fn resolve_externref(
-        &mut self,
-        generation: HostGeneration,
-        broker_handle: u32,
-    ) -> Result<HostRef, Errno>;
-
     // NOTE (Phase 6 item 5 — minimize host surface): `resolve_funcref`,
     // `resolve_static_root`, and `install_reference_global` were REMOVED from
     // this trait. None is an engine-floor host capability, and the production
@@ -174,45 +149,29 @@ pub trait ForkHostCapabilities {
     //    imported ref global is fixed from the import object; there is no
     //    `global.set` hook), so it is a facet of `instantiate_child`, not a
     //    separate capability.
+    //
+    // NOTE (M2 — minimize host surface): `begin_generation`, `resolve_externref`,
+    // `transit_publish`, `transit_read`, and `release_generation` were REMOVED
+    // from this trait, mirroring item 5. The externref seam existed ONLY because
+    // this `no_std` Rust core cannot HOLD an `externref`, so it addressed every
+    // externref by an opaque `u32` ordinal and drove a host `resolve -> publish
+    // -> read-back` round trip. Injected wasm CAN hold an `externref`, so — like
+    // item 3c moved GC struct/array reconstruction into `fm_drive_execute` — that
+    // work moves into the module and the host calls disappear:
+    //  - externref decode is the injected guest import
+    //    `__wpk_fork_ref_decode_externref`, whose bound body resolves the handle
+    //    directly (the single residual host externref import returns an
+    //    `externref`, not a `u32` ordinal — see M2 Task 4), so no ordinal seam.
+    //  - transit publish + the R1 read-back become a
+    //    `DRIVE_OP_EXTERNREF_TRANSIT` drive step: `table.set(anyref_transit,
+    //    recipe + 1, any.convert_extern(resolve))` + a `ref.is_null` non-null
+    //    check, all wasm (binder-expressible).
+    //  - the per-fork host generation (begin/release) and its side-map of rooted
+    //    ordinals are no longer needed: identity is guaranteed at the source by
+    //    the host token cache's idempotent `materialize`, and the transit slots
+    //    are cleared with the module's own `table.fill(null)`.
     // Removing them shrinks the host contract every host (Node/browser/native)
     // must implement — the campaign's north star.
-
-    /// Publish the reconstructed reference `value` into the Wasm-GC anyref
-    /// transit table at `slot` (the canonical `recipe_id + 1`), so the guest
-    /// codec's `_fill` / `any.convert_extern` can consume it.
-    ///
-    /// WHY Wasm can't: the transit table is `(ref null any)`, which WebKit's
-    /// `WebAssembly.Table` constructor refuses to build (hence the fixed Wasm
-    /// provider in `fork-anyref-transit.ts`); and the module holds only an
-    /// ordinal, not the `anyref`. Backs `ForkAnyrefTransitTable.set` /
-    /// `ensureRecipeSlot` (the D6 plan's `host_gc_transit_publish`).
-    ///
-    /// When: REPLAY. ORDER IS LOAD-BEARING (rooting hazard R1/R2): the slot MUST
-    /// be published BEFORE the guest `_fill` that consumes it, so the GC cannot
-    /// collect the value between reconstruction and use.
-    fn transit_publish(
-        &mut self,
-        generation: HostGeneration,
-        slot: u32,
-        value: HostRef,
-    ) -> Result<(), Errno>;
-
-    /// Read back the transit `slot` and verify it is non-null, returning its
-    /// opaque [`HostRef`].
-    ///
-    /// WHY Wasm can't: reading a `(ref null any)` slot and checking it is
-    /// non-null is a host table op over a value the module cannot name directly.
-    /// This is the assert-non-null-before-fill guard (mirror
-    /// `fork-early-reference-provider.ts:1344-1349`). Backs
-    /// `ForkAnyrefTransitTable.get` (the D6 plan's `host_gc_transit_read`).
-    ///
-    /// When: REPLAY, immediately before driving a `_fill` that consumes `slot`.
-    /// A null (unpublished) slot is a truthful `EINVAL`, never a guessed value.
-    fn transit_read(
-        &mut self,
-        generation: HostGeneration,
-        slot: u32,
-    ) -> Result<HostRef, Errno>;
 
     /// Mint (or resolve) the `WebAssembly.Tag` for `module_activation`'s
     /// exception `layout_id`, returning an opaque [`HostTag`] the module routes
@@ -270,20 +229,6 @@ pub trait ForkHostCapabilities {
         tag: HostTag,
         candidate: HostRef,
     ) -> Result<bool, Errno>;
-
-    /// Release EVERY host root minted under `generation` — drop all per-fork
-    /// [`HostRef`]/[`HostTag`] handles and clear the anyref transit table
-    /// (`table.fill(null)`), in REVERSE activation order.
-    ///
-    /// WHY Wasm can't: releasing host GC roots (broker `Map` entries, transit
-    /// slots, minted `Tag`s) is host lifetime management; the module cannot free
-    /// a host root, and leaving one rooted is a leak that pins a whole process
-    /// image. Backs `ForkExternrefBroker.releaseGeneration` +
-    /// `ForkAnyrefTransitTable.clear` (the D6 plan's `host_release_ordinals`).
-    ///
-    /// When: on BOTH successful fork completion AND abort. After release the
-    /// generation is inactive: any further op on it is a truthful `EINVAL`.
-    fn release_generation(&mut self, generation: HostGeneration) -> Result<(), Errno>;
 }
 
 /// The fork LIFECYCLE floor: instantiate a child Wasm instance and launch the
@@ -339,199 +284,42 @@ pub trait ForkLifecycleCapabilities {
 }
 
 // ---------------------------------------------------------------------------
-// Test/mock backend — a `std` `HashMap`-backed fake that proves the seam is
-// real (not speculative). Compiled only for host `cargo test` (where `std` is
-// available; the crate is `no_std` only under wasm). It owns a handle table
-// exactly as the native backend will own its `handle -> Rooted<ExternRef>` map,
-// so a unit test can drive a full mint -> publish -> read-back -> release cycle
-// through the trait and assert the bookkeeping.
+// Test/mock backend. Since M2 the externref / anyref-transit / per-fork
+// generation seam is GONE (it moved into injected wasm), so the fake now backs
+// only the residual tag primitives: minting a per-activation exception tag and
+// providing / recognizing the process-owned unwind transport tag. It owns the
+// small `u32` tag table the Wasm module cannot, exactly as the native backend
+// will own its `handle -> Tag` map. Compiled only for host `cargo test`.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 pub mod mock {
     use super::*;
-    use std::collections::HashMap;
 
-    /// One rooted reference in the fake host table. Records enough to prove the
-    /// right identity was reconstructed, standing in for the real JS object /
-    /// native `Rooted<ExternRef>`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum MockValue {
-        Externref { broker_handle: u32 },
-    }
-
-    #[derive(Default)]
-    struct GenState {
-        refs: HashMap<u32, MockValue>,
-        next_ref: u32,
-        transit: HashMap<u32, u32>,
-        tags: HashMap<u32, (u32, u32)>,
-        next_tag: u32,
-        active: bool,
-    }
-
-    /// A `HashMap`-backed [`ForkHostCapabilities`] fake for tests. Owns the host
-    /// identity table the Wasm module cannot; the same `u32` seam the native
-    /// backend uses.
+    /// A minimal [`ForkHostCapabilities`] fake for tests, backing the residual
+    /// tag primitives (exception tag mint + unwind transport tag).
     #[derive(Default)]
     pub struct MockForkHost {
-        generations: HashMap<u32, GenState>,
-        next_generation: u32,
+        /// Monotonic id source for minted exception tags.
+        next_tag: u32,
+        /// The process-lifetime unwind transport tag, once provided.
         unwind_tag: Option<u32>,
-        /// When set, `transit_read` returns a DIFFERENT ordinal than was
-        /// published — an adversarial engine that lost the anyref slot's
-        /// identity. Drives the R1 non-null/identity guard in
-        /// `ReferenceReplayDriver::drive_reconstruction` to a truthful `EINVAL`.
-        corrupt_transit: bool,
-        /// Records the recipe handles passed to `resolve_externref`, in call
-        /// order (test inspector: proves the module drove the seam per node).
-        resolved_externref_handles: Vec<u32>,
-        /// Count of `mint_exception_tag` calls (test inspector). D6.3a asserts
-        /// this stays 0 across an exnref drive: the drive's Exnref arm is inert
-        /// (the guest export mints/throws its own module-local tag), so the drive
-        /// must never mint a tag.
-        mint_exception_tag_calls: u32,
     }
 
     impl MockForkHost {
         pub fn new() -> Self {
             Self::default()
         }
-
-        /// Make every `transit_read` hand back a corrupted (non-matching)
-        /// ordinal, so a publish→read identity check fails (test inspector).
-        pub fn corrupt_transit_reads(&mut self) {
-            self.corrupt_transit = true;
-        }
-
-        /// The externref broker handles `resolve_externref` was called with, in
-        /// order (test inspector: proof the drive resolved each externref node).
-        pub fn resolved_externref_handles(&self) -> &[u32] {
-            &self.resolved_externref_handles
-        }
-
-        /// Number of times `mint_exception_tag` was called (test inspector).
-        pub fn mint_exception_tag_calls(&self) -> u32 {
-            self.mint_exception_tag_calls
-        }
-
-        /// Number of live rooted references in `generation` (test inspector).
-        pub fn live_ref_count(&self, generation: HostGeneration) -> usize {
-            self.generations
-                .get(&generation.0)
-                .filter(|g| g.active)
-                .map(|g| g.refs.len())
-                .unwrap_or(0)
-        }
-
-        /// Number of published (non-null) transit slots (test inspector).
-        pub fn transit_slot_count(&self, generation: HostGeneration) -> usize {
-            self.generations
-                .get(&generation.0)
-                .filter(|g| g.active)
-                .map(|g| g.transit.len())
-                .unwrap_or(0)
-        }
-
-        /// Whether `generation` is still active (test inspector).
-        pub fn is_active(&self, generation: HostGeneration) -> bool {
-            self.generations
-                .get(&generation.0)
-                .map(|g| g.active)
-                .unwrap_or(false)
-        }
-
-        fn active_gen_mut(&mut self, generation: HostGeneration) -> Result<&mut GenState, Errno> {
-            match self.generations.get_mut(&generation.0) {
-                Some(g) if g.active => Ok(g),
-                _ => Err(Errno::EINVAL), // unknown or released generation
-            }
-        }
-
-        fn mint_ref(&mut self, generation: HostGeneration, value: MockValue) -> Result<HostRef, Errno> {
-            let g = self.active_gen_mut(generation)?;
-            g.next_ref = g.next_ref.checked_add(1).ok_or(Errno::ENOSPC)?;
-            let id = g.next_ref;
-            g.refs.insert(id, value);
-            Ok(HostRef(id))
-        }
     }
 
     impl ForkHostCapabilities for MockForkHost {
-        fn begin_generation(&mut self, pid: u32) -> Result<HostGeneration, Errno> {
-            if pid == 0 {
-                return Err(Errno::EINVAL);
-            }
-            self.next_generation = self.next_generation.checked_add(1).ok_or(Errno::ENOSPC)?;
-            let id = self.next_generation;
-            self.generations.insert(
-                id,
-                GenState {
-                    active: true,
-                    ..GenState::default()
-                },
-            );
-            Ok(HostGeneration(id))
-        }
-
-        fn resolve_externref(
-            &mut self,
-            generation: HostGeneration,
-            broker_handle: u32,
-        ) -> Result<HostRef, Errno> {
-            if broker_handle == 0 {
-                return Err(Errno::EINVAL); // externref handles are 1..=0xffff_ffff
-            }
-            let host_ref = self.mint_ref(generation, MockValue::Externref { broker_handle })?;
-            self.resolved_externref_handles.push(broker_handle);
-            Ok(host_ref)
-        }
-
-        fn transit_publish(
-            &mut self,
-            generation: HostGeneration,
-            slot: u32,
-            value: HostRef,
-        ) -> Result<(), Errno> {
-            let g = self.active_gen_mut(generation)?;
-            if !g.refs.contains_key(&value.0) {
-                return Err(Errno::EINVAL); // value not rooted in this generation
-            }
-            g.transit.insert(slot, value.0);
-            Ok(())
-        }
-
-        fn transit_read(
-            &mut self,
-            generation: HostGeneration,
-            slot: u32,
-        ) -> Result<HostRef, Errno> {
-            let corrupt = self.corrupt_transit;
-            let g = self.active_gen_mut(generation)?;
-            // Non-null guard: an unpublished slot is a truthful EINVAL.
-            let published = g.transit.get(&slot).copied().ok_or(Errno::EINVAL)?;
-            // Adversarial mode: return an ordinal that is non-null but does NOT
-            // match what was published, so the drive's identity assert fires.
-            let value = if corrupt {
-                published.wrapping_add(1).max(1)
-            } else {
-                published
-            };
-            Ok(HostRef(value))
-        }
-
         fn mint_exception_tag(
             &mut self,
-            generation: HostGeneration,
-            module_activation: u32,
-            layout_id: u32,
+            _generation: HostGeneration,
+            _module_activation: u32,
+            _layout_id: u32,
         ) -> Result<HostTag, Errno> {
-            self.mint_exception_tag_calls =
-                self.mint_exception_tag_calls.saturating_add(1);
-            let g = self.active_gen_mut(generation)?;
-            g.next_tag = g.next_tag.checked_add(1).ok_or(Errno::ENOSPC)?;
-            let id = g.next_tag;
-            g.tags.insert(id, (module_activation, layout_id));
-            Ok(HostTag(id))
+            self.next_tag = self.next_tag.checked_add(1).ok_or(Errno::ENOSPC)?;
+            Ok(HostTag(self.next_tag))
         }
 
         fn provide_unwind_transport_tag(&mut self) -> Result<HostTag, Errno> {
@@ -550,20 +338,6 @@ pub mod mock {
                 None => Err(Errno::EINVAL), // transport tag never provided
             }
         }
-
-        fn release_generation(&mut self, generation: HostGeneration) -> Result<(), Errno> {
-            let g = self.active_gen_mut(generation)?;
-            // Clear the transit table (table.fill(null)) and drop every rooted
-            // handle + tag, then retire the generation.
-            g.transit.clear();
-            g.refs.clear();
-            g.tags.clear();
-            g.active = false;
-            Ok(())
-        }
-    }
-
-    impl MockForkHost {
     }
 }
 
@@ -572,67 +346,11 @@ mod tests {
     use super::mock::MockForkHost;
     use super::*;
 
-    // A trivial reference-reconstruction sequence driven THROUGH the trait:
-    // mint (resolve a durable externref) -> publish into the GC transit ->
-    // read it back (the non-null guard) -> release the generation. Asserts the
-    // handle bookkeeping and the generation-release lifecycle behave, proving
-    // the seam is usable rather than speculative.
-    #[test]
-    fn reference_reconstruction_mint_publish_read_release_cycle() {
-        let mut host = MockForkHost::new();
-        let generation = host.begin_generation(42).expect("begin generation");
-        assert!(host.is_active(generation));
-        assert_eq!(host.live_ref_count(generation), 0);
-
-        // Mint / hold: re-root the durable externref named by broker handle 7.
-        let value = host
-            .resolve_externref(generation, 7)
-            .expect("resolve externref");
-        assert_eq!(host.live_ref_count(generation), 1);
-
-        // Publish into the GC anyref transit at the canonical recipe slot.
-        host.transit_publish(generation, 1, value)
-            .expect("publish into transit");
-        assert_eq!(host.transit_slot_count(generation), 1);
-
-        // Read it back — the assert-non-null-before-fill guard — and confirm it
-        // is the SAME opaque ordinal (identity preserved across the seam).
-        let read_back = host.transit_read(generation, 1).expect("read back slot");
-        assert_eq!(read_back, value);
-
-        // An unpublished slot is a truthful failure, never a guessed value.
-        assert_eq!(host.transit_read(generation, 2), Err(Errno::EINVAL));
-
-        // Release drops every root and clears the transit; the generation is
-        // then inactive and every further op fails truthfully.
-        host.release_generation(generation).expect("release generation");
-        assert!(!host.is_active(generation));
-        assert_eq!(host.live_ref_count(generation), 0);
-        assert_eq!(host.transit_slot_count(generation), 0);
-        assert_eq!(host.transit_read(generation, 1), Err(Errno::EINVAL));
-        assert_eq!(
-            host.resolve_externref(generation, 7),
-            Err(Errno::EINVAL),
-            "a released generation roots no new references"
-        );
-        assert_eq!(
-            host.release_generation(generation),
-            Err(Errno::EINVAL),
-            "double release is a truthful failure"
-        );
-    }
-
-    #[test]
-    fn publishing_an_unrooted_handle_is_rejected() {
-        let mut host = MockForkHost::new();
-        let generation = host.begin_generation(1).expect("begin generation");
-        // A handle never minted in this generation cannot be published: the
-        // transit table must only ever root values the host actually holds.
-        assert_eq!(
-            host.transit_publish(generation, 1, HostRef(999)),
-            Err(Errno::EINVAL)
-        );
-    }
+    // NOTE (M2): the externref mint -> transit publish -> read-back -> release
+    // cycle test was REMOVED with those trait methods (they moved into injected
+    // wasm; end-to-end externref identity is validated at the wasm level in M2
+    // Tasks 3/6, and the transit-step PLAN emission in the `reference_replay` /
+    // `drive_plan` unit tests). What remains here is the residual tag seam.
 
     #[test]
     fn unwind_transport_tag_is_stable_and_recognized() {

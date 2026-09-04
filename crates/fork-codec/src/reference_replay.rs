@@ -28,8 +28,7 @@ use wasm_posix_shared::Errno;
 
 use alloc::vec::Vec;
 
-use crate::host_capabilities::{ForkHostCapabilities, HostGeneration, HostRef};
-use crate::reference_recipes::{node_edges, ReferenceRecipeNode};
+use crate::reference_recipes::{node_edges, ReferenceRecipeEntry, ReferenceRecipeNode};
 use crate::reference_transaction::SegmentedReferenceTransaction;
 
 /// The resolved funcref recipe for one node: the activation whose function
@@ -51,38 +50,26 @@ pub struct StaticRootTarget {
     pub static_root_ordinal: u32,
 }
 
-/// The result of one reference-reconstruction drive: the host identities the
-/// module re-rooted for this fork, the host generation that owns them, and how
-/// many references it reconstructed. `host_refs` is indexed by recipe id; a slot
-/// is `None` for a node the drive did not re-root (Null / Funcref / a
-/// not-yet-admitted aggregate). The module stashes this alongside its driver so
-/// the once-per-value host roots outlive the drive until fork teardown calls
-/// `ForkHostCapabilities::release_generation(generation)`.
+/// The result of one reference-reconstruction bookkeeping pass: how many
+/// externref nodes the fork reconstructs. Since M2 this carries NO host
+/// identities and NO host generation: externref resolution + transit publish no
+/// longer cross a Rust host seam. A directly held externref is decoded lazily by
+/// the injected guest import `__wpk_fork_ref_decode_externref`, and a
+/// GC/exnref-reachable externref is published into the anyref transit by a
+/// [`DRIVE_OP_EXTERNREF_TRANSIT`](crate::drive_plan::DRIVE_OP_EXTERNREF_TRANSIT)
+/// drive step (injected wasm, which — unlike this `no_std` Rust — can hold an
+/// `externref`). What remains is the proof-of-use count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconstructionState {
-    host_refs: Vec<Option<HostRef>>,
-    generation: HostGeneration,
     reconstructed: u32,
 }
 
 impl ReconstructionState {
-    /// The host generation that owns every root re-established by the drive. It
-    /// is `HostGeneration(0)` (the reserved sentinel) when the drive needed no
-    /// host identity at all (a funcref/null graph), in which case no generation
-    /// was begun and nothing needs releasing.
-    pub fn generation(&self) -> HostGeneration {
-        self.generation
-    }
-
-    /// The number of references the drive re-rooted through the host seam (the
-    /// externref count for D6.2). Proof-of-use for `fm_externrefs_resolved`.
+    /// The number of externref nodes the fork reconstructs. Proof-of-use for
+    /// `fm_externrefs_resolved` (the injected wasm bumps the live counter when it
+    /// resolves each handle; this is the graph-derived expectation).
     pub fn reconstructed(&self) -> u32 {
         self.reconstructed
-    }
-
-    /// The host ref the drive re-rooted for `recipe_id`, if any.
-    pub fn host_ref(&self, recipe_id: u32) -> Option<HostRef> {
-        self.host_refs.get(recipe_id as usize).copied().flatten()
     }
 }
 
@@ -350,137 +337,39 @@ impl ReferenceReplayDriver {
     /// path is exercised by hand-built graphs now and by real forks once the
     /// aggregate kinds (D6.3 exnref, D6.4 struct/array) are admitted.
     pub fn transit_rooted_recipes(&self) -> Vec<u32> {
-        let nodes = &self.transaction.nodes;
-        // Seed the reachability walk from every aggregate consumer's edges.
-        let mut pending: Vec<u32> = Vec::new();
-        for entry in nodes {
-            if matches!(
-                entry.node,
-                ReferenceRecipeNode::Exnref { .. }
-                    | ReferenceRecipeNode::Struct { .. }
-                    | ReferenceRecipeNode::Array { .. }
-            ) {
-                pending.extend_from_slice(node_edges(&entry.node));
-            }
-        }
-        let mut seen = alloc::vec![false; nodes.len()];
-        let mut rooted: Vec<u32> = Vec::new();
-        while let Some(id) = pending.pop() {
-            let index = id as usize;
-            match seen.get(index) {
-                Some(false) => seen[index] = true,
-                _ => continue, // out of range (impossible on a decoded graph) or already seen
-            }
-            let node = &nodes[index].node;
-            if matches!(node, ReferenceRecipeNode::Externref { .. }) {
-                rooted.push(id);
-            }
-            pending.extend_from_slice(node_edges(node));
-        }
-        rooted.sort_unstable();
-        rooted.dedup();
-        rooted
+        transit_rooted_recipes(&self.transaction.nodes)
     }
 
-    /// Drive the once-per-value host reconstruction the co-resident module
-    /// orchestrates: obtain each externref's durable host identity, then root the
-    /// transit-reachable ones in the anyref transit. The MODULE owns the ORDER;
-    /// the HOST owns the identity, addressed only by opaque `u32` ordinal, so no
-    /// live reference ever crosses into the module.
+    /// Bookkeeping pass over the reference graph: count the externref nodes the
+    /// fork reconstructs. Proof-of-use for `fm_externrefs_resolved`.
     ///
-    /// PHASE A (obtain): walk the nodes in id order and re-root each externref
-    /// via `resolve_externref`, recording `recipe_id -> HostRef`. Null / Funcref
-    /// / StaticRoot / I31 need no host identity here (funcref stays the
-    /// wasm→wasm `table.get` path from D6.1). The aggregate arms are the D6.3 /
-    /// D6.4 seams; today they are inert (the caller's gate keeps aggregate graphs
-    /// out of production, and the hand-built transit unit test walks them).
+    /// Since M2 this NO LONGER resolves externrefs or publishes the anyref
+    /// transit through a Rust host seam. `fork-codec` is `no_std` Rust and cannot
+    /// hold an `externref`; the old seam (`resolve_externref` -> u32,
+    /// `transit_publish`, `transit_read`) existed ONLY to work around that. That
+    /// work is now INJECTED WASM (which can hold an `externref`):
     ///
-    /// PHASE B (root): for each `transit_rooted_recipes()` id, publish the
-    /// obtained ref into the transit at `recipe_id + 1`, then read it back and
-    /// assert the SAME identity (`Err(EINVAL)` otherwise — the R1 guard that a
-    /// reachable slot is non-null and unmoved before any GC fill consumes it).
+    /// * a directly held externref is decoded lazily by the guest import
+    ///   `__wpk_fork_ref_decode_externref` (no plan step), and
+    /// * a GC/exnref-reachable externref is published into the anyref transit at
+    ///   slot `recipe + 1` by a
+    ///   [`DRIVE_OP_EXTERNREF_TRANSIT`](crate::drive_plan::DRIVE_OP_EXTERNREF_TRANSIT)
+    ///   step emitted by
+    ///   [`build_drive_plan`](crate::drive_plan::build_drive_plan) and executed by
+    ///   the injected `fm_drive_execute` shim, which resolves the handle,
+    ///   `any.convert_extern`s it, `table.set`s the transit, and asserts non-null
+    ///   (the R1 rooting guard the retired host PHASE-B read-back enforced).
     ///
-    /// The host generation is opened only when there is host-backed work
-    /// (an externref to root, or a transit slot to publish); a pure funcref/null
-    /// graph opens none (its `generation` is the reserved sentinel `0`), so the
-    /// inert-stub D6.1 path never consults the host. On success the returned
-    /// [`ReconstructionState`] holds the live roots until fork teardown releases
-    /// the generation.
-    pub fn drive_reconstruction<H: ForkHostCapabilities>(
-        &self,
-        host: &mut H,
-        pid: u32,
-    ) -> Result<ReconstructionState, Errno> {
-        let nodes = &self.transaction.nodes;
-        let mut host_refs: Vec<Option<HostRef>> = alloc::vec![None; nodes.len()];
+    /// See the M2 design ruling. So this pass keeps only the graph-derived
+    /// externref count; the ordering-and-identity work lives in the drive plan.
+    pub fn drive_reconstruction(&self) -> Result<ReconstructionState, Errno> {
         let mut reconstructed: u32 = 0;
-
-        let transit_recipes = self.transit_rooted_recipes();
-        let needs_host = !transit_recipes.is_empty()
-            || nodes
-                .iter()
-                .any(|entry| matches!(entry.node, ReferenceRecipeNode::Externref { .. }));
-
-        // Only open a host root scope when there is identity to re-root; a
-        // funcref/null graph leaves the sentinel generation and never calls out.
-        let generation = if needs_host {
-            host.begin_generation(pid)?
-        } else {
-            HostGeneration(0)
-        };
-
-        // PHASE A — obtain each reconstructed value's host identity.
-        for entry in nodes {
-            match &entry.node {
-                ReferenceRecipeNode::Externref { handle } => {
-                    let host_ref = host.resolve_externref(generation, *handle)?;
-                    host_refs[entry.id as usize] = Some(host_ref);
-                    reconstructed = reconstructed.checked_add(1).ok_or(Errno::ENOSPC)?;
-                }
-                // Funcref stays the wasm→wasm table.get path (D6.1); i31 is a
-                // scalar leaf (no host call, no transit); a static-root is
-                // published into the anyref transit by a DRIVE_OP_STATIC_ROOT step
-                // (`table.get` catalog + `table.set` transit, both wasm), not
-                // through the host seam. None need host identity in this phase.
-                ReferenceRecipeNode::Null
-                | ReferenceRecipeNode::Funcref { .. }
-                | ReferenceRecipeNode::StaticRoot { .. }
-                | ReferenceRecipeNode::I31 { .. } => {}
-                // Exnref (D6.3a): admitted; the guest export materializes the
-                // exception against its own module-local tag, so this arm stays a
-                // no-op while PHASE B still roots the exnref's reachable externref
-                // payloads via the transit.
-                ReferenceRecipeNode::Exnref { .. } => {}
-                // Struct/Array (D6.4a): admitted; the guest drives allocate/fill
-                // under the JS order (the module precedes the guest, so it cannot
-                // import `_gc_allocate`/`_gc_fill`), so this arm stays inert. The
-                // module roots the struct/array-reachable externref leaves via
-                // PHASE B (`transit_rooted_recipes` seeds from these edges). Moving
-                // the drive-order into Rust is D6.4b.
-                ReferenceRecipeNode::Struct { .. } | ReferenceRecipeNode::Array { .. } => {}
+        for entry in &self.transaction.nodes {
+            if matches!(entry.node, ReferenceRecipeNode::Externref { .. }) {
+                reconstructed = reconstructed.checked_add(1).ok_or(Errno::ENOSPC)?;
             }
         }
-
-        // PHASE B — root every transit-reachable externref, then verify identity.
-        for recipe_id in transit_recipes {
-            let host_ref = host_refs
-                .get(recipe_id as usize)
-                .copied()
-                .flatten()
-                .ok_or(Errno::EINVAL)?;
-            let slot = recipe_id.checked_add(1).ok_or(Errno::EINVAL)?;
-            host.transit_publish(generation, slot, host_ref)?;
-            let read_back = host.transit_read(generation, slot)?;
-            if read_back != host_ref {
-                return Err(Errno::EINVAL); // R1: slot lost identity before consume
-            }
-        }
-
-        Ok(ReconstructionState {
-            host_refs,
-            generation,
-            reconstructed,
-        })
+        Ok(ReconstructionState { reconstructed })
     }
 
     /// The distinct set of activations any Funcref recipe in the graph names,
@@ -512,6 +401,50 @@ impl ReferenceReplayDriver {
         activations.dedup();
         activations
     }
+}
+
+/// The recipe ids of externrefs a typed/exnref consumer reaches — the externrefs
+/// that MUST be staged in the anyref transit table (at slot `recipe_id + 1`)
+/// before the consumer's GC fill / exception materialize reads them (the R1
+/// rooting hazard). Sorted ascending and deduped, so an aliased leaf reached from
+/// several edges is rooted exactly once. This is the set
+/// [`build_drive_plan`](crate::drive_plan::build_drive_plan) turns into
+/// [`DRIVE_OP_EXTERNREF_TRANSIT`](crate::drive_plan::DRIVE_OP_EXTERNREF_TRANSIT)
+/// drive steps.
+///
+/// EMPTY for a plain externref-in-a-local graph: a bare externref is decoded
+/// straight through the lazy `__wpk_fork_ref_decode_externref` guest import and
+/// never enters the transit.
+pub(crate) fn transit_rooted_recipes(nodes: &[ReferenceRecipeEntry]) -> Vec<u32> {
+    // Seed the reachability walk from every aggregate consumer's edges.
+    let mut pending: Vec<u32> = Vec::new();
+    for entry in nodes {
+        if matches!(
+            entry.node,
+            ReferenceRecipeNode::Exnref { .. }
+                | ReferenceRecipeNode::Struct { .. }
+                | ReferenceRecipeNode::Array { .. }
+        ) {
+            pending.extend_from_slice(node_edges(&entry.node));
+        }
+    }
+    let mut seen = alloc::vec![false; nodes.len()];
+    let mut rooted: Vec<u32> = Vec::new();
+    while let Some(id) = pending.pop() {
+        let index = id as usize;
+        match seen.get(index) {
+            Some(false) => seen[index] = true,
+            _ => continue, // out of range (impossible on a decoded graph) or already seen
+        }
+        let node = &nodes[index].node;
+        if matches!(node, ReferenceRecipeNode::Externref { .. }) {
+            rooted.push(id);
+        }
+        pending.extend_from_slice(node_edges(node));
+    }
+    rooted.sort_unstable();
+    rooted.dedup();
+    rooted
 }
 
 #[cfg(test)]
@@ -707,10 +640,50 @@ mod tests {
         assert_eq!(funcref_only().funcref_activations(), vec![0]);
     }
 
-    // --- D6.2: externref reconstruction drive through the host seam --------
+    // --- externref reconstruction as drive-plan steps (M2) -----------------
+    //
+    // Since M2 the externref resolve + transit publish + R1 read-back no longer
+    // cross a Rust host seam (that seam was deleted). So these tests assert the
+    // PLAN STRUCTURE `build_drive_plan` emits — a DRIVE_OP_EXTERNREF_TRANSIT step
+    // for every GC/exnref-reachable externref, in Phase 0 (before any
+    // allocate/fill/materialize that reads it) — plus the graph-derived
+    // `drive_reconstruction` proof-of-use count. End-to-end externref IDENTITY
+    // reconstruction (resolve the handle, `any.convert_extern`, non-null check)
+    // is validated at the wasm level in M2 Tasks 3/6, not here in `no_std` Rust.
 
-    use crate::host_capabilities::mock::MockForkHost;
-    use crate::host_capabilities::ForkHostCapabilities;
+    use crate::drive_plan::{
+        build_drive_plan, drive_table_base, DrivePlanHints, DriveStep, DRIVE_OP_ALLOC,
+        DRIVE_OP_EXN, DRIVE_OP_EXTERNREF_TRANSIT, DRIVE_OP_FILL,
+    };
+
+    /// A minimal [`DrivePlanHints`] for these graphs: no constructor
+    /// dependencies, no defaultable shells, no i31 owner, and a configurable exn
+    /// owner. Enough to drive `build_drive_plan` over the struct/array/exnref
+    /// graphs below (whose typed nodes carry no allocation dependencies).
+    #[derive(Default)]
+    struct TestHints {
+        exn_owner: Option<u32>,
+    }
+
+    impl DrivePlanHints for TestHints {
+        fn allocation_dependencies(&self, _recipe_id: u32) -> &[u32] {
+            &[]
+        }
+        fn is_defaultable_shell(&self, _recipe_id: u32) -> bool {
+            false
+        }
+        fn i31_owner(&self) -> Option<u32> {
+            None
+        }
+        fn exn_owner(&self, _recipe_id: u32) -> Option<u32> {
+            self.exn_owner
+        }
+    }
+
+    /// A step's (op, recipe) — the shape the plan-order assertions care about.
+    fn op_recipe(step: &DriveStep) -> (u32, u32) {
+        (step.op, step.recipe)
+    }
 
     /// A plain externref-in-a-local graph: Null at id 0, two durable externrefs.
     /// No aggregate consumer, so nothing is transit-rooted (D6.2 case).
@@ -758,70 +731,50 @@ mod tests {
     }
 
     #[test]
-    fn drive_resolves_each_externref_node_through_the_host() {
-        let mut host = MockForkHost::new();
+    fn plain_externref_graph_emits_no_transit_step_but_counts_each_externref() {
+        // A plain externref graph has no GC/exnref consumer, so no externref
+        // enters the transit: `build_drive_plan` emits NOTHING (each externref is
+        // decoded lazily by the guest import), and `drive_reconstruction` reports
+        // the graph-derived proof-of-use count (two externrefs).
         let driver = plain_externref();
-        let state = driver.drive_reconstruction(&mut host, 99).expect("drive");
-
-        // Every externref node was resolved through the seam, in node order.
-        assert_eq!(host.resolved_externref_handles(), &[7, 42]);
-        assert_eq!(state.reconstructed(), 2);
-        // Null carries no host ref; each externref recorded one.
-        assert!(state.host_ref(0).is_none());
-        assert!(state.host_ref(1).is_some());
-        assert!(state.host_ref(2).is_some());
-
-        // The generation is live and roots exactly the two externrefs; a plain
-        // externref graph publishes nothing into the transit.
-        let generation = state.generation();
-        assert!(host.is_active(generation));
-        assert_eq!(host.live_ref_count(generation), 2);
-        assert_eq!(host.transit_slot_count(generation), 0);
-
-        // Release drops the roots (the fork-teardown step drive does not do).
-        host.release_generation(generation).expect("release");
-        assert!(!host.is_active(generation));
+        let plan = build_drive_plan(&driver.transaction().nodes, &TestHints::default()).unwrap();
+        assert!(plan.is_empty(), "no reachable externref -> no transit step");
+        assert_eq!(driver.drive_reconstruction().unwrap().reconstructed(), 2);
     }
 
     #[test]
-    fn funcref_only_drive_touches_no_host() {
-        // A funcref/null graph needs no host identity (funcref stays wasm→wasm
-        // via table.get). The drive must not open a generation, so an inert host
-        // is never consulted — preserving the D6.1 path with inert stubs.
-        let mut host = MockForkHost::new();
-        let state = funcref_only()
-            .drive_reconstruction(&mut host, 1)
-            .expect("drive");
-        assert_eq!(state.reconstructed(), 0);
-        assert!(host.resolved_externref_handles().is_empty());
-        // No generation was begun (sentinel 0), so nothing is active.
-        assert!(!host.is_active(state.generation()));
+    fn funcref_only_graph_reconstructs_no_externref() {
+        // A funcref/null graph has no externref: zero proof-of-use count and an
+        // empty drive plan (the funcref shim + lazy null handle it).
+        let driver = funcref_only();
+        assert_eq!(driver.drive_reconstruction().unwrap().reconstructed(), 0);
+        let plan = build_drive_plan(&driver.transaction().nodes, &TestHints::default()).unwrap();
+        assert!(plan.is_empty());
     }
 
     #[test]
-    fn drive_publishes_and_verifies_transit_for_reachable_externref() {
-        let mut host = MockForkHost::new();
+    fn struct_over_externref_publishes_the_reachable_externref_before_the_fill() {
+        // The struct-field externref (recipe 1) is reachable, so `build_drive_plan`
+        // emits a DRIVE_OP_EXTERNREF_TRANSIT step for it in Phase 0, BEFORE the
+        // struct's ALLOC and FILL that read it out of the transit. `recipe` names
+        // the transit slot (recipe + 1); `slot`/`arg` are unused for the step.
         let driver = struct_over_externref();
-        let state = driver.drive_reconstruction(&mut host, 3).expect("drive");
-
-        // PHASE A resolved the externref; PHASE B published it into the transit
-        // at recipe_id+1 and read it back with matching identity.
-        assert_eq!(host.resolved_externref_handles(), &[5]);
-        assert_eq!(state.reconstructed(), 1);
         assert_eq!(driver.transit_rooted_recipes(), vec![1]);
-        assert_eq!(host.transit_slot_count(state.generation()), 1);
-    }
-
-    #[test]
-    fn drive_rejects_lost_transit_identity_without_panic() {
-        // An engine that loses the anyref slot's identity between publish and
-        // read is a truthful EINVAL (R1 guard), never a silent wrong value.
-        let mut host = MockForkHost::new();
-        host.corrupt_transit_reads();
+        let plan = build_drive_plan(&driver.transaction().nodes, &TestHints::default()).unwrap();
         assert_eq!(
-            struct_over_externref().drive_reconstruction(&mut host, 3),
-            Err(Errno::EINVAL)
+            plan.iter().map(op_recipe).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_EXTERNREF_TRANSIT, 1),
+                (DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_FILL, 0),
+            ]
         );
+        // The transit step drives no guest export / drive-table slot.
+        let transit = &plan[0];
+        assert_eq!(transit.slot, 0);
+        assert_eq!(transit.arg, 0);
+        // Proof-of-use: one externref reconstructed.
+        assert_eq!(driver.drive_reconstruction().unwrap().reconstructed(), 1);
     }
 
     // --- D6.3a: exnref admission + transit into production ------------------
@@ -863,39 +816,30 @@ mod tests {
     }
 
     #[test]
-    fn drive_roots_exnref_reachable_externref_without_minting_a_tag() {
-        let mut host = MockForkHost::new();
+    fn exnref_reachable_externref_is_published_before_the_materialize() {
+        // The exnref payload externref (recipe 1) is reachable, so it is published
+        // into the transit (Phase 0) BEFORE the exnref's EXN materialize step that
+        // reads it. The materialize runs against the guest's own module-local tag
+        // (the EXN step drives `__wpk_fork_exception_materialize`); no host tag is
+        // minted anywhere in the plan.
         let driver = exnref_over_externref();
-        let state = driver.drive_reconstruction(&mut host, 5).expect("drive");
-
-        // PHASE A resolved the reachable externref payload; PHASE B published it
-        // into the transit at recipe_id+1 and read it back with matching
-        // identity (the R1 rooting guard the guest exception materialize relies
-        // on).
-        assert_eq!(host.resolved_externref_handles(), &[8]);
-        assert_eq!(state.reconstructed(), 1);
         assert_eq!(driver.transit_rooted_recipes(), vec![1]);
-        assert_eq!(host.transit_slot_count(state.generation()), 1);
-
-        // The exnref node was admitted (proof-of-use count for
-        // `fm_exnrefs_reconstructed`) ...
-        assert_eq!(driver.exnref_node_count(), 1);
-        // ... but the drive minted NO exception tag: the guest export owns the
-        // throw/catch_ref against its own module-local tag, so the Exnref drive
-        // arm stays inert (`mint_exception_tag` must never be called here).
-        assert_eq!(host.mint_exception_tag_calls(), 0);
-    }
-
-    #[test]
-    fn drive_rejects_lost_transit_identity_for_exnref_without_panic() {
-        // The same R1 guard applies to an exnref's reachable externref payload:
-        // an engine that loses the anyref slot identity is a truthful EINVAL.
-        let mut host = MockForkHost::new();
-        host.corrupt_transit_reads();
+        let hints = TestHints { exn_owner: Some(3) };
+        let plan = build_drive_plan(&driver.transaction().nodes, &hints).unwrap();
         assert_eq!(
-            exnref_over_externref().drive_reconstruction(&mut host, 5),
-            Err(Errno::EINVAL)
+            plan.iter().map(op_recipe).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_EXTERNREF_TRANSIT, 1),
+                (DRIVE_OP_EXN, 2),
+            ]
         );
+        // The EXN step lands in the exnref's owner activation's drive slice.
+        let exn = plan.iter().find(|s| s.op == DRIVE_OP_EXN).unwrap();
+        assert_eq!(exn.slot, drive_table_base(3) + DRIVE_OP_EXN);
+        // Proof-of-use: the reachable externref payload counts once, and the
+        // exnref node is admitted.
+        assert_eq!(driver.drive_reconstruction().unwrap().reconstructed(), 1);
+        assert_eq!(driver.exnref_node_count(), 1);
     }
 
     // --- D6.4a: typed-GC (struct/array/i31) admission + leaf rooting ---------
@@ -1039,39 +983,36 @@ mod tests {
     }
 
     #[test]
-    fn drive_roots_aliased_externref_leaf_once_for_typed_gc_cycle() {
-        let mut host = MockForkHost::new();
+    fn typed_gc_cycle_publishes_the_aliased_externref_leaf_once_before_any_alloc() {
+        // The aliased externref leaf (recipe 2, reached from BOTH the struct field
+        // and the array element) is published into the transit EXACTLY ONCE
+        // (deduped), in Phase 0 before any ALLOC/FILL. Allocate-all-first breaks
+        // the struct<->array cycle: TRANSIT 2, ALLOC 0, ALLOC 1, FILL 0, FILL 1.
         let driver = struct_array_cycle_over_externref();
-        let state = driver.drive_reconstruction(&mut host, 7).expect("drive");
-
-        // The aliased externref leaf (reached from BOTH the struct field and the
-        // array element) was resolved EXACTLY ONCE, and transit-rooted once at
-        // recipe_id+1 with the PHASE B read-back identity holding (the drive
-        // returned Ok, so the R1 assert passed).
-        assert_eq!(host.resolved_externref_handles(), &[12]);
-        assert_eq!(state.reconstructed(), 1);
         assert_eq!(driver.transit_rooted_recipes(), vec![2]);
-        assert_eq!(host.transit_slot_count(state.generation()), 1);
-
-        // The typed-GC nodes were admitted (proof-of-use for
-        // `fm_gc_nodes_reconstructed`) ...
-        assert_eq!(driver.gc_node_count(), 2);
-        // ... but the Struct/Array drive arms stayed INERT: the guest drives the
-        // allocate/fill under the JS order, so the module minted no exception tag
-        // and did no GC allocation here.
-        assert_eq!(host.mint_exception_tag_calls(), 0);
-    }
-
-    #[test]
-    fn drive_rejects_lost_transit_identity_for_typed_gc_cycle_without_panic() {
-        // The R1 guard applies to a typed-GC cycle's reachable externref leaf: an
-        // engine that loses the anyref slot identity is a truthful EINVAL, never a
-        // silently corrupted GC graph.
-        let mut host = MockForkHost::new();
-        host.corrupt_transit_reads();
+        let plan = build_drive_plan(&driver.transaction().nodes, &TestHints::default()).unwrap();
         assert_eq!(
-            struct_array_cycle_over_externref().drive_reconstruction(&mut host, 7),
-            Err(Errno::EINVAL)
+            plan.iter().map(op_recipe).collect::<Vec<_>>(),
+            vec![
+                (DRIVE_OP_EXTERNREF_TRANSIT, 2),
+                (DRIVE_OP_ALLOC, 0),
+                (DRIVE_OP_ALLOC, 1),
+                (DRIVE_OP_FILL, 0),
+                (DRIVE_OP_FILL, 1),
+            ]
         );
+        // Exactly one transit step for the aliased leaf, and it precedes every
+        // ALLOC (the R1 rooting order).
+        assert_eq!(
+            plan.iter()
+                .filter(|s| s.op == DRIVE_OP_EXTERNREF_TRANSIT)
+                .count(),
+            1
+        );
+        let first_alloc = plan.iter().position(|s| s.op == DRIVE_OP_ALLOC).unwrap();
+        assert!(plan[0].op == DRIVE_OP_EXTERNREF_TRANSIT && first_alloc > 0);
+        // Proof-of-use: one externref, two typed-GC nodes admitted.
+        assert_eq!(driver.drive_reconstruction().unwrap().reconstructed(), 1);
+        assert_eq!(driver.gc_node_count(), 2);
     }
 }

@@ -278,7 +278,8 @@ fn gc_allocation_dependencies(
 mod tests {
     use super::*;
     use crate::drive_plan::{
-        build_drive_plan, drive_table_base, DriveStep, DRIVE_OP_ALLOC, DRIVE_OP_EXN, DRIVE_OP_FILL,
+        build_drive_plan, drive_table_base, DriveStep, DRIVE_OP_ALLOC, DRIVE_OP_EXN,
+        DRIVE_OP_EXTERNREF_TRANSIT, DRIVE_OP_FILL,
     };
     use crate::gc_codec::decode_gc_codec;
     use alloc::vec;
@@ -455,10 +456,12 @@ mod tests {
             .map(|s| s.recipe)
             .collect();
         assert_eq!(allocs, vec![1, 0]); // dependency struct(1) first, then struct(0)
-        // Full order: ALLOC 1, ALLOC 0, then fills in id order (0 then 1).
+        // Full order: the reachable externref leaf (recipe 2) is published into the
+        // transit first, then ALLOC 1, ALLOC 0, then fills in id order (0 then 1).
         assert_eq!(
             plan.iter().map(|s| (s.op, s.recipe)).collect::<Vec<_>>(),
             vec![
+                (DRIVE_OP_EXTERNREF_TRANSIT, 2),
                 (DRIVE_OP_ALLOC, 1),
                 (DRIVE_OP_ALLOC, 0),
                 (DRIVE_OP_FILL, 0),
@@ -668,9 +671,14 @@ mod tests {
         let hints = GcCodecHints::new(&nodes, &map, None).unwrap();
         assert_eq!(hints.exn_owner(1), Some(4));
         let plan = build_drive_plan(&nodes, &hints).unwrap();
+        // The reachable payload externref (recipe 0) is published into the transit
+        // first, then the exnref materializes in its owner activation (4).
         assert_eq!(
             plan.iter().map(triple).collect::<Vec<_>>(),
-            vec![(DRIVE_OP_EXN, drive_table_base(4) + DRIVE_OP_EXN, 1)]
+            vec![
+                (DRIVE_OP_EXTERNREF_TRANSIT, 0, 0),
+                (DRIVE_OP_EXN, drive_table_base(4) + DRIVE_OP_EXN, 1),
+            ]
         );
     }
 
