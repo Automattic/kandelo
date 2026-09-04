@@ -32,7 +32,7 @@ use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMem
 /// Increment 2: boot the kernel and run a trivial guest through the real
 /// channel. See [`guest::run_trivial_guest`].
 pub mod guest;
-pub use guest::{run_trivial_guest, RunOutcome};
+pub use guest::{run_guest_with_fs, run_trivial_guest, RunOutcome};
 
 /// ABI version this native host expects the kernel to advertise. Must match
 /// `wasm_posix_shared::ABI_VERSION` (currently 44). A kernel built for a
@@ -53,9 +53,15 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// asserted by the smoke test so an ABI/import-surface change surfaces here.
 ///
 /// The 2026-08-25 feasibility spike measured 83 on the ABI-43 kernel; the
-/// ABI-44 opaque-transport flip dropped one, so the real ABI-44 artifact
-/// imports 82.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 82;
+/// ABI-44 opaque-transport flip dropped one to 82. The Phase 5 VFS rootfs
+/// cutover (`d77efc79f`, after this constant was last pinned) added
+/// `host_blob_read` and `host_fetch_archive` for archive/blob-backed rootfs
+/// content, bringing the real ABI-44 artifact's import count to 84. This is
+/// unrelated to this crate's FS work: it was discovered as a pre-existing,
+/// already-broken assertion (confirmed independent of any local change via
+/// `git stash`) while running the full suite, not caused or fixed by
+/// implementing the real host-directory filesystem.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 84;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
@@ -599,6 +605,78 @@ mod tests {
             "expected epoll_ctl and epoll_pwait in the trace (routed to the kernel, \
              not a host poll conversion): {:?}",
             outcome.syscall_trace
+        );
+        Ok(())
+    }
+
+    /// A directory under the OS temp path that is removed on drop. Gives a
+    /// test a real host directory to root a `HostFs` at without an external
+    /// tempfile crate dependency. Unix-only (no Windows CI target exists for
+    /// this workspace).
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> std::io::Result<Self> {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "kandelo-host-native-{label}-{}-{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir)?;
+            Ok(Self(dir))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// N1-I1: the native host's filesystem is backed by a real host
+    /// directory, not a single hardcoded file. Builds a small tree (a
+    /// regular file, a subdirectory with two files, and a symlink) in a temp
+    /// dir, runs the fixture rooted there through [`run_guest_with_fs`], and
+    /// checks the exact byte-for-byte summary — covering open/read/pread
+    /// (via a second read after lseek), the SYS_LLSEEK extended syscall,
+    /// opendir/readdir/closedir (via musl's open(O_DIRECTORY)+getdents64),
+    /// and readlink, all against real host files rather than kernel-internal
+    /// state.
+    #[test]
+    fn smoke_runs_real_host_fs() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_realfs.wasm");
+
+        let root = TempDir::new("realfs")?;
+        std::fs::write(root.path().join("hello.txt"), b"hello real host fs")?;
+        std::fs::create_dir(root.path().join("subdir"))?;
+        std::fs::write(root.path().join("subdir").join("b.txt"), b"b\n")?;
+        std::fs::write(root.path().join("subdir").join("a.txt"), b"a\n")?;
+        std::os::unix::fs::symlink("hello.txt", root.path().join("link"))?;
+
+        let outcome = run_guest_with_fs(&path, guest, root.path())?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout,
+            b"hello real host fs|real host fs\na.txt,b.txt\nhello.txt\n".to_vec(),
+            "unexpected summary (stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
         );
         Ok(())
     }
