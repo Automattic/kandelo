@@ -83,6 +83,7 @@ changes, package artifacts, or performance claims.
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
+| Rust-first kernel migration (in progress) | — | `docs/plans/2026-09-04-rust-first-remaining-purpose-framed.md` (remaining work + the decision Bar), `docs/plans/2026-08-25-rust-first-runtime-design.md` |
 
 ## Validation Contract
 
