@@ -384,9 +384,46 @@ reconciled tree (worktree `/Users/brandon/kandelo-abi44-reconcile`, branch
 
 ---
 
-## 6. Native wasmtime backend (campaign item 7 / Phase 3 completion)
+## 6. Native wasmtime backend (campaign item 7 / Phase 3 completion) — the main remaining thrust
 
-Depends on N0 (native host present on the integrated tree).
+Depends on N0 (native host present on the integrated tree — DONE; the
+reconciliation brought `crates/host-native` + `native_sketch.rs` onto this tree).
+
+**Grounding correction (2026-09-04):** `crates/host-native` is much further
+along than "loads kernel + ~20 methods." It already boots the real ABI-44
+`kernel.wasm` and runs 8 real SDK-built guest fixtures end-to-end through the
+real channel — the hard spine (wasmtime kernel load, atomic wait/notify channel,
+RAW + opaque-record marshalling, multi-threaded blocking/epoll) is DONE + green
+(`cargo test -p host-native --target <host>`; `guest.rs` pump, `lib.rs` boot).
+13 `HostIO` methods implemented; ~69 trap (truthful `define_unknown_imports_as_traps`).
+The fork core (`crates/fork-codec`) is host-agnostic `no_std`; the engine floor
+is 5 methods (3 tag + 2 lifecycle) in `ForkHostCapabilities`/`ForkLifecycleCapabilities`;
+`native_sketch.rs` maps each to wasmtime (`Tag::new`/`Tag::eq`, `RootScope`,
+`Rooted<ExternRef>`, `Instance::new`, `thread::spawn`).
+
+**N1 increment roadmap** (I1–I3 = predictable breadth on the proven spine;
+I4–I5 = the deep research where the co-resident-module-vs-direct-drive question
+is answered empirically and where the plan CHECKPOINTS with the user):
+- **I1** — real host-dir FS (`host_opendir`/`readdir`/`closedir`/`seek`/`readlink`
+  + generalize the FS methods off the single fake file) + argv/env wiring
+  (`kernel_get_argc`/`argv_read`/`environ_*`, drop the argc=0 fallback) → run an
+  UNMODIFIED shipped coreutils binary natively. Additive; no kernel/ABI change.
+- **I2** — in-kernel rootfs overlay via `blob_read`/`fetch_archive` (serve the
+  real VFS image natively).
+- **I3** — process spawn/exec/`host_waitpid` (multi-instance, argv hand-off,
+  the ABI-44 exec-authority path).
+- **I4** — fork frames natively (no refs): drive `fork-codec`
+  `rewind_driver`/`replay_journal`/`linked_frames` + `instantiate_child`
+  (`Instance::new`) + `spawn_thread` (`thread::spawn`), replacing the
+  `native_sketch` ENOSYS stubs. **Research; checkpoint.**
+- **I5** — fork references (the F6 substrate): native `ForkHostCapabilities`
+  (`Tag::new`/`Tag::eq`, `RootScope`/`Rooted<ExternRef>`), answering whether the
+  co-resident fork-module is needed natively and whether wasmtime's ref/exnref
+  behavior matches the documented floors. **Highest research; checkpoint.**
+- **I6** — conformance suites (libc/posix/sortix) on native vs the Node host
+  (the freeze-gate acid test); net-new native runner harness.
+
+Detail on the fork-capability impl (folded into I4/I5):
 
 - **N1 — Real native backend.** Turn `native_sketch.rs`'s `ENOSYS` stubs
   into a working `ForkHostCapabilities`/`ForkLifecycleCapabilities` impl:
