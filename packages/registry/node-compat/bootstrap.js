@@ -4513,6 +4513,21 @@ function _makeRequire(filename) {
             return exports;
         }
 
+        // ESM target: an ES module cannot be CJS-wrapped (its top-level
+        // import/export declarations are only valid in module goal, so the
+        // wrapper below throws "import declarations may only appear at top
+        // level of a module"). Route it through the native module loader so it
+        // is CompileModule'd and shares one instance (dedup-safe via the
+        // per-path registry) with import and dynamic import(), then return its
+        // namespace -- Node require(esm) semantics (named exports as props,
+        // default as .default). A ".cjs" file is always CommonJS regardless of
+        // the nearest package "type", so it keeps the CJS wrapper below.
+        if ((resolved.endsWith('.mjs') || _nearestPackageType(resolved) === 'module') && !resolved.endsWith('.cjs')) {
+            const ns = _nodeNative.__kandeloRequireModule(resolved);
+            _moduleCache[resolved] = { exports: ns };
+            return ns;
+        }
+
         // Create module object
         const dirname = path.dirname(resolved);
         const mod = {
@@ -4839,7 +4854,7 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
         // Returning an absolute path here is handled natively by
         // ModuleLoader.cpp (confirmed: absolute paths bypass the bare-token
         // synthesis below and are read + compiled as a module directly).
-        if (resolvedPath.endsWith('.mjs') || _nearestPackageType(resolvedPath) === 'module') {
+        if ((resolvedPath.endsWith('.mjs') || _nearestPackageType(resolvedPath) === 'module') && !resolvedPath.endsWith('.cjs')) {
             return resolvedPath;
         }
 

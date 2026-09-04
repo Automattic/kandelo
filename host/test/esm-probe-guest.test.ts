@@ -54,6 +54,23 @@ const FIXTURES: Record<string, string> = {
     '(async()=>{try{const m=await import("epkg");console.log("DYN",m.w,m.default);}catch(e){console.log("DYNERR",(e&&e.message)||e);}})();',
   "maindyn.cjs":
     '(async()=>{try{await import("/app/dynhost.mjs");}catch(e){console.log("DYNERR",(e&&e.message)||e);}})();',
+  // /app is a type:module package so the bare `.js` fixtures below are ES
+  // modules (require() must detect this and route through the native loader
+  // instead of CJS-wrapping them).
+  "package.json": '{"type":"module"}',
+  // require() of an ESM .js: returns the module namespace (named + default).
+  "e.js": 'export const y=43;export default "edefault";',
+  "maincjs.cjs":
+    '(()=>{try{const m=require("/app/e.js");console.log("REQ",m.y,m.default);}catch(e){console.log("REQERR",(e&&e.message)||e);}})();',
+  // require() of an ESM with top-level await: must throw ERR_REQUIRE_ASYNC_MODULE.
+  "tla.js": 'export const z=await Promise.resolve(7);',
+  "maintla.cjs":
+    '(()=>{try{require("/app/tla.js");console.log("TLA no throw");}catch(e){console.log("TLACODE",e&&e.code,(e&&e.message)||e);}})();',
+  // require() and import() of the same path must share ONE native-registry
+  // instance (a===b and a shared, single-evaluated counter).
+  "counter.js": 'let n=0;export function inc(){return ++n;}',
+  "maindedup.cjs":
+    '(async()=>{try{const a=require("/app/counter.js");const b=await import("/app/counter.js");console.log("DEDUP",a.inc(),b.inc(),a===b);}catch(e){console.log("DEDUPERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -87,6 +104,17 @@ describe("spidermonkey-node ESM probe", () => {
       return existsSync(pkg) ? pkg : null;
     })();
   const ready = nodeWasm != null;
+
+  async function runOne(mainPath: string) {
+    const img = await image();
+    return runCentralizedProgram({
+      programPath: nodeWasm!,
+      argv: ["node", mainPath],
+      rootfsImage: img,
+      useDefaultRootfs: false,
+      timeout: 60_000,
+    });
+  }
 
   it.runIf(ready)("dynamic import() of a minified ESM graph", async () => {
     const img = await image();
@@ -171,5 +199,26 @@ describe("spidermonkey-node ESM probe", () => {
     console.log("DYN OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("DYN 42 epkgdefault");
     expect(r.stdout).not.toContain("DYNERR");
+  }, 90_000);
+
+  it.runIf(ready)("require() of an ESM .js returns its namespace", async () => {
+    const r = await runOne("/app/maincjs.cjs");
+    // eslint-disable-next-line no-console
+    console.log("REQ OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("REQ 43 edefault");
+  }, 90_000);
+
+  it.runIf(ready)("require() of an ESM module with top-level await throws ERR_REQUIRE_ASYNC_MODULE", async () => {
+    const r = await runOne("/app/maintla.cjs");
+    // eslint-disable-next-line no-console
+    console.log("TLA OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("TLACODE ERR_REQUIRE_ASYNC_MODULE");
+  }, 90_000);
+
+  it.runIf(ready)("require() and import() of the same path share one instance", async () => {
+    const r = await runOne("/app/maindedup.cjs");
+    // eslint-disable-next-line no-console
+    console.log("DEDUP OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("DEDUP 1 2 true");
   }, 90_000);
 });
