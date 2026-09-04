@@ -41,6 +41,48 @@ function sdkSourcePrefixMapFlags(toolchain: Toolchain, arch: WasmArch): string[]
   ];
 }
 
+const STABLE_BUILD_SOURCE_ROOT = '/usr/src/kandelo-build';
+
+// During a package build the local-build engine sets WASM_POSIX_DEP_WORK_DIR
+// to the recipe's per-build work directory. Its absolute path embeds the
+// build scratch location AND a process-PID-suffixed component
+// (`…/.<pkg>-<cachekey>.work-<pid>-<seq>/recipe-work`), so it varies both with
+// the build location and on every rebuild. That path leaks into DWARF,
+// `__FILE__`, assertion strings, and similar, making otherwise-pure builds
+// differ across build paths and reruns — the determinism check flags exactly
+// these (sqlite3, ruby, nethack, dinit, …). Map the work dir to a stable
+// destination so binaries stay path-independent. Doing it here, in the one
+// wrapper every C/C++ compile flows through, covers each package (and each
+// dependency it links) without per-recipe REPRO_FLAGS. Keyed by package name
+// for a stable, collision-free destination when one binary links several deps.
+//
+// Two maps, from least to most specific (a later -ffile-prefix-map wins for an
+// overlapping path, matching the SDK-map ordering comment above):
+//   1. the source-only cache root — dependency *install* dirs live under it as
+//      `<root>/source-only-v1/compiled/programs/<dep>-<key>/…`, and a `-I` to a
+//      dep's headers embeds that absolute path (e.g. sqlite3 embeds ncurses's
+//      include dir). The `<dep>-<key>` tail is deterministic; only the root
+//      varies, so mapping the root is enough — and it must NOT win over the
+//      work-dir map, whose path sits under the same root but carries the PID.
+//   2. this package's work dir — see above; keyed by name and mapped last so it
+//      takes precedence and strips the PID-suffixed component.
+function recipeWorkPrefixMapFlags(): string[] {
+  const flags: string[] = [];
+  const cacheRoot = process.env.WASM_POSIX_SOURCE_ONLY_CACHE_ROOT;
+  if (cacheRoot && isAbsolute(cacheRoot)) {
+    flags.push(...sourcePrefixMapFlags(cacheRoot, `${STABLE_BUILD_SOURCE_ROOT}-deps`));
+  }
+  const workDir = process.env.WASM_POSIX_DEP_WORK_DIR;
+  if (workDir && isAbsolute(workDir)) {
+    const name = process.env.WASM_POSIX_DEP_NAME;
+    const destination = name && /^[A-Za-z0-9._+-]+$/.test(name)
+      ? `${STABLE_BUILD_SOURCE_ROOT}/${name}`
+      : STABLE_BUILD_SOURCE_ROOT;
+    flags.push(...sourcePrefixMapFlags(workDir, destination));
+  }
+  return flags;
+}
+
 export function decodeLlvmResponseFile(bytes: Uint8Array): string {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
@@ -255,7 +297,7 @@ function buildClangArgsInternal(
   const sdkCompileArgs = (
     hasSourceFiles || parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly || linking ||
     executableLinker?.kind === 'no-link'
-  ) ? sdkSourcePrefixMapFlags(toolchain, arch) : [];
+  ) ? [...sdkSourcePrefixMapFlags(toolchain, arch), ...recipeWorkPrefixMapFlags()] : [];
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object
