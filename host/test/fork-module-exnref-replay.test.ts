@@ -1,46 +1,45 @@
-// Phase 6 D6.3a — exnref reference reconstruction ORCHESTRATED by the co-resident
-// fork module, with the anyref TRANSIT brought into PRODUCTION so the exnref's
-// reachable externref payload is ROOTED in the REAL `(ref null any)` table before
-// the guest codec materializes the exception. Proven end to end in a real
-// WebAssembly engine (Node/V8).
+// Phase 6 D6.3a / M2 — exnref reference reconstruction ORCHESTRATED by the
+// co-resident fork module, with the anyref TRANSIT rooting the exnref's
+// reachable externref payload through the injected drive plan. Proven end to
+// end in a real WebAssembly engine (Node/V8).
 //
 // This is the exnref analogue of `fork-module-externref-replay.test.ts`. The
-// crucial additions over the externref (D6.2) case:
-//
-//   * The graph has an EXNREF whose reference payload names an externref, so the
-//     externref is TRANSIT-REACHABLE: the module's PHASE B publishes it into the
-//     anyref transit at `recipe_id + 1` and reads it back with an identity check
-//     (the R1 rooting guard). D6.2 left the transit adapter latent (`transit:
-//     undefined`); here we wire a REAL adapter over `ForkAnyrefTransitTable` — the
-//     SAME `(ref null any)` object `activationRegistry.publishEarlyGcTransit` /
-//     `readEarlyGcTransit` wrap in production — so `host_transit_publish` /
-//     `host_transit_read` actually root identity in a real anyref table.
-//   * The module does NOT mint an exception tag or throw: the program exception
-//     tag is guest-module-local, so the guest export
-//     `__wpk_fork_exception_materialize` owns the throw/`catch_ref`. We assert
-//     `host_mint_exception_tag` is NEVER called during the drive (it stays inert).
+// crucial addition over the plain externref (D6.2) case: the graph has an
+// EXNREF whose reference payload names an externref, so the externref is
+// TRANSIT-REACHABLE. Since M2 this is no longer a host PHASE A/B round-trip:
+// `fork_codec::build_drive_plan` emits a `DRIVE_OP_EXTERNREF_TRANSIT` step for
+// the reachable payload (Phase 0, before the EXN step), and the injected
+// `fm_drive_execute` shim resolves it through the single residual
+// `env.resolve_externref` host import, internalizes it (`any.convert_extern`),
+// `table.set`s it into the anyref transit at `recipe + 1`, and asserts non-null
+// — the M2 replacement for the retired host `Object.is` R1 read-back guard (see
+// the design ruling in
+// `docs/superpowers/plans/2026-09-03-m2-externref-into-module.md`). The module
+// does NOT mint an exception tag or throw: the program exception tag is
+// guest-module-local, so the guest export
+// `__wpk_fork_exception_materialize` (bound into the drive table, here the
+// FAITHFUL guest double) owns the throw/`catch_ref`.
 //
 // Assertions:
-//   (a) TRANSIT IDENTITY (silent-corruption-critical) — the token the module
-//       publishes into the real anyref transit reads back `Object.is`-identical to
-//       `tokens.materialize(handle)` (the canonical token the still-JS decode
-//       import returns). fm_last_errno === 0 means the module's own read-back
-//       identity assert passed; we ALSO read the transit slot directly to confirm.
+//   (a) TRANSIT IDENTITY (silent-corruption-critical) — the token the injected
+//       drive step publishes into the real anyref transit reads back
+//       `Object.is`-identical to `tokens.materialize(handle)` (the canonical
+//       token the module's lazy externref decode would also return).
 //   (b) PROOF OF USE — `fm_exnrefs_reconstructed` advanced by the exnref-node
-//       count and `fm_externrefs_resolved` by the payload count.
+//       count (bookkeeping, from `fm_begin_reference_replay`) and the drive plan
+//       actually resolved the payload exactly once through the host seam.
 //   (c) MINT INERT — `host_mint_exception_tag` was not called.
-//   (d) TRANSIT IS LOAD-BEARING — without a real transit the exnref drive fails
-//       LOUD (EINVAL), never silently reconstructs a wrong/unrooted payload.
+//   (d) R1 GUARD IS LOAD-BEARING — when the host loses the reachable payload's
+//       identity (`resolve_externref` returns null for it), the injected
+//       non-null check TRAPS the drive rather than silently rooting a null/wrong
+//       identity the guest's exception materialize would then throw with.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import {
-  createForkModuleHostCapabilities,
-  type ForkModuleTransitAdapter,
-} from "../src/fork-module-host-capabilities";
+import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
 import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { ForkModuleStateArena } from "../src/fork-module-state";
@@ -51,6 +50,7 @@ import {
   type ForkReferenceVector,
 } from "../src/fork-reference-segments";
 import { WPK_FORK_REFERENCE_TRANSACTION_OWNER } from "../src/generated/abi";
+import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 
 const PAGE = 65536;
 const PTR_WIDTH = 4 as const;
@@ -58,6 +58,10 @@ const PID = 5151;
 const GENERATION_ID = 9;
 // The durable broker handle the exnref's reference payload names.
 const PAYLOAD_HANDLE = 44;
+
+const DRIVE_OP_ALLOC = 0;
+const DRIVE_OP_FILL = 1;
+const DRIVE_OP_EXN = 2;
 
 /**
  * Build a sealed KFMS arena holding an exnref-over-externref graph:
@@ -120,6 +124,10 @@ interface ForkModuleRefExports {
   fm_externrefs_resolved: () => bigint;
   fm_exnrefs_reconstructed: () => bigint;
   fm_last_errno: () => number;
+  fm_build_gc_plan: (pid: number) => number;
+  fm_gc_plan_count: () => number;
+  fm_drive_execute: (ptr: number, count: number) => void;
+  fm_drive_table_base: (act: number) => number;
   // Phase 6 item 3a RESTORE data-feed exports.
   fm_ref_feed_reads: () => bigint;
   fm_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
@@ -136,26 +144,14 @@ interface ForkModuleRefExports {
   fm_ref_exn_cache_index: (recipeId: number) => number;
 }
 
-/** A REAL transit adapter over the production `(ref null any)` table. Mirrors
- *  what `activationRegistry.publishEarlyGcTransit` / `readEarlyGcTransit` do:
- *  `set(recipeId + 1)` / `get(recipeId + 1)` on the anyref transit. */
-function realTransit(table: ForkAnyrefTransitTable): ForkModuleTransitAdapter {
-  return {
-    publish: (recipeId, value) => {
-      table.ensureRecipeSlot(recipeId);
-      table.set(recipeId + 1, value);
-    },
-    read: (recipeId) => table.get(recipeId + 1),
-  };
-}
-
 const MODULE = new WebAssembly.Module(
   readFileSync(resolveBinary("fork_module32.wasm")),
 );
 
 function instantiate(
   memory: WebAssembly.Memory,
-  hostCapabilities: Readonly<Record<string, (...args: number[]) => number>>,
+  resolveExternref: (handle: number) => unknown,
+  hostCapabilities?: Readonly<Record<string, (...args: number[]) => number>>,
 ) {
   const reserveBase = 8 * 1024 * 1024;
   const fm = instantiateForkModule({
@@ -164,43 +160,58 @@ function instantiate(
     ptrWidth: PTR_WIDTH,
     reserve: () => reserveBase,
     label: "exnref-replay-test",
+    resolveExternref,
     hostCapabilities,
   });
   return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
-describe("fork-module exnref reference reconstruction + transit into production (Phase 6 D6.3a)", () => {
+/** Bind the FAITHFUL guest's `exception_materialize` (and, defensively, its
+ *  alloc/fill) into the module's drive table at activation 0's slice, so the
+ *  drive's DRIVE_OP_EXN `call_indirect` resolves. Also presizes the anyref
+ *  transit table for the graph's max recipe id, mirroring the production
+ *  `ForkActivationRegistry.ensureRecipeSlot(maxRecipeId)` presize the injected
+ *  drive's `table.set` (unlike the retired host PHASE B) does NOT do itself. */
+function bindFaithfulGuest(
+  fm: ReturnType<typeof instantiateForkModule>,
+  x: ForkModuleRefExports,
+  maxRecipeId: number,
+) {
+  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  transitTable.ensureRecipeSlot(maxRecipeId);
+  const { guest } = instantiateFaithfulGuest(transitTable);
+  const base = x.fm_drive_table_base(0);
+  if (fm.driveTable.length < base + 3) {
+    fm.driveTable.grow(base + 3 - fm.driveTable.length);
+  }
+  fm.driveTable.set(base + DRIVE_OP_ALLOC, guest.gc_allocate);
+  fm.driveTable.set(base + DRIVE_OP_FILL, guest.gc_fill);
+  fm.driveTable.set(base + DRIVE_OP_EXN, guest.exception_materialize);
+  return { transitTable, guest };
+}
+
+describe("fork-module exnref reference reconstruction + transit into production (Phase 6 D6.3a / M2)", () => {
   it("roots the exnref's reachable externref payload in the real anyref transit with identity parity, advances the counters, and never mints a tag", () => {
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
 
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    // M1 t6: `createForkModuleHostCapabilities` reads `backing.transit` lazily
-    // (a property lookup at call time), so `hostCapabilities` can be built now
-    // and `backing.transit` assigned below, once the module's own exported
-    // `gcTransitTable` exists — mirroring worker-main.ts's production wiring.
-    const backing: {
-      tokens: ForkExternrefTokenCache;
-      generationId: number;
-      transit?: ForkModuleTransitAdapter;
-    } = { tokens, generationId: GENERATION_ID };
-    const hostCapabilities = createForkModuleHostCapabilities(backing);
+    const hostCapabilities = createForkModuleHostCapabilities({ tokens });
 
     // Spy on `host_mint_exception_tag` (inert stub in production for this seam)
     // to prove the drive never mints an exception tag: the guest export owns it.
     let mintCalls = 0;
-    const imports = {
-      ...hostCapabilities.imports,
-      host_mint_exception_tag: () => {
-        mintCalls += 1;
-        return 0;
-      },
-    };
 
     const root = buildExnrefArena(memory);
-    const { fm, x } = instantiate(memory, imports);
-    // STORE #2: wrap (not mint) the module's own exported transit table (M1).
-    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
-    backing.transit = realTransit(transitTable);
+    const { fm, x } = instantiate(
+      memory,
+      hostCapabilities.imports.resolve_externref,
+      {
+        host_mint_exception_tag: () => {
+          mintCalls += 1;
+          return 0;
+        },
+      },
+    );
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
@@ -208,71 +219,82 @@ describe("fork-module exnref reference reconstruction + transit into production 
     const externrefsBefore = Number(x.fm_externrefs_resolved());
     const exnrefsBefore = Number(x.fm_exnrefs_reconstructed());
 
-    // Drive the reconstruction: PHASE A resolves the externref payload; PHASE B
-    // publishes it into the REAL anyref transit at recipe_id+1 and reads it back
-    // with an identity assert (fm_last_errno stays 0 only if identity survived).
+    // Seed the reference graph (bookkeeping only).
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    // (b) PROOF OF USE — one exnref admitted, one externref payload re-rooted.
+    // (b) PROOF OF USE (graph admission) — one exnref admitted, one externref
+    // node counted, purely from bookkeeping.
     expect(Number(x.fm_exnrefs_reconstructed()) - exnrefsBefore).toBe(1);
     expect(Number(x.fm_externrefs_resolved()) - externrefsBefore).toBe(1);
 
-    // (a) TRANSIT IDENTITY — the token the module rooted for the payload is the
-    // SAME object `tokens.materialize(handle)` returns (idempotent cache), and it
-    // is what actually sits in the real anyref transit slot (recipe_id 1 -> slot
-    // 2). This is the silent-corruption-critical assertion: the module rooted the
-    // same identity JS would, in a real `(ref null any)` table.
+    // Build + execute the real drive plan: PHASE 0 publishes the reachable
+    // externref payload into the anyref transit; the EXN step then drives the
+    // guest's exception materialize.
+    const planPtr = x.fm_build_gc_plan(PID);
+    expect(x.fm_last_errno()).toBe(0);
+    const count = x.fm_gc_plan_count();
+
+    const { transitTable, guest } = bindFaithfulGuest(fm, x, 2);
+
+    x.fm_drive_execute(planPtr, count);
+
+    // (a) TRANSIT IDENTITY — the token the drive published for the payload is
+    // the SAME object `tokens.materialize(handle)` returns (idempotent cache),
+    // and it is what actually sits in the real anyref transit slot (recipe_id 1
+    // -> slot 2).
     const canonical = tokens.materialize(PAYLOAD_HANDLE);
-    expect(hostCapabilities.rootedToken(1)).toBe(canonical);
     expect(transitTable.get(2)).toBe(canonical);
+    expect(hostCapabilities.resolvedCount).toBe(1);
+
+    // The EXN step actually ran (the guest's exception_materialize order code).
+    expect(guest.order()).toBe(3);
 
     // (c) MINT INERT — the drive never minted an exception tag.
     expect(mintCalls).toBe(0);
-    expect(hostCapabilities.resolvedCount).toBe(1);
   });
 
-  it("fails LOUD when no real transit backs the exnref's transit-reachable payload (transit is load-bearing)", () => {
+  it("R1 GUARD (wasm-level): a resolved-but-lost externref payload TRAPS the drive, never silently mis-roots the exnref's identity", () => {
+    // The retired host `Object.is` R1 guard is replaced, in M2, by the injected
+    // `fm_drive_execute` shim's non-null structural check on the transit slot
+    // (see the design ruling). Simulate the host losing the payload's identity
+    // (`resolve_externref` returns null for it): the DRIVE_OP_EXTERNREF_TRANSIT
+    // step internalizes null, `table.set`s it, reads it back, and TRAPS —
+    // failing loud rather than letting the guest's exception materialize
+    // consume a null/wrong payload.
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
 
-    const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    // No transit adapter: the D6.2 latent state. PHASE B has a reachable payload
-    // to root, so the module drives `host_transit_publish`, which fails EINVAL.
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-    });
-
     const root = buildExnrefArena(memory);
-    const { x } = instantiate(memory, hostCapabilities.imports);
+    const { fm, x } = instantiate(memory, () => null);
 
     x.fm_set_format(PTR_WIDTH, 0);
+    x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    // The exnref drive reaches PHASE B, calls host_transit_publish with no transit
-    // backing, and fails truthfully — never a silent unrooted payload.
-    x.fm_begin_reference_replay(root, PID);
-    expect(x.fm_last_errno()).not.toBe(0);
+    const planPtr = x.fm_build_gc_plan(PID);
+    expect(x.fm_last_errno()).toBe(0);
+    const count = x.fm_gc_plan_count();
+
+    // Presize the transit table (mirrors production's `ensureRecipeSlot`) so the
+    // trap below is the intended non-null structural check, not an unrelated
+    // out-of-bounds `table.set` on a too-small default table.
+    new ForkAnyrefTransitTable(fm.gcTransitTable).ensureRecipeSlot(2);
+
+    expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
   });
 
   it("serves the exnref RESTORE data-feed through the module (item 3a): route, cache index, and scalar/reference loads match the decoded graph", () => {
     // Phase 6 item 3a: the exnref restore imports the guest exception codec used
     // to call on the JS reference provider now resolve to the module's `fm_ref_*`
     // exports. Drive them directly against the seeded feed and prove the MODULE
-    // produced JS-identical results, in a real WebAssembly engine.
+    // produced JS-identical results, in a real WebAssembly engine. This data
+    // feed does not touch the externref transit at all, so a resolver that is
+    // never expected to be called is enough.
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-    const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const backing: {
-      tokens: ForkExternrefTokenCache;
-      generationId: number;
-      transit?: ForkModuleTransitAdapter;
-    } = { tokens, generationId: GENERATION_ID };
-    const hostCapabilities = createForkModuleHostCapabilities(backing);
-
     const root = buildExnrefArena(memory);
-    const { fm, x } = instantiate(memory, hostCapabilities.imports);
-    const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
-    backing.transit = realTransit(transitTable);
+    const { x } = instantiate(memory, () => {
+      throw new Error("resolve_externref should not be called by the data feed");
+    });
     x.fm_set_format(PTR_WIDTH, 0);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
