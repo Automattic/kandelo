@@ -139,14 +139,14 @@ describe("externref fork through the co-resident module (Phase 6 D6.5)", () => {
     ).toBeNull();
   });
 
-  // SKIPPED: module-mode (WASM_POSIX_FORK_MODULE=1) fork abort-replay is a known
-  // gap deferred to M8 — see docs/fork-reference-support.md. With the co-resident
-  // fork-module enabled, a gated fork cannot yet abort cleanly: the module owns
-  // its own continuation journal (the JS replay-event journal stays idle) and has
-  // no abort-replay path, so beginAbortReplay would crash the worker. The
-  // flag-off test above proves the capture-side EOPNOTSUPP gate; this case is
-  // re-enabled once module-mode abort-replay lands.
-  it.skip("aborts a carried host externref fork cleanly with EOPNOTSUPP (flag on)", async () => {
+  // F1 (module abort-replay): with the co-resident fork-module ENABLED, a gated
+  // fork now aborts cleanly through the module's own `fm_begin_abort`/
+  // `fm_finish_abort` path (see `beginModuleAbortReplay`/`finishModuleTransaction`
+  // in `host/src/fork-process-continuation.ts`) instead of throwing
+  // "fork-module path does not own abort replay" and crashing the worker. This
+  // is the primary end-to-end proof of F1: the flag-on path now reaches the SAME
+  // clean-abort outcome as the flag-off test above.
+  it("aborts a carried host externref fork cleanly with EOPNOTSUPP (flag on)", async () => {
     const result = await runCentralizedProgram({
       programPath,
       argv: ["externref-local-fork-fresh-worker"],
@@ -154,11 +154,11 @@ describe("externref fork through the co-resident module (Phase 6 D6.5)", () => {
       forkModuleEnabled: true,
       forkHostImportRegistrar: registerHostReferenceImports,
     });
-    // TARGET STATE once module-mode abort-replay lands (M8): the flag-on path
-    // must reach the SAME clean-abort outcome as the flag-off test above — a
-    // gated externref is not reconstructed under either flag. No child is
-    // spawned, so the guest exits 92; the gate is clean (stderr empty) and
-    // nothing reconstructed the reference (the externref proof-of-use is null).
+    // The flag-on path reaches the SAME clean-abort outcome as the flag-off
+    // test above — a gated externref is not reconstructed under either flag.
+    // No child is spawned, so the guest exits 92; the gate is clean (stderr
+    // empty) and nothing reconstructed the reference (the externref
+    // proof-of-use is null).
     expect(
       result.exitCode,
       `flag-on externref fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,

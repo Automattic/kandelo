@@ -519,6 +519,72 @@ function runAbortCycle() {
   console.log("  ok: abort-replay cycle (fm_begin_abort/fm_finish_abort mirror fm_begin_replay/fm_finish_replay) + EINVAL pairing guard");
 }
 
+// --- Case 3.5: parent-corruption fault injection (F1 Task 5) -----------------
+// A twin of `crates/fork-codec/src/rewind_driver.rs`'s
+// `peek_rejects_tail_node_corrupted_after_attach`, adapted to this harness's
+// single shared live memory (rather than that unit test's two separate before/
+// after snapshots): `decode_linked_frames` -- which both `fm_begin_replay` and
+// `fm_begin_abort` call via the shared `begin_replay_impl` -- eagerly walks
+// and validates every committed node's KFCN magic while building the replay
+// order (`crates/fork-codec/src/linked_frames.rs::read_node_fields`), reading
+// directly from the live guest memory. So corrupting a committed frame's node
+// header in place, then driving `fm_begin_abort`, is caught at attach time
+// here. This proves the address-space-corruption risk the plan calls out (a
+// stray write into a committed frame, e.g. a Wasm-side buffer overrun)
+// surfaces as a TRUTHFUL failure (nonzero `fm_last_errno`) rather than the
+// abort path reading garbage as if it were a valid frame -- and that neither
+// `fm_begin_abort` nor a subsequent `fm_finish_abort` mis-drives or silently
+// succeeds over the corruption.
+function runAbortCorruption() {
+  const ACT = 11;
+  const spec = { func: 901, call: 1, fill: 0xc0, size: 40 };
+
+  beginUnwind(ACT);
+  const payload = x.__wpk_fork_frame_reserve(spec.size) >>> 0;
+  assert.equal(errno(), 0, "corruption reserve errno");
+  writePayload(payload, spec.func, spec.call, spec.fill, spec.size);
+  x.__wpk_fork_frame_commit(payload);
+  assert.equal(errno(), 0, "corruption commit errno");
+
+  x.fm_finish_unwind();
+  assert.equal(errno(), 0, "corruption fm_finish_unwind errno");
+
+  // Corrupt the committed frame's KFCN node header magic: the first 4 bytes
+  // of the node, NODE_HEADER (24, for the wasm32/pointer-width-4 layout the
+  // Rust unit tests and this harness both use) bytes before its payload.
+  // Mirrors `w_u32(&mut corrupt, driver.committed_tail(), 0xdead_beef)` in
+  // `peek_rejects_tail_node_corrupted_after_attach`.
+  const NODE_HEADER = 24;
+  const nodeBase = payload - NODE_HEADER;
+  writeU32(nodeBase, 0xdeadbeef);
+
+  // `fm_begin_abort`'s attach (`RewindDriver::attach` / `decode_linked_frames`)
+  // eagerly reads every committed node's magic while building the replay
+  // order, so the corruption FAILS LOUDLY right here: EINVAL, not a silent
+  // success and not a trap/panic reading garbage as a valid frame.
+  x.fm_begin_abort();
+  assert.equal(
+    errno(),
+    EINVAL,
+    "corrupt-frame fm_begin_abort sets EINVAL (decode reads the corrupted node's magic)",
+  );
+
+  // `fm_finish_abort` must not silently succeed either: no `fm_begin_abort`
+  // actually took hold (it failed above), so this is the same loud
+  // no-matching-begin EINVAL the happy-path pairing guard proves above --
+  // never a fall-through into finishing as if the abort had completed.
+  x.fm_finish_abort();
+  assert.equal(
+    errno(),
+    EINVAL,
+    "fm_finish_abort after a failed fm_begin_abort sets EINVAL (not silent success)",
+  );
+  console.log(
+    "  ok: abort-replay over a corrupted committed frame fails loudly "
+      + "(fm_last_errno=EINVAL) at both begin and finish -- never mis-drives, never silently succeeds",
+  );
+}
+
 console.log("fork-module co-residency harness (Node/V8, live imported memory, PIC placement):");
 
 // Prime the low region with guest data BEFORE instantiating anything into it.
@@ -540,6 +606,10 @@ console.log("  ok: SENTINEL SURVIVED 5000-frame stress fork — no low-memory co
 runAbortCycle();
 assertSentinelIntact("after abort-replay cycle");
 console.log("  ok: SENTINEL SURVIVED abort-replay cycle");
+
+runAbortCorruption();
+assertSentinelIntact("after abort-replay corruption fault injection");
+console.log("  ok: SENTINEL SURVIVED abort-replay corruption fault injection");
 
 // ===========================================================================
 // HEADLINE: parent -> address-space copy -> child replay seeding (Phase 6 D5)
