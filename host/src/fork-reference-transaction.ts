@@ -304,6 +304,38 @@ export class ForkReferenceTransaction {
     });
   }
 
+  /**
+   * Reserve one placeholder recipe for a GATED capture kind (externref / i31 /
+   * typed Wasm-GC / static-root), keeping the LIVE captured value so the PARENT
+   * still resumes faithfully.
+   *
+   * The gated capture imports no longer run their real encoders: the fork is
+   * aborted with `EOPNOTSUPP` before any child restores the graph (see
+   * `ForkActivationRegistry`). But the save walk still SEALS the capture (which
+   * validates every node) and then REPLAYS the parent continuation, which
+   * restores the parent's live reference locals/globals/tables. On the parent
+   * that restore is a same-worker round-trip of the ORIGINAL live objects — via
+   * the transit table for the module GC codecs and via `capturedValues` for the
+   * runtime externref/funcref codecs — so no typed layout, scalar, provenance,
+   * or static-root reconstruction is needed here. This reserves a self-contained
+   * non-null leaf node (a canonical `i31` node, the cheapest kind that passes
+   * `validateCanonicalCapture` without real backing; the sealed graph is
+   * discarded unread) and keeps the live value for the parent replay decode.
+   * Because a gated `lookup` returns this NONZERO recipe on first sight, the
+   * guest takes its alias branch and never recurses into the typed field walk,
+   * so leaf placeholders suffice for the whole gated graph.
+   */
+  reserveGatedPlaceholder(value: unknown): number {
+    this.requirePhase("capture", "reserve a gated placeholder recipe");
+    const id = this.nodes.length;
+    if (id > 0xffff_ffff) {
+      throw new RangeError("fork reference recipe id space exhausted");
+    }
+    this.nodes.push({ id, node: { kind: "i31", value: 0 } });
+    this.capturedValues.push(value);
+    return id;
+  }
+
   lookupGcSlot(table: WebAssembly.Table, slot: number): number {
     this.requirePhase("capture", "look up a Wasm-GC identity");
     const value = this.gcSlotValue(table, slot);

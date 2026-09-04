@@ -486,17 +486,16 @@ export function buildForkActivationStateImports(
     // GATED: a live externref has no linear-memory representation and cannot be
     // faithfully reconstructed in a fresh child today. Record the kind so the
     // parent run loop aborts the fork with EOPNOTSUPP after seal (a throw here
-    // cannot carry an errno through the Wasm fork save walk). The real encode
-    // still runs so the injected codec's own contract holds — it grows the
-    // shared transit table and returns the canonical recipe the guest publishes
-    // via `table.set(recipe + 1)`; a bare sentinel would trap that store OOB.
-    // The captured graph is discarded unread when the fork aborts before any
-    // child restores it.
+    // cannot carry an errno through the Wasm fork save walk). Instead of running
+    // the real externref encoder, return the shared gated placeholder recipe: a
+    // real null graph node the guest can append to a frame reference vector, so
+    // the save walk completes without trapping. The captured graph is discarded
+    // unread when the fork aborts before any child restores it.
     [WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF]: (
       value: unknown,
     ): number => {
       registry.markUnsupportedReferenceKind("externref");
-      return references().encodeExternref(value);
+      return registry.reserveGatedLeafPlaceholder(value);
     },
     [WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF]: (
       recipeId: number,
@@ -522,50 +521,44 @@ export function buildForkActivationStateImports(
     // reconstruct engine-internal typed references that a fresh child cannot be
     // guaranteed to rebuild faithfully today. Every gated capture import records
     // its kind so the parent run loop aborts the fork with EOPNOTSUPP after
-    // seal. The real body still runs (it grows the shared transit table and
-    // returns canonical recipes/layout ids the injected codec publishes and
-    // recurses on; a bare sentinel would trap the guest's own `table.set`); the
-    // captured graph is discarded unread once the fork aborts before restore.
+    // seal, and instead of running the real encoder returns the shared gated
+    // placeholder recipe (or no-ops for the void imports). Because `lookup`
+    // returns a NONZERO recipe on first sight, the instrumented guest treats
+    // every typed value as an already-seen alias and never recurses into the
+    // struct/array/i31 field walk — so `claim` / `define` / `capture_layout` /
+    // provenance / broker are not reached for these fixtures. They keep survivable
+    // placeholders so any other module shape that does reach them still cannot
+    // trap the guest save walk. The captured graph is discarded unread once the
+    // fork aborts before restore.
     [WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP]: (
-      slot: number,
+      _slot: number,
     ): number => {
       registry.markUnsupportedReferenceKind("static-root/gc");
-      return registry.lookupGcSlot(activationId, slot);
+      return registry.reserveGatedTransitPlaceholder();
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_CLAIM]: (
-      slot: number,
+      _slot: number,
     ): number => {
       registry.markUnsupportedReferenceKind("gc");
-      return registry.claimGcSlot(slot);
+      return registry.reserveGatedTransitPlaceholder();
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_I31]: (
-      value: number,
+      _value: number,
     ): number => {
       registry.markUnsupportedReferenceKind("i31");
-      return registry.encodeI31(value);
+      return registry.reserveGatedLeafPlaceholder(null);
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_DEFINE]: (
-      recipeId: number,
-      recordActivationId: number,
-      typeOrdinal: number,
-      layoutId: number,
-      kind: number,
-      scalarPointer: number | bigint,
-      scalarByteLength: number,
-      referenceVectorOrdinal: number,
+      _recipeId: number,
+      _recordActivationId: number,
+      _typeOrdinal: number,
+      _layoutId: number,
+      _kind: number,
+      _scalarPointer: number | bigint,
+      _scalarByteLength: number,
+      _referenceVectorOrdinal: number,
     ): void => {
       registry.markUnsupportedReferenceKind("struct/array");
-      registry.defineGc(
-        activationId,
-        recipeId >>> 0,
-        recordActivationId >>> 0,
-        typeOrdinal,
-        layoutId,
-        kind,
-        scalarPointer,
-        scalarByteLength,
-        referenceVectorOrdinal >>> 0,
-      );
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_ROUTE]: (
       recipeId: number,
@@ -603,17 +596,20 @@ export function buildForkActivationStateImports(
     // GATED (typed Wasm-GC capture, continued): broker encode, layout capture,
     // and constructor-provenance recording all observe engine-internal GC
     // values. Record the kind so the fork aborts cleanly with EOPNOTSUPP after
-    // seal; the real body still runs to honor the injected codec's transit-table
-    // and recursion contract (a bare sentinel would trap the guest's own table
-    // publish), and the captured graph is discarded unread once the fork aborts.
+    // seal, and return survivable placeholders instead of running the real
+    // codec. Like `claim` / `define` above, these live only on the guest's
+    // fresh-node walk, which a gated `lookup` short-circuits — so for the gated
+    // fixtures they are unreachable — but each still returns a non-trapping
+    // value in case another module shape reaches it. The captured graph is
+    // discarded unread once the fork aborts.
     [WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE]: (
-      slot: number,
+      _slot: number,
     ): number => {
       registry.markUnsupportedReferenceKind("gc");
-      return registry.encodeGcFromSlot(activationId, slot);
+      return registry.reserveGatedTransitPlaceholder();
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT]: (
-      slot: number,
+      _slot: number,
       recordActivationId: number,
       baseLayoutId: number,
     ): number => {
@@ -624,46 +620,36 @@ export function buildForkActivationStateImports(
           + `activation ${recordActivationId}`,
         );
       }
-      return registry.captureGcLayout(
-        activationId,
-        slot,
-        baseLayoutId,
-      );
+      // The guest only threads this value back into the gated (no-op) `define`
+      // as metadata; the base layout id it already holds is the survivable
+      // identity choice and never drives a memory or field read.
+      return baseLayoutId;
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN]: (
-      slot: number,
-      recordActivationId: number,
-      baseLayoutId: number,
-      specializedLayoutId: number,
-      scalarLo: bigint,
-      scalarHi: bigint,
-      referenceCount: number,
+      _slot: number,
+      _recordActivationId: number,
+      _baseLayoutId: number,
+      _specializedLayoutId: number,
+      _scalarLo: bigint,
+      _scalarHi: bigint,
+      _referenceCount: number,
     ): number => {
       registry.markUnsupportedReferenceKind("gc");
-      return registry.beginGcProvenance(
-        activationId,
-        slot,
-        recordActivationId,
-        baseLayoutId,
-        specializedLayoutId,
-        scalarLo,
-        scalarHi,
-        referenceCount,
-      );
+      // A provenance token only names the pending record consumed by the gated
+      // (no-op) provenance ref/end imports below, so any stable value survives.
+      return 0;
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF]: (
-      token: number,
-      index: number,
-      slot: number,
+      _token: number,
+      _index: number,
+      _slot: number,
     ): void => {
       registry.markUnsupportedReferenceKind("gc");
-      registry.appendGcProvenanceReference(token, index, slot);
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END]: (
-      token: number,
+      _token: number,
     ): void => {
       registry.markUnsupportedReferenceKind("gc");
-      registry.endGcProvenance(token);
     },
   };
 }
@@ -1168,6 +1154,43 @@ export class ForkActivationRegistry {
       this.gcTransit.table,
       slot,
     );
+    this.gcTransit.ensureRecipeSlot(recipeId);
+    return recipeId;
+  }
+
+  /**
+   * Reserve a gated placeholder recipe for an anyref value that the module GC
+   * codec has already published into transit slot 0 (`lookup` / `claim` /
+   * broker).
+   *
+   * The live anyref is republished at `recipe + 1` so the PARENT continuation
+   * replay — a same-worker `table.get(transit, recipe + 1)` in the module's
+   * `decode_anyref` — restores the identical live object without any typed
+   * reconstruction. A gated `lookup` returning this NONZERO recipe makes the
+   * guest treat the value as an already-seen alias, so it never recurses into
+   * the struct/array field walk: no layout descriptor, provenance, or
+   * static-root catalog work runs on the capture side.
+   */
+  reserveGatedTransitPlaceholder(): number {
+    const value = this.gcTransit.get(0);
+    const recipeId = this.currentReferences().reserveGatedPlaceholder(value);
+    this.gcTransit.ensureRecipeSlot(recipeId);
+    this.gcTransit.set(recipeId + 1, value);
+    return recipeId;
+  }
+
+  /**
+   * Reserve a gated placeholder recipe for a value the guest hands directly to
+   * a capture import (`encode_externref`) or republishes into transit itself
+   * (`i31`).
+   *
+   * The runtime externref/funcref codec restores the parent from
+   * `capturedValues` (kept here), and the i31 bridge publishes its own
+   * `i31ref` into `recipe + 1`; both only need the transit slot sized so a later
+   * guest `table.set(transit, recipe + 1)` publish store stays in bounds.
+   */
+  reserveGatedLeafPlaceholder(value: unknown): number {
+    const recipeId = this.currentReferences().reserveGatedPlaceholder(value);
     this.gcTransit.ensureRecipeSlot(recipeId);
     return recipeId;
   }
