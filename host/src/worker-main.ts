@@ -336,6 +336,12 @@ const STARTUP_EAGAIN = 11;
 const STARTUP_EFAULT = 14;
 const STARTUP_EINVAL = 22;
 const STARTUP_ERANGE = 34;
+// Errno::EOPNOTSUPP (crates/shared/src/lib.rs; POSIX ENOTSUP shares this value).
+// Returned to a guest fork() that carries a reference kind the platform cannot
+// faithfully reconstruct in a fresh child (see the capture-side record-stubs in
+// fork-activation-registry.ts). No host-generated numeric errno constant exists
+// for this seam, so it is defined symbolically here.
+const FORK_REFERENCE_EOPNOTSUPP = 95;
 
 function processForkMode(value: number): ProcessForkMode | null {
   if (value === PROCESS_FORK_MODE_FORK) return PROCESS_FORK_MODE_FORK;
@@ -5101,6 +5107,23 @@ export async function centralizedWorkerMain(
           }
           if (phase === "capture") {
             processContinuation.sealCapture();
+            // GATED REFERENCE KIND: a capture-side record-stub in
+            // `buildForkActivationStateImports` marked this fork as carrying a
+            // reference kind the platform cannot faithfully reconstruct in a
+            // fresh child (e.g. a live externref or typed Wasm-GC value). Abort
+            // the fork cleanly with EOPNOTSUPP instead of launching a child:
+            // the guest's `kernel_fork` re-enters in `abort-replay` and returns
+            // `-EOPNOTSUPP`. This reaches the exact post-abort handling the
+            // `childPid < 0` branch below uses; it never throws (a throw cannot
+            // unwind an errno through the Wasm fork save walk) and never
+            // silently succeeds.
+            const unsupportedKind =
+              activationRegistry.takeUnsupportedReferenceKind();
+            if (unsupportedKind !== null) {
+              forkResult = -FORK_REFERENCE_EOPNOTSUPP;
+              processContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
+              continue;
+            }
             const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
               ? processContinuation.borrowedReplayWorkspaceRequirements()
               : undefined;
@@ -7011,6 +7034,18 @@ export async function centralizedThreadWorkerMain(
         }
         if (phase === "capture") {
           threadProcessContinuation.sealCapture();
+          // GATED REFERENCE KIND (fork-from-thread mirror of the main run
+          // loop): abort cleanly with EOPNOTSUPP when a capture-side record-stub
+          // marked an unsupported reference kind, instead of launching a child.
+          // The guest fork() re-enters in `abort-replay` and returns
+          // `-EOPNOTSUPP`.
+          const unsupportedKind =
+            threadActivationRegistry?.takeUnsupportedReferenceKind() ?? null;
+          if (unsupportedKind !== null) {
+            forkResult = -FORK_REFERENCE_EOPNOTSUPP;
+            threadProcessContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
+            continue;
+          }
           const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
             ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
             : undefined;

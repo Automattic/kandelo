@@ -483,9 +483,21 @@ export function buildForkActivationStateImports(
     [WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF]: (
       recipeId: number,
     ): CallableFunction | null => referenceReplay().decodeFuncref(recipeId >>> 0),
+    // GATED: a live externref has no linear-memory representation and cannot be
+    // faithfully reconstructed in a fresh child today. Record the kind so the
+    // parent run loop aborts the fork with EOPNOTSUPP after seal (a throw here
+    // cannot carry an errno through the Wasm fork save walk). The real encode
+    // still runs so the injected codec's own contract holds — it grows the
+    // shared transit table and returns the canonical recipe the guest publishes
+    // via `table.set(recipe + 1)`; a bare sentinel would trap that store OOB.
+    // The captured graph is discarded unread when the fork aborts before any
+    // child restores it.
     [WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF]: (
       value: unknown,
-    ): number => references().encodeExternref(value),
+    ): number => {
+      registry.markUnsupportedReferenceKind("externref");
+      return references().encodeExternref(value);
+    },
     [WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF]: (
       recipeId: number,
     ): unknown => referenceReplay().decodeExternref(recipeId >>> 0),
@@ -506,15 +518,32 @@ export function buildForkActivationStateImports(
       ordinal >>> 0,
       index >>> 0,
     ),
+    // GATED (typed Wasm-GC / static-root capture): the co-resident GC codecs
+    // reconstruct engine-internal typed references that a fresh child cannot be
+    // guaranteed to rebuild faithfully today. Every gated capture import records
+    // its kind so the parent run loop aborts the fork with EOPNOTSUPP after
+    // seal. The real body still runs (it grows the shared transit table and
+    // returns canonical recipes/layout ids the injected codec publishes and
+    // recurses on; a bare sentinel would trap the guest's own `table.set`); the
+    // captured graph is discarded unread once the fork aborts before restore.
     [WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP]: (
       slot: number,
-    ): number => registry.lookupGcSlot(activationId, slot),
+    ): number => {
+      registry.markUnsupportedReferenceKind("static-root/gc");
+      return registry.lookupGcSlot(activationId, slot);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_CLAIM]: (
       slot: number,
-    ): number => registry.claimGcSlot(slot),
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      return registry.claimGcSlot(slot);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_I31]: (
       value: number,
-    ): number => registry.encodeI31(value),
+    ): number => {
+      registry.markUnsupportedReferenceKind("i31");
+      return registry.encodeI31(value);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_DEFINE]: (
       recipeId: number,
       recordActivationId: number,
@@ -524,17 +553,20 @@ export function buildForkActivationStateImports(
       scalarPointer: number | bigint,
       scalarByteLength: number,
       referenceVectorOrdinal: number,
-    ): void => registry.defineGc(
-      activationId,
-      recipeId >>> 0,
-      recordActivationId >>> 0,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarPointer,
-      scalarByteLength,
-      referenceVectorOrdinal >>> 0,
-    ),
+    ): void => {
+      registry.markUnsupportedReferenceKind("struct/array");
+      registry.defineGc(
+        activationId,
+        recipeId >>> 0,
+        recordActivationId >>> 0,
+        typeOrdinal,
+        layoutId,
+        kind,
+        scalarPointer,
+        scalarByteLength,
+        referenceVectorOrdinal >>> 0,
+      );
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_ROUTE]: (
       recipeId: number,
       expectedActivation: number,
@@ -568,14 +600,24 @@ export function buildForkActivationStateImports(
       scalarDestination,
       scalarByteLength,
     ),
+    // GATED (typed Wasm-GC capture, continued): broker encode, layout capture,
+    // and constructor-provenance recording all observe engine-internal GC
+    // values. Record the kind so the fork aborts cleanly with EOPNOTSUPP after
+    // seal; the real body still runs to honor the injected codec's transit-table
+    // and recursion contract (a bare sentinel would trap the guest's own table
+    // publish), and the captured graph is discarded unread once the fork aborts.
     [WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE]: (
       slot: number,
-    ): number => registry.encodeGcFromSlot(activationId, slot),
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      return registry.encodeGcFromSlot(activationId, slot);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT]: (
       slot: number,
       recordActivationId: number,
       baseLayoutId: number,
     ): number => {
+      registry.markUnsupportedReferenceKind("struct/array");
       if (recordActivationId !== activationId) {
         throw new Error(
           `activation ${activationId} cannot select GC layout for `
@@ -596,24 +638,33 @@ export function buildForkActivationStateImports(
       scalarLo: bigint,
       scalarHi: bigint,
       referenceCount: number,
-    ): number => registry.beginGcProvenance(
-      activationId,
-      slot,
-      recordActivationId,
-      baseLayoutId,
-      specializedLayoutId,
-      scalarLo,
-      scalarHi,
-      referenceCount,
-    ),
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      return registry.beginGcProvenance(
+        activationId,
+        slot,
+        recordActivationId,
+        baseLayoutId,
+        specializedLayoutId,
+        scalarLo,
+        scalarHi,
+        referenceCount,
+      );
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF]: (
       token: number,
       index: number,
       slot: number,
-    ): void => registry.appendGcProvenanceReference(token, index, slot),
+    ): void => {
+      registry.markUnsupportedReferenceKind("gc");
+      registry.appendGcProvenanceReference(token, index, slot);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END]: (
       token: number,
-    ): void => registry.endGcProvenance(token),
+    ): void => {
+      registry.markUnsupportedReferenceKind("gc");
+      registry.endGcProvenance(token);
+    },
   };
 }
 
@@ -656,6 +707,20 @@ export class ForkActivationRegistry {
   // one is minted, preserving every existing caller.
   private gcTransit: ForkAnyrefTransitTable;
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
+  /**
+   * First gated reference kind observed by a capture-side record-stub during
+   * the active capture, or `null` when the fork carries only supported kinds.
+   *
+   * A raw `throw` from a capture import cannot unwind an errno through the Wasm
+   * fork save walk (see `fork-continuation.ts`), so the gated import bodies in
+   * `buildForkActivationStateImports` RECORD the kind here and return a benign
+   * sentinel instead of throwing. The parent run loop reads and clears this
+   * after `sealCapture` and, when set, aborts the fork cleanly with
+   * `EOPNOTSUPP` via `beginAbortReplay` instead of launching a child. Read-and-
+   * clear (`takeUnsupportedReferenceKind`) guarantees it never leaks into the
+   * next fork; capture entry also clears it defensively.
+   */
+  private unsupportedReferenceKind: string | null = null;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -1315,6 +1380,9 @@ export class ForkActivationRegistry {
     }
     // A prior trap must never make a stale object appear as a recipe hit.
     this.gcProvenance.abortPending();
+    // A partially-consumed marker from an aborted prior capture must never
+    // gate this fork; the run loop's read-and-clear is the primary owner.
+    this.unsupportedReferenceKind = null;
     this.gcTransit.clear();
     const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
@@ -1645,6 +1713,28 @@ export class ForkActivationRegistry {
 
   phaseName(): RegistryPhase {
     return this.phase;
+  }
+
+  /**
+   * Record that the active capture encountered a gated reference kind. First
+   * observation wins so the parent run loop reports the first kind the guest's
+   * save walk actually reached. Called from the capture-side record-stubs in
+   * `buildForkActivationStateImports`; never throws (throwing here cannot carry
+   * an errno through the Wasm fork save walk).
+   */
+  markUnsupportedReferenceKind(kind: string): void {
+    this.unsupportedReferenceKind ??= kind;
+  }
+
+  /**
+   * Read and clear the gated reference kind observed during capture. Returns
+   * `null` when the fork carried only supported kinds. Read-and-clear so a
+   * gated kind can never leak into a subsequent, supported fork.
+   */
+  takeUnsupportedReferenceKind(): string | null {
+    const kind = this.unsupportedReferenceKind;
+    this.unsupportedReferenceKind = null;
+    return kind;
   }
 
   private buildFunctionCatalog(): ForkFunctionCatalog {
