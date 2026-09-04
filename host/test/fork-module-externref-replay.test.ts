@@ -1,24 +1,31 @@
-// Phase 6 D6.2 — externref reference reconstruction ORCHESTRATED by the
-// co-resident fork module and ROOTED through the REAL `wpk_fork_host` engine
-// floor, proven end to end in a real WebAssembly engine (Node/V8).
+// Phase 6 D6.2 / M2 — externref reference reconstruction for a PLAIN, directly
+// held externref (no aggregate consumer), proven end to end in a real
+// WebAssembly engine (Node/V8).
 //
-// This is the externref analogue of `fork-module-funcref-replay.test.ts`. The
-// crucial difference from funcref: an externref has NO linear-memory
-// representation and there is no imported externref table to `table.get`, so
-// `__wpk_fork_ref_decode_externref` STAYS a JS import (it returns the value).
-// The module's job is to ORCHESTRATE the order and ROOT host-side identity
-// through the `wpk_fork_host` seam. Here we build a REAL, externref-only KFMS
-// reference transaction with the production host encoder, instantiate the module
-// with the REAL seam bodies (`createForkModuleHostCapabilities`, backed by a
-// broker token cache), drive `fm_begin_reference_replay`, and assert:
+// M2 moved externref decode out of the host: the co-resident module's injected
+// `__wpk_fork_ref_decode_externref(recipe) -> externref` export now calls the
+// single residual `env.resolve_externref(handle) -> externref` host import
+// DIRECTLY (no table, no generation, no PHASE A/B host round-trip) — see the
+// design ruling in
+// `docs/superpowers/plans/2026-09-03-m2-externref-into-module.md`. A plain
+// externref-in-a-local graph (this file's case) has no GC/exnref consumer, so
+// `fm_begin_reference_replay`'s bookkeeping pass never calls the host seam
+// itself (it is now host-free, see `ReconstructionState`'s doc in
+// `crates/fork-codec/src/reference_replay.rs`); resolution only happens when
+// something actually DECODES a recipe, i.e. this test must call the module's
+// `__wpk_fork_ref_decode_externref` export directly (mirroring what the guest's
+// restore path — or the injected DRIVE_OP_EXTERNREF_TRANSIT step for a
+// reachable leaf — would do at fork time).
 //
-//   (a) PARITY — the token the module's `host_resolve_externref` roots for a
-//       broker handle is `Object.is`-identical to `tokenCache.materialize(handle)`
-//       (the same canonical token the still-JS decode import returns), so module
-//       and JS agree on identity.
-//   (b) PROOF OF USE — `fm_externrefs_resolved` advanced by the externref node
-//       count AND the host bodies recorded that `resolve_externref` was invoked,
-//       so the module (not a silent JS fallback) drove the reconstruction.
+// This asserts:
+//   (a) PARITY — the value `__wpk_fork_ref_decode_externref(recipe)` returns for
+//       a broker handle is `Object.is`-identical to
+//       `tokenCache.materialize(handle)` (the same canonical token the JS decode
+//       path returns), so module and JS agree on identity.
+//   (b) PROOF OF USE — `fm_externrefs_resolved` (the graph-derived bookkeeping
+//       count from `fm_begin_reference_replay`) advances by the externref node
+//       count, AND the host `resolve_externref` body actually observed one call
+//       per decode this test drove.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -88,18 +95,32 @@ function buildExternrefArena(memory: WebAssembly.Memory): number {
   return root;
 }
 
-describe("fork-module externref reference reconstruction (Phase 6 D6.2)", () => {
-  it("orchestrates externref re-rooting through the module with identity parity and proof of use", () => {
+interface ForkModuleRefExports {
+  fm_set_format: (pw: number, fixedPrefix: number) => void;
+  fm_begin_reference_replay: (root: number, pid: number) => void;
+  fm_externrefs_resolved: () => bigint;
+  fm_last_errno: () => number;
+  __wpk_fork_ref_decode_externref: (recipeId: number) => unknown;
+}
+
+describe("fork-module externref reference reconstruction (Phase 6 D6.2 / M2)", () => {
+  it("decodes a directly-held externref through the module with identity parity and proof of use", () => {
     const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
 
     // The child worker's externref token cache — the SAME cache the still-JS
-    // `__wpk_fork_ref_decode_externref` path would use, so the token the module
-    // roots is byte-for-byte the canonical identity JS returns.
+    // reference path would use, so the value the module's decode returns is
+    // byte-for-byte the canonical identity JS returns.
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-    const hostCapabilities = createForkModuleHostCapabilities({
-      tokens,
-      generationId: GENERATION_ID,
-    });
+    let resolveCalls = 0;
+    const hostCapabilities = createForkModuleHostCapabilities({ tokens });
+    // Wrap the single residual import to count invocations independent of the
+    // module's own `fm_externrefs_resolved` bookkeeping (which — since M2 — is a
+    // host-free, graph-derived count, not a live per-call tally; see
+    // `ReconstructionState`'s doc).
+    const resolveExternref = (handle: number): unknown => {
+      resolveCalls += 1;
+      return hostCapabilities.imports.resolve_externref(handle);
+    };
 
     const root = buildExternrefArena(memory);
 
@@ -113,42 +134,41 @@ describe("fork-module externref reference reconstruction (Phase 6 D6.2)", () => 
       ptrWidth: PTR_WIDTH,
       reserve: () => reserveBase,
       label: "externref-replay-test",
-      hostCapabilities: hostCapabilities.imports,
+      resolveExternref,
     });
-    const x = fm.exports as unknown as {
-      fm_set_format: (pw: number, fixedPrefix: number) => void;
-      fm_begin_reference_replay: (root: number, pid: number) => void;
-      fm_externrefs_resolved: () => bigint;
-      fm_last_errno: () => number;
-    };
+    const x = fm.exports as unknown as ForkModuleRefExports;
 
     x.fm_set_format(PTR_WIDTH, 0);
     expect(x.fm_last_errno()).toBe(0);
 
     const before = Number(x.fm_externrefs_resolved());
 
-    // Drive the reference reconstruction: the module walks the graph and calls
-    // `host_resolve_externref` once per externref node (PHASE A), re-rooting
-    // identity through the seam. No node is transit-reachable, so PHASE B
-    // publishes nothing.
+    // Seed the reference graph (bookkeeping only — since M2 this does NOT call
+    // the host seam; see `fm_begin_reference_replay`'s doc).
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    // (b) PROOF OF USE — the module counter advanced by the externref node
-    // count, and the host bodies recorded that many resolve_externref calls.
+    // (b) PROOF OF USE (graph admission) — the module's bookkeeping counter
+    // advanced by the externref node count purely from admitting the graph.
     const after = Number(x.fm_externrefs_resolved());
     expect(after - before).toBe(HANDLES.length);
-    expect(hostCapabilities.resolvedCount).toBe(HANDLES.length);
+    // Admission alone calls the host seam zero times (M2: host-free bookkeeping).
+    expect(resolveCalls).toBe(0);
 
-    // (a) PARITY — the module resolves externrefs in node (id) order, so the
-    // i-th rooted ordinal (1-based) is HANDLES[i-1]. The token it rooted is the
-    // SAME object `tokenCache.materialize(handle)` returns (idempotent cache).
+    // (a) PARITY + (b) PROOF OF USE (actual decode) — decoding each recipe
+    // through the module's injected `__wpk_fork_ref_decode_externref` export
+    // calls `resolve_externref` exactly once per decode and returns the SAME
+    // canonical token `tokenCache.materialize(handle)` returns.
     HANDLES.forEach((handle, index) => {
-      const ordinal = index + 1;
-      expect(hostCapabilities.rootedToken(ordinal)).toBe(tokens.materialize(handle));
+      const recipeId = index + 1;
+      const decoded = x.__wpk_fork_ref_decode_externref(recipeId);
+      expect(decoded).toBe(tokens.materialize(handle));
     });
+    expect(resolveCalls).toBe(HANDLES.length);
 
-    // The rooted tokens are the canonical, worker-generation-tagged identities.
-    expect(hostCapabilities.rootedToken(1)).not.toBe(hostCapabilities.rootedToken(2));
+    // The decoded tokens are the canonical, worker-generation-tagged identities.
+    expect(x.__wpk_fork_ref_decode_externref(1)).not.toBe(
+      x.__wpk_fork_ref_decode_externref(2),
+    );
   });
 });
