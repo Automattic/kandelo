@@ -53,9 +53,10 @@ use wasm_posix_shared::channel::{
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
-use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_EXECVEAT, SYS_SPAWN};
+use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_EXECVEAT, SYS_FORK, SYS_SPAWN, SYS_VFORK};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
+use wasm_posix_shared::fork_contract::MODE_VFORK;
 use wasm_posix_shared::host_abi::{
     SyscallArgDesc, SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS,
 };
@@ -615,6 +616,43 @@ fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemor
     Ok(SharedMemory::new(engine, MemoryType::shared(min, max))?)
 }
 
+/// N1-I4 Task 2: a PRIVATE, byte-for-byte copy of `parent_mem`'s CURRENT
+/// (already-grown) contents into a FRESH `SharedMemory` — the
+/// private-memory half of `SYS_FORK` (`handle_fork`). Unlike I3a's thread
+/// clone (`spawn_worker_thread`, which SHARES `guest_mem` directly with the
+/// new OS thread), a `fork()` child must diverge from its parent: after this
+/// call, a write to either the parent's or the child's memory must be
+/// invisible to the other.
+///
+/// Copies `parent_mem.size()` pages — the parent's ACTUAL current extent —
+/// rather than `ProcessLayout::initial_pages`, so anything the parent grew
+/// into since its own launch (brk/mmap growth, and any co-resident
+/// fork-module region already reserved by `instantiate_fork_module`/
+/// `grow_to_cover`) is preserved in the child too; forking after either kind
+/// of growth must not silently truncate the child's image. The new memory's
+/// own `maximum` is [`DEFAULT_MAX_PAGES`] — the SAME ceiling
+/// [`compute_guest_memory`] gives every guest memory in this host — so the
+/// child can grow exactly as far as the parent could have.
+///
+/// # Soundness
+/// `SharedMemory::data()` (via [`mem_base`]) gives a raw view with no
+/// Rust-level exclusivity guarantee — this is exactly as sound (or
+/// unsound) as every other raw access in this file (`read_bytes`/
+/// `write_bytes`). The caller (`handle_fork`, running on the pump thread
+/// while the forking guest thread is itself blocked inside its own
+/// `kernel_fork` import call awaiting this very operation — see that
+/// closure's busy-wait) is responsible for there being no OTHER concurrent
+/// writer to `parent_mem` at the moment of the copy.
+fn clone_guest_memory(engine: &Engine, parent_mem: &SharedMemory) -> anyhow::Result<SharedMemory> {
+    let current_pages = parent_mem.size();
+    let child_mem = new_shared(engine, current_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+    let len = current_pages as usize * WASM_PAGE_SIZE;
+    unsafe {
+        core::ptr::copy_nonoverlapping(mem_base(parent_mem), mem_base(&child_mem), len);
+    }
+    Ok(child_mem)
+}
+
 /// The guest's launch environment: argv and environment variables, encoded as
 /// raw UTF-8 bytes (no NUL terminator — the guest CRT appends its own,
 /// mirroring `host/src/worker-main.ts`'s `encodeStartupMetadata`), plus any
@@ -637,6 +675,20 @@ pub struct GuestOptions {
     /// N1-I1a's behavior exactly: the overlay's `/` starts and stays empty,
     /// with no manifest loaded and the `host_blob_read` import unreachable.
     pub base_image: Option<BaseImage>,
+    /// N1-I4 Task 2: instantiate a co-resident fork-module
+    /// (`crates/fork-module`) alongside EVERY process this run launches (the
+    /// boot process, and any spawned/forked descendant — see
+    /// `launch_process`) and shrink each process's kernel-visible `max_addr`
+    /// ceiling below the module's reserved region (see `launch_process`'s
+    /// `kernel_set_max_addr` call site and `compute_fork_module_region`'s
+    /// doc comment). `false` (the default) preserves every test that
+    /// predates this increment byte-for-byte: no fork module is
+    /// instantiated, and `max_addr` is the plain `ProcessLayout::max_addr`
+    /// ceiling. Only a caller that actually built
+    /// `local-binaries/fork_module32.wasm` (`crates/fork-module/build-
+    /// wasm.sh`) should set this `true` — `run_guest` fails loudly (never
+    /// silently skips) if it is `true` but the artifact is missing.
+    pub enable_fork_module: bool,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
@@ -786,6 +838,14 @@ pub fn run_guest(
     // rejection (see `handle_spawn`): the child's Process record still
     // exists unpublished and must be removed by the host.
     let remove_process = kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_remove_process")?;
+    // N1-I4 Task 2: `SYS_FORK`/`SYS_VFORK` (`handle_fork`). Clones the
+    // caller's kernel-side `Process` state (signal mask, credentials, ...)
+    // under a freshly allocated child pid; the host-side private-memory copy
+    // and child guest `Instance`/co-resident module are `handle_fork`'s own
+    // job (this export creates identity only, mirroring `kernel_spawn_process`
+    // above).
+    let fork_process =
+        kernel.get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_fork_process")?;
     // N1-I3b Task 1: the exec-target authority `handle_spawn` uses to source
     // the spawned child's program bytes from the in-kernel VFS instead of a
     // host-side program map. `kernel_spawn_exec_target_prepare` resolves
@@ -993,6 +1053,8 @@ pub fn run_guest(
         import_exit_status.clone(),
         launch_argv,
         launch_env,
+        options.enable_fork_module,
+        false, // the boot process is never itself a pending-replay fork child
     )?;
     let mut processes = vec![process];
     // N1-I3a Task 3: the boot process's ppid is the sentinel `0` — never a
@@ -1031,9 +1093,11 @@ pub fn run_guest(
         &exec_target_prepare,
         &exec_commit,
         &exec_target_resolve_shebang,
+        &fork_process,
         &current_memory,
         &current_pid,
         &wait_table,
+        options.enable_fork_module,
         &mut syscall_trace,
     )?;
 
@@ -2196,16 +2260,22 @@ pub struct ForkModule {
 /// against the CURRENT (grown) size, so the module's own start function
 /// (which writes its passive data segments into the region) would trap
 /// without this.
-pub(crate) fn instantiate_fork_module(
-    engine: &Engine,
-    store: &mut Store<()>,
-    guest_mem: &SharedMemory,
-    layout: &ProcessLayout,
-) -> anyhow::Result<ForkModule> {
+/// Pure computation of the co-resident fork-module's placement: reads
+/// `crate::fork_module_path()`'s bytes fresh and returns `(memory_base,
+/// region_bytes)` — the SAME math [`instantiate_fork_module`] used to do
+/// inline, split out here (N1-I4 Task 2) so [`launch_process`] can learn
+/// `memory_base` — the value it must pass to the kernel's
+/// `kernel_set_max_addr` export (see that call site's doc comment for
+/// concern 3: shrinking the process's kernel-visible ceiling BELOW this
+/// region so the kernel's own brk/mmap allocator can never collide with it)
+/// — BEFORE the guest OS thread that actually instantiates the module even
+/// exists. Touches no `Store`/`Engine` state; only file I/O and arithmetic,
+/// so it is safe to call from the pump/kernel thread while a guest OS thread
+/// is live.
+pub(crate) fn compute_fork_module_region(layout: &ProcessLayout) -> anyhow::Result<(usize, usize)> {
     let fork_module_wasm_path = crate::fork_module_path();
     let wasm_bytes = std::fs::read(&fork_module_wasm_path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", fork_module_wasm_path.display()))?;
-    let module = Module::new(engine, &wasm_bytes)?;
 
     let (mem_size, mem_align) = read_fork_module_mem_info(&wasm_bytes)?;
     anyhow::ensure!(mem_align > 0 && mem_align.is_power_of_two(), "fork-module mem_align {mem_align} is not a power of two");
@@ -2232,6 +2302,22 @@ pub(crate) fn instantiate_fork_module(
         i32::try_from(stack_top).is_ok(),
         "fork-module region top 0x{stack_top:x} does not fit in a wasm32 i32 address"
     );
+    Ok((memory_base, region_bytes))
+}
+
+pub(crate) fn instantiate_fork_module(
+    engine: &Engine,
+    store: &mut Store<()>,
+    guest_mem: &SharedMemory,
+    layout: &ProcessLayout,
+) -> anyhow::Result<ForkModule> {
+    let fork_module_wasm_path = crate::fork_module_path();
+    let wasm_bytes = std::fs::read(&fork_module_wasm_path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", fork_module_wasm_path.display()))?;
+    let module = Module::new(engine, &wasm_bytes)?;
+
+    let (memory_base, region_bytes) = compute_fork_module_region(layout)?;
+    let stack_top = memory_base + region_bytes;
 
     grow_to_cover(guest_mem, memory_base + region_bytes)?;
 
@@ -2372,6 +2458,8 @@ fn launch_process(
     import_exit_status: Arc<Mutex<Option<i32>>>,
     launch_argv: Arc<Vec<Vec<u8>>>,
     launch_env: Arc<Vec<Vec<u8>>>,
+    use_fork_module: bool,
+    fork_child_pending_replay: bool,
 ) -> anyhow::Result<GuestProcess> {
     let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
     if scratch_ptr <= 0 {
@@ -2379,10 +2467,25 @@ fn launch_process(
     }
     let scratch_base = scratch_ptr as u32 as usize;
 
+    // N1-I4 Task 2 concern 3: when this process will co-reside a fork-module
+    // (`use_fork_module`), the kernel's OWN `max_addr` ceiling for `pid` must
+    // be the region's `memory_base` — STRICTLY below the module's reserved
+    // static/BSS/shadow-stack region — never the plain `ProcessLayout::
+    // max_addr` the module's placement math treats as the region's END. This
+    // makes the reservation KERNEL-ENFORCED (see `instantiate_fork_module`'s
+    // doc comment): the kernel's own brk/mmap allocator can then never hand
+    // this process an address inside the module's region, even before any
+    // fork ever happens and for BOTH the parent (this call, at its own
+    // launch) and a fork child (this same function, called again from
+    // `handle_fork`). `use_fork_module == false` (every test that predates
+    // this increment) keeps the plain `layout.max_addr` ceiling, byte-for-
+    // byte unchanged.
+    let max_addr = if use_fork_module { compute_fork_module_region(&layout)?.0 } else { layout.max_addr };
+
     for (name, val) in [
         ("kernel_set_brk_base", set_brk_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
         ("kernel_set_mmap_base", set_mmap_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
-        ("kernel_set_max_addr", set_max_addr.call(&mut *kernel_store, (pid, layout.max_addr as i32))?),
+        ("kernel_set_max_addr", set_max_addr.call(&mut *kernel_store, (pid, max_addr as i32))?),
     ] {
         if val < 0 {
             anyhow::bail!("{name} failed: {val}");
@@ -2397,6 +2500,8 @@ fn launch_process(
         import_exit_status,
         launch_argv,
         launch_env,
+        use_fork_module,
+        fork_child_pending_replay,
     );
     let mut thread_handles = HashMap::new();
     thread_handles.insert(layout.channel_offset, main_handle);
@@ -2430,6 +2535,8 @@ fn spawn_guest_thread(
     import_exit_status: Arc<Mutex<Option<i32>>>,
     launch_argv: Arc<Vec<Vec<u8>>>,
     launch_env: Arc<Vec<Vec<u8>>>,
+    use_fork_module: bool,
+    fork_child_pending_replay: bool,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     thread::spawn(move || {
@@ -2445,6 +2552,50 @@ fn spawn_guest_thread(
         )
         .unwrap();
         linker.define(&mut store, "env", "__channel_base", channel_base).unwrap();
+
+        // N1-I4 Task 2: instantiate the co-resident fork-module (Task 1's
+        // `instantiate_fork_module`) in this SAME `Store` as the guest
+        // instance about to be created below, then flip the guest's
+        // `__wpk_fork_frame_reserve/commit/peek/next` +
+        // `__wpk_fork_resume_peek` imports to resolve to the module's
+        // exported `Func`s — a synchronous wasm->wasm call over shared
+        // memory, mirroring `host/src/worker-main.ts:4545-4557`. Both
+        // instances must share one `Store`: a `Func` can only be handed to
+        // `Linker::define`/`instantiate` for a Store it was created in. This
+        // runs for EVERY process launched with `use_fork_module` (the boot
+        // process, a spawned child, or a fork child — see `launch_process`),
+        // so the parent side of a later fork already has this wiring from
+        // its OWN launch; `handle_fork` never needs to retrofit it. If the
+        // guest module does not actually import these five names (e.g. this
+        // increment's un-instrumented fixtures), `linker.define` is simply
+        // unused — Wasmtime does not require a defined name to be consumed.
+        if use_fork_module {
+            match instantiate_fork_module(&engine, &mut store, &guest_mem, &layout) {
+                Ok(fork_module) => {
+                    const FRAME_IMPORT_NAMES: [&str; 5] = [
+                        "__wpk_fork_frame_reserve",
+                        "__wpk_fork_frame_commit",
+                        "__wpk_fork_frame_peek",
+                        "__wpk_fork_frame_next",
+                        "__wpk_fork_resume_peek",
+                    ];
+                    for name in FRAME_IMPORT_NAMES {
+                        let Some(f) = fork_module.instance.get_func(&mut store, name) else {
+                            eprintln!("fork-module missing expected export {name}");
+                            return;
+                        };
+                        if let Err(e) = linker.define(&mut store, "env", name, f) {
+                            eprintln!("wiring fork-module export {name} into env failed: {e}");
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("instantiate_fork_module failed: {e:#}");
+                    return;
+                }
+            }
+        }
 
         // Host-provided launch metadata: real argv/env from the caller's
         // `GuestOptions`, matching the copy contract `host/src/worker-main.ts`'s
@@ -2559,6 +2710,55 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
+        // kernel_fork (N1-I4 Task 2): `fork()`/`vfork()`/`_Fork()` call this
+        // import DIRECTLY (`libc/glue/channel_syscall.c:492-493,577-600),
+        // never through the generic channel dispatcher (`__do_syscall_impl`
+        // explicitly returns ENOSYS for `SYS_FORK`/`SYS_VFORK`) — this keeps
+        // wasm-fork-instrument's call-graph rewriting scoped to fork callers
+        // alone, per that file's own module doc comment. Mirrors
+        // `kernel_clone` immediately above: post `SYS_FORK`/`SYS_VFORK` +
+        // `mode` on THIS channel (this import is only ever reached from the
+        // process's main thread — a worker-thread `fork()` is not wired up
+        // by this host and traps, unchanged from before this task) and block
+        // for the pump's `handle_fork` (N1-I4 Task 2) to create the child and
+        // report back. Unlike `kernel_clone`'s tid, the value this import
+        // returns is used DIRECTLY as `kernel_fork`'s own C-level return —
+        // `__do_syscall_impl`'s generic "ret<0 -> -errno" post-processing
+        // never runs for a direct import call, so apply that SAME convention
+        // here explicitly, exactly like `kernel_wait4` below.
+        {
+            let mem = guest_mem.clone();
+            let ch = layout.channel_offset;
+            linker
+                .func_wrap("kernel", "kernel_fork", move |_c: Caller<'_, ()>, mode: i32| -> i32 {
+                    let syscall_nr = if mode as u32 == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+                    unsafe {
+                        write_bytes(&mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+                        write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+                        for i in 1..6 {
+                            write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+                        }
+                        write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                    }
+                    let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                    loop {
+                        let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                        if s != STATUS_PENDING {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_micros(200));
+                    }
+                    let (ret, errno) = unsafe {
+                        (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
+                    };
+                    unsafe {
+                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                    }
+                    if ret < 0 { -(errno as i32) } else { ret as i32 }
+                })
+                .unwrap();
+        }
         // kernel_wait4: registered defensively so a guest that happens to
         // import "kernel.kernel_wait4" does not trap the build. In practice
         // the CURRENT glue (`libc/glue/channel_syscall.c`, which replaced
@@ -2651,12 +2851,68 @@ fn spawn_guest_thread(
                 return;
             }
         };
+
+        if fork_child_pending_replay {
+            // N1-I4 Task 2: this `Instance` is a real `SYS_FORK` child (see
+            // `handle_fork`) — proof enough that the private-memory-copy +
+            // co-resident-module setup this task covers does not trap — but
+            // this task does NOT drive the fm_* capture/replay coordinator
+            // (Task 3) that would let it resume execution at the guest's
+            // fork call site. Calling `_start` here would be WRONG, not
+            // merely incomplete: this is the SAME copied program the parent
+            // is running, so `main()` would reach `fork()` again — a fork
+            // bomb — and the CRT's OWN unrelated `kernel_is_fork_child`/
+            // `fork_child_exec` bootstrap (`libc/musl-overlay/src/env/
+            // __libc_start_main.c`, built for a DIFFERENT purpose — resuming
+            // a fork that immediately execs — and never wired to THIS host's
+            // channel-based exit accounting) is not an available substitute
+            // either. Instead: never execute a single instruction of the
+            // child's copied program, and post an already-successful
+            // `SYS_EXIT_GROUP(0)` on its own (not-yet-run) channel, so this
+            // pending-replay child is reaped through the EXACT SAME
+            // exit-commit path (`run_pump`'s `ch.is_main` exit branch) every
+            // other process's real exit uses. Task 3 replaces this stub with
+            // a real replayed continuation.
+            post_fork_child_pending_exit(&guest_mem, layout.channel_offset);
+            return;
+        }
+
         let start = instance
             .get_typed_func::<(), ()>(&mut store, "_start")
             .expect("guest exports _start");
         // Blocks until the guest parks after exit_group (normal), or traps.
         let _ = start.call(&mut store, ());
     })
+}
+
+/// N1-I4 Task 2: post an already-successful `SYS_EXIT_GROUP(0)` on a fork
+/// child's own main channel (mirrors [`post_thread_exit`]'s bounded
+/// post-and-wait shape, but on the MAIN channel with `SYS_EXIT_GROUP`
+/// instead of a worker thread's `SYS_exit`), so `run_pump`'s existing
+/// process-exit branch commits this pending-replay child's exit — kernel
+/// zombie/exit-status recording, `wait_table` insertion, channel removal —
+/// through the SAME machinery every other process's exit uses. See
+/// `spawn_guest_thread`'s `fork_child_pending_replay` branch for why this
+/// child never runs any of its copied program before this call.
+fn post_fork_child_pending_exit(guest_mem: &SharedMemory, channel_offset: usize) {
+    let ch = channel_offset;
+    unsafe {
+        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &SYS_EXIT_GROUP.to_le_bytes());
+        for i in 0..6 {
+            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+        }
+        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+    }
+    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if s != STATUS_PENDING || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
 }
 
 /// Launch a worker (pthread) on a fresh OS thread over the shared guest memory.
@@ -3211,9 +3467,11 @@ fn run_pump(
     exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
     exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
+    fork_process: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
+    use_fork_module: bool,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let mut blocked: Vec<BlockedOp> = Vec::new();
@@ -3467,7 +3725,29 @@ fn run_pump(
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
                         exec_target_read, spawn_exec_commit, exec_target_cancel,
-                        exec_target_resolve_shebang, wait_table,
+                        exec_target_resolve_shebang, wait_table, use_fork_module,
+                    )?;
+                    ci += 1;
+                    continue;
+                }
+
+                // SYS_FORK/SYS_VFORK (N1-I4 Task 2): a private-memory child,
+                // posted by this host's OWN `kernel_fork` import closure
+                // (`spawn_guest_thread`) -- the guest's `fork()`/`vfork()`/
+                // `_Fork()` call `kernel.kernel_fork(mode)` DIRECTLY
+                // (`libc/glue/channel_syscall.c`), never through the generic
+                // channel dispatcher, so this interception happens here for
+                // the SAME reason `SYS_CLONE`/`SYS_SPAWN` above do: before
+                // any `dispatch_once`/RAW-arg marshalling. See
+                // `handle_fork`'s doc comment for the full child-identity +
+                // private-memory-copy + co-resident-module sequence, and why
+                // the child never executes any of its copied program in this
+                // increment (that is Task 3's job).
+                if ch.is_main && (syscall_nr == SYS_FORK || syscall_nr == SYS_VFORK) {
+                    handle_fork(
+                        kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
+                        fork_process, remove_process, alloc_scratch, set_brk_base, set_mmap_base,
+                        set_max_addr, use_fork_module,
                     )?;
                     ci += 1;
                     continue;
@@ -3514,7 +3794,7 @@ fn run_pump(
                         open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
                         set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
-                        remove_process, wait_table,
+                        remove_process, wait_table, use_fork_module,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3552,6 +3832,7 @@ fn run_pump(
                         path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_brk_base, set_mmap_base,
                         set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
                         exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
+                        use_fork_module,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3744,6 +4025,7 @@ fn handle_spawn(
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     wait_table: &Arc<Mutex<WaitTable>>,
+    use_fork_module: bool,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -3976,6 +4258,8 @@ fn handle_spawn(
         child_import_exit_status,
         Arc::new(argv_list),
         Arc::new(envp_list),
+        use_fork_module,
+        false, // a posix_spawn child is a fresh image, never a fork replay
     )?;
     processes.push(child);
     let child_pi = processes.len() - 1;
@@ -4036,6 +4320,135 @@ fn handle_spawn(
         unsafe { write_bytes(&guest_mem, pid_out_ptr, &(child_pid as i32).to_le_bytes()) };
     }
     complete_channel(&guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], 0, 0)
+}
+
+/// N1-I4 Task 2: intercept a `SYS_FORK`/`SYS_VFORK` request the guest's own
+/// `kernel_fork` import closure (`spawn_guest_thread`) posted on its main
+/// channel. Drives the FULL child-identity + private-memory-copy +
+/// co-resident-module setup this increment's scope covers:
+///
+///  1. `kernel_fork_process(parent_pid, caller_tid, mode)` allocates the
+///     child's kernel-side `Process` record (a real clone: signal mask,
+///     credentials, ...) under a freshly allocated child pid.
+///  2. [`clone_guest_memory`] makes a PRIVATE byte-for-byte copy of the
+///     PARENT's CURRENT guest memory into a FRESH `SharedMemory` — never
+///     shared, unlike I3a's thread clone.
+///  3. [`launch_process`] (the SAME helper `handle_spawn`/`run_guest`'s boot
+///     path use) creates the child's guest `Instance` over that copy, under
+///     the child pid, with a co-resident fork-module when `use_fork_module`.
+///
+/// Task 3, not this function, drives the fm_* capture/replay coordinator
+/// that would let the child ACTUALLY resume execution at the guest's fork
+/// call site. Without that coordinator, `launch_process`'s
+/// `fork_child_pending_replay = true` argument here means the child guest
+/// thread never executes a single instruction of the copied program — see
+/// `spawn_guest_thread`'s doc comment for why running `_start` from the top
+/// would be wrong (not merely incomplete) before that coordinator exists.
+///
+/// The PARENT always gets a truthful POSIX-shaped return: `child_pid` on
+/// success, or a negative-errno completion on failure (mirroring
+/// `fail_spawn`'s convention, generalized to this sentinel's `syscall_nr`
+/// rather than the fixed `SYS_SPAWN`). A `kernel_fork_process` failure
+/// creates nothing to roll back; a post-fork memory-clone failure DOES need
+/// `remove_process` to reclaim the now-orphaned kernel-side record before
+/// reporting `ENOMEM` to the parent. A `launch_process` failure past that
+/// point propagates via `?` (mirroring `handle_spawn`'s OWN `launch_process`
+/// call, which is equally unguarded) — this deep, its failures are host
+/// resource exhaustion, not a POSIX-shaped fork() error.
+#[allow(clippy::too_many_arguments)]
+fn handle_fork(
+    kernel_store: &mut Store<()>,
+    engine: &Engine,
+    kernel_mem: &SharedMemory,
+    processes: &mut Vec<GuestProcess>,
+    pi: usize,
+    ch: PumpChannel,
+    syscall_nr: u32,
+    args: &[i64; 6],
+    fork_process: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    remove_process: &wasmtime::TypedFunc<u32, i32>,
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    use_fork_module: bool,
+) -> anyhow::Result<()> {
+    let parent_pid = processes[pi].pid;
+    let caller_tid = ch.tid;
+    let scratch_ptr = processes[pi].scratch_base;
+    let guest_mem = processes[pi].memory.clone();
+    let mode = args[0] as u32;
+
+    let child_pid = fork_process.call(&mut *kernel_store, (parent_pid, caller_tid, mode))?;
+    if child_pid <= 0 {
+        let errno = if child_pid < 0 { -child_pid } else { libc_errno::EAGAIN };
+        return complete_channel(
+            &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], -1, errno as u32,
+        );
+    }
+    let child_pid = child_pid as u32;
+
+    let layout = processes[pi].layout;
+    let child_mem = match clone_guest_memory(engine, &guest_mem) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[host-native] fork child {child_pid} memory clone failed: {e:#}");
+            let removed = remove_process.call(&mut *kernel_store, child_pid)?;
+            if removed < 0 {
+                eprintln!(
+                    "[host-native] kernel_remove_process({child_pid}) after a fork memory-clone \
+                     failure failed: {removed}"
+                );
+            }
+            return complete_channel(
+                &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], -1,
+                libc_errno::ENOMEM as u32,
+            );
+        }
+    };
+    // The byte-for-byte copy above ALSO copied the parent's own channel
+    // header, including the very `SYS_FORK` request (still `STATUS_PENDING`)
+    // this function is servicing right now. `processes.push(child)` below
+    // makes the child's channel visible to `run_pump`'s scanning loop
+    // immediately — concurrently with, and possibly BEFORE, the child's own
+    // OS thread (spawned inside `launch_process`, which still has to
+    // instantiate a fork-module and compile/instantiate the guest module)
+    // ever reaches `post_fork_child_pending_exit`. Left uncleared, the pump
+    // would misread that stale copied `SYS_FORK` as a FRESH request from the
+    // child and recursively fork it again — a self-sustaining process
+    // explosion with no real guest code involved (observed: 30s hard-cap
+    // bail with 150+ processes before this fix). Zero the copied main
+    // channel's header now, synchronously, before `launch_process` even
+    // spawns that thread — mirrors the Node reference host's OWN identical
+    // defensive zero (`host/src/node-kernel-worker-entry.ts`'s
+    // `handleOrdinaryFork`: `new Uint8Array(childMemory.buffer,
+    // childChannelOffset, CH_TOTAL_SIZE).fill(0)`).
+    unsafe { write_bytes(&child_mem, layout.channel_offset, &vec![0u8; MIN_CHANNEL_SIZE]) };
+
+    let child_module = processes[pi].module.clone();
+    let child_import_exit_status = Arc::new(Mutex::new(None::<i32>));
+    let child = launch_process(
+        engine,
+        kernel_store,
+        alloc_scratch,
+        set_brk_base,
+        set_mmap_base,
+        set_max_addr,
+        child_module,
+        child_mem,
+        layout,
+        child_pid,
+        child_import_exit_status,
+        Arc::new(Vec::new()),
+        Arc::new(Vec::new()),
+        use_fork_module,
+        true, // fork_child_pending_replay — see this function's doc comment
+    )?;
+    processes.push(child);
+
+    // POSIX: fork() returns the child's pid to the PARENT. The child's own
+    // "0" return is Task 3's job (real replay), never produced here.
+    complete_channel(&guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, args, &[], child_pid as i64, 0)
 }
 
 /// Complete a failed `SYS_SPAWN` request: `ret == -1` and a positive errno,
@@ -4167,6 +4580,7 @@ fn handle_exec_common(
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
     wait_table: &Arc<Mutex<WaitTable>>,
+    use_fork_module: bool,
 ) -> anyhow::Result<Option<i32>> {
     let pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -4338,6 +4752,8 @@ fn handle_exec_common(
         Arc::new(Mutex::new(None)),
         Arc::new(argv_list),
         Arc::new(envp_list),
+        use_fork_module,
+        false, // an exec'd image is never itself a fork replay
     ) {
         Ok(v) => v,
         Err(error) => {

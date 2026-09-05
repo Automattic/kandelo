@@ -1631,4 +1631,101 @@ mod tests {
         );
         Ok(())
     }
+
+    /// N1-I4 Task 2 gate: mirrors `kernel_path_or_skip` for the locally-built
+    /// fork-module artifact (`crates/fork-module/build-wasm.sh`) — a fresh
+    /// checkout without it skips this test (with a clear message) rather
+    /// than failing loudly, since building it is a separate step from
+    /// building the kernel.
+    fn fork_module_path_or_skip() -> Option<PathBuf> {
+        let path = fork_module_path();
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!(
+                "SKIP host-native fork test: {} not found.\n  Build it with:\n    \
+                 scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh",
+                path.display()
+            );
+            None
+        }
+    }
+
+    /// N1-I4 Task 2: a REAL native `SYS_FORK` end to end, through the
+    /// guest's OWN direct `kernel.kernel_fork` import (never the generic
+    /// syscall dispatcher — see `native_fork.c`'s doc comment and
+    /// `guest::handle_fork`'s). Proves, without tripping the pump's 30s
+    /// hard-cap bail or any Wasmtime trap:
+    ///
+    ///  - `kernel_fork_process` creates a real child pid (`child_pid > 0`):
+    ///    the parent's own `fork()` return value IS that pid, so its
+    ///    subsequent `waitpid(p, ...)` only resolves cleanly — rather than
+    ///    hanging into the pump's 30s hard-cap bail, which would surface as
+    ///    a test failure via `run_guest`'s `?` — if a REAL, correctly
+    ///    identified kernel process record exists to be reaped. This test's
+    ///    `outcome.exit_code == 0` assertion below is exactly that clean
+    ///    resolution.
+    ///  - the private memory copy (`guest::clone_guest_memory`) and the
+    ///    child's guest `Instance` (`guest::launch_process`) are created
+    ///    without a trap: `outcome.syscall_trace` recording the `SYS_FORK`
+    ///    sentinel (pushed by `run_pump` BEFORE `handle_fork` runs) proves
+    ///    the request was serviced, not silently dropped or trapped.
+    ///  - the co-resident fork-module is instantiated for BOTH the parent
+    ///    (at ITS OWN launch, `options.enable_fork_module`) and the child
+    ///    (inside `handle_fork`'s own `launch_process` call) — again, no
+    ///    trap: an `instantiate_fork_module`/frame-import-wiring failure in
+    ///    `spawn_guest_thread` would abandon that guest thread, which for
+    ///    the CHILD would mean nothing ever posts its synthetic exit, and
+    ///    for the PARENT would mean it never even reaches `fork()` — either
+    ///    way the parent's `waitpid` would hang into the same 30s bail.
+    ///
+    /// What this test does NOT prove (deferred to N1-I4 Task 3, which drives
+    /// the fm_* capture/replay coordinator): the child never actually runs
+    /// any of `native_fork.c` — see `guest::spawn_guest_thread`'s
+    /// `fork_child_pending_replay` doc comment for why running it would be
+    /// actively wrong (a fork bomb) before that coordinator exists. So
+    /// stdout contains ONLY "parent\n", never "child\n", and the parent's
+    /// reaped `WEXITSTATUS` is `0` (this task's synthetic
+    /// `SYS_EXIT_GROUP(0)`), not the fixture's real `_exit(3)`. A future
+    /// Task 3 test should assert BOTH lines and `exit_code == 3`.
+    #[test]
+    fn smoke_fork_parent_child() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = include_bytes!("../fixtures/native_fork.wasm");
+
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "parent's reaped WEXITSTATUS for its Task-2 synthetic (unreplayed) \
+             child (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("parent\n"),
+            "expected the parent to resume after fork() and print \"parent\\n\": {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("child\n"),
+            "N1-I4 Task 2 does not yet replay the child (that is Task 3) -- a \
+             \"child\\n\" line here would mean the child ran its ORIGINAL \
+             program from `_start`, i.e. the fork-bomb risk this task \
+             deliberately avoids: {stdout:?}"
+        );
+        assert!(
+            outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
+            "expected the SYS_FORK sentinel in the syscall trace: {:?}",
+            outcome.syscall_trace
+        );
+        Ok(())
+    }
 }
