@@ -630,12 +630,32 @@ pub fn run_guest(
     // process's memory — correct until the pump binds it to a different
     // process ahead of a `kernel_handle_channel` call.
     let current_memory: Arc<Mutex<SharedMemory>> = Arc::new(Mutex::new(guest_mem.clone()));
+    // N1-I3a Task 3: the "current pid" cell `host_waitpid` reads to learn
+    // which process is calling it (see its doc comment) — the exact same
+    // out-of-band pattern as `current_memory` above, set alongside it by
+    // `bind_and_dispatch`. `0` is a placeholder never read before the first
+    // real dispatch (the boot process's own pid is not known yet at this
+    // point in `run_guest`).
+    let current_pid: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    // N1-I3a Task 3: host-side waitpid bookkeeping (`host_waitpid`'s doc
+    // comment) — populated below (the boot process) and by `handle_spawn`/
+    // `run_pump`'s exit-commit branch.
+    let wait_table: Arc<Mutex<WaitTable>> = Arc::new(Mutex::new(WaitTable::default()));
 
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
     klinker.define(&mut kernel_store, "env", "memory", kernel_mem.clone())?;
-    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &current_memory, &base_blobs)?;
-    // Everything else the kernel imports (the ~78 unused host_* capabilities)
+    define_kernel_host_imports(
+        &mut klinker,
+        &kernel_mem,
+        &captured,
+        &fs,
+        &current_memory,
+        &base_blobs,
+        &current_pid,
+        &wait_table,
+    )?;
+    // Everything else the kernel imports (the ~77 unused host_* capabilities)
     // traps: a trivial no-VFS program touches none of them, and a trap is a
     // truthful boundary that surfaces any surprise syscall loudly.
     klinker.define_unknown_imports_as_traps(&kernel_module)?;
@@ -702,6 +722,16 @@ pub fn run_guest(
     // rejection (see `handle_spawn`): the child's Process record still
     // exists unpublished and must be removed by the host.
     let remove_process = kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_remove_process")?;
+    // N1-I3a Task 3: `host_waitpid`'s reap + status-encoding support.
+    // `kernel_get_process_exit_signal` disambiguates `get_exit_status`'s
+    // "shell-style" 128+signal encoding from a genuine 128-255 exit code
+    // (see `encode_wait_status`); `kernel_reap_exited_child` releases the
+    // kernel's own zombie once a parked `wait4` resolves (called by the pump
+    // itself, never from inside `host_waitpid` — see its doc comment).
+    let get_exit_signal =
+        kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_get_process_exit_signal")?;
+    let reap_exited_child =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_reap_exited_child")?;
 
     // --- Kernel-side process setup -------------------------------------------
     // Only the pid is created here; the rest of this process's launch (scratch
@@ -839,6 +869,10 @@ pub fn run_guest(
         launch_env,
     )?;
     let mut processes = vec![process];
+    // N1-I3a Task 3: the boot process's ppid is the sentinel `0` — never a
+    // real pid, so the boot process itself can never be `waitpid`'d (nothing
+    // above it exists in this host's process model).
+    wait_table.lock().unwrap().parent_of.insert(pid, 0);
 
     // --- The channel pump ---------------------------------------------------
     let mut syscall_trace = Vec::new();
@@ -850,6 +884,7 @@ pub fn run_guest(
         &set_current_tid,
         &handle_channel,
         &get_exit_status,
+        &get_exit_signal,
         &blocking_retry_token,
         &blocking_retry_release,
         &thread_exit,
@@ -861,8 +896,11 @@ pub fn run_guest(
         &spawn_blob_decode,
         &publish_spawn_child,
         &remove_process,
+        &reap_exited_child,
         &options.programs,
         &current_memory,
+        &current_pid,
+        &wait_table,
         &mut syscall_trace,
     )?;
 
@@ -1172,6 +1210,7 @@ mod base_image_tests {
 
 /// Define the minimal native `host_*` capabilities the boot + trivial path
 /// needs; every other host import is left to `define_unknown_imports_as_traps`.
+#[allow(clippy::too_many_arguments)]
 fn define_kernel_host_imports(
     linker: &mut Linker<()>,
     kernel_mem: &SharedMemory,
@@ -1179,6 +1218,8 @@ fn define_kernel_host_imports(
     fs: &Arc<HostFs>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     base_blobs: &Arc<BTreeMap<u64, Vec<u8>>>,
+    current_pid: &Arc<Mutex<u32>>,
+    wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     // host_futex_wake(addr, count) -> i32: wake up to `count` waiters parked on
     // the futex word at process address `addr` (in GUEST memory). musl's
@@ -1679,7 +1720,140 @@ fn define_kernel_host_imports(
             },
         )?;
     }
+    // host_waitpid(pid, options, status_ptr) -> i32: N1-I3a Task 3. The
+    // kernel's own `sys_waitpid` (`crates/runtime-core/src/syscalls.rs`)
+    // delegates ENTIRELY to this import (its `_proc` parameter is unused) —
+    // it never consults its own process table to pick or validate a child —
+    // so this closure implements the WHOLE POSIX `waitpid` contract itself,
+    // using host-side bookkeeping (`wait_table`) instead of any kernel
+    // state: `-ECHILD` when `pid` does not name a live-or-zombie child of
+    // the CALLING process (`current_pid`, an out-of-band "who is
+    // dispatching right now" cell exactly like `host_futex_wake`'s
+    // `current_memory` above — `bind_and_dispatch` sets both immediately
+    // before every `kernel_handle_channel` call), `-EAGAIN` (or `0` under
+    // `WNOHANG`) when the child exists but has not exited, or the reaped
+    // child's pid with the wait-status word written to `status_ptr` (a
+    // KERNEL address — see `crates/kernel/src/wasm_api.rs`'s `host_waitpid`
+    // wrapper, which passes the address of its own local variable, later
+    // copied into the caller's actual `wstatus_ptr` by `kernel_wait4`
+    // itself) once it has.
+    //
+    // This MUST NOT truly block or call back into another kernel export.
+    // It runs synchronously inside the single-threaded pump's
+    // `kernel_handle_channel` call — the same thread that must also keep
+    // servicing the target child's own channel so it can run to exit and
+    // reentering the kernel instance while already inside one of its calls
+    // risks aliasing its process-table borrows. `Wait4` is one of
+    // `syscall_can_block`'s syscalls, so returning `-EAGAIN` here is
+    // exactly the existing "park and retry" signal the blocking poll/read
+    // table already implements (`run_pump`'s `blocked` vec): the pump parks
+    // the request and retries it on a later iteration, by which point
+    // `run_pump`'s exit-commit branch has recorded the child's status in
+    // `wait_table`. `kernel_reap_exited_child` is deliberately NOT called
+    // from here for the same non-reentrancy reason; the pump calls it
+    // itself, non-nested, immediately after a `Wait4` dispatch resolves
+    // (see both call sites in `run_pump`/`dispatch_once`'s caller).
+    {
+        let kernel_mem = kernel_mem.clone();
+        let current_pid = current_pid.clone();
+        let wait_table = wait_table.clone();
+        linker.func_wrap(
+            "env",
+            "host_waitpid",
+            move |_c: Caller<'_, ()>, pid: i32, options: i32, status_ptr: i32| -> i32 {
+                if pid == 0 || pid < -1 {
+                    // Process-group-scoped waitpid needs pgid tracking this
+                    // increment does not have (single-level spawn tree
+                    // only — see this file's module doc comment); ENOSYS is
+                    // a truthful "not implemented yet", mirroring
+                    // `kernel_execve` above, never a silently wrong result.
+                    return -(libc_errno::ENOSYS);
+                }
+                let caller = *current_pid.lock().unwrap();
+                let mut guard = wait_table.lock().unwrap();
+                let WaitTable { parent_of, exited } = &mut *guard;
+
+                let mut child: Option<u32> = None;
+                if pid == -1 {
+                    for (&c, &p) in parent_of.iter() {
+                        if p == caller && exited.contains_key(&c) {
+                            child = Some(c);
+                            break;
+                        }
+                    }
+                } else {
+                    let target = pid as u32;
+                    if parent_of.get(&target) != Some(&caller) {
+                        return -(libc_errno::ECHILD);
+                    }
+                    if exited.contains_key(&target) {
+                        child = Some(target);
+                    }
+                }
+
+                let Some(child_pid) = child else {
+                    let has_a_child =
+                        pid != -1 || parent_of.values().any(|&p| p == caller);
+                    if !has_a_child {
+                        return -(libc_errno::ECHILD);
+                    }
+                    return if options & (wasm_posix_shared::wait::WNOHANG as i32) != 0 {
+                        0
+                    } else {
+                        -(libc_errno::EAGAIN)
+                    };
+                };
+
+                let status_word = exited.remove(&child_pid).expect("contains_key just checked");
+                parent_of.remove(&child_pid);
+                drop(guard);
+                if status_ptr != 0 {
+                    unsafe {
+                        write_bytes(&kernel_mem, status_ptr as u32 as usize, &status_word.to_le_bytes())
+                    };
+                }
+                child_pid as i32
+            },
+        )?;
+    }
     Ok(())
+}
+
+/// Encode a `waitpid`(2) wait-status word from a process's exit code and
+/// terminating signal (0 for a normal exit), matching the standard
+/// `WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` macro encoding every
+/// POSIX host in this repo uses (see `sysroot/include/sys/wait.h`: a normal
+/// exit packs the low 8 bits of the exit code into bits 8-15 and leaves the
+/// low 7 bits — the "died by signal" field — zero, so `WIFEXITED` (`!TERMSIG`)
+/// holds and `WEXITSTATUS` recovers the code; a signal death packs the signal
+/// number into the low 7 bits (bit 7 marks a core dump, never set here, so
+/// `WCOREDUMP` is always false).
+fn encode_wait_status(exit_code: i32, exit_signal: i32) -> i32 {
+    if exit_signal != 0 {
+        exit_signal & 0x7f
+    } else {
+        (exit_code & 0xff) << 8
+    }
+}
+
+/// Host-side bookkeeping `host_waitpid` needs but the kernel's own
+/// `sys_waitpid` does not track for it (see `host_waitpid`'s doc comment):
+/// which pid belongs to which caller, and which exited children are still
+/// unreaped zombies. Populated by `run_guest` (the boot process, ppid `0` —
+/// never a real pid, so the boot process itself can never be "waited for"),
+/// `handle_spawn` (a newly launched child's real parent), and `run_pump`'s
+/// exit-commit branch (every process's encoded wait status, the moment its
+/// main channel posts exit) — consulted, never mutated, from inside the
+/// `host_waitpid` import closure above.
+#[derive(Default)]
+struct WaitTable {
+    /// child pid -> the pid that launched it. Removed once the child is
+    /// reaped (matching real `waitpid`: a second wait on the same pid is
+    /// `-ECHILD`, not a stale hit).
+    parent_of: HashMap<u32, u32>,
+    /// Exited-but-unreaped children: child pid -> the encoded wait-status
+    /// word (`encode_wait_status`). Removed once reaped.
+    exited: HashMap<u32, i32>,
 }
 
 /// Compute a guest module's process memory layout and allocate the shared
@@ -1924,14 +2098,23 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
-        // kernel_wait4: waitpid()/wait() call this import directly (not the
-        // generic RAW channel post — see `libc/glue/syscall_glue.c`'s
-        // SYS_WAIT4 case), exactly like kernel_clone above. N1-I3a Task 2
-        // wires up the post-and-block protocol now so Task 3's pump-side
-        // `host_waitpid` parked-reap servicing needs no further guest-side
-        // change. The pump does not yet special-case SYS_WAIT4 (that is
-        // Task 3), so a program that actually calls waitpid before Task 3
-        // lands would hang here — no fixture in this increment does.
+        // kernel_wait4: registered defensively so a guest that happens to
+        // import "kernel.kernel_wait4" does not trap the build. In practice
+        // the CURRENT glue (`libc/glue/channel_syscall.c`, which replaced
+        // `syscall_glue.c` — see that file's own header comment) has no
+        // wasm32posix override routing `waitpid`/`wait4` through a direct
+        // "kernel.*" import the way `pthread_create` does for `kernel_clone`
+        // (`libc/musl-overlay/src/thread/wasm32posix/clone.c`): musl's stock
+        // `waitpid`/`wait4` call `__syscall_cp(SYS_wait4, ...)`, the GENERIC
+        // channel post. `SYS_WAIT4` (139) therefore arrives on the process's
+        // MAIN channel like any other syscall and is serviced by the
+        // generic `dispatch_once` path in `run_pump` (RAW-marshalled per
+        // `SYSCALL_ARG_DESCRIPTORS`'s `Wait4` entry) — no `ch.is_main`
+        // special-casing needed, unlike `SYS_CLONE`/`SYS_SPAWN`. Blocking
+        // and reaping are `host_waitpid`'s job (N1-I3a Task 3, an `env`
+        // import the KERNEL itself calls from inside `kernel_wait4`/
+        // `sys_waitpid` — see that closure's doc comment) plus
+        // `syscall_can_block`/the exit-commit branch below, not this import.
         {
             let mem = guest_mem.clone();
             let ch = layout.channel_offset;
@@ -2269,6 +2452,7 @@ fn dispatch_once(
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
+    current_pid: &Arc<Mutex<u32>>,
 ) -> anyhow::Result<(i64, u32, Vec<StagedArg>)> {
     if is_record {
         // Opaque-record blind transport: stamp the syscall, blind-copy the data
@@ -2282,7 +2466,7 @@ fn dispatch_once(
         }
         bind_and_dispatch(
             store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel, guest_mem,
-            current_memory,
+            current_memory, current_pid,
         )?;
         let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
         unsafe {
@@ -2295,7 +2479,7 @@ fn dispatch_once(
         let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
         bind_and_dispatch(
             store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel, guest_mem,
-            current_memory,
+            current_memory, current_pid,
         )?;
         let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
         Ok((ret, errno, staged))
@@ -2306,8 +2490,9 @@ fn dispatch_once(
 /// the shared "current process memory" cell at this channel's owning process
 /// (see `host_futex_wake`'s doc comment — a futex wake fired synchronously
 /// from inside `kernel_handle_channel` must land on the CALLING process's
-/// memory, not whichever process happened to be dispatched last), and call
-/// `kernel_handle_channel`.
+/// memory, not whichever process happened to be dispatched last) and the
+/// "current pid" cell `host_waitpid` reads (N1-I3a Task 3 — same reasoning,
+/// same mechanism), and call `kernel_handle_channel`.
 #[allow(clippy::too_many_arguments)]
 fn bind_and_dispatch(
     store: &mut Store<()>,
@@ -2319,12 +2504,14 @@ fn bind_and_dispatch(
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     guest_mem: &SharedMemory,
     current_memory: &Arc<Mutex<SharedMemory>>,
+    current_pid: &Arc<Mutex<u32>>,
 ) -> anyhow::Result<()> {
     let bind = set_current_tid.call(&mut *store, (pid, tid))?;
     if bind < 0 {
         anyhow::bail!("kernel_set_current_tid({pid},{tid}) failed: {bind}");
     }
     *current_memory.lock().unwrap() = guest_mem.clone();
+    *current_pid.lock().unwrap() = pid;
     handle_channel.call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, retry_token))?;
     Ok(())
 }
@@ -2388,12 +2575,18 @@ fn complete_channel(
 /// before the child had even started running, making the "child's stdout
 /// appears" assertion flaky. A spawned child's own main-channel exit always
 /// just commits into the kernel's process table and drops its channel (never
-/// ends the pump by itself). Reaping an exited child
-/// (`kernel_get_process_exit_status`/`kernel_reap_exited_child`) is Task 3's
-/// `host_waitpid`; this task only keeps the pump correctly running until
-/// then. `processes[0]`'s OWN non-main (worker-thread) channels are NOT part
-/// of the drain condition — unchanged from before this task, a still-blocked
-/// worker thread of the boot process never delays the return.
+/// ends the pump by itself). This branch also RECORDS every process's exit
+/// (`kernel_get_process_exit_status`/`kernel_get_process_exit_signal`,
+/// encoded via `encode_wait_status`) into `wait_table`, whether or not a
+/// parent is currently parked on it — N1-I3a Task 3's `host_waitpid`
+/// resolves against exactly that record (see its doc comment), and
+/// `kernel_reap_exited_child` is called from THIS function (never from
+/// inside `host_waitpid` itself) at the two places a `Wait4` dispatch can
+/// resolve successfully: the immediate (non-parked) path below and the
+/// blocked-retry path above. `processes[0]`'s OWN non-main (worker-thread)
+/// channels are NOT part of the drain condition — unchanged from before
+/// Task 2, a still-blocked worker thread of the boot process never delays
+/// the return.
 #[allow(clippy::too_many_arguments)]
 fn run_pump(
     kernel_store: &mut Store<()>,
@@ -2403,6 +2596,7 @@ fn run_pump(
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
     get_exit_status: &wasmtime::TypedFunc<u32, i32>,
+    get_exit_signal: &wasmtime::TypedFunc<u32, i32>,
     blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
@@ -2414,8 +2608,11 @@ fn run_pump(
     spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
+    reap_exited_child: &wasmtime::TypedFunc<(u32, u32), i32>,
     programs: &HashMap<String, Vec<u8>>,
     current_memory: &Arc<Mutex<SharedMemory>>,
+    current_pid: &Arc<Mutex<u32>>,
+    wait_table: &Arc<Mutex<WaitTable>>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let mut blocked: Vec<BlockedOp> = Vec::new();
@@ -2466,12 +2663,26 @@ fn run_pump(
                 handle_channel,
                 &guest_mem,
                 current_memory,
+                current_pid,
             )?;
             let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
 
             if !deadline_passed && ret == -1 && errno == libc_errno::EAGAIN as u32 {
                 i += 1;
                 continue; // still blocked
+            }
+            // N1-I3a Task 3: a parked `wait4` that just resolved (`ret` is the
+            // reaped child's pid) releases the kernel's own zombie here — a
+            // plain top-level call, never nested inside `host_waitpid` (see
+            // its doc comment for why).
+            if op.syscall_nr == Syscall::Wait4 as u32 && ret >= 0 {
+                let removed = reap_exited_child.call(&mut *kernel_store, (pid, ret as u32))?;
+                if removed < 0 {
+                    eprintln!(
+                        "[host-native] kernel_reap_exited_child({pid},{ret}) after a resolved \
+                         parked wait4 failed: {removed}"
+                    );
+                }
             }
             complete_channel(
                 &guest_mem, kernel_mem, scratch_ptr, op.channel, op.syscall_nr, &args, &staged, ret, errno,
@@ -2523,20 +2734,30 @@ fn run_pump(
                     let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args)?;
                     let _ = bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
-                        &guest_mem, current_memory,
+                        &guest_mem, current_memory, current_pid,
                     );
+                    let code = get_exit_status
+                        .call(&mut *kernel_store, pid)
+                        .unwrap_or(args[0] as i32 & 0xff);
                     if pi == 0 {
-                        let code = get_exit_status
-                            .call(&mut *kernel_store, pid)
-                            .unwrap_or(args[0] as i32 & 0xff);
                         root_exit_code = Some(code);
                     }
+                    // N1-I3a Task 3: record this exit for `host_waitpid`
+                    // regardless of whether a parent is parked on it yet —
+                    // the parked-retry loop above finds it on a later
+                    // iteration (see `run_pump`'s doc comment). Every
+                    // process gets a record (including the boot process,
+                    // whose `parent_of` sentinel ppid `0` makes it
+                    // unwaitable — see `run_guest`), for one uniform path.
+                    let signal = get_exit_signal.call(&mut *kernel_store, pid).unwrap_or(0);
+                    wait_table.lock().unwrap().exited.insert(pid, encode_wait_status(code, signal));
                     // No one reads a response to this final syscall (whether
                     // this is the boot process or a spawned child), so drop
                     // the channel (like a worker thread's exit) rather than
                     // completing it. A spawned child's exit is now committed
-                    // in the kernel's process table (Zombie/Exited, ready for
-                    // a future `waitpid` — Task 3's `host_waitpid`).
+                    // in the kernel's process table (Zombie/Exited) and
+                    // recorded in `wait_table`, ready for `host_waitpid` to
+                    // resolve a parked or future `waitpid`.
                     processes[pi].channels.remove(ci);
                     continue; // the vec shifted; do not advance ci
                 }
@@ -2575,7 +2796,7 @@ fn run_pump(
                     let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
                     bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
-                        &guest_mem, current_memory,
+                        &guest_mem, current_memory, current_pid,
                     )?;
                     let (tid, errno) = read_ret_errno(kernel_mem, scratch_ptr);
                     if tid < 0 {
@@ -2634,7 +2855,7 @@ fn run_pump(
                     handle_spawn(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
-                        set_mmap_base, set_max_addr, programs,
+                        set_mmap_base, set_max_addr, programs, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -2642,7 +2863,7 @@ fn run_pump(
 
                 let (ret, errno, staged) = dispatch_once(
                     kernel_store, &guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
-                    &mut args, 0, set_current_tid, handle_channel, current_memory,
+                    &mut args, 0, set_current_tid, handle_channel, current_memory, current_pid,
                 )?;
 
                 if !is_record
@@ -2650,10 +2871,26 @@ fn run_pump(
                     && errno == libc_errno::EAGAIN as u32
                     && syscall_can_block(syscall_nr)
                 {
-                    let token = blocking_retry_token.call(&mut *kernel_store, (pid, ch.tid, syscall_nr))?;
-                    if token < 0 {
-                        anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
-                    }
+                    // `wait4` has no fd/OFD target for the kernel's
+                    // blocked-retry registry to pin (`BlockingRetryOperation
+                    // ::from_syscall` — a workspace-crate table this
+                    // host-native-only increment must not edit — has no
+                    // entry for it, unlike `poll`'s "host-only-snapshot"
+                    // carve-out). It needs no pinning anyway: nothing else
+                    // can race a child's exit status out from under a parked
+                    // waiter. `token: 0` is exactly the SAME "nothing to
+                    // pin" convention `BlockedOp`'s doc comment already
+                    // documents for poll.
+                    let token = if syscall_nr == Syscall::Wait4 as u32 {
+                        0
+                    } else {
+                        let token =
+                            blocking_retry_token.call(&mut *kernel_store, (pid, ch.tid, syscall_nr))?;
+                        if token < 0 {
+                            anyhow::bail!("kernel_blocking_retry_token({syscall_nr}) failed: {token}");
+                        }
+                        token
+                    };
                     blocked.push(BlockedOp {
                         process_index: pi,
                         channel: ch,
@@ -2663,6 +2900,19 @@ fn run_pump(
                     });
                     // Leave the guest parked; do not complete.
                 } else {
+                    // N1-I3a Task 3: an UNPARKED `wait4` that resolved on its
+                    // very first dispatch (the child had already exited
+                    // before the parent even called `waitpid`) needs the
+                    // same non-nested reap as the parked-retry path above.
+                    if syscall_nr == Syscall::Wait4 as u32 && ret >= 0 {
+                        let removed = reap_exited_child.call(&mut *kernel_store, (pid, ret as u32))?;
+                        if removed < 0 {
+                            eprintln!(
+                                "[host-native] kernel_reap_exited_child({pid},{ret}) after an \
+                                 immediately-resolved wait4 failed: {removed}"
+                            );
+                        }
+                    }
                     complete_channel(
                         &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &staged, ret, errno,
                     )?;
@@ -2723,10 +2973,12 @@ fn run_pump(
 /// below for the one remaining, documented gap: the already-launched OS
 /// thread/Wasmtime instance itself is not torn down).
 ///
-/// Reaping (`waitpid`) is Task 3: the child, once launched, simply runs; its
+/// Once fully published, the child is recorded in `wait_table` under its
+/// REAL parent pid (N1-I3a Task 3's `host_waitpid` reaps it later — see that
+/// closure's doc comment). The child, once launched, simply runs; its
 /// stdout/stderr land in the SAME captured buffers as every other process
 /// (`host_write` is keyed by fd, not by process — see `define_kernel_host_
-/// imports`), which is how this task's test observes it ran.
+/// imports`), which is how the spawn/wait tests observe it ran.
 #[allow(clippy::too_many_arguments)]
 fn handle_spawn(
     kernel_store: &mut Store<()>,
@@ -2745,6 +2997,7 @@ fn handle_spawn(
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
     programs: &HashMap<String, Vec<u8>>,
+    wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -2865,6 +3118,13 @@ fn handle_spawn(
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -disposition);
     }
 
+    // N1-I3a Task 3: the child is fully published now (won't be rolled back
+    // above), so it becomes waitable by its REAL parent. This must happen
+    // before returning — the child's own OS thread is already running
+    // concurrently and could exit (posting on its channel, processed by a
+    // later pump iteration) before this function returns.
+    wait_table.lock().unwrap().parent_of.insert(child_pid, parent_pid);
+
     if pid_out_ptr != 0 {
         unsafe { write_bytes(&guest_mem, pid_out_ptr, &(child_pid as i32).to_le_bytes()) };
     }
@@ -2925,9 +3185,13 @@ fn read_ret_errno(mem: &SharedMemory, scratch_ptr: usize) -> (i64, u32) {
 /// Whether a syscall can block (return EAGAIN meaning "not ready, wait") and so
 /// should be parked and re-dispatched by the pump rather than completed. `poll`
 /// is bounded by a caller timeout; readiness-driven waits (read/accept woken by
-/// another task) return `None` from [`blocking_deadline`] and wait indefinitely.
+/// another task, or a child not yet exited under `wait4` — N1-I3a Task 3's
+/// `host_waitpid`) return `None` from [`blocking_deadline`] and wait
+/// indefinitely.
 fn syscall_can_block(syscall_nr: u32) -> bool {
-    syscall_nr == Syscall::Poll as u32 || syscall_nr == Syscall::Read as u32
+    syscall_nr == Syscall::Poll as u32
+        || syscall_nr == Syscall::Read as u32
+        || syscall_nr == Syscall::Wait4 as u32
 }
 
 /// The wall-clock deadline for a timeout-bounded blocking syscall, or `None` for

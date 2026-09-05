@@ -1,13 +1,15 @@
 /*
- * N1-I3a Task 2: the posix_spawn PARENT side. Spawns a fresh-image child
+ * N1-I3a Task 2/3: the posix_spawn PARENT side. Spawns a fresh-image child
  * process ("child" — resolved by the native host's `GuestOptions.programs`
- * map, not the VFS) and exits. No waitpid yet: reaping is Task 3, so this
- * fixture only proves the SYS_SPAWN interception + child launch, not the
- * parent observing the child's exit status.
+ * map, not the VFS), waits for it to exit, and prints its decoded
+ * `WEXITSTATUS` so the host test can assert the reaped status is correct
+ * (Task 3: `host_waitpid` parked reaping).
  *
  * Built through the SDK like the other fixtures; see fixtures/README.md.
  */
 #include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -21,6 +23,21 @@ int main(void) {
     }
     if (pid <= 0) {
         return 2;
+    }
+
+    int status = 0;
+    pid_t reaped = waitpid(pid, &status, 0);
+    if (reaped != pid) {
+        return 3;
+    }
+    if (!WIFEXITED(status)) {
+        return 4;
+    }
+
+    char line[32];
+    int n = snprintf(line, sizeof(line), "status=%d\n", WEXITSTATUS(status));
+    if (n > 0) {
+        write(1, line, (size_t)n);
     }
     return 0;
 }

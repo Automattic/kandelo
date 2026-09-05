@@ -816,4 +816,41 @@ mod tests {
         );
         Ok(())
     }
+
+    /// N1-I3a Task 3: `host_waitpid` parked reaping. The parent `posix_spawn`s
+    /// `"child"` (same fixtures as `smoke_spawn_launches_child`), then
+    /// `waitpid`s it and prints the decoded `WEXITSTATUS`. The child hasn't
+    /// necessarily exited by the time the parent calls `waitpid` — this
+    /// proves the PARKED-retry path (the pump keeps servicing the child's
+    /// channel while the parent's `wait4` is parked as EAGAIN, exactly like
+    /// the existing blocking poll/read table), not just an already-exited
+    /// child. `child _exit(7)` must decode to `WEXITSTATUS == 7`.
+    #[test]
+    fn smoke_spawn_waitpid() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let child = include_bytes!("../fixtures/native_spawn_child.wasm");
+
+        let mut programs = std::collections::HashMap::new();
+        programs.insert("child".to_string(), child.to_vec());
+        let options = guest::GuestOptions { programs, ..Default::default() };
+        let outcome = guest::run_guest(&path, parent, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "parent exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(stdout.contains("child ok"), "expected the child's stdout line: {stdout:?}");
+        assert!(
+            stdout.contains("status=7"),
+            "expected the parent to report the reaped child's WEXITSTATUS (7): {stdout:?}"
+        );
+        Ok(())
+    }
 }
