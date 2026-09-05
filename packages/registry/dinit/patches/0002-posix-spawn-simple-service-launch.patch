@@ -1,0 +1,259 @@
+Subject: [PATCH] Kandelo optimization: launch simple dinit services via posix_spawn
+
+PURPOSE (read this first)
+=========================
+This patch is a deliberate OPTIMIZATION FOR KANDELO, not a package-specific
+hack or workaround. It changes nothing about dinit's semantics or its service
+contract; it only chooses a cheaper kernel primitive for the common case.
+
+Why it exists
+-------------
+On the Kandelo kernel, an ordinary fork() is expensive: the child pays an
+eager memory copy plus a wasm-fork-instrument continuation replay before it
+can reach exec. When dinit launches a service it does fork()+execvp(), so it
+pays that whole cost and then throws the reconstructed child state away
+microseconds later at exec. That is pure waste for the spawn-then-exec pattern.
+
+musl's posix_spawn() issues CLONE_VM|CLONE_VFORK, which routes to Kandelo's
+vfork path: the child borrows the parent's memory and execs immediately,
+skipping the continuation replay entirely. This is exactly the right primitive
+for "start a process and immediately exec it", which is what every service
+launch is.
+
+What it does
+------------
+Adds a posix_spawn fast path in base_process_service::start_ps_process for
+"simple" service launches — no socket activation, no readiness-notification
+fd, no control-socket fd, default stdin, no uid change, no rlimits, not on the
+console, and a NONE/LOGFILE log with no ownership change. The child setup for
+that case reduces exactly to what posix_spawn's file actions and attributes
+express faithfully (stdin/out/err redirection, chdir, new session, restored
+signal mask, environment). ANY service that needs more than that — and any
+spawn error — falls through to the UNCHANGED fork()+run_child_proc path, which
+also reports the precise failing exec stage. So behavior is identical; only
+the cheap case gets cheaper.
+
+Scope and honesty
+-----------------
+This speeds up dinit's own service launches (the fork-then-EXEC path). It is a
+general platform micro-win: any fork-then-exec spawner benefits. It does NOT,
+by itself, speed up workloads dominated by pure fork() with no exec — e.g.
+php-fpm's static worker prefork, where vfork cannot apply because the child
+keeps running as a worker. Measured on the WordPress SQLite browser demo, the
+dinit service-launch window is a small fraction of boot; the dominant cost is
+the services' own startup (php-fpm worker prefork + extension MINIT). This
+patch is worth landing as a correct, low-risk optimization, not as a fix for
+any single demo's boot time.
+
+Correctness
+-----------
+The fork fallback is structurally unchanged. The posix_spawn path preserves
+dinit's parent-side state machine: it reuses the same exec-status pipe (the
+CLOEXEC write end closes on the child's exec, so the parent reads EOF ==
+success), arms the same dasynq child-reap watch on the spawned pid, and falls
+through to the existing parent bookkeeping. dinit's existing scripted-service
+integration test exercises this fast path.
+
+diff --git a/src/baseproc-service.cc b/src/baseproc-service.cc
+index 9347dc8..46e5325 100644
+--- a/src/baseproc-service.cc
++++ b/src/baseproc-service.cc
+@@ -5,7 +5,11 @@
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <sys/wait.h>
+ #include <unistd.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <spawn.h>
+ 
+ #include "dinit.h"
+ #include "dinit-log.h"
+@@ -14,6 +18,11 @@
+ 
+ #include "baseproc-sys.h"
+ 
++// Signal mask captured at dinit startup; run_child_proc restores (a modified
++// form of) it in the child. The posix_spawn fast path below applies the same
++// non-console restoration via POSIX_SPAWN_SETSIGMASK.
++extern sigset_t orig_signal_mask;
++
+ /*
+  * Base process implementation (base_process_service).
+  *
+@@ -99,6 +108,11 @@ bool base_process_service::start_ps_process(const std::vector<const char *> &cmd
+ 
+     event_loop.get_time(last_start_time, clock_type::MONOTONIC);
+ 
++    // Set when the posix_spawn fast path launches the service; declared here,
++    // before any goto, so its initialization is not bypassed by the failure
++    // jumps below.
++    bool spawned = false;
++
+     int pipefd[2];
+     if (bp_sys::pipe2(pipefd, O_CLOEXEC)) {
+         log(loglevel_t::ERROR, get_name(), ": can't create status check pipe: ", strerror(errno));
+@@ -225,23 +239,149 @@ bool base_process_service::start_ps_process(const std::vector<const char *> &cmd
+ 
+         pid_t forkpid;
+ 
+-        try {
+-            child_status_listener.add_watch(event_loop, pipefd[0], dasynq::IN_EVENTS);
+-            child_status_registered = true;
++        // Fast path: posix_spawn for a "simple" service launch.
++        //
++        // On this platform an ordinary fork() pays an eager memory copy plus a
++        // wasm-fork-instrument continuation replay in the child *before* it can
++        // reach execvp — work that dinit's child then throws away microseconds
++        // later at exec. musl's posix_spawn issues CLONE_VM|CLONE_VFORK, which
++        // routes to the kernel's vfork path: it borrows the parent's memory and
++        // execs immediately, skipping the replay. We take this path only when
++        // the child setup reduces to what posix_spawn's file actions and
++        // attributes can express faithfully: no socket activation, no readiness
++        // notification fd, no control-socket fd, default stdin, no uid/gid drop,
++        // no rlimits, not on the console, and a NONE/LOGFILE log with no
++        // ownership change. Anything else falls through to the fork path, which
++        // also reports the precise failing exec stage on error.
++        {
++            const char *spawn_wd = service_dsc_dir;
++            if (!working_dir.empty()) spawn_wd = working_dir.c_str();
++            bool simple_launch =
++                   (socket_fd == -1)
++                && !have_notify
++                && !onstart_flags.pass_cs_fd
++                && (input_fd == -1)
++                // run_as_gid is only applied when run_as_uid is set (see
++                // run_child_proc), so a bare uid == -1 means no privilege change.
++                && (run_as_uid == uid_t(-1))
++                && rlimits.empty()
++                && !on_console
++                && (log_type == log_type_id::NONE
++                        || (log_type == log_type_id::LOGFILE
++                            && logfile_uid == uid_t(-1)
++                            && logfile_gid == gid_t(-1)));
++
++            if (simple_launch) {
++                posix_spawn_file_actions_t fa;
++                posix_spawnattr_t attr;
++                bool fa_ok = (posix_spawn_file_actions_init(&fa) == 0);
++                bool attr_ok = (posix_spawnattr_init(&attr) == 0);
++                bool env_ok = false;
++                environment::env_map penv;
++                try {
++                    penv = service_env.build(main_env);
++                    env_ok = true;
++                }
++                catch (...) { env_ok = false; }
++
++                int rc = (fa_ok && attr_ok && env_ok) ? 0 : -1;
++                // stdin from /dev/null; stdout to the log; stderr mirrors stdout.
++                if (rc == 0) rc = posix_spawn_file_actions_addopen(
++                        &fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
++                if (rc == 0) rc = posix_spawn_file_actions_addopen(
++                        &fa, STDOUT_FILENO, logfile,
++                        O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
++                if (rc == 0) rc = posix_spawn_file_actions_adddup2(
++                        &fa, STDOUT_FILENO, STDERR_FILENO);
++                if (rc == 0 && spawn_wd != nullptr && *spawn_wd != 0)
++                    rc = posix_spawn_file_actions_addchdir_np(&fa, spawn_wd);
++
++                // New session (as run_child_proc does for non-console services)
++                // and the same restored signal mask (orig minus SIGCHLD/SIGTERM).
++                if (rc == 0) {
++                    sigset_t child_mask = orig_signal_mask;
++                    sigdelset(&child_mask, SIGCHLD);
++                    sigdelset(&child_mask, SIGTERM);
++                    rc = posix_spawnattr_setsigmask(&attr, &child_mask);
++                }
++                if (rc == 0) rc = posix_spawnattr_setflags(
++                        &attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK);
++
++                if (rc == 0) {
++                    // Register the exec-status watch exactly as the fork path
++                    // does. The spawned child inherits the CLOEXEC write end;
++                    // its exec closes it, so the parent reads EOF == success.
++                    try {
++                        child_status_listener.add_watch(event_loop, pipefd[0], dasynq::IN_EVENTS);
++                        child_status_registered = true;
++                    }
++                    catch (...) { rc = -1; }
++                }
++
++                if (rc == 0) {
++                    pid_t spawn_pid = -1;
++                    int src = posix_spawnp(&spawn_pid, cmd.data()[0], &fa, &attr,
++                            const_cast<char **>(cmd.data()),
++                            const_cast<char **>(penv.env_list.data()));
++                    if (src == 0) {
++                        try {
++                            child_listener.add_watch(event_loop, spawn_pid,
++                                    dasynq::DEFAULT_PRIORITY - 10);
++                            reserved_child_watch = true;
++                            forkpid = spawn_pid;
++                            spawned = true;
++                        }
++                        catch (...) {
++                            // Could not arm reaping (out of memory). Terminate the
++                            // just-spawned child, unwind the status watch, and fail
++                            // the start attempt.
++                            bp_sys::kill(spawn_pid, SIGKILL);
++                            ::waitpid(spawn_pid, nullptr, 0);
++                            if (child_status_registered) {
++                                child_status_listener.deregister(event_loop);
++                                child_status_registered = false;
++                            }
++                            if (fa_ok) posix_spawn_file_actions_destroy(&fa);
++                            if (attr_ok) posix_spawnattr_destroy(&attr);
++                            log(loglevel_t::ERROR, get_name(),
++                                    ": could not supervise spawned process");
++                            goto out_cs_h;
++                        }
++                    }
++                    else {
++                        // spawn/exec failed: unwind the status watch and fall
++                        // back to the fork path for precise error reporting.
++                        if (child_status_registered) {
++                            child_status_listener.deregister(event_loop);
++                            child_status_registered = false;
++                        }
++                    }
++                }
+ 
+-            // We specify a high priority (i.e. low priority value) so that process termination is
+-            // handled early. This means we have always recorded that the process is terminated by the
+-            // time that we handle events that might otherwise cause us to signal the process, so we
+-            // avoid sending a signal to an invalid (and possibly recycled) process ID.
+-            forkpid = child_listener.fork(event_loop, reserved_child_watch, dasynq::DEFAULT_PRIORITY - 10);
+-            reserved_child_watch = true;
++                if (fa_ok) posix_spawn_file_actions_destroy(&fa);
++                if (attr_ok) posix_spawnattr_destroy(&attr);
++            }
+         }
+-        catch (std::exception &e) {
+-            log(loglevel_t::ERROR, get_name(), ": could not fork: ", e.what());
+-            goto out_cs_h;
++
++        if (!spawned) {
++            try {
++                child_status_listener.add_watch(event_loop, pipefd[0], dasynq::IN_EVENTS);
++                child_status_registered = true;
++
++                // We specify a high priority (i.e. low priority value) so that process termination is
++                // handled early. This means we have always recorded that the process is terminated by the
++                // time that we handle events that might otherwise cause us to signal the process, so we
++                // avoid sending a signal to an invalid (and possibly recycled) process ID.
++                forkpid = child_listener.fork(event_loop, reserved_child_watch, dasynq::DEFAULT_PRIORITY - 10);
++                reserved_child_watch = true;
++            }
++            catch (std::exception &e) {
++                log(loglevel_t::ERROR, get_name(), ": could not fork: ", e.what());
++                goto out_cs_h;
++            }
+         }
+ 
+-        if (forkpid == 0) {
++        if (!spawned && forkpid == 0) {
+             const char * working_dir_c = service_dsc_dir;
+             if (!working_dir.empty()) working_dir_c = working_dir.c_str();
+             after_fork(getpid());
