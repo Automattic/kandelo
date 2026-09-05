@@ -506,14 +506,38 @@ is answered empirically and where the plan CHECKPOINTS with the user):
     doomed instance) nor kill a `std::thread`. Today execve is POSIX-correct but
     leaks one parked thread + its old `SharedMemory` per call (truthfully
     documented at the abandon site). The fix is a cross-cutting `Engine` change
-    (epoch-interruption — and it is unproven whether that can even unblock an
-    `atomic.wait`); it must be decided WITH the I4 fork work, since fork faces
-    the identical thread-lifecycle problem. This is the first thing to resolve
-    at the I4 checkpoint.
-  - **I3d (next, before I4)** — `execveat` (dirfd/`AT_EMPTY_PATH`) +
-    `#!` shebang via `kernel_exec_target_shebang` (assemble the interpreter
-    argv from the kernel-decoded record). Small increment on the proven
-    exec-target spine.
+    (epoch-interruption). **SPIKE RESOLVED THIS 2026-09-05** (see
+    `docs/plans/2026-09-05-native-thread-reclamation-spike.md`): epoch AND fuel
+    provably CANNOT interrupt a parked `atomic.wait32` (it lowers to a
+    synchronous libcall → `std::thread::park_timeout(MAX)`, no wasm runs while
+    parked, so no epoch/fuel check is ever hit — confirmed empirically + in
+    wasmtime 35 source + docs). The sound fix is a **cooperative host-driven
+    teardown sentinel**: the pump writes a new `TEARDOWN` channel-status value +
+    `atomic_notify`, and a check added after the wait loop in
+    `channel_syscall.c` traps so the guest thread unwinds instead of resuming
+    the doomed image (validated end-to-end, no leak/UB). Cost: a channel-status
+    ABI change (glue + `crates/shared` + `abi_constants.h`) → ABI bump/regen +
+    guest rebuild; NO new host import. Unifies all three cases (execve-abandon,
+    fork replay-thread, spawn `-ECHILD` rollback). Residual: multi-threaded
+    execve must tear down every sibling channel's thread. This is the FIRST I4
+    work item.
+  - **I3d — execveat + kernel-owned `#!` shebang (DONE 2026-09-05).** execveat
+    (dirfd/`AT_EMPTY_PATH`) shares `handle_exec_common` with execve. Shebang
+    resolution is **kernel-owned** (campaign-altitude correction, per user): a
+    new additive export `kernel_exec_target_resolve_shebang` resolves the whole
+    chain in-kernel (decode + interpreter retarget + one-level limit + argv
+    prefix), leaving the host only byte-fetch/instantiate/commit/launch — the
+    host has zero shebang decision logic. Leak-free (zero retained target on any
+    error, incl. the export's EOVERFLOW path). Additive ABI (no `ABI_VERSION`
+    bump; snapshot regenerated). host-native 28/28, runtime-core 1755/1755.
+    Commits f0696f6f2 / 6568864a3 / 53f447f05 / 62ecf6188 / a859c8e1d. Plan:
+    `docs/superpowers/plans/2026-09-04-n1-i3d-native-execveat-shebang.md`.
+    Follow-up (batched-test later, approved): migrate Node/browser's TS shebang
+    (`host/src/exec-target.ts`) to call this kernel export.
+  - **N1 "predictable breadth" (I1–I3) is now COMPLETE.** The native process
+    model — in-memory VFS default, real base image, spawn+waitpid, spawn-from-VFS,
+    execve, execveat, shebang — is all in. What remains in N1 is the deep
+    research (I4 fork frames, I5 fork references) + conformance (I6).
 - **I4** — fork frames natively (no refs): drive `fork-codec`
   `rewind_driver`/`replay_journal`/`linked_frames` + `instantiate_child`
   (`Instance::new`) + `spawn_thread` (`thread::spawn`), replacing the
