@@ -1067,4 +1067,163 @@ mod tests {
         );
         Ok(())
     }
+
+    /// N1-I3c Task 2: `handle_execve`'s failure matrix, case 1 —
+    /// `kernel_exec_target_prepare` fails to resolve a path that does not
+    /// exist at all. No target was ever retained (nothing to
+    /// `kernel_exec_target_cancel`); this is the success/failure asymmetry's
+    /// failure half: a failed `execve` is an ORDINARY syscall that RETURNS to
+    /// the caller (`ret == -1`, `errno` set), so the caller's OLD image keeps
+    /// running and observes `errno == ENOENT` — exactly `smoke_spawn_missing_
+    /// path_enoent`'s scenario, but resuming the SAME process/thread rather
+    /// than reclaiming a not-yet-published child.
+    #[test]
+    fn smoke_execve_missing_enoent() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["EXEC_TEST_PATH=/bin/nope".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the caller must SURVIVE a failed execve and reach its own _exit(0) (stdout: {:?}, \
+             stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("execve errno=2"),
+            "expected execve to report ENOENT (2) for a missing path: {stdout:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked exec target/channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I3c Task 2: failure matrix, case 1 (a different errno) —
+    /// `kernel_exec_target_prepare` resolves the path but rejects it on its
+    /// `X_OK` check: a regular file that exists but is not executable (mode
+    /// `0o644`, no execute bits) must report `EACCES`, not `ENOENT`, and the
+    /// caller must still survive (POSIX: a failed `execve` returns to the
+    /// caller).
+    #[test]
+    fn smoke_execve_non_executable_eacces() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/etc", 2, 0o755),
+            guest::BaseEntrySpec::file("/etc/data", 3, 0o644, b"not executable\n".to_vec()),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["EXEC_TEST_PATH=/etc/data".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the caller must SURVIVE a failed execve and reach its own _exit(0) (stdout: {:?}, \
+             stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("execve errno=13"),
+            "expected execve to report EACCES (13) for a non-executable file: {stdout:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked exec target/channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I3c Task 2: failure matrix, case 2 — the path resolves, `X_OK`
+    /// passes (mode `0o755`), and every byte is read back out of the
+    /// kernel's exec-target authority successfully, but the bytes are not a
+    /// valid Wasm module (a `#!/bin/sh` script header, deliberately NOT
+    /// interpreted — shebang support is I3d, out of scope here). `Module::
+    /// new` must fail cleanly into `ENOEXEC` reported to the SURVIVING
+    /// caller (mirroring `handle_spawn`'s identical handling) rather than
+    /// `?`-propagating into a pump-ending `bail!` — this is exactly Task 1's
+    /// documented RED gap this test closes. The RETAINED target (already
+    /// prepared, already fully read) must be reclaimed via `kernel_exec_
+    /// target_cancel` — since this is the caller's OWN pid, not a
+    /// not-yet-published child, there is no `kernel_remove_process` step
+    /// (unlike `smoke_spawn_not_wasm_enoexec`): the caller keeps its OLD
+    /// image and process record untouched.
+    #[test]
+    fn smoke_execve_not_wasm_enoexec() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file(
+                "/bin/notwasm",
+                3,
+                0o755,
+                b"#!/bin/sh\necho hi\n".to_vec(),
+            ),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["EXEC_TEST_PATH=/bin/notwasm".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the caller must SURVIVE a failed execve and reach its own _exit(0) (stdout: {:?}, \
+             stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("execve errno=8"),
+            "expected execve to report ENOEXEC (8) for non-wasm bytes: {stdout:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked exec target/channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
 }
