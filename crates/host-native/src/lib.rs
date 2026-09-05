@@ -867,6 +867,56 @@ mod tests {
         Ok(())
     }
 
+    /// N1-I3c Task 1: `execve` REPLACES the calling process's image IN
+    /// PLACE — the SAME pid, but a fresh address space and a brand-new
+    /// instance running the new program. It is NOT a new process (that's
+    /// `posix_spawn`/N1-I3b, exercised above): per POSIX, a successful
+    /// `execve` never returns to the caller, so the parent's code after the
+    /// `execve()` call (`native_exec_parent.c`'s "execve returned\n" line)
+    /// must NEVER execute, and the exec'd target's own exit status (9, from
+    /// `native_exec_target.c`'s `_exit(9)`) becomes the WHOLE PROCESS's exit
+    /// code — there is no separate child to `waitpid` the way `posix_spawn`
+    /// has one. Today (before this task's implementation) `SYS_EXECVE` falls
+    /// through the pump straight to `dispatch_once`/the kernel's generic
+    /// syscall dispatch, which has no handler for it and returns `-ENOSYS`;
+    /// that is this test's RED state (`execve` returns, the parent prints
+    /// "execve returned\n", and the PARENT's own `_exit(1)` becomes the
+    /// process exit code).
+    #[test]
+    fn smoke_execve_replaces_image() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/exectarget", 3, 0o755, target.to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
+        let outcome = guest::run_guest(&path, parent, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("exec ok"),
+            "expected the exec'd target's stdout line to appear: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("execve returned"),
+            "a successful execve must never return to the caller: {stdout:?}"
+        );
+        assert_eq!(
+            outcome.exit_code, 9,
+            "process exit code must be the EXEC'D image's exit (9), not the caller's own \
+             (stdout: {stdout:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        Ok(())
+    }
+
     /// N1-I3b Task 2: `handle_spawn`'s failure/rollback matrix, case 1 —
     /// `kernel_spawn_exec_target_prepare` fails to resolve a path that does
     /// not exist in the child's VFS namespace at all. No target was ever

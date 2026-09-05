@@ -51,12 +51,13 @@ use wasm_posix_shared::channel::{
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
-use wasm_posix_shared::abi::host_intercepted::SYS_SPAWN;
+use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_SPAWN};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
 use wasm_posix_shared::host_abi::{
     SyscallArgDesc, SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS,
 };
+use wasm_posix_shared::platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT;
 use wasm_posix_shared::seek::SEEK_END;
 use wasm_posix_shared::Syscall;
 
@@ -462,6 +463,74 @@ unsafe fn atomic_u32(mem: &SharedMemory, off: usize) -> &AtomicU32 {
     unsafe { &*(mem_base(mem).add(off) as *const AtomicU32) }
 }
 
+/// Read a NUL-terminated C string out of guest memory starting at `ptr` (a
+/// native wasm32 guest byte address — pointers are 4 bytes LE in every
+/// guest this host runs). Used by `handle_execve` (N1-I3c Task 1) to read
+/// `execve`'s `path` argument and each `argv`/`envp` entry
+/// `read_guest_string_array` finds. Bounds itself against the guest
+/// memory's OWN actual size (`mem.data().len()`, not some fixed cap) so an
+/// out-of-range `ptr` cannot walk past the mapped region: a `ptr` already at
+/// or past the end of memory reads as an empty string, and a string with no
+/// NUL before the end of memory reads to the end of memory rather than
+/// panicking. This mirrors the Node reference host's bounded scan
+/// (`readExecPathFromProcess`/`readStringArrayFromProcess`,
+/// `host/src/kernel-worker.ts:23747-23829`), though Task 1 does not yet
+/// distinguish "ran off the end of memory" from "found a very long,
+/// legitimately-terminated string" the way that reference does (Task 2's
+/// failure matrix is the natural home for that distinction; this happy-path
+/// task never hits it because its fixtures use small, well-formed strings).
+fn read_guest_cstring(mem: &SharedMemory, ptr: u32) -> Vec<u8> {
+    let base = ptr as usize;
+    let total = mem.data().len();
+    if base >= total {
+        return Vec::new();
+    }
+    let remaining = unsafe { core::slice::from_raw_parts(mem_base(mem).add(base), total - base) };
+    let end = remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
+    remaining[..end].to_vec()
+}
+
+/// Walk a NULL-terminated array of 4-byte LE guest pointers (`execve`'s
+/// `argv`/`envp` — native wasm32 guests only, per this file's module doc
+/// comment) starting at `arr_ptr`, reading each entry via
+/// [`read_guest_cstring`]. Bounded by `max` entries, mirroring the Node
+/// reference host's `readStringArrayFromProcess`'s
+/// `PROCESS_STARTUP_MAX_ARGV_COUNT` ceiling (`host/src/kernel-
+/// worker.ts:23781`), so a malformed or unterminated array cannot walk
+/// memory (or grow the returned `Vec`) without bound.
+///
+/// Returns `Err(-E2BIG)` — the same "-errno" convention every kernel-call
+/// result in this file already uses (`token < 0`, `commit < 0`, ...), so
+/// callers can uniformly do `-err` to get a positive errno for
+/// `complete_channel`/`fail_spawn`-style completion — if the array holds
+/// more than `max` non-null entries before a NULL terminator, or
+/// `Err(-EFAULT)` if the pointer-array scan itself would run past the end of
+/// guest memory before finding one. `arr_ptr == 0` is the documented "no
+/// array" case (matching `posix_spawn`'s/`execve`'s own NULL-argv/envp
+/// convention) and returns an empty `Vec`, not an error.
+fn read_guest_string_array(mem: &SharedMemory, arr_ptr: u32, max: usize) -> Result<Vec<Vec<u8>>, i32> {
+    if arr_ptr == 0 {
+        return Ok(Vec::new());
+    }
+    let total = mem.data().len();
+    let mut out = Vec::new();
+    let mut cursor = arr_ptr as usize;
+    loop {
+        if cursor.checked_add(4).is_none_or(|end| end > total) {
+            return Err(-libc_errno::EFAULT);
+        }
+        let entry = unsafe { read_u32(mem, cursor) };
+        if entry == 0 {
+            return Ok(out);
+        }
+        if out.len() >= max {
+            return Err(-libc_errno::E2BIG);
+        }
+        out.push(read_guest_cstring(mem, entry));
+        cursor += 4;
+    }
+}
+
 /// Grow `mem` so byte `end_addr` is accessible, mirroring the TS host's
 /// `growMemoryToCover`. Returns an error if the shared memory cannot grow that
 /// far (a truthful capacity boundary, never a silent short mapping).
@@ -744,6 +813,26 @@ pub fn run_guest(
         .get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_spawn_exec_commit")?;
     let exec_target_cancel =
         kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_exec_target_cancel")?;
+    // N1-I3c Task 1: `execve` — REPLACES the calling process's image in
+    // place (same pid, fresh address space, new program), never a new
+    // process. Reuses the OWNER-GENERIC `exec_target_size`/`exec_target_read`/
+    // `exec_target_cancel` bindings above (called with owner_pid = the
+    // exec'ing pid, not a spawn child's pid), but resolves `path` against
+    // THIS process's OWN namespace/credentials via `kernel_exec_target_prepare`
+    // (unlike `kernel_spawn_exec_target_prepare`, which resolves against a
+    // not-yet-launched spawn child) and commits the pure in-kernel POSIX
+    // exec transition — cloexec fds, set-ID creds, signal reset,
+    // memory-accounting reset, `clear_threads`, `exec_generation` bump — via
+    // `kernel_exec_commit` instead of publishing a new child
+    // (`kernel_spawn_exec_commit`). See the `SYS_EXECVE` branch in
+    // `run_pump`/`handle_execve` for the full prepare -> read -> compile ->
+    // commit -> swap flow.
+    let exec_target_prepare = kernel.get_typed_func::<(u32, u32, i32, u32, u32, u32), i32>(
+        &mut kernel_store,
+        "kernel_exec_target_prepare",
+    )?;
+    let exec_commit =
+        kernel.get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_exec_commit")?;
     // N1-I3a Task 3: `host_waitpid`'s reap + status-encoding support.
     // `kernel_get_process_exit_signal` disambiguates `get_exit_status`'s
     // "shell-style" 128+signal encoding from a genuine 128-255 exit code
@@ -924,6 +1013,8 @@ pub fn run_guest(
         &exec_target_read,
         &spawn_exec_commit,
         &exec_target_cancel,
+        &exec_target_prepare,
+        &exec_commit,
         &current_memory,
         &current_pid,
         &wait_table,
@@ -2640,6 +2731,8 @@ fn run_pump(
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
     spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
+    exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
+    exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -2889,6 +2982,29 @@ fn run_pump(
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
                         exec_target_read, spawn_exec_commit, exec_target_cancel, wait_table,
+                    )?;
+                    ci += 1;
+                    continue;
+                }
+
+                // execve (N1-I3c Task 1): image REPLACEMENT in place — the
+                // SAME pid keeps running, but a fresh address space and a
+                // brand-new instance. Never a new process (that is
+                // SYS_SPAWN above), so no `wait_table` bookkeeping applies.
+                // `handle_execve` either replaces `processes[pi]` in place
+                // (success — see its doc comment for the abandoned-old-
+                // thread leak this deliberately accepts) or completes THIS
+                // channel with a truthful errno (Task 1's basic failure
+                // handling; Task 2 hardens the matrix). Either way, this
+                // channel index (`ci`) must not be re-examined this pass: on
+                // success `ch` no longer belongs to any live process (its
+                // process was just replaced), and on failure it was already
+                // completed by `handle_execve`/`fail_execve`.
+                if ch.is_main && syscall_nr == SYS_EXECVE {
+                    handle_execve(
+                        kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
+                        set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
+                        exec_target_read, exec_commit, exec_target_cancel,
                     )?;
                     ci += 1;
                     continue;
@@ -3303,6 +3419,215 @@ fn fail_spawn(
     errno: i32,
 ) -> anyhow::Result<()> {
     complete_channel(guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], -1, errno as u32)
+}
+
+/// N1-I3c Task 1: intercept `execve`'s `SYS_EXECVE` request posted on a
+/// process's MAIN channel. `execve` REPLACES the CALLING process's image IN
+/// PLACE — same pid, fresh address space, a brand-new module instance
+/// running the new program — never a new process (that is
+/// `SYS_SPAWN`/[`handle_spawn`]). Wire args, read straight from the calling
+/// process's own guest memory (see `libc/musl/src/process/execve.c`'s plain
+/// `syscall(SYS_execve, path, argv, envp)` — no wasm32posix override exists
+/// for `execve`, unlike `pthread_create`'s `kernel_clone`/`waitpid`'s
+/// `kernel_wait4`, so this is the GENERIC channel-posted syscall, RAW guest
+/// pointers, exactly like `SYS_SPAWN`): `args[0]` = path (C-string ptr),
+/// `args[1]` = argv (NULL-terminated array of C-string ptrs), `args[2]` =
+/// envp (same).
+///
+/// Drives the SAME exec-target authority [`handle_spawn`] uses
+/// (`kernel_exec_target_prepare` -> [`read_exec_target_bytes`] ->
+/// `Module::new` -> `kernel_exec_commit`), but resolves `path` against THIS
+/// process's OWN namespace/credentials (`kernel_exec_target_prepare`, not
+/// the spawn family's not-yet-launched-child variant) and commits the pure
+/// in-kernel POSIX exec transition (`kernel_exec_commit`: cloexec fds,
+/// set-ID creds, signal reset, memory-accounting reset, `clear_threads`,
+/// `exec_generation` bump) instead of publishing a new child.
+///
+/// Task 1 = happy path plus BASIC failure handling only: a `read_guest_
+/// string_array` overflow/fault, a `token < 0` from `kernel_exec_target_
+/// prepare`, a `read_exec_target_bytes` errno, or a `commit < 0` all just
+/// complete the CALLER's channel with the truthful errno via
+/// [`fail_execve`] — no retained-target cancellation on the read/commit
+/// paths yet (unlike `handle_spawn`'s `rollback_exec_target`). A `Module::
+/// new` compile failure is allowed to `?`-propagate (ending the whole pump)
+/// rather than reported as `ENOEXEC`. N1-I3c Task 2 hardens all of this into
+/// the full failure/rollback matrix — see that increment for the
+/// `exec_target_cancel` calls this task deliberately omits.
+///
+/// On success (`commit == 0`): computes a fresh address space
+/// ([`compute_guest_memory`]) and launches a brand-new [`GuestProcess`] for
+/// the SAME `pid` ([`launch_process`] — exactly `handle_spawn`'s launch
+/// sequence, but reusing the exec'ing process's own pid rather than a
+/// freshly allocated one), then overwrites `processes[pi]` with it. The
+/// calling channel `ch` is DELIBERATELY never completed — see the inline
+/// comment at the swap site for why abandoning that thread (rather than
+/// waking or killing it) is the only sound option here, and the leak that
+/// abandonment accepts. Assumes (Task 1's fixtures only ever exercise) that
+/// the exec'ing process has no OTHER live channels at the moment of exec —
+/// a still-running worker (pthread) thread's channel would be left in
+/// `processes[pi]`'s OLD channel list, which this task does not reconcile
+/// against `kernel_exec_commit`'s in-kernel `clear_threads`; multi-threaded
+/// `execve` is out of this task's scope.
+#[allow(clippy::too_many_arguments)]
+fn handle_execve(
+    kernel_store: &mut Store<()>,
+    engine: &Engine,
+    kernel_mem: &SharedMemory,
+    processes: &mut Vec<GuestProcess>,
+    pi: usize,
+    ch: PumpChannel,
+    args: &[i64; 6],
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
+    exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
+    exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
+    exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
+) -> anyhow::Result<()> {
+    let pid = processes[pi].pid;
+    let caller_tid = ch.tid;
+    let guest_mem = processes[pi].memory.clone();
+
+    let path_bytes = read_guest_cstring(&guest_mem, args[0] as u32);
+    let argv_ptr = args[1] as u32;
+    let envp_ptr = args[2] as u32;
+
+    let argv_list = match read_guest_string_array(&guest_mem, argv_ptr, PROCESS_STARTUP_MAX_ARGV_COUNT) {
+        Ok(list) => list,
+        Err(errno) => return fail_execve(&guest_mem, kernel_mem, ch, args, -errno),
+    };
+    let envp_list = match read_guest_string_array(&guest_mem, envp_ptr, PROCESS_STARTUP_MAX_ARGV_COUNT) {
+        Ok(list) => list,
+        Err(errno) => return fail_execve(&guest_mem, kernel_mem, ch, args, -errno),
+    };
+
+    // Stage the path into a KERNEL-memory scratch region: `kernel_exec_
+    // target_prepare` requires a kernel-owned range, exactly like
+    // `handle_spawn`'s `resolve_bytes` staging — the two engines run in
+    // separate Wasmtime instances with separate memories (this file's
+    // module doc comment).
+    let path_scratch = alloc_scratch.call(&mut *kernel_store, path_bytes.len() as u32)?;
+    if path_scratch <= 0 {
+        return fail_execve(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
+    }
+    let path_scratch = path_scratch as u32 as usize;
+    unsafe { write_bytes(kernel_mem, path_scratch, &path_bytes) };
+
+    let token = exec_target_prepare.call(
+        &mut *kernel_store,
+        (pid, caller_tid, open_flags::AT_FDCWD, path_scratch as u32, path_bytes.len() as u32, 0),
+    )?;
+    if token < 0 {
+        // Task 1: no target was ever retained on a `prepare` failure, so
+        // there is nothing to cancel — just resume the caller with the
+        // truthful errno (Task 2 hardens the rest of the matrix).
+        return fail_execve(&guest_mem, kernel_mem, ch, args, -token);
+    }
+    let token = token as u32;
+
+    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
+    if read_scratch <= 0 {
+        let _ = exec_target_cancel.call(&mut *kernel_store, (pid, token));
+        return fail_execve(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
+    }
+    let program_bytes = match read_exec_target_bytes(
+        kernel_store,
+        kernel_mem,
+        exec_target_size,
+        exec_target_read,
+        read_scratch as u32,
+        EXEC_TARGET_READ_CHUNK,
+        pid,
+        token,
+    )? {
+        Ok(bytes) => bytes,
+        Err(errno) => {
+            let _ = exec_target_cancel.call(&mut *kernel_store, (pid, token));
+            return fail_execve(&guest_mem, kernel_mem, ch, args, errno);
+        }
+    };
+
+    // Task 1 may `?`-propagate a compile failure here (ending the whole
+    // pump run) rather than reporting a per-`execve` `ENOEXEC` — Task 2
+    // makes this a truthful `fail_execve(..., ENOEXEC)` after cancelling the
+    // still-retained target, mirroring `handle_spawn`'s `Module::new`
+    // handling exactly.
+    let new_module = Module::new(engine, &program_bytes)?;
+
+    let commit = exec_commit.call(&mut *kernel_store, (pid, caller_tid, token))?;
+    if commit < 0 {
+        return fail_execve(&guest_mem, kernel_mem, ch, args, -commit);
+    }
+
+    // --- SUCCESS: `kernel_exec_commit` returned 0, so the kernel already
+    // completed the POSIX exec transition (cloexec fds, set-ID creds,
+    // signal reset, memory-accounting reset, clear_threads, exec_generation
+    // bump) for THIS pid. Now build the host-side half: a fresh address
+    // space and a brand-new module instance running the new program, on the
+    // SAME pid `launch_process` re-pushes brk/mmap/max-addr for (required
+    // because commit just reset the kernel's memory accounting).
+    let (new_mem, new_layout) = compute_guest_memory(engine, &new_module)?;
+    let new_proc = launch_process(
+        engine,
+        kernel_store,
+        alloc_scratch,
+        set_brk_base,
+        set_mmap_base,
+        set_max_addr,
+        new_module,
+        new_mem,
+        new_layout,
+        pid,
+        Arc::new(Mutex::new(None)),
+        Arc::new(argv_list),
+        Arc::new(envp_list),
+    )?;
+
+    // DOCUMENTED LEAK (deliberate — do not "fix" by waking or killing the
+    // old thread): the exec'ing guest thread — this channel's OS thread,
+    // `ch` — is right now parked in a REAL Wasm `memory.atomic.wait32` on
+    // `ch`'s status word, inside the OLD, now-superseded module instance
+    // and memory. We never complete `ch`: `kernel_exec_commit` already
+    // performed the actual POSIX exec transition in the kernel, so waking
+    // that parked thread would resume execution inside the doomed PRE-exec
+    // instance — exactly the image POSIX `execve` just replaced. Wasmtime's
+    // `Engine` here has no epoch-interruption or fuel configured (a
+    // deferred, cross-cutting Engine change, out of scope for this
+    // increment), so there is also no way to preempt or forcibly join that
+    // parked `std::thread` from the outside. `processes[pi]` is simply
+    // overwritten below with `new_proc` (same pid, fresh module, memory,
+    // scratch, and a single fresh main channel); the pump keeps servicing
+    // `new_proc` from the very next loop iteration because `processes[pi]`
+    // now points at it. The old `GuestProcess` (its thread handle was never
+    // even kept, so there is nothing to join or drop explicitly) and its
+    // old `SharedMemory`/channels are dropped here — one parked OS thread
+    // plus its backing shared memory leaks per successful `execve`. This is
+    // POSIX-correct (`execve` truly never returns to the old image on
+    // success), but it is a real, permanent resource leak per call.
+    processes[pi] = new_proc;
+    Ok(())
+}
+
+/// Complete a failed `SYS_EXECVE` request on the CALLING process's own
+/// channel: `ret == -1` and a positive errno, matching `__do_syscall_impl`'s
+/// generic `if (result < 0) return -(long)err;` convention — exactly
+/// [`fail_spawn`]'s contract, except a failed `execve` resumes the SAME
+/// process/thread that called it (POSIX: `execve` only returns to the
+/// caller on failure), so there is no child process/token to roll back for
+/// a `prepare` failure (Task 1's scope); Task 2 adds the retained-target
+/// `exec_target_cancel` rollback for read/compile/commit failures, mirroring
+/// `handle_spawn`'s `rollback_exec_target`.
+fn fail_execve(
+    guest_mem: &SharedMemory,
+    kernel_mem: &SharedMemory,
+    ch: PumpChannel,
+    args: &[i64; 6],
+    errno: i32,
+) -> anyhow::Result<()> {
+    complete_channel(guest_mem, kernel_mem, 0, ch, SYS_EXECVE, args, &[], -1, errno as u32)
 }
 
 /// `handle_spawn`'s Task 1 happy-path rollback: the child's `Process` record
