@@ -88,22 +88,48 @@ pub struct KernelImportSurface {
 /// threads proposal (shared memory + atomic wait/notify). Bulk-memory and
 /// mutable-globals are enabled by default in this Wasmtime version.
 ///
-/// N1-I4: also enables the GC proposal (`wasm_gc`, `false` by default in this
-/// Wasmtime version). This is required to even PARSE the co-resident
-/// fork-module (`guest::instantiate_fork_module`) — despite that module
-/// having no `struct`/`array`/`i31ref` use on the frames-only path this crate
+/// N1-I4: also enables the GC proposal (`wasm_gc`, `false` by default in
+/// Wasmtime 35, the version this comment originally described). This is
+/// required to even PARSE the co-resident fork-module
+/// (`guest::instantiate_fork_module`) — despite that module having no
+/// `struct`/`array`/`i31ref` use on the frames-only path this crate
 /// exercises, its `dylink.0`/import surface still declares an `externref`
 /// return type and an anyref table (`env.__wpk_fork_static_root_catalog`,
-/// the I5 static-root binder), and Wasmtime 35 represents even those under
-/// the same "heap types" machinery the GC proposal gates
-/// (`Module::new` fails with "heap types not supported without the gc
-/// feature" otherwise). This is purely a validator permission — it does not
-/// change how the kernel/guest modules (which use none of these types) are
-/// compiled or run, so it is safe to enable on this shared engine.
+/// the I5 static-root binder), and Wasmtime represents even those under the
+/// same "heap types" machinery the GC proposal gates (`Module::new` fails
+/// with "heap types not supported without the gc feature" otherwise). This
+/// is purely a validator permission — it does not change how the
+/// kernel/guest modules (which use none of these types) are compiled or run,
+/// so it is safe to enable on this shared engine.
+///
+/// Wasmtime 48 upgrade (native-fork unblock): the fork-instrumented guest a
+/// real `fork()`/`vfork()` call produces declares an `exnref`/`Exn` heap type
+/// (the exception-handling proposal, used by the frame-unwind/journal
+/// machinery `crates/fork-instrument` weaves in) — `wasm-fork-instrument`'s
+/// output would not even load on Wasmtime 35, which rejects that heap type
+/// outright ("unsupported heap type Exn"). `wasm_exceptions(true)` enables
+/// the exceptions proposal explicitly, matching `wasm_gc(true)` immediately
+/// above: Wasmtime 48 defaults `wasm_exceptions` to `true` already (it is
+/// gated on the same `gc` Cargo feature, itself a default feature of the
+/// `wasmtime` crate), so this call is redundant with the current default —
+/// but it is set explicitly, not left implicit, so a future Wasmtime upgrade
+/// that changes that default cannot silently regress this engine back to
+/// rejecting `exnref`/`Exn` without a loud local diff.
 pub fn kernel_engine() -> wasmtime::Result<Engine> {
     let mut config = Config::new();
     config.wasm_threads(true);
     config.wasm_gc(true);
+    config.wasm_exceptions(true);
+    // Wasmtime 48 upgrade: `wasm_threads(true)` alone is no longer enough to
+    // create a `SharedMemory` — Wasmtime 48 split `SharedMemory` construction
+    // out behind its own `Config::shared_memory` knob, off by default, with
+    // upstream flagging wasm threads/shared memory as a tier-2 feature
+    // ("will not receive security updates or fixes to historical releases").
+    // The whole channel/pump design this crate exists to validate is built on
+    // `SharedMemory` (`env.memory` imported shared, atomic wait/notify), so
+    // this is a required, not optional, knob for this engine — flagged here
+    // for N1-R/fork review, not silently opted into.
+    config.shared_memory(true);
     Engine::new(&config)
 }
 
@@ -1725,6 +1751,89 @@ mod tests {
             outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
             "expected the SYS_FORK sentinel in the syscall trace: {:?}",
             outcome.syscall_trace
+        );
+        Ok(())
+    }
+
+    /// Wasmtime 35 -> 48 upgrade acceptance test (the reason for the
+    /// upgrade): a *fork-instrumented* guest module — the exact artifact
+    /// shape `scripts/run-wasm-fork-instrument.sh` produces for every
+    /// fork-using package, and the artifact native fork (N1-I4/I5) ultimately
+    /// needs this host to load — must actually load. Wasmtime 35 rejected
+    /// this outright: `wasm-fork-instrument`'s frame-unwind/journal machinery
+    /// (`crates/fork-instrument`) weaves in the exception-handling proposal's
+    /// `exnref`/`Exn` heap type, and wasmtime-environ 35 has no
+    /// representation for it at all ("unsupported heap type Exn",
+    /// wasmtime-environ-35/src/types.rs:2263-2267) — so `Module::new` failed
+    /// before a single byte of the module's own logic ever ran.
+    ///
+    /// This builds a MINIMAL fork-using fixture through the exact production
+    /// instrumentation pipeline
+    /// (`scripts/build-fork-instrumented-test-fixture.sh`, which itself
+    /// shells out to `scripts/run-wasm-fork-instrument.sh` — the same tool
+    /// every fork-using package build runs through) rather than hand-crafting
+    /// a WAT with a guessed-at `exnref` shape, so a future change to the real
+    /// instrumentation tool's output shape cannot silently stop this test
+    /// from testing what it claims to test.
+    ///
+    /// Scope: this is a direct ENGINE-LEVEL check (`Module::new` succeeds),
+    /// not a full guest run. N1-I4 Task 2's `handle_fork` does not yet drive
+    /// the `fm_*` capture/replay coordinator for a real fork-instrumented
+    /// guest (only `smoke_fork_parent_child`'s uninstrumented,
+    /// direct-`kernel.kernel_fork` fixture runs end-to-end today), so
+    /// "the module the fork work depends on can even be parsed by this
+    /// engine" is the correctly-scoped claim for this task, independent of
+    /// what a future replay coordinator does with it.
+    #[test]
+    fn smoke_loads_fork_instrumented_guest() -> anyhow::Result<()> {
+        let script = repo_root().join("scripts").join("build-fork-instrumented-test-fixture.sh");
+        anyhow::ensure!(script.exists(), "missing {}", script.display());
+
+        let output_path = std::env::temp_dir().join(format!(
+            "kandelo-host-native-fork-instrumented-{}-{}.wasm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+
+        let status = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("--arch")
+            .arg("wasm32")
+            .arg("--output")
+            .arg(&output_path)
+            .status()
+            .map_err(|e| anyhow::anyhow!("spawning {}: {e}", script.display()))?;
+        anyhow::ensure!(
+            status.success(),
+            "{} exited with {status}; run inside scripts/dev-shell.sh so cargo/rustc/wat2wasm \
+             are on PATH",
+            script.display()
+        );
+
+        let wasm_bytes = std::fs::read(&output_path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", output_path.display()))?;
+        let _ = std::fs::remove_file(&output_path);
+
+        let engine = kernel_engine()?;
+        // The acceptance claim: this engine (`wasm_exceptions(true)` alongside
+        // `wasm_gc(true)`, both set in `kernel_engine`) can PARSE a real
+        // fork-instrumented module. On Wasmtime 35 this failed with
+        // "unsupported heap type Exn" before a single byte of the module's
+        // own logic ever ran; on Wasmtime 48, with the exceptions proposal
+        // enabled, it must succeed.
+        let module = Module::new(&engine, &wasm_bytes).map_err(|e| {
+            anyhow::anyhow!(
+                "wasmtime::Module::new failed to load the fork-instrumented fixture -- this is \
+                 the exact exnref/Exn heap-type blocker this Wasmtime upgrade exists to resolve: \
+                 {e:#}"
+            )
+        })?;
+        anyhow::ensure!(
+            module.get_export("_start").is_some(),
+            "instrumented fixture should still export _start"
         );
         Ok(())
     }

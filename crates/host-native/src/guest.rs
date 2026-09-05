@@ -2649,9 +2649,9 @@ fn spawn_guest_thread(
         {
             let status = import_exit_status.clone();
             linker
-                .func_wrap("kernel", "kernel_exit", move |_c: Caller<'_, ()>, s: i32| -> anyhow::Result<()> {
+                .func_wrap("kernel", "kernel_exit", move |_c: Caller<'_, ()>, s: i32| -> wasmtime::Result<()> {
                     *status.lock().unwrap() = Some(s);
-                    Err(anyhow::anyhow!("kernel_exit({s})"))
+                    Err(wasmtime::Error::msg(format!("kernel_exit({s})")))
                 })
                 .unwrap();
         }
@@ -3005,7 +3005,7 @@ fn run_worker_thread(
         // `unreachable` to halt the thread. That trap is the expected, clean end
         // of the thread, exactly like the process exit trap on the main thread.
         Err(e) if is_unreachable_trap(&e) => Ok(()),
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
         // A thread entry that returns without self-exiting is unusual (musl
         // always exits via __pthread_exit); post the exit ourselves as a fallback.
         Ok(()) => {
@@ -3017,7 +3017,7 @@ fn run_worker_thread(
 
 /// Whether a Wasmtime error is a guest `unreachable` trap (the expected halt at
 /// the end of the process/thread exit path).
-fn is_unreachable_trap(e: &anyhow::Error) -> bool {
+fn is_unreachable_trap(e: &wasmtime::Error) -> bool {
     matches!(
         e.downcast_ref::<wasmtime::Trap>(),
         Some(wasmtime::Trap::UnreachableCodeReached)

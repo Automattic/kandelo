@@ -26,13 +26,23 @@ name = "host_native"
 path = "src/lib.rs"
 
 [dependencies]
-# Wasmtime 35 matches the feasibility spike in
+# Wasmtime 35 originally matched the feasibility spike in
 # docs/plans/2026-08-25-rust-first-runtime-design.md. It supports every
 # feature the kernel needs (threads/shared-memory + atomic wait/notify,
 # bulk-memory, mutable-globals, imported/exported memory) with no WASI or
 # Component Model. Loading the same `kernel.wasm` on a non-JS engine is the
 # freeze-gate acid test that the platform boundary is not JavaScript-shaped.
-wasmtime = "35"
+#
+# Upgraded 35 -> 48 (N1-I4/I5 native-fork unblock): Wasmtime 35 cannot load a
+# fork-instrumented guest at all — it rejects the exception-handling
+# proposal's `exnref`/`Exn` heap type outright ("unsupported heap type Exn").
+# Wasmtime 48 supports the exceptions proposal (see
+# `kernel_engine`'s `Config::wasm_exceptions` call in `src/lib.rs`), which is
+# the whole point of this bump: native `fork()` needs the fork-instrumented
+# guest to load in the first place. See
+# `.superpowers/sdd/2026-09-05-n1-i4-native-fork-frames/wasmtime-upgrade-report.md`
+# for the full reconciliation of the 35->48 API churn.
+wasmtime = "48"
 
 # The authoritative ABI: syscall numbers, channel offsets, and the pointer-arg
 # marshalling descriptors. A `no_std` constants/types crate with no external
