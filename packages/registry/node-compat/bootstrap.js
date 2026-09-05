@@ -4011,16 +4011,68 @@ const _builtinModules = {
         }
         // minipass-fetch / tar instantiate via `new zlib.Gunzip()` / `new zlib.Unzip()`.
         class Gunzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
+        // Node's Unzip auto-detects a zlib or gzip header. The native backend's
+        // createGunzip already sniffs both (windowBits 47 / auto), so Unzip is
+        // backed by it too.
         class Unzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
+        // Brotli: there is no Brotli codec in the native backend (patch 0012
+        // wires libz only, no libbrotli). Provide an honest fail-loud stream:
+        // it constructs (so module-init that builds a Brotli stream succeeds)
+        // but errors on the first byte of data instead of silently returning
+        // wrong bytes. Real Brotli is tracked future work (docs/posix-status.md).
+        const _brotliMsg = 'zlib Brotli is not implemented on spidermonkey-node';
+        class BrotliUnsupported extends stream.Transform {
+            _transform(_chunk, _enc, cb) { cb(new Error(_brotliMsg)); }
+        }
+        // Real Node zlib/Brotli numeric constants. Only Z_SYNC_FLUSH and
+        // BROTLI_OPERATION_FLUSH are read by the app today, but expose the
+        // standard set so consumers that read other flush/level/param codes
+        // work. Values match Node's zlib.constants.
+        const constants = {
+            Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3,
+            Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
+            Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1,
+            Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
+            Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
+            Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9,
+            Z_DEFAULT_COMPRESSION: -1,
+            Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4,
+            Z_DEFAULT_STRATEGY: 0,
+            Z_BINARY: 0, Z_TEXT: 1, Z_ASCII: 1, Z_UNKNOWN: 2,
+            Z_DEFLATED: 8,
+            Z_DEFAULT_CHUNK: 16384, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity,
+            Z_DEFAULT_LEVEL: -1, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9,
+            Z_DEFAULT_MEMLEVEL: 8, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9,
+            Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15,
+            BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1,
+            BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
+            BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1,
+            BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_LGWIN: 2,
+            BROTLI_PARAM_LGBLOCK: 3,
+            BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4,
+            BROTLI_PARAM_SIZE_HINT: 5, BROTLI_PARAM_LARGE_WINDOW: 6,
+            BROTLI_PARAM_NPOSTFIX: 7, BROTLI_PARAM_NDIRECT: 8,
+            BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11,
+            BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24,
+            BROTLI_DEFAULT_WINDOW: 22, BROTLI_LARGE_MAX_WINDOW_BITS: 30,
+            BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24,
+        };
         return {
             createGzip:    (opts) => new ZlibTransform(z.createGzip(opts?.level), opts),
             createGunzip:  (opts) => new Gunzip(opts),
+            createUnzip:   (opts) => new Unzip(opts),
             createDeflate: (opts) => new ZlibTransform(z.createDeflate(opts?.level), opts),
             createInflate: (opts) => new ZlibTransform(z.createInflate(), opts),
             gzipSync:    (b, opts) => Buffer.from(z.gzipSync(toU8(b), opts?.level)),
             gunzipSync:  (b)       => Buffer.from(z.gunzipSync(toU8(b))),
             deflateSync: (b, opts) => Buffer.from(z.deflateSync(toU8(b), opts?.level)),
             inflateSync: (b)       => Buffer.from(z.inflateSync(toU8(b))),
+            // Brotli: honest fail-loud stubs (construct OK, error on data).
+            createBrotliCompress:   (opts) => new BrotliUnsupported(opts),
+            createBrotliDecompress: (opts) => new BrotliUnsupported(opts),
+            brotliCompressSync:   _notImpl('zlib', 'brotliCompressSync'),
+            brotliDecompressSync: _notImpl('zlib', 'brotliDecompressSync'),
+            constants,
             Gunzip, Unzip,
         };
     })(),
