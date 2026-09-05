@@ -429,7 +429,48 @@ is answered empirically and where the plan CHECKPOINTS with the user):
   heavy alternative to I1a's empty overlay) — needed to run a shipped binary that
   reads real base files from the image.
 - **I3** — process spawn/exec/`host_waitpid` (multi-instance, argv hand-off,
-  the ABI-44 exec-authority path).
+  the ABI-44 exec-authority path). Sub-increments:
+  - **I3a — posix_spawn + waitpid (DONE 2026-09-04).** Pump generalized to N
+    `GuestProcess`es (each own `SharedMemory`/pid/scratch/channels, blocking ops
+    routed by `process_index`); `SYS_SPAWN` decodes the blob, resolves `argv[0]`
+    in `GuestOptions.programs`, launches the child via `launch_process`, publishes
+    it, and rolls back the kernel process-table entry via `kernel_remove_process`
+    on `-ECHILD`; `host_waitpid` is a PARKED op (never blocks the single-threaded
+    pump) resolved on child exit → `kernel_get_process_exit_status`/`_signal` →
+    `encode_wait_status` (WEXITSTATUS) → `kernel_reap_exited_child(real_ppid,…)` →
+    status writeback → resolve the parent's parked channel. 17/17 host-native
+    tests (`smoke_spawn_waitpid` e2e: child `_exit(7)` → parent `WEXITSTATUS==7`).
+    Host-side-only; child bytes from the `programs` map. Commits 66672e254 /
+    9618b2f0e / f71c314bb / 5dee3f0b0.
+    - **Native-surfaced platform follow-up (the point of N1):** `runtime-core`'s
+      `blocked_retry.rs` has NO `wait4` (syscall 139) entry and `wait4` is not in
+      `is_explicit_host_only_snapshot_syscall`, so `kernel_blocking_retry_token(139)`
+      returns `-EINVAL`. I3a worked around it host-side (`token: 0`, poll's
+      "nothing to pin" convention) under the host-native-only constraint — sound
+      (the pump re-dispatches every parked op each iteration, no lost wakeup) but
+      it leaves a gap: a parked `wait4` is not representable through the kernel's
+      reviewed retry-token classification. FOLLOW-UP: add `wait4` to that reviewed
+      host-only-snapshot list in `runtime-core` so `token_for_syscall(139)`
+      succeeds for ALL hosts (native + Node + browser), removing the host-side
+      special case. Not on the I3 critical path; do when a `runtime-core` build is
+      already warranted.
+    - **Process-lifecycle follow-ups (opus whole-increment review, PARKED as I3
+      work — genuine POSIX gaps, both fail truthfully today so not blocking):**
+      (1) The native pump returns only once every spawned child has quiesced
+      (`guest.rs:2930-2934`), so a parent that exits while a child still holds a
+      live channel (infinite loop, indefinite `read`/`wait4`, detached parked
+      pthread) yields a LOUD 30s pump timeout rather than the POSIX behavior of
+      the parent exiting immediately and its orphans reparenting to init. Task 2
+      widened the drain deliberately to avoid a parent-vs-child exit race, so the
+      correct fix is the larger lifecycle piece — **orphan reparenting to init
+      (PID 1) + parent exit returning immediately** — best done with the I3b+
+      exec-authority work, not bolted on mid-increment.
+      (2) Relatedly, a child that exits but is never `wait`ed leaves a kernel
+      zombie + host `WaitTable` entries unreaped (bounded to the `run_guest`
+      lifetime; mirrors real POSIX zombie semantics). Folds into the same
+      reparent-to-init work — init reaps orphaned zombies.
+  - **I3b/c/d (later)** — spawn-bytes-from-VFS, execve/image-replacement (the
+    ABI-44 exec-authority path proper), shebang/`execveat`.
 - **I4** — fork frames natively (no refs): drive `fork-codec`
   `rewind_driver`/`replay_journal`/`linked_frames` + `instantiate_child`
   (`Instance::new`) + `spawn_thread` (`thread::spawn`), replacing the
