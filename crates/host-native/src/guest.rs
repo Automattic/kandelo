@@ -2256,21 +2256,31 @@ fn read_linked_frame_fixed_prefix_size(wasm_bytes: &[u8]) -> anyhow::Result<Opti
     Ok(Some(fixed_prefix_size))
 }
 
+/// One decoded `kandelo.wpk_fork.resume_catalog` (KFRC) record: the
+/// deterministic `function_ordinal` `fm_set_resume_catalog` numbers the
+/// module's OWN resume slots from, and the `local_catalog_slot` that names
+/// this record's THUNK in the guest's own EXPORTED `__wpk_fork_resume_
+/// catalog` table (mirrors the TS `ForkResumeCatalogRecord`).
+#[derive(Debug, Clone, Copy)]
+struct ForkResumeCatalogRecord {
+    function_ordinal: u32,
+    local_catalog_slot: u32,
+}
+
 /// Read the guest's `kandelo.wpk_fork.resume_catalog` (KFRC) custom section —
 /// the ordered `(function_ordinal, local_catalog_slot)` table
-/// `wasm-fork-instrument` emits — and return just the `function_ordinal`
-/// column, in file order (already validated strictly increasing), exactly
-/// the shape `readForkResumeCatalog(...).map(r => r.functionOrdinal)` builds
-/// in `host/src/worker-main.ts`. These KFRC framing constants have NO
-/// shared-ABI mirror (see `crates/fork-codec/src/catalogs.rs`'s identical
-/// note) — they live only in `host/src/fork-resume-catalog.ts`,
-/// `crates/fork-codec/src/catalogs.rs`, and privately in
+/// `wasm-fork-instrument` emits — in file order (already validated strictly
+/// increasing by `function_ordinal`), exactly the shape `readForkResumeCatalog
+/// (...)` decodes in `host/src/fork-resume-catalog.ts`. These KFRC framing
+/// constants have NO shared-ABI mirror (see `crates/fork-codec/src/
+/// catalogs.rs`'s identical note) — they live only in `host/src/fork-resume-
+/// catalog.ts`, `crates/fork-codec/src/catalogs.rs`, and privately in
 /// `crates/fork-instrument`, so they are carried locally here too. Returns an
 /// empty `Vec` when the section is absent (a fork-instrumented guest with no
 /// resume targets at all is not expected in practice, but an absent section
 /// is treated the same as the TS `setup()`'s `count === 0` skip, not an
 /// error).
-fn read_fork_resume_catalog_ordinals(wasm_bytes: &[u8]) -> anyhow::Result<Vec<u32>> {
+fn read_fork_resume_catalog_records(wasm_bytes: &[u8]) -> anyhow::Result<Vec<ForkResumeCatalogRecord>> {
     const RESUME_MAGIC: [u8; 4] = *b"KFRC";
     const RESUME_VERSION: u16 = 1;
     const RESUME_HEADER_SIZE: usize = 12;
@@ -2289,18 +2299,23 @@ fn read_fork_resume_catalog_ordinals(wasm_bytes: &[u8]) -> anyhow::Result<Vec<u3
     let expected = RESUME_HEADER_SIZE + count * RESUME_RECORD_SIZE;
     anyhow::ensure!(bytes.len() == expected, "resume catalog has an invalid size");
 
-    let mut ordinals = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(count);
     let mut previous: Option<u32> = None;
     for i in 0..count {
         let off = RESUME_HEADER_SIZE + i * RESUME_RECORD_SIZE;
-        let ordinal = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        let function_ordinal = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        let local_catalog_slot =
+            u32::from_le_bytes([bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]]);
         if let Some(prev) = previous {
-            anyhow::ensure!(ordinal > prev, "resume catalog function ordinals are not strictly increasing");
+            anyhow::ensure!(
+                function_ordinal > prev,
+                "resume catalog function ordinals are not strictly increasing"
+            );
         }
-        previous = Some(ordinal);
-        ordinals.push(ordinal);
+        previous = Some(function_ordinal);
+        records.push(ForkResumeCatalogRecord { function_ordinal, local_catalog_slot });
     }
-    Ok(ordinals)
+    Ok(records)
 }
 
 /// The guest-program-specific fork format this host must seed into a FRESH
@@ -2315,6 +2330,17 @@ fn read_fork_resume_catalog_ordinals(wasm_bytes: &[u8]) -> anyhow::Result<Vec<u3
 pub(crate) struct GuestForkFormat {
     pub fixed_prefix_size: u32,
     pub catalog_ordinals: Vec<u32>,
+    /// The SAME KFRC records' `local_catalog_slot` column, in the SAME
+    /// (file/ordinal) order as `catalog_ordinals` — needed to populate the
+    /// REAL `env.__wpk_fork_resume_table` import (see `wire_resume_table`):
+    /// entry `i` of that table must hold the guest's own `__wpk_fork_resume_
+    /// catalog[local_catalog_slots[i]]` thunk. Mirrors `host/src/fork-resume-
+    /// catalog.ts`'s `forkResumeTargetsFromInstance` (`table.get(localCatalog
+    /// Slot)`) and `host/src/fork-replay-events.ts`'s `ForkResumeTable::
+    /// registerActivation` (which allocates slot `i`, in `functionOrdinal`
+    /// order, for the `i`-th target — the KFRC section's own file order,
+    /// since it is already validated strictly increasing by ordinal).
+    pub catalog_local_slots: Vec<u32>,
 }
 
 /// Compute [`GuestForkFormat`] from a guest program's raw wasm bytes, or
@@ -2470,14 +2496,16 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
     let Some(fixed_prefix_size) = read_linked_frame_fixed_prefix_size(wasm_bytes)? else {
         return Ok(None);
     };
-    let catalog_ordinals = read_fork_resume_catalog_ordinals(wasm_bytes)?;
+    let records = read_fork_resume_catalog_records(wasm_bytes)?;
     anyhow::ensure!(
-        catalog_ordinals.len() <= FORK_MODULE_RESUME_CATALOG_CAP,
+        records.len() <= FORK_MODULE_RESUME_CATALOG_CAP,
         "resume catalog of {} entries exceeds the module cap {}",
-        catalog_ordinals.len(),
+        records.len(),
         FORK_MODULE_RESUME_CATALOG_CAP
     );
-    Ok(Some(GuestForkFormat { fixed_prefix_size, catalog_ordinals }))
+    let catalog_ordinals = records.iter().map(|r| r.function_ordinal).collect();
+    let catalog_local_slots = records.iter().map(|r| r.local_catalog_slot).collect();
+    Ok(Some(GuestForkFormat { fixed_prefix_size, catalog_ordinals, catalog_local_slots }))
 }
 
 /// Read one ULEB128 varint out of `data` starting at `*cursor`, advancing it
@@ -3438,40 +3466,111 @@ fn spawn_guest_thread(
                 |_c: Caller<'_, ()>, _path_ptr: i32, _path_len: i32| -> i32 { -(libc_errno::ENOSYS) },
             )
             .unwrap();
+        // N1-I4 Task 3 (bootstrap-fix follow-up): `env.__wpk_fork_resume_
+        // table` is NOT a fork-module-owned table like the 5 frame imports
+        // above — it is the REAL cross-activation dispatch table `wpk_fork_
+        // resume_start`'s `call_indirect`s target during replay, and it must
+        // hold ACTUAL funcrefs to the guest's own resume targets (mirrors
+        // `host/src/fork-replay-events.ts`'s `ForkResumeTable`: a real,
+        // host-owned `WebAssembly.Table`, grown and `table.set` one slot per
+        // catalog record — never a JS/module default). A table left at its
+        // bare declared minimum (as `define_unknown_imports_as_default_
+        // values` below would otherwise give it) traps
+        // `undefined element: out of bounds table access` the first time
+        // replay dispatches to any slot beyond that minimum. Create it here,
+        // sized to the FULL catalog PLUS ONE (`fmt.catalog_ordinals.len() +
+        // 1`), from the GUEST's own declared import type (reference element
+        // type + any declared `max`), so a real `catalog_ordinals.len() > 1`
+        // case still round-trips the import-matching check (a supplied
+        // table's `min` may exceed the import's declared `min`; only `max`
+        // is a hard ceiling). The `+ 1` mirrors `ForkResumeTable`'s own
+        // `initial: 1` + `allocateSlot()` contract EXACTLY: that class starts
+        // its table at length 1 and `allocateSlot()` returns `table.length`
+        // BEFORE growing — so slot `0` is NEVER allocated to a real target
+        // (it stays the implicit "no event" sentinel `ForkResumeTable.
+        // slotFor` reads back for a null/absent replay event) and the first
+        // REAL record lands at slot `1`, the second at `2`, and so on. The
+        // table is POPULATED below, after `linker.instantiate` creates the
+        // guest `Instance` whose OWN exported `__wpk_fork_resume_catalog`
+        // table is this table's data source — see the `resume_table`
+        // population block after `instantiate`, which writes record `i`
+        // (0-based, file/ordinal order) to slot `i + 1` for the exact same
+        // reason.
+        let mut resume_table: Option<wasmtime::Table> = None;
+        if let Some(fmt) = fork_format.as_ref() {
+            if let Some(import) = module.imports().find(|i| {
+                i.module() == "env" && i.name() == wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
+            }) {
+                let declared = match import.ty() {
+                    ExternType::Table(t) => t,
+                    other => {
+                        eprintln!(
+                            "guest env.{} is a {other:?}, not a table",
+                            wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE
+                        );
+                        return;
+                    }
+                };
+                let needed = fmt.catalog_ordinals.len() as u64 + 1;
+                let min = needed.max(declared.minimum());
+                let Ok(min) = u32::try_from(min) else {
+                    eprintln!("resume table minimum {min} does not fit in a wasm32 table size");
+                    return;
+                };
+                let max = declared.maximum().map(|m| u32::try_from(m).unwrap_or(u32::MAX));
+                let table_ty = wasmtime::TableType::new(declared.element().clone(), min, max);
+                let table = match Table::new(&mut store, table_ty, Ref::Func(None)) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("creating env.__wpk_fork_resume_table failed: {e:#}");
+                        return;
+                    }
+                };
+                if let Err(e) = linker.define(
+                    &mut store,
+                    "env",
+                    wasm_posix_shared::abi::WPK_FORK_RESUME_IMPORT_TABLE,
+                    table,
+                ) {
+                    eprintln!("wiring env.__wpk_fork_resume_table failed: {e:#}");
+                    return;
+                }
+                resume_table = Some(table);
+            }
+        }
+
         // The fork-exec import set is imported but never reached on this
         // (non-forking) path; a trap is the truthful boundary.
         linker.define_unknown_imports_as_traps(&module).unwrap();
         // N1-I4 Task 3: a real ABI-43+ fork-instrumented guest unconditionally
         // imports a much larger surface than the 5 frame imports + unwind tag
-        // this function wires explicitly above — the FULL module-state save/
-        // restore family (`__wpk_fork_module_state_*`) and the reference/
-        // exception routing family (`__wpk_fork_ref_gc_*`/`__wpk_fork_ref_
-        // exn_*`), declared once per program regardless of whether it ever
-        // actually captures a reference. Every FUNCTION import in those
-        // families is already covered by `define_unknown_imports_as_traps`
-        // just above (frames-only must never actually call one — see this
-        // file's "N1-I4 Task 1" section doc comment and `ForkProofOfUse`'s),
-        // but a handful of NON-function imports remain unresolved after that
-        // call: `env.__wpk_fork_ref_gc_transit`/`env.__wpk_fork_resume_table`
-        // (tables) and `env.__wpk_fork_module_activation`/`env.__wpk_fork_
-        // module_state_table_generation_addr` (globals) — `Linker::
-        // define_unknown_imports_as_traps` only ever handles `ExternType::
-        // Func` (traps have no meaning for a table/global import: there is
-        // no "call" to intercept), so those four still need SOME value.
+        // + resume table this function wires explicitly above — the FULL
+        // module-state save/restore family (`__wpk_fork_module_state_*`) and
+        // the reference/exception routing family (`__wpk_fork_ref_gc_*`/
+        // `__wpk_fork_ref_exn_*`), declared once per program regardless of
+        // whether it ever actually captures a reference. Every FUNCTION
+        // import in those families is already covered by `define_unknown_
+        // imports_as_traps` just above (frames-only must never actually call
+        // one — see this file's "N1-I4 Task 1" section doc comment and
+        // `ForkProofOfUse`'s), but a handful of NON-function imports remain
+        // unresolved after that call: `env.__wpk_fork_ref_gc_transit` (a
+        // table) and `env.__wpk_fork_module_activation`/`env.__wpk_fork_
+        // module_state_table_generation_addr` (globals) — `Linker::define_
+        // unknown_imports_as_traps` only ever handles `ExternType::Func`
+        // (traps have no meaning for a table/global import: there is no
+        // "call" to intercept), so those three still need SOME value.
         // `define_unknown_imports_as_default_values` fills in exactly the
-        // imports still unresolved at this point (every function is already
-        // defined, so this touches only those four) with the zero/null value
-        // for their declared type — a table at its declared minimum size,
-        // all-null, and a `0`-valued global. This is the platform boundary
-        // this task accepts as-is rather than second-guessing: a
-        // single-activation, no-reference, no-dlopen fork's OWN resume-table
-        // population (if any) and module-state bookkeeping are guest-owned
-        // runtime behavior this host does not need to understand to host a
-        // frames-only fork correctly, and a resume path that actually needed
-        // a real value here would fail loudly (a trap or an observably wrong
-        // resume) rather than silently — exactly the truthful-failure
-        // contract `smoke_fork_parent_child`'s full assertions and `fm_last_
-        // errno` checks are there to catch.
+        // imports still unresolved at this point (every function AND
+        // `env.__wpk_fork_resume_table`, wired for real above, are already
+        // defined, so this touches only those three) with the zero/null
+        // value for their declared type. This is the platform boundary this
+        // task accepts as-is rather than second-guessing: a single-
+        // activation, no-reference, no-dlopen fork never reads `env.__wpk_
+        // fork_ref_gc_transit`/the two globals for real, and a resume path
+        // that actually needed a real value here would fail loudly (a trap
+        // or an observably wrong resume) rather than silently — exactly the
+        // truthful-failure contract `smoke_fork_parent_child`'s full
+        // assertions and `fm_last_errno` checks are there to catch.
         linker.define_unknown_imports_as_default_values(&mut store, &module).unwrap();
 
         let instance = match linker.instantiate(&mut store, &module) {
@@ -3481,6 +3580,53 @@ fn spawn_guest_thread(
                 return;
             }
         };
+
+        // N1-I4 Task 3 (bootstrap-fix follow-up): populate `env.__wpk_fork_
+        // resume_table` from the GUEST's own newly-created `Instance` — the
+        // data source (`__wpk_fork_resume_catalog`, the guest's OWN exported
+        // table) does not exist until instantiation completes, so this MUST
+        // run after `linker.instantiate` and BEFORE `run_fork_capable_entry`
+        // ever calls the bootstrap/`_start`/`wpk_fork_resume_start` exports
+        // that `call_indirect` against it. Mirrors `host/src/fork-resume-
+        // catalog.ts`'s `forkResumeTargetsFromInstance` (`table.get(local
+        // CatalogSlot)`) feeding `host/src/fork-replay-events.ts`'s
+        // `ForkResumeTable::registerActivation` (`table.set(slot, thunk)`,
+        // slot `i` for the `i`-th record in file/ordinal order — the KFRC
+        // section's own order, already validated strictly increasing).
+        if let (Some(fmt), Some(dest)) = (fork_format.as_ref(), resume_table.as_ref()) {
+            if !fmt.catalog_ordinals.is_empty() {
+                let Some(catalog) = instance.get_table(&mut store, "__wpk_fork_resume_catalog") else {
+                    eprintln!("guest missing __wpk_fork_resume_catalog export");
+                    return;
+                };
+                for (i, &local_slot) in fmt.catalog_local_slots.iter().enumerate() {
+                    let thunk = match catalog.get(&mut store, u64::from(local_slot)) {
+                        Some(Ref::Func(Some(f))) => Ref::Func(Some(f)),
+                        Some(other) => {
+                            eprintln!(
+                                "__wpk_fork_resume_catalog[{local_slot}] is {other:?}, not a function"
+                            );
+                            return;
+                        }
+                        None => {
+                            eprintln!(
+                                "__wpk_fork_resume_catalog[{local_slot}] is out of bounds \
+                                 (catalog size {})",
+                                catalog.size(&mut store)
+                            );
+                            return;
+                        }
+                    };
+                    // Slot `i + 1`, not `i` — slot `0` is the reserved "no
+                    // resume event" sentinel; see this block's doc comment.
+                    let slot = i as u64 + 1;
+                    if let Err(e) = dest.set(&mut store, slot, thunk) {
+                        eprintln!("populating __wpk_fork_resume_table[{slot}] failed: {e:#}");
+                        return;
+                    }
+                }
+            }
+        }
 
         run_fork_capable_entry(
             &mut store,
@@ -3572,18 +3718,26 @@ where
     func.typed::<Params, Results>(&mut *caller)
 }
 
-/// Whether a Wasmtime error is an uncaught Wasm exception (`Trap::
-/// UnhandledTag`) — the shape an escaped `env.__wpk_fork_unwind` throw takes
-/// once it propagates all the way out of the guest's outer `_start` call (see
-/// `kernel_fork`'s `Idle` branch's doc comment for why this is the expected,
-/// deliberate way a fresh fork capture surfaces to the host, not a bug).
-/// Wasmtime does not distinguish WHICH tag was unhandled at this level, so
-/// [`run_fork_capable_entry`] additionally requires this to be seen only
-/// straight after the LEXICAL `_start` entry (never during a replay/resume
-/// call) before treating it as a fork capture — see that function's doc
-/// comment.
-fn is_unhandled_tag_trap(e: &wasmtime::Error) -> bool {
-    matches!(e.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::UnhandledTag))
+/// Whether a Wasmtime error represents an uncaught Wasm exception escaping a
+/// call into the guest (`wasmtime::ThrownException` — NOT `Trap::
+/// UnhandledTag`, a DIFFERENT error shape reserved for the stack-switching/
+/// continuations proposal; Wasmtime 48's exceptions-proposal implementation
+/// stores the actual pending exception object on the `Store` itself — see
+/// `Store::take_pending_exception`, called at this function's one call site
+/// — and returns this zero-payload marker error from the call, per `wasmtime
+/// ::exception::ThrownException`'s own doc comment). This is the shape an
+/// escaped `env.__wpk_fork_unwind` throw takes once it propagates all the
+/// way out of the guest's outer `_start` call (see `kernel_fork`'s `Idle`
+/// branch's doc comment for why this is the expected, deliberate way a fresh
+/// fork capture surfaces to the host, not a bug). Wasmtime does not
+/// distinguish WHICH tag was thrown at this level (that requires inspecting
+/// the taken `ExnRef`'s own tag, which this frames-only task does not do —
+/// see [`run_fork_capable_entry`]'s call site for why), so that function
+/// additionally requires this to be seen only straight after the LEXICAL
+/// `_start` entry (never during a replay/resume call) before treating it as
+/// a fork capture.
+fn is_thrown_exception_escape(e: &wasmtime::Error) -> bool {
+    e.downcast_ref::<wasmtime::ThrownException>().is_some()
 }
 
 /// N1-I4 Task 3: drive one guest OS thread (either a fresh, `_start`-from-the-
@@ -3637,6 +3791,48 @@ fn run_fork_capable_entry(
     let resume_start = instance
         .get_typed_func::<(), ()>(&mut *store, wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_START)
         .ok();
+
+    // N1-I4 Task 3 (bootstrap fix): `wasm-fork-instrument` converts every
+    // ACTIVE element/data segment on an instrumented guest to PASSIVE and
+    // defers their initialization into an EXPORTED bootstrap function — the
+    // module has no `start` function of its own after instrumentation (see
+    // `crates/fork-instrument/src/module_state.rs`'s `inject`/`emit_
+    // bootstrap_helper`/`emit_thread_bootstrap_helper`). Node/browser call
+    // this exact export, once, straight after instantiation and BEFORE the
+    // guest's own entry point (`host/src/worker-main.ts:4714` before `_start`
+    // at `:5036`; `:6898` for a fresh-table thread/child instance) — this
+    // host must too, or the guest's own `__indirect_function_table` (and any
+    // `.data`/`.rodata`) is never populated, and the FIRST `call_indirect`
+    // (or first read of static data) traps. `ForkEntry::Normal` gets a
+    // brand-new instance whose linear memory + tables need FULL init (data
+    // copy + table.init + the guest's real, original `main`-reaching start
+    // logic) — `WPK_FORK_EXPORT_MODULE_BOOTSTRAP`. `ForkEntry::ChildReplay`
+    // gets a FRESH instance too, but one whose linear memory is a byte-for-
+    // byte private copy of an ALREADY-bootstrapped parent (so its `.data`/
+    // `.rodata` are already correct) with brand-new, EMPTY instance-local
+    // tables — `WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP` re-inits just the
+    // tables (and `DataDrop`s the now-redundant data segments) without
+    // re-copying memory or re-running the original start, exactly matching
+    // `worker-main.ts:6898`'s thread/child-instance variant.
+    //
+    // A NON-instrumented guest exports NEITHER name, so
+    // `get_typed_func(...).ok()` simply finds nothing and this is a byte-
+    // for-byte no-op for it — this is what keeps every pre-existing,
+    // non-instrumented test (and the `ChildPendingStub` legacy path, handled
+    // above before this point is ever reached) unaffected, without needing
+    // to thread `fork_format`/"is this guest instrumented" down into this
+    // function at all: the guest's own export list is the ground truth.
+    let bootstrap_export = match fork_entry {
+        ForkEntry::Normal => wasm_posix_shared::abi::WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
+        ForkEntry::ChildReplay { .. } => wasm_posix_shared::abi::WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+        ForkEntry::ChildPendingStub => unreachable!("handled above"),
+    };
+    if let Ok(bootstrap) = instance.get_typed_func::<(), ()>(&mut *store, bootstrap_export) {
+        if let Err(e) = bootstrap.call(&mut *store, ()) {
+            eprintln!("{bootstrap_export} failed: {e:#}");
+            return;
+        }
+    }
 
     let mut entry_is_lexical = true;
     if let ForkEntry::ChildReplay { root, image_ptr, image_len } = fork_entry {
@@ -3693,17 +3889,31 @@ fn run_fork_capable_entry(
         match result {
             Ok(()) => return,
             Err(e) if is_unreachable_trap(&e) => return,
-            Err(e) if is_unhandled_tag_trap(&e) => {
+            Err(e) if is_thrown_exception_escape(&e) => {
                 // Only valid straight after the LEXICAL entry captured a
-                // fresh fork (`Idle` phase); an unhandled tag escaping
-                // during a replay/resume call is a genuine bug or a foreign
-                // (non-fork) exception this loop does not understand.
+                // fresh fork (`Idle` phase); an exception escaping during a
+                // replay/resume call is a genuine bug or a foreign (non-fork)
+                // exception this loop does not understand.
                 if !entry_is_lexical {
-                    eprintln!("unexpected unhandled-tag trap during fork replay: {e:#}");
+                    eprintln!("unexpected exception escape during fork replay: {e:#}");
                     return;
                 }
+                // Consume the pending exception the `Store` is holding
+                // rooted (per `ThrownException`'s own doc comment: "the
+                // caller should either continue propagating the error
+                // upward, or take and handle the exception"). This task does
+                // not inspect the taken `ExnRef`'s own tag (frames-only has
+                // exactly one possible escaping tag in practice, `env.
+                // __wpk_fork_unwind`); it only clears the slot so it cannot
+                // leak into and confuse a later, unrelated call.
+                if store.take_pending_exception().is_none() {
+                    eprintln!(
+                        "is_thrown_exception_escape matched but the store has no pending \
+                         exception to take — this should not happen"
+                    );
+                }
                 let Some(fm) = fork_module else {
-                    eprintln!("fork-unwind trap escaped with no fork-module");
+                    eprintln!("fork-unwind exception escaped with no fork-module");
                     return;
                 };
                 if !drive_fork_capture_seal_and_launch_child(
@@ -4769,7 +4979,7 @@ fn run_pump(
                     handle_fork(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         fork_process, remove_process, alloc_scratch, set_brk_base, set_mmap_base,
-                        set_max_addr, use_fork_module, fork_proof_of_use,
+                        set_max_addr, use_fork_module, fork_proof_of_use, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -5407,6 +5617,7 @@ fn handle_fork(
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
     use_fork_module: bool,
     fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
+    wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -5491,6 +5702,23 @@ fn handle_fork(
     // `handleOrdinaryFork`: `new Uint8Array(childMemory.buffer,
     // childChannelOffset, CH_TOTAL_SIZE).fill(0)`).
     unsafe { write_bytes(&child_mem, layout.channel_offset, &vec![0u8; MIN_CHANNEL_SIZE]) };
+
+    // N1-I4 Task 3 (bootstrap-fix follow-up): register the child as
+    // waitable by its REAL parent — mirrors `handle_spawn`'s identical
+    // `parent_of.insert` (N1-I3a Task 3's original `host_waitpid`
+    // contract). This was MISSING from `handle_fork` entirely: no test
+    // before this task ever reached a genuinely-replayed `waitpid()` call
+    // against a real fork child, so the gap was invisible — `host_waitpid`
+    // silently returned `-ECHILD` for a legitimate, live fork child (its
+    // `parent_of` map simply had no entry for it), which musl's `waitpid()`
+    // wrapper surfaces as an immediate `-1`/`ECHILD` failure with `*status`
+    // left UNTOUCHED — exactly why the parent's `WEXITSTATUS(st)` read back
+    // `0` from `st`'s zero-initialized stack slot instead of ever blocking
+    // for (and reaping) the child's real `_exit(3)`. Must happen before
+    // returning, same reasoning as `handle_spawn`'s: the child's own OS
+    // thread is about to start running concurrently and could exit before
+    // this function returns.
+    wait_table.lock().unwrap().parent_of.insert(child_pid, parent_pid);
 
     let child_module = processes[pi].module.clone();
     let child_import_exit_status = Arc::new(Mutex::new(None::<i32>));
