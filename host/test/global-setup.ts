@@ -125,6 +125,7 @@ const TEST_PROGRAMS = [
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
   "checkpoint-loop.c",
+  "checkpoint-epoll.c",
   "checkpoint-threads.c",
   "checkpoint-dlopen.c",
   "checkpoint-handles.c",

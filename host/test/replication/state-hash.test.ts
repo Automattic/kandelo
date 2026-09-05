@@ -41,6 +41,7 @@ function machine(
     unreadableFilesystems: [],
     framebuffers: [],
     kms: { fbs: [], crtcs: [], masterPid: null, buffers: [] },
+    epolls: [],
     monotonicNs: 0,
     processes: [bucket(41, 3)],
     ...overrides,
