@@ -469,8 +469,51 @@ is answered empirically and where the plan CHECKPOINTS with the user):
       zombie + host `WaitTable` entries unreaped (bounded to the `run_guest`
       lifetime; mirrors real POSIX zombie semantics). Folds into the same
       reparent-to-init work — init reaps orphaned zombies.
-  - **I3b/c/d (later)** — spawn-bytes-from-VFS, execve/image-replacement (the
-    ABI-44 exec-authority path proper), shebang/`execveat`.
+  - **I3b — spawn bytes from the VFS (DONE 2026-09-04).** `posix_spawn`
+    sources the child's program bytes from the in-kernel VFS via the SPAWN
+    exec-target authority (`kernel_spawn_exec_target_prepare` →
+    `kernel_exec_target_size`/`read` → `kernel_spawn_exec_commit`), replacing
+    I3a's host-side `programs` map (removed). `X_OK`/set-ID/close-on-exec
+    delegated to the kernel; POSIX-correct `ENOENT`/`EACCES`/`ENOEXEC`
+    failures with leak-free rollback (cancel + `kernel_remove_process` on
+    every branch); the spawn `path` is authoritative (empty → `ENOENT`, no
+    `argv[0]` fallback). Host-side-only, 20/20 tests. Commits ee1a0031b /
+    9749ed480 / d4db3e8a5. Plan:
+    `docs/superpowers/plans/2026-09-04-n1-i3b-native-spawn-from-vfs.md`.
+  - **I3c — execve/image-replacement (DONE 2026-09-04).** A running process
+    replaces its own image in place (same pid, fresh address space) via the
+    non-spawn `kernel_exec_target_prepare` → read → `kernel_exec_commit`; the
+    pump intercepts `SYS_EXECVE` (Tier-A host-intercepted), reads
+    `path`/`argv`/`envp` from guest memory, and swaps the `GuestProcess` under
+    the same pid via `launch_process`. POSIX success/failure asymmetry: a
+    successful execve abandons the calling thread and never returns; a failed
+    execve (`ENOENT`/`EACCES`/`ENOEXEC`) completes the channel so the caller
+    resumes its old image. Host-side-only, 24/24 tests. Commits 14d088c55 /
+    b45ef44eb. Plan: `docs/superpowers/plans/2026-09-04-n1-i3c-native-execve.md`.
+    Documented follow-ups (opus review, PARKED — none compromise correctness
+    for real programs): (a) a NULL/out-of-bounds `path`/`argv` pointer surfaces
+    as `ENOENT` rather than POSIX `EFAULT` (degenerate input musl never
+    produces); (b) **multi-threaded execve** — execve from a worker/pthread
+    channel falls through to the kernel's `-ENOSYS` (only main-thread execve is
+    handled) and sibling channels are not reconciled against the kernel's
+    `clear_threads`; this folds into the I4 thread-lifecycle work below.
+  - **The native thread-reclamation gap (HEADLINE ITEM for the I4 checkpoint).**
+    On a successful `execve` (and on the `-ECHILD` spawn-rollback, and for the
+    fork threads I4 will spawn) the native host cannot reclaim a guest OS
+    thread parked in a WASM `memory.atomic.wait32`: the wasmtime `Engine`
+    (`crates/host-native/src/lib.rs`) enables neither epoch-interruption nor
+    fuel, so the pump can neither wake the thread correctly (waking resumes a
+    doomed instance) nor kill a `std::thread`. Today execve is POSIX-correct but
+    leaks one parked thread + its old `SharedMemory` per call (truthfully
+    documented at the abandon site). The fix is a cross-cutting `Engine` change
+    (epoch-interruption — and it is unproven whether that can even unblock an
+    `atomic.wait`); it must be decided WITH the I4 fork work, since fork faces
+    the identical thread-lifecycle problem. This is the first thing to resolve
+    at the I4 checkpoint.
+  - **I3d (next, before I4)** — `execveat` (dirfd/`AT_EMPTY_PATH`) +
+    `#!` shebang via `kernel_exec_target_shebang` (assemble the interpreter
+    argv from the kernel-decoded record). Small increment on the proven
+    exec-target spine.
 - **I4** — fork frames natively (no refs): drive `fork-codec`
   `rewind_driver`/`replay_journal`/`linked_frames` + `instantiate_child`
   (`Instance::new`) + `spawn_thread` (`thread::spawn`), replacing the
