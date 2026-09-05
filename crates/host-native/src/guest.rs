@@ -3058,6 +3058,12 @@ fn run_pump(
                     complete_channel(
                         &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
                     )?;
+                    // Drop this worker's JoinHandle alongside its channel: the
+                    // thread is exiting on its own, and worker channel offsets
+                    // are never reused within a process (next_thread_slot only
+                    // increments), so leaving the entry would accumulate a stale
+                    // dead-thread handle per pthread ever created.
+                    processes[pi].thread_handles.remove(&ch.offset);
                     processes[pi].channels.remove(ci);
                     continue; // the vec shifted; do not advance ci
                 }
