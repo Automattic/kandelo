@@ -834,6 +834,18 @@ pub fn run_guest(
     )?;
     let exec_commit =
         kernel.get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_exec_commit")?;
+    // N1-I3d Task 3: resolve a prepared target's `#!` chain in the kernel —
+    // shared by BOTH `handle_exec_common` (owner = the exec'ing pid) and
+    // `handle_spawn` (owner = the not-yet-launched child pid), called right
+    // after `kernel_exec_target_prepare`/`kernel_spawn_exec_target_prepare`
+    // succeeds and before `read_exec_target_bytes`/`Module::new`/commit — see
+    // `apply_shebang`. The kernel owns ALL shebang decision logic (decode,
+    // interpreter retarget, one-level nesting limit, argv-prefix assembly);
+    // this host only decodes the returned record.
+    let exec_target_resolve_shebang = kernel.get_typed_func::<(u32, u32, u32, u32), i64>(
+        &mut kernel_store,
+        "kernel_exec_target_resolve_shebang",
+    )?;
     // N1-I3a Task 3: `host_waitpid`'s reap + status-encoding support.
     // `kernel_get_process_exit_signal` disambiguates `get_exit_status`'s
     // "shell-style" 128+signal encoding from a genuine 128-255 exit code
@@ -1016,6 +1028,7 @@ pub fn run_guest(
         &exec_target_cancel,
         &exec_target_prepare,
         &exec_commit,
+        &exec_target_resolve_shebang,
         &current_memory,
         &current_pid,
         &wait_table,
@@ -2734,6 +2747,7 @@ fn run_pump(
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
     exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
     exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -2982,7 +2996,8 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
-                        exec_target_read, spawn_exec_commit, exec_target_cancel, wait_table,
+                        exec_target_read, spawn_exec_commit, exec_target_cancel,
+                        exec_target_resolve_shebang, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -3028,7 +3043,8 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
                         set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
-                        exec_target_read, exec_commit, exec_target_cancel, remove_process, wait_table,
+                        exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
+                        remove_process, wait_table,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3065,7 +3081,7 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args, dirfd,
                         path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_brk_base, set_mmap_base,
                         set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
-                        exec_target_cancel, remove_process, wait_table,
+                        exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3201,6 +3217,19 @@ fn run_pump(
 /// token (see that call site's note) — belt-and-suspenders against any commit
 /// failure path that does not reach `take`.
 ///
+/// N1-I3d Task 3 inserts `apply_shebang` right after `prepare` succeeds,
+/// before any of the above: `ShebangError::Resolved` means the kernel's
+/// `kernel_exec_target_resolve_shebang` export itself failed (including
+/// `ENOEXEC` for a nested `#!` chain) and already released every token it
+/// touched — same shape as case 1, only `rollback_spawned_child` (no
+/// cancel). `ShebangError::ScratchAlloc` means `apply_shebang`'s OWN scratch
+/// allocation failed before the export was even called — `token` (from
+/// `prepare`) is still retained, so this runs `rollback_exec_target` (cancel
+/// then remove), the same shape as case 2. On success, `token` and
+/// `argv_list` are REBOUND to the resolved interpreter's target and the `#!`
+/// argv-prefix + `orig_argv[1..]` — cases 2 and 3 below, and the successful
+/// launch, all operate on the resolved values, never the original script's.
+///
 /// On success: launches the child as a brand-new `GuestProcess` (Task 1's
 /// `compute_guest_memory`/`launch_process` — a fresh image, never a fork),
 /// pushes it onto `processes`, publishes the parent/child edge
@@ -3243,6 +3272,7 @@ fn handle_spawn(
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
     spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
+    exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
@@ -3331,13 +3361,62 @@ fn handle_spawn(
     }
     let token = token as u32;
 
+    // N1-I3d Task 3: resolve `token`'s `#!` chain in the kernel BEFORE
+    // streaming any bytes — a `#!` script's own bytes are never a valid Wasm
+    // module (see the `Module::new` ENOEXEC handling below), so the target
+    // this function goes on to read/compile/commit must already be the
+    // resolved INTERPRETER's target, never the script's. `apply_shebang`
+    // does no shebang decision logic itself; it only calls the kernel export
+    // and decodes the record it returns (see its doc comment). On success,
+    // `token` is rebound to `final_token` (the interpreter's token when the
+    // input was a script, or the unchanged input token otherwise) and
+    // `argv_list` is rebound to the resolved launch argv (the `#!`
+    // argv-prefix + `orig_argv[1..]`, or `argv_list` unchanged).
+    let (token, argv_list) = match apply_shebang(
+        kernel_store,
+        kernel_mem,
+        exec_target_resolve_shebang,
+        alloc_scratch,
+        child_pid,
+        token,
+        &argv_list,
+    )? {
+        Ok(pair) => pair,
+        Err(ShebangError::ScratchAlloc(errno)) => {
+            // `apply_shebang`'s OWN scratch allocation failed before the
+            // kernel export was ever called — `token` (from `prepare`
+            // above) is still fully retained, exactly like the
+            // `read_scratch <= 0` case just below. Same rollback shape.
+            rollback_exec_target(
+                kernel_store, exec_target_cancel, remove_process, child_pid, token,
+                "a shebang-record scratch-allocation failure",
+            );
+            return fail_spawn(&guest_mem, kernel_mem, ch, args, errno);
+        }
+        Err(ShebangError::Resolved(errno)) => {
+            // `kernel_exec_target_resolve_shebang` itself returned a
+            // negative errno. Per its contract, the kernel already released
+            // every token it touched (the input token AND any
+            // half-resolved interpreter token) on this failure path — same
+            // shape as the `spawn_exec_target_prepare` failure above:
+            // nothing here to cancel, only the still-unpublished child
+            // Process record to reclaim.
+            rollback_spawned_child(
+                kernel_store, remove_process, child_pid,
+                "a kernel_exec_target_resolve_shebang failure",
+            );
+            return fail_spawn(&guest_mem, kernel_mem, ch, args, errno);
+        }
+    };
+
     // Stream the retained target's full contents out of the kernel into host
     // memory, through a fixed-size scratch region — a FRESH allocation, since
     // the blob-decode scratch above is a different, already-consumed region.
-    // `prepare` above already retained a target under `token`, so from here
-    // on any failure must run through `rollback_exec_target` (cancel THEN
-    // remove — N1-I3b Task 2's target-retained branches), never the bare
-    // `rollback_spawned_child` the earlier `prepare`-failure branch uses.
+    // `prepare`/`apply_shebang` above already retained a target under
+    // `token`, so from here on any failure must run through
+    // `rollback_exec_target` (cancel THEN remove — N1-I3b Task 2's
+    // target-retained branches), never the bare `rollback_spawned_child` the
+    // earlier `prepare`-failure branch uses.
     let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
     if read_scratch <= 0 {
         rollback_exec_target(
@@ -3372,14 +3451,18 @@ fn handle_spawn(
     };
 
     // Case 2 (continued): the bytes read back fully and cleanly, but they
-    // are not a well-formed Wasm module (e.g. a `#!` shebang script — I3d
-    // interpretation is explicitly out of scope here, so this must fail, not
-    // execute the script). Catch `Module::new`'s error instead of letting it
-    // `?`-propagate into a pump-ending `bail!`: a bad exec target is a
-    // per-spawn POSIX failure (`ENOEXEC`, mirroring Node's
-    // `isWasmModuleBytes` -> `ENOEXEC` in `host/src/exec-target.ts:453`), not
-    // a host/kernel malfunction. The target is still retained at this point
-    // (never committed), so cancel it before reclaiming the child.
+    // are not a well-formed Wasm module. `apply_shebang` above already
+    // resolved any `#!` chain in the kernel (exactly one level; a nested
+    // chain is a `ShebangError::Resolved(ENOEXEC)` handled above, well
+    // before this point), so `token`/`program_bytes` here are always the
+    // INTERPRETER's — a non-wasm target reaching `Module::new` is therefore
+    // a genuinely malformed executable, not an unresolved script. Catch
+    // `Module::new`'s error instead of letting it `?`-propagate into a
+    // pump-ending `bail!`: a bad exec target is a per-spawn POSIX failure
+    // (`ENOEXEC`, mirroring Node's `isWasmModuleBytes` -> `ENOEXEC` in
+    // `host/src/exec-target.ts:453`), not a host/kernel malfunction. The
+    // target is still retained at this point (never committed), so cancel
+    // it before reclaiming the child.
     let child_module = match Module::new(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
@@ -3518,17 +3601,30 @@ fn fail_spawn(
 ///   1. `read_guest_string_array` fault or `kernel_exec_target_prepare`
 ///      returning `token < 0`: no target was ever retained, so there is
 ///      nothing to cancel — just [`fail_exec`] with the truthful errno.
-///   2. A `read_exec_target_bytes` errno OR a `Module::new` compile failure
-///      (e.g. a `#!` shebang script — I3d interpretation is explicitly out
-///      of scope, so this must fail `ENOEXEC`, never execute the script,
-///      mirroring `handle_spawn`'s identical `Module::new` handling): the
-///      target IS retained under `token` at this point, so
-///      `kernel_exec_target_cancel` ([`cancel_exec_target`], best-effort)
-///      runs FIRST, then [`fail_exec`] with the mapped errno (read) or
-///      `ENOEXEC` (compile) resumes the caller. `Module::new`'s `Err` is
-///      matched explicitly here — never allowed to `?`-propagate into a
-///      pump-ending `bail!` — exactly like `handle_spawn`'s `child_module`
-///      handling.
+///   1b. (N1-I3d Task 3) `apply_shebang` resolving `token`'s `#!` chain:
+///      `ShebangError::Resolved` means `kernel_exec_target_resolve_shebang`
+///      itself failed (including `ENOEXEC` for a nested `#!` chain) and the
+///      kernel already released every token it touched — same shape as
+///      case 1, nothing to cancel. `ShebangError::ScratchAlloc` means
+///      `apply_shebang`'s OWN scratch allocation failed before the export
+///      was even called — `token` is still retained, so this cancels it
+///      first (same shape as case 2's `read_scratch` sub-case). On success,
+///      `token` and `argv_list` are REBOUND to the resolved interpreter's
+///      target and the `#!` argv-prefix + `orig_argv[1..]` — everything
+///      from here on (case 2/3/4, and a successful swap) operates on the
+///      resolved values, never the original script's.
+///   2. A `read_exec_target_bytes` errno OR a `Module::new` compile
+///      failure — by this point `apply_shebang` has already resolved any
+///      `#!` chain (exactly one level; deeper nesting is case 1b's
+///      `ENOEXEC`), so a non-wasm target reaching `Module::new` here is a
+///      genuinely malformed executable, mirroring `handle_spawn`'s
+///      identical `Module::new` handling: the target IS retained under
+///      `token` at this point, so `kernel_exec_target_cancel`
+///      ([`cancel_exec_target`], best-effort) runs FIRST, then
+///      [`fail_exec`] with the mapped errno (read) or `ENOEXEC` (compile)
+///      resumes the caller. `Module::new`'s `Err` is matched explicitly
+///      here — never allowed to `?`-propagate into a pump-ending `bail!` —
+///      exactly like `handle_spawn`'s `child_module` handling.
 ///   3. `kernel_exec_commit` returning `commit < 0`: the target is still
 ///      retained (commit failed before consuming it) — cancel it
 ///      ([`cancel_exec_target`], best-effort), then [`fail_exec`] with
@@ -3583,6 +3679,7 @@ fn handle_exec_common(
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
     exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
+    exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
     wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<Option<i32>> {
@@ -3623,6 +3720,43 @@ fn handle_exec_common(
     }
     let token = token as u32;
 
+    // N1-I3d Task 3: resolve `token`'s `#!` chain in the kernel BEFORE
+    // streaming any bytes — see `handle_spawn`'s identical call site for the
+    // full rationale. `apply_shebang` does no shebang decision logic itself;
+    // it only calls the kernel export and decodes the record it returns
+    // (see its doc comment). On success, `token` is rebound to
+    // `final_token` and `argv_list` is rebound to the resolved launch argv.
+    let (token, argv_list) = match apply_shebang(
+        kernel_store,
+        kernel_mem,
+        exec_target_resolve_shebang,
+        alloc_scratch,
+        pid,
+        token,
+        &argv_list,
+    )? {
+        Ok(pair) => pair,
+        Err(ShebangError::ScratchAlloc(errno)) => {
+            // `apply_shebang`'s OWN scratch allocation failed before the
+            // kernel export was ever called — `token` (from `prepare`
+            // above) is still fully retained, exactly like the
+            // `read_scratch <= 0` case just below. Same rollback shape.
+            cancel_exec_target(
+                kernel_store, exec_target_cancel, pid, token, "a shebang-record scratch-allocation failure",
+            );
+            return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, errno).map(|()| None);
+        }
+        Err(ShebangError::Resolved(errno)) => {
+            // `kernel_exec_target_resolve_shebang` itself returned a
+            // negative errno. Per its contract, the kernel already released
+            // every token it touched (the input token AND any
+            // half-resolved interpreter token) on this failure path —
+            // exactly like Case 1's `prepare` failure above: nothing here
+            // to cancel.
+            return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, errno).map(|()| None);
+        }
+    };
+
     let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
     if read_scratch <= 0 {
         cancel_exec_target(kernel_store, exec_target_cancel, pid, token, "a scratch-allocation failure");
@@ -3640,9 +3774,9 @@ fn handle_exec_common(
     )? {
         Ok(bytes) => bytes,
         Err(errno) => {
-            // Case 2: the target was retained by `prepare` but its bytes
-            // could not be fully read back — cancel it before resuming the
-            // caller.
+            // Case 2: the target was retained by `prepare`/`apply_shebang`
+            // but its bytes could not be fully read back — cancel it before
+            // resuming the caller.
             cancel_exec_target(
                 kernel_store, exec_target_cancel, pid, token, "a read_exec_target_bytes failure",
             );
@@ -3650,15 +3784,19 @@ fn handle_exec_common(
         }
     };
 
-    // Case 2 (continued): the bytes read back fully and cleanly, but they are
-    // not a well-formed Wasm module (e.g. a `#!` shebang script — I3d
-    // interpretation is explicitly out of scope here, so this must fail, not
-    // execute the script). Catch `Module::new`'s error instead of letting it
-    // `?`-propagate into a pump-ending `bail!`: a bad exec target is a
-    // per-`execve`/`execveat` POSIX failure (`ENOEXEC`), not a host/kernel
-    // malfunction, mirroring `handle_spawn`'s `child_module` handling exactly.
-    // The target is still retained at this point (never committed), so cancel
-    // it before resuming the caller.
+    // Case 2 (continued): the bytes read back fully and cleanly, but they
+    // are not a well-formed Wasm module. `apply_shebang` above already
+    // resolved any `#!` chain in the kernel (exactly one level; a nested
+    // chain is a `ShebangError::Resolved(ENOEXEC)` handled above, well
+    // before this point), so `token`/`program_bytes` here are always the
+    // INTERPRETER's — a non-wasm target reaching `Module::new` is therefore
+    // a genuinely malformed executable, not an unresolved script. Catch
+    // `Module::new`'s error instead of letting it `?`-propagate into a
+    // pump-ending `bail!`: a bad exec target is a per-`execve`/`execveat`
+    // POSIX failure (`ENOEXEC`), not a host/kernel malfunction, mirroring
+    // `handle_spawn`'s `child_module` handling exactly. The target is still
+    // retained at this point (never committed), so cancel it before
+    // resuming the caller.
     let new_module = match Module::new(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
@@ -4025,6 +4163,151 @@ fn read_exec_target_bytes(
         return Ok(Err(libc_errno::EIO));
     }
     Ok(Ok(out))
+}
+
+/// N1-I3d Task 3: the two ways [`apply_shebang`] can fail, distinguished
+/// ONLY so each call site can run the CORRECT rollback for `token` — never a
+/// shebang decision the host itself makes.
+///
+/// - `ScratchAlloc`: `apply_shebang`'s own scratch allocation for the record
+///   buffer failed BEFORE `kernel_exec_target_resolve_shebang` was ever
+///   called. The input `token` (from `kernel_exec_target_prepare`/
+///   `kernel_spawn_exec_target_prepare`) is therefore still fully retained —
+///   exactly the same shape as `handle_exec_common`'s/`handle_spawn`'s own
+///   pre-existing `read_scratch <= 0` case, so the caller must run its
+///   normal target-retained rollback (`cancel_exec_target`/
+///   `rollback_exec_target`).
+/// - `Resolved`: the kernel export itself returned a negative errno. Per
+///   `resolve_shebang`'s contract (`crates/runtime-core/src/exec_target.rs`):
+///   "On every error path, zero tokens from this call are left retained" —
+///   the kernel has ALREADY released the input token and any half-resolved
+///   interpreter token, so the caller must NOT cancel anything; this is the
+///   shebang-stage analog of a `prepare` failure itself (Case 1 in both
+///   `handle_exec_common` and `handle_spawn`).
+enum ShebangError {
+    ScratchAlloc(i32),
+    Resolved(i32),
+}
+
+/// N1-I3d Task 3: resolve `token`'s `#!` chain through the kernel's
+/// `kernel_exec_target_resolve_shebang` export and decode its record. ALL
+/// shebang decision logic — is this a script, the one-level nesting limit,
+/// interpreter retargeting, argv-prefix assembly — is the kernel's (see that
+/// export's doc comment in `crates/kernel/src/wasm_api.rs` and
+/// `resolve_shebang`'s in `crates/runtime-core/src/exec_target.rs`). This
+/// helper does nothing beyond allocating a scratch buffer for the record,
+/// calling the export, and decoding the fixed record layout it documents:
+/// `[kind: u8][final_token: u32]`, then, only if `kind == 1` (the input
+/// token was a `#!` script), `[has_arg: u8][interp_len: u32][arg_len: u32]
+/// [script_path_len: u32][interp bytes][arg bytes][script_path bytes]`.
+///
+/// `owner_pid` is the process `token` is retained under — the exec'ing pid
+/// itself for `execve`/`execveat` ([`handle_exec_common`]), or the
+/// not-yet-launched CHILD pid for `posix_spawn` ([`handle_spawn`]), exactly
+/// matching `kernel_exec_target_prepare`'s/
+/// `kernel_spawn_exec_target_prepare`'s own owner conventions (the kernel's
+/// `resolve_shebang` re-prepares the interpreter under that SAME owner, so
+/// this never changes across the call).
+///
+/// Returns `Ok(Ok((final_token, launch_argv)))` on success: `final_token` is
+/// what the caller must actually `read_exec_target_bytes`/`Module::new`/
+/// commit from here on, and `launch_argv` is either `orig_argv` unchanged
+/// (`kind == 0`, not a script) or `[interp] + [arg]? + [script_path] +
+/// orig_argv[1..]` (`kind == 1`) — POSIX's `#!` argv-prefix convention,
+/// mirroring the host's former `resolveShebangChain`
+/// (`host/src/exec-target.ts`), which this kernel export now replaces.
+///
+/// Returns `Ok(Err(ShebangError::_))` for the two failure shapes documented
+/// on [`ShebangError`] itself — both are NORMAL outcomes this function
+/// itself never rolls back (that is the caller's job, using the errno and
+/// the matched variant to pick the right rollback). A genuine call failure
+/// (`TypedFunc::call` itself trapping — a host/kernel malfunction) still
+/// propagates via the outer `anyhow::Result`'s `?`, ending the whole pump —
+/// unchanged from every other kernel-export call site in this file.
+fn apply_shebang(
+    kernel_store: &mut Store<()>,
+    kernel_mem: &SharedMemory,
+    resolve_fn: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    owner_pid: u32,
+    token: u32,
+    orig_argv: &[Vec<u8>],
+) -> anyhow::Result<Result<(u32, Vec<Vec<u8>>), ShebangError>> {
+    // 8 KiB comfortably covers the record's fixed 18-byte header plus any
+    // realistic interpreter path, one `#!` argument, and script path. A
+    // record that does not fit is the kernel export's own `-EOVERFLOW`,
+    // handled uniformly below via `ShebangError::Resolved`.
+    const SHEBANG_RECORD_SCRATCH: u32 = 8192;
+    let out_scratch = alloc_scratch.call(&mut *kernel_store, SHEBANG_RECORD_SCRATCH)?;
+    if out_scratch <= 0 {
+        return Ok(Err(ShebangError::ScratchAlloc(libc_errno::ENOMEM)));
+    }
+    let out_ptr = out_scratch as u32;
+
+    let result =
+        resolve_fn.call(&mut *kernel_store, (owner_pid, token, out_ptr, SHEBANG_RECORD_SCRATCH))?;
+    if result < 0 {
+        return Ok(Err(ShebangError::Resolved((-result) as i32)));
+    }
+
+    let record_len = result as usize;
+    let record = unsafe { read_bytes(kernel_mem, out_ptr as usize, record_len) };
+    if record.len() < 5 {
+        anyhow::bail!(
+            "kernel_exec_target_resolve_shebang({owner_pid}, {token}) returned a record shorter \
+             than its fixed 5-byte minimum ({} bytes)",
+            record.len()
+        );
+    }
+    let kind = record[0];
+    let final_token = u32::from_le_bytes(record[1..5].try_into().unwrap());
+    if kind == 0 {
+        return Ok(Ok((final_token, orig_argv.to_vec())));
+    }
+
+    if record.len() < 18 {
+        anyhow::bail!(
+            "kernel_exec_target_resolve_shebang({owner_pid}, {token}) returned a kind==1 record \
+             shorter than its fixed 18-byte header ({} bytes)",
+            record.len()
+        );
+    }
+    let has_arg = record[5] != 0;
+    let interp_len = u32::from_le_bytes(record[6..10].try_into().unwrap()) as usize;
+    let arg_len = u32::from_le_bytes(record[10..14].try_into().unwrap()) as usize;
+    let script_path_len = u32::from_le_bytes(record[14..18].try_into().unwrap()) as usize;
+
+    let interp_end = 18usize.checked_add(interp_len);
+    let arg_end = interp_end.and_then(|e| e.checked_add(arg_len));
+    let script_path_end = arg_end.and_then(|e| e.checked_add(script_path_len));
+    let (Some(interp_end), Some(arg_end), Some(script_path_end)) = (interp_end, arg_end, script_path_end)
+    else {
+        anyhow::bail!(
+            "kernel_exec_target_resolve_shebang({owner_pid}, {token}) returned overflowing field \
+             lengths (interp={interp_len}, arg={arg_len}, script_path={script_path_len})"
+        );
+    };
+    if script_path_end > record.len() {
+        anyhow::bail!(
+            "kernel_exec_target_resolve_shebang({owner_pid}, {token}) returned a record too short \
+             for its own declared field lengths ({} bytes, needs {script_path_end})",
+            record.len()
+        );
+    }
+    let interp = record[18..interp_end].to_vec();
+    let arg = record[interp_end..arg_end].to_vec();
+    let script_path = record[arg_end..script_path_end].to_vec();
+
+    let mut launch_argv = Vec::with_capacity(2 + usize::from(has_arg) + orig_argv.len().saturating_sub(1));
+    launch_argv.push(interp);
+    if has_arg {
+        launch_argv.push(arg);
+    }
+    launch_argv.push(script_path);
+    if orig_argv.len() > 1 {
+        launch_argv.extend_from_slice(&orig_argv[1..]);
+    }
+    Ok(Ok((final_token, launch_argv)))
 }
 
 /// Parse `kernel_spawn_blob_decode`'s host-private read-back framing —

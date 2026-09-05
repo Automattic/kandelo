@@ -9,13 +9,22 @@
  * environment variable so the same binary also drives the failure/rollback
  * matrix (missing path -> ENOENT, non-executable -> EACCES, non-wasm bytes
  * -> ENOEXEC). When `SPAWN_TEST_PATH` is set, this fixture switches to
- * "report the raw posix_spawn errno and exit" mode: it never waits for a
- * child (a failed spawn has none to wait for) and prints
+ * "report the raw posix_spawn errno and exit" mode and prints
  * "spawn errno=<N>\n" where <N> is `posix_spawn`'s direct return value (POSIX:
  * `posix_spawn` returns the errno directly on failure, it does not set the
- * global `errno` — see `posix_spawn.c`). With `SPAWN_TEST_PATH` unset, this
- * fixture keeps its original N1-I3a/I3b-Task-1 behavior byte-for-byte:
+ * global `errno` — see `posix_spawn.c`). A failed spawn (`rc != 0`) has no
+ * child to wait for, so it exits right there. With `SPAWN_TEST_PATH` unset,
+ * this fixture keeps its original N1-I3a/I3b-Task-1 behavior byte-for-byte:
  * spawn "/bin/child", wait for it, and print "status=<WEXITSTATUS>\n".
+ *
+ * N1-I3d Task 3: when `SPAWN_TEST_PATH` resolves successfully (`rc == 0`),
+ * this fixture ALSO waits for the child and prints its reaped
+ * `WEXITSTATUS` as "spawn status=<N>\n" — reusing the SAME `SPAWN_TEST_PATH`
+ * knob to additionally drive the shebang-resolution SUCCESS path
+ * (`smoke_spawn_shebang`), which needs both the child's own stdout (its
+ * argv dump) AND proof the child was actually reaped, not just launched.
+ * This is additive: every existing `SPAWN_TEST_PATH` test drives a FAILURE
+ * (`rc != 0`), so this new success branch never runs for them.
  *
  * Built through the SDK like the other fixtures; see fixtures/README.md.
  */
@@ -38,6 +47,19 @@ int main(void) {
         int n = snprintf(line, sizeof(line), "spawn errno=%d\n", rc);
         if (n > 0) {
             write(1, line, (size_t)n);
+        }
+        if (rc != 0) {
+            return 0;
+        }
+
+        int status = 0;
+        pid_t reaped = waitpid(pid, &status, 0);
+        if (reaped == pid && WIFEXITED(status)) {
+            char status_line[32];
+            int sn = snprintf(status_line, sizeof(status_line), "spawn status=%d\n", WEXITSTATUS(status));
+            if (sn > 0) {
+                write(1, status_line, (size_t)sn);
+            }
         }
         return 0;
     }

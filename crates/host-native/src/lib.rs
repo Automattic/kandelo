@@ -1065,14 +1065,18 @@ mod tests {
     /// N1-I3b Task 2: failure/rollback matrix, case 2 — the path resolves,
     /// `X_OK` passes (mode `0o755`), and every byte is read back out of the
     /// kernel's exec-target authority successfully, but the bytes are not a
-    /// valid Wasm module (a `#!/bin/sh` script header, deliberately NOT
-    /// interpreted — shebang support is I3d, out of scope here). `Module::new`
-    /// must fail cleanly into `ENOEXEC` reported to the parent (mirroring
-    /// Node's `isWasmModuleBytes` -> `ENOEXEC`, `host/src/exec-target.ts:453`)
-    /// rather than `?`-propagating into a pump-ending `bail!`. The RETAINED
-    /// target (already prepared, already fully read) must be reclaimed via
-    /// `kernel_exec_target_cancel` before the child's `Process` record is
-    /// removed via `kernel_remove_process` — no leak of either.
+    /// valid Wasm module and NOT a `#!` script either (no leading `#!` —
+    /// N1-I3d Task 3 wires up real `#!` resolution, exercised separately by
+    /// `smoke_spawn_shebang`/`smoke_execve_shebang_nested_enoexec`, so this
+    /// test's content must stay unambiguously non-shebang to keep testing
+    /// what it says: plain garbage bytes reaching `Module::new`).
+    /// `Module::new` must fail cleanly into `ENOEXEC` reported to the parent
+    /// (mirroring Node's `isWasmModuleBytes` -> `ENOEXEC`,
+    /// `host/src/exec-target.ts:453`) rather than `?`-propagating into a
+    /// pump-ending `bail!`. The RETAINED target (already prepared, already
+    /// fully read) must be reclaimed via `kernel_exec_target_cancel` before
+    /// the child's `Process` record is removed via `kernel_remove_process` —
+    /// no leak of either.
     #[test]
     fn smoke_spawn_not_wasm_enoexec() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -1087,7 +1091,7 @@ mod tests {
                 "/bin/notwasm",
                 3,
                 0o755,
-                b"#!/bin/sh\necho hi\n".to_vec(),
+                b"not a wasm module\n".to_vec(),
             ),
         ]);
         let options = guest::GuestOptions {
@@ -1220,17 +1224,18 @@ mod tests {
     /// N1-I3c Task 2: failure matrix, case 2 — the path resolves, `X_OK`
     /// passes (mode `0o755`), and every byte is read back out of the
     /// kernel's exec-target authority successfully, but the bytes are not a
-    /// valid Wasm module (a `#!/bin/sh` script header, deliberately NOT
-    /// interpreted — shebang support is I3d, out of scope here). `Module::
-    /// new` must fail cleanly into `ENOEXEC` reported to the SURVIVING
-    /// caller (mirroring `handle_spawn`'s identical handling) rather than
-    /// `?`-propagating into a pump-ending `bail!` — this is exactly Task 1's
-    /// documented RED gap this test closes. The RETAINED target (already
-    /// prepared, already fully read) must be reclaimed via `kernel_exec_
-    /// target_cancel` — since this is the caller's OWN pid, not a
-    /// not-yet-published child, there is no `kernel_remove_process` step
-    /// (unlike `smoke_spawn_not_wasm_enoexec`): the caller keeps its OLD
-    /// image and process record untouched.
+    /// valid Wasm module and NOT a `#!` script either (no leading `#!` — see
+    /// `smoke_spawn_not_wasm_enoexec`'s doc comment for why this content
+    /// must stay unambiguously non-shebang now that N1-I3d Task 3 wires up
+    /// real `#!` resolution). `Module::new` must fail cleanly into
+    /// `ENOEXEC` reported to the SURVIVING caller (mirroring `handle_spawn`'s
+    /// identical handling) rather than `?`-propagating into a pump-ending
+    /// `bail!` — this is exactly Task 1's documented RED gap this test
+    /// closes. The RETAINED target (already prepared, already fully read)
+    /// must be reclaimed via `kernel_exec_target_cancel` — since this is the
+    /// caller's OWN pid, not a not-yet-published child, there is no
+    /// `kernel_remove_process` step (unlike `smoke_spawn_not_wasm_enoexec`):
+    /// the caller keeps its OLD image and process record untouched.
     #[test]
     fn smoke_execve_not_wasm_enoexec() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -1245,7 +1250,7 @@ mod tests {
                 "/bin/notwasm",
                 3,
                 0o755,
-                b"#!/bin/sh\necho hi\n".to_vec(),
+                b"not a wasm module\n".to_vec(),
             ),
         ]);
         let options = guest::GuestOptions {
@@ -1270,6 +1275,235 @@ mod tests {
         assert!(
             stdout.contains("execve errno=8"),
             "expected execve to report ENOEXEC (8) for non-wasm bytes: {stdout:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked exec target/channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I3d Task 3: `execve` on a `#!` script resolves the interpreter IN
+    /// THE KERNEL (`kernel_exec_target_resolve_shebang`, via `apply_shebang`)
+    /// and execs the INTERPRETER, not the script — the host never decides
+    /// this itself. `/usr/bin/script` is `b"#!/bin/interp scriptarg\n..."`;
+    /// a successful resolve retargets the exec onto `/bin/interp`
+    /// (`native_interp.wasm`, which prints its own `argv` one entry per
+    /// line, then `_exit(0)`) with the POSIX `#!` argv-prefix assembled as
+    /// `[interp, arg, script_path] + orig_argv[1..]` — here
+    /// `["/bin/interp", "scriptarg", "/usr/bin/script"]`, since
+    /// `native_exec_parent.c`'s `EXEC_TEST_PATH` mode execs with a
+    /// single-element argv (`{test_path, NULL}`), so `orig_argv[1..]` is
+    /// empty. Before this task's implementation (RED): `SYS_EXECVE`'s
+    /// `Module::new` on the RAW `#!` bytes fails `ENOEXEC` (the same failure
+    /// `smoke_execve_not_wasm_enoexec` exercises for genuinely non-wasm
+    /// bytes), so `native_exec_parent.c` prints "execve errno=8\n" and
+    /// exits 0 instead of ever reaching the interpreter — this test's
+    /// stdout/exit-code assertions fail cleanly against that RED state
+    /// rather than hanging.
+    #[test]
+    fn smoke_execve_shebang() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let interp = include_bytes!("../fixtures/native_interp.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/interp", 3, 0o755, interp.to_vec()),
+            guest::BaseEntrySpec::dir("/usr", 4, 0o755),
+            guest::BaseEntrySpec::dir("/usr/bin", 5, 0o755),
+            guest::BaseEntrySpec::file(
+                "/usr/bin/script",
+                6,
+                0o755,
+                b"#!/bin/interp scriptarg\necho this line is never read\n".to_vec(),
+            ),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["EXEC_TEST_PATH=/usr/bin/script".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains(
+                "argv[0]=/bin/interp\nargv[1]=scriptarg\nargv[2]=/usr/bin/script\n"
+            ),
+            "expected the interpreter's argv, in order, with the `#!` argument and the \
+             script's own path appended (stdout: {stdout:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert!(
+            !stdout.contains("execve errno="),
+            "a successful execve must never return to the caller: {stdout:?}"
+        );
+        assert_eq!(
+            outcome.exit_code, 0,
+            "process exit code must be the resolved INTERPRETER's exit (0), not a failure \
+             (stdout: {stdout:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked exec target/channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I3d Task 3: `posix_spawn`'s analog of `smoke_execve_shebang` — the
+    /// SAME kernel-side `#!` resolution (`apply_shebang`, called from
+    /// `handle_spawn` right after `kernel_spawn_exec_target_prepare`) must
+    /// retarget the CHILD onto the resolved interpreter, not the script.
+    /// `native_spawn_parent.c`'s `SPAWN_TEST_PATH` mode now waits for the
+    /// child on a successful spawn (N1-I3d Task 3's addition to that
+    /// fixture) and prints its reaped `WEXITSTATUS`, so this test both
+    /// observes the child's own stdout (its resolved argv dump) AND proves
+    /// the child was launched as a real, waitable process — not silently
+    /// dropped. Before this task's implementation (RED): `Module::new` on
+    /// the raw `#!` bytes fails `ENOEXEC` inside `handle_spawn`, so
+    /// `posix_spawn` itself fails (`spawn errno=8`) and there is no child to
+    /// wait for at all.
+    #[test]
+    fn smoke_spawn_shebang() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let interp = include_bytes!("../fixtures/native_interp.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/interp", 3, 0o755, interp.to_vec()),
+            guest::BaseEntrySpec::dir("/usr", 4, 0o755),
+            guest::BaseEntrySpec::dir("/usr/bin", 5, 0o755),
+            guest::BaseEntrySpec::file(
+                "/usr/bin/script",
+                6,
+                0o755,
+                b"#!/bin/interp scriptarg\necho this line is never read\n".to_vec(),
+            ),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["SPAWN_TEST_PATH=/usr/bin/script".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "parent exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("spawn errno=0\n"),
+            "expected posix_spawn to SUCCEED once resolved onto the interpreter: {stdout:?}"
+        );
+        assert!(
+            stdout.contains(
+                "argv[0]=/bin/interp\nargv[1]=scriptarg\nargv[2]=/usr/bin/script\n"
+            ),
+            "expected the spawned interpreter's argv, in order, with the `#!` argument and \
+             the script's own path appended: {stdout:?}"
+        );
+        assert!(
+            stdout.contains("spawn status=0\n"),
+            "expected the child to be reaped with the interpreter's exit status (0): {stdout:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "a leaked child channel would hang the pump; run took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I3d Task 3: the kernel's long-standing one-level `#!` nesting limit
+    /// (`resolve_shebang`, `crates/runtime-core/src/exec_target.rs`) surfaces
+    /// through `execve` as an ordinary, SURVIVABLE `ENOEXEC` failure — never
+    /// a pump-ending trap, a hang, or (worse) an attempt by the host to
+    /// resolve the chain itself. `/usr/bin/script2` is
+    /// `b"#!/usr/bin/script\n..."` — its OWN interpreter (`/usr/bin/script`)
+    /// is itself a `#!` script — so the kernel cancels `script2`'s token,
+    /// prepares `/usr/bin/script`'s target, discovers THAT is also a script,
+    /// cancels it too, and reports `-ENOEXEC` with zero tokens retained
+    /// (`ShebangError::Resolved(ENOEXEC)` in `apply_shebang`, handled
+    /// exactly like a `kernel_exec_target_prepare` failure — no host-side
+    /// cancel). `native_exec_parent.c`'s `EXEC_TEST_PATH` mode already
+    /// prints "execve errno=<N>\n" and exits 0 on ANY failed `execve`, so
+    /// this test's assertions hold whether the `ENOEXEC` comes from today's
+    /// pre-Task-3 `Module::new` failure (RED — the RAW `#!` bytes reaching
+    /// `Module::new` directly) or Task 3's in-kernel nesting rejection
+    /// (GREEN) — what this test actually proves is the SURVIVAL property
+    /// (no hang, no leaked token blocking a later exec/spawn in the same
+    /// run): see this crate's task report for the RED/GREEN evidence this
+    /// specific scenario needed instead (a syscall-trace/token-leak check,
+    /// not this assertion set alone).
+    #[test]
+    fn smoke_execve_shebang_nested_enoexec() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let interp = include_bytes!("../fixtures/native_interp.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/interp", 3, 0o755, interp.to_vec()),
+            guest::BaseEntrySpec::dir("/usr", 4, 0o755),
+            guest::BaseEntrySpec::dir("/usr/bin", 5, 0o755),
+            guest::BaseEntrySpec::file(
+                "/usr/bin/script",
+                6,
+                0o755,
+                b"#!/bin/interp scriptarg\necho this line is never read\n".to_vec(),
+            ),
+            guest::BaseEntrySpec::file(
+                "/usr/bin/script2",
+                7,
+                0o755,
+                b"#!/usr/bin/script\necho this line is never read either\n".to_vec(),
+            ),
+        ]);
+        let options = guest::GuestOptions {
+            base_image: Some(base_image),
+            env: vec!["EXEC_TEST_PATH=/usr/bin/script2".to_string()],
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let outcome = guest::run_guest(&path, parent, &options)?;
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "the caller must SURVIVE a failed execve and reach its own _exit(0) (stdout: {:?}, \
+             stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("execve errno=8"),
+            "expected execve to report ENOEXEC (8) for a nested `#!` chain: {stdout:?}"
         );
         assert!(
             elapsed < Duration::from_secs(30),
