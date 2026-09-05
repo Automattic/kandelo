@@ -619,6 +619,7 @@ platform-values contract cares about most:
 | `crypto.X509Certificate` | constructable stub — throws on `new` (links so module-scope imports succeed) |
 | `tls.createSecureContext` | no secure-context/cert-chain surface |
 | `zlib.inflateRawSync`, `zlib.createZstdDecompress` | raw-inflate window and zstd codec not wired |
+| `ws` (the WebSocket npm package, provided by node-compat because Bun ships it natively and Bun-bundled apps mark it external) | The module resolves and the `WebSocket` class exists (static ready-state constants, `instanceof`, subclassing, and `require`/`import` all work at module scope), but **constructing a live `WebSocket`/`WebSocketServer` or calling `createWebSocketStream` throws** `"ws (...) is not implemented on spidermonkey-node"`. **Full real `ws` is deferred future work:** a real WebSocket client (and eventually server) over the platform's TCP/TLS with `permessage-deflate`. Depends on the outbound TLS keep-alive egress path and a CSPRNG for `Sec-WebSocket-Key` (see the silent-approximations table and the interactive-runtime row). Verified that headless `claude -p` imports `ws` but never opens a socket, so the throwing stub unblocks it without faking WebSocket behavior. |
 
 **Silent approximations** (return a plausible value without the real work — graduate first):
 

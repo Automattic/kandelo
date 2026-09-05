@@ -97,6 +97,14 @@ const FIXTURES: Record<string, string> = {
   "real/counter3.js": 'let n=0;export function inc(){return ++n;}',
   "mainsymdedup.cjs":
     '(async()=>{try{const a=require("/app/lnk/counter3.js");const b=await import("/app/lnk/counter3.js");console.log("SYM",a.inc(),b.inc(),a===b);}catch(e){console.log("SYMERR",(e&&e.message)||e);}})();',
+  // `ws` compat module (Phase D): resolves via require + ESM default/named
+  // import; default IS the WebSocket class (static OPEN constant, works at
+  // module scope); constructing a live socket throws (honest stub — real ws
+  // is deferred future work). Mirrors how Bun-bundled apps import ws.
+  "wsimport.mjs":
+    'import W,{WebSocketServer as S}from"ws";export const okDefault=typeof W==="function"&&W.OPEN===1;export const okNamed=typeof S==="function";',
+  "mainws.cjs":
+    '(async()=>{try{const R=require("ws");const m=await import("/app/wsimport.mjs");let threw=false;try{new R("wss://x")}catch(e){threw=true}console.log("WS",typeof R,R.OPEN,m.okDefault,m.okNamed,threw);}catch(e){console.log("WSERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -270,5 +278,12 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("SYM OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("SYM 1 2 true");
+  }, 90_000);
+
+  it.runIf(ready)("ws compat module resolves; default is the WebSocket class; construct throws", async () => {
+    const r = await runOne("/app/mainws.cjs");
+    // eslint-disable-next-line no-console
+    console.log("WS OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("WS function 1 true true true");
   }, 90_000);
 });

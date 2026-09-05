@@ -4289,6 +4289,41 @@ const _dnsPromises = { lookup: util.promisify(_builtinModules['dns'].lookup) };
 _builtinModules['dns'].promises = _dnsPromises;
 _builtinModules['dns/promises'] = _dnsPromises;
 
+// `ws` — the WebSocket npm package. Bun ships a native ws-compatible module,
+// so Bun-bundled apps (Claude Code) mark `ws` external and expect the runtime
+// to provide it; it is not in the bundle or the package. node-compat is that
+// runtime layer, so it provides `ws` here. This is a MINIMAL honest module:
+// the module object IS the `WebSocket` class (real ws's `module.exports`), so
+// `import WebSocket from "ws"` and `require("ws")` resolve and the class,
+// static ready-state constants, `instanceof`, and subclassing all work at
+// module scope; but *constructing a live WebSocket throws* -- real WebSocket
+// I/O over TLS is tracked future work (docs/posix-status.md). Verified via a
+// scope probe: `claude -p` imports `ws` but never opens a socket, so this
+// unblocks it without faking WebSocket behavior. Graduating this to a full,
+// real ws client/server is the deferred follow-up.
+_builtinModules['ws'] = (() => {
+    function WebSocket() {
+        throw new Error('ws (WebSocket client) is not implemented on spidermonkey-node');
+    }
+    // Static ready-state constants (read at module scope by consumers).
+    WebSocket.CONNECTING = 0;
+    WebSocket.OPEN = 1;
+    WebSocket.CLOSING = 2;
+    WebSocket.CLOSED = 3;
+    function WebSocketServer() {
+        throw new Error('ws (WebSocketServer) is not implemented on spidermonkey-node');
+    }
+    function createWebSocketStream() {
+        throw new Error('ws (createWebSocketStream) is not implemented on spidermonkey-node');
+    }
+    // real ws attaches these onto the exported WebSocket function.
+    WebSocket.WebSocket = WebSocket;
+    WebSocket.WebSocketServer = WebSocketServer;
+    WebSocket.Server = WebSocketServer;
+    WebSocket.createWebSocketStream = createWebSocketStream;
+    return WebSocket;
+})();
+
 _builtinModules['perf_hooks'].monitorEventLoopDelay = function () {
     return {
         enable() {}, disable() {}, reset() {},
