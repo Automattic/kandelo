@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
+import { ensureDirRecursive, symlink, writeVfsBinary } from "../src/vfs/image-helpers";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 // Inlined fixture contents — kept tiny and minified to match the shape of a
@@ -78,6 +78,25 @@ const FIXTURES: Record<string, string> = {
   "counter2.js": 'let n=0;export function inc(){return ++n;}',
   "maindedup2.cjs":
     '(async()=>{try{const b=await import("/app/counter2.js");const a=require("/app/counter2.js");console.log("DEDUPREV",b.inc(),a.inc(),a===b);}catch(e){console.log("DEDUPREVERR",(e&&e.message)||e);}})();',
+  // `path/win32` builtin subpath resolves (Phase C). Cross-platform apps
+  // statically import both path variants; the win32 import must resolve even
+  // though its methods are only called under win32 guards. Both routes:
+  // require("path/win32") and a static `import ... from "path/win32"` inside a
+  // native ES module (the exact shape that failed with `can't open
+  // //path/win32`). `sep` is the win32 backslash.
+  "win32.mjs":
+    'import*as w from"path/win32";export const sep=w.sep;export const hasJoin=typeof w.join==="function";',
+  "mainwin32.cjs":
+    '(async()=>{try{const r=require("path/win32");const m=await import("/app/win32.mjs");console.log("WIN32",r.sep,m.sep,m.hasJoin);}catch(e){console.log("WIN32ERR",(e&&e.message)||e);}})();',
+  // Symlink dedup (Phase C canonicalization fix): the same specifier
+  // "/app/lnk/counter3.js" — where /app/lnk is a symlink to /app/real — loaded
+  // via require() and import() must share ONE native-registry instance. require
+  // now passes the pre-realpath (lexical) path to the seam, matching the key
+  // import gives the lexical shell ModuleLoader; before the fix require keyed on
+  // the realpath (/app/real/...) and import on /app/lnk/..., double-instancing.
+  "real/counter3.js": 'let n=0;export function inc(){return ++n;}',
+  "mainsymdedup.cjs":
+    '(async()=>{try{const a=require("/app/lnk/counter3.js");const b=await import("/app/lnk/counter3.js");console.log("SYM",a.inc(),b.inc(),a===b);}catch(e){console.log("SYMERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -100,6 +119,8 @@ function image(): Uint8Array | Promise<Uint8Array> {
     if (sub !== ".") ensureDirRecursive(fs, `/app/${sub}`);
     writeVfsBinary(fs, `/app/${f}`, new Uint8Array(readFileSync(join(DIR, f))), 0o644);
   }
+  // /app/lnk -> /app/real, for the symlink-dedup case (mainsymdedup.cjs).
+  symlink(fs, "/app/real", "/app/lnk");
   return fs.saveImage();
 }
 
@@ -234,5 +255,20 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("DEDUPREV OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("DEDUPREV 1 2 true");
+  }, 90_000);
+
+  it.runIf(ready)("path/win32 builtin subpath resolves via require and import", async () => {
+    const r = await runOne("/app/mainwin32.cjs");
+    // eslint-disable-next-line no-console
+    console.log("WIN32 OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    // Backslash separator from both routes; join present (approximate win32).
+    expect(r.stdout).toContain("WIN32 \\ \\ true");
+  }, 90_000);
+
+  it.runIf(ready)("require() and import() through a symlinked dir share one instance", async () => {
+    const r = await runOne("/app/mainsymdedup.cjs");
+    // eslint-disable-next-line no-console
+    console.log("SYM OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    expect(r.stdout).toContain("SYM 1 2 true");
   }, 90_000);
 });

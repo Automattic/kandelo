@@ -591,6 +591,63 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **spidermonkey-node `require()` of an ES module (supported)** | node-compat / esm | `require()` (and `import.meta.require` / the Bun `__breq` cross-chunk helper) of an ES module is supported on spidermonkey-node. When the resolved target is an ES module (a `.mjs` file, or a `.js`/extensionless file whose nearest `package.json` has `"type":"module"`, and not a `.cjs` file), the node-compat require loader (`packages/registry/node-compat/bootstrap.js`) routes it to the native `_nodeNative.__kandeloRequireModule(path)` C seam (SpiderMonkey shell `ModuleLoader::requireModuleNamespace`, `patches/0018-kandelo-require-module.patch`) instead of CommonJS-wrapping it (which would throw `import declarations may only appear at top level of a module`). The module is loaded, linked, and evaluated through the shell module registry, so `require`, static `import`, and dynamic `import()` of the same resolved path share one module instance and namespace. `require()` returns that namespace (named exports as properties, the default export as `.default`). **Boundary:** a required ES module with a pending *top-level await* cannot complete synchronously, so `require()` of it throws an `Error` whose `.code` is `ERR_REQUIRE_ASYNC_MODULE` (matching Node); load it with dynamic `import()` instead. A synchronous evaluation rejection is rethrown to the caller. |
 | **node-compat builtin exports that link but throw when called** | node-compat | The node-compat shim (`packages/registry/node-compat/bootstrap.js`) now exports 40 additional Node builtin names that the Claude Code CLI's extracted ESM app imports, so that its module graph links (a named import of a name a module doesn't export fails at ESM link time even if the name is never called). Most are real implementations (e.g. `os.availableParallelism`, `util.stripVTControlCharacters`, `crypto.timingSafeEqual`, `zlib.deflate`/`inflate`, `dns.promises.lookup`, `path/posix`). The remainder are honest stubs that link but throw `"<mod>.<name> is not implemented on spidermonkey-node"` if actually called: `fs.fsyncSync`/`fs.ftruncateSync` (no `fsync`/`ftruncate` primitive in the `qjs:os` native module), `fs/promises.link`/`lutimes`/`opendir`/`statfs`, `crypto.randomFillSync`/`createCipheriv`/`createDecipheriv`/`createPrivateKey`/`createPublicKey`/`generateKeyPairSync`/`sign`/`verify`, `zlib.inflateRawSync`/`createZstdDecompress`, and `tls.createSecureContext`. Two constructable stubs (`net.BlockList`, `crypto.X509Certificate`) link and construct as no-ops/throw-on-construct rather than throwing at call time, since npm/CLI code commonly does `new BlockList()` at module scope. Phase B graduates whichever of these the app actually calls at runtime to a real implementation. |
 
+#### node-compat (spidermonkey-node) — stubbed & approximated Node core surface (tracked future work)
+
+This is the single, complete inventory of Node core APIs the node-compat
+shim (`packages/registry/node-compat/bootstrap.js`, plus the
+`packages/registry/spidermonkey/node-compat/adapter.js` native bridge) does
+**not** yet implement faithfully. Every entry is future work to graduate to a
+real implementation. Entries are grouped by *honesty class*, which is what the
+platform-values contract cares about most:
+
+- **Fail-loud** — link-time present, throws a clear
+  `"<mod>.<name> is not implemented on spidermonkey-node"` when actually
+  called. Never silently wrong; safe to ship as a boundary.
+- **Silent** — returns a plausible value without doing the real work. These
+  can be *quietly wrong* and are the priority to graduate. Each is called out
+  so it is a visible boundary, not a hidden one.
+- **Approximate** — partially real; correct for the paths exercised today but
+  not a full implementation.
+
+**Fail-loud throwing stubs** (present for ESM link-time completeness, throw on call):
+
+| API | Note |
+|-----|------|
+| `fs.fsyncSync`, `fs.ftruncateSync` | no `fsync`/`ftruncate` primitive in the `qjs:os` native module |
+| `fs/promises.link`, `.lutimes`, `.opendir`, `.statfs` | no kernel/native primitive wired |
+| `crypto.randomFillSync`, `.createCipheriv`, `.createDecipheriv`, `.createPrivateKey`, `.createPublicKey`, `.generateKeyPairSync`, `.sign`, `.verify` | no libcrypto cipher/asymmetric-key surface wired |
+| `crypto.X509Certificate` | constructable stub — throws on `new` (links so module-scope imports succeed) |
+| `tls.createSecureContext` | no secure-context/cert-chain surface |
+| `zlib.inflateRawSync`, `zlib.createZstdDecompress` | raw-inflate window and zstd codec not wired |
+
+**Silent approximations** (return a plausible value without the real work — graduate first):
+
+| API | Behavior today | Risk if relied on |
+|-----|----------------|-------------------|
+| `crypto.randomBytes`, `.randomUUID`, `.randomInt`, `.randomFill*` | backed by `Math.random()`, **not a CSPRNG** | security-sensitive: predictable randomness for keys/tokens/nonces |
+| `tls.checkServerIdentity` | returns `undefined` (always "valid") | no hostname/identity verification on TLS peers |
+| `net.BlockList` | no-op class; `.check()` always returns `false` (never blocked) | address allow/deny lists silently ineffective |
+| `net.Server` | stub — spidermonkey-node ships client sockets only (no `listen()`) | inbound/listening sockets don't work |
+| `perf_hooks.monitorEventLoopDelay` | inert histogram; all percentiles/min/max/mean/stddev return `0` | event-loop-delay metrics are fake zeros |
+| `os.getPriority` / `os.setPriority` | returns `0` / no-op | scheduling niceness not reflected |
+| `os.version` | returns `''` | empty kernel-version string |
+| `diagnostics_channel` | inert channels; `publish`/`subscribe`/`tracingChannel` are no-ops (`hasSubscribers:false`) | tracing/diagnostics hooks never fire |
+| `events.setMaxListeners` | no-op for the process-wide default | max-listeners warning cannot be tuned globally |
+| WHATWG `fetch` / `Headers` / `Request` / `Response` / `ReadableStream` | see the fetch section below — reserved globals with a real impl where wired; unwired surface is inert | HTTP paths that hit inert surface fail or no-op |
+
+**Approximate implementations** (partially real):
+
+| API | Behavior today | Gap |
+|-----|----------------|-----|
+| `path/win32` (subpath) and `path.win32` | resolves to `{...path.posix, sep: '\\'}` — only `sep`/`delimiter` differ; `join`/`resolve`/`parse`/`normalize` still use POSIX `/` | not real Windows-path semantics. Fine today because Claude Code imports `path/win32` in cross-platform code that only *calls* it under `process.platform === 'win32'` / `O() === 'windows'` guards, which are false on Kandelo (`process.platform` is `linux`). Would need real win32 semantics only if a feature parsed Windows paths regardless of host OS. |
+| `child_process.spawnSync` / `execSync` / `exec` / `execFile` | synchronous, shell out through libc `popen()` (needs `/bin/sh`), `pid: 0`, no stdin, no streaming, ignores `encoding` (always `Buffer`), stderr discarded unless `stdio: 'inherit'` | see the dedicated row above; no async/streaming subprocess model |
+| `process.stdin.setRawMode` | forwards to a `native.setRawMode` shell hook the SpiderMonkey build does not define → effectively a no-op | see the interactive-runtime row above; raw-mode TTY input not wired |
+| `tls`/`https` egress | works for one-shot requests; not proven under a long-lived keep-alive loop | see the interactive-runtime row above |
+
+The `crypto` CSPRNG, `setRawMode`, and `tls`/`https` keep-alive items are also
+described in the **spidermonkey-node interactive-runtime gaps** row above; they
+are repeated here so this inventory is complete on its own.
+
 ### Wasm-Inherent — Gaps that cannot be fully resolved in Wasm
 
 | Gap | Subsystem | Reason |

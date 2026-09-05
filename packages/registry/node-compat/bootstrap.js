@@ -4276,6 +4276,14 @@ const _builtinModules = {
 // further down (search for `_builtinModules['stream/web']`).
 // ------------------------------------------------------------
 _builtinModules['path/posix'] = path.posix;
+// `path/win32` mirrors `path/posix`: cross-platform code (e.g. Claude Code's
+// shell-detection chunk) statically imports both variants and only *calls*
+// the win32 one under `process.platform === 'win32'` guards, which are false
+// on Kandelo (platform is `linux`). The subpath must still resolve for the
+// static import. `path.win32` is a POSIX approximation with `sep: '\\'` (see
+// its definition above); real win32 path semantics are tracked future work
+// (docs/posix-status.md, node-compat approximate implementations).
+_builtinModules['path/win32'] = path.win32;
 
 const _dnsPromises = { lookup: util.promisify(_builtinModules['dns'].lookup) };
 _builtinModules['dns'].promises = _dnsPromises;
@@ -4523,7 +4531,16 @@ function _makeRequire(filename) {
         // default as .default). A ".cjs" file is always CommonJS regardless of
         // the nearest package "type", so it keeps the CJS wrapper below.
         if ((resolved.endsWith('.mjs') || _nearestPackageType(resolved) === 'module') && !resolved.endsWith('.cjs')) {
-            const ns = _nodeNative.__kandeloRequireModule(resolved);
+            // Pass the pre-realpath `resolvedPath`, not the realpath'd
+            // `resolved`, to the native seam. The shell ModuleLoader keys its
+            // per-path registry by a purely *lexical* normalizePath (no symlink
+            // resolution), and `import`/dynamic `import()` reach it with the
+            // same pre-realpath specifier path. Realpath'ing here would key the
+            // registry differently from import under a symlinked module dir and
+            // double-instantiate the module, defeating the shared-instance
+            // dedup. The JS-side `_moduleCache` stays realpath-keyed (its own
+            // cache, consistent with the check above).
+            const ns = _nodeNative.__kandeloRequireModule(resolvedPath);
             _moduleCache[resolved] = { exports: ns };
             return ns;
         }
