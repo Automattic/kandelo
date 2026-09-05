@@ -224,6 +224,7 @@ pub fn kernel_wasm_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering as AtomicOrdering;
     use std::time::Instant;
     use wasm_posix_shared::Syscall;
 
@@ -914,6 +915,101 @@ mod tests {
             String::from_utf8_lossy(&outcome.stderr),
             outcome.syscall_trace,
         );
+        Ok(())
+    }
+
+    /// N1-R Task 2: a successful `execve` must not just replace the image
+    /// (proven above by `smoke_execve_replaces_image`) — it must also
+    /// RECLAIM the old, now-superseded image's parked OS thread instead of
+    /// abandoning it (the pre-N1-R "documented leak" at what was
+    /// `guest.rs:3866-3887`). This test proves reclamation deterministically
+    /// happened, not just that the new image ran correctly.
+    ///
+    /// The strongest deterministic signal available from OUTSIDE
+    /// `run_guest` (which owns the pump/thread bookkeeping privately) is
+    /// `guest::RECLAIMED_THREAD_JOIN_COUNT`: a `cfg(test)`-only counter
+    /// `join_reclaimed_thread` increments exactly once per reclaimed
+    /// thread whose `JoinHandle::join()` returned `Ok(())` — i.e., whose
+    /// closure genuinely ran to completion (the thread woke from its parked
+    /// `memory.atomic.wait32`, observed `CH_TEARDOWN`, trapped, and
+    /// unwound) AND was synchronously joined before `run_guest` returned.
+    /// `join()` cannot return early or spuriously: it blocks until the OS
+    /// thread's closure ends, so a nonzero per-iteration delta is only
+    /// possible if a real thread actually finished. This is not merely "the
+    /// new image is correct" (already covered by
+    /// `smoke_execve_replaces_image`) — it is direct evidence the OLD
+    /// thread was torn down and reclaimed rather than left parked forever.
+    ///
+    /// The assertion is a PER-ITERATION count delta (`>= 1`), not an exact
+    /// absolute value: the counter is a single process-wide static shared
+    /// by every test in this binary, so a concurrently running execve test
+    /// (`cargo test` runs tests in parallel by default) can add extra
+    /// increments during our window. Extra increments from unrelated tests
+    /// can only make an already-passing delta larger, never smaller, so
+    /// they cannot manufacture a false pass; they also cannot cause a false
+    /// failure, because failing here means "our own reclamation, wired in
+    /// this exact call, did not happen" (see the RED-state note below) —
+    /// no interleaving of PASSING reclamations from other tests can produce
+    /// that shortfall for OUR N iterations. Looping `N` times over a fresh
+    /// `run_guest` call each time (rather than one process execve-chaining
+    /// N times, which would need new fixtures — out of this task's
+    /// host-side-only scope) also demonstrates the counter increases
+    /// monotonically call after call rather than saturating at 1, i.e. that
+    /// each independent execve's reclamation is being counted, not some
+    /// one-time setup artifact.
+    ///
+    /// RED (pre-wiring) state: before `reclaim_all_channels`/
+    /// `join_reclaimed_thread` existed, the old thread's `JoinHandle` was
+    /// never even kept (`spawn_guest_thread`'s return value was discarded),
+    /// so nothing could ever increment this counter — every iteration's
+    /// delta would be exactly `0`, failing the `>= 1` assertion below.
+    #[test]
+    fn smoke_execve_reclaims_thread() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/exectarget", 3, 0o755, target.to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
+
+        const ITERATIONS: usize = 5;
+        for i in 0..ITERATIONS {
+            let before = guest::RECLAIMED_THREAD_JOIN_COUNT.load(AtomicOrdering::SeqCst);
+            let outcome = guest::run_guest(&path, parent, &options)?;
+
+            // Functional: unchanged from `smoke_execve_replaces_image` —
+            // reclamation must be transparent to the ordinary exec-success
+            // assertions.
+            let stdout = String::from_utf8_lossy(&outcome.stdout);
+            assert!(
+                stdout.contains("exec ok") && !stdout.contains("execve returned"),
+                "iteration {i}: execve must still replace the image correctly: {stdout:?}"
+            );
+            assert_eq!(
+                outcome.exit_code, 9,
+                "iteration {i}: process exit code must be the EXEC'D image's exit (9): {stdout:?}"
+            );
+
+            // Reclamation: the old thread's JoinHandle must have been
+            // joined exactly because `run_guest` tore it down, not because
+            // some unrelated test happened to run at the same moment (a
+            // concurrently running unrelated execve test can only add
+            // MORE joins to this shared counter during our window, never
+            // remove the one this iteration's own reclamation produces).
+            let after = guest::RECLAIMED_THREAD_JOIN_COUNT.load(AtomicOrdering::SeqCst);
+            assert!(
+                after >= before + 1,
+                "iteration {i}: expected the old exec'd-from thread to be reclaimed and joined \
+                 (RECLAIMED_THREAD_JOIN_COUNT before={before}, after={after}); a delta of 0 means \
+                 the old thread was abandoned instead of torn down"
+            );
+        }
         Ok(())
     }
 

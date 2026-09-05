@@ -36,6 +36,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write as _};
 use std::os::unix::fs::{DirEntryExt, FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -59,7 +61,7 @@ use wasm_posix_shared::host_abi::{
 };
 use wasm_posix_shared::platform_limits::PROCESS_STARTUP_MAX_ARGV_COUNT;
 use wasm_posix_shared::seek::SEEK_END;
-use wasm_posix_shared::Syscall;
+use wasm_posix_shared::{ChannelStatus, Syscall};
 
 // --- Channel status word values --------------------------------------------
 // Mirror of `WASM_POSIX_CHANNEL_STATUS_*` in `libc/glue/abi_constants.h`, which
@@ -2066,7 +2068,7 @@ fn launch_process(
         }
     }
 
-    spawn_guest_thread(
+    let main_handle = spawn_guest_thread(
         engine,
         guest_module.clone(),
         memory.clone(),
@@ -2075,6 +2077,8 @@ fn launch_process(
         launch_argv,
         launch_env,
     );
+    let mut thread_handles = HashMap::new();
+    thread_handles.insert(layout.channel_offset, main_handle);
 
     Ok(GuestProcess {
         pid,
@@ -2084,14 +2088,19 @@ fn launch_process(
         layout,
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
         next_thread_slot: 0,
+        thread_handles,
     })
 }
 
 /// Instantiate the guest on a fresh OS thread and run it to `_start`. The
 /// thread blocks inside `_start` on each syscall's `wait32`; the pump on the
 /// kernel thread services them. It never returns for a normal exit (the guest
-/// parks after `exit_group`), so the caller must not join it — it is reclaimed
-/// when the process exits.
+/// parks after `exit_group`), so the ordinary caller must not join it — it is
+/// reclaimed when the process exits. N1-R's `reclaim_parked_thread` +
+/// `join_reclaimed_thread` are the one exception: on execve-success or spawn
+/// `-ECHILD` rollback, the pump publishes `CH_TEARDOWN` on this thread's
+/// channel, notifies it, and joins the returned handle deterministically
+/// instead of abandoning it (see `GuestProcess::thread_handles`).
 fn spawn_guest_thread(
     engine: &Engine,
     module: Module,
@@ -2332,7 +2341,10 @@ fn spawn_guest_thread(
 /// Launch a worker (pthread) on a fresh OS thread over the shared guest memory.
 /// It sets the thread's channel base, stack, and TLS, calls the thread entry via
 /// the indirect function table, then posts SYS_EXIT on its channel and parks for
-/// the pump to release it. Detached — the pump routes its exit; never joined.
+/// the pump to release it. Detached in the ordinary case — the pump routes
+/// its exit and never joins it — except under N1-R reclamation (execve
+/// success tearing down a still-live worker channel), which joins the
+/// returned handle via `GuestProcess::thread_handles`.
 #[allow(clippy::too_many_arguments)]
 fn spawn_worker_thread(
     engine: &Engine,
@@ -2494,6 +2506,17 @@ struct GuestProcess {
     /// consumes one. Per-process because the arena itself is carved out of
     /// this process's own memory layout.
     next_thread_slot: usize,
+    /// The OS `JoinHandle` backing each live entry in `channels`, keyed by
+    /// that channel's `offset` (the same key `reclaim_parked_thread` writes
+    /// the teardown sentinel to). Normally these threads are never joined —
+    /// they park forever in the channel's `memory.atomic.wait32` and are
+    /// left for the OS to reclaim at process teardown (see
+    /// `spawn_guest_thread`/`spawn_worker_thread`'s doc comments). N1-R's
+    /// reclamation paths (execve-success, spawn `-ECHILD` rollback) are the
+    /// exception: they publish `CH_TEARDOWN` on a channel, then look up and
+    /// `join()` its handle here for deterministic reclamation instead of
+    /// abandoning it.
+    thread_handles: HashMap<usize, thread::JoinHandle<()>>,
 }
 
 /// A blocking syscall parked awaiting readiness (or its timeout deadline). The
@@ -2683,6 +2706,125 @@ fn complete_channel(
         .atomic_notify((ch.offset + STATUS_OFFSET) as u64, 1)
         .map_err(|e| anyhow::anyhow!("atomic_notify failed: {e}"))?;
     Ok(())
+}
+
+/// Test-only hook (N1-R Task 2): counts every reclaimed guest thread whose
+/// `JoinHandle::join()` returned `Ok(())` after a `reclaim_parked_thread`
+/// teardown. Always compiled under `cfg(test)` (both `guest.rs` and
+/// `lib.rs`'s test module are part of the same crate, so this is visible to
+/// `smoke_execve_reclaims_thread`), never touched by production code paths.
+/// It exists because there is no other externally observable signal that a
+/// specific OS thread — parked deep inside a live Wasmtime `Instance::call`
+/// on its own stack — actually unwound and its closure returned, short of
+/// `join()`ing it, which is exactly what production code already does.
+#[cfg(test)]
+pub(crate) static RECLAIMED_THREAD_JOIN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Host-driven thread reclamation (N1-R Task 2, consuming Task 1's
+/// `ChannelStatus::Teardown`): publish `TEARDOWN` into `ch`'s status word
+/// (release store — the guest's wake-side re-read uses `__ATOMIC_SEQ_CST`,
+/// at least as strong as acquire, so the write is visible before it
+/// observes `TEARDOWN`) and notify any guest thread parked in this channel's
+/// `memory.atomic.wait32`. Mirrors `complete_channel`'s exact status-word
+/// address math (`ch.offset + STATUS_OFFSET`) so this targets the SAME
+/// address the guest glue parks on.
+///
+/// The guest glue (`libc/glue/channel_syscall.c`, Task 1) re-reads the
+/// status word on wake and, on `TEARDOWN`, `__builtin_trap()`s immediately
+/// instead of reading `CH_RETURN`/`CH_ERRNO` — wasmtime unwinds the guest
+/// stack, the thread's `Store`/`SharedMemory` clone drop, and the spawning
+/// closure returns. Validated end-to-end by the spike (`exp_d`,
+/// `docs/plans/2026-09-05-native-thread-reclamation-spike.md`).
+///
+/// This function ONLY publishes the sentinel and notifies — it does not
+/// join. Callers must not treat `ch` as servicable afterward (no further
+/// syscall will ever post on it) and are responsible for looking up and
+/// joining its `JoinHandle` (see [`join_reclaimed_thread`]) for
+/// deterministic reclamation.
+fn reclaim_parked_thread(mem: &SharedMemory, ch: &PumpChannel) {
+    unsafe {
+        atomic_u32(mem, ch.offset + STATUS_OFFSET)
+            .store(ChannelStatus::Teardown as u32, Ordering::Release);
+    }
+    let _ = mem.atomic_notify((ch.offset + STATUS_OFFSET) as u64, 1);
+}
+
+/// Join a thread handle after [`reclaim_parked_thread`] has already
+/// published `TEARDOWN` and notified it. The thread is expected to trap and
+/// return promptly (no wasm executes between the notify and the trap check
+/// — see `channel_syscall.c`'s teardown check immediately after the wait
+/// loop), so this blocking `join()` is not expected to hang; if the guest
+/// glue is ever missing the Task 1 check (a stale/mismatched build), the
+/// thread would re-park forever and this join WOULD hang — that staleness
+/// is exactly the class of failure the ABI/build contracts (fixture
+/// rebuild, `scripts/build-musl.sh`) exist to make loud elsewhere, not a
+/// case this function tries to detect itself.
+fn join_reclaimed_thread(handle: thread::JoinHandle<()>) {
+    match handle.join() {
+        Ok(()) => {
+            #[cfg(test)]
+            RECLAIMED_THREAD_JOIN_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(_) => {
+            eprintln!(
+                "[host-native] a reclaimed guest thread panicked instead of trapping cleanly on \
+                 TEARDOWN"
+            );
+        }
+    }
+}
+
+/// Publish `TEARDOWN` to every PARKED live channel of `proc_` (execve-success
+/// reclaims ALL of the old process's parked channels, not just the caller's
+/// main one — a still-running worker/pthread channel that is genuinely
+/// parked in its wait would otherwise be left abandoned in the superseded
+/// image) and join each such channel's thread handle. Consumes `proc_`
+/// because the old `GuestProcess` (its module, memory, and any remaining
+/// bookkeeping) has no further use once this returns.
+///
+/// "Parked" is decided empirically per channel, right here, by its OWN
+/// status word: a channel reads `STATUS_PENDING` if and only if its guest
+/// thread has posted a request and is at, or about to enter,
+/// `memory.atomic.wait32` on this exact word (see `channel_syscall.c`'s
+/// wait loop — it stores `CH_PENDING` immediately before waiting and
+/// nothing else changes it away from `PENDING` except a pump completion).
+/// The caller's own exec-posting channel is always in this state (`run_pump`
+/// only reaches `handle_exec_common` while servicing a `PENDING` channel,
+/// and it deliberately never completes it — see that function's doc
+/// comment), so it is always reclaimed.
+///
+/// NOTE (carried from the spike, Q3/Q4): a sibling worker channel that is
+/// NOT `PENDING` right now means its thread is compute-bound inside the
+/// guest, not parked in this channel's wait — epoch/fuel cannot interrupt
+/// it (spike Q1/Q2), and forcibly writing `TEARDOWN` there would be
+/// clobbered by that thread's OWN next `CH_PENDING` store before it ever
+/// waits, so `join()`ing such a handle could hang forever waiting for a
+/// syscall this now-orphaned channel will never receive. This function
+/// deliberately does NOT touch or join a non-parked channel's thread — it
+/// is the documented, out-of-scope multi-threaded-execve residual (the
+/// handle is dropped unjoined, same shape as the pre-N1-R single-channel
+/// leak this task replaces for the common, single-threaded case).
+fn reclaim_all_channels(proc_: GuestProcess) {
+    let GuestProcess {
+        memory,
+        channels,
+        mut thread_handles,
+        ..
+    } = proc_;
+    for ch in &channels {
+        let status =
+            unsafe { atomic_u32(&memory, ch.offset + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if status != STATUS_PENDING {
+            // Compute-bound sibling, not parked — leave it alone (see this
+            // function's doc comment); drop its handle unjoined.
+            thread_handles.remove(&ch.offset);
+            continue;
+        }
+        reclaim_parked_thread(&memory, ch);
+        if let Some(handle) = thread_handles.remove(&ch.offset) {
+            join_reclaimed_thread(handle);
+        }
+    }
 }
 
 /// The channel pump: a single-threaded event loop that services every live
@@ -2962,7 +3104,7 @@ fn run_pump(
                             &vec![0u8; PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE],
                         );
                     }
-                    spawn_worker_thread(
+                    let worker_handle = spawn_worker_thread(
                         engine,
                         &guest_module,
                         guest_mem.clone(),
@@ -2978,6 +3120,7 @@ fn run_pump(
                         tid: tid as u32,
                         is_main: false,
                     });
+                    processes[pi].thread_handles.insert(thread_channel_offset, worker_handle);
                     complete_channel(
                         &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], tid, 0,
                     )?;
@@ -3508,6 +3651,7 @@ fn handle_spawn(
         Arc::new(envp_list),
     )?;
     processes.push(child);
+    let child_pi = processes.len() - 1;
 
     let disposition = publish_spawn_child.call(&mut *kernel_store, (parent_pid, child_pid))?;
     if disposition < -1 {
@@ -3531,12 +3675,25 @@ fn handle_spawn(
                      rejection failed: {removed}"
                 );
             }
+            // N1-R Task 2: also reclaim the just-launched child's OWN
+            // OS thread/Wasmtime instance — the same `reclaim_all_channels`
+            // teardown-sentinel path `handle_exec_common` uses on a
+            // successful exec — instead of leaving it running forever
+            // against a process the kernel just erased. `child_pi` is
+            // guaranteed to still be `processes.len() - 1`: nothing else
+            // pushes to `processes` between the push above and this
+            // synchronous check, so `pop()` removes exactly (and only) the
+            // rejected child, disturbing no other process's index.
+            debug_assert_eq!(child_pi, processes.len() - 1);
+            if let Some(child_proc) = processes.pop() {
+                reclaim_all_channels(child_proc);
+            }
         }
-        // This increment has no host-side rollback for the ALREADY-LAUNCHED
-        // OS thread/Wasmtime instance itself (no fork/exec image-replacement
-        // machinery exists to retarget or tear it down mid-flight, and the
-        // Node reference host does not solve this either) — only the
-        // kernel's process-table entry is reclaimed above. Report the
+        // Reclamation above is best-effort, same as `kernel_remove_process`
+        // just above it: a child whose thread has not yet posted its first
+        // syscall (not yet PARKED — see `reclaim_all_channels`'s doc
+        // comment) cannot be safely joined here either, and is the same
+        // documented residual as a compute-bound execve sibling. Report the
         // truthful failure to the parent rather than claiming success.
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -disposition);
     }
@@ -3641,15 +3798,16 @@ fn fail_spawn(
 /// exactly `handle_spawn`'s launch sequence, but reusing the exec'ing
 /// process's own pid rather than a freshly allocated one), then overwrites
 /// `processes[pi]` with it. The calling channel `ch` is DELIBERATELY never
-/// completed — see the inline comment at the swap site for why abandoning
-/// that thread (rather than waking or killing it) is the only sound option
-/// here, and the leak that abandonment accepts. Assumes (this task's
-/// fixtures only ever exercise) that the exec'ing process has no OTHER live
-/// channels at the moment of exec — a still-running worker (pthread)
-/// thread's channel would be left in `processes[pi]`'s OLD channel list,
-/// which this task does not reconcile against `kernel_exec_commit`'s
-/// in-kernel `clear_threads`; multi-threaded `execve`/`execveat` is out of
-/// this task's scope.
+/// completed — see the inline comment at the swap site for why waking it
+/// with a normal completion would be unsound. Instead (N1-R Task 2) the OLD
+/// `GuestProcess` — `ch`'s channel AND any other live channel it still owns
+/// (a still-running worker/pthread thread) — is handed to
+/// `reclaim_all_channels`, which tears down and joins every one of them
+/// that is genuinely PARKED in its wait; a compute-bound sibling thread that
+/// is NOT parked at that moment is the one residual this does not chase
+/// (see that function's doc comment) — it cannot be interrupted by this
+/// cooperative mechanism and is left, unjoined, exactly as the whole old
+/// process used to be before this task.
 ///
 /// Returns `Ok(None)` for every ordinary outcome (the channel was completed,
 /// or the image was swapped). Returns `Ok(Some(fatal_exit_code))` only for
@@ -3863,28 +4021,27 @@ fn handle_exec_common(
         }
     };
 
-    // DOCUMENTED LEAK (deliberate — do not "fix" by waking or killing the
-    // old thread): the exec'ing guest thread — this channel's OS thread,
+    // N1-R Task 2: the exec'ing guest thread — this channel's OS thread,
     // `ch` — is right now parked in a REAL Wasm `memory.atomic.wait32` on
     // `ch`'s status word, inside the OLD, now-superseded module instance
-    // and memory. We never complete `ch`: `kernel_exec_commit` already
+    // and memory. We never COMPLETE `ch` (`kernel_exec_commit` already
     // performed the actual POSIX exec transition in the kernel, so waking
-    // that parked thread would resume execution inside the doomed PRE-exec
-    // instance — exactly the image POSIX `execve`/`execveat` just replaced.
-    // Wasmtime's `Engine` here has no epoch-interruption or fuel configured
-    // (a deferred, cross-cutting Engine change, out of scope for this
-    // increment), so there is also no way to preempt or forcibly join that
-    // parked `std::thread` from the outside. `processes[pi]` is simply
-    // overwritten below with `new_proc` (same pid, fresh module, memory,
-    // scratch, and a single fresh main channel); the pump keeps servicing
-    // `new_proc` from the very next loop iteration because `processes[pi]`
-    // now points at it. The old `GuestProcess` (its thread handle was never
-    // even kept, so there is nothing to join or drop explicitly) and its
-    // old `SharedMemory`/channels are dropped here — one parked OS thread
-    // plus its backing shared memory leaks per successful call. This is
-    // POSIX-correct (`execve`/`execveat` truly never return to the old image
-    // on success), but it is a real, permanent resource leak per call.
-    processes[pi] = new_proc;
+    // it with a normal completion would resume execution inside the doomed
+    // PRE-exec instance — exactly the image POSIX `execve`/`execveat` just
+    // replaced), but we do RECLAIM it: swap `new_proc` into `processes[pi]`
+    // first (so the pump starts servicing it from the very next loop
+    // iteration), take the OLD `GuestProcess` out, and hand it to
+    // `reclaim_all_channels`, which publishes `CH_TEARDOWN` + notifies each
+    // of its PARKED channels (not just `ch` — see that function's doc
+    // comment for the multi-channel case and its documented compute-bound
+    // residual) and `join()`s each one's `JoinHandle`. The guest glue
+    // (`channel_syscall.c`, N1-R Task 1) traps immediately on observing
+    // `TEARDOWN` instead of resuming, so this is sound: no parked thread
+    // resumes the doomed image, and none leaks anymore (validated by the
+    // spike, `docs/plans/2026-09-05-native-thread-reclamation-spike.md`,
+    // `exp_d`).
+    let old_proc = std::mem::replace(&mut processes[pi], new_proc);
+    reclaim_all_channels(old_proc);
     Ok(None)
 }
 
