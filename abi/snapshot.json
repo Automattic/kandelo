@@ -2004,6 +2004,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_target_resolve_shebang",
+      "signature": "(i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_target_shebang",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },

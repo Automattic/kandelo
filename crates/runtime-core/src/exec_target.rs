@@ -88,7 +88,6 @@ pub struct PreparedExecTarget {
     file_id: Option<FileId>,
     stat: WasmStat,
     statfs: WasmStatfs,
-    #[allow(dead_code)] // Retained only for Task 11 diagnostics, never authority.
     diagnostic_path: Vec<u8>,
     observed_bytes: Vec<u8>,
     observed_ranges: Vec<(usize, usize)>,
@@ -133,6 +132,14 @@ impl PreparedExecTarget {
 
     pub fn owner(&self) -> PreparedExecOwner {
         self.owner
+    }
+
+    /// The pathname (or `AT_EMPTY_PATH` fd's captured path) this target was
+    /// retained from. Diagnostic by origin, but `resolve_shebang` also uses it
+    /// as the exact `argv[1]` a `#!` interpreter expects: the script's own
+    /// path, not the interpreter's.
+    pub fn diagnostic_path(&self) -> &[u8] {
+        &self.diagnostic_path
     }
 
     pub fn ofd_ref(&self) -> OpenFileDescRef {
@@ -631,6 +638,83 @@ pub fn shebang(
         filled += read;
     }
     Ok(parse_shebang(&header[..filled]))
+}
+
+/// The `#!` argv-prefix pieces the caller assembles ahead of the resolved
+/// interpreter's own argv: the decoded interpreter path, its single optional
+/// argument, and the original script's path (a `#!` script's own path is
+/// always the interpreter's first argument, exactly as the host's former
+/// `resolveShebangChain` assembled it in `host/src/exec-target.ts`).
+pub struct ShebangArgvPrefix {
+    pub interpreter: alloc::string::String,
+    pub argument: Option<alloc::string::String>,
+    pub script_path: Vec<u8>,
+}
+
+/// The outcome of resolving one retained target's `#!` chain.
+///
+/// `final_token` is the token the caller should actually instantiate and
+/// commit — either the input token unchanged (not a script) or a freshly
+/// prepared interpreter token (a script, resolved exactly one level).
+pub struct ResolvedShebang {
+    pub final_token: u32,
+    pub prefix: Option<ShebangArgvPrefix>,
+}
+
+/// Resolve `token`'s `#!` chain end-to-end.
+///
+/// A non-script target passes through unchanged. A script target is resolved
+/// by canceling the script's own retained target (a script's set-ID bits are
+/// never honored, so nothing about the script object survives past
+/// resolution) and preparing its decoded interpreter under the same owner.
+/// Exactly one level of `#!` is permitted: if the freshly prepared
+/// interpreter is itself a script, the half-resolved interpreter token is
+/// canceled and resolution fails `ENOEXEC` — the kernel's long-standing
+/// nested-shebang limit. On every error path, zero tokens from this call are
+/// left retained; on success, exactly one (`final_token`) is.
+pub fn resolve_shebang(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    owner_pid: u32,
+    token: u32,
+) -> Result<ResolvedShebang, Errno> {
+    match shebang(proc, host, owner_pid, token)? {
+        None => Ok(ResolvedShebang {
+            final_token: token,
+            prefix: None,
+        }),
+        Some(sb) => {
+            let owner = proc.prepared_exec_targets.get(token)?.owner();
+            let script_path = proc
+                .prepared_exec_targets
+                .get(token)?
+                .diagnostic_path()
+                .to_vec();
+            cancel(proc, locks, host, owner_pid, token)?;
+            let interp_token = prepare(
+                proc,
+                locks,
+                host,
+                owner,
+                wasm_posix_shared::flags::AT_FDCWD,
+                sb.interpreter.as_bytes(),
+                0,
+            )?;
+            if shebang(proc, host, owner_pid, interp_token)?.is_some() {
+                cancel(proc, locks, host, owner_pid, interp_token)?;
+                return Err(Errno::ENOEXEC);
+            }
+            Ok(ResolvedShebang {
+                final_token: interp_token,
+                prefix: Some(ShebangArgvPrefix {
+                    interpreter: sb.interpreter,
+                    argument: sb.argument,
+                    script_path,
+                }),
+            })
+        }
+    }
 }
 
 pub fn cancel(

@@ -45479,6 +45479,146 @@ mod tests {
         .unwrap()
     }
 
+    /// Like `prepare_test_exec`, but the retained target's content is
+    /// `bytes` exactly (rather than the fixed `"hello"` fixture), so a test
+    /// can prepare several distinct targets (a script, then its interpreter)
+    /// in one `MockHostIO` with `freeze_exec_handles = true` snapshotting
+    /// each handle's content at its own `host_open` time.
+    fn prepare_test_exec_with_bytes(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        host.stat_size = bytes.len() as u64;
+        host.prepared_exec_bytes = Some(bytes.to_vec());
+        host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, bytes);
+        crate::exec_target::prepare(
+            proc,
+            locks,
+            host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid: proc.pid,
+                caller_tid: proc.pid,
+                generation: proc.exec_generation,
+            },
+            AT_FDCWD,
+            path,
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn resolve_shebang_prepares_the_interpreter_and_assembles_the_argv_prefix() {
+        let mut proc = Process::new(151);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+
+        let script_token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/usr/bin/script",
+            b"#!/bin/interp scriptarg\nbody\n",
+        );
+
+        // Seed the interpreter's own content *before* resolve_shebang prepares
+        // it: `host_open` (invoked inside `resolve_shebang`) is what snapshots
+        // this into the interpreter's own handle.
+        host.stat_size = 6;
+        host.prepared_exec_bytes = Some(b"binary".to_vec());
+        host.set_file_with_owner(b"/bin/interp", 0, 0, S_IFREG | 0o755, b"binary");
+
+        let resolved = crate::exec_target::resolve_shebang(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            pid,
+            script_token,
+        )
+        .unwrap();
+
+        assert_ne!(resolved.final_token, script_token);
+        assert_eq!(
+            proc.prepared_exec_targets.get(script_token).err(),
+            Some(Errno::EINVAL),
+        );
+        // `is_script()` needs a full `read()` pass through `observed_bytes`;
+        // `shebang()` is the direct decode `resolve_shebang` itself uses and
+        // needs no prior read, so it is the right check that the final token
+        // is not itself a script.
+        assert!(
+            crate::exec_target::shebang(&proc, &mut host, pid, resolved.final_token)
+                .unwrap()
+                .is_none()
+        );
+        let prefix = resolved.prefix.expect("a script resolves to Some prefix");
+        assert_eq!(prefix.interpreter, "/bin/interp");
+        assert_eq!(prefix.argument.as_deref(), Some("scriptarg"));
+        assert_eq!(prefix.script_path, b"/usr/bin/script");
+    }
+
+    #[test]
+    fn resolve_shebang_rejects_a_nested_interpreter_chain_without_leaking_tokens() {
+        let mut proc = Process::new(152);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+
+        let script_token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/usr/bin/script2",
+            b"#!/bin/nested-interp\n",
+        );
+
+        // The "interpreter" is itself a `#!` script — one level too deep.
+        host.stat_size = 20;
+        host.prepared_exec_bytes = Some(b"#!/bin/real-interp\n".to_vec());
+        host.set_file_with_owner(
+            b"/bin/nested-interp",
+            0,
+            0,
+            S_IFREG | 0o755,
+            b"#!/bin/real-interp\n",
+        );
+
+        assert!(matches!(
+            crate::exec_target::resolve_shebang(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                script_token,
+            ),
+            Err(Errno::ENOEXEC),
+        ));
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn resolve_shebang_passes_through_a_non_script_target_unchanged() {
+        let mut proc = Process::new(153);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/exact-native");
+
+        let resolved =
+            crate::exec_target::resolve_shebang(&mut proc, &mut locks, &mut host, pid, token)
+                .unwrap();
+
+        assert_eq!(resolved.final_token, token);
+        assert!(resolved.prefix.is_none());
+        assert!(proc.prepared_exec_targets.get(token).is_ok());
+    }
+
     #[test]
     fn exec_target_reads_are_positioned_and_cancel_is_exactly_once() {
         let mut proc = Process::new(81);

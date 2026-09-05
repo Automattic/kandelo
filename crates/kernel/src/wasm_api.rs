@@ -3206,6 +3206,101 @@ pub extern "C" fn kernel_exec_target_shebang(
     total as i32
 }
 
+/// Resolve the retained target's `#!` chain end-to-end: a non-script target
+/// passes through unchanged, and exactly one level of `#!` script is resolved
+/// by preparing the decoded interpreter under the same owner (the script's
+/// own retained target is released — a script's set-ID bits are never
+/// honored). This is the kernel-owned replacement for the host's former
+/// `resolveShebangChain` (`host/src/exec-target.ts`): the host no longer
+/// walks the chain itself, it only byte-fetches/instantiates/commits/launches
+/// whatever `final_token` this resolves to.
+///
+/// Writes a record to `out_ptr` and returns the record byte length, or a
+/// negative errno — including `-ENOEXEC` for a nested `#!` chain (the decoded
+/// interpreter is itself a script; the kernel's long-standing one-level
+/// shebang limit) and `-EOVERFLOW` if `out_len` is too small for the record.
+///
+/// Record format (little-endian):
+///   `[kind: u8][final_token: u32]`, then, only if `kind == 1` (the input
+///   token was a script):
+///   `[has_arg: u8][interp_len: u32][arg_len: u32][script_path_len: u32]
+///    [interp bytes][arg bytes][script_path bytes]`.
+/// `kind == 0` (not a script) is exactly the first five bytes, with
+/// `final_token` equal to the input `token`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_resolve_shebang(
+    owner_pid: u32,
+    token: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i64 {
+    if out_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i64);
+    }
+    if out_len != 0 && (out_ptr == 0 || out_ptr.checked_add(out_len).is_none()) {
+        return -(Errno::EFAULT as i64);
+    }
+    let out: &mut [u8] = if out_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) }
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(owner_pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i64),
+    };
+    let mut host = WasmHostIO;
+    let resolved = match crate::exec_target::resolve_shebang(
+        proc,
+        advisory_locks,
+        &mut host,
+        owner_pid,
+        token,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => return -(error as i64),
+    };
+    let Some(prefix) = resolved.prefix else {
+        if out.len() < 5 {
+            return -(Errno::EOVERFLOW as i64);
+        }
+        out[0] = 0;
+        out[1..5].copy_from_slice(&resolved.final_token.to_le_bytes());
+        return 5;
+    };
+    let interpreter = prefix.interpreter.as_bytes();
+    let argument = prefix.argument.as_deref().map(str::as_bytes);
+    let argument_bytes = argument.unwrap_or(&[]);
+    let script_path = prefix.script_path.as_slice();
+    let Some(total) = 18usize
+        .checked_add(interpreter.len())
+        .and_then(|partial| partial.checked_add(argument_bytes.len()))
+        .and_then(|partial| partial.checked_add(script_path.len()))
+    else {
+        return -(Errno::EOVERFLOW as i64);
+    };
+    if total > out.len() {
+        return -(Errno::EOVERFLOW as i64);
+    }
+    let interp_len = interpreter.len() as u32;
+    let arg_len = argument_bytes.len() as u32;
+    let script_path_len = script_path.len() as u32;
+    out[0] = 1;
+    out[1..5].copy_from_slice(&resolved.final_token.to_le_bytes());
+    out[5] = u8::from(argument.is_some());
+    out[6..10].copy_from_slice(&interp_len.to_le_bytes());
+    out[10..14].copy_from_slice(&arg_len.to_le_bytes());
+    out[14..18].copy_from_slice(&script_path_len.to_le_bytes());
+    let mut offset = 18usize;
+    out[offset..offset + interpreter.len()].copy_from_slice(interpreter);
+    offset += interpreter.len();
+    out[offset..offset + argument_bytes.len()].copy_from_slice(argument_bytes);
+    offset += argument_bytes.len();
+    out[offset..offset + script_path.len()].copy_from_slice(script_path);
+    total as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
