@@ -19244,6 +19244,12 @@ mod tests {
         pread_calls: Vec<(i64, i64, usize)>,
         pwrite_calls: Vec<(i64, i64, Vec<u8>)>,
         pread_error: Option<Errno>,
+        /// Scope `pread_error` to exactly this handle. `None` (the default)
+        /// preserves every existing test's behavior: `pread_error` fires for
+        /// any handle. Set this to make a test inject a read failure on one
+        /// specific retained target without also breaking an earlier
+        /// `host_pread` on a different handle in the same call.
+        pread_error_handle: Option<i64>,
         pwrite_error: Option<Errno>,
         pread_reported: Option<usize>,
         pwrite_reported: Option<usize>,
@@ -19329,6 +19335,7 @@ mod tests {
                 pread_calls: Vec::new(),
                 pwrite_calls: Vec::new(),
                 pread_error: None,
+                pread_error_handle: None,
                 pwrite_error: None,
                 pread_reported: None,
                 pwrite_reported: None,
@@ -19476,7 +19483,12 @@ mod tests {
         fn host_pread(&mut self, handle: i64, buf: &mut [u8], offset: i64) -> Result<usize, Errno> {
             self.pread_calls.push((handle, offset, buf.len()));
             if let Some(error) = self.pread_error {
-                return Err(error);
+                if self
+                    .pread_error_handle
+                    .is_none_or(|scoped| scoped == handle)
+                {
+                    return Err(error);
+                }
             }
             if let Some(data) = self
                 .frozen_handle_bytes
@@ -45600,6 +45612,58 @@ mod tests {
             Err(Errno::ENOEXEC),
         ));
         assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn resolve_shebang_releases_the_interpreter_token_when_its_header_read_fails() {
+        // Fix-round-1 regression test: the one-level-limit check used to
+        // `?`-propagate a `shebang()` read error on the freshly-prepared
+        // interpreter token, leaking it. `pread_error_handle` scopes the
+        // injected read failure to exactly the interpreter's own handle (101)
+        // so the script's own decode (handle 100, read first) still succeeds
+        // and the failure is observed only where the fix applies.
+        let mut proc = Process::new(154);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+
+        let script_token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/usr/bin/script3",
+            b"#!/bin/flaky-interp\n",
+        );
+        let script_handle = proc
+            .prepared_exec_targets
+            .get(script_token)
+            .unwrap()
+            .ofd_ref();
+        let script_host_handle = proc.ofd_table.get(script_handle.0).unwrap().host_handle;
+
+        host.stat_size = 6;
+        host.prepared_exec_bytes = Some(b"binary".to_vec());
+        host.set_file_with_owner(b"/bin/flaky-interp", 0, 0, S_IFREG | 0o755, b"binary");
+        // The interpreter is the *next* handle MockHostIO will hand out.
+        let interp_host_handle = script_host_handle + 1;
+        host.pread_error = Some(Errno::EIO);
+        host.pread_error_handle = Some(interp_host_handle);
+
+        assert!(matches!(
+            crate::exec_target::resolve_shebang(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                pid,
+                script_token,
+            ),
+            Err(Errno::EIO),
+        ));
+        assert!(
+            proc.prepared_exec_targets.is_empty(),
+            "the half-resolved interpreter token must not leak when its header read fails",
+        );
     }
 
     #[test]

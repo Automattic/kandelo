@@ -701,9 +701,24 @@ pub fn resolve_shebang(
                 sb.interpreter.as_bytes(),
                 0,
             )?;
-            if shebang(proc, host, owner_pid, interp_token)?.is_some() {
-                cancel(proc, locks, host, owner_pid, interp_token)?;
-                return Err(Errno::ENOEXEC);
+            match shebang(proc, host, owner_pid, interp_token) {
+                Ok(Some(_)) => {
+                    // The interpreter is itself a `#!` script — one level too
+                    // deep. Release the half-resolved interpreter token before
+                    // reporting the nested chain as `ENOEXEC`.
+                    cancel(proc, locks, host, owner_pid, interp_token)?;
+                    return Err(Errno::ENOEXEC);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // The header read on the freshly-prepared interpreter
+                    // failed. Release it too — the caller must see zero
+                    // retained tokens on every error path, not just the
+                    // nested-script one. Best-effort: a cancel failure here
+                    // must not mask the original read error.
+                    let _ = cancel(proc, locks, host, owner_pid, interp_token);
+                    return Err(error);
+                }
             }
             Ok(ResolvedShebang {
                 final_token: interp_token,
