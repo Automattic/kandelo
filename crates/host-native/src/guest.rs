@@ -698,6 +698,10 @@ pub fn run_guest(
         kernel.get_typed_func::<(i32, i32, i32), i32>(&mut kernel_store, "kernel_spawn_blob_decode")?;
     let publish_spawn_child =
         kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_publish_spawn_child")?;
+    // The rollback seam for a `kernel_publish_spawn_child` `-ECHILD`
+    // rejection (see `handle_spawn`): the child's Process record still
+    // exists unpublished and must be removed by the host.
+    let remove_process = kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_remove_process")?;
 
     // --- Kernel-side process setup -------------------------------------------
     // Only the pid is created here; the rest of this process's launch (scratch
@@ -856,6 +860,7 @@ pub fn run_guest(
         &spawn_process,
         &spawn_blob_decode,
         &publish_spawn_child,
+        &remove_process,
         &options.programs,
         &current_memory,
         &mut syscall_trace,
@@ -2408,6 +2413,7 @@ fn run_pump(
     spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
     spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
+    remove_process: &wasmtime::TypedFunc<u32, i32>,
     programs: &HashMap<String, Vec<u8>>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     trace: &mut Vec<u32>,
@@ -2627,8 +2633,8 @@ fn run_pump(
                 if ch.is_main && syscall_nr == SYS_SPAWN {
                     handle_spawn(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
-                        spawn_blob_decode, spawn_process, publish_spawn_child, set_brk_base, set_mmap_base,
-                        set_max_addr, programs,
+                        spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
+                        set_mmap_base, set_max_addr, programs,
                     )?;
                     ci += 1;
                     continue;
@@ -2711,9 +2717,11 @@ fn run_pump(
 /// `posix_spawn` success encoding; see `posix_spawn.c`'s `if (ret < 0) return
 /// -ret;` — a non-negative `ret` is returned to the caller as-is). On any
 /// failure, completes the parent's channel with `ret == -1` and a positive
-/// errno instead (`__do_syscall_impl`'s own `-errno`-on-negative convention),
-/// and never leaves a live child behind — except the one documented gap at
-/// the `kernel_publish_spawn_child` call site below.
+/// errno instead (`__do_syscall_impl`'s own `-errno`-on-negative convention).
+/// A `kernel_publish_spawn_child` `-ECHILD` rejection rolls the kernel's
+/// process-table entry back via `kernel_remove_process` (see that call site
+/// below for the one remaining, documented gap: the already-launched OS
+/// thread/Wasmtime instance itself is not torn down).
 ///
 /// Reaping (`waitpid`) is Task 3: the child, once launched, simply runs; its
 /// stdout/stderr land in the SAME captured buffers as every other process
@@ -2732,6 +2740,7 @@ fn handle_spawn(
     spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
     spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
+    remove_process: &wasmtime::TypedFunc<u32, i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -2826,16 +2835,33 @@ fn handle_spawn(
 
     let disposition = publish_spawn_child.call(&mut *kernel_store, (parent_pid, child_pid))?;
     if disposition < -1 {
-        // The kernel rejected publication (e.g. ESRCH/ECHILD — the parent or
-        // child disappeared from under this call). The child process is
-        // already fully launched and running by this point; this increment
-        // has no host-side rollback for a launched OS thread/Wasmtime
-        // instance (no fork/exec image-replacement machinery exists to
-        // retarget or tear it down mid-flight). Report the truthful failure
-        // to the parent rather than claiming success; the child becomes an
-        // orphaned, never-reaped process for the remainder of this run — a
-        // known, narrow gap for Task 3 (real reaping) to close alongside
-        // `host_waitpid`.
+        // The kernel rejected publication. Per `publish_spawn_child`'s
+        // documented contract (crates/runtime-core/src/process_table.rs
+        // ~:1517-1550): `-ESRCH` means the child is ALREADY absent (already
+        // self-reaped/removed — nothing left to remove), `-EINVAL` means bad
+        // arguments (the child was never a pending spawn publication — also
+        // nothing to remove), and `-ECHILD` SPECIFICALLY means the child's
+        // Process record still exists, unpublished, because the PARENT
+        // disappeared out from under this call — that record must be
+        // reclaimed via the host's rollback seam (`kernel_remove_process`),
+        // exactly like the Node reference host's
+        // `#rollbackSpawnWithinKernelEntry` does on `-ECHILD`. Best-effort:
+        // log rather than fail the whole run if the removal itself errors.
+        if disposition == -(libc_errno::ECHILD as i32) {
+            let removed = remove_process.call(&mut *kernel_store, child_pid)?;
+            if removed < 0 {
+                eprintln!(
+                    "[host-native] kernel_remove_process({child_pid}) after a -ECHILD spawn-publish \
+                     rejection failed: {removed}"
+                );
+            }
+        }
+        // This increment has no host-side rollback for the ALREADY-LAUNCHED
+        // OS thread/Wasmtime instance itself (no fork/exec image-replacement
+        // machinery exists to retarget or tear it down mid-flight, and the
+        // Node reference host does not solve this either) — only the
+        // kernel's process-table entry is reclaimed above. Report the
+        // truthful failure to the parent rather than claiming success.
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -disposition);
     }
 
@@ -3047,6 +3073,7 @@ mod libc_errno {
     pub const ENOMEM: i32 = 12;
     pub const EFAULT: i32 = 14;
     pub const EBADF: i32 = 9;
+    pub const ECHILD: i32 = 10;
     pub const EAGAIN: i32 = 11;
     pub const EACCES: i32 = 13;
     pub const EEXIST: i32 = 17;
