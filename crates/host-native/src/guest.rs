@@ -51,7 +51,7 @@ use wasm_posix_shared::channel::{
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
-use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_SPAWN};
+use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_EXECVEAT, SYS_SPAWN};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
 use wasm_posix_shared::host_abi::{
@@ -465,8 +465,9 @@ unsafe fn atomic_u32(mem: &SharedMemory, off: usize) -> &AtomicU32 {
 
 /// Read a NUL-terminated C string out of guest memory starting at `ptr` (a
 /// native wasm32 guest byte address — pointers are 4 bytes LE in every
-/// guest this host runs). Used by `handle_execve` (N1-I3c Task 1) to read
-/// `execve`'s `path` argument and each `argv`/`envp` entry
+/// guest this host runs). Used by `execve`/`execveat`'s `run_pump` branches
+/// (N1-I3c Task 1, N1-I3d Task 1) to read the `path` argument, and by
+/// `handle_exec_common` to read each `argv`/`envp` entry
 /// `read_guest_string_array` finds. Bounds itself against the guest
 /// memory's OWN actual size (`mem.data().len()`, not some fixed cap) so an
 /// out-of-range `ptr` cannot walk past the mapped region: a `ptr` already at
@@ -824,9 +825,9 @@ pub fn run_guest(
     // exec transition — cloexec fds, set-ID creds, signal reset,
     // memory-accounting reset, `clear_threads`, `exec_generation` bump — via
     // `kernel_exec_commit` instead of publishing a new child
-    // (`kernel_spawn_exec_commit`). See the `SYS_EXECVE` branch in
-    // `run_pump`/`handle_execve` for the full prepare -> read -> compile ->
-    // commit -> swap flow.
+    // (`kernel_spawn_exec_commit`). See the `SYS_EXECVE`/`SYS_EXECVEAT`
+    // branches in `run_pump`/`handle_exec_common` for the full prepare ->
+    // read -> compile -> commit -> swap flow.
     let exec_target_prepare = kernel.get_typed_func::<(u32, u32, i32, u32, u32, u32), i32>(
         &mut kernel_store,
         "kernel_exec_target_prepare",
@@ -2994,8 +2995,8 @@ fn run_pump(
                 // `parent_of`/new-pid `wait_table` bookkeeping applies —
                 // only the rare fatal-termination case below touches
                 // `wait_table` at all (an `exited` record, exactly like a
-                // real process exit). `handle_execve` does exactly ONE of:
-                // (a) replace `processes[pi]` in place (success — see its
+                // real process exit). `handle_exec_common` does exactly ONE
+                // of: (a) replace `processes[pi]` in place (success — see its
                 // doc comment for the abandoned-old-thread leak this
                 // deliberately accepts), (b) complete THIS channel with a
                 // truthful errno (the full failure matrix — see its doc
@@ -3007,14 +3008,64 @@ fn run_pump(
                 // channel index (`ci`) must not be re-examined this pass: on
                 // success `ch` no longer belongs to any live process (its
                 // process was just replaced); on an ordinary failure it was
-                // already completed by `handle_execve`/`fail_execve`; on
+                // already completed by `handle_exec_common`/`fail_exec`; on
                 // fatal termination `processes[pi]`'s channels (including
                 // `ch`) were just cleared.
+                //
+                // Wire args (see `libc/musl/src/process/execve.c`'s plain
+                // `syscall(SYS_execve, path, argv, envp)`): `args[0]` = path
+                // (C-string ptr), `args[1]` = argv, `args[2]` = envp. `execve`
+                // always resolves relative to the caller's own cwd with no
+                // extra flags, so it calls the shared helper with the fixed
+                // `AT_FDCWD`/`flags=0` pair — see the `SYS_EXECVEAT` branch
+                // below for the dirfd/flags-carrying sibling.
                 if ch.is_main && syscall_nr == SYS_EXECVE {
-                    if let Some(fatal_exit_code) = handle_execve(
-                        kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
+                    let guest_mem = processes[pi].memory.clone();
+                    let path_bytes = read_guest_cstring(&guest_mem, args[0] as u32);
+                    let argv_ptr = args[1] as u32;
+                    let envp_ptr = args[2] as u32;
+                    if let Some(fatal_exit_code) = handle_exec_common(
+                        kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
+                        open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
                         set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, remove_process, wait_table,
+                    )? {
+                        if pi == 0 {
+                            root_exit_code = Some(fatal_exit_code);
+                        }
+                    }
+                    ci += 1;
+                    continue;
+                }
+
+                // execveat (N1-I3d Task 1): the SAME image-replacement flow
+                // as `execve` above, sharing `handle_exec_common` in its
+                // entirety — the only difference is where the dirfd/path/
+                // flags wire args come from. Wire args (see
+                // `libc/musl/src/process/fexecve.c`'s `syscall(SYS_execveat,
+                // fd, "", argv, envp, AT_EMPTY_PATH)` — the only in-tree
+                // caller, but the general wire shape any raw
+                // `syscall(SYS_execveat, dirfd, path, argv, envp, flags)`
+                // caller uses): `args[0]` = dirfd (signed fd or `AT_FDCWD`),
+                // `args[1]` = path (C-string ptr), `args[2]` = argv,
+                // `args[3]` = envp, `args[4]` = flags (e.g. `AT_EMPTY_PATH`
+                // for `fexecve`'s fd-only form). The guest's real dirfd and
+                // flags are passed straight through to
+                // `kernel_exec_target_prepare`, which already resolves an
+                // `AT_EMPTY_PATH`+empty-path request against the fd itself —
+                // nothing here needs to special-case that combination.
+                if ch.is_main && syscall_nr == SYS_EXECVEAT {
+                    let guest_mem = processes[pi].memory.clone();
+                    let dirfd = args[0] as i32;
+                    let path_bytes = read_guest_cstring(&guest_mem, args[1] as u32);
+                    let argv_ptr = args[2] as u32;
+                    let envp_ptr = args[3] as u32;
+                    let flags = args[4] as u32;
+                    if let Some(fatal_exit_code) = handle_exec_common(
+                        kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args, dirfd,
+                        path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_brk_base, set_mmap_base,
+                        set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
+                        exec_target_cancel, remove_process, wait_table,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3435,18 +3486,17 @@ fn fail_spawn(
     complete_channel(guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], -1, errno as u32)
 }
 
-/// N1-I3c Task 1: intercept `execve`'s `SYS_EXECVE` request posted on a
-/// process's MAIN channel. `execve` REPLACES the CALLING process's image IN
-/// PLACE — same pid, fresh address space, a brand-new module instance
-/// running the new program — never a new process (that is
-/// `SYS_SPAWN`/[`handle_spawn`]). Wire args, read straight from the calling
-/// process's own guest memory (see `libc/musl/src/process/execve.c`'s plain
-/// `syscall(SYS_execve, path, argv, envp)` — no wasm32posix override exists
-/// for `execve`, unlike `pthread_create`'s `kernel_clone`/`waitpid`'s
-/// `kernel_wait4`, so this is the GENERIC channel-posted syscall, RAW guest
-/// pointers, exactly like `SYS_SPAWN`): `args[0]` = path (C-string ptr),
-/// `args[1]` = argv (NULL-terminated array of C-string ptrs), `args[2]` =
-/// envp (same).
+/// N1-I3c Task 1 / N1-I3d Task 1: the shared image-replacement body behind
+/// BOTH `execve`'s `SYS_EXECVE` and `execveat`'s `SYS_EXECVEAT` requests
+/// posted on a process's MAIN channel. Either syscall REPLACES the CALLING
+/// process's image IN PLACE — same pid, fresh address space, a brand-new
+/// module instance running the new program — never a new process (that is
+/// `SYS_SPAWN`/[`handle_spawn`]). The two syscalls differ only in where their
+/// wire args come from (`SYS_EXECVE` has no dirfd/flags; `SYS_EXECVEAT` reads
+/// a real dirfd and flags word — see each `run_pump` branch's doc comment for
+/// the exact wire layout): the caller has already read `dirfd`, `path_bytes`,
+/// `argv_ptr`, `envp_ptr`, and `flags` out of guest memory (or fixed them at
+/// `AT_FDCWD`/`0` for plain `execve`) by the time it calls this function.
 ///
 /// Drives the SAME exec-target authority [`handle_spawn`] uses
 /// (`kernel_exec_target_prepare` -> [`read_exec_target_bytes`] ->
@@ -3459,29 +3509,29 @@ fn fail_spawn(
 ///
 /// N1-I3c Task 2 hardens Task 1's happy path plus basic failure handling
 /// into the FULL POSIX failure/rollback matrix, whose crux is the success/
-/// failure ASYMMETRY: a failed `execve` is an ORDINARY syscall that RETURNS
-/// to the caller (the OLD image keeps running), so every failure branch that
-/// does not reach `kernel_exec_commit` completes `ch` (the caller's own
-/// channel) with the truthful errno via [`fail_execve`] and performs NO
-/// image swap; a `kernel_exec_commit` SUCCESS never resumes the caller (see
-/// the swap site below). The matrix:
+/// failure ASYMMETRY: a failed `execve`/`execveat` is an ORDINARY syscall
+/// that RETURNS to the caller (the OLD image keeps running), so every
+/// failure branch that does not reach `kernel_exec_commit` completes `ch`
+/// (the caller's own channel) with the truthful errno via [`fail_exec`] and
+/// performs NO image swap; a `kernel_exec_commit` SUCCESS never resumes the
+/// caller (see the swap site below). The matrix:
 ///   1. `read_guest_string_array` fault or `kernel_exec_target_prepare`
 ///      returning `token < 0`: no target was ever retained, so there is
-///      nothing to cancel — just [`fail_execve`] with the truthful errno.
+///      nothing to cancel — just [`fail_exec`] with the truthful errno.
 ///   2. A `read_exec_target_bytes` errno OR a `Module::new` compile failure
 ///      (e.g. a `#!` shebang script — I3d interpretation is explicitly out
 ///      of scope, so this must fail `ENOEXEC`, never execute the script,
 ///      mirroring `handle_spawn`'s identical `Module::new` handling): the
 ///      target IS retained under `token` at this point, so
 ///      `kernel_exec_target_cancel` ([`cancel_exec_target`], best-effort)
-///      runs FIRST, then [`fail_execve`] with the mapped errno (read) or
+///      runs FIRST, then [`fail_exec`] with the mapped errno (read) or
 ///      `ENOEXEC` (compile) resumes the caller. `Module::new`'s `Err` is
 ///      matched explicitly here — never allowed to `?`-propagate into a
 ///      pump-ending `bail!` — exactly like `handle_spawn`'s `child_module`
 ///      handling.
 ///   3. `kernel_exec_commit` returning `commit < 0`: the target is still
 ///      retained (commit failed before consuming it) — cancel it
-///      ([`cancel_exec_target`], best-effort), then [`fail_execve`] with
+///      ([`cancel_exec_target`], best-effort), then [`fail_exec`] with
 ///      `-commit`. NO swap.
 ///   4. A `compute_guest_memory`/`launch_process` failure AFTER
 ///      `kernel_exec_commit` already returned `0`: see
@@ -3502,22 +3552,28 @@ fn fail_spawn(
 /// channels at the moment of exec — a still-running worker (pthread)
 /// thread's channel would be left in `processes[pi]`'s OLD channel list,
 /// which this task does not reconcile against `kernel_exec_commit`'s
-/// in-kernel `clear_threads`; multi-threaded `execve` is out of this task's
-/// scope.
+/// in-kernel `clear_threads`; multi-threaded `execve`/`execveat` is out of
+/// this task's scope.
 ///
 /// Returns `Ok(None)` for every ordinary outcome (the channel was completed,
 /// or the image was swapped). Returns `Ok(Some(fatal_exit_code))` only for
 /// case 4 above, so `run_pump`'s caller can fold it into `root_exit_code`
 /// when `pi == 0` — see [`terminate_process_after_failed_exec_commit`].
 #[allow(clippy::too_many_arguments)]
-fn handle_execve(
+fn handle_exec_common(
     kernel_store: &mut Store<()>,
     engine: &Engine,
     kernel_mem: &SharedMemory,
     processes: &mut Vec<GuestProcess>,
     pi: usize,
     ch: PumpChannel,
+    syscall_nr: u32,
     args: &[i64; 6],
+    dirfd: i32,
+    path_bytes: Vec<u8>,
+    argv_ptr: u32,
+    envp_ptr: u32,
+    flags: u32,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -3534,17 +3590,13 @@ fn handle_execve(
     let caller_tid = ch.tid;
     let guest_mem = processes[pi].memory.clone();
 
-    let path_bytes = read_guest_cstring(&guest_mem, args[0] as u32);
-    let argv_ptr = args[1] as u32;
-    let envp_ptr = args[2] as u32;
-
     let argv_list = match read_guest_string_array(&guest_mem, argv_ptr, PROCESS_STARTUP_MAX_ARGV_COUNT) {
         Ok(list) => list,
-        Err(errno) => return fail_execve(&guest_mem, kernel_mem, ch, args, -errno).map(|()| None),
+        Err(errno) => return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, -errno).map(|()| None),
     };
     let envp_list = match read_guest_string_array(&guest_mem, envp_ptr, PROCESS_STARTUP_MAX_ARGV_COUNT) {
         Ok(list) => list,
-        Err(errno) => return fail_execve(&guest_mem, kernel_mem, ch, args, -errno).map(|()| None),
+        Err(errno) => return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, -errno).map(|()| None),
     };
 
     // Stage the path into a KERNEL-memory scratch region: `kernel_exec_
@@ -3554,27 +3606,27 @@ fn handle_execve(
     // module doc comment).
     let path_scratch = alloc_scratch.call(&mut *kernel_store, path_bytes.len() as u32)?;
     if path_scratch <= 0 {
-        return fail_execve(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM).map(|()| None);
+        return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
     }
     let path_scratch = path_scratch as u32 as usize;
     unsafe { write_bytes(kernel_mem, path_scratch, &path_bytes) };
 
     let token = exec_target_prepare.call(
         &mut *kernel_store,
-        (pid, caller_tid, open_flags::AT_FDCWD, path_scratch as u32, path_bytes.len() as u32, 0),
+        (pid, caller_tid, dirfd, path_scratch as u32, path_bytes.len() as u32, flags),
     )?;
     if token < 0 {
         // Case 1: no target was ever retained on a `prepare` failure, so
         // there is nothing to cancel — just resume the caller with the
         // truthful errno.
-        return fail_execve(&guest_mem, kernel_mem, ch, args, -token).map(|()| None);
+        return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, -token).map(|()| None);
     }
     let token = token as u32;
 
     let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
     if read_scratch <= 0 {
         cancel_exec_target(kernel_store, exec_target_cancel, pid, token, "a scratch-allocation failure");
-        return fail_execve(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM).map(|()| None);
+        return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
     }
     let program_bytes = match read_exec_target_bytes(
         kernel_store,
@@ -3594,7 +3646,7 @@ fn handle_execve(
             cancel_exec_target(
                 kernel_store, exec_target_cancel, pid, token, "a read_exec_target_bytes failure",
             );
-            return fail_execve(&guest_mem, kernel_mem, ch, args, errno).map(|()| None);
+            return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, errno).map(|()| None);
         }
     };
 
@@ -3603,10 +3655,10 @@ fn handle_execve(
     // interpretation is explicitly out of scope here, so this must fail, not
     // execute the script). Catch `Module::new`'s error instead of letting it
     // `?`-propagate into a pump-ending `bail!`: a bad exec target is a
-    // per-`execve` POSIX failure (`ENOEXEC`), not a host/kernel malfunction,
-    // mirroring `handle_spawn`'s `child_module` handling exactly. The target
-    // is still retained at this point (never committed), so cancel it before
-    // resuming the caller.
+    // per-`execve`/`execveat` POSIX failure (`ENOEXEC`), not a host/kernel
+    // malfunction, mirroring `handle_spawn`'s `child_module` handling exactly.
+    // The target is still retained at this point (never committed), so cancel
+    // it before resuming the caller.
     let new_module = match Module::new(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
@@ -3614,7 +3666,8 @@ fn handle_execve(
                 kernel_store, exec_target_cancel, pid, token,
                 "a Module::new compile failure (non-wasm exec target bytes)",
             );
-            return fail_execve(&guest_mem, kernel_mem, ch, args, libc_errno::ENOEXEC).map(|()| None);
+            return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOEXEC)
+                .map(|()| None);
         }
     };
 
@@ -3624,7 +3677,7 @@ fn handle_execve(
         // target (or left it retained on this path) — cancel it, best-effort,
         // before resuming the caller. NO swap.
         cancel_exec_target(kernel_store, exec_target_cancel, pid, token, "a kernel_exec_commit failure");
-        return fail_execve(&guest_mem, kernel_mem, ch, args, -commit).map(|()| None);
+        return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, -commit).map(|()| None);
     }
 
     // --- SUCCESS: `kernel_exec_commit` returned 0, so the kernel already
@@ -3679,9 +3732,9 @@ fn handle_execve(
     // and memory. We never complete `ch`: `kernel_exec_commit` already
     // performed the actual POSIX exec transition in the kernel, so waking
     // that parked thread would resume execution inside the doomed PRE-exec
-    // instance — exactly the image POSIX `execve` just replaced. Wasmtime's
-    // `Engine` here has no epoch-interruption or fuel configured (a
-    // deferred, cross-cutting Engine change, out of scope for this
+    // instance — exactly the image POSIX `execve`/`execveat` just replaced.
+    // Wasmtime's `Engine` here has no epoch-interruption or fuel configured
+    // (a deferred, cross-cutting Engine change, out of scope for this
     // increment), so there is also no way to preempt or forcibly join that
     // parked `std::thread` from the outside. `processes[pi]` is simply
     // overwritten below with `new_proc` (same pid, fresh module, memory,
@@ -3690,9 +3743,9 @@ fn handle_execve(
     // now points at it. The old `GuestProcess` (its thread handle was never
     // even kept, so there is nothing to join or drop explicitly) and its
     // old `SharedMemory`/channels are dropped here — one parked OS thread
-    // plus its backing shared memory leaks per successful `execve`. This is
-    // POSIX-correct (`execve` truly never returns to the old image on
-    // success), but it is a real, permanent resource leak per call.
+    // plus its backing shared memory leaks per successful call. This is
+    // POSIX-correct (`execve`/`execveat` truly never return to the old image
+    // on success), but it is a real, permanent resource leak per call.
     processes[pi] = new_proc;
     Ok(None)
 }
@@ -3768,7 +3821,7 @@ fn cancel_exec_target(
 /// inventing a new one; it is the fatal-exit-code return value + emptied
 /// channel list that make it inert, not physical removal from `processes`.
 ///
-/// Returns the synthetic fatal exit code so `handle_execve`'s caller
+/// Returns the synthetic fatal exit code so `handle_exec_common`'s caller
 /// (`run_pump`) can fold it into `root_exit_code` when `pi == 0`.
 fn terminate_process_after_failed_exec_commit(
     kernel_store: &mut Store<()>,
@@ -3781,9 +3834,9 @@ fn terminate_process_after_failed_exec_commit(
     error: &anyhow::Error,
 ) -> i32 {
     eprintln!(
-        "[host-native] execve({pid}): {stage} failed AFTER kernel_exec_commit succeeded — the \
-         kernel already committed the new program's POSIX exec transition, so the caller cannot \
-         be resumed; terminating pid {pid} instead: {error}"
+        "[host-native] execve/execveat({pid}): {stage} failed AFTER kernel_exec_commit \
+         succeeded — the kernel already committed the new program's POSIX exec transition, so \
+         the caller cannot be resumed; terminating pid {pid} instead: {error}"
     );
     match remove_process.call(&mut *kernel_store, pid) {
         Ok(removed) if removed < 0 => {
@@ -3806,27 +3859,32 @@ fn terminate_process_after_failed_exec_commit(
     FATAL_EXIT_CODE
 }
 
-/// Complete a failed `SYS_EXECVE` request on the CALLING process's own
-/// channel: `ret == -1` and a positive errno, matching `__do_syscall_impl`'s
-/// generic `if (result < 0) return -(long)err;` convention — exactly
-/// [`fail_spawn`]'s contract, except a failed `execve` resumes the SAME
-/// process/thread that called it (POSIX: `execve` only returns to the
-/// caller on failure). This is the success/failure asymmetry's failure half
-/// in its entirety: every `handle_execve` branch that calls this did NOT
-/// reach `kernel_exec_commit` (or reached it and it failed), so the OLD
-/// image is still the truth and the caller must be resumed with the
-/// truthful errno — never a swap. Retained-target cancellation
-/// (`cancel_exec_target`) is the CALLER's responsibility, done immediately
-/// before invoking this, mirroring `handle_spawn`'s `rollback_exec_target`
-/// ordering.
-fn fail_execve(
+/// Complete a failed `SYS_EXECVE`/`SYS_EXECVEAT` request on the CALLING
+/// process's own channel: `ret == -1` and a positive errno, matching
+/// `__do_syscall_impl`'s generic `if (result < 0) return -(long)err;`
+/// convention — exactly [`fail_spawn`]'s contract, except a failed
+/// `execve`/`execveat` resumes the SAME process/thread that called it
+/// (POSIX: `execve`/`execveat` only return to the caller on failure). This
+/// is the success/failure asymmetry's failure half in its entirety: every
+/// `handle_exec_common` branch that calls this did NOT reach
+/// `kernel_exec_commit` (or reached it and it failed), so the OLD image is
+/// still the truth and the caller must be resumed with the truthful errno —
+/// never a swap. Retained-target cancellation (`cancel_exec_target`) is the
+/// CALLER's responsibility, done immediately before invoking this, mirroring
+/// `handle_spawn`'s `rollback_exec_target` ordering. `syscall_nr` is passed
+/// through to `complete_channel` (`SYS_EXECVE` or `SYS_EXECVEAT`, whichever
+/// the caller actually posted) purely for fidelity — `complete_channel` only
+/// branches on `syscall_nr` for `ret >= 0` (mmap/brk growth), never reached
+/// here since `ret` is always `-1` on this path.
+fn fail_exec(
     guest_mem: &SharedMemory,
     kernel_mem: &SharedMemory,
     ch: PumpChannel,
+    syscall_nr: u32,
     args: &[i64; 6],
     errno: i32,
 ) -> anyhow::Result<()> {
-    complete_channel(guest_mem, kernel_mem, 0, ch, SYS_EXECVE, args, &[], -1, errno as u32)
+    complete_channel(guest_mem, kernel_mem, 0, ch, syscall_nr, args, &[], -1, errno as u32)
 }
 
 /// `handle_spawn`'s Task 1 happy-path rollback: the child's `Process` record

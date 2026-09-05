@@ -917,6 +917,57 @@ mod tests {
         Ok(())
     }
 
+    /// N1-I3d Task 1: `execveat` (`SYS_EXECVEAT` = 386, the dirfd-relative
+    /// exec syscall) shares `execve`'s image-replacement semantics — a
+    /// successful call REPLACES the calling process's image IN PLACE, never
+    /// returning to the caller — but reads its wire args in a different
+    /// shape: `dirfd`, then `path`, then `argv`/`envp`, then a `flags` word
+    /// (`AT_EMPTY_PATH` support belongs to the kernel's `kernel_exec_target_
+    /// prepare`, which already accepts a dirfd/flags pair — see this crate's
+    /// `handle_exec_common`). `native_execveat.c` calls
+    /// `execveat(AT_FDCWD, "/bin/exectarget", argv, envp, 0)` — the ordinary
+    /// `AT_FDCWD`-relative case — via the raw `syscall()` wrapper (musl has
+    /// no plain `execveat()` libc symbol). Before this task's implementation,
+    /// `SYS_EXECVEAT` falls through the pump straight to the kernel's generic
+    /// dispatch, which has no handler for it and returns `-ENOSYS`; that is
+    /// this test's RED state (`execveat` returns, the parent prints
+    /// "execveat returned\n", and the PARENT's own `_exit(1)` becomes the
+    /// process exit code).
+    #[test]
+    fn smoke_execveat_replaces_image() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_execveat.wasm");
+        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/exectarget", 3, 0o755, target.to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
+        let outcome = guest::run_guest(&path, parent, &options)?;
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("exec ok"),
+            "expected the exec'd target's stdout line to appear: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("execveat returned"),
+            "a successful execveat must never return to the caller: {stdout:?}"
+        );
+        assert_eq!(
+            outcome.exit_code, 9,
+            "process exit code must be the EXEC'D image's exit (9), not the caller's own \
+             (stdout: {stdout:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        Ok(())
+    }
+
     /// N1-I3b Task 2: `handle_spawn`'s failure/rollback matrix, case 1 —
     /// `kernel_spawn_exec_target_prepare` fails to resolve a path that does
     /// not exist in the child's VFS namespace at all. No target was ever
@@ -1068,7 +1119,7 @@ mod tests {
         Ok(())
     }
 
-    /// N1-I3c Task 2: `handle_execve`'s failure matrix, case 1 —
+    /// N1-I3c Task 2: `handle_exec_common`'s failure matrix, case 1 —
     /// `kernel_exec_target_prepare` fails to resolve a path that does not
     /// exist at all. No target was ever retained (nothing to
     /// `kernel_exec_target_cancel`); this is the success/failure asymmetry's
