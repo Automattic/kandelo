@@ -81,6 +81,7 @@ type LocalReplicationMessage<TMachine> =
   | { readonly kind: "hello" }
   | { readonly kind: "entries"; readonly entries: readonly ReplicationLogEntry[] }
   | { readonly kind: "navigated"; readonly path: string }
+  | { readonly kind: "miss"; readonly key: string }
   | { readonly kind: "ended" }
   | { readonly kind: "join"; readonly joinId: string }
   | { readonly kind: "withdrawn"; readonly joinId: string }
@@ -347,6 +348,30 @@ export class LocalReplicationLog<TMachine = never> {
    */
   publishNavigation(path: string): void {
     this.#post({ kind: "navigated", path });
+  }
+
+  /**
+   * Tell the publisher its log has no replay of `key`, a request line this
+   * watcher's page asked its replica for.
+   *
+   * The publisher's browser served it from cache, or served it before this
+   * replica joined; either way the publisher can still make the request, and
+   * once it does, the log carries it to every replica.
+   */
+  reportMiss(key: string): void {
+    this.#post({ kind: "miss", key });
+  }
+
+  /**
+   * Serve the request lines watchers report missing. Returns an unsubscribe.
+   */
+  onMiss(handler: (key: string) => void): () => void {
+    const listener = (event: MessageEvent) => {
+      const message = event.data as LocalReplicationMessage<TMachine>;
+      if (message.kind === "miss") handler(message.key);
+    };
+    this.#channel.addEventListener("message", listener);
+    return () => this.#channel.removeEventListener("message", listener);
   }
 
   /**

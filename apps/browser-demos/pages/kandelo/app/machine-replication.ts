@@ -174,8 +174,12 @@ export function useMachineReplication(
           },
         };
       });
+      const stopServingMisses = wire.onMiss((key) => {
+        serveMissedRequest(host, key);
+      });
       leaveRole = () => {
         stopServing();
+        stopServingMisses();
         setPublishing(false);
       };
     };
@@ -214,9 +218,12 @@ export function useMachineReplication(
        * again, and the loop below asks the other computer for whatever it is
        * running now.
        */
+      let stopMisses: (() => void) | null = null;
       const dropReplica = () => {
         if (!replica) return;
         replica = false;
+        stopMisses?.();
+        stopMisses = null;
         setReplicating(false);
         setViewerPath(null);
         void host.stopReplicatingMachine();
@@ -300,6 +307,9 @@ export function useMachineReplication(
             }
             if (gone || left) return;
             replica = true;
+            stopMisses = host.subscribeReplicationHttpMisses((key) => {
+              wire.reportMiss(key);
+            });
             setJoining(false);
             setFailure(null);
             setReplicating(true);
@@ -355,4 +365,29 @@ export function useMachineReplication(
     failure,
     navigation: { publish: publishNavigation, viewerPath },
   };
+}
+
+/**
+ * Make the request a viewer's replica has no replay of.
+ *
+ * The fetch travels this page's own service-worker bridge into the machine,
+ * and skips this browser's HTTP cache — the cache is why the log misses it.
+ * The response is discarded here: the injection is what was asked for, and
+ * the viewer serves the copy its own replica computes from the log.
+ */
+function serveMissedRequest(host: KernelHost, key: string): void {
+  const space = key.indexOf(" ");
+  if (space < 0) return;
+  const method = key.slice(0, space);
+  if (method !== "GET" && method !== "HEAD") return;
+  const base = host.getWebPreview()?.url;
+  if (!base || base === "about:blank") return;
+  const root = new URL(
+    base.endsWith("/") ? base : `${base}/`,
+    window.location.href,
+  );
+  const target = new URL(key.slice(space + 1).replace(/^\//, ""), root);
+  void fetch(target, { method, cache: "no-store" })
+    .then((response) => response.arrayBuffer())
+    .catch(() => {});
 }

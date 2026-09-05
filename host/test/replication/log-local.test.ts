@@ -312,4 +312,21 @@ describe("local replication log", () => {
       plain.close();
     }
   });
+  it("carries a watcher's missing request line to the publisher", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const publisher = new LocalReplicationLog(channel);
+    const watcher = new LocalReplicationLog(channel);
+    const misses: string[] = [];
+    const stopMisses = publisher.onMiss((key) => void misses.push(key));
+    try {
+      watcher.reportMiss("GET /wp-content/style.css");
+      await vi.waitFor(() =>
+        expect(misses).toEqual(["GET /wp-content/style.css"]),
+      );
+    } finally {
+      stopMisses();
+      publisher.close();
+      watcher.close();
+    }
+  });
 });
