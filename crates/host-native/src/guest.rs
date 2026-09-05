@@ -51,6 +51,7 @@ use wasm_posix_shared::channel::{
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
+use wasm_posix_shared::abi::host_intercepted::SYS_SPAWN;
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
 use wasm_posix_shared::host_abi::{
@@ -564,6 +565,14 @@ pub struct GuestOptions {
     /// N1-I1a's behavior exactly: the overlay's `/` starts and stays empty,
     /// with no manifest loaded and the `host_blob_read` import unreachable.
     pub base_image: Option<BaseImage>,
+    /// `posix_spawn`-able program bytes, keyed by the exact `path` a guest
+    /// passes to `posix_spawn`/`posix_spawnp` (tried first) or, failing that,
+    /// the spawn blob's decoded `argv[0]` (N1-I3a Task 2). Mirrors Node's
+    /// `execPrograms` host map. Empty (the default) means `posix_spawn`
+    /// always fails `ENOENT` — no VFS-backed resolution or PATH search yet
+    /// (later increments); this increment's only source of spawnable bytes is
+    /// this explicit host-provided map.
+    pub programs: HashMap<String, Vec<u8>>,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
@@ -616,10 +625,16 @@ pub fn run_guest(
             .unwrap_or_default(),
     );
 
+    // N1-I3a Task 2: the "current process memory" cell `host_futex_wake`
+    // routes through (see its doc comment). Starts pointed at the FIRST
+    // process's memory — correct until the pump binds it to a different
+    // process ahead of a `kernel_handle_channel` call.
+    let current_memory: Arc<Mutex<SharedMemory>> = Arc::new(Mutex::new(guest_mem.clone()));
+
     let mut kernel_store = Store::new(&engine, ());
     let mut klinker: Linker<()> = Linker::new(&engine);
     klinker.define(&mut kernel_store, "env", "memory", kernel_mem.clone())?;
-    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &guest_mem, &base_blobs)?;
+    define_kernel_host_imports(&mut klinker, &kernel_mem, &captured, &fs, &current_memory, &base_blobs)?;
     // Everything else the kernel imports (the ~78 unused host_* capabilities)
     // traps: a trivial no-VFS program touches none of them, and a trap is a
     // truthful boundary that surfaces any surprise syscall loudly.
@@ -671,6 +686,18 @@ pub fn run_guest(
     // RTFS manifest, if one was supplied (see the call site below).
     let rootfs_load_manifest = kernel
         .get_typed_func::<(i32, u32), i32>(&mut kernel_store, "kernel_rootfs_load_manifest")?;
+    // N1-I3a Task 2: posix_spawn. `kernel_spawn_process` parses the raw
+    // wire blob and builds the child Process; `kernel_spawn_blob_decode`
+    // decodes the SAME blob shape into the host-private argv/envp read-back
+    // framing (so this host never re-implements the `posix_spawn` guest
+    // ABI); `kernel_publish_spawn_child` records the parent/child edge once
+    // the child is fully launched (see `handle_spawn`).
+    let spawn_process =
+        kernel.get_typed_func::<(u32, u32, i32, i32), i32>(&mut kernel_store, "kernel_spawn_process")?;
+    let spawn_blob_decode =
+        kernel.get_typed_func::<(i32, i32, i32), i32>(&mut kernel_store, "kernel_spawn_blob_decode")?;
+    let publish_spawn_child =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_publish_spawn_child")?;
 
     // --- Kernel-side process setup -------------------------------------------
     // Only the pid is created here; the rest of this process's launch (scratch
@@ -822,6 +849,15 @@ pub fn run_guest(
         &blocking_retry_token,
         &blocking_retry_release,
         &thread_exit,
+        &alloc_scratch,
+        &set_brk_base,
+        &set_mmap_base,
+        &set_max_addr,
+        &spawn_process,
+        &spawn_blob_decode,
+        &publish_spawn_child,
+        &options.programs,
+        &current_memory,
         &mut syscall_trace,
     )?;
 
@@ -1136,19 +1172,31 @@ fn define_kernel_host_imports(
     kernel_mem: &SharedMemory,
     captured: &Arc<Mutex<CapturedIo>>,
     fs: &Arc<HostFs>,
-    guest_mem: &SharedMemory,
+    current_memory: &Arc<Mutex<SharedMemory>>,
     base_blobs: &Arc<BTreeMap<u64, Vec<u8>>>,
 ) -> anyhow::Result<()> {
     // host_futex_wake(addr, count) -> i32: wake up to `count` waiters parked on
     // the futex word at process address `addr` (in GUEST memory). musl's
-    // pthread machinery and clear-child-tid use this. Returns the count.
+    // pthread machinery and clear-child-tid use this. `addr` is a raw address
+    // in WHICHEVER process the kernel is currently dispatching for — unlike
+    // every other host_* import here, the kernel passes no pid, so the host
+    // must track "the process currently bound via kernel_set_current_tid" out
+    // of band. `current_memory` is that shared cell: the pump (`bind_and_
+    // dispatch`) updates it to the dispatching channel's owning process's
+    // memory immediately before every `kernel_handle_channel` call, so a
+    // futex wake fired synchronously from within that call always lands on
+    // the right process's `SharedMemory` (N1-I3a Task 2 — before this fix,
+    // this closure permanently captured the FIRST process's memory, which
+    // was harmless with exactly one process but silently wrong for any
+    // futex/pthread operation a spawned child performs).
     {
-        let mem = guest_mem.clone();
+        let current_memory = current_memory.clone();
         linker.func_wrap(
             "env",
             "host_futex_wake",
             move |_c: Caller<'_, ()>, addr: i32, count: i32| -> i32 {
                 let n = if count < 0 { i32::MAX } else { count };
+                let mem = current_memory.lock().unwrap().clone();
                 mem.atomic_notify(addr as u32 as u64, n as u32)
                     .map(|woke| woke as i32)
                     .unwrap_or(0)
@@ -1871,6 +1919,78 @@ fn spawn_guest_thread(
                 )
                 .unwrap();
         }
+        // kernel_wait4: waitpid()/wait() call this import directly (not the
+        // generic RAW channel post — see `libc/glue/syscall_glue.c`'s
+        // SYS_WAIT4 case), exactly like kernel_clone above. N1-I3a Task 2
+        // wires up the post-and-block protocol now so Task 3's pump-side
+        // `host_waitpid` parked-reap servicing needs no further guest-side
+        // change. The pump does not yet special-case SYS_WAIT4 (that is
+        // Task 3), so a program that actually calls waitpid before Task 3
+        // lands would hang here — no fixture in this increment does.
+        {
+            let mem = guest_mem.clone();
+            let ch = layout.channel_offset;
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_wait4",
+                    move |_c: Caller<'_, ()>,
+                          pid: i32,
+                          wstatus_ptr: i32,
+                          options: i32,
+                          rusage_ptr: i32|
+                          -> i32 {
+                        let wait_args = [
+                            pid as i64,
+                            wstatus_ptr as i64,
+                            options as i64,
+                            rusage_ptr as i64,
+                            0i64,
+                            0i64,
+                        ];
+                        unsafe {
+                            write_bytes(&mem, ch + SYSCALL_OFFSET, &(Syscall::Wait4 as u32).to_le_bytes());
+                            for (i, a) in wait_args.iter().enumerate() {
+                                write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
+                            }
+                            write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                        }
+                        let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                        loop {
+                            let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                            if s != STATUS_PENDING {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_micros(200));
+                        }
+                        let (ret, errno) = unsafe {
+                            (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
+                        };
+                        unsafe {
+                            atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                        }
+                        // This import bypasses `__do_syscall_impl`'s generic
+                        // "ret<0 -> -errno" post-processing (it is called
+                        // directly, not through the RAW channel path), so it
+                        // must apply that same convention itself.
+                        if ret < 0 { -(errno as i32) } else { ret as i32 }
+                    },
+                )
+                .unwrap();
+        }
+        // kernel_execve: execve()/execveat() call this import directly.
+        // Image replacement is a later increment (I3c); return ENOSYS (a real
+        // posix errno) rather than leaving this to the default trap-stub, so
+        // a guest that calls execve() sees a truthful "not implemented yet"
+        // failure instead of an abrupt host trap.
+        linker
+            .func_wrap(
+                "kernel",
+                "kernel_execve",
+                |_c: Caller<'_, ()>, _path_ptr: i32, _path_len: i32| -> i32 { -(libc_errno::ENOSYS) },
+            )
+            .unwrap();
         // The fork-exec import set is imported but never reached on this
         // (non-forking) path; a trap is the truthful boundary.
         linker.define_unknown_imports_as_traps(&module).unwrap();
@@ -2033,12 +2153,12 @@ struct PumpChannel {
 /// channels (the main channel plus any worker-thread channels sharing this
 /// process's memory).
 ///
-/// N1-I3a Task 1 generalizes the pump from a single hard-coded process to a
-/// `Vec<GuestProcess>` so a later increment (posix_spawn, Task 2) can push
+/// N1-I3a Task 1 generalized the pump from a single hard-coded process to a
+/// `Vec<GuestProcess>` so a later increment (posix_spawn) could push
 /// additional entries — one per spawned child, each with its OWN memory —
-/// without restructuring the pump loop again. This task keeps exactly one
-/// entry and preserves the prior single-process behavior exactly; nothing
-/// here yet creates a second process.
+/// without restructuring the pump loop again. Task 2 is that increment: a
+/// successful `SYS_SPAWN` (see `handle_spawn`) pushes exactly one more entry
+/// per call, one per launched child.
 struct GuestProcess {
     pid: u32,
     /// The compiled module this process's main thread and any of its worker
@@ -2143,6 +2263,7 @@ fn dispatch_once(
     retry_token: i64,
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
+    current_memory: &Arc<Mutex<SharedMemory>>,
 ) -> anyhow::Result<(i64, u32, Vec<StagedArg>)> {
     if is_record {
         // Opaque-record blind transport: stamp the syscall, blind-copy the data
@@ -2154,7 +2275,10 @@ fn dispatch_once(
             let record_in = read_bytes(guest_mem, ch.offset + DATA_OFFSET, DATA_SIZE);
             write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &record_in);
         }
-        bind_and_dispatch(store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel)?;
+        bind_and_dispatch(
+            store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel, guest_mem,
+            current_memory,
+        )?;
         let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
         unsafe {
             let record_out = read_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, DATA_SIZE);
@@ -2164,14 +2288,22 @@ fn dispatch_once(
         Ok((ret, errno, Vec::new()))
     } else {
         let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
-        bind_and_dispatch(store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel)?;
+        bind_and_dispatch(
+            store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel, guest_mem,
+            current_memory,
+        )?;
         let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
         Ok((ret, errno, staged))
     }
 }
 
-/// Bind the channel's tid (a one-shot binding consumed by the dispatch) and call
+/// Bind the channel's tid (a one-shot binding consumed by the dispatch), point
+/// the shared "current process memory" cell at this channel's owning process
+/// (see `host_futex_wake`'s doc comment — a futex wake fired synchronously
+/// from inside `kernel_handle_channel` must land on the CALLING process's
+/// memory, not whichever process happened to be dispatched last), and call
 /// `kernel_handle_channel`.
+#[allow(clippy::too_many_arguments)]
 fn bind_and_dispatch(
     store: &mut Store<()>,
     scratch_ptr: usize,
@@ -2180,11 +2312,14 @@ fn bind_and_dispatch(
     retry_token: i64,
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
+    guest_mem: &SharedMemory,
+    current_memory: &Arc<Mutex<SharedMemory>>,
 ) -> anyhow::Result<()> {
     let bind = set_current_tid.call(&mut *store, (pid, tid))?;
     if bind < 0 {
         anyhow::bail!("kernel_set_current_tid({pid},{tid}) failed: {bind}");
     }
+    *current_memory.lock().unwrap() = guest_mem.clone();
     handle_channel.call(&mut *store, (scratch_ptr as i32, MIN_CHANNEL_SIZE as u32, pid, retry_token))?;
     Ok(())
 }
@@ -2231,17 +2366,29 @@ fn complete_channel(
 /// channel of every live process and parks blocking syscalls in a table
 /// (re-dispatching them across iterations) rather than looping in place — so
 /// a blocked op on one channel never starves another. Returns the exit code
-/// of the FIRST process's (`processes[0]`) main channel when it posts
-/// exit/exit_group.
+/// of the FIRST process's (`processes[0]`, the boot process) main channel
+/// once it has posted exit/exit_group.
 ///
-/// N1-I3a Task 1: `processes` is a `Vec` so a future increment (posix_spawn,
-/// Task 2) can push additional entries here; this task's only caller
-/// (`run_guest`) always passes exactly one, so this refactor changes no
-/// observable behavior. The "return on `processes[0]`'s main-channel exit"
-/// rule is itself a single-process assumption Task 2/3 will need to revisit
-/// (a real parent+child run must not end the whole pump when a spawned
-/// child's main channel exits — only `waitpid`-style reaping should), but
-/// widening that rule is explicitly out of scope here.
+/// N1-I3a Task 1 made `processes` a `Vec` so Task 2 (posix_spawn) could push
+/// additional entries here. Task 2 does exactly that (see the `SYS_SPAWN`
+/// branch below) and, since a run can now have more than one process, also
+/// widens the "whose main-channel exit ends the pump" rule Task 1 flagged as
+/// out of scope. `processes[0]`'s exit no longer returns immediately: it is
+/// recorded (`root_exit_code`) and the pump keeps running until every
+/// spawned child (`processes[1..]`) has ALSO finished all of its channels,
+/// only then returning the recorded code. Without this drain, whichever of
+/// the parent/child happened to exit first would nondeterministically decide
+/// when the run ends — and since this task's own test has no `waitpid` to
+/// synchronize on, an immediate return on the parent's exit could return
+/// before the child had even started running, making the "child's stdout
+/// appears" assertion flaky. A spawned child's own main-channel exit always
+/// just commits into the kernel's process table and drops its channel (never
+/// ends the pump by itself). Reaping an exited child
+/// (`kernel_get_process_exit_status`/`kernel_reap_exited_child`) is Task 3's
+/// `host_waitpid`; this task only keeps the pump correctly running until
+/// then. `processes[0]`'s OWN non-main (worker-thread) channels are NOT part
+/// of the drain condition — unchanged from before this task, a still-blocked
+/// worker thread of the boot process never delays the return.
 #[allow(clippy::too_many_arguments)]
 fn run_pump(
     kernel_store: &mut Store<()>,
@@ -2254,10 +2401,26 @@ fn run_pump(
     blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
+    spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
+    publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
+    programs: &HashMap<String, Vec<u8>>,
+    current_memory: &Arc<Mutex<SharedMemory>>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let mut blocked: Vec<BlockedOp> = Vec::new();
     let hard_cap = Instant::now() + Duration::from_secs(30);
+    // Set once `processes[0]` (the boot process) posts exit/exit_group; the
+    // pump keeps running until every spawned child (`processes[1..]`) has
+    // also finished all of its channels (see the return check below and this
+    // function's doc comment), so a child's stdout/exit is guaranteed to have
+    // landed before this returns even though nothing here waits for it via
+    // `waitpid` yet.
+    let mut root_exit_code: Option<i32> = None;
 
     loop {
         if Instant::now() > hard_cap {
@@ -2295,6 +2458,8 @@ fn run_pump(
                 op.token.max(0),
                 set_current_tid,
                 handle_channel,
+                &guest_mem,
+                current_memory,
             )?;
             let (ret, errno) = read_ret_errno(kernel_mem, scratch_ptr);
 
@@ -2342,20 +2507,32 @@ fn run_pump(
                 trace.push(syscall_nr);
 
                 // Process exit on the MAIN channel: the kernel commits the
-                // status then traps via kernel_exit's `unreachable`; read the
-                // status and end the run. See this function's doc comment: this
-                // "end the whole pump" behavior is a `processes[0]`-only
-                // assumption Task 1 preserves unchanged (there is only ever one
-                // process today).
+                // status then traps via kernel_exit's `unreachable`. Only
+                // `processes[0]`'s (the boot process) exit marks the run as
+                // done, but does not necessarily return immediately (see this
+                // function's doc comment: it drains any spawned children
+                // first). A spawned child's exit always just commits into the
+                // kernel and drops its channel.
                 if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
                     let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args)?;
                     let _ = bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
+                        &guest_mem, current_memory,
                     );
-                    let code = get_exit_status
-                        .call(&mut *kernel_store, pid)
-                        .unwrap_or(args[0] as i32 & 0xff);
-                    return Ok(code);
+                    if pi == 0 {
+                        let code = get_exit_status
+                            .call(&mut *kernel_store, pid)
+                            .unwrap_or(args[0] as i32 & 0xff);
+                        root_exit_code = Some(code);
+                    }
+                    // No one reads a response to this final syscall (whether
+                    // this is the boot process or a spawned child), so drop
+                    // the channel (like a worker thread's exit) rather than
+                    // completing it. A spawned child's exit is now committed
+                    // in the kernel's process table (Zombie/Exited, ready for
+                    // a future `waitpid` — Task 3's `host_waitpid`).
+                    processes[pi].channels.remove(ci);
+                    continue; // the vec shifted; do not advance ci
                 }
 
                 // Worker-thread exit on a NON-main channel: route to
@@ -2392,6 +2569,7 @@ fn run_pump(
                     let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
                     bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
+                        &guest_mem, current_memory,
                     )?;
                     let (tid, errno) = read_ret_errno(kernel_mem, scratch_ptr);
                     if tid < 0 {
@@ -2442,9 +2620,23 @@ fn run_pump(
                     continue;
                 }
 
+                // posix_spawn (N1-I3a Task 2): a fresh-image child, never a
+                // fork. Fully self-contained — decodes the blob, resolves the
+                // program in `programs`, creates + launches the child, and
+                // completes this (parent) channel itself — so just move on.
+                if ch.is_main && syscall_nr == SYS_SPAWN {
+                    handle_spawn(
+                        kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
+                        spawn_blob_decode, spawn_process, publish_spawn_child, set_brk_base, set_mmap_base,
+                        set_max_addr, programs,
+                    )?;
+                    ci += 1;
+                    continue;
+                }
+
                 let (ret, errno, staged) = dispatch_once(
                     kernel_store, &guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
-                    &mut args, 0, set_current_tid, handle_channel,
+                    &mut args, 0, set_current_tid, handle_channel, current_memory,
                 )?;
 
                 if !is_record
@@ -2473,12 +2665,225 @@ fn run_pump(
             }
         }
 
+        // The boot process has exited AND every spawned child
+        // (`processes[1..]`) has finished all of its channels: the run is
+        // done. `processes[0]`'s OWN non-main (thread) channels are
+        // deliberately excluded from this check — unchanged from before
+        // Task 2, a still-blocked worker thread of the boot process does not
+        // delay the return (see e.g. `native_thread.c`'s detached writer).
+        if let Some(code) = root_exit_code {
+            if processes[1..].iter().all(|p| p.channels.is_empty()) {
+                return Ok(code);
+            }
+        }
+
         // Idle only when nothing was ready this pass, to keep latency low while
         // avoiding a hot spin.
         if !progressed {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// N1-I3a Task 2: intercept a `posix_spawn` request posted as `SYS_SPAWN` on
+/// a process's main channel. Wire args (see `libc/musl-overlay/src/process/
+/// wasm32posix/posix_spawn.c`): arg0/1 = path ptr/len, arg2/3 = blob ptr/len,
+/// arg4 = pid_out_ptr — all guest-memory addresses/lengths, since `SYS_SPAWN`
+/// is RAW (`wasm_posix_shared::host_raw_syscalls::HOST_RAW_SYSCALLS`), so the
+/// pump intercepts it here before any `dispatch_once`/RAW-arg marshalling —
+/// exactly like the `SYS_CLONE` branch above.
+///
+/// Never re-implements the `posix_spawn` guest ABI: the blob is decoded via
+/// the kernel's own `kernel_spawn_blob_decode` (to resolve the program and
+/// build the child's argv/env) and parsed a SECOND time by the kernel's own
+/// `kernel_spawn_process` (to build the child `Process`) — this host only
+/// stages bytes into kernel memory and reads the decoded framing back. The
+/// child's program bytes come ONLY from `programs` (this increment's
+/// `GuestOptions.programs` host map, mirroring Node's `execPrograms`); there
+/// is no VFS/PATH lookup yet (a later increment), so an unresolvable
+/// `path`/`argv[0]` is a truthful `ENOENT`, never a silent success.
+///
+/// On success: launches the child as a brand-new `GuestProcess` (Task 1's
+/// `compute_guest_memory`/`launch_process` — a fresh image, never a fork),
+/// pushes it onto `processes`, publishes the parent/child edge
+/// (`kernel_publish_spawn_child`), writes the child pid to the parent's
+/// `pid_out_ptr`, and completes the parent's channel with `ret == 0` (POSIX's
+/// `posix_spawn` success encoding; see `posix_spawn.c`'s `if (ret < 0) return
+/// -ret;` — a non-negative `ret` is returned to the caller as-is). On any
+/// failure, completes the parent's channel with `ret == -1` and a positive
+/// errno instead (`__do_syscall_impl`'s own `-errno`-on-negative convention),
+/// and never leaves a live child behind — except the one documented gap at
+/// the `kernel_publish_spawn_child` call site below.
+///
+/// Reaping (`waitpid`) is Task 3: the child, once launched, simply runs; its
+/// stdout/stderr land in the SAME captured buffers as every other process
+/// (`host_write` is keyed by fd, not by process — see `define_kernel_host_
+/// imports`), which is how this task's test observes it ran.
+#[allow(clippy::too_many_arguments)]
+fn handle_spawn(
+    kernel_store: &mut Store<()>,
+    engine: &Engine,
+    kernel_mem: &SharedMemory,
+    processes: &mut Vec<GuestProcess>,
+    pi: usize,
+    ch: PumpChannel,
+    args: &[i64; 6],
+    alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
+    spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
+    publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
+    set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    programs: &HashMap<String, Vec<u8>>,
+) -> anyhow::Result<()> {
+    let parent_pid = processes[pi].pid;
+    let caller_tid = ch.tid;
+    let guest_mem = processes[pi].memory.clone();
+
+    let path_ptr = args[0] as u32 as usize;
+    let path_len = args[1] as u32 as usize;
+    let blob_ptr = args[2] as u32 as usize;
+    let blob_len = args[3] as u32 as usize;
+    let pid_out_ptr = args[4] as u32 as usize;
+
+    if blob_len == 0 {
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::EINVAL);
+    }
+    // `kernel_spawn_process` itself rejects `blob_len > MIN_CHANNEL_SIZE`
+    // with E2BIG; check the same bound here (before wasting a scratch
+    // allocation on a blob that can never be spawned) and report the same
+    // errno for consistency.
+    if blob_len > MIN_CHANNEL_SIZE {
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::E2BIG);
+    }
+
+    let path_bytes = unsafe { read_bytes(&guest_mem, path_ptr, path_len) };
+    let path_str = String::from_utf8_lossy(&path_bytes).into_owned();
+    let blob_bytes = unsafe { read_bytes(&guest_mem, blob_ptr, blob_len) };
+
+    // Stage the blob into a fresh kernel-memory scratch region — both
+    // `kernel_spawn_blob_decode` and `kernel_spawn_process` require a
+    // kernel-owned range, never a raw guest address: the two engines run in
+    // separate Wasmtime instances with separate memories (this file's module
+    // doc comment).
+    let scratch = alloc_scratch.call(&mut *kernel_store, blob_len as u32)?;
+    if scratch <= 0 {
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
+    }
+    let scratch = scratch as u32 as usize;
+
+    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
+    let decoded_len =
+        spawn_blob_decode.call(&mut *kernel_store, (scratch as i32, blob_len as i32, blob_len as i32))?;
+    if decoded_len < 0 {
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, -decoded_len);
+    }
+    let (argv_list, envp_list) = read_decoded_argv_envp(kernel_mem, scratch);
+
+    let argv0 = argv_list.first().map(|b| String::from_utf8_lossy(b).into_owned());
+    let program_bytes = programs
+        .get(&path_str)
+        .or_else(|| argv0.as_ref().and_then(|a| programs.get(a)))
+        .cloned();
+    let Some(program_bytes) = program_bytes else {
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOENT);
+    };
+
+    // `kernel_spawn_blob_decode` overwrote `scratch` in place; re-stage the
+    // untouched RAW blob bytes before `kernel_spawn_process`'s own parse.
+    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
+    let child_pid =
+        spawn_process.call(&mut *kernel_store, (parent_pid, caller_tid, scratch as i32, blob_len as i32))?;
+    if child_pid <= 0 {
+        let errno = if child_pid < 0 { -child_pid } else { libc_errno::EIO };
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, errno);
+    }
+    let child_pid = child_pid as u32;
+
+    // Launch the child: its own compiled module, memory, and layout — a
+    // fresh image, never a fork — reusing Task 1's helpers verbatim, with the
+    // decoded argv/envp as its launch metadata.
+    let child_module = Module::new(engine, &program_bytes)?;
+    let (child_mem, child_layout) = compute_guest_memory(engine, &child_module)?;
+    let child_import_exit_status = Arc::new(Mutex::new(None::<i32>));
+    let child = launch_process(
+        engine,
+        kernel_store,
+        alloc_scratch,
+        set_brk_base,
+        set_mmap_base,
+        set_max_addr,
+        child_module,
+        child_mem,
+        child_layout,
+        child_pid,
+        child_import_exit_status,
+        Arc::new(argv_list),
+        Arc::new(envp_list),
+    )?;
+    processes.push(child);
+
+    let disposition = publish_spawn_child.call(&mut *kernel_store, (parent_pid, child_pid))?;
+    if disposition < -1 {
+        // The kernel rejected publication (e.g. ESRCH/ECHILD — the parent or
+        // child disappeared from under this call). The child process is
+        // already fully launched and running by this point; this increment
+        // has no host-side rollback for a launched OS thread/Wasmtime
+        // instance (no fork/exec image-replacement machinery exists to
+        // retarget or tear it down mid-flight). Report the truthful failure
+        // to the parent rather than claiming success; the child becomes an
+        // orphaned, never-reaped process for the remainder of this run — a
+        // known, narrow gap for Task 3 (real reaping) to close alongside
+        // `host_waitpid`.
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, -disposition);
+    }
+
+    if pid_out_ptr != 0 {
+        unsafe { write_bytes(&guest_mem, pid_out_ptr, &(child_pid as i32).to_le_bytes()) };
+    }
+    complete_channel(&guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], 0, 0)
+}
+
+/// Complete a failed `SYS_SPAWN` request: `ret == -1` and a positive errno,
+/// matching `__do_syscall_impl`'s `if (result < 0) return -(long)err;`
+/// convention (`posix_spawn.c` then returns that errno value directly, per
+/// POSIX — it never sets the global `errno`). No child is left behind on any
+/// of this function's call sites except the one documented in `handle_spawn`.
+fn fail_spawn(
+    guest_mem: &SharedMemory,
+    kernel_mem: &SharedMemory,
+    ch: PumpChannel,
+    args: &[i64; 6],
+    errno: i32,
+) -> anyhow::Result<()> {
+    complete_channel(guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], -1, errno as u32)
+}
+
+/// Parse `kernel_spawn_blob_decode`'s host-private read-back framing —
+/// `[argc u32][envc u32]` then `argc + envc` entries of `[len u32][bytes]`,
+/// argv first then envp (see `crate::spawn::serialize_argv_envp` in
+/// `crates/runtime-core/src/spawn.rs`) — out of KERNEL memory at `ptr` into
+/// owned `Vec<Vec<u8>>`s, ready for `launch_process`'s `launch_argv`/
+/// `launch_env` (which expect raw bytes with no NUL terminator, matching this
+/// framing exactly).
+fn read_decoded_argv_envp(kernel_mem: &SharedMemory, ptr: usize) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let argc = unsafe { read_u32(kernel_mem, ptr) } as usize;
+    let envc = unsafe { read_u32(kernel_mem, ptr + 4) } as usize;
+    let mut cursor = ptr + 8;
+    let mut take = |count: usize| -> Vec<Vec<u8>> {
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = unsafe { read_u32(kernel_mem, cursor) } as usize;
+            cursor += 4;
+            out.push(unsafe { read_bytes(kernel_mem, cursor, len) });
+            cursor += len;
+        }
+        out
+    };
+    let argv = take(argc);
+    let envp = take(envc);
+    (argv, envp)
 }
 
 /// Read the `(RETURN, ERRNO)` pair the kernel wrote into the scratch header.
@@ -2637,7 +3042,10 @@ fn copy_launch_entry(
 /// capabilities. Pinned here to avoid a `libc` dependency for these constants.
 mod libc_errno {
     pub const ENOENT: i32 = 2;
+    pub const E2BIG: i32 = 7;
     pub const EIO: i32 = 5;
+    pub const ENOMEM: i32 = 12;
+    pub const EFAULT: i32 = 14;
     pub const EBADF: i32 = 9;
     pub const EAGAIN: i32 = 11;
     pub const EACCES: i32 = 13;
@@ -2645,6 +3053,6 @@ mod libc_errno {
     pub const ENOTDIR: i32 = 20;
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
-    pub const EFAULT: i32 = 14;
     pub const ERANGE: i32 = 34;
+    pub const ENOSYS: i32 = 38;
 }

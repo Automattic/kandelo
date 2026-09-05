@@ -558,6 +558,7 @@ mod tests {
             env: vec![],
             mounts: vec![],
             base_image: None,
+            ..Default::default()
         };
         let outcome = guest::run_guest(&path, guest, &options)?;
 
@@ -769,6 +770,49 @@ mod tests {
             "expected epoll_ctl and epoll_pwait in the trace (routed to the kernel, \
              not a host poll conversion): {:?}",
             outcome.syscall_trace
+        );
+        Ok(())
+    }
+
+    /// N1-I3a Task 2: `posix_spawn` launches a FRESH-IMAGE child process
+    /// (never a fork) resolved from the native host's `GuestOptions.programs`
+    /// map. The parent `posix_spawn`s `"child"` and exits; the child (a
+    /// distinct guest module, its own memory, its own OS thread) runs to
+    /// completion and writes its own line. Reaping (`waitpid`) is Task 3 —
+    /// not exercised here — so this proves only that `SYS_SPAWN` is
+    /// intercepted, the blob is decoded and resolved via `programs`, and the
+    /// child is actually launched and runs: its stdout must appear in the
+    /// SAME captured buffer as the parent's (`host_write` is keyed by fd, not
+    /// by process). The pump drains the spawned child to completion before
+    /// returning (see `run_pump`'s doc comment), so this assertion is not a
+    /// race against the child's startup.
+    #[test]
+    fn smoke_spawn_launches_child() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let child = include_bytes!("../fixtures/native_spawn_child.wasm");
+
+        let mut programs = std::collections::HashMap::new();
+        programs.insert("child".to_string(), child.to_vec());
+        let options = guest::GuestOptions { programs, ..Default::default() };
+        let outcome = guest::run_guest(&path, parent, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "parent exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert!(
+            outcome
+                .stdout
+                .windows(b"child ok\n".len())
+                .any(|w| w == b"child ok\n"),
+            "expected the spawned child's stdout line to appear: {:?}",
+            String::from_utf8_lossy(&outcome.stdout)
         );
         Ok(())
     }
