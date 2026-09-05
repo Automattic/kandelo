@@ -723,10 +723,13 @@ pub fn run_guest(
     // scratch memory; `kernel_spawn_exec_commit` records the child's initial
     // image once every byte has been read back (see `read_exec_target_bytes`
     // and its call site in `handle_spawn`). `kernel_exec_target_cancel` is
-    // the rollback seam for a prepared-but-not-committed target — bound here
-    // for Task 2's full failure-matrix hardening; Task 1's happy path never
-    // calls it (a failed `prepare` has no token to cancel, and a failed
-    // `commit` has already consumed its token via the kernel's own `take`).
+    // the rollback seam for a prepared-but-not-committed target. N1-I3b Task 2
+    // calls it on the failure/rollback matrix's target-retained branches (a
+    // read/compile failure after `prepare` succeeded, and — best-effort,
+    // since the kernel's own `take` inside `kernel_spawn_exec_commit` usually
+    // consumes the token before validation fails — a `commit` failure too);
+    // Task 1's happy path and a `prepare` failure itself never call it (no
+    // token exists yet in the latter case).
     let spawn_exec_target_prepare = kernel.get_typed_func::<(u32, u32, u32, u32), i32>(
         &mut kernel_store,
         "kernel_spawn_exec_target_prepare",
@@ -739,7 +742,7 @@ pub fn run_guest(
     )?;
     let spawn_exec_commit = kernel
         .get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_spawn_exec_commit")?;
-    let _exec_target_cancel =
+    let exec_target_cancel =
         kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_exec_target_cancel")?;
     // N1-I3a Task 3: `host_waitpid`'s reap + status-encoding support.
     // `kernel_get_process_exit_signal` disambiguates `get_exit_status`'s
@@ -920,6 +923,7 @@ pub fn run_guest(
         &exec_target_size,
         &exec_target_read,
         &spawn_exec_commit,
+        &exec_target_cancel,
         &current_memory,
         &current_pid,
         &wait_table,
@@ -2635,6 +2639,7 @@ fn run_pump(
     exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
     spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -2883,7 +2888,7 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
-                        exec_target_read, spawn_exec_commit, wait_table,
+                        exec_target_read, spawn_exec_commit, exec_target_cancel, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -2991,14 +2996,29 @@ fn run_pump(
 /// against the CHILD's namespace with `X_OK` and retains an exact executable
 /// object behind an opaque token; `read_exec_target_bytes` streams that
 /// target's full contents out via `kernel_exec_target_size`/
-/// `kernel_exec_target_read`; and `kernel_spawn_exec_commit` records the
-/// child's initial image once every byte has been read back (see that
-/// helper's doc comment for why full coverage is required). An unresolvable
-/// `path`/`argv[0]` is a truthful negative-errno token from `prepare`, never
-/// a silent success. This function handles only the HAPPY PATH's rollback
-/// (best-effort `kernel_remove_process` + `fail_spawn` on a `prepare`/
-/// `commit` failure); the full failure/rollback matrix (EACCES, ENOEXEC,
-/// explicit `kernel_exec_target_cancel`) is later hardening.
+/// `kernel_exec_target_read`; `Module::new` compiles those bytes (N1-I3b Task
+/// 2 moved this compile step BEFORE `kernel_spawn_exec_commit`, deliberately
+/// diverging from Task 1's original prepare/read/commit/compile order — see
+/// the note at the `Module::new` call site for why: `kernel_spawn_exec_commit`
+/// unconditionally consumes the token via the kernel's own `take`, so a
+/// `Module::new` failure discovered AFTER commit would have nothing left to
+/// `kernel_exec_target_cancel`); and `kernel_spawn_exec_commit` records the
+/// child's initial image once every byte has been read AND compiled
+/// successfully (see that helper's doc comment for why full coverage is
+/// required). An unresolvable `path`/`argv[0]` is a truthful negative-errno
+/// token from `prepare`, never a silent success.
+///
+/// N1-I3b Task 2's full failure/rollback matrix: every failure path reports a
+/// truthful errno to the parent (via `fail_spawn`) and leaks neither the
+/// child's kernel process-table entry nor a retained exec target. A `prepare`
+/// failure (case 1) has no token to cancel — only `kernel_remove_process`
+/// runs. A `read_exec_target_bytes` or `Module::new` failure (case 2) has a
+/// target STILL retained (never committed) — `kernel_exec_target_cancel`
+/// runs before `kernel_remove_process`. A `kernel_spawn_exec_commit` failure
+/// (case 3) runs the same cancel-then-remove sequence best-effort, even
+/// though the kernel's own `take` inside commit usually already consumed the
+/// token (see that call site's note) — belt-and-suspenders against any commit
+/// failure path that does not reach `take`.
 ///
 /// On success: launches the child as a brand-new `GuestProcess` (Task 1's
 /// `compute_guest_memory`/`launch_process` — a fresh image, never a fork),
@@ -3041,6 +3061,7 @@ fn handle_spawn(
     exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
     spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
+    exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
     wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
@@ -3124,10 +3145,8 @@ fn handle_spawn(
         // Resolution failure (e.g. ENOENT/EACCES/ENOTDIR from the kernel's
         // path walk): no target was ever retained, so there is nothing to
         // cancel — just reclaim the child's unpublished Process record and
-        // report the truthful errno. The full failure/rollback matrix
-        // (EACCES nuance, ENOEXEC via a `Module::new` catch, explicit
-        // `kernel_exec_target_cancel` use) is later hardening (N1-I3b Task 2);
-        // this is the happy path's minimum viable rollback.
+        // report the truthful errno. This is case 1 of N1-I3b Task 2's
+        // failure/rollback matrix.
         rollback_spawned_child(kernel_store, remove_process, child_pid, "a kernel_spawn_exec_target_prepare failure");
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -token);
     }
@@ -3136,12 +3155,19 @@ fn handle_spawn(
     // Stream the retained target's full contents out of the kernel into host
     // memory, through a fixed-size scratch region — a FRESH allocation, since
     // the blob-decode scratch above is a different, already-consumed region.
+    // `prepare` above already retained a target under `token`, so from here
+    // on any failure must run through `rollback_exec_target` (cancel THEN
+    // remove — N1-I3b Task 2's target-retained branches), never the bare
+    // `rollback_spawned_child` the earlier `prepare`-failure branch uses.
     let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
     if read_scratch <= 0 {
-        rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure reading the exec target");
+        rollback_exec_target(
+            kernel_store, exec_target_cancel, remove_process, child_pid, token,
+            "a scratch-allocation failure reading the exec target",
+        );
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
     }
-    let program_bytes = read_exec_target_bytes(
+    let program_bytes = match read_exec_target_bytes(
         kernel_store,
         kernel_mem,
         exec_target_size,
@@ -3150,22 +3176,58 @@ fn handle_spawn(
         EXEC_TARGET_READ_CHUNK,
         child_pid,
         token,
-    )?;
+    )? {
+        Ok(bytes) => bytes,
+        Err(errno) => {
+            // Case 2 of the failure/rollback matrix: the target was
+            // retained by `prepare` but its bytes could not be fully read
+            // back (a kernel-reported size/read errno, or a short read that
+            // left the coverage check unsatisfiable). The target is still
+            // retained — cancel it before reclaiming the child.
+            rollback_exec_target(
+                kernel_store, exec_target_cancel, remove_process, child_pid, token,
+                "a read_exec_target_bytes failure",
+            );
+            return fail_spawn(&guest_mem, kernel_mem, ch, args, errno);
+        }
+    };
+
+    // Case 2 (continued): the bytes read back fully and cleanly, but they
+    // are not a well-formed Wasm module (e.g. a `#!` shebang script — I3d
+    // interpretation is explicitly out of scope here, so this must fail, not
+    // execute the script). Catch `Module::new`'s error instead of letting it
+    // `?`-propagate into a pump-ending `bail!`: a bad exec target is a
+    // per-spawn POSIX failure (`ENOEXEC`, mirroring Node's
+    // `isWasmModuleBytes` -> `ENOEXEC` in `host/src/exec-target.ts:453`), not
+    // a host/kernel malfunction. The target is still retained at this point
+    // (never committed), so cancel it before reclaiming the child.
+    let child_module = match Module::new(engine, &program_bytes) {
+        Ok(module) => module,
+        Err(_) => {
+            rollback_exec_target(
+                kernel_store, exec_target_cancel, remove_process, child_pid, token,
+                "a Module::new compile failure (non-wasm exec target bytes)",
+            );
+            return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOEXEC);
+        }
+    };
 
     let commit = spawn_exec_commit.call(&mut *kernel_store, (parent_pid, child_pid, token))?;
     if commit < 0 {
-        // `kernel_spawn_exec_commit` already `take`s the target out of the
-        // child's ledger before validating — win or lose, the token is
-        // consumed either way, so never call `kernel_exec_target_cancel`
-        // here (see this function's doc comment).
-        rollback_spawned_child(kernel_store, remove_process, child_pid, "a kernel_spawn_exec_commit failure");
+        // Case 3: `kernel_spawn_exec_commit` already `take`s the target out
+        // of the child's ledger before validating, so on most commit
+        // failures the token is already consumed and a `cancel` call here is
+        // a harmless best-effort no-op (it will itself fail, logged, because
+        // the ledger no longer holds the token). Call it anyway — cheap
+        // insurance against any commit-failure path that does NOT reach that
+        // `take` and so leaves the target retained — before reclaiming the
+        // child, per this function's no-leak contract.
+        rollback_exec_target(
+            kernel_store, exec_target_cancel, remove_process, child_pid, token,
+            "a kernel_spawn_exec_commit failure",
+        );
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -commit);
     }
-
-    // Launch the child: its own compiled module, memory, and layout — a
-    // fresh image, never a fork — reusing Task 1's helpers verbatim, with the
-    // decoded argv/envp as its launch metadata.
-    let child_module = Module::new(engine, &program_bytes)?;
     let (child_mem, child_layout) = compute_guest_memory(engine, &child_module)?;
     let child_import_exit_status = Arc::new(Mutex::new(None::<i32>));
     let child = launch_process(
@@ -3272,6 +3334,48 @@ fn rollback_spawned_child(
     }
 }
 
+/// N1-I3b Task 2's target-retained rollback: like [`rollback_spawned_child`],
+/// but for a failure that happens AFTER `kernel_spawn_exec_target_prepare`
+/// already retained a target under `token` (a read, compile, or commit
+/// failure — see `handle_spawn`'s doc comment for the exact case list).
+/// Cancels the retained target first (`kernel_exec_target_cancel`,
+/// best-effort — logs on failure/trap rather than failing the whole run),
+/// THEN reclaims the child's still-unpublished `Process` record via
+/// [`rollback_spawned_child`]. Ordering matters even though both calls are
+/// keyed on `child_pid`: the target is filed under that pid in the kernel's
+/// per-process ledger (`kernel_spawn_exec_target_prepare`'s doc comment), so
+/// canceling it first is the conservative order — reclaiming the process
+/// record first would still work (the ledger lives on the `Process` itself,
+/// so `kernel_remove_process` drops any retained target with it), but
+/// canceling explicitly first makes the target's release independently
+/// observable and keeps this helper correct even if that invariant ever
+/// changes.
+fn rollback_exec_target(
+    kernel_store: &mut Store<()>,
+    exec_target_cancel: &wasmtime::TypedFunc<(u32, u32), i32>,
+    remove_process: &wasmtime::TypedFunc<u32, i32>,
+    child_pid: u32,
+    token: u32,
+    reason: &str,
+) {
+    match exec_target_cancel.call(&mut *kernel_store, (child_pid, token)) {
+        Ok(canceled) if canceled < 0 => {
+            eprintln!(
+                "[host-native] kernel_exec_target_cancel({child_pid}, {token}) after {reason} \
+                 failed: {canceled}"
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "[host-native] kernel_exec_target_cancel({child_pid}, {token}) after {reason} \
+                 trapped: {error}"
+            );
+        }
+        Ok(_) => {}
+    }
+    rollback_spawned_child(kernel_store, remove_process, child_pid, reason);
+}
+
 /// A chunk size for `read_exec_target_bytes`'s kernel-scratch buffer: large
 /// enough that even a several-MB guest program needs only a handful of
 /// `kernel_exec_target_read` round trips, small enough to stay a trivial
@@ -3291,6 +3395,16 @@ const EXEC_TARGET_READ_CHUNK: u32 = 65536;
 /// zero-gap coverage before `kernel_spawn_exec_commit`/`kernel_exec_commit`
 /// will succeed, so a caller MUST drain this to completion (or `size == 0`)
 /// before committing.
+///
+/// Returns `Ok(Ok(bytes))` on a full, successful read. A genuine call
+/// failure (the `TypedFunc::call` itself trapping — a host/kernel
+/// malfunction, not a normal outcome) still propagates via the outer
+/// `anyhow::Result`'s `?`, ending the whole pump exactly as before this
+/// function existed. A NORMAL negative-errno result from the kernel (a bad
+/// size, a failed read, or a short read that leaves the coverage gap
+/// unsatisfiable) is instead `Ok(Err(errno))` — N1-I3b Task 2's callers map
+/// this to a truthful `fail_spawn` errno rather than a pump `bail!` (see
+/// `handle_spawn`'s call site).
 fn read_exec_target_bytes(
     kernel_store: &mut Store<()>,
     kernel_mem: &SharedMemory,
@@ -3300,10 +3414,10 @@ fn read_exec_target_bytes(
     scratch_len: u32,
     owner_pid: u32,
     token: u32,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<Result<Vec<u8>, i32>> {
     let size = size_fn.call(&mut *kernel_store, (owner_pid, token))?;
     if size < 0 {
-        anyhow::bail!("kernel_exec_target_size({owner_pid}, {token}) failed: {size}");
+        return Ok(Err(-size as i32));
     }
     let total = size as usize;
     let mut out = Vec::with_capacity(total);
@@ -3315,22 +3429,22 @@ fn read_exec_target_bytes(
             (owner_pid, token, offset as u32, (offset >> 32) as i32, scratch_ptr, want),
         )?;
         if n < 0 {
-            anyhow::bail!("kernel_exec_target_read({owner_pid}, {token}, {offset}) failed: {n}");
+            return Ok(Err(-n));
         }
         if n == 0 {
-            break; // EOF short of `size`: the loop below reports the gap.
+            break; // EOF short of `size`: the check below reports the gap.
         }
         let chunk = unsafe { read_bytes(kernel_mem, scratch_ptr as usize, n as usize) };
         out.extend_from_slice(&chunk);
         offset += n as i64;
     }
     if out.len() != total {
-        anyhow::bail!(
-            "kernel_exec_target_read({owner_pid}, {token}) returned {} of {total} expected bytes",
-            out.len()
-        );
+        // Not a kernel-reported errno (the reads themselves all succeeded) —
+        // a coverage-gap invariant violation. EIO is the closest POSIX errno
+        // for "the underlying object did not deliver a promised read".
+        return Ok(Err(libc_errno::EIO));
     }
-    Ok(out)
+    Ok(Ok(out))
 }
 
 /// Parse `kernel_spawn_blob_decode`'s host-private read-back framing —
@@ -3520,6 +3634,7 @@ fn copy_launch_entry(
 mod libc_errno {
     pub const ENOENT: i32 = 2;
     pub const E2BIG: i32 = 7;
+    pub const ENOEXEC: i32 = 8;
     pub const EIO: i32 = 5;
     pub const ENOMEM: i32 = 12;
     pub const EFAULT: i32 = 14;
