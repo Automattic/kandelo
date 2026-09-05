@@ -427,6 +427,33 @@ pub struct RunOutcome {
     /// The syscall numbers the guest posted, in order — a witness that the
     /// program really ran the expected path (mmap, getpid, write, exit_group).
     pub syscall_trace: Vec<u32>,
+    /// N1-I4 Task 3: the co-resident fork-module's proof-of-use counters,
+    /// SUMMED across every guest OS thread this run ever instantiated one
+    /// for (the boot process, and any spawned/forked/exec'd descendant).
+    /// `Default::default()` (all zero) for any run with `enable_fork_module
+    /// == false` — test-observability plumbing, exactly like
+    /// `syscall_trace`, not a behavior change.
+    pub fork_proof_of_use: ForkProofOfUse,
+}
+
+/// N1-I4 Task 3: proof-of-use counters accumulated (by simple addition, never
+/// reset) from EVERY co-resident fork-module instance a [`run_guest`] call
+/// ever instantiates. A frames-only fork (this task's scope) drives ONLY
+/// `frames_committed` (a parent's capture/unwind) and `frames_replayed` (a
+/// parent's OR a child's rewind) — the four reference-path counters must
+/// stay `0` until I5 starts driving reference reconstruction; a nonzero
+/// value there would mean the frames-only coordinator accidentally exercised
+/// the inert reference/exception host-import stubs `instantiate_fork_module`
+/// wires as traps, which is exactly what [`RunOutcome::fork_proof_of_use`]'s
+/// tests assert never happens.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ForkProofOfUse {
+    pub frames_committed: i64,
+    pub frames_replayed: i64,
+    pub references_reconstructed: i64,
+    pub externrefs_resolved: i64,
+    pub exnrefs_reconstructed: i64,
+    pub gc_nodes_reconstructed: i64,
 }
 
 // --- Raw shared-memory access helpers ---------------------------------------
@@ -1039,6 +1066,16 @@ pub fn run_guest(
         Arc::new(options.argv.iter().map(|s| s.as_bytes().to_vec()).collect());
     let launch_env: Arc<Vec<Vec<u8>>> =
         Arc::new(options.env.iter().map(|s| s.as_bytes().to_vec()).collect());
+    // N1-I4 Task 3: computed once from the boot module's OWN raw bytes (the
+    // only site with them in scope — `wasmtime::Module` retains no
+    // custom-section accessor, per `compute_guest_fork_format`'s doc
+    // comment). `None` for any non-fork-instrumented guest, which is every
+    // fixture that predates this task.
+    let boot_fork_format = compute_guest_fork_format(guest_wasm)?.map(Arc::new);
+    // N1-I4 Task 3: shared, SUMMED-into accumulator for
+    // `RunOutcome::fork_proof_of_use` — see that field's doc comment. Threaded
+    // through `launch_process`/`run_pump` exactly like `wait_table`.
+    let fork_proof_of_use: Arc<Mutex<ForkProofOfUse>> = Arc::new(Mutex::new(ForkProofOfUse::default()));
     let process = launch_process(
         &engine,
         &mut kernel_store,
@@ -1054,7 +1091,9 @@ pub fn run_guest(
         launch_argv,
         launch_env,
         options.enable_fork_module,
-        false, // the boot process is never itself a pending-replay fork child
+        ForkEntry::Normal, // the boot process is never itself a fork child
+        boot_fork_format,
+        Arc::clone(&fork_proof_of_use),
     )?;
     let mut processes = vec![process];
     // N1-I3a Task 3: the boot process's ppid is the sentinel `0` — never a
@@ -1098,15 +1137,18 @@ pub fn run_guest(
         &current_pid,
         &wait_table,
         options.enable_fork_module,
+        &fork_proof_of_use,
         &mut syscall_trace,
     )?;
 
     let io = captured.lock().unwrap();
+    let fork_proof_of_use = *fork_proof_of_use.lock().unwrap();
     Ok(RunOutcome {
         exit_code,
         stdout: io.stdout.clone(),
         stderr: io.stderr.clone(),
         syscall_trace,
+        fork_proof_of_use,
     })
 }
 
@@ -2112,6 +2154,332 @@ const FORK_MODULE_SHADOW_STACK_BYTES: usize = 1 << 20;
 /// `WASM_DYLINK_MEM_INFO`.
 const WASM_DYLINK_MEM_INFO: u8 = 1;
 
+/// The fork-module's static resume-catalog cap, mirroring TypeScript's
+/// `FORK_MODULE_RESUME_CATALOG_CAP` (`host/src/fork-module-backend.ts`).
+const FORK_MODULE_RESUME_CATALOG_CAP: usize = 16_384;
+
+/// N1-I4 Task 3: a small, fixed-size, host-owned scratch region — big enough
+/// to hold [`FORK_MODULE_RESUME_CATALOG_CAP`] `u32` ordinals (exactly 64 KiB)
+/// — carved out of the co-resident fork-module's OWN shadow-stack padding
+/// (see [`instantiate_fork_module`]'s `catalog_scratch_base` computation) and
+/// used ONCE, synchronously, before the guest's `_start` ever runs: staging
+/// the resume-catalog ordinals `fm_set_resume_catalog` reads. Mirrors the
+/// TRANSIENT half of `ForkModuleBackendOptions.reserveRegion`/`releaseRegion`
+/// (`host/src/fork-module-backend.ts`'s `setup()`) — this host does not need
+/// a general-purpose reserve/release cycle because this scratch is used and
+/// abandoned before the guest's own allocator ever starts, so no later guest
+/// code can ever observe or collide with it.
+const FORK_MODULE_CATALOG_SCRATCH_BYTES: usize = FORK_MODULE_RESUME_CATALOG_CAP * 4;
+
+/// Find a custom section named `name` in raw wasm module `bytes`, returning
+/// its payload if present. Generalizes the section-scanning loop
+/// [`read_fork_module_mem_info`] already uses for `dylink.0`, so
+/// [`compute_guest_fork_format`] can reuse the same scanner for the GUEST's
+/// own `kandelo.wpk_fork.linked_frames` (KLCF) and
+/// `kandelo.wpk_fork.resume_catalog` (KFRC) custom sections. `wasmtime::Module`
+/// has no custom-section accessor (see `read_fork_module_mem_info`'s doc
+/// comment), so this parses the raw byte stream directly, independent of
+/// Wasmtime, exactly like that function.
+fn find_custom_section<'a>(wasm_bytes: &'a [u8], name: &str) -> anyhow::Result<Option<&'a [u8]>> {
+    anyhow::ensure!(
+        wasm_bytes.len() >= 8 && &wasm_bytes[0..4] == b"\0asm",
+        "not a wasm module (bad magic)"
+    );
+    let mut pos = 8usize;
+    while pos < wasm_bytes.len() {
+        let section_id = wasm_bytes[pos];
+        pos += 1;
+        let section_len = read_leb_u32(wasm_bytes, &mut pos)? as usize;
+        let section_end = pos + section_len;
+        anyhow::ensure!(section_end <= wasm_bytes.len(), "section runs past end of module");
+        if section_id == 0 {
+            let name_len = read_leb_u32(wasm_bytes, &mut pos)? as usize;
+            let name_end = pos + name_len;
+            anyhow::ensure!(name_end <= section_end, "custom section name runs past section end");
+            if &wasm_bytes[pos..name_end] == name.as_bytes() {
+                return Ok(Some(&wasm_bytes[name_end..section_end]));
+            }
+        }
+        pos = section_end;
+    }
+    Ok(None)
+}
+
+/// Read the guest's `kandelo.wpk_fork.linked_frames` (KLCF) custom section —
+/// `wasm-fork-instrument`'s linked-frame format descriptor — and return its
+/// `fixed_prefix_size` field (the second argument `fm_set_format` needs).
+/// Mirrors `readLinkedFrameFormat` in `host/src/fork-continuation.ts`, using
+/// the SAME field names/offsets from `wasm_posix_shared::abi` it imports from
+/// `host/src/generated/abi.ts`. Returns `Ok(None)` when the section is
+/// absent (an ordinary, non-fork-instrumented guest) rather than erroring —
+/// absence is the expected, common case for every fixture that never calls
+/// `fork()`.
+fn read_linked_frame_fixed_prefix_size(wasm_bytes: &[u8]) -> anyhow::Result<Option<u32>> {
+    use wasm_posix_shared::abi::{
+        WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
+        WPK_FORK_LINKED_FRAME_FORMAT_SECTION, WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+        WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT, WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+    };
+    let Some(bytes) = find_custom_section(wasm_bytes, WPK_FORK_LINKED_FRAME_FORMAT_SECTION)? else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        bytes.len() == WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE as usize,
+        "linked-frame format descriptor has {} bytes, expected {}",
+        bytes.len(),
+        WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE
+    );
+    anyhow::ensure!(bytes[0..4] == WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, "bad linked-frame format magic");
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    anyhow::ensure!(
+        version == WPK_FORK_LINKED_FRAME_FORMAT_VERSION,
+        "unsupported linked-frame format version {version}"
+    );
+    let declared_size = u16::from_le_bytes([bytes[6], bytes[7]]);
+    anyhow::ensure!(
+        declared_size == WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
+        "bad linked-frame format declared size {declared_size}"
+    );
+    let ptr_width = bytes[8];
+    anyhow::ensure!(ptr_width == 4, "this host only supports wasm32 guests, got ptr_width {ptr_width}");
+    let alignment = bytes[9];
+    anyhow::ensure!(
+        alignment == WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
+        "bad linked-frame record alignment {alignment}"
+    );
+    let flags = u16::from_le_bytes([bytes[10], bytes[11]]);
+    anyhow::ensure!(
+        flags == WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
+        "unsupported linked-frame flags {flags:#x}"
+    );
+    let fixed_prefix_size = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Ok(Some(fixed_prefix_size))
+}
+
+/// Read the guest's `kandelo.wpk_fork.resume_catalog` (KFRC) custom section —
+/// the ordered `(function_ordinal, local_catalog_slot)` table
+/// `wasm-fork-instrument` emits — and return just the `function_ordinal`
+/// column, in file order (already validated strictly increasing), exactly
+/// the shape `readForkResumeCatalog(...).map(r => r.functionOrdinal)` builds
+/// in `host/src/worker-main.ts`. These KFRC framing constants have NO
+/// shared-ABI mirror (see `crates/fork-codec/src/catalogs.rs`'s identical
+/// note) — they live only in `host/src/fork-resume-catalog.ts`,
+/// `crates/fork-codec/src/catalogs.rs`, and privately in
+/// `crates/fork-instrument`, so they are carried locally here too. Returns an
+/// empty `Vec` when the section is absent (a fork-instrumented guest with no
+/// resume targets at all is not expected in practice, but an absent section
+/// is treated the same as the TS `setup()`'s `count === 0` skip, not an
+/// error).
+fn read_fork_resume_catalog_ordinals(wasm_bytes: &[u8]) -> anyhow::Result<Vec<u32>> {
+    const RESUME_MAGIC: [u8; 4] = *b"KFRC";
+    const RESUME_VERSION: u16 = 1;
+    const RESUME_HEADER_SIZE: usize = 12;
+    const RESUME_RECORD_SIZE: usize = 8;
+
+    let Some(bytes) = find_custom_section(wasm_bytes, "kandelo.wpk_fork.resume_catalog")? else {
+        return Ok(Vec::new());
+    };
+    anyhow::ensure!(bytes.len() >= RESUME_HEADER_SIZE, "resume catalog descriptor is truncated");
+    anyhow::ensure!(bytes[0..4] == RESUME_MAGIC, "bad resume catalog magic");
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    anyhow::ensure!(version == RESUME_VERSION, "unsupported resume catalog version {version}");
+    let header_size = u16::from_le_bytes([bytes[6], bytes[7]]);
+    anyhow::ensure!(header_size as usize == RESUME_HEADER_SIZE, "bad resume catalog header size {header_size}");
+    let count = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    let expected = RESUME_HEADER_SIZE + count * RESUME_RECORD_SIZE;
+    anyhow::ensure!(bytes.len() == expected, "resume catalog has an invalid size");
+
+    let mut ordinals = Vec::with_capacity(count);
+    let mut previous: Option<u32> = None;
+    for i in 0..count {
+        let off = RESUME_HEADER_SIZE + i * RESUME_RECORD_SIZE;
+        let ordinal = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        if let Some(prev) = previous {
+            anyhow::ensure!(ordinal > prev, "resume catalog function ordinals are not strictly increasing");
+        }
+        previous = Some(ordinal);
+        ordinals.push(ordinal);
+    }
+    Ok(ordinals)
+}
+
+/// The guest-program-specific fork format this host must seed into a FRESH
+/// co-resident fork-module instance ONCE, before any `fork()` (mirrors
+/// `ForkModuleContinuationBackend::setup()`, `host/src/fork-module-
+/// backend.ts:131-154`): the linked-frame `fixed_prefix_size` and the FULL
+/// resume-catalog function ordinals, both read straight from the guest's OWN
+/// custom sections (see [`compute_guest_fork_format`]). `ptr_width` is not
+/// carried here — this host only supports wasm32 guests, so it is always `4`
+/// (`fm_set_format`'s first argument).
+#[derive(Debug, Clone)]
+pub(crate) struct GuestForkFormat {
+    pub fixed_prefix_size: u32,
+    pub catalog_ordinals: Vec<u32>,
+}
+
+/// Compute [`GuestForkFormat`] from a guest program's raw wasm bytes, or
+/// `Ok(None)` if the guest carries no `kandelo.wpk_fork.linked_frames`
+/// section at all (an ordinary, non-fork-instrumented program — the common
+/// case). Called once at every site that compiles a fresh guest `Module`
+/// from raw bytes ([`run_guest`]'s boot module, `handle_spawn`'s child,
+/// `handle_exec_common`'s new image); a fork child reuses its parent's
+/// already-computed value (`GuestProcess::fork_format`) since it runs the
+/// IDENTICAL bytes, never recomputing it.
+/// How a fresh guest OS thread should enter its program (N1-I4 Task 3).
+/// Replaces the old `fork_child_pending_replay: bool` — a legacy fork child
+/// could only ever be stubbed (never actually run its program; see the
+/// `ChildPendingStub` variant's doc comment for why that path is kept, not
+/// deleted). A REAL fork child (the common case once a guest is
+/// fork-instrumented) drives `ChildReplay` instead.
+#[derive(Clone, Copy)]
+enum ForkEntry {
+    /// The ordinary case: call `_start` from the top. Used for the boot
+    /// process, every `posix_spawn`ed child, every `execve`d image, and —
+    /// when the PARENT'S OWN program is not fork-instrumented — even a fork
+    /// child (see `ChildPendingStub`).
+    Normal,
+    /// N1-I4 Task 2's legacy stub, preserved for a `use_fork_module` fork of
+    /// a NON-instrumented guest (`GuestProcess::fork_format == None`): no
+    /// coordinator exists to drive a real replay for such a guest (it was
+    /// never `wasm-fork-instrument`ed, so it has no `wpk_fork_*` exports to
+    /// call), so this never executes a single instruction of the child's
+    /// copied program and instead posts an immediate synthetic
+    /// `SYS_EXIT_GROUP(0)` — see [`post_fork_child_pending_exit`]. No test
+    /// exercises this today (the one `use_fork_module` test now uses an
+    /// instrumented fixture, per N1-I4 Task 3), but `handle_fork` cannot
+    /// assume every `use_fork_module` guest is instrumented, so this
+    /// fallback stays.
+    ChildPendingStub,
+    /// N1-I4 Task 3: a REAL fork child. `root` is the parent's continuation
+    /// anchor (`fm_begin_unwind`'s return value, inherited verbatim via the
+    /// private memory copy); `image_ptr`/`image_len` locate the serialized
+    /// KFRE journal image `fm_serialize_journal_alloc` wrote into the SAME
+    /// copied memory. The child drives `fm_begin_child_replay(root,
+    /// image_ptr, image_len)` then `wpk_fork_rewind_begin(root)` then
+    /// `wpk_fork_resume_start()` — see `run_fork_capable_entry`.
+    ChildReplay { root: u32, image_ptr: u32, image_len: u32 },
+}
+
+/// `kernel_fork`'s two reachable phases on a native guest thread (N1-I4 Task
+/// 3). `Idle` covers BOTH "no fork has happened yet" and "the process has
+/// returned to normal execution after a previous fork's replay finished" —
+/// the entry loop resets this back to `Idle` once `fm_finish_replay`
+/// succeeds (see `drive_fork_capture_seal_and_launch_child`'s tail and
+/// `kernel_fork`'s `Replaying` arm), so a SECOND, later `fork()` call is
+/// captured exactly like the first. `Replaying` covers both PARENT replay
+/// (after `fm_begin_replay`) and CHILD replay (after `fm_begin_child_
+/// replay`) — the closure's own behavior at this phase (`wpk_fork_rewind_
+/// end` + `fm_finish_replay` + return `fork_result`) is identical either
+/// way; only the entry loop's choice of which `fm_begin_*` call preceded it
+/// differs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ForkCoordPhase {
+    Idle,
+    Replaying,
+}
+
+/// N1-I4 Task 3: mutable state shared, via `Arc`, between a guest OS thread's
+/// entry-driving loop ([`run_fork_capable_entry`]) and its `kernel_fork`
+/// import closure. Both run on the SAME OS thread in practice (a guest never
+/// forks from a worker thread — see `kernel_fork`'s own doc comment), so
+/// nothing here is ever actually contended — but `Linker::func_wrap`'s
+/// `IntoFunc` bound requires every captured value to be `Send + Sync`
+/// regardless (Wasmtime's `Store`/`Func` types are usable from any thread
+/// the embedder chooses, even though this host only ever calls this one
+/// from its own guest thread), so this uses `Arc<Atomic*>` — the same
+/// cross-thread-safe-by-construction shape `import_exit_status: Arc<Mutex<
+/// Option<i32>>>` already uses elsewhere in this file — rather than a
+/// simpler but non-`Send` `Rc<Cell<_>>`. `kernel_fork` is called TWICE per
+/// fork: once at `Idle` (starts capture, never blocks on the channel itself
+/// — see that branch), and once at `Replaying` (re-entered from within the
+/// resumed frame chain the guest's OWN resume-table dispatch walks back to)
+/// to learn the ACTUAL `fork()` return value now that the child's pid (or
+/// `0`, for the child itself) is known.
+struct ForkCoordState {
+    phase: AtomicU32,
+    /// The value `kernel_fork` returns while `phase == Replaying`: the
+    /// child's pid (parent) or `0` (child), or a negative errno if capture
+    /// or child-creation failed. Stored as the bit pattern of an `i32`.
+    fork_result: AtomicU32,
+    /// `fm_begin_unwind`'s return value (the continuation root) — needed by
+    /// the entry loop AFTER `_start` unwinds, to serialize the journal and
+    /// begin parent replay. Unused (left `0`) on a fresh `ChildReplay`
+    /// thread, which already knows its own `root` from `ForkEntry`.
+    root: AtomicU32,
+    /// The `mode` argument (`fork()` vs `vfork()`) `kernel_fork`'s `Idle`
+    /// branch recorded, needed by the entry loop to choose `SYS_FORK` vs
+    /// `SYS_VFORK` when it finally posts the real channel request (AFTER
+    /// capture completes — see `drive_fork_capture_seal_and_launch_child`).
+    mode: AtomicU32,
+}
+
+const FORK_COORD_PHASE_IDLE: u32 = 0;
+const FORK_COORD_PHASE_REPLAYING: u32 = 1;
+
+impl ForkCoordState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            phase: AtomicU32::new(FORK_COORD_PHASE_IDLE),
+            fork_result: AtomicU32::new(0),
+            root: AtomicU32::new(0),
+            mode: AtomicU32::new(0),
+        })
+    }
+
+    fn phase(&self) -> ForkCoordPhase {
+        match self.phase.load(Ordering::SeqCst) {
+            FORK_COORD_PHASE_REPLAYING => ForkCoordPhase::Replaying,
+            _ => ForkCoordPhase::Idle,
+        }
+    }
+
+    fn set_phase(&self, phase: ForkCoordPhase) {
+        let raw = match phase {
+            ForkCoordPhase::Idle => FORK_COORD_PHASE_IDLE,
+            ForkCoordPhase::Replaying => FORK_COORD_PHASE_REPLAYING,
+        };
+        self.phase.store(raw, Ordering::SeqCst);
+    }
+
+    fn fork_result(&self) -> i32 {
+        self.fork_result.load(Ordering::SeqCst) as i32
+    }
+
+    fn set_fork_result(&self, value: i32) {
+        self.fork_result.store(value as u32, Ordering::SeqCst);
+    }
+
+    fn root(&self) -> u32 {
+        self.root.load(Ordering::SeqCst)
+    }
+
+    fn set_root(&self, value: u32) {
+        self.root.store(value, Ordering::SeqCst);
+    }
+
+    fn mode(&self) -> u32 {
+        self.mode.load(Ordering::SeqCst)
+    }
+
+    fn set_mode(&self, value: u32) {
+        self.mode.store(value, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Option<GuestForkFormat>> {
+    let Some(fixed_prefix_size) = read_linked_frame_fixed_prefix_size(wasm_bytes)? else {
+        return Ok(None);
+    };
+    let catalog_ordinals = read_fork_resume_catalog_ordinals(wasm_bytes)?;
+    anyhow::ensure!(
+        catalog_ordinals.len() <= FORK_MODULE_RESUME_CATALOG_CAP,
+        "resume catalog of {} entries exceeds the module cap {}",
+        catalog_ordinals.len(),
+        FORK_MODULE_RESUME_CATALOG_CAP
+    );
+    Ok(Some(GuestForkFormat { fixed_prefix_size, catalog_ordinals }))
+}
+
 /// Read one ULEB128 varint out of `data` starting at `*cursor`, advancing it
 /// past the value. Mirrors `readVarUint` in `host/src/fork-module-instance.ts`.
 fn read_leb_u32(data: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
@@ -2182,6 +2550,16 @@ fn read_fork_module_mem_info(wasm_bytes: &[u8]) -> anyhow::Result<(usize, usize)
 
 /// The co-resident fork-module (`crates/fork-module`), instantiated sharing a
 /// guest's linear memory. See this file's "N1-I4 Task 1" section doc comment.
+///
+/// `Clone` (N1-I4 Task 3): every field is a cheap handle (`wasmtime::Instance`
+/// is `Copy`; `wasmtime::TypedFunc` is `Clone`) into the SAME `Store` this was
+/// instantiated in — cloning does not create a second module instance. This
+/// lets `spawn_guest_thread` hand one copy to its `kernel_fork` import
+/// closure (which needs to drive `fm_begin_unwind`/`fm_begin_replay`/
+/// `fm_finish_replay` reentrantly from inside that closure) while keeping the
+/// original for the outer entry-loop's own coordinator calls
+/// (`fm_finish_unwind`/`fm_serialize_journal_alloc`/...).
+#[derive(Clone)]
 pub struct ForkModule {
     /// The instantiated fork-module, in the `Store` passed to
     /// [`instantiate_fork_module`].
@@ -2194,6 +2572,14 @@ pub struct ForkModule {
     /// shadow stack ([`FORK_MODULE_SHADOW_STACK_BYTES`]). The region is
     /// `[memory_base, memory_base + region_bytes)`.
     pub region_bytes: usize,
+    /// N1-I4 Task 3: first byte of a [`FORK_MODULE_CATALOG_SCRATCH_BYTES`]
+    /// host-owned scratch region carved out of this module's OWN
+    /// shadow-stack padding (`[memory_base + static_bytes, memory_base +
+    /// static_bytes + FORK_MODULE_CATALOG_SCRATCH_BYTES)`), used ONCE to
+    /// stage the resume-catalog ordinals before calling `fm_set_resume_
+    /// catalog` — see [`compute_guest_fork_format`] and its caller in
+    /// `spawn_guest_thread`.
+    pub catalog_scratch_base: usize,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
@@ -2319,6 +2705,23 @@ pub(crate) fn instantiate_fork_module(
     let (memory_base, region_bytes) = compute_fork_module_region(layout)?;
     let stack_top = memory_base + region_bytes;
 
+    // N1-I4 Task 3: derive the catalog scratch offset from the SAME
+    // dylink.0 mem_info `compute_fork_module_region` already read (a second,
+    // cheap re-parse of `wasm_bytes` already in scope here — this file
+    // already tolerates that redundancy; `compute_fork_module_region` itself
+    // re-reads the fork-module's bytes from disk independently). See
+    // `ForkModule::catalog_scratch_base`'s doc comment for why this offset
+    // (inside the shadow-stack padding, never touched by the module's own
+    // calls this early) is safe to reuse as host-only scratch.
+    let (fm_mem_size, fm_mem_align) = read_fork_module_mem_info(&wasm_bytes)?;
+    let fm_static_bytes = fm_mem_size.div_ceil(fm_mem_align) * fm_mem_align;
+    let catalog_scratch_base = memory_base + fm_static_bytes;
+    anyhow::ensure!(
+        catalog_scratch_base + FORK_MODULE_CATALOG_SCRATCH_BYTES <= memory_base + region_bytes,
+        "fork-module catalog scratch ({FORK_MODULE_CATALOG_SCRATCH_BYTES} bytes) does not fit in \
+         the module's shadow-stack padding"
+    );
+
     grow_to_cover(guest_mem, memory_base + region_bytes)?;
 
     let mut linker: Linker<()> = Linker::new(engine);
@@ -2402,6 +2805,7 @@ pub(crate) fn instantiate_fork_module(
         instance,
         memory_base,
         region_bytes,
+        catalog_scratch_base,
         fm_set_format: fm_func!("fm_set_format": (u32, u32) => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
         fm_begin_unwind: fm_func!("fm_begin_unwind": (u32, u32) => u32),
@@ -2459,7 +2863,9 @@ fn launch_process(
     launch_argv: Arc<Vec<Vec<u8>>>,
     launch_env: Arc<Vec<Vec<u8>>>,
     use_fork_module: bool,
-    fork_child_pending_replay: bool,
+    fork_entry: ForkEntry,
+    fork_format: Option<Arc<GuestForkFormat>>,
+    fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<GuestProcess> {
     let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
     if scratch_ptr <= 0 {
@@ -2501,7 +2907,9 @@ fn launch_process(
         launch_argv,
         launch_env,
         use_fork_module,
-        fork_child_pending_replay,
+        fork_entry,
+        fork_format.clone(),
+        fork_proof_of_use,
     );
     let mut thread_handles = HashMap::new();
     thread_handles.insert(layout.channel_offset, main_handle);
@@ -2515,6 +2923,7 @@ fn launch_process(
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
         next_thread_slot: 0,
         thread_handles,
+        fork_format,
     })
 }
 
@@ -2536,7 +2945,9 @@ fn spawn_guest_thread(
     launch_argv: Arc<Vec<Vec<u8>>>,
     launch_env: Arc<Vec<Vec<u8>>>,
     use_fork_module: bool,
-    fork_child_pending_replay: bool,
+    fork_entry: ForkEntry,
+    fork_format: Option<Arc<GuestForkFormat>>,
+    fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
 ) -> thread::JoinHandle<()> {
     let engine = engine.clone();
     thread::spawn(move || {
@@ -2569,9 +2980,18 @@ fn spawn_guest_thread(
         // guest module does not actually import these five names (e.g. this
         // increment's un-instrumented fixtures), `linker.define` is simply
         // unused — Wasmtime does not require a defined name to be consumed.
+        // N1-I4 Task 3: kept alive past this block (unlike Task 2, which
+        // dropped it once the frame imports were wired) — the `kernel_fork`
+        // import closure below and the entry loop at the end of this
+        // function both need to drive its `fm_*` coordinator exports.
+        let mut fork_module: Option<ForkModule> = None;
+        // N1-I4 Task 3: shared coordinator state between `kernel_fork` and
+        // the entry loop at the end of this function — see
+        // `ForkCoordState`'s doc comment.
+        let coord = ForkCoordState::new();
         if use_fork_module {
             match instantiate_fork_module(&engine, &mut store, &guest_mem, &layout) {
-                Ok(fork_module) => {
+                Ok(fm) => {
                     const FRAME_IMPORT_NAMES: [&str; 5] = [
                         "__wpk_fork_frame_reserve",
                         "__wpk_fork_frame_commit",
@@ -2580,7 +3000,7 @@ fn spawn_guest_thread(
                         "__wpk_fork_resume_peek",
                     ];
                     for name in FRAME_IMPORT_NAMES {
-                        let Some(f) = fork_module.instance.get_func(&mut store, name) else {
+                        let Some(f) = fm.instance.get_func(&mut store, name) else {
                             eprintln!("fork-module missing expected export {name}");
                             return;
                         };
@@ -2589,6 +3009,102 @@ fn spawn_guest_thread(
                             return;
                         }
                     }
+                    // N1-I4 Task 3: the guest's own PRIVATE unwind-transport
+                    // tag (`env.__wpk_fork_unwind`) — the exception
+                    // `wasm-fork-instrument`'s generated transport helpers
+                    // throw to escape a synchronous nested call chain during
+                    // capture (see `crates/fork-instrument/src/instrument.
+                    // rs`'s `populate_lexical_call` doc comment). Only a
+                    // fork-instrumented guest module actually imports this
+                    // (a plain, non-instrumented fixture does not), so this
+                    // reads the declared `TagType` back off the GUEST
+                    // module's own import list — exactly like the fork-
+                    // module's reference tables above — rather than
+                    // assuming a shape, and simply skips wiring it when
+                    // absent.
+                    if let Some(import) = module.imports().find(|i| {
+                        i.module() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE
+                            && i.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                    }) {
+                        let tag_ty = match import.ty() {
+                            ExternType::Tag(t) => t,
+                            other => {
+                                eprintln!(
+                                    "guest env.{} is a {other:?}, not a tag",
+                                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                                );
+                                return;
+                            }
+                        };
+                        let tag = match wasmtime::Tag::new(&mut store, &tag_ty) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!("creating the guest's unwind tag failed: {e:#}");
+                                return;
+                            }
+                        };
+                        if let Err(e) = linker.define(
+                            &mut store,
+                            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+                            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+                            tag,
+                        ) {
+                            eprintln!("wiring the guest's unwind tag failed: {e:#}");
+                            return;
+                        }
+                    }
+                    // N1-I4 Task 3: seed this FRESH module instance's
+                    // linked-frame format + resume catalog once, before any
+                    // `fork()` — mirrors `ForkModuleContinuationBackend::
+                    // setup()` (`host/src/fork-module-backend.ts:131-154`).
+                    // `fork_format` is `None` for a non-instrumented guest
+                    // (nothing to seed; `fm_begin_unwind` is never reached
+                    // for such a guest either, since its `kernel_fork`
+                    // import goes through the OLD direct-passthrough branch
+                    // below).
+                    if let Some(fmt) = fork_format.as_ref() {
+                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size)) {
+                            eprintln!("fm_set_format failed: {e:#}");
+                            return;
+                        }
+                        match fm.fm_last_errno.call(&mut store, ()) {
+                            Ok(0) => {}
+                            Ok(errno) => {
+                                eprintln!("fm_set_format({}, {}) failed: errno {errno}", 4, fmt.fixed_prefix_size);
+                                return;
+                            }
+                            Err(e) => {
+                                eprintln!("fm_last_errno after fm_set_format failed: {e:#}");
+                                return;
+                            }
+                        }
+                        if !fmt.catalog_ordinals.is_empty() {
+                            let mut buf = Vec::with_capacity(fmt.catalog_ordinals.len() * 4);
+                            for ordinal in &fmt.catalog_ordinals {
+                                buf.extend_from_slice(&ordinal.to_le_bytes());
+                            }
+                            unsafe { write_bytes(&guest_mem, fm.catalog_scratch_base, &buf) };
+                            if let Err(e) = fm.fm_set_resume_catalog.call(
+                                &mut store,
+                                (fm.catalog_scratch_base as u32, fmt.catalog_ordinals.len() as u32),
+                            ) {
+                                eprintln!("fm_set_resume_catalog failed: {e:#}");
+                                return;
+                            }
+                            match fm.fm_last_errno.call(&mut store, ()) {
+                                Ok(0) => {}
+                                Ok(errno) => {
+                                    eprintln!("fm_set_resume_catalog failed: errno {errno}");
+                                    return;
+                                }
+                                Err(e) => {
+                                    eprintln!("fm_last_errno after fm_set_resume_catalog failed: {e:#}");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    fork_module = Some(fm);
                 }
                 Err(e) => {
                     eprintln!("instantiate_fork_module failed: {e:#}");
@@ -2726,37 +3242,119 @@ fn spawn_guest_thread(
         // `__do_syscall_impl`'s generic "ret<0 -> -errno" post-processing
         // never runs for a direct import call, so apply that SAME convention
         // here explicitly, exactly like `kernel_wait4` below.
+        //
+        // N1-I4 Task 3: for a FORK-INSTRUMENTED guest (`fork_format.is_some()`
+        // — i.e. `fork_module` was seeded above), this import no longer does
+        // the whole round trip itself. Its two reachable phases
+        // (`ForkCoordState::phase`):
+        //
+        //  - `Idle` (the first call, straight from the guest's own `fork()`
+        //    wrapper, still mid-stack): starts capture — `fm_begin_unwind`
+        //    (allocates the module's continuation buffer) then the guest's
+        //    OWN `wpk_fork_unwind_begin(root)` export (flips its internal
+        //    `_wpk_fork_state` global to UNWINDING and records `root`) — and
+        //    returns `0` immediately WITHOUT posting anything on the
+        //    channel. Per `wasm-fork-instrument`'s contract (see this file's
+        //    "N1-I4 Task 1" section doc comment and `crates/fork-instrument/
+        //    src/instrument.rs`'s `populate_lexical_call` doc comment), the
+        //    guest's OWN postamble at THIS call site sees `_wpk_fork_state
+        //    == UNWINDING` upon return and starts unwinding the REAL,
+        //    already-live call chain itself (spilling each frame into the
+        //    fork-module via the already-wired `__wpk_fork_frame_*`
+        //    imports), eventually escaping the OS thread's outer `_start`
+        //    call as an uncaught `env.__wpk_fork_unwind` exception —
+        //    `run_fork_capable_entry`'s loop catches that, drives the
+        //    seal/serialize/channel-post/parent-replay-begin sequence, and
+        //    only THEN re-enters this instance via `wpk_fork_resume_start`.
+        //  - `Replaying` (a SECOND call, reached by that resume-table
+        //    dispatch walking back down to this exact call site — see
+        //    `ForkCoordPhase`'s doc comment): the rewind of frame STATE is
+        //    already done by this point, so this closes it out —
+        //    `wpk_fork_rewind_end` (flips `_wpk_fork_state` back to NORMAL)
+        //    then `fm_finish_replay` — and returns the REAL value (child pid
+        //    for the parent, `0` for the child, or a negative errno)
+        //    `run_fork_capable_entry` recorded in `coord.fork_result`.
+        //
+        // For a NON-instrumented guest (`fork_module` is `None` or
+        // `fork_format` was `None`, so `fork_module` was never seeded with a
+        // format), this import keeps the OLD direct-passthrough behavior
+        // byte-for-byte: post `SYS_FORK`/`SYS_VFORK` on the channel and
+        // block for `handle_fork`'s reply — there is no coordinator to
+        // drive, so the reply IS the whole answer.
         {
             let mem = guest_mem.clone();
             let ch = layout.channel_offset;
+            let fm_for_import = fork_module.clone();
+            let has_format = fork_format.is_some();
+            let coord = Arc::clone(&coord);
             linker
-                .func_wrap("kernel", "kernel_fork", move |_c: Caller<'_, ()>, mode: i32| -> i32 {
-                    let syscall_nr = if mode as u32 == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
-                    unsafe {
-                        write_bytes(&mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
-                        write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
-                        for i in 1..6 {
-                            write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+                .func_wrap(
+                    "kernel",
+                    "kernel_fork",
+                    move |mut caller: Caller<'_, ()>, mode: i32| -> wasmtime::Result<i32> {
+                        let Some(fm) = (if has_format { fm_for_import.as_ref() } else { None }) else {
+                            let syscall_nr = if mode as u32 == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+                            unsafe {
+                                write_bytes(&mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+                                write_bytes(&mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+                                for i in 1..6 {
+                                    write_bytes(&mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+                                }
+                                write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+                                atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+                            }
+                            let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+                            loop {
+                                let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+                                if s != STATUS_PENDING {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_micros(200));
+                            }
+                            let (ret, errno) = unsafe {
+                                (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
+                            };
+                            unsafe {
+                                atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+                            }
+                            return Ok(if ret < 0 { -(errno as i32) } else { ret as i32 });
+                        };
+
+                        match coord.phase() {
+                            ForkCoordPhase::Idle => {
+                                coord.set_mode(mode as u32);
+                                let root = fm.fm_begin_unwind.call(&mut caller, (0, ch as u32))?;
+                                let errno = fm.fm_last_errno.call(&mut caller, ())?;
+                                if errno != 0 {
+                                    return Ok(-(errno));
+                                }
+                                let unwind_begin: wasmtime::TypedFunc<u32, ()> = caller_export_typed(
+                                    &mut caller,
+                                    wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
+                                )?;
+                                unwind_begin.call(&mut caller, root)?;
+                                coord.set_root(root);
+                                Ok(0) // ignored by the caller while unwinding
+                            }
+                            ForkCoordPhase::Replaying => {
+                                let rewind_end: wasmtime::TypedFunc<(), ()> = caller_export_typed(
+                                    &mut caller,
+                                    wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
+                                )?;
+                                rewind_end.call(&mut caller, ())?;
+                                fm.fm_finish_replay.call(&mut caller, ())?;
+                                let errno = fm.fm_last_errno.call(&mut caller, ())?;
+                                if errno != 0 {
+                                    return Err(wasmtime::Error::msg(format!(
+                                        "fm_finish_replay failed: errno {errno}"
+                                    )));
+                                }
+                                coord.set_phase(ForkCoordPhase::Idle);
+                                Ok(coord.fork_result())
+                            }
                         }
-                        write_bytes(&mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
-                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
-                    }
-                    let _ = mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
-                    loop {
-                        let s = unsafe { atomic_u32(&mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
-                        if s != STATUS_PENDING {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_micros(200));
-                    }
-                    let (ret, errno) = unsafe {
-                        (read_i64(&mem, ch + RETURN_OFFSET), read_u32(&mem, ch + ERRNO_OFFSET))
-                    };
-                    unsafe {
-                        atomic_u32(&mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
-                    }
-                    if ret < 0 { -(errno as i32) } else { ret as i32 }
-                })
+                    },
+                )
                 .unwrap();
         }
         // kernel_wait4: registered defensively so a guest that happens to
@@ -2843,6 +3441,38 @@ fn spawn_guest_thread(
         // The fork-exec import set is imported but never reached on this
         // (non-forking) path; a trap is the truthful boundary.
         linker.define_unknown_imports_as_traps(&module).unwrap();
+        // N1-I4 Task 3: a real ABI-43+ fork-instrumented guest unconditionally
+        // imports a much larger surface than the 5 frame imports + unwind tag
+        // this function wires explicitly above — the FULL module-state save/
+        // restore family (`__wpk_fork_module_state_*`) and the reference/
+        // exception routing family (`__wpk_fork_ref_gc_*`/`__wpk_fork_ref_
+        // exn_*`), declared once per program regardless of whether it ever
+        // actually captures a reference. Every FUNCTION import in those
+        // families is already covered by `define_unknown_imports_as_traps`
+        // just above (frames-only must never actually call one — see this
+        // file's "N1-I4 Task 1" section doc comment and `ForkProofOfUse`'s),
+        // but a handful of NON-function imports remain unresolved after that
+        // call: `env.__wpk_fork_ref_gc_transit`/`env.__wpk_fork_resume_table`
+        // (tables) and `env.__wpk_fork_module_activation`/`env.__wpk_fork_
+        // module_state_table_generation_addr` (globals) — `Linker::
+        // define_unknown_imports_as_traps` only ever handles `ExternType::
+        // Func` (traps have no meaning for a table/global import: there is
+        // no "call" to intercept), so those four still need SOME value.
+        // `define_unknown_imports_as_default_values` fills in exactly the
+        // imports still unresolved at this point (every function is already
+        // defined, so this touches only those four) with the zero/null value
+        // for their declared type — a table at its declared minimum size,
+        // all-null, and a `0`-valued global. This is the platform boundary
+        // this task accepts as-is rather than second-guessing: a
+        // single-activation, no-reference, no-dlopen fork's OWN resume-table
+        // population (if any) and module-state bookkeeping are guest-owned
+        // runtime behavior this host does not need to understand to host a
+        // frames-only fork correctly, and a resume path that actually needed
+        // a real value here would fail loudly (a trap or an observably wrong
+        // resume) rather than silently — exactly the truthful-failure
+        // contract `smoke_fork_parent_child`'s full assertions and `fm_last_
+        // errno` checks are there to catch.
+        linker.define_unknown_imports_as_default_values(&mut store, &module).unwrap();
 
         let instance = match linker.instantiate(&mut store, &module) {
             Ok(i) => i,
@@ -2852,37 +3482,419 @@ fn spawn_guest_thread(
             }
         };
 
-        if fork_child_pending_replay {
-            // N1-I4 Task 2: this `Instance` is a real `SYS_FORK` child (see
-            // `handle_fork`) — proof enough that the private-memory-copy +
-            // co-resident-module setup this task covers does not trap — but
-            // this task does NOT drive the fm_* capture/replay coordinator
-            // (Task 3) that would let it resume execution at the guest's
-            // fork call site. Calling `_start` here would be WRONG, not
-            // merely incomplete: this is the SAME copied program the parent
-            // is running, so `main()` would reach `fork()` again — a fork
-            // bomb — and the CRT's OWN unrelated `kernel_is_fork_child`/
-            // `fork_child_exec` bootstrap (`libc/musl-overlay/src/env/
-            // __libc_start_main.c`, built for a DIFFERENT purpose — resuming
-            // a fork that immediately execs — and never wired to THIS host's
-            // channel-based exit accounting) is not an available substitute
-            // either. Instead: never execute a single instruction of the
-            // child's copied program, and post an already-successful
-            // `SYS_EXIT_GROUP(0)` on its own (not-yet-run) channel, so this
-            // pending-replay child is reaped through the EXACT SAME
-            // exit-commit path (`run_pump`'s `ch.is_main` exit branch) every
-            // other process's real exit uses. Task 3 replaces this stub with
-            // a real replayed continuation.
-            post_fork_child_pending_exit(&guest_mem, layout.channel_offset);
+        run_fork_capable_entry(
+            &mut store,
+            &instance,
+            &guest_mem,
+            layout.channel_offset,
+            fork_module.as_ref(),
+            &coord,
+            fork_entry,
+        );
+
+        // N1-I4 Task 3: fold this thread's fork-module proof-of-use counters
+        // into the shared accumulator — see `ForkProofOfUse`'s doc comment.
+        // Best-effort (a `fm_*_reconstructed` call failing here is not this
+        // thread's problem to report; `run_fork_capable_entry` already
+        // reported everything that could go wrong with the coordinator
+        // itself) and additive, never overwriting: a `run_guest` call may
+        // instantiate many fork-module instances (boot + every descendant),
+        // each with its OWN, independent counters that all start at `0`.
+        if let Some(fm) = fork_module.as_ref() {
+            let mut acc = fork_proof_of_use.lock().unwrap();
+            if let Ok(v) = fm.fm_frames_committed.call(&mut store, ()) {
+                acc.frames_committed += v;
+            }
+            if let Ok(v) = fm.fm_frames_replayed.call(&mut store, ()) {
+                acc.frames_replayed += v;
+            }
+            if let Ok(v) = fm.fm_references_reconstructed.call(&mut store, ()) {
+                acc.references_reconstructed += v;
+            }
+            if let Ok(v) = fm.fm_externrefs_resolved.call(&mut store, ()) {
+                acc.externrefs_resolved += v;
+            }
+            if let Ok(v) = fm.fm_exnrefs_reconstructed.call(&mut store, ()) {
+                acc.exnrefs_reconstructed += v;
+            }
+            if let Ok(v) = fm.fm_gc_nodes_reconstructed.call(&mut store, ()) {
+                acc.gc_nodes_reconstructed += v;
+            }
+        }
+    })
+}
+
+/// Read a guest export by name and check it against `Params`/`Results` via
+/// [`wasmtime::Instance::get_typed_func`], logging and returning `None` on
+/// any failure (missing export, wrong signature) instead of panicking. Used
+/// by [`run_fork_capable_entry`], which has direct `Instance`/`Store` access
+/// (unlike `kernel_fork`'s import closure, which must instead reach the
+/// SAME exports reentrantly through [`caller_export_typed`]).
+fn get_guest_export_typed<Params, Results>(
+    store: &mut Store<()>,
+    instance: &wasmtime::Instance,
+    name: &str,
+) -> Option<wasmtime::TypedFunc<Params, Results>>
+where
+    Params: wasmtime::WasmParams,
+    Results: wasmtime::WasmResults,
+{
+    match instance.get_typed_func::<Params, Results>(&mut *store, name) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!("guest missing/mistyped export {name}: {e:#}");
+            None
+        }
+    }
+}
+
+/// Read a guest export by name FROM WITHIN a host import closure — i.e. from
+/// the calling instance's OWN exports, reached via [`Caller::get_export`]
+/// (the only way to reach a guest's exports before that guest's `Instance`
+/// even exists, since the import closures that need this are themselves
+/// bound into the `Linker` BEFORE `Linker::instantiate` runs). Used by
+/// `kernel_fork`'s import closure to call the guest's OWN
+/// `wpk_fork_unwind_begin`/`wpk_fork_rewind_end` exports reentrantly.
+fn caller_export_typed<Params, Results>(
+    caller: &mut Caller<'_, ()>,
+    name: &str,
+) -> wasmtime::Result<wasmtime::TypedFunc<Params, Results>>
+where
+    Params: wasmtime::WasmParams,
+    Results: wasmtime::WasmResults,
+{
+    let ext = caller
+        .get_export(name)
+        .ok_or_else(|| wasmtime::Error::msg(format!("guest missing export {name}")))?;
+    let func = ext
+        .into_func()
+        .ok_or_else(|| wasmtime::Error::msg(format!("guest export {name} is not a function")))?;
+    func.typed::<Params, Results>(&mut *caller)
+}
+
+/// Whether a Wasmtime error is an uncaught Wasm exception (`Trap::
+/// UnhandledTag`) — the shape an escaped `env.__wpk_fork_unwind` throw takes
+/// once it propagates all the way out of the guest's outer `_start` call (see
+/// `kernel_fork`'s `Idle` branch's doc comment for why this is the expected,
+/// deliberate way a fresh fork capture surfaces to the host, not a bug).
+/// Wasmtime does not distinguish WHICH tag was unhandled at this level, so
+/// [`run_fork_capable_entry`] additionally requires this to be seen only
+/// straight after the LEXICAL `_start` entry (never during a replay/resume
+/// call) before treating it as a fork capture — see that function's doc
+/// comment.
+fn is_unhandled_tag_trap(e: &wasmtime::Error) -> bool {
+    matches!(e.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::UnhandledTag))
+}
+
+/// N1-I4 Task 3: drive one guest OS thread (either a fresh, `_start`-from-the-
+/// top launch, or a fork child's `fm_begin_child_replay`-seeded resume) to
+/// completion, transparently handling however many `fork()`s it makes along
+/// the way. Replaces Task 2's unconditional `let _ = start.call(...)` (and
+/// its `fork_child_pending_replay` stub, still used for a NON-instrumented
+/// guest — see [`ForkEntry::ChildPendingStub`]'s doc comment).
+///
+/// The loop alternates between the guest's LEXICAL entry (`_start`, called
+/// exactly once, only for [`ForkEntry::Normal`]) and its instrumented
+/// `wpk_fork_resume_start` export (called every time execution must
+/// re-enter after a fork: once per capture the lexical entry made, seeded by
+/// [`drive_fork_capture_seal_and_launch_child`]'s `fm_begin_replay` for a
+/// PARENT, or once up front, seeded by this function's own `fm_begin_child_
+/// replay` call, for a fresh [`ForkEntry::ChildReplay`] thread). Either call
+/// blocks until the guest parks after `exit_group` (normal — the loop
+/// returns), traps via the `kernel_exit` SIGKILL fast path or a normal
+/// `unreachable` halt (also normal — the loop returns), or escapes with an
+/// uncaught `env.__wpk_fork_unwind` exception ([`is_unhandled_tag_trap`]) —
+/// the ONLY case the loop continues on, by driving the seal/serialize/
+/// channel-post/parent-replay-begin sequence before looping back to call
+/// `wpk_fork_resume_start`.
+fn run_fork_capable_entry(
+    store: &mut Store<()>,
+    instance: &wasmtime::Instance,
+    guest_mem: &SharedMemory,
+    channel_offset: usize,
+    fork_module: Option<&ForkModule>,
+    coord: &Arc<ForkCoordState>,
+    fork_entry: ForkEntry,
+) {
+    if matches!(fork_entry, ForkEntry::ChildPendingStub) {
+        // N1-I4 Task 2's legacy stub — see `ForkEntry::ChildPendingStub`'s
+        // doc comment for why this path still exists and why running this
+        // copied program's `_start` here would be a fork bomb.
+        post_fork_child_pending_exit(guest_mem, channel_offset);
+        return;
+    }
+
+    let Some(start) = get_guest_export_typed::<(), ()>(&mut *store, instance, "_start") else {
+        return;
+    };
+    // A non-instrumented guest has no `wpk_fork_resume_start` export at all
+    // (its `kernel_fork` import, if it even has one, never reaches
+    // `ForkCoordPhase::Replaying` — see that closure's doc comment) — that
+    // is fine as long as this loop never actually needs to call it (i.e.
+    // `fork_entry` is `Normal` and the guest never captures a fork). Missing
+    // is therefore NOT logged as an error here; a later attempt to actually
+    // USE it (below) is.
+    let resume_start = instance
+        .get_typed_func::<(), ()>(&mut *store, wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_START)
+        .ok();
+
+    let mut entry_is_lexical = true;
+    if let ForkEntry::ChildReplay { root, image_ptr, image_len } = fork_entry {
+        let Some(fm) = fork_module else {
+            eprintln!("fork child replay requested with no fork-module");
+            return;
+        };
+        if let Err(e) = fm.fm_begin_child_replay.call(&mut *store, (root, image_ptr, image_len)) {
+            eprintln!("fm_begin_child_replay failed: {e:#}");
             return;
         }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_begin_child_replay failed: errno {errno}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_begin_child_replay failed: {e:#}");
+                return;
+            }
+        }
+        let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
+            &mut *store,
+            instance,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
+        ) else {
+            return;
+        };
+        if let Err(e) = rewind_begin.call(&mut *store, root) {
+            eprintln!("wpk_fork_rewind_begin failed: {e:#}");
+            return;
+        }
+        coord.set_phase(ForkCoordPhase::Replaying);
+        coord.set_fork_result(0);
+        entry_is_lexical = false;
+    }
 
-        let start = instance
-            .get_typed_func::<(), ()>(&mut store, "_start")
-            .expect("guest exports _start");
-        // Blocks until the guest parks after exit_group (normal), or traps.
-        let _ = start.call(&mut store, ());
-    })
+    loop {
+        let result = if entry_is_lexical {
+            start.call(&mut *store, ())
+        } else {
+            match resume_start.as_ref() {
+                Some(f) => f.call(&mut *store, ()),
+                None => {
+                    eprintln!(
+                        "guest is missing {} for a required fork replay",
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_RESUME_START
+                    );
+                    return;
+                }
+            }
+        };
+        match result {
+            Ok(()) => return,
+            Err(e) if is_unreachable_trap(&e) => return,
+            Err(e) if is_unhandled_tag_trap(&e) => {
+                // Only valid straight after the LEXICAL entry captured a
+                // fresh fork (`Idle` phase); an unhandled tag escaping
+                // during a replay/resume call is a genuine bug or a foreign
+                // (non-fork) exception this loop does not understand.
+                if !entry_is_lexical {
+                    eprintln!("unexpected unhandled-tag trap during fork replay: {e:#}");
+                    return;
+                }
+                let Some(fm) = fork_module else {
+                    eprintln!("fork-unwind trap escaped with no fork-module");
+                    return;
+                };
+                if !drive_fork_capture_seal_and_launch_child(
+                    store,
+                    instance,
+                    guest_mem,
+                    channel_offset,
+                    fm,
+                    coord,
+                ) {
+                    return;
+                }
+                entry_is_lexical = false;
+            }
+            Err(e) => {
+                eprintln!("guest entry failed: {e:#}");
+                return;
+            }
+        }
+    }
+}
+
+/// N1-I4 Task 3: runs once, from [`run_fork_capable_entry`]'s loop, right
+/// after the guest's lexical `_start` call escapes with an uncaught
+/// `env.__wpk_fork_unwind` exception — i.e. right after `kernel_fork`'s
+/// `Idle` branch already began capture (`fm_begin_unwind` + the guest's OWN
+/// `wpk_fork_unwind_begin`) and the guest's OWN instrumented postambles
+/// already spilled every live frame into the fork-module (via the
+/// already-wired `__wpk_fork_frame_*` imports) while unwinding the REAL call
+/// stack back out to this point. Drives, in order (`fm_last_errno` after
+/// every `fm_*` call, per this task's brief):
+///
+///  1. The guest's `wpk_fork_unwind_end` export (closes the capture,
+///     flipping `_wpk_fork_state` back to committed/NORMAL).
+///  2. `fm_finish_unwind` — seals the module's journal.
+///  3. `fm_serialize_journal_alloc(channel_base)` + `fm_journal_image_len` —
+///     serializes the sealed journal as a KFRE image INTO THE SAME (still
+///     parent-owned) guest memory; both values are recorded so the real
+///     `SYS_FORK`/`SYS_VFORK` request below can smuggle them to `handle_fork`.
+///  4. THE REAL channel post: `SYS_FORK`/`SYS_VFORK` + `mode` (from
+///     `coord.mode`, set at capture time) plus the coordinator's `root`/
+///     `image_ptr`/`image_len` written into this channel's DATA region
+///     (mirrors `kernel_clone`'s `fn_ptr`/`arg` smuggling) — `handle_fork`
+///     reads them back to launch a REAL `ForkEntry::ChildReplay` child whose
+///     private memory copy (taken AFTER this point) inherits both the
+///     spilled frames and the just-serialized journal image, byte-for-byte.
+///     Blocks (busy-polls the channel status word, exactly like `kernel_
+///     clone`/the legacy `kernel_fork` passthrough) for `handle_fork`'s
+///     reply: the child's pid, or a negative errno.
+///  5. `fm_begin_replay` — begins the PARENT's own rewind.
+///  6. The guest's `wpk_fork_rewind_begin(root)` export — flips
+///     `_wpk_fork_state` to REWINDING so the guest's OWN `wpk_fork_resume_
+///     start` (the caller's NEXT call, once this returns `true`) walks its
+///     resume-table dispatch back down to the exact `fork()` call site,
+///     re-entering `kernel_fork` at `ForkCoordPhase::Replaying` to learn the
+///     REAL return value this function recorded in `coord.fork_result`
+///     (step 4's child pid, or a negative errno).
+///
+/// Returns `false` (having already logged the truthful failure) on the
+/// first `fm_*`/guest-export failure; the caller then ends this OS thread
+/// without ever calling `wpk_fork_resume_start` — a genuine module/guest bug
+/// at this point has no honest way to resume, so a loud stop beats a wrong
+/// resume.
+fn drive_fork_capture_seal_and_launch_child(
+    store: &mut Store<()>,
+    instance: &wasmtime::Instance,
+    guest_mem: &SharedMemory,
+    ch: usize,
+    fm: &ForkModule,
+    coord: &Arc<ForkCoordState>,
+) -> bool {
+    let Some(unwind_end) = get_guest_export_typed::<(), ()>(
+        &mut *store,
+        instance,
+        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END,
+    ) else {
+        return false;
+    };
+    if let Err(e) = unwind_end.call(&mut *store, ()) {
+        eprintln!("wpk_fork_unwind_end failed: {e:#}");
+        return false;
+    }
+    if let Err(e) = fm.fm_finish_unwind.call(&mut *store, ()) {
+        eprintln!("fm_finish_unwind failed: {e:#}");
+        return false;
+    }
+    match fm.fm_last_errno.call(&mut *store, ()) {
+        Ok(0) => {}
+        Ok(errno) => {
+            eprintln!("fm_finish_unwind failed: errno {errno}");
+            return false;
+        }
+        Err(e) => {
+            eprintln!("fm_last_errno after fm_finish_unwind failed: {e:#}");
+            return false;
+        }
+    }
+    let image_ptr = match fm.fm_serialize_journal_alloc.call(&mut *store, ch as u32) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("fm_serialize_journal_alloc failed: {e:#}");
+            return false;
+        }
+    };
+    match fm.fm_last_errno.call(&mut *store, ()) {
+        Ok(0) => {}
+        Ok(errno) => {
+            eprintln!("fm_serialize_journal_alloc failed: errno {errno}");
+            return false;
+        }
+        Err(e) => {
+            eprintln!("fm_last_errno after fm_serialize_journal_alloc failed: {e:#}");
+            return false;
+        }
+    }
+    let image_len = match fm.fm_journal_image_len.call(&mut *store, ()) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("fm_journal_image_len failed: {e:#}");
+            return false;
+        }
+    };
+    if image_ptr == 0 || image_len <= 0 {
+        eprintln!("fork-module produced an invalid journal image (ptr={image_ptr}, len={image_len})");
+        return false;
+    }
+
+    let root = coord.root();
+    let mode = coord.mode();
+    let syscall_nr = if mode == MODE_VFORK { SYS_VFORK } else { SYS_FORK };
+    unsafe {
+        write_bytes(guest_mem, ch + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
+        write_bytes(guest_mem, ch + ARGS_OFFSET, &(mode as i64).to_le_bytes());
+        for i in 1..6 {
+            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+        }
+        // N1-I4 Task 3: smuggle the continuation root + journal image
+        // location to `handle_fork` through this channel's DATA region —
+        // mirrors `kernel_clone`'s `fn_ptr`/`arg` smuggling above. Neither
+        // `fork()`'s POSIX ABI nor any guest code ever reads these bytes
+        // back; they exist purely for this host's own pump to read.
+        write_bytes(guest_mem, ch + DATA_OFFSET, &root.to_le_bytes());
+        write_bytes(guest_mem, ch + DATA_OFFSET + 4, &(image_ptr as u32).to_le_bytes());
+        write_bytes(guest_mem, ch + DATA_OFFSET + 8, &image_len.to_le_bytes());
+        write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
+    }
+    let _ = guest_mem.atomic_notify((ch + STATUS_OFFSET) as u64, 1);
+    loop {
+        let s = unsafe { atomic_u32(guest_mem, ch + STATUS_OFFSET) }.load(Ordering::SeqCst);
+        if s != STATUS_PENDING {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    let (ret, errno) =
+        unsafe { (read_i64(guest_mem, ch + RETURN_OFFSET), read_u32(guest_mem, ch + ERRNO_OFFSET)) };
+    unsafe {
+        atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_IDLE, Ordering::SeqCst);
+    }
+    let fork_result = if ret < 0 { -(errno as i32) } else { ret as i32 };
+    coord.set_fork_result(fork_result);
+
+    if let Err(e) = fm.fm_begin_replay.call(&mut *store, ()) {
+        eprintln!("fm_begin_replay failed: {e:#}");
+        return false;
+    }
+    match fm.fm_last_errno.call(&mut *store, ()) {
+        Ok(0) => {}
+        Ok(errno) => {
+            eprintln!("fm_begin_replay failed: errno {errno}");
+            return false;
+        }
+        Err(e) => {
+            eprintln!("fm_last_errno after fm_begin_replay failed: {e:#}");
+            return false;
+        }
+    }
+    let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
+        &mut *store,
+        instance,
+        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
+    ) else {
+        return false;
+    };
+    if let Err(e) = rewind_begin.call(&mut *store, root) {
+        eprintln!("wpk_fork_rewind_begin failed: {e:#}");
+        return false;
+    }
+    coord.set_phase(ForkCoordPhase::Replaying);
+    true
 }
 
 /// N1-I4 Task 2: post an already-successful `SYS_EXIT_GROUP(0)` on a fork
@@ -3094,6 +4106,15 @@ struct GuestProcess {
     /// `join()` its handle here for deterministic reclamation instead of
     /// abandoning it.
     thread_handles: HashMap<usize, thread::JoinHandle<()>>,
+    /// N1-I4 Task 3: this process's own [`GuestForkFormat`] (from its OWN
+    /// `Module::new` call site — `run_guest`'s boot module, `handle_spawn`'s
+    /// child, or `handle_exec_common`'s new image), or `None` for a
+    /// non-fork-instrumented program. `handle_fork` clones this for a fork
+    /// child (the SAME bytes, so the SAME format) rather than recomputing
+    /// it, and uses `is_some()` to decide whether a fork of THIS process can
+    /// drive a real [`ForkEntry::ChildReplay`] or must fall back to
+    /// [`ForkEntry::ChildPendingStub`].
+    fork_format: Option<Arc<GuestForkFormat>>,
 }
 
 /// A blocking syscall parked awaiting readiness (or its timeout deadline). The
@@ -3472,6 +4493,7 @@ fn run_pump(
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
     use_fork_module: bool,
+    fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
     trace: &mut Vec<u32>,
 ) -> anyhow::Result<i32> {
     let mut blocked: Vec<BlockedOp> = Vec::new();
@@ -3725,7 +4747,7 @@ fn run_pump(
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
                         exec_target_read, spawn_exec_commit, exec_target_cancel,
-                        exec_target_resolve_shebang, wait_table, use_fork_module,
+                        exec_target_resolve_shebang, wait_table, use_fork_module, fork_proof_of_use,
                     )?;
                     ci += 1;
                     continue;
@@ -3747,7 +4769,7 @@ fn run_pump(
                     handle_fork(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         fork_process, remove_process, alloc_scratch, set_brk_base, set_mmap_base,
-                        set_max_addr, use_fork_module,
+                        set_max_addr, use_fork_module, fork_proof_of_use,
                     )?;
                     ci += 1;
                     continue;
@@ -3794,7 +4816,7 @@ fn run_pump(
                         open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
                         set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
-                        remove_process, wait_table, use_fork_module,
+                        remove_process, wait_table, use_fork_module, fork_proof_of_use,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -3832,7 +4854,7 @@ fn run_pump(
                         path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_brk_base, set_mmap_base,
                         set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
                         exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
-                        use_fork_module,
+                        use_fork_module, fork_proof_of_use,
                     )? {
                         if pi == 0 {
                             root_exit_code = Some(fatal_exit_code);
@@ -4026,6 +5048,7 @@ fn handle_spawn(
     exec_target_resolve_shebang: &wasmtime::TypedFunc<(u32, u32, u32, u32), i64>,
     wait_table: &Arc<Mutex<WaitTable>>,
     use_fork_module: bool,
+    fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -4225,6 +5248,11 @@ fn handle_spawn(
             return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOEXEC);
         }
     };
+    // N1-I4 Task 3: computed from THIS child's own raw bytes (a spawned
+    // child can run a different program than its parent — see
+    // `GuestProcess::module`'s doc comment — so it never reuses the
+    // parent's `fork_format`).
+    let child_fork_format = compute_guest_fork_format(&program_bytes)?.map(Arc::new);
 
     let commit = spawn_exec_commit.call(&mut *kernel_store, (parent_pid, child_pid, token))?;
     if commit < 0 {
@@ -4259,7 +5287,9 @@ fn handle_spawn(
         Arc::new(argv_list),
         Arc::new(envp_list),
         use_fork_module,
-        false, // a posix_spawn child is a fresh image, never a fork replay
+        ForkEntry::Normal, // a posix_spawn child is a fresh image, never a fork replay
+        child_fork_format,
+        Arc::clone(fork_proof_of_use),
     )?;
     processes.push(child);
     let child_pi = processes.len() - 1;
@@ -4322,28 +5352,32 @@ fn handle_spawn(
     complete_channel(&guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], 0, 0)
 }
 
-/// N1-I4 Task 2: intercept a `SYS_FORK`/`SYS_VFORK` request the guest's own
+/// N1-I4 Task 2/3: intercept a `SYS_FORK`/`SYS_VFORK` request the guest's own
 /// `kernel_fork` import closure (`spawn_guest_thread`) posted on its main
-/// channel. Drives the FULL child-identity + private-memory-copy +
-/// co-resident-module setup this increment's scope covers:
+/// channel — for a fork-instrumented parent (Task 3), this is posted only
+/// AFTER `run_fork_capable_entry` already drove the full capture (the
+/// parent's live frames already spilled into the fork-module, its journal
+/// already sealed and serialized); for a non-instrumented parent (Task 2's
+/// original scope), it is posted immediately, with no capture at all. Drives
+/// the FULL child-identity + private-memory-copy + co-resident-module setup:
 ///
 ///  1. `kernel_fork_process(parent_pid, caller_tid, mode)` allocates the
 ///     child's kernel-side `Process` record (a real clone: signal mask,
 ///     credentials, ...) under a freshly allocated child pid.
 ///  2. [`clone_guest_memory`] makes a PRIVATE byte-for-byte copy of the
 ///     PARENT's CURRENT guest memory into a FRESH `SharedMemory` — never
-///     shared, unlike I3a's thread clone.
+///     shared, unlike I3a's thread clone. For an instrumented parent this
+///     copy ALSO carries every spilled frame and the serialized journal
+///     image, since the fork-module shares the SAME guest memory.
 ///  3. [`launch_process`] (the SAME helper `handle_spawn`/`run_guest`'s boot
 ///     path use) creates the child's guest `Instance` over that copy, under
 ///     the child pid, with a co-resident fork-module when `use_fork_module`.
-///
-/// Task 3, not this function, drives the fm_* capture/replay coordinator
-/// that would let the child ACTUALLY resume execution at the guest's fork
-/// call site. Without that coordinator, `launch_process`'s
-/// `fork_child_pending_replay = true` argument here means the child guest
-/// thread never executes a single instruction of the copied program — see
-/// `spawn_guest_thread`'s doc comment for why running `_start` from the top
-/// would be wrong (not merely incomplete) before that coordinator exists.
+///     `fork_entry` (computed above from `fork_format` + this channel's
+///     smuggled root/image fields — see this function's body) tells
+///     `run_fork_capable_entry` whether the child can drive a REAL
+///     `fm_begin_child_replay` (Task 3) or must fall back to the legacy
+///     `ChildPendingStub` (Task 2's original behavior, preserved for a
+///     non-instrumented `use_fork_module` guest).
 ///
 /// The PARENT always gets a truthful POSIX-shaped return: `child_pid` on
 /// success, or a negative-errno completion on failure (mirroring
@@ -4372,12 +5406,45 @@ fn handle_fork(
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
     use_fork_module: bool,
+    fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
     let caller_tid = ch.tid;
     let scratch_ptr = processes[pi].scratch_base;
     let guest_mem = processes[pi].memory.clone();
     let mode = args[0] as u32;
+    let fork_format = processes[pi].fork_format.clone();
+
+    // N1-I4 Task 3: for a fork-instrumented parent, `run_fork_capable_entry`
+    // (via `drive_fork_capture_seal_and_launch_child`) already drove the
+    // FULL capture — the parent's own frames are already spilled into the
+    // fork-module and its journal already serialized — before ever posting
+    // THIS request, and smuggled the continuation root + journal image
+    // location into this channel's DATA region (mirrors `kernel_clone`'s
+    // `fn_ptr`/`arg` smuggling). Read them back NOW, from the PARENT's still
+    //-intact `guest_mem` (the child's copy, taken below, inherits the SAME
+    // bytes byte-for-byte). A non-instrumented parent (`fork_format ==
+    // None`) never wrote anything meaningful here — its `kernel_fork`
+    // import took the OLD direct-passthrough branch — so the child launches
+    // via the legacy `ChildPendingStub` instead.
+    let fork_entry = match fork_format.as_ref() {
+        Some(_) => {
+            let root = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET) };
+            let image_ptr = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 4) };
+            let image_len_i64 = unsafe { read_i64(&guest_mem, ch.offset + DATA_OFFSET + 8) };
+            if root == 0 || image_ptr == 0 || image_len_i64 <= 0 || image_len_i64 > u32::MAX as i64 {
+                eprintln!(
+                    "[host-native] fork pid={parent_pid}: invalid smuggled continuation \
+                     (root={root:#x}, image_ptr={image_ptr:#x}, image_len={image_len_i64}); \
+                     falling back to the legacy pending-replay stub for the child"
+                );
+                ForkEntry::ChildPendingStub
+            } else {
+                ForkEntry::ChildReplay { root, image_ptr, image_len: image_len_i64 as u32 }
+            }
+        }
+        None => ForkEntry::ChildPendingStub,
+    };
 
     let child_pid = fork_process.call(&mut *kernel_store, (parent_pid, caller_tid, mode))?;
     if child_pid <= 0 {
@@ -4442,7 +5509,9 @@ fn handle_fork(
         Arc::new(Vec::new()),
         Arc::new(Vec::new()),
         use_fork_module,
-        true, // fork_child_pending_replay — see this function's doc comment
+        fork_entry,
+        fork_format,
+        Arc::clone(fork_proof_of_use),
     )?;
     processes.push(child);
 
@@ -4581,6 +5650,7 @@ fn handle_exec_common(
     remove_process: &wasmtime::TypedFunc<u32, i32>,
     wait_table: &Arc<Mutex<WaitTable>>,
     use_fork_module: bool,
+    fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<Option<i32>> {
     let pid = processes[pi].pid;
     let caller_tid = ch.tid;
@@ -4707,6 +5777,25 @@ fn handle_exec_common(
                 .map(|()| None);
         }
     };
+    // N1-I4 Task 3: computed from THIS new image's own raw bytes — an
+    // execve'd image can be fork-instrumented even if the process it
+    // replaces was not (or vice versa), so it never reuses `processes[pi]`'s
+    // OLD `fork_format`. A well-formed wasm module (already proven by the
+    // `Module::new` success above) with a corrupt KLCF/KFRC custom section
+    // is treated the same as a compile failure: cancel the retained target
+    // and resume the caller with `ENOEXEC` rather than letting a parse error
+    // `?`-propagate into a pump-ending `bail!`.
+    let new_fork_format = match compute_guest_fork_format(&program_bytes) {
+        Ok(f) => f.map(Arc::new),
+        Err(_) => {
+            cancel_exec_target(
+                kernel_store, exec_target_cancel, pid, token,
+                "a compute_guest_fork_format failure (malformed fork-instrumentation metadata)",
+            );
+            return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOEXEC)
+                .map(|()| None);
+        }
+    };
 
     let commit = exec_commit.call(&mut *kernel_store, (pid, caller_tid, token))?;
     if commit < 0 {
@@ -4753,7 +5842,9 @@ fn handle_exec_common(
         Arc::new(argv_list),
         Arc::new(envp_list),
         use_fork_module,
-        false, // an exec'd image is never itself a fork replay
+        ForkEntry::Normal, // an exec'd image is never itself a fork replay
+        new_fork_format,
+        Arc::clone(fork_proof_of_use),
     ) {
         Ok(v) => v,
         Err(error) => {

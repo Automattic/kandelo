@@ -44,3 +44,36 @@ OUT=crates/host-native/fixtures
 The program's `__abi_version` export must match the kernel's ABI (the host
 asserts this at load), so a stale fixture built for an older ABI fails loudly
 rather than running wrong.
+
+## `native_fork.instrumented.wasm`
+
+`smoke_fork_parent_child`'s fixture (N1-I4 Task 3): the SAME source as
+`native_fork.wasm` (`native_fork.c`), but run through the REAL production
+fork-instrumentation tool (`scripts/run-wasm-fork-instrument.sh` — the exact
+tool every fork-using package build runs its own artifacts through), so its
+`fork()` call site can actually unwind/rewind through the co-resident
+fork-module's `fm_*` coordinator (`guest.rs`'s `run_fork_capable_entry`).
+`native_fork.wasm` itself (this fixture's un-instrumented sibling) stays
+committed too — nothing still needs it directly, but it is still produced by
+`build-fixtures.sh`'s uniform "every `.c` in this directory" loop, and
+removing it would be an unrelated, unforced change.
+
+Regenerate both from within the dev shell:
+
+```sh
+# 1. Rebuild every fixture (including native_fork.wasm) through the SDK:
+SYSROOT=<repo>/sysroot scripts/dev-shell.sh \
+  bash crates/host-native/fixtures/build-fixtures.sh
+
+# 2. Instrument native_fork.wasm specifically:
+scripts/dev-shell.sh bash -lc '
+  cd crates/host-native/fixtures
+  <repo>/scripts/run-wasm-fork-instrument.sh \
+    native_fork.wasm -o native_fork.instrumented.wasm --entry kernel.kernel_fork
+'
+```
+
+Like `native_hello.wasm`, the program's `__abi_version` must match the
+kernel's ABI, and re-running step 2 after any `crates/fork-instrument` change
+picks up the current instrumentation tool automatically (see
+`scripts/run-wasm-fork-instrument.sh`'s own input-hash rebuild check).

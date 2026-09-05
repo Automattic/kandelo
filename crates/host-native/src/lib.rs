@@ -1677,43 +1677,34 @@ mod tests {
         }
     }
 
-    /// N1-I4 Task 2: a REAL native `SYS_FORK` end to end, through the
-    /// guest's OWN direct `kernel.kernel_fork` import (never the generic
-    /// syscall dispatcher — see `native_fork.c`'s doc comment and
-    /// `guest::handle_fork`'s). Proves, without tripping the pump's 30s
-    /// hard-cap bail or any Wasmtime trap:
+    /// N1-I4 Task 3: a REAL native `fork()` end to end, driven through the
+    /// co-resident fork-module's `fm_*` capture/replay coordinator
+    /// (`guest::run_fork_capable_entry`/`drive_fork_capture_seal_and_launch_
+    /// child`), against a GENUINELY fork-instrumented guest
+    /// (`native_fork.instrumented.wasm` — the SAME `native_fork.c` source as
+    /// Task 2's `native_fork.wasm`, but run through the REAL production
+    /// `scripts/run-wasm-fork-instrument.sh`; see `fixtures/README.md`).
+    /// Proves, without tripping the pump's 30s hard-cap bail or any
+    /// Wasmtime trap:
     ///
-    ///  - `kernel_fork_process` creates a real child pid (`child_pid > 0`):
-    ///    the parent's own `fork()` return value IS that pid, so its
-    ///    subsequent `waitpid(p, ...)` only resolves cleanly — rather than
-    ///    hanging into the pump's 30s hard-cap bail, which would surface as
-    ///    a test failure via `run_guest`'s `?` — if a REAL, correctly
-    ///    identified kernel process record exists to be reaped. This test's
-    ///    `outcome.exit_code == 0` assertion below is exactly that clean
-    ///    resolution.
-    ///  - the private memory copy (`guest::clone_guest_memory`) and the
-    ///    child's guest `Instance` (`guest::launch_process`) are created
-    ///    without a trap: `outcome.syscall_trace` recording the `SYS_FORK`
-    ///    sentinel (pushed by `run_pump` BEFORE `handle_fork` runs) proves
-    ///    the request was serviced, not silently dropped or trapped.
-    ///  - the co-resident fork-module is instantiated for BOTH the parent
-    ///    (at ITS OWN launch, `options.enable_fork_module`) and the child
-    ///    (inside `handle_fork`'s own `launch_process` call) — again, no
-    ///    trap: an `instantiate_fork_module`/frame-import-wiring failure in
-    ///    `spawn_guest_thread` would abandon that guest thread, which for
-    ///    the CHILD would mean nothing ever posts its synthetic exit, and
-    ///    for the PARENT would mean it never even reaches `fork()` — either
-    ///    way the parent's `waitpid` would hang into the same 30s bail.
-    ///
-    /// What this test does NOT prove (deferred to N1-I4 Task 3, which drives
-    /// the fm_* capture/replay coordinator): the child never actually runs
-    /// any of `native_fork.c` — see `guest::spawn_guest_thread`'s
-    /// `fork_child_pending_replay` doc comment for why running it would be
-    /// actively wrong (a fork bomb) before that coordinator exists. So
-    /// stdout contains ONLY "parent\n", never "child\n", and the parent's
-    /// reaped `WEXITSTATUS` is `0` (this task's synthetic
-    /// `SYS_EXIT_GROUP(0)`), not the fixture's real `_exit(3)`. A future
-    /// Task 3 test should assert BOTH lines and `exit_code == 3`.
+    ///  - BOTH "parent\n" and "child\n" land in the combined stdout — the
+    ///    child ACTUALLY ran its copied program (`write(1, "child\n", 6);
+    ///    _exit(3);`) via a real `fm_begin_child_replay` + `wpk_fork_
+    ///    resume_start`, not Task 2's stub.
+    ///  - `exit_code == 3`: the parent's `waitpid` reaped the child's REAL
+    ///    `WEXITSTATUS`, not Task 2's synthetic `SYS_EXIT_GROUP(0)`.
+    ///  - `fork_proof_of_use.frames_committed > 0` (the parent's capture
+    ///    actually spilled at least one live frame into the fork-module) AND
+    ///    `frames_replayed > 0` (at least one rewind — parent, child, or
+    ///    both — actually pulled a frame back out) — the MODULE drove this,
+    ///    not a silent host-side no-op.
+    ///  - every reference-path counter (`references_reconstructed`,
+    ///    `externrefs_resolved`, `exnrefs_reconstructed`,
+    ///    `gc_nodes_reconstructed`) stays EXACTLY `0`: this is frames-only
+    ///    (N1-I4) — the inert `env.resolve_externref`/exception host-import
+    ///    trap-stubs `instantiate_fork_module` wires must never actually be
+    ///    reached (see `ForkProofOfUse`'s doc comment; I5 is reference
+    ///    reconstruction, deliberately out of this task's scope).
     #[test]
     fn smoke_fork_parent_child() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -1722,35 +1713,112 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork.wasm");
+        let guest_wasm = include_bytes!("../fixtures/native_fork.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
 
         assert_eq!(
-            outcome.exit_code, 0,
-            "parent's reaped WEXITSTATUS for its Task-2 synthetic (unreplayed) \
-             child (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            outcome.exit_code, 3,
+            "the parent's reaped WEXITSTATUS must be the child's REAL _exit(3) \
+             (stdout: {:?}, stderr: {:?}, trace: {:?}, proof: {:?})",
             String::from_utf8_lossy(&outcome.stdout),
             String::from_utf8_lossy(&outcome.stderr),
             outcome.syscall_trace,
+            outcome.fork_proof_of_use,
         );
         let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(
+            stdout.contains("child\n"),
+            "expected the REPLAYED child to run its copied program and print \
+             \"child\\n\": {stdout:?}"
+        );
         assert!(
             stdout.contains("parent\n"),
             "expected the parent to resume after fork() and print \"parent\\n\": {stdout:?}"
         );
         assert!(
-            !stdout.contains("child\n"),
-            "N1-I4 Task 2 does not yet replay the child (that is Task 3) -- a \
-             \"child\\n\" line here would mean the child ran its ORIGINAL \
-             program from `_start`, i.e. the fork-bomb risk this task \
-             deliberately avoids: {stdout:?}"
-        );
-        assert!(
             outcome.syscall_trace.contains(&wasm_posix_shared::abi::host_intercepted::SYS_FORK),
             "expected the SYS_FORK sentinel in the syscall trace: {:?}",
             outcome.syscall_trace
+        );
+
+        let proof = outcome.fork_proof_of_use;
+        assert!(
+            proof.frames_committed > 0,
+            "expected the parent's capture to have committed at least one frame: {proof:?}"
+        );
+        assert!(
+            proof.frames_replayed > 0,
+            "expected at least one rewind (parent and/or child) to have replayed a frame: {proof:?}"
+        );
+        assert_eq!(
+            proof.references_reconstructed, 0,
+            "frames-only fork must never reconstruct a reference: {proof:?}"
+        );
+        assert_eq!(
+            proof.externrefs_resolved, 0,
+            "frames-only fork must never resolve an externref: {proof:?}"
+        );
+        assert_eq!(
+            proof.exnrefs_reconstructed, 0,
+            "frames-only fork must never reconstruct an exnref: {proof:?}"
+        );
+        assert_eq!(
+            proof.gc_nodes_reconstructed, 0,
+            "frames-only fork must never reconstruct a typed-GC node: {proof:?}"
+        );
+        Ok(())
+    }
+
+    /// N1-I4 Task 3: a fork of a program with no captured references (the
+    /// SAME `native_fork.instrumented.wasm` fixture — its `fork()` call site
+    /// carries only scalar locals, no funcref/externref/exnref/GC state)
+    /// must never call the inert `env.resolve_externref`/exception
+    /// host-import stubs `instantiate_fork_module` wires as TRAPS. If the
+    /// frames-only coordinator ever reached one of those stubs, calling it
+    /// would trap and abandon the guest thread mid-run — this test's own
+    /// `exit_code == 3` and stdout assertions independently confirm the run
+    /// completed cleanly (so no inert stub trapped), and the `ForkProofOfUse`
+    /// reference-path counters (which only advance when the module's OWN
+    /// reference-replay driving code — the actual caller of those stubs —
+    /// runs) make the "never called" claim explicit and directly
+    /// verifiable, rather than merely inferred from a clean exit.
+    #[test]
+    fn smoke_fork_no_reference_path() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+        let guest_wasm = include_bytes!("../fixtures/native_fork.instrumented.wasm");
+
+        let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
+        let outcome = guest::run_guest(&path, guest_wasm, &options)?;
+
+        assert_eq!(
+            outcome.exit_code, 3,
+            "expected the real replayed fork to complete cleanly (stdout: {:?}, proof: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            outcome.fork_proof_of_use,
+        );
+        let proof = outcome.fork_proof_of_use;
+        assert_eq!(
+            proof.references_reconstructed, 0,
+            "the inert reference-decode stub must never be called: {proof:?}"
+        );
+        assert_eq!(
+            proof.externrefs_resolved, 0,
+            "the inert resolve_externref stub must never be called: {proof:?}"
+        );
+        assert_eq!(
+            proof.exnrefs_reconstructed, 0,
+            "the inert exception-tag stubs must never be called: {proof:?}"
+        );
+        assert_eq!(
+            proof.gc_nodes_reconstructed, 0,
+            "the inert typed-GC stubs must never be called: {proof:?}"
         );
         Ok(())
     }
