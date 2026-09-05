@@ -3108,8 +3108,6 @@ fn handle_spawn(
     }
     let (argv_list, envp_list) = read_decoded_argv_envp(kernel_mem, scratch);
 
-    let argv0 = argv_list.first().map(|b| String::from_utf8_lossy(b).into_owned());
-
     // `kernel_spawn_blob_decode` overwrote `scratch` in place; re-stage the
     // untouched RAW blob bytes before `kernel_spawn_process`'s own parse.
     unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
@@ -3121,14 +3119,14 @@ fn handle_spawn(
     }
     let child_pid = child_pid as u32;
 
-    // N1-I3b Task 1: resolve the child's program bytes from the in-kernel
-    // VFS, through the kernel's exec-target authority, against the CHILD's
-    // namespace (never the parent's — see `kernel_spawn_exec_target_prepare`'s
-    // doc comment). `path_str` (the spawn `path` arg) is tried first; an
-    // empty `path` (`posix_spawn` allows this — the program is then resolved
-    // from `argv[0]`) falls back to the decoded `argv[0]`.
-    let resolve_str: &str = if !path_str.is_empty() { &path_str } else { argv0.as_deref().unwrap_or("") };
-    let resolve_bytes = resolve_str.as_bytes();
+    // N1-I3b: resolve the child's program bytes from the in-kernel VFS,
+    // through the kernel's exec-target authority, against the CHILD's namespace
+    // (never the parent's — see `kernel_spawn_exec_target_prepare`'s doc
+    // comment). Per POSIX the spawn `path` argument is authoritative: an empty
+    // `path` is NOT resolved from `argv[0]` — it is passed through and the
+    // kernel rejects it with ENOENT (`kernel_spawn_exec_target_prepare`,
+    // wasm_api.rs:3073-3074), which is the correct posix_spawn failure.
+    let resolve_bytes = path_str.as_bytes();
     let path_scratch = alloc_scratch.call(&mut *kernel_store, resolve_bytes.len() as u32)?;
     if path_scratch <= 0 {
         rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure resolving the exec target");
