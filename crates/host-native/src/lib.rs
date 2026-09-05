@@ -774,18 +774,23 @@ mod tests {
         Ok(())
     }
 
-    /// N1-I3a Task 2: `posix_spawn` launches a FRESH-IMAGE child process
-    /// (never a fork) resolved from the native host's `GuestOptions.programs`
-    /// map. The parent `posix_spawn`s `"child"` and exits; the child (a
-    /// distinct guest module, its own memory, its own OS thread) runs to
-    /// completion and writes its own line. Reaping (`waitpid`) is Task 3 —
-    /// not exercised here — so this proves only that `SYS_SPAWN` is
-    /// intercepted, the blob is decoded and resolved via `programs`, and the
-    /// child is actually launched and runs: its stdout must appear in the
-    /// SAME captured buffer as the parent's (`host_write` is keyed by fd, not
-    /// by process). The pump drains the spawned child to completion before
-    /// returning (see `run_pump`'s doc comment), so this assertion is not a
-    /// race against the child's startup.
+    /// N1-I3b Task 1: `posix_spawn` launches a FRESH-IMAGE child process
+    /// (never a fork) resolved from the in-kernel VFS through the kernel's
+    /// exec-target authority (`kernel_spawn_exec_target_prepare` ->
+    /// `kernel_exec_target_size`/`kernel_exec_target_read` ->
+    /// `kernel_spawn_exec_commit`) — NOT a host-side program map (that
+    /// `GuestOptions.programs` placeholder from N1-I3a is gone). The child
+    /// executable is placed in the `BaseImage` at the absolute path
+    /// `/bin/child`; the parent `posix_spawn`s that absolute path and exits.
+    /// The child (a distinct guest module, its own memory, its own OS thread)
+    /// runs to completion and writes its own line. Reaping (`waitpid`) is
+    /// Task 3 of N1-I3a — not exercised here — so this proves only that
+    /// `SYS_SPAWN` is intercepted, the target is resolved and read out of the
+    /// VFS, and the child is actually launched and runs: its stdout must
+    /// appear in the SAME captured buffer as the parent's (`host_write` is
+    /// keyed by fd, not by process). The pump drains the spawned child to
+    /// completion before returning (see `run_pump`'s doc comment), so this
+    /// assertion is not a race against the child's startup.
     #[test]
     fn smoke_spawn_launches_child() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -794,9 +799,12 @@ mod tests {
         let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
         let child = include_bytes!("../fixtures/native_spawn_child.wasm");
 
-        let mut programs = std::collections::HashMap::new();
-        programs.insert("child".to_string(), child.to_vec());
-        let options = guest::GuestOptions { programs, ..Default::default() };
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/child", 3, 0o755, child.to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
         let outcome = guest::run_guest(&path, parent, &options)?;
 
         assert_eq!(
@@ -818,13 +826,15 @@ mod tests {
     }
 
     /// N1-I3a Task 3: `host_waitpid` parked reaping. The parent `posix_spawn`s
-    /// `"child"` (same fixtures as `smoke_spawn_launches_child`), then
-    /// `waitpid`s it and prints the decoded `WEXITSTATUS`. The child hasn't
-    /// necessarily exited by the time the parent calls `waitpid` — this
-    /// proves the PARKED-retry path (the pump keeps servicing the child's
-    /// channel while the parent's `wait4` is parked as EAGAIN, exactly like
-    /// the existing blocking poll/read table), not just an already-exited
-    /// child. `child _exit(7)` must decode to `WEXITSTATUS == 7`.
+    /// `/bin/child` (same fixtures/VFS layout as `smoke_spawn_launches_child`,
+    /// resolved through the kernel's exec-target authority — N1-I3b Task 1),
+    /// then `waitpid`s it and prints the decoded `WEXITSTATUS`. The child
+    /// hasn't necessarily exited by the time the parent calls `waitpid` —
+    /// this proves the PARKED-retry path (the pump keeps servicing the
+    /// child's channel while the parent's `wait4` is parked as EAGAIN,
+    /// exactly like the existing blocking poll/read table), not just an
+    /// already-exited child. `child _exit(7)` must decode to
+    /// `WEXITSTATUS == 7`.
     #[test]
     fn smoke_spawn_waitpid() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -833,9 +843,12 @@ mod tests {
         let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
         let child = include_bytes!("../fixtures/native_spawn_child.wasm");
 
-        let mut programs = std::collections::HashMap::new();
-        programs.insert("child".to_string(), child.to_vec());
-        let options = guest::GuestOptions { programs, ..Default::default() };
+        let base_image = guest::build_base_image(&[
+            guest::BaseEntrySpec::dir("/", 1, 0o755),
+            guest::BaseEntrySpec::dir("/bin", 2, 0o755),
+            guest::BaseEntrySpec::file("/bin/child", 3, 0o755, child.to_vec()),
+        ]);
+        let options = guest::GuestOptions { base_image: Some(base_image), ..Default::default() };
         let outcome = guest::run_guest(&path, parent, &options)?;
 
         assert_eq!(

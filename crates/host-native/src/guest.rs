@@ -565,14 +565,6 @@ pub struct GuestOptions {
     /// N1-I1a's behavior exactly: the overlay's `/` starts and stays empty,
     /// with no manifest loaded and the `host_blob_read` import unreachable.
     pub base_image: Option<BaseImage>,
-    /// `posix_spawn`-able program bytes, keyed by the exact `path` a guest
-    /// passes to `posix_spawn`/`posix_spawnp` (tried first) or, failing that,
-    /// the spawn blob's decoded `argv[0]` (N1-I3a Task 2). Mirrors Node's
-    /// `execPrograms` host map. Empty (the default) means `posix_spawn`
-    /// always fails `ENOENT` — no VFS-backed resolution or PATH search yet
-    /// (later increments); this increment's only source of spawnable bytes is
-    /// this explicit host-provided map.
-    pub programs: HashMap<String, Vec<u8>>,
 }
 
 /// Boot the real `kernel.wasm` and run `guest_wasm` to completion through the
@@ -722,6 +714,33 @@ pub fn run_guest(
     // rejection (see `handle_spawn`): the child's Process record still
     // exists unpublished and must be removed by the host.
     let remove_process = kernel.get_typed_func::<u32, i32>(&mut kernel_store, "kernel_remove_process")?;
+    // N1-I3b Task 1: the exec-target authority `handle_spawn` uses to source
+    // the spawned child's program bytes from the in-kernel VFS instead of a
+    // host-side program map. `kernel_spawn_exec_target_prepare` resolves
+    // `path` against the CHILD's namespace (X_OK) and retains an exact
+    // executable object, returning an opaque token; `kernel_exec_target_size`/
+    // `kernel_exec_target_read` stream that target's bytes into kernel
+    // scratch memory; `kernel_spawn_exec_commit` records the child's initial
+    // image once every byte has been read back (see `read_exec_target_bytes`
+    // and its call site in `handle_spawn`). `kernel_exec_target_cancel` is
+    // the rollback seam for a prepared-but-not-committed target — bound here
+    // for Task 2's full failure-matrix hardening; Task 1's happy path never
+    // calls it (a failed `prepare` has no token to cancel, and a failed
+    // `commit` has already consumed its token via the kernel's own `take`).
+    let spawn_exec_target_prepare = kernel.get_typed_func::<(u32, u32, u32, u32), i32>(
+        &mut kernel_store,
+        "kernel_spawn_exec_target_prepare",
+    )?;
+    let exec_target_size =
+        kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_exec_target_size")?;
+    let exec_target_read = kernel.get_typed_func::<(u32, u32, u32, i32, u32, u32), i32>(
+        &mut kernel_store,
+        "kernel_exec_target_read",
+    )?;
+    let spawn_exec_commit = kernel
+        .get_typed_func::<(u32, u32, u32), i32>(&mut kernel_store, "kernel_spawn_exec_commit")?;
+    let _exec_target_cancel =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_exec_target_cancel")?;
     // N1-I3a Task 3: `host_waitpid`'s reap + status-encoding support.
     // `kernel_get_process_exit_signal` disambiguates `get_exit_status`'s
     // "shell-style" 128+signal encoding from a genuine 128-255 exit code
@@ -897,7 +916,10 @@ pub fn run_guest(
         &publish_spawn_child,
         &remove_process,
         &reap_exited_child,
-        &options.programs,
+        &spawn_exec_target_prepare,
+        &exec_target_size,
+        &exec_target_read,
+        &spawn_exec_commit,
         &current_memory,
         &current_pid,
         &wait_table,
@@ -2609,7 +2631,10 @@ fn run_pump(
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
     reap_exited_child: &wasmtime::TypedFunc<(u32, u32), i32>,
-    programs: &HashMap<String, Vec<u8>>,
+    spawn_exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, u32, u32), i32>,
+    exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
+    exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
+    spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     current_memory: &Arc<Mutex<SharedMemory>>,
     current_pid: &Arc<Mutex<u32>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -2847,15 +2872,18 @@ fn run_pump(
                     continue;
                 }
 
-                // posix_spawn (N1-I3a Task 2): a fresh-image child, never a
-                // fork. Fully self-contained — decodes the blob, resolves the
-                // program in `programs`, creates + launches the child, and
-                // completes this (parent) channel itself — so just move on.
+                // posix_spawn (N1-I3a Task 2 / N1-I3b Task 1): a fresh-image
+                // child, never a fork. Fully self-contained — decodes the
+                // blob, resolves the program through the kernel's exec-target
+                // authority against the in-kernel VFS, creates + launches the
+                // child, and completes this (parent) channel itself — so just
+                // move on.
                 if ch.is_main && syscall_nr == SYS_SPAWN {
                     handle_spawn(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
-                        set_mmap_base, set_max_addr, programs, wait_table,
+                        set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
+                        exec_target_read, spawn_exec_commit, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -2941,23 +2969,36 @@ fn run_pump(
     }
 }
 
-/// N1-I3a Task 2: intercept a `posix_spawn` request posted as `SYS_SPAWN` on
-/// a process's main channel. Wire args (see `libc/musl-overlay/src/process/
-/// wasm32posix/posix_spawn.c`): arg0/1 = path ptr/len, arg2/3 = blob ptr/len,
-/// arg4 = pid_out_ptr — all guest-memory addresses/lengths, since `SYS_SPAWN`
-/// is RAW (`wasm_posix_shared::host_raw_syscalls::HOST_RAW_SYSCALLS`), so the
-/// pump intercepts it here before any `dispatch_once`/RAW-arg marshalling —
-/// exactly like the `SYS_CLONE` branch above.
+/// N1-I3a Task 2 / N1-I3b Task 1: intercept a `posix_spawn` request posted as
+/// `SYS_SPAWN` on a process's main channel. Wire args (see `libc/musl-
+/// overlay/src/process/wasm32posix/posix_spawn.c`): arg0/1 = path ptr/len,
+/// arg2/3 = blob ptr/len, arg4 = pid_out_ptr — all guest-memory
+/// addresses/lengths, since `SYS_SPAWN` is RAW (`wasm_posix_shared::
+/// host_raw_syscalls::HOST_RAW_SYSCALLS`), so the pump intercepts it here
+/// before any `dispatch_once`/RAW-arg marshalling — exactly like the
+/// `SYS_CLONE` branch above.
 ///
 /// Never re-implements the `posix_spawn` guest ABI: the blob is decoded via
-/// the kernel's own `kernel_spawn_blob_decode` (to resolve the program and
-/// build the child's argv/env) and parsed a SECOND time by the kernel's own
+/// the kernel's own `kernel_spawn_blob_decode` (to resolve the child's
+/// argv/env) and parsed a SECOND time by the kernel's own
 /// `kernel_spawn_process` (to build the child `Process`) — this host only
 /// stages bytes into kernel memory and reads the decoded framing back. The
-/// child's program bytes come ONLY from `programs` (this increment's
-/// `GuestOptions.programs` host map, mirroring Node's `execPrograms`); there
-/// is no VFS/PATH lookup yet (a later increment), so an unresolvable
-/// `path`/`argv[0]` is a truthful `ENOENT`, never a silent success.
+/// child's PROGRAM BYTES come from the in-kernel VFS, through the kernel's
+/// exec-target authority (N1-I3b Task 1 — no more host-side program map):
+/// once `kernel_spawn_process` returns a `child_pid`,
+/// `kernel_spawn_exec_target_prepare(parent_pid, child_pid, path)` resolves
+/// `path` (the spawn `path` arg, or — if empty — the decoded `argv[0]`)
+/// against the CHILD's namespace with `X_OK` and retains an exact executable
+/// object behind an opaque token; `read_exec_target_bytes` streams that
+/// target's full contents out via `kernel_exec_target_size`/
+/// `kernel_exec_target_read`; and `kernel_spawn_exec_commit` records the
+/// child's initial image once every byte has been read back (see that
+/// helper's doc comment for why full coverage is required). An unresolvable
+/// `path`/`argv[0]` is a truthful negative-errno token from `prepare`, never
+/// a silent success. This function handles only the HAPPY PATH's rollback
+/// (best-effort `kernel_remove_process` + `fail_spawn` on a `prepare`/
+/// `commit` failure); the full failure/rollback matrix (EACCES, ENOEXEC,
+/// explicit `kernel_exec_target_cancel`) is later hardening.
 ///
 /// On success: launches the child as a brand-new `GuestProcess` (Task 1's
 /// `compute_guest_memory`/`launch_process` — a fresh image, never a fork),
@@ -2996,7 +3037,10 @@ fn handle_spawn(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
-    programs: &HashMap<String, Vec<u8>>,
+    spawn_exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, u32, u32), i32>,
+    exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
+    exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
+    spawn_exec_commit: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     wait_table: &Arc<Mutex<WaitTable>>,
 ) -> anyhow::Result<()> {
     let parent_pid = processes[pi].pid;
@@ -3044,13 +3088,6 @@ fn handle_spawn(
     let (argv_list, envp_list) = read_decoded_argv_envp(kernel_mem, scratch);
 
     let argv0 = argv_list.first().map(|b| String::from_utf8_lossy(b).into_owned());
-    let program_bytes = programs
-        .get(&path_str)
-        .or_else(|| argv0.as_ref().and_then(|a| programs.get(a)))
-        .cloned();
-    let Some(program_bytes) = program_bytes else {
-        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOENT);
-    };
 
     // `kernel_spawn_blob_decode` overwrote `scratch` in place; re-stage the
     // untouched RAW blob bytes before `kernel_spawn_process`'s own parse.
@@ -3062,6 +3099,68 @@ fn handle_spawn(
         return fail_spawn(&guest_mem, kernel_mem, ch, args, errno);
     }
     let child_pid = child_pid as u32;
+
+    // N1-I3b Task 1: resolve the child's program bytes from the in-kernel
+    // VFS, through the kernel's exec-target authority, against the CHILD's
+    // namespace (never the parent's — see `kernel_spawn_exec_target_prepare`'s
+    // doc comment). `path_str` (the spawn `path` arg) is tried first; an
+    // empty `path` (`posix_spawn` allows this — the program is then resolved
+    // from `argv[0]`) falls back to the decoded `argv[0]`.
+    let resolve_str: &str = if !path_str.is_empty() { &path_str } else { argv0.as_deref().unwrap_or("") };
+    let resolve_bytes = resolve_str.as_bytes();
+    let path_scratch = alloc_scratch.call(&mut *kernel_store, resolve_bytes.len() as u32)?;
+    if path_scratch <= 0 {
+        rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure resolving the exec target");
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
+    }
+    let path_scratch = path_scratch as u32 as usize;
+    unsafe { write_bytes(kernel_mem, path_scratch, resolve_bytes) };
+
+    let token = spawn_exec_target_prepare.call(
+        &mut *kernel_store,
+        (parent_pid, child_pid, path_scratch as u32, resolve_bytes.len() as u32),
+    )?;
+    if token < 0 {
+        // Resolution failure (e.g. ENOENT/EACCES/ENOTDIR from the kernel's
+        // path walk): no target was ever retained, so there is nothing to
+        // cancel — just reclaim the child's unpublished Process record and
+        // report the truthful errno. The full failure/rollback matrix
+        // (EACCES nuance, ENOEXEC via a `Module::new` catch, explicit
+        // `kernel_exec_target_cancel` use) is later hardening (N1-I3b Task 2);
+        // this is the happy path's minimum viable rollback.
+        rollback_spawned_child(kernel_store, remove_process, child_pid, "a kernel_spawn_exec_target_prepare failure");
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, -token);
+    }
+    let token = token as u32;
+
+    // Stream the retained target's full contents out of the kernel into host
+    // memory, through a fixed-size scratch region — a FRESH allocation, since
+    // the blob-decode scratch above is a different, already-consumed region.
+    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
+    if read_scratch <= 0 {
+        rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure reading the exec target");
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
+    }
+    let program_bytes = read_exec_target_bytes(
+        kernel_store,
+        kernel_mem,
+        exec_target_size,
+        exec_target_read,
+        read_scratch as u32,
+        EXEC_TARGET_READ_CHUNK,
+        child_pid,
+        token,
+    )?;
+
+    let commit = spawn_exec_commit.call(&mut *kernel_store, (parent_pid, child_pid, token))?;
+    if commit < 0 {
+        // `kernel_spawn_exec_commit` already `take`s the target out of the
+        // child's ledger before validating — win or lose, the token is
+        // consumed either way, so never call `kernel_exec_target_cancel`
+        // here (see this function's doc comment).
+        rollback_spawned_child(kernel_store, remove_process, child_pid, "a kernel_spawn_exec_commit failure");
+        return fail_spawn(&guest_mem, kernel_mem, ch, args, -commit);
+    }
 
     // Launch the child: its own compiled module, memory, and layout — a
     // fresh image, never a fork — reusing Task 1's helpers verbatim, with the
@@ -3144,6 +3243,94 @@ fn fail_spawn(
     errno: i32,
 ) -> anyhow::Result<()> {
     complete_channel(guest_mem, kernel_mem, 0, ch, SYS_SPAWN, args, &[], -1, errno as u32)
+}
+
+/// `handle_spawn`'s Task 1 happy-path rollback: the child's `Process` record
+/// was already created (`kernel_spawn_process`) but never published
+/// (`kernel_publish_spawn_child` hasn't run yet), so it is still ours to
+/// reclaim. Best-effort — logs rather than failing the whole run if the
+/// removal itself errors, exactly like the `-ECHILD` publish-rejection
+/// rollback below `handle_spawn` already does.
+fn rollback_spawned_child(
+    kernel_store: &mut Store<()>,
+    remove_process: &wasmtime::TypedFunc<u32, i32>,
+    child_pid: u32,
+    reason: &str,
+) {
+    match remove_process.call(&mut *kernel_store, child_pid) {
+        Ok(removed) if removed < 0 => {
+            eprintln!(
+                "[host-native] kernel_remove_process({child_pid}) after {reason} failed: {removed}"
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "[host-native] kernel_remove_process({child_pid}) after {reason} trapped: {error}"
+            );
+        }
+        Ok(_) => {}
+    }
+}
+
+/// A chunk size for `read_exec_target_bytes`'s kernel-scratch buffer: large
+/// enough that even a several-MB guest program needs only a handful of
+/// `kernel_exec_target_read` round trips, small enough to stay a trivial
+/// kernel-scratch allocation.
+const EXEC_TARGET_READ_CHUNK: u32 = 65536;
+
+/// N1-I3b Task 1: stream a prepared exec target's full contents out of the
+/// kernel through a fixed-size scratch buffer. `owner_pid` is the process the
+/// target is retained under (the CHILD pid for a spawn — see
+/// `kernel_spawn_exec_target_prepare`'s doc comment; the calling process
+/// itself for an in-place `execve`, not used by this increment). Calls
+/// `size_fn` once, then loops `read_fn` — which writes up to `scratch_len`
+/// bytes into KERNEL memory at `scratch_ptr` — copying each chunk out of
+/// `kernel_mem` into the returned `Vec<u8>` until every byte has been read.
+/// The kernel's own commit-time coverage check
+/// (`PreparedExecTarget::observed_bytes`) requires this full, contiguous,
+/// zero-gap coverage before `kernel_spawn_exec_commit`/`kernel_exec_commit`
+/// will succeed, so a caller MUST drain this to completion (or `size == 0`)
+/// before committing.
+fn read_exec_target_bytes(
+    kernel_store: &mut Store<()>,
+    kernel_mem: &SharedMemory,
+    size_fn: &wasmtime::TypedFunc<(u32, u32), i64>,
+    read_fn: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
+    scratch_ptr: u32,
+    scratch_len: u32,
+    owner_pid: u32,
+    token: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let size = size_fn.call(&mut *kernel_store, (owner_pid, token))?;
+    if size < 0 {
+        anyhow::bail!("kernel_exec_target_size({owner_pid}, {token}) failed: {size}");
+    }
+    let total = size as usize;
+    let mut out = Vec::with_capacity(total);
+    let mut offset: i64 = 0;
+    while (out.len() as i64) < size {
+        let want = core::cmp::min(scratch_len as i64, size - offset) as u32;
+        let n = read_fn.call(
+            &mut *kernel_store,
+            (owner_pid, token, offset as u32, (offset >> 32) as i32, scratch_ptr, want),
+        )?;
+        if n < 0 {
+            anyhow::bail!("kernel_exec_target_read({owner_pid}, {token}, {offset}) failed: {n}");
+        }
+        if n == 0 {
+            break; // EOF short of `size`: the loop below reports the gap.
+        }
+        let chunk = unsafe { read_bytes(kernel_mem, scratch_ptr as usize, n as usize) };
+        out.extend_from_slice(&chunk);
+        offset += n as i64;
+    }
+    if out.len() != total {
+        anyhow::bail!(
+            "kernel_exec_target_read({owner_pid}, {token}) returned {} of {total} expected bytes",
+            out.len()
+        );
+    }
+    Ok(out)
 }
 
 /// Parse `kernel_spawn_blob_decode`'s host-private read-back framing —

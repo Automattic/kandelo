@@ -1,7 +1,8 @@
 /*
- * N1-I3a Task 2/3: the posix_spawn PARENT side. Spawns a fresh-image child
- * process ("child" — resolved by the native host's `GuestOptions.programs`
- * map, not the VFS), waits for it to exit, and prints its decoded
+ * N1-I3a Task 2/3 / N1-I3b Task 1: the posix_spawn PARENT side. Spawns a
+ * fresh-image child process at the ABSOLUTE VFS path "/bin/child" (resolved
+ * by the kernel's exec-target authority against the in-kernel VFS, not a
+ * host-side program map), waits for it to exit, and prints its decoded
  * `WEXITSTATUS` so the host test can assert the reaped status is correct
  * (Task 3: `host_waitpid` parked reaping).
  *
@@ -16,8 +17,8 @@ extern char **environ;
 
 int main(void) {
     pid_t pid = 0;
-    char *argv[] = { "child", (char *)0 };
-    int rc = posix_spawn(&pid, "child", NULL, NULL, argv, environ);
+    char *argv[] = { "/bin/child", (char *)0 };
+    int rc = posix_spawn(&pid, "/bin/child", NULL, NULL, argv, environ);
     if (rc != 0) {
         return 1;
     }
