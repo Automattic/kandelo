@@ -497,30 +497,31 @@ is answered empirically and where the plan CHECKPOINTS with the user):
     channel falls through to the kernel's `-ENOSYS` (only main-thread execve is
     handled) and sibling channels are not reconciled against the kernel's
     `clear_threads`; this folds into the I4 thread-lifecycle work below.
-  - **The native thread-reclamation gap (HEADLINE ITEM for the I4 checkpoint).**
-    On a successful `execve` (and on the `-ECHILD` spawn-rollback, and for the
-    fork threads I4 will spawn) the native host cannot reclaim a guest OS
-    thread parked in a WASM `memory.atomic.wait32`: the wasmtime `Engine`
-    (`crates/host-native/src/lib.rs`) enables neither epoch-interruption nor
-    fuel, so the pump can neither wake the thread correctly (waking resumes a
-    doomed instance) nor kill a `std::thread`. Today execve is POSIX-correct but
-    leaks one parked thread + its old `SharedMemory` per call (truthfully
-    documented at the abandon site). The fix is a cross-cutting `Engine` change
-    (epoch-interruption). **SPIKE RESOLVED THIS 2026-09-05** (see
-    `docs/plans/2026-09-05-native-thread-reclamation-spike.md`): epoch AND fuel
+  - **N1-R — native thread reclamation (DONE 2026-09-05).** Resolved the
+    thread-reclamation gap (successful `execve`, `-ECHILD` spawn-rollback, and
+    the fork replay threads I4 will spawn all need to reclaim a guest thread
+    parked in a WASM `memory.atomic.wait32`). A spike proved epoch AND fuel
     provably CANNOT interrupt a parked `atomic.wait32` (it lowers to a
-    synchronous libcall → `std::thread::park_timeout(MAX)`, no wasm runs while
-    parked, so no epoch/fuel check is ever hit — confirmed empirically + in
-    wasmtime 35 source + docs). The sound fix is a **cooperative host-driven
-    teardown sentinel**: the pump writes a new `TEARDOWN` channel-status value +
-    `atomic_notify`, and a check added after the wait loop in
-    `channel_syscall.c` traps so the guest thread unwinds instead of resuming
-    the doomed image (validated end-to-end, no leak/UB). Cost: a channel-status
-    ABI change (glue + `crates/shared` + `abi_constants.h`) → ABI bump/regen +
-    guest rebuild; NO new host import. Unifies all three cases (execve-abandon,
-    fork replay-thread, spawn `-ECHILD` rollback). Residual: multi-threaded
-    execve must tear down every sibling channel's thread. This is the FIRST I4
-    work item.
+    synchronous libcall → `std::thread::park_timeout(MAX)`; no wasm runs while
+    parked — empirical + wasmtime-35 source + docs; see
+    `docs/plans/2026-09-05-native-thread-reclamation-spike.md`). Fix shipped: a
+    **cooperative `TEARDOWN` channel-status sentinel** — the pump writes
+    `TEARDOWN` + `atomic_notify`s the parked channel, and a check after the wait
+    loop in `channel_syscall.c` traps so the guest thread unwinds instead of
+    resuming the superseded image (`reclaim_parked_thread`/`reclaim_all_channels`
+    + `thread_handles` join bookkeeping). Race-free (opus-reviewed:
+    `wait32`'s value-compare-on-entry is immune to lost wakeups; notify address
+    matches `complete_channel`; single-threaded pump; no join-deadlock).
+    Closes the documented execve-success + spawn `-ECHILD` thread/`SharedMemory`
+    leaks. **Additive ABI (`Teardown=4`), folded into in-dev ABI 44 — NO
+    `ABI_VERSION` bump** (unreleased; all guests rebuilt: musl + 16 fixtures);
+    NO new host import. host-native 29/29. Commits d8981e940 (ABI/glue) +
+    c556f763d (host wiring) + the map-prune fix. Plan:
+    `docs/superpowers/plans/2026-09-05-n1-thread-reclamation-teardown.md`.
+    Residual (documented, out of scope): multi-threaded execve does not tear
+    down a NON-parked compute-bound sibling until its next syscall (writing
+    `TEARDOWN` to a non-parked channel would be clobbered / could hang a join).
+    I4's fork replay-thread teardown REUSES `reclaim_parked_thread`.
   - **I3d — execveat + kernel-owned `#!` shebang (DONE 2026-09-05).** execveat
     (dirfd/`AT_EMPTY_PATH`) shares `handle_exec_common` with execve. Shebang
     resolution is **kernel-owned** (campaign-altitude correction, per user): a
