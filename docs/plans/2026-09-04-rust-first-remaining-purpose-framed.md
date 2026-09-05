@@ -648,6 +648,53 @@ is the immediate next step.
 
 ---
 
+## 8.6 Campaign decisions (2026-09-05, user)
+
+- **Tier-2 wasmtime dependency: acceptable for now.** The native host was
+  upgraded to wasmtime 48 (from a stale 35) to gain the exceptions proposal
+  (`exnref`, required to load fork-instrumented guests) + GC. wasmtime marks
+  wasm threads/shared-memory Tier-2 (no security-update guarantee); the whole
+  native pump depends on `SharedMemory` + atomics. Accepted: native is the
+  campaign's forcing function / third host; Node+browser (V8) stay the
+  production hosts. Not gating native's status on Tier-1.
+- **Reference-completeness bar (I5/F6) = ALL kinds, no `EOPNOTSUPP` left.**
+  externref (incl. GC-derived), struct, array, i31, static-root — every
+  reference kind reconstructs, via the ONE shared co-resident module across all
+  hosts. No accepted subset.
+- **Batch validation runs ONCE, at campaign completion** (not interleaved at
+  I6): when ALL THREE hosts are ready to test the complete finished result —
+  Node Vitest, browser Playwright, and the libc/posix/sortix conformance
+  suites, on the same `kernel.wasm`. Keep building increments (green unit +
+  host-native tests per increment) without the cross-host batch until the end.
+- **Close the native fork/exec residuals (do NOT ship them as gaps):**
+  1. **Real vfork.** Native currently routes `SYS_VFORK` → the plain-fork
+     (private-copy) path; wire the fork-module's BORROWED path
+     (`fm_begin_borrowed_child_replay`, `crates/fork-module/src/lib.rs:1803-1822`)
+     so vfork shares the parked parent's memory and suspends the parent until
+     the child execs/exits — matching Node/browser (vfork already works there).
+     **FIRST STEP (user directive 2026-09-05): audit whether vfork was already
+     SOLVED during this campaign and wire native to that solution rather than
+     reinventing.** Check: the kernel `MODE_VFORK` path + `kernel_fork_process`
+     mode semantics; the fork-module `begin_borrowed_child_replay_impl`
+     (borrowed/vfork) contract; the Node/browser host vfork branch
+     (`handleFork`/`onFork` borrowed path in `host/src/`); the F1 abort-replay
+     work; and the "vfork DONE" campaign item. The near-certain conclusion is
+     that the vfork ALGORITHM already exists platform-wide and native only needs
+     to route `SYS_VFORK` to the borrowed path + provide the parent-suspend +
+     borrowed-memory capabilities — confirm before implementing.
+  2. **fork/execve from a non-main (worker/pthread) channel** currently traps —
+     make it work.
+  3. **Multi-threaded execve** must tear down a NON-parked compute-bound sibling
+     (today only channel-parked siblings are reclaimed via `TEARDOWN`).
+  Sequence these into the native fork/exec completion (after I4 frames + I5
+  refs, or as fits); they are campaign scope, not deferred future work.
+- **Pre-merge commit curation boundary:** each curated commit is a
+  self-contained UNIT OF PROGRESS AND MEANING that stands and passes tests on
+  its own (NOT one-per-increment or one-per-phase mechanically). Expect much
+  less granular history than the development commits; drop dev-churn/fix-round
+  commits; preserve contributor attribution. This is the bar even though it is
+  more burdensome.
+
 ## 9. This supersedes
 
 For remaining-work framing, this document supersedes (does not delete —
