@@ -9,7 +9,6 @@ import {
   appendSegmentedForkReferenceTransaction,
   decodeSegmentedForkReferenceTransaction,
   findForkReferenceVectorOrdinal,
-  forkReferenceVectorFrom,
   ForkReferenceDirectoryOverlay,
   ForkReferenceVectorBuilder,
   indexForkReferenceVector,
@@ -26,11 +25,9 @@ import {
   FORK_GC_FIELD_MUTABLE,
   FORK_GC_FIELD_REFERENCE,
   FORK_GC_LAYOUT_DEFAULTABLE_SHELL,
-  FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
   ForkGcConstructorKind,
   type ForkGcCodecDescriptor,
   type ForkGcCodecProvider,
-  type ForkGcConstructorProvenance,
   type ForkGcLayoutDescriptor,
 } from "./fork-gc-codec";
 import { ForkStaticRootCatalog } from "./fork-static-root-catalog";
@@ -125,11 +122,6 @@ export interface ForkReferenceChildReplayAdoption {
   readonly materializedExceptionRecipes: ReadonlySet<number>;
 }
 
-export interface ForkGcDefinitionProvenance {
-  readonly record: ForkGcConstructorProvenance;
-  readonly recipeIds: readonly number[];
-}
-
 interface ScratchChunk {
   readonly addr: number;
   readonly size: number;
@@ -204,8 +196,6 @@ export class ForkReferenceTransaction {
     new PagedForkReferenceDirectory();
   private readonly materializedValues = new Map<number, unknown>();
   private readonly pendingExceptions = new Set<number>();
-  private readonly pendingGc = new Set<number>();
-  private readonly i31Ids = new Map<number, number>();
   private readonly exceptionCacheIndexes = new Map<number, number>();
   private exceptionSlots: ForkExceptionSlotProvider | undefined;
   private readonly scratchChunks: ScratchChunk[] = [];
@@ -225,9 +215,6 @@ export class ForkReferenceTransaction {
     MutableForkReferenceVectorInternIndex = new Map();
   private readonly decodedReferenceVectors =
     new ForkReferenceDirectoryOverlay<ForkReferenceVector>();
-  private readonly decodedReferenceVectorIntern:
-    MutableForkReferenceVectorInternIndex = new Map();
-  private readonly replayGcVectors = new Map<number, number>();
   private typedMaterialized = false;
   private childTransaction: DecodedSegmentedForkReferenceTransaction | null = null;
   private childReplayAdopted = false;
@@ -280,233 +267,36 @@ export class ForkReferenceTransaction {
     });
   }
 
-  encodeExternref(value: unknown): number {
-    this.requirePhase("capture", "encode an externref");
-    if (value === null) return 0;
-    return this.intern(value, () => {
-      // A WebAssembly function can cross an externref conversion. Keep one
-      // node for it so converting back in the child observes the same fresh
-      // function identity as a funcref slot.
-      if (typeof value === "function") {
-        const recipe = this.functions.encode(value);
-        if (recipe) {
-          return {
-            kind: "funcref",
-            moduleActivation: recipe.moduleActivation,
-            functionOrdinal: recipe.ordinal,
-          };
-        }
-      }
-      return {
-        kind: "externref",
-        handle: this.externrefs.capture(value),
-      };
-    });
-  }
-
-  lookupGcSlot(table: WebAssembly.Table, slot: number): number {
-    this.requirePhase("capture", "look up a Wasm-GC identity");
-    const value = this.gcSlotValue(table, slot);
-    const known = this.lookupId(value);
-    if (known !== undefined) return known;
-    const staticRoot = this.staticRoots?.encode(value);
-    if (!staticRoot) return 0;
+  /**
+   * Reserve one placeholder recipe for a GATED capture kind (externref / i31 /
+   * typed Wasm-GC / static-root), keeping the LIVE captured value so the PARENT
+   * still resumes faithfully.
+   *
+   * The gated capture imports no longer run their real encoders: the fork is
+   * aborted with `EOPNOTSUPP` before any child restores the graph (see
+   * `ForkActivationRegistry`). But the save walk still SEALS the capture (which
+   * validates every node) and then REPLAYS the parent continuation, which
+   * restores the parent's live reference locals/globals/tables. On the parent
+   * that restore is a same-worker round-trip of the ORIGINAL live objects — via
+   * the transit table for the module GC codecs and via `capturedValues` for the
+   * runtime externref/funcref codecs — so no typed layout, scalar, provenance,
+   * or static-root reconstruction is needed here. This reserves a self-contained
+   * non-null leaf node (a canonical `i31` node, the cheapest kind that passes
+   * `validateCanonicalCapture` without real backing; the sealed graph is
+   * discarded unread) and keeps the live value for the parent replay decode.
+   * Because a gated `lookup` returns this NONZERO recipe on first sight, the
+   * guest takes its alias branch and never recurses into the typed field walk,
+   * so leaf placeholders suffice for the whole gated graph.
+   */
+  reserveGatedPlaceholder(value: unknown): number {
+    this.requirePhase("capture", "reserve a gated placeholder recipe");
     const id = this.nodes.length;
     if (id > 0xffff_ffff) {
       throw new RangeError("fork reference recipe id space exhausted");
     }
-    this.nodes.push({
-      id,
-      node: {
-        kind: "static-root",
-        moduleActivation: staticRoot.moduleActivation,
-        staticRootOrdinal: staticRoot.ordinal,
-      },
-    });
+    this.nodes.push({ id, node: { kind: "i31", value: 0 } });
     this.capturedValues.push(value);
-    this.rememberId(value, id);
     return id;
-  }
-
-  claimGcSlot(table: WebAssembly.Table, slot: number): number {
-    this.requirePhase("capture", "claim a Wasm-GC identity");
-    const value = this.gcSlotValue(table, slot);
-    const known = this.lookupId(value);
-    if (known !== undefined) return known;
-    const id = this.nodes.length;
-    if (id > 0xffff_ffff) {
-      throw new RangeError("fork reference recipe id space exhausted");
-    }
-    // WHY: publish graph identity before recursively encoding fields. The
-    // placeholder is never serializable; `sealInto` rejects it via pendingGc
-    // unless the generated codec completes `defineGc`.
-    this.nodes.push({
-      id,
-      node: {
-        kind: "struct",
-        moduleActivation: 0,
-        typeOrdinal: 0,
-        layoutId: 0,
-        scalars: new Uint8Array(),
-        fields: [],
-      },
-    });
-    this.capturedValues.push(value);
-    this.rememberId(value, id);
-    this.pendingGc.add(id);
-    return id;
-  }
-
-  encodeI31(value: number): number {
-    this.requirePhase("capture", "encode an i31ref");
-    if (
-      !Number.isInteger(value)
-      || value < -0x4000_0000
-      || value > 0x3fff_ffff
-    ) {
-      throw new RangeError(`invalid signed i31 payload ${value}`);
-    }
-    const known = this.i31Ids.get(value);
-    if (known !== undefined) return known;
-    const id = this.nodes.length;
-    if (id > 0xffff_ffff) {
-      throw new RangeError("fork reference recipe id space exhausted");
-    }
-    this.nodes.push({ id, node: { kind: "i31", value } });
-    // i31 identity is defined by its 31-bit payload. Keep a scalar here so
-    // parent replay and graph aliases use the same canonical recipe id.
-    this.capturedValues.push(value);
-    this.i31Ids.set(value, id);
-    return id;
-  }
-
-  capturedGcValue(recipeId: number): unknown {
-    this.requirePhase("capture", "read a captured Wasm-GC identity");
-    assertRecipeId(recipeId);
-    if (recipeId === 0 || recipeId >= this.capturedValues.length) {
-      throw new Error(`fork Wasm-GC recipe ${recipeId} is out of bounds`);
-    }
-    return this.capturedValues.get(recipeId);
-  }
-
-  defineGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarPointer: number | bigint,
-    scalarByteLength: number,
-    referenceVectorOrdinal: number,
-    descriptor: ForkGcCodecDescriptor,
-    provenance: ForkGcDefinitionProvenance | null,
-  ): void {
-    this.requirePhase("capture", "define a Wasm-GC recipe");
-    assertRecipeId(recipeId);
-    this.assertU32(moduleActivation, "GC module activation");
-    this.assertU32(typeOrdinal, "GC type ordinal");
-    this.assertU31(layoutId, "GC layout id", false);
-    this.assertU32(referenceVectorOrdinal, "GC reference vector ordinal");
-    if (!this.pendingGc.has(recipeId)) {
-      throw new Error(`fork Wasm-GC recipe ${recipeId} is not pending definition`);
-    }
-    const layout = descriptor.require(layoutId);
-    if (
-      layout.typeOrdinal !== typeOrdinal
-      || layout.kind !== kind
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} coordinate does not match `
-        + `${moduleActivation}:${typeOrdinal}:${layoutId}:${kind}`,
-      );
-    }
-    const snapshotScalars = this.readBytes(
-      scalarPointer,
-      scalarByteLength,
-      "fork Wasm-GC scalar payload",
-    );
-    const vector = this.referenceVectors.get(referenceVectorOrdinal);
-    if (!vector) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} names an unavailable reference vector`,
-      );
-    }
-    this.validateGcSnapshot(
-      layout,
-      snapshotScalars,
-      vector,
-      `fork Wasm-GC recipe ${recipeId}`,
-    );
-
-    const requiresProvenance =
-      (layout.flags & FORK_GC_LAYOUT_REQUIRES_PROVENANCE) !== 0;
-    if (requiresProvenance !== (provenance !== null)) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} has `
-        + `${provenance ? "unexpected" : "missing"} constructor provenance`,
-      );
-    }
-    let provenanceScalars: Uint8Array = new Uint8Array();
-    let provenanceIds: readonly number[] = [];
-    if (provenance) {
-      const selected = descriptor.requireCaptureLayout(
-        layout.baseLayoutId,
-        provenance.record.layoutId,
-      );
-      if (
-        selected.id !== layout.id
-        || provenance.record.activationId !== moduleActivation
-        || provenance.record.baseLayoutId !== layout.baseLayoutId
-        || provenance.record.scalars.byteLength
-          !== layout.provenanceScalarLength
-        || provenance.record.references.length
-          !== layout.provenanceReferenceCount
-        || provenance.recipeIds.length
-          !== layout.provenanceReferenceCount
-      ) {
-        throw new Error(
-          `fork Wasm-GC recipe ${recipeId} provenance does not match `
-          + `layout ${layout.id}`,
-        );
-      }
-      provenance.recipeIds.forEach((id, index) => {
-        assertRecipeId(id);
-        if (id >= this.nodes.length) {
-          throw new Error(
-            `fork Wasm-GC provenance ${index} names missing recipe ${id}`,
-          );
-        }
-      });
-      provenanceScalars = provenance.record.scalars;
-      provenanceIds = provenance.recipeIds;
-    }
-
-    const scalars = new Uint8Array(
-      provenanceScalars.byteLength + snapshotScalars.byteLength,
-    );
-    scalars.set(provenanceScalars);
-    scalars.set(snapshotScalars, provenanceScalars.byteLength);
-    const references = [...provenanceIds, ...vector];
-    const node: ForkReferenceRecipeNode =
-      layout.kind === 1
-        ? {
-            kind: "struct",
-            moduleActivation,
-            typeOrdinal,
-            layoutId,
-            scalars,
-            fields: references,
-          }
-        : {
-            kind: "array",
-            moduleActivation,
-            typeOrdinal,
-            layoutId,
-            scalars,
-            elements: references,
-          };
-    this.nodes.set(recipeId, { id: recipeId, node });
-    this.pendingGc.delete(recipeId);
   }
 
   sealInto(arena: ForkModuleStateArena): Uint8Array {
@@ -519,11 +309,6 @@ export class ForkReferenceTransaction {
     if (this.pendingExceptions.size !== 0) {
       throw new Error(
         `cannot seal ${this.pendingExceptions.size} incomplete exception recipe(s)`,
-      );
-    }
-    if (this.pendingGc.size !== 0) {
-      throw new Error(
-        `cannot seal ${this.pendingGc.size} incomplete Wasm-GC recipe(s)`,
       );
     }
     if (this.pendingReferenceVectors.size !== 0) {
@@ -579,7 +364,6 @@ export class ForkReferenceTransaction {
     // transaction-wide index. The immutable decoded directory remains the
     // shared base used by both early and ordinary replay.
     this.decodedReferenceVectors.reset(decoded.vectors);
-    this.decodedReferenceVectorIntern.clear();
     for (const entry of graph.nodes) {
       if (entry.node.kind === "exnref") {
         this.exceptionCacheIndexes.set(
@@ -1215,137 +999,6 @@ export class ForkReferenceTransaction {
     return 1;
   }
 
-  routeGc(recipeId: number, expectedActivation: number): number {
-    assertRecipeId(recipeId);
-    this.assertU32(expectedActivation, "GC route activation");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") return 0;
-    if (
-      (node?.kind !== "struct" && node?.kind !== "array")
-      || node.moduleActivation !== expectedActivation
-    ) {
-      return -1;
-    }
-    const layoutId = node.layoutId ?? 0;
-    this.assertU31(layoutId, `fork Wasm-GC recipe ${recipeId} layout`, false);
-    return layoutId;
-  }
-
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number {
-    assertRecipeId(recipeId);
-    this.assertU32(expectedActivation, "GC payload activation");
-    this.assertU31(expectedLayoutId, "GC payload layout");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") {
-      if (expectedLayoutId !== 0) {
-        throw new Error(`fork i31 recipe ${recipeId} has a nonzero layout`);
-      }
-      return 4;
-    }
-    if (
-      (node?.kind !== "struct" && node?.kind !== "array")
-      || node.moduleActivation !== expectedActivation
-      || (node.layoutId ?? 0) !== expectedLayoutId
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} does not match payload route `
-        + `${expectedActivation}:${expectedLayoutId}`,
-      );
-    }
-    return (node.scalars ?? new Uint8Array()).byteLength;
-  }
-
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number {
-    this.requirePhase("child-replay", "load a Wasm-GC recipe");
-    assertRecipeId(recipeId);
-    this.assertU32(moduleActivation, "GC load activation");
-    this.assertU32(typeOrdinal, "GC load type ordinal");
-    this.assertU31(layoutId, "GC load layout id");
-    this.assertU32(kind, "GC load kind");
-    const node = this.recipeNode(recipeId);
-    if (node?.kind === "i31") {
-      if (
-        layoutId !== 0
-        || typeOrdinal !== 0xffff_ffff
-        || kind !== 0
-        || scalarByteLength !== 4
-      ) {
-        throw new Error(`fork i31 recipe ${recipeId} has an invalid load coordinate`);
-      }
-      const bytes = new Uint8Array(4);
-      new DataView(bytes.buffer).setInt32(0, node.value, true);
-      this.writeBytes(
-        scalarDestination,
-        bytes,
-        "fork i31 scalar destination",
-      );
-      return 0;
-    }
-    if (node?.kind !== "struct" && node?.kind !== "array") {
-      throw new Error(`fork recipe ${recipeId} is not a Wasm-GC aggregate`);
-    }
-    const nodeKind = node.kind === "struct" ? 1 : 2;
-    const scalars = node.scalars ?? new Uint8Array();
-    if (
-      node.moduleActivation !== moduleActivation
-      || node.typeOrdinal !== typeOrdinal
-      || (node.layoutId ?? 0) !== layoutId
-      || nodeKind !== kind
-      || scalars.byteLength !== scalarByteLength
-    ) {
-      throw new Error(
-        `fork Wasm-GC recipe ${recipeId} payload does not match `
-        + `the generated codec`,
-      );
-    }
-    this.writeBytes(
-      scalarDestination,
-      scalars,
-      "fork Wasm-GC scalar destination",
-    );
-    const edges = node.kind === "struct" ? node.fields : node.elements;
-    if (edges.length === 0) return 0;
-    const known = this.replayGcVectors.get(recipeId);
-    if (known !== undefined) return known;
-    const existing = findForkReferenceVectorOrdinal(
-      [
-        this.childTransaction!.vectorIntern,
-        this.decodedReferenceVectorIntern,
-      ],
-      this.decodedReferenceVectors,
-      forkReferenceVectorFrom(edges, edges.length),
-    );
-    if (existing !== undefined) {
-      this.replayGcVectors.set(recipeId, existing);
-      return existing;
-    }
-    const ordinal = this.decodedReferenceVectors.length;
-    if (ordinal > MAX_REFERENCE_VECTOR_ORDINAL) {
-      throw new RangeError("fork reference vector ordinal space exhausted");
-    }
-    const canonical = forkReferenceVectorFrom(edges, edges.length);
-    this.decodedReferenceVectors.push(canonical);
-    indexForkReferenceVector(
-      this.decodedReferenceVectorIntern,
-      canonical,
-      ordinal,
-    );
-    this.replayGcVectors.set(recipeId, ordinal);
-    return ordinal;
-  }
-
   /**
    * Eager fresh-child barrier for all Wasm-only reference identities.
    *
@@ -1353,8 +1006,24 @@ export class ForkReferenceTransaction {
    * then allocated globally, remaining constructors follow their exact
    * dependency edges, exceptions are cached in their owning activation, and
    * mutable fields are filled only after every identity exists.
+   *
+   * Phase 6 item 3c: when `moduleDrive` is supplied (a flag-on qualifying child
+   * whose reference graph was admitted through the co-resident fork-module), the
+   * typed allocate/fill/exn topological SUB-LOOP below is replaced by the module
+   * drive (`fm_build_gc_plan` + `fm_drive_execute`). PHASE A/B — the static-root
+   * transit pin and the externref-leaf publish just above it — still runs on the
+   * JS path: the module drive's guest `_gc_allocate`/`_gc_fill` reads those leaves
+   * and roots out of the SAME shared transit table this transaction publishes
+   * them into. `moduleDrive` calls the guest `_gc_allocate`/`_gc_fill`/
+   * `_exception_materialize` exports (via the module's `call_indirect` drive
+   * table) exactly as the JS sub-loop would through `owner.provider(...)`, so the
+   * guest GC state it publishes into the transit table is equivalent; the JS
+   * `allocated`/`filled`/`completedExceptions` bookkeeping (all function-local)
+   * simply never runs, and no consumer downstream of `restoreModuleState` reads
+   * it. When `moduleDrive` is omitted (flag-off, or a non-qualifying fork) this
+   * is byte-identical to before.
    */
-  materializeAllTyped(): void {
+  materializeAllTyped(moduleDrive?: () => void): void {
     this.requirePhase("child-replay", "materialize typed references");
     if (this.typedMaterialized) {
       throw new Error("typed fork references were materialized twice");
@@ -1408,19 +1077,53 @@ export class ForkReferenceTransaction {
     }
 
     owner.prepareTransit(Math.max(0, this.decodedNodes.length - 1));
-    for (const entry of this.decodedNodes) {
-      if (entry.node.kind !== "static-root") continue;
-      if (!this.materializedValues.has(entry.id)) {
-        throw new Error(
-          `fork static-root recipe ${entry.id} was not pinned during child attach`,
-        );
+    // PHASE A — static-root transit publish. On the MODULE path (`moduleDrive`
+    // present) each static root is published into the same anyref transit by the
+    // module's DRIVE_OP_STATIC_ROOT step (`table.get` the merged catalog mirror +
+    // `table.set` transit, both wasm — the static-root binder), so the JS
+    // `publishTransit` is skipped to avoid a redundant double-publish. When
+    // `moduleDrive` is omitted (flag-off / non-admitted fork) this is the
+    // byte-identical JS path.
+    if (!moduleDrive) {
+      for (const entry of this.decodedNodes) {
+        if (entry.node.kind !== "static-root") continue;
+        if (!this.materializedValues.has(entry.id)) {
+          throw new Error(
+            `fork static-root recipe ${entry.id} was not pinned during child attach`,
+          );
+        }
+        // WHY: generated GC constructors and field fills decode reference edges
+        // from recipe+1 in the shared anyref table. Instantiation recreated this
+        // identity instead of a codec, so publish the pinned child root before
+        // any dynamic object can consume it.
+        owner.publishTransit(entry.id, this.materializedValues.get(entry.id));
       }
-      // WHY: generated GC constructors and field fills decode reference edges
-      // from recipe+1 in the shared anyref table. Instantiation recreated this
-      // identity instead of a codec, so publish the pinned child root before
-      // any dynamic object can consume it.
-      owner.publishTransit(entry.id, this.materializedValues.get(entry.id));
     }
+    // PHASE B — externref transit publish. UNCONDITIONAL, unlike PHASE A above:
+    // `owner.publishExternref` calls the GUEST program's own generated
+    // `_gc_publish_externref_transit` export directly (`any.convert_extern` +
+    // `table.set` on the shared anyref transit `forkGcTransit` wraps) — it
+    // never routed through any fork-module host capability, so there is no
+    // M2-deleted seam here to avoid double-calling.
+    //
+    // It also cannot be skipped on the module path the way PHASE A can: the
+    // module's own `DRIVE_OP_EXTERNREF_TRANSIT` step (run inside
+    // `fm_drive_execute`, itself gated on `hasModuleDriveNode` below —
+    // struct/array/i31/exnref/static-root, NOT plain "externref") only roots
+    // struct/array/exnref-REACHABLE externref leaves
+    // (`transit_rooted_recipes` seeds from Struct/Array edges). A directly
+    // held externref carried across the fork as a plain reference LOCAL
+    // (restored through the reference-vector feed, `__wpk_fork_ref_vector_get`
+    // + `__wpk_fork_ref_decode_externref`) is not struct/array/exnref-reachable
+    // and so is never covered by that drive step, on OR off the module path.
+    // Skipping this JS publish for that common case would leave its transit
+    // slot unseeded (a verified regression: the module-path externref fork
+    // test fails with a null/mismatched reconstruction without this loop).
+    // Because `ForkExternrefTokenCache.materialize` is idempotent, republishing
+    // a struct/array-reachable leaf here after the module's own drive step
+    // already rooted it is a safe, redundant no-op (same canonical token),
+    // not a correctness risk — so this loop always runs, on both the flag-off
+    // and module-backed paths.
     for (const entry of this.decodedNodes) {
       if (entry.node.kind !== "externref") continue;
       // Externref leaves must exist before immutable GC constructors or
@@ -1428,6 +1131,32 @@ export class ForkReferenceTransaction {
       // only the JavaScript token is insufficient: the shared transit table
       // stores anyref, so a generated Wasm helper performs the conversion.
       owner.publishExternref(entry.id, this.decodeExternref(entry.id));
+    }
+    // Phase 6 item 3c production flip: once PHASE A/B (static-root pin + externref
+    // publish) has seeded the shared transit table, hand the typed allocate/fill/
+    // exn topological order to the co-resident fork-module. The module's
+    // `fm_build_gc_plan` reproduces THIS same walk (allocate-all-shells-first,
+    // dependency-ordered constructors, cycle break, then fills) and drives the
+    // guest exports through its `call_indirect` drive table, publishing each
+    // reconstructed identity into the same transit table the JS sub-loop would.
+    // Only run it when there is actually module-drive work: struct/array/i31/exnref
+    // (the typed allocate/fill/exn topological order) OR a static-root (the
+    // DRIVE_OP_STATIC_ROOT publish above is emitted first in the same plan). A
+    // funcref/externref/null-only fork stays on the untouched path and never asks
+    // the module to build an empty plan.
+    if (moduleDrive) {
+      const hasModuleDriveNode = this.decodedNodes.some(({ node }) =>
+        node.kind === "struct"
+        || node.kind === "array"
+        || node.kind === "i31"
+        || node.kind === "exnref"
+        || node.kind === "static-root"
+      );
+      if (hasModuleDriveNode) {
+        moduleDrive();
+        this.typedMaterialized = true;
+        return;
+      }
     }
     const allocated = new Set(this.adoptedAllocatedTypedRecipes);
     const completedExceptions = new Set(
@@ -1649,21 +1378,6 @@ export class ForkReferenceTransaction {
     }
   }
 
-  private gcSlotValue(table: WebAssembly.Table, slot: number): unknown {
-    this.assertU32(slot, "Wasm-GC transit slot");
-    if (slot >= table.length) {
-      throw new RangeError(`Wasm-GC transit slot ${slot} is out of bounds`);
-    }
-    const value = table.get(slot);
-    if (
-      (typeof value !== "object" || value === null)
-      && typeof value !== "function"
-    ) {
-      throw new TypeError("Wasm-GC transit slot is not a non-null reference");
-    }
-    return value;
-  }
-
   private validateGcSnapshot(
     layout: ForkGcLayoutDescriptor,
     scalars: Uint8Array,
@@ -1871,20 +1585,6 @@ export class ForkReferenceTransaction {
     }
   }
 
-  private assertU31(
-    value: number,
-    context: string,
-    allowZero = true,
-  ): void {
-    if (
-      !Number.isInteger(value)
-      || value < (allowZero ? 0 : 1)
-      || value > 0x7fff_ffff
-    ) {
-      throw new RangeError(`${context} is not ${allowZero ? "a" : "a nonzero"} u31`);
-    }
-  }
-
   private requireActivePhase(operation: string): void {
     if (
       this.phase !== "capture"
@@ -2050,8 +1750,6 @@ export class ForkReferenceTransaction {
       }
     }
     this.pendingExceptions.clear();
-    this.pendingGc.clear();
-    this.i31Ids.clear();
     this.exceptionCacheIndexes.clear();
     this.nodes.clear();
     this.capturedValues.clear();
@@ -2064,8 +1762,6 @@ export class ForkReferenceTransaction {
     this.nextReferenceVectorHandle = 1;
     this.referenceVectorIntern.clear();
     this.decodedReferenceVectors.clear();
-    this.decodedReferenceVectorIntern.clear();
-    this.replayGcVectors.clear();
     this.typedMaterialized = false;
     this.childTransaction = null;
     this.childReplayAdopted = false;

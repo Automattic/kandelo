@@ -72,6 +72,13 @@ export interface BrowserKernelOptions {
   maxProcessMemoryBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
+  /**
+   * Phase 6 D5: enable the co-resident `fork-module` for fork-instrumented
+   * process workers (mirrors `WASM_POSIX_FORK_MODULE` on the Node host). When
+   * true, the wasm32 fork-module URL is fetched at boot and shipped to the
+   * kernel worker. Default false leaves the browser path unchanged.
+   */
+  forkModuleEnabled?: boolean;
   /** Additional VFS mount points */
   extraMounts?: Array<{ mountPoint: string; backend: { open: Function } }>;
   /** Environment variables for spawned processes */
@@ -200,6 +207,20 @@ async function fetchDefaultBrowserKernelArtifact(
     "./browser-kernel-default-artifacts"
   );
   return fetch(browserKernelDefaultArtifactUrls[kind]).then((response) =>
+    response.arrayBuffer()
+  );
+}
+
+/**
+ * Phase 6 D5: fetch the wasm32 fork-module bytes from its optional bundler URL.
+ * Kept behind its own dynamic import so a default boot never requires the
+ * fork-module artifact (see `browser-fork-module-artifact`).
+ */
+async function fetchDefaultBrowserForkModule32(): Promise<ArrayBuffer> {
+  const { browserForkModule32ArtifactUrl } = await import(
+    "./browser-fork-module-artifact"
+  );
+  return fetch(browserForkModule32ArtifactUrl).then((response) =>
     response.arrayBuffer()
   );
 }
@@ -402,6 +423,11 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
+    // Phase 6 D5: fetch the optional wasm32 fork-module bytes only when the
+    // demo opted in. Default boots never resolve the artifact.
+    const forkModuleBytes = this.options.forkModuleEnabled
+      ? await fetchDefaultBrowserForkModule32()
+      : undefined;
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     this.workerStarted = true;
@@ -474,6 +500,9 @@ export class BrowserKernel {
         const initMsg: MainToKernelMessage = {
           type: "init",
           kernelWasmBytes: transferBuf,
+          ...(this.options.forkModuleEnabled && forkModuleBytes
+            ? { forkModuleEnabled: true, forkModuleBytes }
+            : {}),
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
@@ -497,6 +526,9 @@ export class BrowserKernel {
           },
         };
         const transfer: Transferable[] = [transferBuf];
+        if (this.options.forkModuleEnabled && forkModuleBytes) {
+          transfer.push(forkModuleBytes);
+        }
         if (opts.takeVfsImageOwnership) {
           // WHY: this API is used at durable reboot boundaries where the main
           // thread has already hashed the image and will not reuse it. Transfer

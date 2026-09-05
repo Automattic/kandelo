@@ -415,6 +415,26 @@ deallocates the module-state arena. Failure midway through attachment detaches
 every child controller so the suspended parent can replay the original
 transaction.
 
+When the co-resident fork-module is enabled (`WASM_POSIX_FORK_MODULE`), a
+single-activation borrowed child drives that same borrowed replay through the
+module instead of the JavaScript engine. It instantiates its own fork-module at
+a distinct `__memory_base` — obtained on demand by channel-mapping a fresh,
+non-overlapping region so it can never alias the parked parent's live data, and
+released again the moment the one replay finishes so nothing is durably owned in
+the parent's restored address space (the runtime never shrinks a `Shared
+WebAssembly.Memory`, so an unreleased region would persist). It reads the
+parent's serialized journal image and drives a read-only rewind over the
+parent's borrowed frame nodes, copying the parent's fixed runtime prefix into a
+child-private region so the guest's rewind writes its active-frame pointer there
+rather than the parent's. It never marks nodes consumed, releases the parent's
+mappings, or writes the process launch anchor. A multi-activation dlopen-vfork
+("mode-1") borrowed child — one that issues `vfork` from a dlopened side-module
+frame — drives every activation the same way: the main activation seeds from the
+journal image and each side activation is added against the same borrowed
+continuation with its own child-private prefix. The guest instrumentation ABI is
+unchanged either way; the module only changes which host provider drives the
+frames and references.
+
 Dynamic-linker reconstruction has a matching fail-closed mode. It accepts
 only shared Memory, passive data segments, and a complete loader transaction.
 For ordinary wasm-ld modules it suppresses only a start function exported as

@@ -70,10 +70,12 @@ import {
 } from "./host-owned-process-reap";
 import {
   compileSpawnCandidateSnapshot,
+  decodePreparedExecShebang,
   launchPreparedExecTarget,
   PreparedExecTargetError,
   type ExecLaunchCallback,
   type PreparedExecKernel,
+  type PreparedExecShebang,
 } from "./exec-target";
 import {
   buildRawHttpRequest,
@@ -114,7 +116,9 @@ import {
   FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
+  CHANNEL_REQUEST_FLAG_OPAQUE_RECORD,
   HOST_INTERCEPTED_SYSCALLS,
+  HOST_RAW_SYSCALLS,
   IOCTL_REQUESTS,
   OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
@@ -233,16 +237,7 @@ import {
   SIGNAL_MASK_BYTES,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
-  SPAWN_MAX_ACTION_COUNT,
-  SPAWN_MAX_ARGV_COUNT,
-  SPAWN_MAX_ENVP_COUNT,
-  SPAWN_WIRE_ACTION_RECORD_BYTES,
-  SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-  SPAWN_WIRE_HEADER_ARGC_OFFSET,
-  SPAWN_WIRE_HEADER_BYTES,
-  SPAWN_WIRE_HEADER_ENVC_OFFSET,
   SPAWN_WIRE_MAX_BYTES,
-  SPAWN_WIRE_STRING_OFFSET_BYTES,
   STRUCT_SIZE_KERNEL_CMSGHDR_WIRE,
   STRUCT_SIZE_KERNEL_IOVEC_WIRE,
   STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
@@ -1096,6 +1091,22 @@ const EAGAIN_RETRY_MS = 1;
 /** Profiling: enabled via WASM_POSIX_PROFILE env var. Zero-cost when disabled. */
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
 
+/**
+ * In-kernel tmpfs (Phase 5 cutover): the scratch mounts (`/tmp`, `/var/*`,
+ * `/root`, `/srv`, ...) are served by the Rust kernel instead of a host-side
+ * memory FS. This is the unconditional authority — the mount resolvers always
+ * drop the host-side scratch backends (`filterMountSpecForKernelTmpfs`), so the
+ * kernel-enable and host-mount-removal halves of the cutover never disagree.
+ */
+function enableKernelTmpfs(instance: WebAssembly.Instance): void {
+  const fn = instance.exports.kernel_set_tmpfs_enabled as
+    | ((enabled: number) => number)
+    | undefined;
+  if (typeof fn === 'function') {
+    fn(1);
+  }
+}
+
 /** Read-like syscalls that may block on pipe/socket data */
 const READ_LIKE_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Read,
@@ -1120,7 +1131,7 @@ const WRITE_LIKE_SYSCALLS = new Set<number>([
  * Generic-channel data transfers whose complete request must survive a host
  * EAGAIN park. Vector/message transfers have dedicated snapshot kinds below.
  */
-const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
+export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Open,
   ABI_SYSCALLS.Read,
   ABI_SYSCALLS.Write,
@@ -1496,125 +1507,6 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
     malformed("trailing bytes follow the declared records");
   }
   return out;
-}
-
-/**
- * Decode just the argv and envp strings out of a SYS_SPAWN blob. The kernel
- * does the authoritative parsing (file actions, attrs); this minimal
- * decoder exists because `onSpawn` needs `string[]` for the worker-launch
- * path.
- *
- * Wire format mirrors `crates/kernel/src/spawn.rs::parse_blob` — see
- * `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
- *
- * Throws on malformed input. Callers should treat the throw as EINVAL.
- */
-function decodeSpawnBlobStrings(
-  blob: Uint8Array,
-  pointerWidth: 4 | 8,
-): { argv: string[]; envp: string[] } {
-  if (blob.byteLength < SPAWN_WIRE_HEADER_BYTES) {
-    throw new Error("blob too short for header");
-  }
-  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-  const argc = view.getUint32(SPAWN_WIRE_HEADER_ARGC_OFFSET, true);
-  const envc = view.getUint32(SPAWN_WIRE_HEADER_ENVC_OFFSET, true);
-  const nActions = view.getUint32(
-    SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
-    true,
-  );
-
-  // Cap counts to mirror the kernel parser's adversarial-input cap.
-  if (
-    argc > SPAWN_MAX_ARGV_COUNT
-    || envc > SPAWN_MAX_ENVP_COUNT
-    || nActions > SPAWN_MAX_ACTION_COUNT
-  ) {
-    throw new Error("blob count exceeds limit");
-  }
-
-  const argvOffsetsAt = SPAWN_WIRE_HEADER_BYTES;
-  const envpOffsetsAt =
-    argvOffsetsAt + argc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const actionsAt =
-    envpOffsetsAt + envc * SPAWN_WIRE_STRING_OFFSET_BYTES;
-  const stringsAt =
-    actionsAt + nActions * SPAWN_WIRE_ACTION_RECORD_BYTES;
-
-  if (stringsAt > blob.byteLength) {
-    throw new Error("blob truncated before strings region");
-  }
-  const stringsLen = blob.byteLength - stringsAt;
-  const decoder = new TextDecoder();
-
-  // Account for every pointer before scanning or decoding any string. Then
-  // measure all referenced wire spans against one incremental budget. This
-  // makes the total scanning and allocation work proportional to ARG_MAX:
-  // thousands of duplicate offsets into a multi-megabyte tail are rejected
-  // before TextDecoder can allocate that tail once per entry.
-  let representedBytes = (argc + envc + 2) * pointerWidth;
-  if (
-    !Number.isSafeInteger(representedBytes)
-    || representedBytes > POSIX_ARG_MAX_BYTES
-  ) {
-    throw new KernelScratchError(
-      "spawn argv/environment pointer representation exceeds ARG_MAX",
-      E2BIG,
-    );
-  }
-  const measure = (
-    offsetsAt: number,
-    count: number,
-  ): Array<{ start: number; end: number }> => {
-    const ranges = new Array<{ start: number; end: number }>(count);
-    for (let i = 0; i < count; i++) {
-      const off = view.getUint32(
-        offsetsAt + i * SPAWN_WIRE_STRING_OFFSET_BYTES,
-        true,
-      );
-      if (off > stringsLen) {
-        throw new KernelScratchError("spawn string offset is out of bounds", EINVAL);
-      }
-      let end = off;
-      while (end < stringsLen && blob[stringsAt + end] !== 0) end++;
-      if (end === stringsLen) {
-        throw new KernelScratchError(
-          "spawn string is missing its terminating NUL",
-          EINVAL,
-        );
-      }
-      const length = end - off;
-      if (length > PROCESS_METADATA_ENTRY_MAX_BYTES) {
-        throw new KernelScratchError(
-          "spawn metadata entry exceeds the process-metadata transport limit",
-          E2BIG,
-        );
-      }
-      representedBytes += length + 1;
-      if (
-        !Number.isSafeInteger(representedBytes)
-        || representedBytes > POSIX_ARG_MAX_BYTES
-      ) {
-        throw new KernelScratchError(
-          "spawn argv/environment representation exceeds ARG_MAX",
-          E2BIG,
-        );
-      }
-      ranges[i] = {
-        start: stringsAt + off,
-        end: stringsAt + end,
-      };
-    }
-    return ranges;
-  };
-
-  const argvRanges = measure(argvOffsetsAt, argc);
-  const envpRanges = measure(envpOffsetsAt, envc);
-  const decode = ({ start, end }: { start: number; end: number }): string =>
-    decoder.decode(blob.subarray(start, end));
-  const argv = argvRanges.map(decode);
-  const envp = envpRanges.map(decode);
-  return { argv, envp };
 }
 
 /** Syscall number → name mapping for logging */
@@ -2786,6 +2678,45 @@ export class CentralizedKernelWorker {
   #kernelInstance: WebAssembly.Instance | null = null;
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
+  /**
+   * Rootfs overlay boot state (Phase 5 Increment 2). The worker entry (which
+   * holds the `/` image `MemoryFileSystem`) builds the manifest + byte provider
+   * and hands them here before `init()`; `#maybeLoadKernelRootfs` applies them
+   * once the kernel instance exists. Null until configured / when the rootfs
+   * gate is off.
+   */
+  #rootfsManifest: Uint8Array | null = null;
+  #rootfsBlobProvider:
+    | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
+    | null = null;
+  /**
+   * Rootfs raw-archive byte-store provider (Phase 5 Increment 3b). Mirrors
+   * `#rootfsBlobProvider`: the worker entry hands this in via
+   * {@link configureRootfsOverlay} before `init()`; `#maybeLoadKernelRootfs`
+   * installs it on the kernel once the manifest has loaded. Null when no
+   * lazy-archive provider was supplied (the default, unaffected path).
+   */
+  #rootfsArchiveProvider:
+    | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
+    | null = null;
+  /**
+   * Canonical mount points of the sibling filesystems still mounted under `/`
+   * after the worker entry drops the host `/` mount (for example `/dev/shm`
+   * shmfs, `/run/kandelo-run` session-seed host mounts, extra `HostFileSystem`
+   * mounts). Handed in via {@link configureRootfsOverlay} before `init()`;
+   * `#maybeLoadKernelRootfs` registers them so the in-kernel overlay does NOT
+   * claim these paths and they keep falling through to the host mount. Empty
+   * when the rootfs gate is off or nothing else is mounted.
+   */
+  #rootfsForeignPrefixes: string[] = [];
+  /**
+   * Whether the overlay's `/` mount was configured `nosuid`. Handed in via
+   * {@link configureRootfsOverlay}; `#maybeLoadKernelRootfs` publishes it to the
+   * kernel (`kernel_set_rootfs_nosuid`) before enabling rootfs authority so an
+   * overlay-served setuid/setgid exec target elevates (or, on a nosuid mount,
+   * does not) exactly like the host `/` mount. Defaults set-ID honoring.
+   */
+  #rootfsNosuid = false;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5022,6 +4953,436 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Hand the rootfs overlay its boot manifest and byte provider (Phase 5
+   * Increment 2). Called by the worker entry — which holds the `/` image
+   * `MemoryFileSystem` — before {@link init}. `#maybeLoadKernelRootfs` applies
+   * them once the kernel instance exists. A no-op path when the rootfs gate is
+   * off (the entry simply never calls this).
+   */
+  configureRootfsOverlay(
+    manifest: Uint8Array,
+    blobProvider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
+    archiveProvider?: (
+      archiveId: number,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number,
+    foreignMountPrefixes?: string[],
+    rootNosuid?: boolean,
+  ): void {
+    this.#rootfsManifest = manifest;
+    this.#rootfsBlobProvider = blobProvider;
+    this.#rootfsArchiveProvider = archiveProvider ?? null;
+    this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
+    this.#rootfsNosuid = rootNosuid === true;
+  }
+
+  /**
+   * If a rootfs overlay manifest was configured, hand the tree to the kernel and
+   * install the byte provider before any guest filesystem op runs: publish the
+   * wall clock (so base entries are not epoch-stamped), copy the manifest into
+   * kernel memory and load it, wire the provider, then enable rootfs authority.
+   * Any failure leaves rootfs disabled (the host keeps serving `/`), which is the
+   * safe fallback.
+   */
+  #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
+    const manifest = this.#rootfsManifest;
+    const provider = this.#rootfsBlobProvider;
+    if (manifest === null || provider === null) return;
+    const memory = this.#kernelMemory;
+    if (memory === null) return;
+
+    const setNow = instance.exports.kernel_set_rootfs_now as
+      | ((secLo: number, secHi: number, nsec: number) => number)
+      | undefined;
+    const alloc = instance.exports.kernel_alloc_scratch as
+      | ((size: number) => KernelPointer)
+      | undefined;
+    const load = instance.exports.kernel_rootfs_load_manifest as
+      | ((ptr: KernelPointer, len: number) => number)
+      | undefined;
+    const enable = instance.exports.kernel_set_rootfs_enabled as
+      | ((enabled: number) => number)
+      | undefined;
+    if (
+      typeof setNow !== "function" ||
+      typeof alloc !== "function" ||
+      typeof load !== "function" ||
+      typeof enable !== "function"
+    ) {
+      // Kernel predates the rootfs overlay exports; keep host-served `/`.
+      return;
+    }
+
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    // Hoist the clock control scalars so the kernel-export call site carries
+    // only reviewed scalar identifiers (no arithmetic operators), matching the
+    // scratch-contract audit's exact-key convention for kernel_* export calls.
+    const rootfsNowSecLo = nowSec >>> 0;
+    const rootfsNowSecHi = Math.floor(nowSec / 0x1_0000_0000);
+    const rootfsNowNsec = (nowMs % 1000) * 1_000_000;
+    setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec);
+
+    const ptr = alloc(manifest.byteLength);
+    const ptrValue = Number(ptr);
+    if (ptrValue === 0) {
+      // Allocation failed; do not enable a rootfs with no tree.
+      return;
+    }
+    new Uint8Array(memory.buffer, ptrValue, manifest.byteLength).set(manifest);
+    const loaded = load(ptr, manifest.byteLength);
+    if (loaded < 0) {
+      // Malformed manifest; leave `/` host-served rather than a partial tree.
+      return;
+    }
+    this.#kernel.setRootfsBlobProvider(provider);
+    if (this.#rootfsArchiveProvider) {
+      this.#kernel.setRootfsArchiveProvider(this.#rootfsArchiveProvider);
+    }
+    // Tell the overlay which sibling mounts still live under `/` so it does not
+    // greedily claim their paths (which would shadow `/dev/shm` shmfs,
+    // `/run/kandelo-run` session-seed host mounts, and extra HostFileSystem
+    // mounts once the overlay is the sole `/` authority). Must run before
+    // enable(1). A kernel that predates the export simply keeps the old greedy
+    // behavior — visible as the real regression it is, not silently patched.
+    const setForeign = instance.exports.kernel_rootfs_set_foreign_prefixes as
+      | ((ptr: KernelPointer, len: number) => number)
+      | undefined;
+    if (typeof setForeign === "function" && this.#rootfsForeignPrefixes.length > 0) {
+      // NUL-separated canonical mount points; the kernel trims and de-dupes.
+      const encoded = new TextEncoder().encode(
+        this.#rootfsForeignPrefixes.join("\0"),
+      );
+      const fptr = alloc(encoded.byteLength);
+      const fptrValue = Number(fptr);
+      if (fptrValue !== 0) {
+        new Uint8Array(memory.buffer, fptrValue, encoded.byteLength).set(encoded);
+        setForeign(fptr, encoded.byteLength);
+      }
+    }
+    // Publish the `/` mount's set-ID policy before enabling authority. A kernel
+    // that predates the export keeps its built-in default (set-ID honoring),
+    // visible as the real behavior it is rather than silently patched. Only a
+    // `nosuid` mount needs the call; the honoring default matches the kernel's.
+    const setNosuid = instance.exports.kernel_set_rootfs_nosuid as
+      | ((nosuid: number) => number)
+      | undefined;
+    if (typeof setNosuid === "function") {
+      setNosuid(this.#rootfsNosuid ? 1 : 0);
+    }
+    enable(1);
+  }
+
+  /**
+   * Read the entire rootfs file at `path` through the in-kernel overlay (2e
+   * cutover). After the host `/` mount is dropped this is how the host reads
+   * authoritative `/` bytes: copy-on-written bytes come straight from the
+   * overlay, an unmodified base file's bytes via the installed blob provider.
+   * Runs in one kernel entry, reading region-sized chunks. Throws
+   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
+   * if a kernel entry is already active (the RPC caller retries).
+   */
+  rootfsReadFile(path: string): Uint8Array {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs read path too long", ENAMETOOLONG);
+    }
+    let output = new Uint8Array(0);
+    // A routine errno (ENOENT/EISDIR) must NOT throw inside the ingress — a
+    // throw there is treated as a fatal kernel fault. Capture it and raise it
+    // after the entry returns.
+    let failErrno = 0;
+    this.#runImmediateKernelEntry(
+      "kernel rootfs read file",
+      (entry) => {
+        if (
+          typeof entry.instance.exports.kernel_rootfs_read_file !== "function"
+        ) {
+          failErrno = ENOSYS;
+          return undefined;
+        }
+        const region = this.#requireMainScratchRegion();
+        const chunkCap = region.capacity - pathLen;
+        if (chunkCap <= 0) {
+          failErrno = ENAMETOOLONG;
+          return undefined;
+        }
+        const chunks: Uint8Array[] = [];
+        let fileOffset = 0;
+        for (;;) {
+          const res: { errno: number; bytes: Uint8Array | null } =
+            region.withLease((lease) => {
+              lease.copyFrom(encodedPath, 0, 0, pathLen);
+              const pathPtr = lease.exportPointer(0, pathLen);
+              const bufPtr = lease.exportPointer(pathLen, chunkCap);
+              const result = this.#invokeEntryScratchExport(
+                entry,
+                lease,
+                "kernel_rootfs_read_file",
+                [
+                  pathPtr,
+                  pathLen,
+                  fileOffset >>> 0,
+                  Math.floor(fileOffset / 0x1_0000_0000),
+                  bufPtr,
+                  chunkCap,
+                ],
+              );
+              if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+              if (result < 0) return { errno: -result, bytes: null };
+              return {
+                errno: 0,
+                bytes: result === 0 ? null : lease.copyOut(pathLen, result),
+              };
+            });
+          if (res.errno !== 0) {
+            failErrno = res.errno;
+            break;
+          }
+          if (res.bytes === null) break;
+          chunks.push(res.bytes);
+          fileOffset += res.bytes.byteLength;
+          // rootfs read returns min(request, bytes-remaining); a short read is
+          // therefore EOF, so a further crossing is unnecessary.
+          if (res.bytes.byteLength < chunkCap) break;
+        }
+        if (failErrno === 0) {
+          let total = 0;
+          for (const c of chunks) total += c.byteLength;
+          const merged = new Uint8Array(total);
+          let at = 0;
+          for (const c of chunks) {
+            merged.set(c, at);
+            at += c.byteLength;
+          }
+          output = merged;
+        }
+        return undefined;
+      },
+    );
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs read failed", failErrno);
+    }
+    return output;
+  }
+
+  /**
+   * Serialize the entire overlay-owned `/` tree (Phase 5 cutover export) as an
+   * RXPT metadata buffer through the in-kernel overlay. Runs in one kernel entry,
+   * reading region-sized chunks; the kernel serializes once (the overlay is
+   * quiescent during export) and serves the rest from a cache. Throws
+   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
+   * if a kernel entry is already active (the RPC caller retries). See
+   * `host/src/vfs/rootfs-overlay-export.ts` for the buffer's reconciler.
+   */
+  rootfsExportTree(): Uint8Array {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    let output = new Uint8Array(0);
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs export tree", (entry) => {
+      if (
+        typeof entry.instance.exports.kernel_rootfs_export_tree !== "function"
+      ) {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      const chunkCap = region.capacity;
+      if (chunkCap <= 0) {
+        failErrno = EIO;
+        return undefined;
+      }
+      const chunks: Uint8Array[] = [];
+      let offset = 0;
+      for (;;) {
+        const res: { errno: number; bytes: Uint8Array | null } =
+          region.withLease((lease) => {
+            const bufPtr = lease.exportPointer(0, chunkCap);
+            const result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_rootfs_export_tree",
+              [
+                offset >>> 0,
+                Math.floor(offset / 0x1_0000_0000),
+                bufPtr,
+                chunkCap,
+              ],
+            );
+            if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+            if (result < 0) return { errno: -result, bytes: null };
+            return {
+              errno: 0,
+              bytes: result === 0 ? null : lease.copyOut(0, result),
+            };
+          });
+        if (res.errno !== 0) {
+          failErrno = res.errno;
+          break;
+        }
+        if (res.bytes === null) break;
+        chunks.push(res.bytes);
+        offset += res.bytes.byteLength;
+        // A short read (min(request, remaining)) means end of buffer.
+        if (res.bytes.byteLength < chunkCap) break;
+      }
+      if (failErrno === 0) {
+        let total = 0;
+        for (const c of chunks) total += c.byteLength;
+        const merged = new Uint8Array(total);
+        let at = 0;
+        for (const c of chunks) {
+          merged.set(c, at);
+          at += c.byteLength;
+        }
+        output = merged;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs export tree failed", failErrno);
+    }
+    return output;
+  }
+
+  /**
+   * Write `data` to the rootfs file at `path` through the in-kernel overlay (2e
+   * cutover), creating or replacing it so the write is visible to live guests.
+   * "Replace whole file" semantics: the first crossing truncates and sets
+   * `mode`; the remainder are positioned continuations. Runs in one kernel entry.
+   * Throws `KernelScratchError` (POSIX errno) on failure, or
+   * `KernelReentrantEntryError` if a kernel entry is already active.
+   */
+  rootfsWriteFile(path: string, data: Uint8Array, mode: number): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs write path too long", ENAMETOOLONG);
+    }
+    // A routine errno must NOT throw inside the ingress (that is a fatal kernel
+    // fault); capture it and raise it after the entry returns.
+    let failErrno = 0;
+    this.#runImmediateKernelEntry(
+      "kernel rootfs write file",
+      (entry) => {
+        if (
+          typeof entry.instance.exports.kernel_rootfs_write_file !== "function"
+        ) {
+          failErrno = ENOSYS;
+          return undefined;
+        }
+        const region = this.#requireMainScratchRegion();
+        const chunkCap = region.capacity - pathLen;
+        if (chunkCap <= 0) {
+          failErrno = ENAMETOOLONG;
+          return undefined;
+        }
+        let dataOffset = 0;
+        let first = true;
+        // A single crossing even for empty data: the truncating first write
+        // creates/empties the file.
+        for (;;) {
+          const chunkLen = Math.min(chunkCap, data.byteLength - dataOffset);
+          const errno: number = region.withLease((lease) => {
+            lease.copyFrom(encodedPath, 0, 0, pathLen);
+            if (chunkLen > 0) {
+              // dest = after the path in scratch; source = into `data` at the
+              // current file offset.
+              lease.copyFrom(data, pathLen, dataOffset, chunkLen);
+            }
+            const pathPtr = lease.exportPointer(0, pathLen);
+            const bufPtr = lease.exportPointer(pathLen, chunkLen);
+            const result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_rootfs_write_file",
+              [
+                pathPtr,
+                pathLen,
+                dataOffset >>> 0,
+                Math.floor(dataOffset / 0x1_0000_0000),
+                bufPtr,
+                chunkLen,
+                mode & 0o7777,
+                first ? 1 : 0,
+              ],
+            );
+            if (!Number.isSafeInteger(result)) return EIO;
+            if (result < 0) return -result;
+            if (result !== chunkLen) return EIO; // short write
+            return 0;
+          });
+          if (errno !== 0) {
+            failErrno = errno;
+            break;
+          }
+          dataOffset += chunkLen;
+          first = false;
+          if (dataOffset >= data.byteLength) break;
+        }
+        return undefined;
+      },
+    );
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs write failed", failErrno);
+    }
+  }
+
+  /**
+   * Return the mode bits (type + permissions) of the rootfs entry at `path`
+   * through the overlay (2e cutover), for `read_vfs_file`'s includeMode variant.
+   * Throws `KernelScratchError` (POSIX errno) on failure.
+   */
+  rootfsStatMode(path: string): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs stat path too long", ENAMETOOLONG);
+    }
+    let mode = 0;
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs stat mode", (entry) => {
+      if (
+        typeof entry.instance.exports.kernel_rootfs_stat_mode !== "function"
+      ) {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      if (pathLen > region.capacity) {
+        failErrno = ENAMETOOLONG;
+        return undefined;
+      }
+      const result = region.withLease((lease) => {
+        lease.copyFrom(encodedPath, 0, 0, pathLen);
+        const pathPtr = lease.exportPointer(0, pathLen);
+        return this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_rootfs_stat_mode",
+          [pathPtr, pathLen],
+        );
+      });
+      if (!Number.isSafeInteger(result) || result < 0) {
+        failErrno =
+          Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+      } else {
+        mode = result;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs stat failed", failErrno);
+    }
+    return mode;
+  }
+
+  /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
    */
@@ -5082,6 +5443,12 @@ export class CentralizedKernelWorker {
         }
         const abiVersion = abiVersionFn();
         validateKernelHostAdapterManifest(instance, this.#kernelMemory!);
+
+        // Phase 5 bring-up: optionally hand scratch-mount ownership to the
+        // in-kernel tmpfs, and the `/` tree to the in-kernel rootfs overlay,
+        // before any guest filesystem op runs.
+        enableKernelTmpfs(instance);
+        this.#maybeLoadKernelRootfs(instance);
 
         // Allocate scratch from the kernel heap. Host-side memory.grow() would
         // create pages unknown to dlmalloc and let later Rust allocations
@@ -7562,7 +7929,9 @@ export class CentralizedKernelWorker {
       throw new Error("Kernel missing required kernel_set_cwd export");
     }
     if (result < 0) {
-      throw new Error(`setCwd failed for pid ${pid}: errno ${-result}`);
+      throw new Error(
+        `setCwd failed for pid ${pid}: errno ${-result} (cwd=${JSON.stringify(cwd)})`,
+      );
     }
   }
 
@@ -8395,6 +8764,70 @@ export class CentralizedKernelWorker {
       throw new KernelReentrantEntryError("kernel exec target read");
     }
     return result;
+  }
+
+  /**
+   * Decode the retained target's `#!` interpreter line in the kernel. Returns
+   * null when the target is not a script. The host never parses program bytes
+   * to make this decision; the kernel owns the exec guest-ABI interpretation
+   * and writes back only the decoded interpreter and single optional argument.
+   */
+  execTargetShebang(
+    ownerPid: number,
+    target: number,
+  ): PreparedExecShebang | null {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const region = this.#requireMainScratchRegion();
+    let decoded: PreparedExecShebang | null = null;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target shebang pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          region.withLease((lease) => {
+            result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_shebang",
+              [
+                ownerPid,
+                target,
+                lease.exportPointer(0, region.capacity),
+                region.capacity,
+              ],
+            );
+            if (result > 0) {
+              const byteLength = this.#checkedScratchProducerByteLength(
+                result,
+                region.capacity,
+                "kernel_exec_target_shebang",
+              );
+              const record = new Uint8Array(byteLength);
+              lease.copyTo(record, 0, 0, byteLength);
+              decoded = decodePreparedExecShebang(record);
+            }
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target shebang");
+    }
+    if (result < 0) {
+      const errno = -result;
+      throw new PreparedExecTargetError(
+        "prepared exec target shebang decode failed",
+        errno > 0 && errno <= 4095 ? errno : EIO,
+      );
+    }
+    return decoded;
   }
 
   execTargetCancel(ownerPid: number, target: number): number {
@@ -11508,6 +11941,42 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // --- Phase 2 opaque record fast-path (Option A) ---
+    // A non-RAW syscall self-marshalled its pointer arguments into a record at
+    // CH_DATA and set REQUEST_FLAG_OPAQUE_RECORD in the channel header. Transport
+    // that byte region blindly to the kernel and return, bypassing the entire
+    // Tier-A intercept ladder and Tier-B descriptor machinery below. The record
+    // decision is read from the header flag (written fresh every request beside
+    // the syscall number), NOT the data-buffer magic: that magic can be stale in
+    // a fork child or a reused per-thread channel slot, while the header cannot.
+    // RAW syscalls never set the flag, so their raw args fall through unchanged.
+    const channelRequestFlags =
+      this.activeChannelRequests.get(channel)?.requestFlags
+      ?? processView.getUint32(CH_REQUEST_FLAGS, true);
+    if ((channelRequestFlags & CHANNEL_REQUEST_FLAG_OPAQUE_RECORD) !== 0) {
+      if (HOST_RAW_SYSCALLS.has(syscallNr)) {
+        // Defense in depth: a RAW syscall must NEVER set the record flag. If one
+        // does, the guest RAW set and this guard have drifted — fail loud instead
+        // of blind-transporting a syscall whose host capability or blocking
+        // behaviour would be silently skipped. Deadlock/corruption net, not a
+        // recoverable condition.
+        this.#failBlockingRetryProtocol(
+          `RAW syscall ${syscallNr} arrived with REQUEST_FLAG_OPAQUE_RECORD set; `
+            + `the guest RAW set and host guard have drifted`,
+        );
+      }
+      if (logging) console.error(logEntry);
+      this.#handleRecordSyscall(
+        channel,
+        syscallNr,
+        origArgs,
+        processMem,
+        logging ? logEntry : "",
+        entry,
+      );
+      return;
+    }
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // direct kernel dispatch.
@@ -13568,6 +14037,142 @@ export class CentralizedKernelWorker {
       }
       throw err;
     }
+  }
+
+  /**
+   * Phase 2 opaque-record blind transport (Option A).
+   *
+   * The guest self-marshalled this non-RAW syscall's pointer arguments into a
+   * `channel_record` at CH_DATA (magic already verified by the caller). The
+   * host is out of the data path here: it blind-copies the record's data region
+   * into the kernel lease, calls kernel_handle_channel (which decodes,
+   * validates, dispatches, and writes OUT/InOut results back into the record at
+   * the span offsets), copies the data region back to process memory, then
+   * delivers any pending signal and completes the channel.
+   *
+   * There are NO plannedScratchWrites and NO plannedChannelScratchArgs: the
+   * record carries every pointer span, so the host performs zero per-syscall
+   * marshalling. Only non-blocking, purely-marshalling syscalls reach here
+   * (every host-involved or blocking syscall is RAW), so the descriptor-path
+   * post-processing (mmap growth, shared-mapping flush, blocking retry, …) does
+   * not apply; the sole shared tail is signal delivery + channel completion.
+   */
+  #handleRecordSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    processMem: Uint8Array,
+    logEntry: string,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const recordStart = channel.channelOffset + CH_DATA;
+    // Read-once snapshot of the guest-authored record data region.
+    const recordIn = processMem.slice(recordStart, recordStart + CH_DATA_SIZE);
+
+    this.currentHandlePid = channel.pid;
+    let rawRetVal = -1n;
+    let errVal = EIO;
+    let recordOut: Uint8Array | null = null;
+    try {
+      const dispatched = this.#executeCapacityOwnedChannel(
+        channel,
+        CH_TOTAL_SIZE,
+        entry,
+        (lease) => {
+          // Stamp the syscall number for the kernel header mirror + logging,
+          // then blind-copy the record data region into the kernel lease. No
+          // arg words or scratch pointers are staged: the record is
+          // authoritative for both scalars and pointer spans.
+          lease.dataView(0, CH_DATA).setUint32(CH_SYSCALL, syscallNr, true);
+          lease.copyFrom(recordIn, CH_DATA, 0, CH_DATA_SIZE);
+        },
+        (lease) => {
+          const view = lease.dataView(0, CH_DATA);
+          rawRetVal = view.getBigInt64(CH_RETURN, true);
+          errVal = view.getUint32(CH_ERRNO, true);
+          // The kernel wrote OUT/InOut results back into the record at their
+          // span offsets; copy the whole data region back so the guest's
+          // __unmarshal_channel_record can deliver them to caller pointers.
+          const out = lease.copyOut(CH_DATA, CH_DATA_SIZE);
+          // Clear the record magic from the shared lease before releasing it.
+          // This is the ONLY path that writes a record into the lease, and the
+          // kernel keys its decode on the magic; a later RAW scalar-only syscall
+          // (no scratch write at CH_DATA offset 0) would otherwise reuse this
+          // lease and be wrongly decoded as a record.
+          lease.dataView(CH_DATA, 4).setUint32(0, 0, true);
+          return out;
+        },
+      );
+      recordOut = dispatched.value;
+    } catch (err) {
+      this.#rethrowKernelEntryFatal(err);
+      if (
+        this.#kernelFatalError !== null
+        || err instanceof KernelTransferExecuteTrapError
+        || err instanceof KernelTaskBindingError
+        || err instanceof KernelReentrantEntryError
+      ) {
+        throw err;
+      }
+      const recent = this.dumpLastSyscalls(channel.pid);
+      console.error(
+        (logEntry || `syscall ${syscallNr}`)
+          + " = KERNEL THROW (record path)",
+      );
+      if (recent) {
+        console.error(
+          `[handleRecordSyscall] recent syscalls for pid=${channel.pid}:\n${recent}`,
+        );
+      }
+      console.error(
+        `[handleRecordSyscall] kernel threw for pid=${channel.pid} `
+          + `syscall=${syscallNr}:`,
+        err,
+      );
+      this.completeChannelRawAndRelisten(channel, -5, 5, entry); // -EIO
+      return;
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    // A terminating signal action may have marked the process dead inside the
+    // kernel call; do not post-process an execution that must not resume.
+    if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
+      this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
+      return;
+    }
+
+    if (recordOut !== null) {
+      // Re-fetch the process view: a coherence sync inside the kernel entry
+      // could have replaced Memory.buffer. Record-eligible syscalls never grow
+      // process memory, but this stays correct if that ever changes.
+      new Uint8Array(channel.memory.buffer).set(recordOut, recordStart);
+    }
+
+    const { publicationRetVal, errVal: normErr } =
+      this.normalizeKernelSyscallResult(channel, syscallNr, rawRetVal, errVal);
+
+    // Deliver any pending caught signal into the process channel exactly as the
+    // descriptor path does; the guest invokes the handler after waking.
+    this.#dequeueSignalForDelivery(channel, entry);
+
+    if (logEntry) {
+      console.error(
+        logEntry
+          + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
+      );
+    }
+    this.completeChannel(
+      channel,
+      syscallNr,
+      origArgs,
+      undefined,
+      publicationRetVal,
+      normErr,
+      [],
+      undefined,
+      entry,
+    );
   }
 
   /**
@@ -19295,65 +19900,36 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // EPOLL event flags → poll event flags
-    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
-    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
-
-    // Build fixed pollfd records in kernel scratch data.
-    const nfds = interests.length;
-    const pollfdSize = nfds * STRUCT_SIZE_WASM_POLL_FD;
-
-    if (pollfdSize > CH_DATA_SIZE) {
-      // Too many fds — unlikely but handle gracefully
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // -EINVAL
-      return;
-    }
-
-    let pollResult: {
+    // Dispatch epoll_pwait through the kernel as a non-blocking readiness check
+    // (timeout 0). This host still owns the wait/retry loop below, but the
+    // kernel — not a host-side poll conversion — now computes epoll readiness
+    // (sys_epoll_pwait) and writes the ready epoll_events into the scratch data
+    // region, which we copy back to the caller's array. (The interest mirror is
+    // retained only to resolve targeted wake indices for the retry loop.)
+    let epollResult: {
       retVal: number;
       errVal: number;
-      pollfds: Uint8Array;
+      events: Uint8Array | null;
     };
     try {
-      pollResult = this.#requireMainScratchRegion().withLease((lease) => {
+      epollResult = this.#requireMainScratchRegion().withLease((lease) => {
         const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        const pollfdsView = lease.dataView(CH_DATA, pollfdSize);
-        for (let i = 0; i < nfds; i++) {
-          const interest = interests[i]!;
-          const off = i * STRUCT_SIZE_WASM_POLL_FD;
-          let pollEvents = 0;
-          if (interest.events & EPOLLIN) pollEvents |= POLLIN;
-          if (interest.events & EPOLLOUT) pollEvents |= POLLOUT;
-          pollfdsView.setInt32(
-            off + WASM_POLL_FD_FD_OFFSET,
-            interest.fd,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_EVENTS_OFFSET,
-            pollEvents,
-            true,
-          );
-          pollfdsView.setInt16(
-            off + WASM_POLL_FD_REVENTS_OFFSET,
-            0,
-            true,
-          );
-        }
-
-        kernelView.setUint32(CH_SYSCALL, SYS_POLL, true);
+        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_PWAIT, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
+        // events output array [out], staged at CH_DATA.
         lease.writeAddress(
-          CH_ARGS,
+          CH_ARGS + CH_ARG_SIZE,
           CH_DATA,
-          pollfdSize,
+          maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
           "u64-le",
         );
-        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(nfds), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, 0n, true);
-        for (let i = 3; i < CH_ARGS_COUNT; i++) {
+        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(maxevents), true);
+        // timeout 0: this host owns the blocking wait, so the kernel does a
+        // single non-blocking readiness evaluation each dispatch.
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true);
+        for (let i = 4; i < CH_ARGS_COUNT; i++) {
           kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
         }
-
         this.#bindKernelTidForChannel(channel, entry);
         this.currentHandlePid = channel.pid;
         try {
@@ -19372,11 +19948,15 @@ export class CentralizedKernelWorker {
           this.currentHandlePid = 0;
         }
         const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errVal: resultView.getUint32(CH_ERRNO, true),
-          pollfds: lease.copyOut(CH_DATA, pollfdSize),
-        };
+        const retVal = Number(resultView.getBigInt64(CH_RETURN, true));
+        const errVal = resultView.getUint32(CH_ERRNO, true);
+        const events = retVal > 0
+          ? lease.copyOut(
+              CH_DATA,
+              Math.min(retVal, maxevents) * STRUCT_SIZE_WASM_EPOLL_EVENT,
+            )
+          : null;
+        return { retVal, errVal, events };
       });
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -19384,71 +19964,25 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const { retVal, errVal, pollfds } = pollResult;
+    const { retVal, errVal, events } = epollResult;
 
-    // This host-side emulation performs a nonblocking poll and owns the
-    // wait/retry loop, so it must preserve the syscall-boundary signal
-    // outcome that kernel_handle_channel would normally return to the guest.
-    // A default terminating action leaves an exited kernel Process and must
-    // reap the worker without waking guest code. A caught handler interrupts
-    // epoll with EINTR so the glue can run the copied handler metadata before
-    // the application decides whether to restart the wait.
+    // This host owns the wait/retry loop, so it must preserve the
+    // syscall-boundary signal outcome that kernel_handle_channel would normally
+    // return to the guest: a default terminating action reaps the worker; a
+    // caught handler interrupts epoll with EINTR.
     if (this.completeEpollSignalOutcome(channel, entry)) return;
 
-    // If poll returned error (not EAGAIN), propagate it
+    // Propagate a real error (anything other than the would-block EAGAIN).
     if (retVal < 0 && errVal !== EAGAIN) {
       this.completeChannelRawAndRelisten(channel, retVal, errVal, entry);
       return;
     }
 
-    // Count ready events and map back to epoll_event format
-    let readyCount = 0;
-    if (retVal > 0) {
-      const processView = new DataView(channel.memory.buffer);
-      const pollfdsView = new DataView(
-        pollfds.buffer,
-        pollfds.byteOffset,
-        pollfds.byteLength,
-      );
-      for (let i = 0; i < nfds && readyCount < maxevents; i++) {
-        const off = i * STRUCT_SIZE_WASM_POLL_FD;
-        const revents = pollfdsView.getInt16(
-          off + WASM_POLL_FD_REVENTS_OFFSET,
-          true,
-        );
-        if (revents !== 0) {
-          // Map poll revents back to epoll events
-          let epEvents = 0;
-          if (revents & POLLIN) epEvents |= EPOLLIN;
-          if (revents & POLLOUT) epEvents |= EPOLLOUT;
-          if (revents & POLLERR) epEvents |= EPOLLERR;
-          if (revents & POLLHUP) epEvents |= EPOLLHUP;
-
-          const evOff =
-            eventsPtr + readyCount * STRUCT_SIZE_WASM_EPOLL_EVENT;
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_EVENTS_OFFSET,
-            epEvents,
-            true,
-          );
-          processView.setUint32(
-            evOff + WASM_EPOLL_EVENT_PAD_OFFSET,
-            0,
-            true,
-          );
-          processView.setBigUint64(
-            evOff + WASM_EPOLL_EVENT_DATA_OFFSET,
-            interests[i].data,
-            true,
-          );
-          readyCount++;
-        }
-      }
-    }
-
-    // If we got events, return them
-    if (readyCount > 0) {
-      this.completeChannelRawAndRelisten(channel, readyCount, 0, entry);
+    // Ready: the kernel wrote the ready epoll_events into the scratch; copy them
+    // into the caller's array and return the count.
+    if (retVal > 0 && events !== null) {
+      new Uint8Array(channel.memory.buffer).set(events, eventsPtr);
+      this.completeChannelRawAndRelisten(channel, retVal, 0, entry);
       return;
     }
 
@@ -22071,17 +22605,14 @@ export class CentralizedKernelWorker {
       checkedBlobPtr + blobLen,
     );
 
-    // ── Decode argv + envp host-side ──
-    // The kernel parses the blob too, but onSpawn needs string[] for the
-    // worker launch path. We don't redo action/attr parsing here; the
-    // kernel is the authoritative parser for that surface.
+    // ── Decode argv + envp through the kernel ──
+    // The kernel is the sole spawn-blob parser; onSpawn needs string[] for the
+    // worker launch path, so it reads back the kernel's own argv/envp decode.
+    // File actions and attrs stay entirely inside the kernel parse.
     let argv: string[];
     let envp: string[];
     try {
-      const decoded = decodeSpawnBlobStrings(
-        blobBytes,
-        this.getPtrWidth(parentPid),
-      );
+      const decoded = this.#spawnDecodeArgvEnvp(blobBytes, entry);
       argv = decoded.argv;
       envp = decoded.envp;
     } catch (error) {
@@ -22358,6 +22889,242 @@ export class CentralizedKernelWorker {
       `kernel rejected spawn scratch cancellation: ${String(result)}`,
       EIO,
     );
+  }
+
+  /**
+   * Decode a SYS_SPAWN blob's argv and envp through the kernel's
+   * `kernel_spawn_blob_decode` export, so the host never interprets the
+   * `posix_spawn` guest ABI. The kernel is the authoritative blob parser
+   * (`crate::spawn::parse_blob`); this reads back only the argv/envp strings the
+   * deferred worker-launch path needs before the child is built. File actions
+   * and spawn attrs stay entirely inside the kernel parse.
+   *
+   * The kernel decodes in place: the blob is copied into the front of a scratch
+   * range and the argv/envp framing (`[argc u32][envc u32]`, then each entry as
+   * `[len u32][raw bytes]`) overwrites it. Blobs within the shared syscall
+   * scratch use it directly; larger blobs use one tokenized reservation.
+   *
+   * Throws `KernelScratchError` (POSIX errno) on a malformed blob or a framing
+   * that exceeds the argv/environment budget. `validateExecMetadata` still
+   * applies the ARG_MAX and per-entry limits to the decoded strings afterward.
+   */
+  #spawnDecodeArgvEnvp(
+    blobBytes: Uint8Array,
+    entry: KernelWorkerEntryContext,
+  ): { argv: string[]; envp: string[] } {
+    const blobLen = blobBytes.byteLength;
+    if (blobLen <= 0) {
+      throw new KernelScratchError("spawn blob is empty", EINVAL);
+    }
+    if (
+      typeof this.#kernelInstanceForEntry(entry).exports
+        .kernel_spawn_blob_decode !== "function"
+    ) {
+      throw new KernelScratchError(
+        "Kernel missing required kernel_spawn_blob_decode export",
+        EIO,
+      );
+    }
+    if (blobLen <= SCRATCH_SIZE) {
+      const region = this.#requireMainScratchRegion();
+      return region.withLease((scratch) =>
+        this.#decodeSpawnFramingWithinLease(
+          entry,
+          scratch,
+          region.capacity,
+          blobBytes,
+          blobLen,
+        )
+      );
+    }
+    return this.#decodeLargeSpawnBlob(blobBytes, blobLen, entry);
+  }
+
+  /**
+   * Copy the blob into one leased scratch range, invoke
+   * `kernel_spawn_blob_decode` in place, and parse the read-back framing. The
+   * capacity is the full leased range: the kernel reads only `blobLen` bytes but
+   * may write a framing that a duplicated-offset blob makes wider than the blob.
+   */
+  #decodeSpawnFramingWithinLease(
+    entry: KernelWorkerEntryContext,
+    scratch: KernelScratchLease,
+    capacity: number,
+    blobBytes: Uint8Array,
+    blobLen: number,
+  ): { argv: string[]; envp: string[] } {
+    scratch.copyFrom(blobBytes, 0, 0, blobLen);
+    const result = this.#invokeEntryScratchExport(
+      entry,
+      scratch,
+      "kernel_spawn_blob_decode",
+      [
+        scratch.exportPointer(0, capacity),
+        this.toKernelPtr(capacity),
+        this.toKernelPtr(blobLen),
+      ],
+    );
+    if (result < 0) {
+      const errno = (-result) >>> 0;
+      // A framing wider than the buffer means the decoded argv/environment is
+      // too large to transport — the same boundary `validateExecMetadata`
+      // reports for oversized strings, so surface it as E2BIG.
+      throw new KernelScratchError(
+        "kernel_spawn_blob_decode rejected the spawn blob",
+        errno === EOVERFLOW
+          ? E2BIG
+          : errno > 0 && errno <= 4095
+          ? errno
+          : EIO,
+      );
+    }
+    const framedLen = this.#checkedScratchProducerByteLength(
+      result,
+      capacity,
+      "kernel_spawn_blob_decode",
+    );
+    return this.#parseSpawnFraming(scratch.copyOut(0, framedLen));
+  }
+
+  /**
+   * Decode a spawn blob larger than the shared syscall scratch through one
+   * tokenized kernel reservation, then release it before returning so the
+   * later transport reservation in `#handleSpawnAfterResolve` finds the slot
+   * free. A trapped export leaves the guard set and propagates as fatal.
+   */
+  #decodeLargeSpawnBlob(
+    blobBytes: Uint8Array,
+    blobLen: number,
+    entry: KernelWorkerEntryContext,
+  ): { argv: string[]; envp: string[] } {
+    if (this.#largeSpawnScratchInUse) {
+      throw new KernelScratchError(
+        "spawn scratch reservation is already in use",
+        EBUSY,
+      );
+    }
+    this.#largeSpawnScratchInUse = true;
+    let reservation: ReservedSpawnScratch | null = null;
+    let decoded: { argv: string[]; envp: string[] } | null = null;
+    let caught: unknown = undefined;
+    let fatalError: KernelTransferExecuteTrapError | null = null;
+    try {
+      const begun = this.#beginLargeSpawnScratch(blobLen, entry);
+      reservation = begun.reservation;
+      if (!reservation?.region) {
+        throw new KernelScratchError(
+          "kernel could not reserve spawn decode scratch",
+          begun.errno > 0 && begun.errno <= 4095 ? begun.errno : EIO,
+        );
+      }
+      const region = reservation.region;
+      decoded = region.withLease((scratch) =>
+        this.#decodeSpawnFramingWithinLease(
+          entry,
+          scratch,
+          region.capacity,
+          blobBytes,
+          blobLen,
+        )
+      );
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      caught = error;
+      if (this.#kernelFatalError !== null) {
+        fatalError = error instanceof KernelTransferExecuteTrapError
+          ? error
+          : new KernelTransferExecuteTrapError(
+            "kernel spawn decode reservation trapped",
+            error,
+          );
+      }
+    }
+    if (reservation) {
+      try {
+        reservation.region?.revoke();
+      } catch (revokeError) {
+        this.#rethrowKernelEntryFatal(revokeError);
+        fatalError ??= new KernelTransferExecuteTrapError(
+          "kernel spawn decode reservation lease could not be revoked",
+          revokeError,
+        );
+      }
+      if (fatalError === null) {
+        try {
+          this.#cancelLargeSpawnScratch(reservation.token, entry);
+        } catch (cancelError) {
+          this.#rethrowKernelEntryFatal(cancelError);
+          fatalError = new KernelTransferExecuteTrapError(
+            "kernel spawn decode reservation could not be settled",
+            cancelError,
+          );
+        }
+      }
+    }
+    if (fatalError !== null) throw fatalError;
+    this.#largeSpawnScratchInUse = false;
+    if (caught !== undefined) throw caught;
+    // Every branch either set `decoded` or threw; the sentinel is unreachable.
+    if (decoded === null) {
+      throw new KernelScratchError("spawn decode produced no result", EIO);
+    }
+    return decoded;
+  }
+
+  /**
+   * Parse the host-private framing `kernel_spawn_blob_decode` wrote:
+   * `[argc u32][envc u32]` then each argv and envp entry as `[len u32][bytes]`.
+   * The bytes are `TextDecode`d exactly as the deleted host wire decoder did.
+   */
+  #parseSpawnFraming(framed: Uint8Array): { argv: string[]; envp: string[] } {
+    if (framed.byteLength < 8) {
+      throw new KernelScratchError(
+        "spawn framing is shorter than its header",
+        EIO,
+      );
+    }
+    const view = new DataView(
+      framed.buffer,
+      framed.byteOffset,
+      framed.byteLength,
+    );
+    const argc = view.getUint32(0, true);
+    const envc = view.getUint32(4, true);
+    // Each entry needs at least its 4-byte length prefix, so a count wider than
+    // the framing is corrupt; reject before allocating an array for it.
+    if (argc > framed.byteLength || envc > framed.byteLength) {
+      throw new KernelScratchError("spawn framing count is out of bounds", EIO);
+    }
+    const decoder = new TextDecoder();
+    let cursor = 8;
+    const readEntries = (count: number): string[] => {
+      const out = new Array<string>(count);
+      for (let i = 0; i < count; i++) {
+        if (cursor + 4 > framed.byteLength) {
+          throw new KernelScratchError(
+            "spawn framing entry header is out of bounds",
+            EIO,
+          );
+        }
+        const len = view.getUint32(cursor, true);
+        cursor += 4;
+        if (len > framed.byteLength - cursor) {
+          throw new KernelScratchError(
+            "spawn framing entry is out of bounds",
+            EIO,
+          );
+        }
+        out[i] = decoder.decode(framed.subarray(cursor, cursor + len));
+        cursor += len;
+      }
+      return out;
+    };
+    const argv = readEntries(argc);
+    const envp = readEntries(envc);
+    if (cursor !== framed.byteLength) {
+      throw new KernelScratchError("spawn framing has trailing bytes", EIO);
+    }
+    return { argv, envp };
   }
 
   #completeSpawnWithinKernelEntry(

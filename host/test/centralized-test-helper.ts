@@ -5,7 +5,7 @@
  * for optimal performance. Falls back to main-thread mode when a custom
  * PlatformIO is provided (PlatformIO can't be serialized across threads).
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
@@ -43,6 +43,25 @@ import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, Worker
 import type { PlatformIO } from "../src/types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Create a fresh host temp directory that the in-kernel tmpfs never claims.
+ *
+ * The in-kernel tmpfs (Phase 5 cutover) is the unconditional authority for its
+ * scratch prefixes (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`,
+ * `/root`, `/srv`). `os.tmpdir()` frequently resolves under `/tmp` (the nix dev
+ * shell sets `TMPDIR=/tmp/nix-shell.*`, and Linux defaults to `/tmp`), so a
+ * kernel-routed guest open of a path there is served by the empty in-kernel
+ * tmpfs, not the host directory. Tests that need the guest to reach a real host
+ * file through `NodePlatformIO` must therefore stage it outside every scratch
+ * prefix. `<repoRoot>/target` is git-ignored and never a scratch prefix, so it
+ * gives raw host-filesystem coverage on every platform. Callers own cleanup.
+ */
+export function makeHostScratchTempRoot(prefix: string): string {
+  const base = join(__dirname, "../..", "target", "host-fs-test-scratch");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(base, prefix));
+}
 
 const MAX_PAGES = 16384;
 const SIGSEGV = 11;
@@ -128,6 +147,21 @@ export interface RunProgramOptions {
   programPath: string;
   /** Optional pre-compiled module for programPath. */
   programModule?: WebAssembly.Module;
+  /**
+   * Phase 6 D5: mirror the kernel host's `WASM_POSIX_FORK_MODULE` decision.
+   * When true, ship the width-matching pre-compiled `fork-module` and set
+   * `forkModuleEnabled` so each fork-instrumented worker instantiates it at
+   * init. Default (undefined/false) is the unchanged path.
+   */
+  forkModuleEnabled?: boolean;
+  /**
+   * Explicit path to the kernel `.wasm` to boot. When omitted the kernel is
+   * resolved through the binary resolver. Build-time callers (e.g. package
+   * recipes running under the scrubbed source-only resolver, where the
+   * projection root is intentionally unavailable) pass the kernel they
+   * declared as a build dependency so they never depend on projection state.
+   */
+  kernelWasmPath?: string;
   /** Environment variables as KEY=VALUE strings */
   env?: string[];
   /** Program arguments */
@@ -197,6 +231,19 @@ export interface RunProgramOptions {
     ppid?: number;
     exitStatus?: number;
   }) => void;
+  /**
+   * Phase 6 D6.5: register owner-side fork host-import handlers (e.g. a
+   * broker-backed `env.get_ext` / `env.check_ext`) before any Worker is created,
+   * so a test-provided HOST externref becomes broker-tracked and survives a real
+   * fork through the `wpk_fork_host` / `host_resolve_externref` seam. Supplying
+   * this forces main-thread mode (the test helper owns the
+   * `ForkHostImportOwnerRuntime` there) and makes the child fork Worker's
+   * `fork_module_references` proof-of-use surface on
+   * `RunProgramResult.hostDiagnostics`, mirroring the Node/browser worker
+   * entries. The registrar runs once, before the process main Worker, while the
+   * catalog is still unsealed.
+   */
+  forkHostImportRegistrar?: (owner: ForkHostImportOwnerRuntime) => void;
 }
 
 export interface RunProgramResult {
@@ -219,6 +266,26 @@ export interface RunProgramResult {
 }
 
 /**
+ * Phase 6 D5: resolve, compile (once per width), and package the co-resident
+ * `fork-module` init fields, mirroring what the kernel host ships. Returns an
+ * empty object when disabled so the default init message is byte-identical.
+ */
+const forkModuleModuleByWidth = new Map<4 | 8, WebAssembly.Module>();
+function centralizedForkModuleFields(
+  enabled: boolean | undefined,
+  ptrWidth: 4 | 8,
+): { forkModuleEnabled?: true; forkModuleModule?: WebAssembly.Module } {
+  if (!enabled) return {};
+  let mod = forkModuleModuleByWidth.get(ptrWidth);
+  if (!mod) {
+    const name = `fork_module${ptrWidth === 8 ? 64 : 32}.wasm`;
+    mod = new WebAssembly.Module(readFileSync(resolveBinary(name)));
+    forkModuleModuleByWidth.set(ptrWidth, mod);
+  }
+  return { forkModuleEnabled: true, forkModuleModule: mod };
+}
+
+/**
  * Run a Wasm program using the shared-kernel architecture.
  *
  * By default, spawns the kernel in a dedicated worker_thread for optimal
@@ -228,7 +295,7 @@ export interface RunProgramResult {
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
-  if (options.io || options.onKernelReady) {
+  if (options.io || options.onKernelReady || options.forkHostImportRegistrar) {
     return runOnMainThread(options);
   }
   return runInWorkerThread(options);
@@ -278,6 +345,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
+    forkModuleEnabled: options.forkModuleEnabled,
     execPrograms,
     rootfsImage,
     enableTcpNetwork: options.enableTcpNetwork,
@@ -479,6 +547,51 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const externrefProcessOwner = new ForkExternrefProcessOwner();
   const forkHostImportOwnerRuntime =
     new ForkHostImportOwnerRuntime(externrefProcessOwner);
+  // Phase 6 D6.5: let a test register broker-backed owner host imports (e.g.
+  // `env.get_ext` / `env.check_ext`) while the catalog is still unsealed, before
+  // any Worker is created. This is how a genuine HOST externref becomes
+  // broker-tracked so it survives a real fork through the `host_resolve_externref`
+  // seam.
+  options.forkHostImportRegistrar?.(forkHostImportOwnerRuntime);
+  // Capture the co-resident fork-module's per-kind reference proof-of-use posted
+  // by a fork CHILD Worker, mirroring how the Node/browser worker entries forward
+  // it as a `fork-module` host diagnostic. Main-thread mode otherwise returns no
+  // host diagnostics.
+  const mainThreadHostDiagnostics: HostDiagnostic[] = [];
+  const recordForkModuleReferences = (
+    forPid: number,
+    message: Extract<WorkerToHostMessage, { type: "fork_module_references" }>,
+  ): void => {
+    mainThreadHostDiagnostics.push({
+      pid: forPid,
+      source: "fork-module",
+      message:
+        `fork_module_references=${message.references} ` +
+        `externrefs_resolved=${message.externrefs} ` +
+        `exnrefs_reconstructed=${message.exnrefs} ` +
+        `gc_nodes_reconstructed=${message.gcNodes}`,
+    });
+  };
+  // Phase 6 D5/D7a.1a: forward the co-resident module's FRAME proof-of-use — the
+  // parent's committed-frame count and a fork child's replayed-frame count — as
+  // `fork-module` host diagnostics, mirroring the Node/browser worker entries so
+  // main-thread tests (which route here via `io`) can assert module drive.
+  const recordForkModuleFrames = (
+    forPid: number,
+    message: Extract<
+      WorkerToHostMessage,
+      { type: "fork_module_frames" | "fork_module_child_frames" }
+    >,
+  ): void => {
+    mainThreadHostDiagnostics.push({
+      pid: forPid,
+      source: "fork-module",
+      message:
+        message.type === "fork_module_frames"
+          ? `fork_module_frames=${message.frames}`
+          : `fork_module_child_frames=${message.frames}`,
+    });
+  };
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
@@ -486,6 +599,44 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   let kernelMemoryPages: number | undefined;
 
   let pid = 0;
+
+  // Worker-quiescence teardown for non-main child processes (fork/spawn/exec).
+  //
+  // The production Node and browser hosts terminate a child's Worker only after
+  // it becomes QUIESCENT — i.e. after the child Worker has posted its terminal
+  // `exit` message and all of its earlier messages have therefore been drained.
+  // A fork child's fork-module reference proof-of-use (`fork_module_references`)
+  // is posted from the child Worker's tail, AFTER its guest `kernel_exit` — so
+  // the kernel-driven `onExit` fires (and the main thread schedules teardown)
+  // while that tail is still running. Terminating the child Worker on that
+  // `onExit` turn races the tail: the Worker is frequently killed before it runs
+  // the tail at all, dropping the diagnostic (a flaky NULL proof-of-use).
+  //
+  // Mirror production: a child Worker is reaped only once BOTH the kernel has
+  // reported its exit AND the child Worker has posted its own terminal `exit`
+  // message. Because a MessagePort delivers in FIFO order, processing that final
+  // `exit` message guarantees every earlier message (including the reference
+  // proof-of-use) was already delivered and recorded. Abnormal exits never post
+  // `exit` (they post `error`/crash, which `finalize*WorkerError` terminates
+  // directly, and the overall timeout terminates everything), so this path
+  // governs only clean child exits.
+  const childKernelExited = new Set<number>();
+  const childWorkerQuiesced = new Set<number>();
+  const reapChildWorkerIfReady = (childPid: number): void => {
+    if (
+      !childKernelExited.has(childPid) ||
+      !childWorkerQuiesced.has(childPid)
+    ) {
+      return;
+    }
+    childKernelExited.delete(childPid);
+    childWorkerQuiesced.delete(childPid);
+    const worker = workers.get(childPid);
+    if (worker) {
+      worker.terminate().catch(() => {});
+      workers.delete(childPid);
+    }
+  };
 
   const releaseProcessReferenceOwner = (releasePid: number): void => {
     processForkHostImports.get(releasePid)?.close();
@@ -571,6 +722,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: childPtrWidth,
           externrefGenerationId: childGeneration.id,
           forkHostImports: childForkHostImports.init,
+          ...centralizedForkModuleFields(options.forkModuleEnabled, childPtrWidth),
         };
 
         try {
@@ -612,6 +764,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             finalizeSpawnWorkerError(message.message);
           } else if (message.type === "fork_host_import") {
             childForkHostImports.dispatch(message.wake);
+          } else if (message.type === "exit" && message.pid === childPid) {
+            childWorkerQuiesced.add(childPid);
+            reapChildWorkerIfReady(childPid);
           }
         });
         return 0;
@@ -711,6 +866,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: parentPtrWidth,
           externrefGenerationId: childGeneration.id,
           forkHostImports: childForkHostImports.init,
+          ...centralizedForkModuleFields(options.forkModuleEnabled, parentPtrWidth),
         };
 
         try {
@@ -764,6 +920,22 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             finalizeChildWorkerError(m.message);
           } else if (m.type === "fork_host_import") {
             childForkHostImports.dispatch(m.wake);
+          } else if (
+            m.type === "fork_module_references" &&
+            m.pid === childPid
+          ) {
+            recordForkModuleReferences(childPid, m);
+          } else if (
+            (m.type === "fork_module_frames" ||
+              m.type === "fork_module_child_frames") &&
+            m.pid === childPid
+          ) {
+            recordForkModuleFrames(childPid, m);
+          } else if (m.type === "exit" && m.pid === childPid) {
+            // Worker quiescence: every earlier message from this child (e.g. its
+            // reference proof-of-use) has been drained in FIFO order. Safe to reap.
+            childWorkerQuiesced.add(childPid);
+            reapChildWorkerIfReady(childPid);
           }
         });
         observeForkReplayWorker(
@@ -936,6 +1108,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 ptrWidth: newPtrWidth,
                 externrefGenerationId: replacementGeneration.id,
                 forkHostImports: replacementForkHostImports.init,
+                ...centralizedForkModuleFields(
+                  options.forkModuleEnabled,
+                  newPtrWidth,
+                ),
               };
 
               replacementWorker = workerAdapter.createWorker(initData);
@@ -948,6 +1124,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 const m = msg as WorkerToHostMessage;
                 if (m.type === "fork_host_import") {
                   replacementForkHostImports?.dispatch(m.wake);
+                } else if (m.type === "exit" && m.pid === execPid) {
+                  childWorkerQuiesced.add(execPid);
+                  reapChildWorkerIfReady(execPid);
                 }
               });
               kernelWorker.finishProcessExecHandoff(execPid);
@@ -1049,6 +1228,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ptrWidth: clonePtrWidth,
           externrefGenerationId: processGeneration.id,
           forkHostImports: threadForkHostImports.init,
+          // Phase 6 D7b: ship the fork-module to a pthread so a fork issued from
+          // it unwinds through the module (parent side of a fork-from-thread),
+          // mirroring the process-worker init above.
+          ...centralizedForkModuleFields(options.forkModuleEnabled, clonePtrWidth),
         };
 
         try {
@@ -1111,11 +1294,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processPtrWidths.delete(exitPid);
               forkReplayContexts.delete(exitPid);
               releaseProcessReferenceOwner(exitPid);
-              const w = workers.get(exitPid);
-              if (w) {
-                w.terminate().catch(() => {});
-                workers.delete(exitPid);
-              }
+              // Do NOT terminate the child Worker here — wait for its terminal
+              // `exit` message (worker quiescence), mirroring the production
+              // hosts, so a fork child's tail-emitted reference proof-of-use is
+              // delivered before teardown.
+              childKernelExited.add(exitPid);
+              reapChildWorkerIfReady(exitPid);
             } catch (error) {
               rejectExit(
                 error instanceof Error ? error : new Error(String(error)),
@@ -1207,6 +1391,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     ptrWidth,
     externrefGenerationId: mainGeneration.id,
     forkHostImports: mainForkHostImports.init,
+    ...centralizedForkModuleFields(options.forkModuleEnabled, ptrWidth),
   };
 
   try {
@@ -1252,6 +1437,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       rejectExit(new Error(m.message));
     } else if (m.type === "fork_host_import") {
       mainForkHostImports.dispatch(m.wake);
+    } else if (m.type === "fork_module_references" && m.pid === pid) {
+      recordForkModuleReferences(pid, m);
+    } else if (
+      (m.type === "fork_module_frames" ||
+        m.type === "fork_module_child_frames") &&
+      m.pid === pid
+    ) {
+      recordForkModuleFrames(pid, m);
     }
   });
 
@@ -1287,7 +1480,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     exitCode,
     stdout,
     stderr,
-    hostDiagnostics: [],
+    hostDiagnostics: mainThreadHostDiagnostics,
     stdoutBytes,
     forkCount: mainThreadForkCount,
     spawnScratchCapacity,

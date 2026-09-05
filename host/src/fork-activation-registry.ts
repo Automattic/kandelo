@@ -49,7 +49,6 @@ import type {
   DylinkForkTablePatchRun,
 } from "./dylink-fork-archive";
 import {
-  FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
   ForkGcProvenanceRegistry,
   forkGcCodecProviderFromInstance,
   type ForkGcCodecProvider,
@@ -57,7 +56,6 @@ import {
 import {
   FORK_HOST_EXCEPTION_ACTIVATION_ID,
   ForkReferenceTransaction,
-  type ForkGcDefinitionProvenance,
   type ForkExternrefRecipeProvider,
   type ForkReferenceScratchAllocate,
   type ForkReferenceScratchDeallocate,
@@ -71,6 +69,7 @@ import {
   FORK_STATIC_ROOT_HARVEST_EXPORT,
   ForkStaticRootCatalog,
 } from "./fork-static-root-catalog";
+import { ForkReferenceUnsupportedError } from "./fork-reference-unsupported";
 
 export const FORK_MODULE_BOOTSTRAP_EXPORT = "wpk_fork_module_bootstrap";
 export const FORK_MODULE_STATE_SAVE_EXPORT = "wpk_fork_module_state_save";
@@ -193,23 +192,7 @@ export interface ForkActivationRegistration {
  */
 export interface ForkActivationReferenceReplayImports {
   decodeFuncref(recipeId: number): CallableFunction | null;
-  decodeExternref(recipeId: number): unknown;
   getReferenceVector(ordinal: number, index: number): number;
-  routeGc(recipeId: number, expectedActivation: number): number;
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number;
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number;
 }
 
 type RegistryPhase =
@@ -483,12 +466,35 @@ export function buildForkActivationStateImports(
     [WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF]: (
       recipeId: number,
     ): CallableFunction | null => referenceReplay().decodeFuncref(recipeId >>> 0),
+    // GATED: a live externref has no linear-memory representation and cannot be
+    // faithfully reconstructed in a fresh child today. Record the kind so the
+    // parent run loop aborts the fork with EOPNOTSUPP after seal (a throw here
+    // cannot carry an errno through the Wasm fork save walk). Instead of running
+    // the real externref encoder, return the shared gated placeholder recipe: a
+    // real null graph node the guest can append to a frame reference vector, so
+    // the save walk completes without trapping. The captured graph is discarded
+    // unread when the fork aborts before any child restores it.
     [WPK_FORK_REFERENCE_IMPORT_ENCODE_EXTERNREF]: (
       value: unknown,
-    ): number => references().encodeExternref(value),
+    ): number => {
+      registry.markUnsupportedReferenceKind("externref");
+      return registry.reserveGatedLeafPlaceholder(value);
+    },
+    // RESTORE-side raise-stub (delete-and-gate slice, 2026-09-04). This guest
+    // import is only driven while a fresh child rebuilds a plain externref
+    // reference local/global/table entry. externref is a GATED capture kind:
+    // `ENCODE_EXTERNREF` above marks it unsupported and the parent aborts the
+    // fork with EOPNOTSUPP after seal, so no child ever restores one. It is kept
+    // BOUND (the instrumented guest still declares the import at ABI 44) but is
+    // unreachable; if it is ever reached it must fail loud, not silently
+    // reconstruct. The host-exception externref payload is decoded through the
+    // INTERNAL `ForkReferenceTransaction.materializeHostException`, not this
+    // guest import, so this stub does not touch the exnref path.
     [WPK_FORK_REFERENCE_IMPORT_DECODE_EXTERNREF]: (
-      recipeId: number,
-    ): unknown => referenceReplay().decodeExternref(recipeId >>> 0),
+      _recipeId: number,
+    ): unknown => {
+      throw new ForkReferenceUnsupportedError("externref");
+    },
     [WPK_FORK_REFERENCE_IMPORT_VECTOR_BEGIN]: (
       expectedLength: number,
     ): number => references().beginReferenceVector(expectedLength >>> 0),
@@ -506,114 +512,150 @@ export function buildForkActivationStateImports(
       ordinal >>> 0,
       index >>> 0,
     ),
+    // GATED (typed Wasm-GC / static-root capture): the co-resident GC codecs
+    // reconstruct engine-internal typed references that a fresh child cannot be
+    // guaranteed to rebuild faithfully today. Every gated capture import records
+    // its kind so the parent run loop aborts the fork with EOPNOTSUPP after
+    // seal, and instead of running the real encoder returns the shared gated
+    // placeholder recipe (or no-ops for the void imports). Because `lookup`
+    // returns a NONZERO recipe on first sight, the instrumented guest treats
+    // every typed value as an already-seen alias and never recurses into the
+    // struct/array/i31 field walk — so `claim` / `define` / `capture_layout` /
+    // provenance / broker are not reached for these fixtures. They keep survivable
+    // placeholders so any other module shape that does reach them still cannot
+    // trap the guest save walk. The captured graph is discarded unread once the
+    // fork aborts before restore.
     [WPK_FORK_REFERENCE_IMPORT_GC_LOOKUP]: (
-      slot: number,
-    ): number => registry.lookupGcSlot(activationId, slot),
+      _slot: number,
+    ): number => {
+      // `gc_lookup` is the anyref-transit dedup entry: the guest routes EVERY
+      // anyref-lineage value through it (an internalized host externref held in
+      // a local/global/table, a static root, or a typed Wasm-GC struct/array/
+      // i31), and it observes only the transit slot, not the referent's
+      // concrete kind. It cannot honestly claim "gc" (the externref fixture
+      // holds a plain host externref in a LOCAL and still reaches here) nor
+      // "externref" (a real GC value reaches here too). Report the honest
+      // undistinguished umbrella; the gc-structure imports below (claim /
+      // define / broker / i31 / provenance) report the specific typed-GC kind
+      // on the fresh-node walk that a nonzero `lookup` short-circuits.
+      registry.markUnsupportedReferenceKind("externref or Wasm-GC (anyref)");
+      return registry.reserveGatedTransitPlaceholder();
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_CLAIM]: (
-      slot: number,
-    ): number => registry.claimGcSlot(slot),
+      _slot: number,
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      return registry.reserveGatedTransitPlaceholder();
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_I31]: (
-      value: number,
-    ): number => registry.encodeI31(value),
+      _value: number,
+    ): number => {
+      registry.markUnsupportedReferenceKind("i31");
+      return registry.reserveGatedLeafPlaceholder(null);
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_DEFINE]: (
-      recipeId: number,
-      recordActivationId: number,
-      typeOrdinal: number,
-      layoutId: number,
-      kind: number,
-      scalarPointer: number | bigint,
-      scalarByteLength: number,
-      referenceVectorOrdinal: number,
-    ): void => registry.defineGc(
-      activationId,
-      recipeId >>> 0,
-      recordActivationId >>> 0,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarPointer,
-      scalarByteLength,
-      referenceVectorOrdinal >>> 0,
-    ),
+      _recipeId: number,
+      _recordActivationId: number,
+      _typeOrdinal: number,
+      _layoutId: number,
+      _kind: number,
+      _scalarPointer: number | bigint,
+      _scalarByteLength: number,
+      _referenceVectorOrdinal: number,
+    ): void => {
+      registry.markUnsupportedReferenceKind("struct/array");
+    },
+    // RESTORE-side raise-stubs (delete-and-gate slice, 2026-09-04). The GC
+    // route/payload-length/load imports are only driven while a fresh child
+    // rebuilds a typed Wasm-GC (struct/array/i31) reference. Those are GATED
+    // capture kinds (the GC lookup/claim/i31/broker imports above mark them
+    // unsupported and the parent aborts the fork with EOPNOTSUPP after seal), so
+    // no child ever restores one. Kept BOUND at ABI 44 (the instrumented guest
+    // still declares the imports) but unreachable; a reached path must fail loud
+    // rather than silently reconstruct. exnref restore keeps its own live
+    // route/load imports (`ROUTE_EXCEPTION`/`LOAD_EXCEPTION`), untouched here.
     [WPK_FORK_REFERENCE_IMPORT_GC_ROUTE]: (
-      recipeId: number,
-      expectedActivation: number,
-    ): number => referenceReplay().routeGc(
-      recipeId >>> 0,
-      expectedActivation >>> 0,
-    ),
+      _recipeId: number,
+      _expectedActivation: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN]: (
-      recipeId: number,
-      expectedActivation: number,
-      expectedLayoutId: number,
-    ): number => referenceReplay().gcPayloadLength(
-      recipeId >>> 0,
-      expectedActivation >>> 0,
-      expectedLayoutId,
-    ),
+      _recipeId: number,
+      _expectedActivation: number,
+      _expectedLayoutId: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_LOAD]: (
-      recipeId: number,
-      moduleActivation: number,
-      typeOrdinal: number,
-      layoutId: number,
-      kind: number,
-      scalarDestination: number | bigint,
-      scalarByteLength: number,
-    ): number => referenceReplay().loadGc(
-      recipeId >>> 0,
-      moduleActivation >>> 0,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarDestination,
-      scalarByteLength,
-    ),
+      _recipeId: number,
+      _moduleActivation: number,
+      _typeOrdinal: number,
+      _layoutId: number,
+      _kind: number,
+      _scalarDestination: number | bigint,
+      _scalarByteLength: number,
+    ): number => {
+      throw new ForkReferenceUnsupportedError("struct/array/i31");
+    },
+    // GATED (typed Wasm-GC capture, continued): broker encode, layout capture,
+    // and constructor-provenance recording all observe engine-internal GC
+    // values. Record the kind so the fork aborts cleanly with EOPNOTSUPP after
+    // seal, and return survivable placeholders instead of running the real
+    // codec. Like `claim` / `define` above, these live only on the guest's
+    // fresh-node walk, which a gated `lookup` short-circuits — so for the gated
+    // fixtures they are unreachable — but each still returns a non-trapping
+    // value in case another module shape reaches it. The captured graph is
+    // discarded unread once the fork aborts.
     [WPK_FORK_REFERENCE_IMPORT_GC_BROKER_ENCODE]: (
-      slot: number,
-    ): number => registry.encodeGcFromSlot(activationId, slot),
+      _slot: number,
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      return registry.reserveGatedTransitPlaceholder();
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT]: (
-      slot: number,
+      _slot: number,
       recordActivationId: number,
       baseLayoutId: number,
     ): number => {
+      registry.markUnsupportedReferenceKind("struct/array");
       if (recordActivationId !== activationId) {
         throw new Error(
           `activation ${activationId} cannot select GC layout for `
           + `activation ${recordActivationId}`,
         );
       }
-      return registry.captureGcLayout(
-        activationId,
-        slot,
-        baseLayoutId,
-      );
+      // The guest only threads this value back into the gated (no-op) `define`
+      // as metadata; the base layout id it already holds is the survivable
+      // identity choice and never drives a memory or field read.
+      return baseLayoutId;
     },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_BEGIN]: (
-      slot: number,
-      recordActivationId: number,
-      baseLayoutId: number,
-      specializedLayoutId: number,
-      scalarLo: bigint,
-      scalarHi: bigint,
-      referenceCount: number,
-    ): number => registry.beginGcProvenance(
-      activationId,
-      slot,
-      recordActivationId,
-      baseLayoutId,
-      specializedLayoutId,
-      scalarLo,
-      scalarHi,
-      referenceCount,
-    ),
+      _slot: number,
+      _recordActivationId: number,
+      _baseLayoutId: number,
+      _specializedLayoutId: number,
+      _scalarLo: bigint,
+      _scalarHi: bigint,
+      _referenceCount: number,
+    ): number => {
+      registry.markUnsupportedReferenceKind("gc");
+      // A provenance token only names the pending record consumed by the gated
+      // (no-op) provenance ref/end imports below, so any stable value survives.
+      return 0;
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_REF]: (
-      token: number,
-      index: number,
-      slot: number,
-    ): void => registry.appendGcProvenanceReference(token, index, slot),
+      _token: number,
+      _index: number,
+      _slot: number,
+    ): void => {
+      registry.markUnsupportedReferenceKind("gc");
+    },
     [WPK_FORK_REFERENCE_IMPORT_GC_PROVENANCE_END]: (
-      token: number,
-    ): void => registry.endGcProvenance(token),
+      _token: number,
+    ): void => {
+      registry.markUnsupportedReferenceKind("gc");
+    },
   };
 }
 
@@ -647,8 +689,29 @@ export class ForkActivationRegistry {
   private references: ForkReferenceTransaction | null = null;
   private functions: ForkFunctionCatalog | null = null;
   private readonly staticRoots = new ForkStaticRootCatalog();
-  private readonly gcTransit = new ForkAnyrefTransitTable();
+  // The process-worker-owned Wasm-GC transit table bound to every activation's
+  // guest `__wpk_fork_ref_gc_transit` import (see `bindActivationImports` /
+  // `gcTransitTable()`). The co-resident fork-module's injected `fm_drive_execute`
+  // must read this SAME table object (STORE #2) to see what a guest's
+  // `_gc_allocate` published, so the worker can pass it in via the constructor and
+  // hand the identical table to `instantiateForkModule`. When not supplied a fresh
+  // one is minted, preserving every existing caller.
+  private gcTransit: ForkAnyrefTransitTable;
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
+  /**
+   * First gated reference kind observed by a capture-side record-stub during
+   * the active capture, or `null` when the fork carries only supported kinds.
+   *
+   * A raw `throw` from a capture import cannot unwind an errno through the Wasm
+   * fork save walk (see `fork-continuation.ts`), so the gated import bodies in
+   * `buildForkActivationStateImports` RECORD the kind here and return a benign
+   * sentinel instead of throwing. The parent run loop reads and clears this
+   * after `sealCapture` and, when set, aborts the fork cleanly with
+   * `EOPNOTSUPP` via `beginAbortReplay` instead of launching a child. Read-and-
+   * clear (`takeUnsupportedReferenceKind`) guarantees it never leaks into the
+   * next fork; capture entry also clears it defensively.
+   */
+  private unsupportedReferenceKind: string | null = null;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -656,7 +719,10 @@ export class ForkActivationRegistry {
     private readonly label: string,
     private readonly allocateScratch?: ForkReferenceScratchAllocate,
     private readonly deallocateScratch?: ForkReferenceScratchDeallocate,
-  ) {}
+    gcTransit?: ForkAnyrefTransitTable,
+  ) {
+    this.gcTransit = gcTransit ?? new ForkAnyrefTransitTable();
+  }
 
   registerActivation(registration: ForkActivationRegistration): void {
     this.requireIdle("register a module activation");
@@ -1010,6 +1076,24 @@ export class ForkActivationRegistry {
   }
 
   /**
+   * Replace this registry's transit table with one that WRAPS an externally
+   * owned table — used on the thread-fork path, where a co-resident
+   * fork-module is instantiated AFTER this registry already exists (the
+   * module's own `enableModuleBacking` gate needs a process-continuation
+   * coordinator built from this registry first). Once adopted, the guest's
+   * `__wpk_fork_ref_gc_transit` import (bound later via
+   * `gcTransitTable()`/`buildForkActivationStateImports`) and the
+   * fork-module's own exported table are the same object, matching the
+   * process path's single-table invariant. Must be called before any
+   * activation import is built and before any fork capture; the mint-time
+   * default remains a self-owned table when this is never called (flag-off
+   * or non-qualifying fork).
+   */
+  adoptGcTransit(table: WebAssembly.Table): void {
+    this.gcTransit = new ForkAnyrefTransitTable(table);
+  }
+
+  /**
    * Reserve/read the same transit slots used by the normal replay owner while
    * imported references are reconstructed before every activation exists.
    */
@@ -1059,218 +1143,41 @@ export class ForkActivationRegistry {
     });
   }
 
-  lookupGcSlot(requestingActivation: number, slot: number): number {
-    const provenance = this.gcProvenance.find(this.gcTransit.get(slot));
-    if (provenance && provenance.activationId !== requestingActivation) {
-      // Canonically equivalent recursive types can test true in more than one
-      // instance. Constructor/segment provenance decides the reconstruction
-      // owner before the requesting codec claims graph identity.
-      return this.requireTypedProvider(provenance.activationId).encodeSlot(slot);
-    }
-    return this.currentReferences().lookupGcSlot(this.gcTransit.table, slot);
-  }
-
-  claimGcSlot(slot: number): number {
-    const recipeId = this.currentReferences().claimGcSlot(
-      this.gcTransit.table,
-      slot,
-    );
+  /**
+   * Reserve a gated placeholder recipe for an anyref value that the module GC
+   * codec has already published into transit slot 0 (`lookup` / `claim` /
+   * broker).
+   *
+   * The live anyref is republished at `recipe + 1` so the PARENT continuation
+   * replay — a same-worker `table.get(transit, recipe + 1)` in the module's
+   * `decode_anyref` — restores the identical live object without any typed
+   * reconstruction. A gated `lookup` returning this NONZERO recipe makes the
+   * guest treat the value as an already-seen alias, so it never recurses into
+   * the struct/array field walk: no layout descriptor, provenance, or
+   * static-root catalog work runs on the capture side.
+   */
+  reserveGatedTransitPlaceholder(): number {
+    const value = this.gcTransit.get(0);
+    const recipeId = this.currentReferences().reserveGatedPlaceholder(value);
     this.gcTransit.ensureRecipeSlot(recipeId);
+    this.gcTransit.set(recipeId + 1, value);
     return recipeId;
   }
 
-  encodeI31(value: number): number {
-    const recipeId = this.currentReferences().encodeI31(value);
+  /**
+   * Reserve a gated placeholder recipe for a value the guest hands directly to
+   * a capture import (`encode_externref`) or republishes into transit itself
+   * (`i31`).
+   *
+   * The runtime externref/funcref codec restores the parent from
+   * `capturedValues` (kept here), and the i31 bridge publishes its own
+   * `i31ref` into `recipe + 1`; both only need the transit slot sized so a later
+   * guest `table.set(transit, recipe + 1)` publish store stays in bounds.
+   */
+  reserveGatedLeafPlaceholder(value: unknown): number {
+    const recipeId = this.currentReferences().reserveGatedPlaceholder(value);
     this.gcTransit.ensureRecipeSlot(recipeId);
     return recipeId;
-  }
-
-  captureGcLayout(
-    activationId: number,
-    slot: number,
-    baseLayoutId: number,
-  ): number {
-    const provider = this.requireTypedProvider(activationId);
-    const base = provider.descriptor.require(baseLayoutId);
-    const object = this.gcTransit.get(slot);
-    const provenance = this.gcProvenance.lookup(
-      object,
-      activationId,
-      provider.descriptor,
-      baseLayoutId,
-    );
-    if (provenance) return provenance.layoutId;
-    if ((base.flags & FORK_GC_LAYOUT_REQUIRES_PROVENANCE) !== 0) {
-      throw new Error(
-        `${this.label}: GC layout ${activationId}:${baseLayoutId} `
-        + "requires constructor provenance",
-      );
-    }
-    return base.id;
-  }
-
-  defineGc(
-    activationId: number,
-    recipeId: number,
-    recordActivationId: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarPointer: number | bigint,
-    scalarByteLength: number,
-    referenceVectorOrdinal: number,
-  ): void {
-    if (recordActivationId !== activationId) {
-      throw new Error(
-        `activation ${activationId} cannot define GC state for `
-        + `activation ${recordActivationId}`,
-      );
-    }
-    const provider = this.requireTypedProvider(activationId);
-    const layout = provider.descriptor.require(layoutId);
-    const source = this.currentReferences().capturedGcValue(recipeId);
-    const record = this.gcProvenance.lookup(
-      source,
-      activationId,
-      provider.descriptor,
-      layout.baseLayoutId,
-    );
-    let provenance: ForkGcDefinitionProvenance | null = null;
-    if (record) {
-      const recipeIds = record.references.map((reference) =>
-        reference === null ? 0 : this.encodeGcObject(reference)
-      );
-      provenance = { record, recipeIds };
-    }
-    this.currentReferences().defineGc(
-      recipeId,
-      recordActivationId,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarPointer,
-      scalarByteLength,
-      referenceVectorOrdinal,
-      provider.descriptor,
-      provenance,
-    );
-  }
-
-  routeGc(recipeId: number, expectedActivation: number): number {
-    return this.currentReferences().routeGc(recipeId, expectedActivation);
-  }
-
-  gcPayloadLength(
-    recipeId: number,
-    expectedActivation: number,
-    expectedLayoutId: number,
-  ): number {
-    return this.currentReferences().gcPayloadLength(
-      recipeId,
-      expectedActivation,
-      expectedLayoutId,
-    );
-  }
-
-  loadGc(
-    recipeId: number,
-    moduleActivation: number,
-    typeOrdinal: number,
-    layoutId: number,
-    kind: number,
-    scalarDestination: number | bigint,
-    scalarByteLength: number,
-  ): number {
-    return this.currentReferences().loadGc(
-      recipeId,
-      moduleActivation,
-      typeOrdinal,
-      layoutId,
-      kind,
-      scalarDestination,
-      scalarByteLength,
-    );
-  }
-
-  encodeGcFromSlot(sourceActivation: number, slot: number): number {
-    const provenance = this.gcProvenance.find(this.gcTransit.get(slot));
-    if (
-      provenance
-      && provenance.activationId !== sourceActivation
-    ) {
-      return this.requireTypedProvider(provenance.activationId).encodeSlot(slot);
-    }
-    const candidates = this.activations().filter(
-      ({ activationId, typedReferenceProvider }) =>
-        activationId !== sourceActivation && typedReferenceProvider !== undefined,
-    );
-    for (const activation of candidates) {
-      const provider = this.requireTypedProvider(activation.activationId);
-      const packed = provider.probe(slot);
-      if (packed === 0n) continue;
-      const baseLayoutId = Number(packed & 0xffff_ffffn);
-      const typeOrdinal = Number(packed >> 32n);
-      const base = provider.descriptor.require(baseLayoutId);
-      if (
-        base.baseLayoutId !== base.id
-        || base.typeOrdinal !== typeOrdinal
-      ) {
-        throw new Error(
-          `${this.label}: activation ${activation.activationId} returned `
-          + "an invalid GC probe coordinate",
-        );
-      }
-      return provider.encodeSlot(slot);
-    }
-    // No module codec recognized the internal value, so it is a hostref made
-    // by `any.convert_extern`. Its worker-local token names a process-owned
-    // broker handle; retain that handle as an externref leaf in the same graph.
-    const recipeId = this.currentReferences().encodeExternref(
-      this.gcTransit.get(slot),
-    );
-    this.gcTransit.ensureRecipeSlot(recipeId);
-    return recipeId;
-  }
-
-  beginGcProvenance(
-    expectedActivationId: number,
-    slot: number,
-    activationId: number,
-    baseLayoutId: number,
-    specializedLayoutId: number,
-    scalarLo: bigint,
-    scalarHi: bigint,
-    referenceCount: number,
-  ): number {
-    return this.gcProvenance.begin(
-      this.gcTransit.table,
-      this.requireTypedProvider(expectedActivationId).descriptor,
-      expectedActivationId,
-      slot,
-      activationId,
-      baseLayoutId,
-      specializedLayoutId,
-      scalarLo,
-      scalarHi,
-      referenceCount,
-    );
-  }
-
-  appendGcProvenanceReference(
-    token: number,
-    index: number,
-    slot: number,
-  ): void {
-    this.gcProvenance.appendReference(
-      this.gcTransit.table,
-      token,
-      index,
-      slot,
-    );
-  }
-
-  endGcProvenance(token: number): void {
-    this.gcProvenance.end(token);
   }
 
   /**
@@ -1287,6 +1194,9 @@ export class ForkActivationRegistry {
     }
     // A prior trap must never make a stale object appear as a recipe hit.
     this.gcProvenance.abortPending();
+    // A partially-consumed marker from an aborted prior capture must never
+    // gate this fork; the run loop's read-and-clear is the primary owner.
+    this.unsupportedReferenceKind = null;
     this.gcTransit.clear();
     const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
@@ -1518,7 +1428,7 @@ export class ForkActivationRegistry {
     this.phase = "child-replay";
   }
 
-  restoreModuleState(): void {
+  restoreModuleState(typedDrive?: () => void): void {
     if (this.phase !== "parent-replay" && this.phase !== "child-replay") {
       throw new Error(
         `${this.label}: cannot restore module state while registry is ${this.phase}`,
@@ -1529,7 +1439,11 @@ export class ForkActivationRegistry {
       // the fresh instance's transit table. Publish every reconstructed typed
       // identity first, while passive data/element segments are still intact
       // for array.new_data/array.new_elem constructors.
-      this.currentReferences().materializeAllTyped();
+      //
+      // Phase 6 item 3c: `typedDrive`, when supplied by the module-backed child
+      // coordinator, replaces the JS typed allocate/fill/exn sub-loop with the
+      // co-resident fork-module drive (PHASE A/B still runs on the JS path).
+      this.currentReferences().materializeAllTyped(typedDrive);
     }
     for (const activation of this.activations()) {
       activation.moduleState.restore(activation.activationId);
@@ -1615,6 +1529,28 @@ export class ForkActivationRegistry {
     return this.phase;
   }
 
+  /**
+   * Record that the active capture encountered a gated reference kind. First
+   * observation wins so the parent run loop reports the first kind the guest's
+   * save walk actually reached. Called from the capture-side record-stubs in
+   * `buildForkActivationStateImports`; never throws (throwing here cannot carry
+   * an errno through the Wasm fork save walk).
+   */
+  markUnsupportedReferenceKind(kind: string): void {
+    this.unsupportedReferenceKind ??= kind;
+  }
+
+  /**
+   * Read and clear the gated reference kind observed during capture. Returns
+   * `null` when the fork carried only supported kinds. Read-and-clear so a
+   * gated kind can never leak into a subsequent, supported fork.
+   */
+  takeUnsupportedReferenceKind(): string | null {
+    const kind = this.unsupportedReferenceKind;
+    this.unsupportedReferenceKind = null;
+    return kind;
+  }
+
   private buildFunctionCatalog(): ForkFunctionCatalog {
     const functions = new ForkFunctionCatalog();
     for (const activation of this.activations()) {
@@ -1680,15 +1616,6 @@ export class ForkActivationRegistry {
       );
     }
     return provider as ForkGcCodecProvider & ForkActivationTypedReferenceProvider;
-  }
-
-  private encodeGcObject(value: object): number {
-    this.gcTransit.set(0, value);
-    try {
-      return this.encodeGcFromSlot(-1, 0);
-    } finally {
-      this.gcTransit.clearSlot(0);
-    }
   }
 
   private typedReplayOwner() {

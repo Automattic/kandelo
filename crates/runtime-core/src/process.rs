@@ -57,6 +57,27 @@ pub trait HostIO {
         // implementation would race another user of the shared host cursor.
         Err(Errno::ENOSYS)
     }
+    /// Read up to `buf.len()` bytes at `offset` from a content byte-leaf named by
+    /// `blob_id`. This is the narrow byte-provider seam for the in-kernel rootfs
+    /// overlay (Phase 5 Increment 2): the kernel owns the `/` tree and asks the
+    /// host only for a base file's immutable bytes, addressed by a manifest-
+    /// assigned blob id rather than a mutable path or a shared-cursor handle.
+    /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
+    /// mock hosts and hosts predating the overlay compile unchanged.
+    fn blob_read(&mut self, _blob_id: u64, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Read up to `buf.len()` bytes at `offset` from the raw byte store backing
+    /// lazy-archive member `archive_id`. This is the narrow raw-archive
+    /// transport seam for the in-kernel rootfs overlay's `LazyMember` nodes
+    /// (Phase 5 Increment 3b-wiring.2): the host is only a byte store for the
+    /// whole archive blob, addressed by a manifest-assigned `archive_id`; the
+    /// kernel decodes the archive format (zip) and owns member extraction.
+    /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
+    /// mock hosts and hosts predating lazy-archive support compile unchanged.
+    fn fetch_archive(&mut self, _archive_id: u32, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_pwrite(&mut self, _handle: i64, _buf: &[u8], _offset: i64) -> Result<usize, Errno> {
         // See host_pread: unsupported is truthful; cursor emulation is not.
         Err(Errno::ENOSYS)

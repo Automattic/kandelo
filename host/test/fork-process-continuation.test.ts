@@ -654,6 +654,40 @@ describe("ForkProcessContinuationCoordinator", () => {
     expect(fixture.coordinator.phaseName()).toBe("idle");
   });
 
+  it("makes the abort errno readable from the coordinator after a partial-capture abort", () => {
+    const memory = new WebAssembly.Memory({ initial: 16 });
+    const owner = allocationOwner(memory);
+    const calls: string[] = [];
+    const roots = new Map<number, number>();
+    const fixture = makeCoordinator(
+      memory,
+      owner,
+      calls,
+      roots,
+      "capture-abort errno",
+    );
+    fixture.arena.begin();
+    fixture.coordinator.beginCapture(fixture.arena);
+
+    const sideImports = fixture.coordinator.continuationImports(4);
+    const payload = (
+      sideImports.__wpk_fork_frame_reserve as (size: number) => number
+    )(16);
+    writeOrdinal(memory, payload, 8);
+    (
+      sideImports.__wpk_fork_frame_commit as (payload: number) => void
+    )(payload);
+
+    fixture.coordinator.beginCaptureAbort(12);
+
+    // Regression coverage: worker-main reads the abort errno from the
+    // coordinator (not the per-activation continuation) on both the flag-off
+    // and flag-on paths. `beginCaptureAbort` must populate `#abortErrno`
+    // the same way `beginAbortReplay` does, or this throws instead of
+    // returning the recorded errno.
+    expect(fixture.coordinator.abortErrno()).toBe(12);
+  });
+
   it("replays an arbitrarily nested main-to-side-to-side stack", () => {
     const parentMemory = new WebAssembly.Memory({ initial: 16 });
     const parentOwner = allocationOwner(parentMemory);

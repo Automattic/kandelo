@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   buildForkActivationStateImports,
   ForkActivationRegistry,
@@ -17,6 +17,22 @@ import {
 } from "../src/generated/abi";
 
 const PAGE_SIZE = 65_536;
+
+// Minimal Wasm module exporting one zero-arg function `f`, used to mint a
+// real WebAssembly funcref identity for static-root harvest fixtures.
+const MINIMAL_WASM_FUNCTION_BYTES = Uint8Array.from([
+  0, 97, 115, 109, 1, 0, 0, 0,
+  1, 4, 1, 96, 0, 0,
+  3, 2, 1, 0,
+  7, 5, 1, 1, 102, 0, 0,
+  10, 4, 1, 2, 0, 11,
+]);
+
+function makeWasmFunction(): CallableFunction {
+  return new WebAssembly.Instance(
+    new WebAssembly.Module(MINIMAL_WASM_FUNCTION_BYTES),
+  ).exports.f as CallableFunction;
+}
 
 function makeArena(memory: WebAssembly.Memory, label: string): ForkModuleStateArena {
   let next = PAGE_SIZE;
@@ -126,17 +142,20 @@ function registry(memory: WebAssembly.Memory, label: string): ForkActivationRegi
 }
 
 describe("ForkActivationRegistry", () => {
-  it("binds GC layout capture in the generated slot/activation/layout order", () => {
+  it("gates GC layout capture with a survivable placeholder and records the kind", () => {
+    // The real capture-side layout encoder (`ForkActivationRegistry.captureGcLayout`)
+    // was deleted once Task 4 gutted this import to a survivable placeholder (no
+    // reconstruction runs on the capture side for gated struct/array kinds); this
+    // now exercises the current gated import body instead.
     const memory = new WebAssembly.Memory({ initial: 2 });
     const owner = registry(memory, "GC capture import");
-    const capture = vi.spyOn(owner, "captureGcLayout").mockReturnValue(23);
     const imports = buildForkActivationStateImports(7, owner);
     const captureLayout = imports[
       WPK_FORK_REFERENCE_IMPORT_GC_CAPTURE_LAYOUT
     ] as CallableFunction;
 
-    expect(captureLayout(5, 7, 11)).toBe(23);
-    expect(capture).toHaveBeenCalledWith(7, 5, 11);
+    expect(captureLayout(5, 7, 11)).toBe(11);
+    expect(owner.takeUnsupportedReferenceKind()).toBe("struct/array");
     expect(() => captureLayout(7, 5, 11)).toThrow(
       "activation 7 cannot select GC layout for activation 5",
     );
@@ -243,10 +262,14 @@ describe("ForkActivationRegistry", () => {
   });
 
   it("keeps weak static identity across later forks and forgets it on unregister", () => {
+    // Probes the static-root catalog through `encodeFuncref` (a surviving,
+    // supported capture path that shares the `intern()` static-root check)
+    // rather than `encodeExternref`, which Task 5 deleted as unreachable
+    // capture-side reconstruction once externref capture became gated.
     const memory = new WebAssembly.Memory({ initial: 8 });
-    const root = Object.freeze({ segment: "already dropped" });
+    const root = makeWasmFunction();
     const harvest = new WebAssembly.Table({
-      element: "externref",
+      element: "anyfunc",
       initial: 1,
       maximum: 1,
     });
@@ -263,7 +286,7 @@ describe("ForkActivationRegistry", () => {
       const arena = makeArena(memory, label);
       arena.begin();
       owner.beginCapture(arena);
-      expect(owner.currentReferences().encodeExternref(root)).toBe(1);
+      expect(owner.currentReferences().encodeFuncref(root)).toBe(1);
       owner.abort();
     }
 
@@ -271,8 +294,8 @@ describe("ForkActivationRegistry", () => {
     const afterUnload = makeArena(memory, "after unload");
     afterUnload.begin();
     owner.beginCapture(afterUnload);
-    expect(() => owner.currentReferences().encodeExternref(root)).toThrow(
-      "fixture has no externrefs",
+    expect(() => owner.currentReferences().encodeFuncref(root)).toThrow(
+      "funcref is absent from the process module catalogs",
     );
     owner.abort();
   });
