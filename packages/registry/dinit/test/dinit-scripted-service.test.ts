@@ -115,13 +115,22 @@ describe.skipIf(!hasArtifacts)("dinit supervisor", () => {
           { timeout: 10_000, interval: 50 },
         ).toContain("[  OK  ] one-shot");
 
-        // A successful scripted service means dinit forked and exec'd the
-        // helper, reaped its zero exit status, and stayed alive as supervisor.
-        // Leaving dasynq's pselect pull_events() noexcept makes the Wasm SjLj
-        // transfer reach std::terminate while handling SIGCHLD instead.
+        // A successful scripted service means dinit launched the helper, reaped
+        // its zero exit status, and stayed alive as supervisor.
+        //
+        // Simple services take dinit's posix_spawn fast path (patch 0002), which
+        // fuses fork+exec via the kernel's vfork route: the child is BORN
+        // executing the helper, so we observe a spawn (ppid == dinit) and a zero
+        // exit, but NO separate "exec" event — there is no prior image to
+        // replace, which matches how posix_spawn behaves on any OS. (A service
+        // that did not qualify for the fast path would fall back to
+        // fork()+execvp() and additionally emit an "exec" event.)
+        //
+        // Reaping the child's SIGCHLD without std::terminate is the Wasm SjLj
+        // behavior guarded by patch 0001: leaving dasynq's pselect pull_events()
+        // noexcept makes the SjLj transfer reach std::terminate on SIGCHLD.
         expect(events).toEqual(expect.arrayContaining([
           expect.objectContaining({ kind: "spawn", ppid: dinitPid }),
-          expect.objectContaining({ kind: "exec" }),
           expect.objectContaining({ kind: "exit", exitStatus: 0 }),
         ]));
         expect((await host.enumProcs()).some(({ pid }) => pid === dinitPid))
