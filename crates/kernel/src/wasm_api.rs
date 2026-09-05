@@ -3263,6 +3263,20 @@ pub extern "C" fn kernel_exec_target_resolve_shebang(
     };
     let Some(prefix) = resolved.prefix else {
         if out.len() < 5 {
+            // `resolve_shebang` already retained `final_token` on this
+            // success path; every negative return from this export must
+            // leave zero tokens retained (the native host's
+            // `ShebangError::Resolved` contract assumes the kernel already
+            // released everything on error and does not cancel itself), so
+            // release it here before reporting the caller's buffer as too
+            // small.
+            let _ = crate::exec_target::cancel(
+                proc,
+                advisory_locks,
+                &mut host,
+                owner_pid,
+                resolved.final_token,
+            );
             return -(Errno::EOVERFLOW as i64);
         }
         out[0] = 0;
@@ -3278,9 +3292,30 @@ pub extern "C" fn kernel_exec_target_resolve_shebang(
         .and_then(|partial| partial.checked_add(argument_bytes.len()))
         .and_then(|partial| partial.checked_add(script_path.len()))
     else {
+        // Same "negative ⇒ zero retained" contract: this guard is defensive
+        // (interpreter/argument/script-path lengths are bounded well under
+        // `usize::MAX` in practice) but it is still a post-resolve return, so
+        // it must not leave `final_token` retained either.
+        let _ = crate::exec_target::cancel(
+            proc,
+            advisory_locks,
+            &mut host,
+            owner_pid,
+            resolved.final_token,
+        );
         return -(Errno::EOVERFLOW as i64);
     };
     if total > out.len() {
+        // Same "negative ⇒ zero retained" contract as above: the interpreter
+        // token `resolve_shebang` just prepared must not leak because the
+        // caller's buffer was too small to hold the record describing it.
+        let _ = crate::exec_target::cancel(
+            proc,
+            advisory_locks,
+            &mut host,
+            owner_pid,
+            resolved.final_token,
+        );
         return -(Errno::EOVERFLOW as i64);
     }
     let interp_len = interpreter.len() as u32;
