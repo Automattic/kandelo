@@ -44,8 +44,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wasmtime::{
-    Caller, Engine, Global, GlobalType, Linker, MemoryType, Module, Mutability, Ref, SharedMemory,
-    Store, Val, ValType,
+    Caller, Engine, ExternType, Global, GlobalType, Linker, MemoryType, Module, Mutability, Ref,
+    SharedMemory, Store, Table, Val, ValType,
 };
 
 use wasm_posix_shared::channel::{
@@ -114,7 +114,7 @@ const STDIO_KIND_HOST_PIPE: i32 = 0;
 /// The resolved process memory layout for a single guest, computed exactly like
 /// the TypeScript host's `computeProcessMemoryLayout` with no `__heap_base`.
 #[derive(Debug, Clone, Copy)]
-struct ProcessLayout {
+pub(crate) struct ProcessLayout {
     initial_pages: usize,
     channel_offset: usize,
     brk_base: usize,
@@ -2012,6 +2012,327 @@ fn compute_guest_memory(engine: &Engine, guest_module: &Module) -> anyhow::Resul
     let layout = ProcessLayout::compute(imported_min_pages);
     let memory = new_shared(engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
     Ok((memory, layout))
+}
+
+// --- N1-I4 Task 1: the co-resident fork-module (PIC side module) -----------
+//
+// `crates/fork-module` is built (`crates/fork-module/build-wasm.sh`) as a
+// POSITION-INDEPENDENT (`--pie`) wasm side module: it imports the guest's
+// `env.memory` plus the placement globals `env.__memory_base` (immutable),
+// `env.__stack_pointer` (mutable), and `env.__table_base` (immutable), and
+// its data segments are PASSIVE, copied to `__memory_base + offset` by its
+// own start function during instantiation. Placing its static data/BSS/
+// shadow stack at a HOST-CHOSEN region — instead of the fixed low offsets a
+// plain cdylib would use — is the gating fix: those offsets would otherwise
+// collide with and corrupt live guest data. This mirrors the placement
+// contract `host/src/fork-module-instance.ts:415-542` already uses on the
+// browser/Node hosts; see that file's `instantiateForkModule` for the
+// reference this section ports.
+//
+// This is FRAMES-ONLY (N1-I4 Task 1): it instantiates the module and binds
+// its `fm_*` coordinator exports, but the reference/exception import surface
+// (`wpk_fork_host.*` + `env.resolve_externref`) is stubbed as inert traps
+// that this path never calls. No `SYS_FORK`/kernel wiring happens here
+// (Task 2); no capture/replay is driven here (Task 3).
+
+/// Byte size of the fork-module's own shadow stack, appended above its
+/// static/BSS footprint when reserving its host-owned region. Mirrors
+/// `FORK_MODULE_SHADOW_STACK_BYTES` in `host/src/fork-module-instance.ts`
+/// (kept local here, not in `wasm-posix-shared`, because it is a host-side
+/// placement policy constant, not part of the wire ABI).
+const FORK_MODULE_SHADOW_STACK_BYTES: usize = 1 << 20;
+
+/// The `dylink.0` custom section's `mem_info` subsection ID (the WebAssembly
+/// dynamic-linking convention: `WASM_DYLINK_MEM_INFO` in the upstream tool
+/// sources), mirrored from `host/src/fork-module-instance.ts`'s
+/// `WASM_DYLINK_MEM_INFO`.
+const WASM_DYLINK_MEM_INFO: u8 = 1;
+
+/// Read one ULEB128 varint out of `data` starting at `*cursor`, advancing it
+/// past the value. Mirrors `readVarUint` in `host/src/fork-module-instance.ts`.
+fn read_leb_u32(data: &[u8], cursor: &mut usize) -> anyhow::Result<u32> {
+    let mut result: u32 = 0;
+    let mut shift = 0u32;
+    loop {
+        let byte = *data
+            .get(*cursor)
+            .ok_or_else(|| anyhow::anyhow!("dylink.0: truncated LEB128 at byte {}", *cursor))?;
+        *cursor += 1;
+        result |= u32::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+/// Read the fork-module's `dylink.0` custom section's `mem_info` subsection
+/// straight out of its raw wasm bytes: `(memory_size, memory_align_bytes)`.
+/// Mirrors `readForkModuleMemInfo` in `host/src/fork-module-instance.ts:372-
+/// 399` — the module is a PIC side module (see this section's module doc
+/// comment), so its own static/BSS footprint is not baked into fixed linear-
+/// memory offsets; the host must read this section to know how large a
+/// region to reserve before choosing `__memory_base`. `wasmtime::Module` has
+/// no custom-section accessor, so this parses the module's own byte stream
+/// directly (the same bytes `Module::new` compiles), independent of Wasmtime.
+fn read_fork_module_mem_info(wasm_bytes: &[u8]) -> anyhow::Result<(usize, usize)> {
+    anyhow::ensure!(
+        wasm_bytes.len() >= 8 && &wasm_bytes[0..4] == b"\0asm",
+        "not a wasm module (bad magic)"
+    );
+    let mut pos = 8usize;
+    while pos < wasm_bytes.len() {
+        let section_id = wasm_bytes[pos];
+        pos += 1;
+        let section_len = read_leb_u32(wasm_bytes, &mut pos)? as usize;
+        let section_end = pos + section_len;
+        anyhow::ensure!(section_end <= wasm_bytes.len(), "section runs past end of module");
+        if section_id == 0 {
+            let name_len = read_leb_u32(wasm_bytes, &mut pos)? as usize;
+            let name_end = pos + name_len;
+            anyhow::ensure!(name_end <= section_end, "custom section name runs past section end");
+            let name = &wasm_bytes[pos..name_end];
+            if name == b"dylink.0" {
+                let mut cursor = name_end;
+                while cursor < section_end {
+                    let sub_type = wasm_bytes[cursor];
+                    cursor += 1;
+                    let sub_len = read_leb_u32(wasm_bytes, &mut cursor)? as usize;
+                    let sub_end = cursor + sub_len;
+                    anyhow::ensure!(sub_end <= section_end, "dylink.0 subsection runs past section end");
+                    if sub_type == WASM_DYLINK_MEM_INFO {
+                        let memory_size = read_leb_u32(wasm_bytes, &mut cursor)? as usize;
+                        let memory_align_log2 = read_leb_u32(wasm_bytes, &mut cursor)? as usize;
+                        return Ok((memory_size, 1usize << memory_align_log2));
+                    }
+                    cursor = sub_end;
+                }
+                anyhow::bail!("fork-module dylink.0 has no mem_info subsection");
+            }
+        }
+        pos = section_end;
+    }
+    anyhow::bail!("fork-module is not a PIC side module (no dylink.0 custom section)");
+}
+
+/// The co-resident fork-module (`crates/fork-module`), instantiated sharing a
+/// guest's linear memory. See this file's "N1-I4 Task 1" section doc comment.
+pub struct ForkModule {
+    /// The instantiated fork-module, in the `Store` passed to
+    /// [`instantiate_fork_module`].
+    pub instance: wasmtime::Instance,
+    /// First byte of the host-reserved region (== the module's
+    /// `__memory_base`).
+    pub memory_base: usize,
+    /// Total bytes reserved: the module's static/BSS footprint (from its
+    /// `dylink.0` mem_info, rounded up to its declared alignment) plus its
+    /// shadow stack ([`FORK_MODULE_SHADOW_STACK_BYTES`]). The region is
+    /// `[memory_base, memory_base + region_bytes)`.
+    pub region_bytes: usize,
+
+    // -- Coordinator (`fm_*`) exports, bound once here so callers never
+    // re-look-up a name (a typo would only surface at the FIRST call site,
+    // not at instantiation) -----------------------------------------------
+    pub fm_set_format: wasmtime::TypedFunc<(u32, u32), ()>,
+    pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
+    pub fm_begin_unwind: wasmtime::TypedFunc<(u32, u32), u32>,
+    pub fm_finish_unwind: wasmtime::TypedFunc<(), ()>,
+    pub fm_serialize_journal_alloc: wasmtime::TypedFunc<u32, u32>,
+    pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
+    pub fm_begin_replay: wasmtime::TypedFunc<(), ()>,
+    pub fm_finish_replay: wasmtime::TypedFunc<(), ()>,
+    pub fm_begin_child_replay: wasmtime::TypedFunc<(u32, u32, u32), ()>,
+    pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
+    /// Proof-of-use counter: frames committed (unwind) since worker start.
+    pub fm_frames_committed: wasmtime::TypedFunc<(), i64>,
+    /// Proof-of-use counter: frames replayed (rewind) since worker start.
+    pub fm_frames_replayed: wasmtime::TypedFunc<(), i64>,
+    pub fm_references_reconstructed: wasmtime::TypedFunc<(), i64>,
+    pub fm_externrefs_resolved: wasmtime::TypedFunc<(), i64>,
+    pub fm_exnrefs_reconstructed: wasmtime::TypedFunc<(), i64>,
+    pub fm_gc_nodes_reconstructed: wasmtime::TypedFunc<(), i64>,
+}
+
+/// Instantiate the co-resident fork-module (`crate::fork_module_path()`)
+/// sharing `guest_mem` as its `env.memory`, placing its static/BSS/shadow-
+/// stack region at the TOP of `layout.max_addr` (frames-only — N1-I4 Task
+/// 1). See this file's "N1-I4 Task 1" section doc comment for the design
+/// this ports from `host/src/fork-module-instance.ts:415-542`.
+///
+/// ## Region placement, and why it is safe
+///
+/// The module is PIC: its data/BSS/shadow stack live at `__memory_base +
+/// offset`, so the host must choose a region of `guest_mem` the module can
+/// own without colliding with the guest's own data. This computes that
+/// region's size from the module's own `dylink.0` `mem_info` (its real
+/// static footprint, not a guess) plus a 1 MiB shadow stack, and places it
+/// ending exactly at `layout.max_addr` — the SAME ceiling value
+/// `launch_process` already passes to the kernel's `kernel_set_max_addr`
+/// export for this process (see that call site). Reusing that exact knob is
+/// deliberate: a caller that, instead of `layout.max_addr`, passes this
+/// function's returned `memory_base` to `kernel_set_max_addr` SHRINKS the
+/// process's kernel-visible address ceiling, so the kernel's own mmap/brk
+/// allocator can never hand the guest an address inside `[memory_base,
+/// memory_base + region_bytes)` afterward — the reservation becomes
+/// KERNEL-ENFORCED (the kernel is the address-space authority for this
+/// process), not merely "unlikely to collide". This is the same safety
+/// property the browser/Node host's `continuationMmap` gets by routing a
+/// real `mmap` through the kernel, reached here through a different existing
+/// knob instead of a synthesized channel round-trip.
+///
+/// Task 1 does NOT itself call `kernel_set_max_addr` — this function has no
+/// kernel `Store`/pid in scope, and Task 1 is instantiation-only (no
+/// `SYS_FORK` wiring). Wiring that shrink into `launch_process` — so it is
+/// actually kernel-enforced for a live, running guest, rather than merely
+/// computed — is Task 2/3's job, once a real fork path exists to protect.
+/// The smoke test below instantiates against a freshly computed layout whose
+/// guest never runs, so the un-enforced reservation cannot collide with
+/// anything in that scope either way.
+///
+/// Before returning, this grows `guest_mem`'s wasm-visible size to cover the
+/// reserved region ([`grow_to_cover`]) — `SharedMemory` pre-reserves its
+/// hard virtual maximum, but ordinary wasm loads/stores are bounds-checked
+/// against the CURRENT (grown) size, so the module's own start function
+/// (which writes its passive data segments into the region) would trap
+/// without this.
+pub(crate) fn instantiate_fork_module(
+    engine: &Engine,
+    store: &mut Store<()>,
+    guest_mem: &SharedMemory,
+    layout: &ProcessLayout,
+) -> anyhow::Result<ForkModule> {
+    let fork_module_wasm_path = crate::fork_module_path();
+    let wasm_bytes = std::fs::read(&fork_module_wasm_path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", fork_module_wasm_path.display()))?;
+    let module = Module::new(engine, &wasm_bytes)?;
+
+    let (mem_size, mem_align) = read_fork_module_mem_info(&wasm_bytes)?;
+    anyhow::ensure!(mem_align > 0 && mem_align.is_power_of_two(), "fork-module mem_align {mem_align} is not a power of two");
+    let static_bytes = mem_size.div_ceil(mem_align) * mem_align;
+    let min_region_bytes = static_bytes + FORK_MODULE_SHADOW_STACK_BYTES;
+
+    let region_end = layout.max_addr;
+    anyhow::ensure!(
+        min_region_bytes <= region_end,
+        "fork-module region ({min_region_bytes} bytes) does not fit under max_addr ({region_end})"
+    );
+    // Place the region so it ends exactly at `region_end`, aligning its base
+    // DOWN to the module's required alignment (this can only grow the
+    // region slightly, never shrink it below `min_region_bytes`, and never
+    // push the base below 0 given the `ensure!` above).
+    let memory_base = (region_end - min_region_bytes) / mem_align * mem_align;
+    let region_bytes = region_end - memory_base;
+    let stack_top = memory_base + region_bytes;
+    anyhow::ensure!(
+        stack_top % 16 == 0,
+        "fork-module stack top 0x{stack_top:x} is not 16-byte aligned"
+    );
+    anyhow::ensure!(
+        i32::try_from(stack_top).is_ok(),
+        "fork-module region top 0x{stack_top:x} does not fit in a wasm32 i32 address"
+    );
+
+    grow_to_cover(guest_mem, memory_base + region_bytes)?;
+
+    let mut linker: Linker<()> = Linker::new(engine);
+    linker.define(&mut *store, "env", "memory", guest_mem.clone())?;
+
+    // The module's own reference-carrying tables: an empty, growable table
+    // exactly matching each import's declared type (frames-only never
+    // populates any of them — the three funcref tables are the funcref-
+    // reconstruction path, I5's job; `__wpk_fork_static_root_catalog` is the
+    // GC static-root binder, also I5). Reading the declared `TableType` back
+    // off the import — rather than assuming a shape — means a future module
+    // rebuild that changes these declarations fails loudly here instead of
+    // silently mismatching. `resolve_externref`'s return type (`externref`,
+    // confirmed by probing `module.imports()`) already showed reference
+    // types alone were not the gate here: `env.__wpk_fork_static_root_
+    // catalog` is a table of `(ref null any)` (anyref) — the module also
+    // declares this GC-proposal table even though this frames-only path
+    // never drives a step that reads it — so its null init is `Ref::Any`,
+    // not `Ref::Func`.
+    for (name, init) in [
+        ("__indirect_function_table", Ref::Func(None)),
+        ("__wpk_fork_function_catalog", Ref::Func(None)),
+        ("__wpk_fork_drive_table", Ref::Func(None)),
+        ("__wpk_fork_static_root_catalog", Ref::Any(None)),
+    ] {
+        let ty = module
+            .imports()
+            .find(|i| i.module() == "env" && i.name() == name)
+            .ok_or_else(|| anyhow::anyhow!("fork-module does not import env.{name}"))
+            .and_then(|i| match i.ty() {
+                ExternType::Table(t) => Ok(t),
+                other => anyhow::bail!("fork-module env.{name} is a {other:?}, not a table"),
+            })?;
+        let table = Table::new(&mut *store, ty, init)?;
+        linker.define(&mut *store, "env", name, table)?;
+    }
+
+    let memory_base_global = Global::new(
+        &mut *store,
+        GlobalType::new(ValType::I32, Mutability::Const),
+        Val::I32(memory_base as i32),
+    )?;
+    linker.define(&mut *store, "env", "__memory_base", memory_base_global)?;
+
+    let table_base_global = Global::new(
+        &mut *store,
+        GlobalType::new(ValType::I32, Mutability::Const),
+        Val::I32(0),
+    )?;
+    linker.define(&mut *store, "env", "__table_base", table_base_global)?;
+
+    let stack_pointer_global = Global::new(
+        &mut *store,
+        GlobalType::new(ValType::I32, Mutability::Var),
+        Val::I32(stack_top as i32),
+    )?;
+    linker.define(&mut *store, "env", "__stack_pointer", stack_pointer_global)?;
+
+    // Every remaining function import is the reference/exception-path seam
+    // (`wpk_fork_host.host_last_errno`/`host_mint_exception_tag`/
+    // `host_recognize_unwind_transport`/`host_provide_unwind_transport_tag`/
+    // `host_spawn_thread`/`host_instantiate_child`, plus `env.
+    // resolve_externref`) — this frames-only path never calls any of them.
+    // `define_unknown_imports_as_traps` reads each import's EXACT declared
+    // `FuncType` and defines a stub with that signature that traps when
+    // called, so a real (buggy) call surfaces loudly instead of silently
+    // returning a wrong-typed default.
+    linker.define_unknown_imports_as_traps(&module)?;
+
+    let instance = linker.instantiate(&mut *store, &module)?;
+
+    macro_rules! fm_func {
+        ($name:literal : $params:ty => $ret:ty) => {
+            instance
+                .get_typed_func::<$params, $ret>(&mut *store, $name)
+                .map_err(|e| anyhow::anyhow!("fork-module missing/mistyped export {}: {e}", $name))?
+        };
+    }
+
+    Ok(ForkModule {
+        instance,
+        memory_base,
+        region_bytes,
+        fm_set_format: fm_func!("fm_set_format": (u32, u32) => ()),
+        fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
+        fm_begin_unwind: fm_func!("fm_begin_unwind": (u32, u32) => u32),
+        fm_finish_unwind: fm_func!("fm_finish_unwind": () => ()),
+        fm_serialize_journal_alloc: fm_func!("fm_serialize_journal_alloc": u32 => u32),
+        fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
+        fm_begin_replay: fm_func!("fm_begin_replay": () => ()),
+        fm_finish_replay: fm_func!("fm_finish_replay": () => ()),
+        fm_begin_child_replay: fm_func!("fm_begin_child_replay": (u32, u32, u32) => ()),
+        fm_last_errno: fm_func!("fm_last_errno": () => i32),
+        fm_frames_committed: fm_func!("fm_frames_committed": () => i64),
+        fm_frames_replayed: fm_func!("fm_frames_replayed": () => i64),
+        fm_references_reconstructed: fm_func!("fm_references_reconstructed": () => i64),
+        fm_externrefs_resolved: fm_func!("fm_externrefs_resolved": () => i64),
+        fm_exnrefs_reconstructed: fm_func!("fm_exnrefs_reconstructed": () => i64),
+        fm_gc_nodes_reconstructed: fm_func!("fm_gc_nodes_reconstructed": () => i64),
+    })
 }
 
 /// Launch one guest process instance and return the [`GuestProcess`] the pump
@@ -4674,4 +4995,80 @@ mod libc_errno {
     pub const EINVAL: i32 = 22;
     pub const ERANGE: i32 = 34;
     pub const ENOSYS: i32 = 38;
+}
+
+/// N1-I4 Task 1: the co-resident fork-module (PIC side module) instantiation
+/// smoke test. Lives here (not `lib.rs`) rather than in `crate::tests`
+/// because it needs this module's private `ProcessLayout`/
+/// `compute_guest_memory` — the SAME cross-module-privacy convention
+/// `base_image_tests` above already uses for this file's other test-only
+/// access to private items.
+#[cfg(test)]
+mod fork_module_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Mirrors `lib.rs`'s `kernel_path_or_skip`: a fresh checkout without the
+    /// locally-built fork-module artifact skips (with a clear message)
+    /// rather than failing with an obscure file-not-found panic. Building it
+    /// is not this test's job — see `crates/fork-module/build-wasm.sh`.
+    fn fork_module_path_or_skip() -> Option<PathBuf> {
+        let path = crate::fork_module_path();
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!(
+                "SKIP fork-module smoke test: {} not found.\n  Build it with:\n    \
+                 scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh",
+                path.display()
+            );
+            None
+        }
+    }
+
+    /// The PRIMARY-RISK proof for N1-I4: Wasmtime can instantiate the
+    /// `fork-module` PIC side module co-resident with a guest, sharing the
+    /// guest's `SharedMemory` as `env.memory`, with the placement globals +
+    /// inert reference-import stubs `instantiate_fork_module` supplies — and
+    /// a real coordinator call (`fm_set_format`) then succeeds against that
+    /// instance. This does not run the guest program itself (Task 1 is
+    /// instantiation-only — see `instantiate_fork_module`'s doc comment);
+    /// `compute_guest_memory` against the SAME committed `native_hello.wasm`
+    /// fixture `run_trivial_guest` uses elsewhere gives a real, correctly
+    /// laid-out guest `SharedMemory`/`ProcessLayout` to instantiate against.
+    #[test]
+    fn smoke_instantiates_fork_module() -> anyhow::Result<()> {
+        let Some(_fork_module_path) = fork_module_path_or_skip() else {
+            return Ok(());
+        };
+
+        let engine = crate::kernel_engine()?;
+        let guest_wasm = include_bytes!("../fixtures/native_hello.wasm");
+        let guest_module = Module::new(&engine, guest_wasm)?;
+        let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module)?;
+
+        let mut fm_store = Store::new(&engine, ());
+        let fork_module = instantiate_fork_module(&engine, &mut fm_store, &guest_mem, &layout)?;
+
+        assert!(fork_module.region_bytes > 0, "expected a non-empty reserved region");
+        assert!(
+            fork_module.memory_base + fork_module.region_bytes <= layout.max_addr,
+            "reserved region [0x{:x}, +0x{:x}) must not exceed max_addr 0x{:x}",
+            fork_module.memory_base,
+            fork_module.region_bytes,
+            layout.max_addr,
+        );
+
+        // A benign coordinator call: seed the linked-frame format for a
+        // wasm32 guest (pointer_width = 4) with no fixed prefix. Success
+        // (fm_last_errno() == 0) proves the instance is not just linked but
+        // genuinely executable: the call reaches real fork-module code,
+        // which itself only works if the module's start function already
+        // relocated its passive data segments into the reserved region.
+        fork_module.fm_set_format.call(&mut fm_store, (4, 0))?;
+        let errno = fork_module.fm_last_errno.call(&mut fm_store, ())?;
+        assert_eq!(errno, 0, "fm_set_format(4, 0) must succeed on a wasm32 guest");
+
+        Ok(())
+    }
 }

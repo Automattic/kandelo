@@ -87,9 +87,23 @@ pub struct KernelImportSurface {
 /// A Wasmtime engine configured for the kernel's required feature set: the
 /// threads proposal (shared memory + atomic wait/notify). Bulk-memory and
 /// mutable-globals are enabled by default in this Wasmtime version.
+///
+/// N1-I4: also enables the GC proposal (`wasm_gc`, `false` by default in this
+/// Wasmtime version). This is required to even PARSE the co-resident
+/// fork-module (`guest::instantiate_fork_module`) — despite that module
+/// having no `struct`/`array`/`i31ref` use on the frames-only path this crate
+/// exercises, its `dylink.0`/import surface still declares an `externref`
+/// return type and an anyref table (`env.__wpk_fork_static_root_catalog`,
+/// the I5 static-root binder), and Wasmtime 35 represents even those under
+/// the same "heap types" machinery the GC proposal gates
+/// (`Module::new` fails with "heap types not supported without the gc
+/// feature" otherwise). This is purely a validator permission — it does not
+/// change how the kernel/guest modules (which use none of these types) are
+/// compiled or run, so it is safe to enable on this shared engine.
 pub fn kernel_engine() -> wasmtime::Result<Engine> {
     let mut config = Config::new();
     config.wasm_threads(true);
+    config.wasm_gc(true);
     Engine::new(&config)
 }
 
@@ -219,6 +233,16 @@ pub fn repo_root() -> PathBuf {
 /// (`local-binaries/kernel.wasm`, produced by `install_local_binary kernel`).
 pub fn kernel_wasm_path() -> PathBuf {
     repo_root().join("local-binaries").join("kernel.wasm")
+}
+
+/// Path to the locally-built fork-module artifact (N1-I4): the co-resident
+/// PIC wasm side module (`crates/fork-module`, built via `crates/fork-
+/// module/build-wasm.sh`) that owns the fork replay algorithm the native host
+/// instantiates alongside a guest (see [`guest::instantiate_fork_module`]).
+/// `fork_module32.wasm` backs the wasm32 guest path this host exercises; a
+/// `fork_module64.wasm` companion exists for a future wasm64 guest.
+pub fn fork_module_path() -> PathBuf {
+    repo_root().join("local-binaries").join("fork_module32.wasm")
 }
 
 #[cfg(test)]
