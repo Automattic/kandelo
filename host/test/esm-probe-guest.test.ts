@@ -105,6 +105,11 @@ const FIXTURES: Record<string, string> = {
     'import W,{WebSocketServer as S}from"ws";export const okDefault=typeof W==="function"&&W.OPEN===1;export const okNamed=typeof S==="function";',
   "mainws.cjs":
     '(async()=>{try{const R=require("ws");const m=await import("/app/wsimport.mjs");let threw=false;try{new R("wss://x")}catch(e){threw=true}console.log("WS",typeof R,R.OPEN,m.okDefault,m.okNamed,threw);}catch(e){console.log("WSERR",(e&&e.message)||e);}})();',
+  // zlib completeness (Phase E): constants (Z_* + BROTLI_*), createUnzip (real,
+  // backed by the native gunzip auto-detect), and Brotli as an honest
+  // fail-loud stream (constructs, errors on data — real Brotli deferred).
+  "mainzlib.cjs":
+    '(async()=>{try{const z=require("zlib");const c=z.constants;const unz=typeof z.createUnzip==="function"&&!!z.createUnzip();let brThrew=false;try{const br=z.createBrotliDecompress();brThrew=await new Promise((res)=>{br.on("error",()=>res(true));setTimeout(()=>res(false),3000);br.write(Buffer.from([1,2,3]));});}catch(e){brThrew=true;}console.log("ZLIB",c.Z_SYNC_FLUSH,c.BROTLI_OPERATION_FLUSH,unz,brThrew);}catch(e){console.log("ZLIBERR",(e&&e.message)||e);}})();',
 };
 
 function stageFixtures(): string {
@@ -285,5 +290,13 @@ describe("spidermonkey-node ESM probe", () => {
     // eslint-disable-next-line no-console
     console.log("WS OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
     expect(r.stdout).toContain("WS function 1 true true true");
+  }, 90_000);
+
+  it.runIf(ready)("zlib has constants + createUnzip; Brotli is a fail-loud stream", async () => {
+    const r = await runOne("/app/mainzlib.cjs");
+    // eslint-disable-next-line no-console
+    console.log("ZLIB OUT:", JSON.stringify(r.stdout.trim()), "ERR:", r.stderr.trim().split("\n").slice(-6).join(" | "));
+    // Z_SYNC_FLUSH=2, BROTLI_OPERATION_FLUSH=1, createUnzip works, Brotli errors on data.
+    expect(r.stdout).toContain("ZLIB 2 1 true true");
   }, 90_000);
 });
