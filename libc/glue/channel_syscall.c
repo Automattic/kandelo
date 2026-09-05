@@ -95,6 +95,7 @@ int *__errno_location(void);
 /* Short aliases retain the glue's readable field names without owning values. */
 #define CH_IDLE        WASM_POSIX_CHANNEL_STATUS_IDLE
 #define CH_PENDING     WASM_POSIX_CHANNEL_STATUS_PENDING
+#define CH_TEARDOWN    WASM_POSIX_CHANNEL_STATUS_TEARDOWN
 #define CH_STATUS      WASM_POSIX_CHANNEL_STATUS_OFFSET
 #define CH_SYSCALL     WASM_POSIX_CHANNEL_SYSCALL_OFFSET
 #define CH_ARGS        WASM_POSIX_CHANNEL_ARGS_OFFSET
@@ -1875,6 +1876,19 @@ restart_wait_syscall:
 
     /* Read result — re-read base from global for safety */
     base = get_channel_base();
+
+    /* Host-driven thread reclamation (execve-abandon / fork-replay /
+     * spawn-rollback): the pump published TEARDOWN + notified us precisely
+     * to unwind this thread WITHOUT resuming the (now-doomed or superseded)
+     * image. Do not read results or return to the caller. Trap so wasmtime
+     * unwinds the stack and the host OS thread exits, dropping its Store +
+     * SharedMemory. Inert until a host reclaims a channel: no pump writes
+     * CH_TEARDOWN today. */
+    if (__c11_atomic_load((_Atomic int32_t *)(uintptr_t)(base + CH_STATUS),
+            __ATOMIC_SEQ_CST) == CH_TEARDOWN) {
+        __builtin_trap();
+    }
+
     result = (long)*(int64_t *)(uintptr_t)(base + CH_RETURN);
     err = *(int32_t *)(uintptr_t)(base + CH_ERRNO);
 

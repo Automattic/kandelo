@@ -1093,6 +1093,7 @@ fn render_c_channel_contract() -> String {
          #define WASM_POSIX_CHANNEL_STATUS_PENDING {status_pending}u\n\
          #define WASM_POSIX_CHANNEL_STATUS_COMPLETE {status_complete}u\n\
          #define WASM_POSIX_CHANNEL_STATUS_ERROR {status_error}u\n\
+         #define WASM_POSIX_CHANNEL_STATUS_TEARDOWN {status_teardown}u\n\
          \n\
          /* Shared syscall-channel layout. */\n\
          #define WASM_POSIX_CHANNEL_STATUS_OFFSET {status_offset}u\n\
@@ -1142,6 +1143,7 @@ fn render_c_channel_contract() -> String {
         status_pending = shared::ChannelStatus::Pending as u32,
         status_complete = shared::ChannelStatus::Complete as u32,
         status_error = shared::ChannelStatus::Error as u32,
+        status_teardown = shared::ChannelStatus::Teardown as u32,
         status_offset = channel::STATUS_OFFSET,
         status_size = channel::STATUS_SIZE,
         syscall_offset = channel::SYSCALL_OFFSET,
@@ -3298,8 +3300,12 @@ fn render_ts_module() -> String {
         shared::ChannelStatus::Complete as u32
     ));
     out.push_str(&format!(
-        "export const CHANNEL_STATUS_ERROR = {} as const;\n\n",
+        "export const CHANNEL_STATUS_ERROR = {} as const;\n",
         shared::ChannelStatus::Error as u32
+    ));
+    out.push_str(&format!(
+        "export const CHANNEL_STATUS_TEARDOWN = {} as const;\n\n",
+        shared::ChannelStatus::Teardown as u32
     ));
 
     out.push_str("export const CHANNEL_STATUS = {\n");
@@ -3307,6 +3313,7 @@ fn render_ts_module() -> String {
     out.push_str("  Pending: CHANNEL_STATUS_PENDING,\n");
     out.push_str("  Complete: CHANNEL_STATUS_COMPLETE,\n");
     out.push_str("  Error: CHANNEL_STATUS_ERROR,\n");
+    out.push_str("  Teardown: CHANNEL_STATUS_TEARDOWN,\n");
     out.push_str("} as const;\n\n");
 
     out.push_str(&format!(
@@ -6132,6 +6139,7 @@ fn channel_status_codes() -> Value {
         (Pending, "Pending"),
         (Complete, "Complete"),
         (Error, "Error"),
+        (Teardown, "Teardown"),
     ] {
         let mut m: JsonMap = BTreeMap::new();
         m.insert("number".into(), json!(n as u32));
@@ -8008,6 +8016,7 @@ mod tests {
             "#define WASM_POSIX_CHANNEL_STATUS_PENDING 1u",
             "#define WASM_POSIX_CHANNEL_STATUS_COMPLETE 2u",
             "#define WASM_POSIX_CHANNEL_STATUS_ERROR 3u",
+            "#define WASM_POSIX_CHANNEL_STATUS_TEARDOWN 4u",
             "#define WASM_POSIX_CHANNEL_STATUS_OFFSET 0u",
             "#define WASM_POSIX_CHANNEL_SYSCALL_OFFSET 4u",
             "#define WASM_POSIX_CHANNEL_ARGS_OFFSET 8u",

@@ -891,12 +891,14 @@ export const CHANNEL_STATUS_IDLE = 0 as const;
 export const CHANNEL_STATUS_PENDING = 1 as const;
 export const CHANNEL_STATUS_COMPLETE = 2 as const;
 export const CHANNEL_STATUS_ERROR = 3 as const;
+export const CHANNEL_STATUS_TEARDOWN = 4 as const;
 
 export const CHANNEL_STATUS = {
   Idle: CHANNEL_STATUS_IDLE,
   Pending: CHANNEL_STATUS_PENDING,
   Complete: CHANNEL_STATUS_COMPLETE,
   Error: CHANNEL_STATUS_ERROR,
+  Teardown: CHANNEL_STATUS_TEARDOWN,
 } as const;
 
 export const CH_STATUS = 0 as const;

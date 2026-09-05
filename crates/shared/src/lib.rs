@@ -792,6 +792,15 @@ pub enum ChannelStatus {
     Pending = 1,
     Complete = 2,
     Error = 3,
+    /// Host-driven thread reclamation sentinel (not a normal syscall
+    /// outcome). The pump publishes this value plus an `atomic_notify` to
+    /// unwind a guest thread parked in the channel wait
+    /// (`memory.atomic.wait32`) without letting it resume the
+    /// superseded/doomed image — execve-abandon, fork-replay teardown, and
+    /// spawn `-ECHILD` rollback. The guest glue traps immediately on
+    /// observing this status instead of reading CH_RETURN/CH_ERRNO. See
+    /// `docs/plans/2026-09-05-native-thread-reclamation-spike.md`.
+    Teardown = 4,
 }
 
 impl ChannelStatus {
@@ -805,6 +814,8 @@ impl ChannelStatus {
             Some(Self::Complete)
         } else if val == Self::Error as u32 {
             Some(Self::Error)
+        } else if val == Self::Teardown as u32 {
+            Some(Self::Teardown)
         } else {
             None
         }
@@ -1395,6 +1406,31 @@ mod channel_abi_tests {
         assert!(channel::SIG_DELIVERY_SIZE <= channel::SIG_AREA_SIZE);
         assert_eq!(channel::SIG_AREA_SIZE - channel::SIG_DELIVERY_SIZE, 0);
         assert_eq!(channel::SIG_BASE % channel::SIG_AREA_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn teardown_status_is_distinct_from_every_other_channel_status() {
+        use super::ChannelStatus;
+
+        let all = [
+            ChannelStatus::Idle,
+            ChannelStatus::Pending,
+            ChannelStatus::Complete,
+            ChannelStatus::Error,
+            ChannelStatus::Teardown,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(*a as u32, *b as u32, "{a:?} collides with {b:?}");
+                }
+            }
+        }
+        assert_eq!(ChannelStatus::Teardown as u32, 4);
+        assert_eq!(
+            ChannelStatus::from_u32(ChannelStatus::Teardown as u32),
+            Some(ChannelStatus::Teardown),
+        );
     }
 }
 

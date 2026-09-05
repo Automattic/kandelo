@@ -939,6 +939,10 @@
     {
       "name": "Error",
       "number": 3
+    },
+    {
+      "name": "Teardown",
+      "number": 4
     }
   ],
   "custom_sections": [
