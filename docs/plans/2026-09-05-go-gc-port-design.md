@@ -519,6 +519,42 @@ Milestone-specific validation:
 - No performance claims are made without benchmark evidence on both
   hosts.
 
+### Feasibility gate (2026-09-05): confirmed
+
+Before any port work, we ran a throwaway gate: build a stock
+`GOOS=wasip1 GOARCH=wasm` Go `hello world` (Go 1.25.6) and attempt to
+run it through Kandelo's WASI shim. Result: it **cannot** run, for
+exactly the memory-model reason flagged above, which validates the
+milestone-1 obligations as hard prerequisites rather than optional
+work.
+
+- The Go binary (~2.49 MB for a `fmt.Println`) **defines and exports
+  its own private, non-shared memory** (`(memory (;0;) 36)` +
+  `(export "memory" ...)`) and imports only `wasi_snapshot_preview1`
+  (16 functions). It exports `_start`.
+- Kandelo rejects it **before instantiation**: the host guard at
+  `host/src/worker-main.ts:3208-3214` throws for any WASI module that
+  defines its own memory, because the shim requires the shared channel
+  memory to live inside the module's address space (i.e. the module
+  must `--import-memory`). Observed error: *"WASI module defines its
+  own memory. Only modules that import memory (compiled with
+  --import-memory) are supported."*
+- Even bypassing the guard, Go runs on a **disjoint private** memory
+  while the shared channel lives elsewhere, so syscall pointer
+  arguments would be meaningless — the guard fails loudly rather than
+  corrupting silently.
+- Stock Go exposes **no knob** for imported/shared memory on wasip1
+  (`-ldflags=-importmemory`, `GOWASM=importmemory`, and `go tool link`
+  all reject it). Producing imported + shared memory is a `cmd/link`
+  change, confirming it is a toolchain modification and not a build
+  flag.
+
+Conclusion: there is no "run stock wasip1 output through the shim"
+shortcut. Milestone 1's first running artifact depends on the
+custom-linker memory-model work **and** the `__abi_version` marker.
+Within milestone 1, the linker work is the internal gate and should be
+prototyped first.
+
 This is multi-month, frontier work. The honest framing is that
 milestones 1–2 are a well-understood port of a known template
 (`wasip1`), milestone 3 is genuinely novel runtime engineering, and
