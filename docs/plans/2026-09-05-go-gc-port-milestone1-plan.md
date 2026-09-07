@@ -448,6 +448,38 @@ Option 1 and learn where it resists. Record findings (esp. the
 `__channel_base` mechanism that actually works and the atomics-feature
 validation result) back into this file.
 
+### Progress log
+
+**2026-09-07 — Step 1 (atomic opcodes) done (fork `7dff620`).** Added
+`AMemoryAtomicNotify` (`0xFE 00`), `AMemoryAtomicWait32` (`0xFE 01`),
+`AI32AtomicStore` (`0xFE 17`) to `cmd/internal/obj/wasm/a.out.go` +
+`anames.go`, and a `0xFE`-prefix branch in `wasmobj.go` `writeOpcode`
+with memarg encoding (align=2 for i32). Emitted via a hand-written `.s`
+helper; module `wasm-tools validate`s by default (threads is default-on
+in wasm-tools; only fails with `-threads`, and then at the *shared
+memory* decl, not the atomic ops). `wasip1`/`js` unaffected; `go test
+cmd/internal/obj/wasm` passes.
+- **`target_features` finding:** NOT needed for validation or engine
+  execution (engines gate on the memory being shared + host enabling
+  threads/SharedArrayBuffer). Go's linker doesn't emit one. Add a
+  `writeTargetFeaturesSec` only if a downstream Kandelo pipeline tool
+  consumes it — not required for milestone 1.
+
+**Discovered blocker (prerequisite, affects Task 7):** the
+`GOOS=kandelo` port's `runtime.main` does not reach `main.main` — a
+trivial kandelo program keeps `runtime.main` but DCEs the user `main`
+package (it survives under `GOOS=js`). So no kandelo program's `main`
+runs today, independent of syscalls. Must be fixed before any
+end-to-end run. Likely a linker DCE-root / entry-wiring difference for
+the new GOOS (compare against how `js`/`wasip1` keep `main.main`).
+
+**Revised next steps for Option 1:** (A) fix `runtime.main -> main.main`
+[prerequisite, Task 7/Task 3]; (B) `__channel_base` acquisition for Go
+(synthesize `__tls_base` export; host `setupChannelBase` writes the
+offset; read it in the runtime); (C) handshake helper using the atomic
+opcodes + wire `write`/`clock_gettime`/`getrandom`, route `exit` to
+`kernel.kernel_exit`; (D) Task 8 end-to-end (needs `./run.sh setup`).
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
