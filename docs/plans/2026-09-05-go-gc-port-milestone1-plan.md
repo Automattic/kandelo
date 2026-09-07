@@ -238,10 +238,47 @@ Kandelo programs are linked (`docs/sdk-guide.md` `--import-memory
 `wasi-detect.ts` `wasiModuleImportsMemory` for the exact import name the
 host looks for, e.g. `env.memory`).
 
-**Step 2:** Implement: change the linker to **import** memory (correct
-module/field name, `shared`, with a `max`) instead of defining+exporting
-it, for `GOOS=kandelo`. Guard the change so other targets are
-unaffected.
+**Pinned native-program admission contract (2026-09-07 spike, with
+`host/src` + `libc/glue` evidence).** For the host to instantiate and
+accept a native (non-WASI) program:
+
+- **Import `env.memory`** — memory, `shared`, max `16384` pages (1 GiB;
+  64 KiB pages). The host creates the shared `WebAssembly.Memory`
+  (`host/src/process-memory.ts:314-318`, max 16384) and supplies it as
+  `env.memory` (`host/src/worker-main.ts:2358`); the module's declared
+  `min` is honored as a floor (`process-memory.ts:123-181`). This
+  replaces Go's default defined+exported memory.
+- **Export `__abi_version`** as a **function `() -> i32` whose body
+  reduces to `i32.const 43`** (value = `crates/shared/src/lib.rs`
+  `ABI_VERSION`). The host **byte-parses an exported FUNCTION** named
+  `__abi_version` and follows at most one `call` wrapper
+  (`host/src/constants.ts:2767-2938`, `worker-main.ts:3145-3176`); it
+  never calls the export. A **global** named `__abi_version` does NOT
+  satisfy the parser. Mismatch hard-fails; absence only warns.
+- **Export `_start`** (reactor entry; already emitted by Go). Both are
+  the required executable exports (`host/src/binary-resolver.ts:49`).
+- The native path **does not stub imports**: any import the host cannot
+  resolve (`wasi_snapshot_preview1.*`, unexpected `env.<fn>`, unknown
+  `kernel.*`) is a hard `LinkError` (`worker-main.ts:2314-2333`). Our
+  Task-3 stubs import nothing; Task 4 must not introduce stray imports.
+- **Omit** the `kandelo.abi.contract` custom section — warn-only when
+  missing, but a present-but-wrong digest hard-fails.
+
+To *function* (Task 6, not needed for admission) the module must also
+import `env.__channel_base` (mutable `i32` global; every syscall reads
+it) and `kernel.kernel_exit` (`(i32)->()`). Neither is required merely
+to instantiate/admit, so Task 4 does not add them.
+
+**Task-6 wrinkle surfaced here:** `env.__channel_base` is an *imported
+Wasm global*. Go has no mechanism to import a wasm global into runtime
+code (`//go:wasmimport` covers functions only). Task 6 must add a
+linker/runtime path to read it (emit the global import + a runtime
+intrinsic) or obtain the channel base another way (e.g. a kernel
+function import). Decide within Task 6.
+
+**Step 2:** Implement: change the linker to **import** memory (`env`/
+`memory`, `shared`, `max=16384`) instead of defining+exporting it, for
+`GOOS=kandelo`. Guard the change so other targets are unaffected.
 
 **Step 3:** Implement: emit the `__abi_version` marker the host checks.
 Confirm the exact form the host requires (an exported global? a custom
