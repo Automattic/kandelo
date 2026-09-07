@@ -55,29 +55,28 @@ model at link time", and the 2026-09-05 feasibility-gate result).
 
 ---
 
-## Open decisions to confirm before Task 1
+## Decisions (confirmed 2026-09-07)
 
-These are genuine choices; confirm with the maintainer, record the
-answer in this file, then proceed.
-
-1. **Where the Go fork lives.** Options: (a) a git submodule pointing
-   at a Kandelo Go fork repo, pinned to a tag; (b) a patch series under
-   `sdk/go-kandelo/patches/` applied to a fetched pinned Go source
-   tarball, mirroring the musl/package model; (c) a plain local clone
-   for prototyping, productionized later. **Recommendation:** prototype
-   with (c) at `../go-kandelo` (outside the Kandelo repo), and adopt (b)
-   for the committed contract once milestone 1 works, because it
-   matches how `libc/musl` and packages already pin upstream sources.
-   Do NOT commit a multi-MB Go tree into the Kandelo repo.
-2. **Channel handshake mechanism (Task 6).** Option 1 (pure-guest
-   atomic handshake, preserves zero-import contract, needs a wasm
-   backend atomic-op addition) vs. Option 2 (a minimal temporary host
-   import). **Recommendation:** attempt Option 1; if the backend work
-   balloons, land Option 2 behind an explicit, documented temporary
-   boundary and file the follow-up. Note Option 2 is ABI-visible and
-   would require an ABI review.
-3. **Pinned Go version.** Default `go1.25.6` (the version the design was
-   verified against). Confirm before vendoring.
+1. **Where the Go fork lives.** A fork repo will be created on GitHub
+   under the `kandelo-dev/` org. For milestone-1 prototyping, start
+   from a local upstream clone at `../go-kandelo` (outside the Kandelo
+   repo) and push it to the `kandelo-dev/` fork once that repo exists;
+   productionize the committed pinning contract (patch series against a
+   pinned source, mirroring `libc/musl`) after milestone 1 lands. Do
+   NOT commit a multi-MB Go tree into the Kandelo repo.
+2. **Channel handshake mechanism (Task 6).** Attempt Option 1 (pure-
+   guest atomic handshake; preserves the zero-import contract; needs a
+   wasm backend atomic-op addition). If the backend work balloons, land
+   Option 2 (a minimal temporary host import) behind an explicit,
+   documented temporary boundary and file the follow-up. Option 2 is
+   ABI-visible and requires an ABI review.
+3. **Pinned Go version: `go1.25.6`.** This is the version the design's
+   file/line hook points were verified against, so pinning to it keeps
+   this plan accurate. (Note: as of 2026-09-07 a newer stable Go may
+   exist; the assistant's knowledge cutoff predates confirming that.
+   The installed toolchain is `go1.25.6`.) Rebase the fork forward to
+   the latest stable once milestone 1 works, re-verifying hook points
+   at that time.
 
 ---
 
