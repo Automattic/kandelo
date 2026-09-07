@@ -338,38 +338,115 @@ guard and the `__abi_version` admission check.
 ## Task 6: Minimal channel-syscall backend (`write`, `exit`, `clock`, `random`)
 
 Implement the real channel handshake for the few syscalls a hello world
-needs. Follows Decision 2 (pure-guest handshake preferred).
+needs.
 
-**Files (in the Go fork):**
-- Modify: `src/runtime/os_kandelo.go` and the relevant `syscall/
-  *_kandelo.go` — replace the Task-3 stubs for `write`/`fd_write`,
-  `exit`/`proc_exit`, `clock_time_get`, `random_get` with real channel
-  marshalling.
-- If Decision 2 = Option 1: add atomic wait/notify + atomic load/store
-  emission in `src/cmd/internal/obj/wasm/` (and any assembler intrinsic
-  plumbing) so runtime code can perform the `Atomics.wait`-equivalent
-  handshake. Spike this first and record findings.
+### Pinned channel protocol (2026-09-07 spike, `crates/shared/src/lib.rs` `mod channel` + `libc/glue/channel_syscall.c`)
 
-**Step 1 (study the contract):** Read `libc/glue/channel_syscall.c` and
-the channel layout in `crates/shared/src/lib.rs` /
-`docs/architecture.md` (channel status slot, arg region, data region,
-`Atomics.wait/notify` handshake). Write the exact wire layout and
-syscall numbers for `write`/`exit`/`clock`/`random` into this plan.
+Per-instance channel region layout:
 
-**Step 2:** Implement the handshake helper in the runtime (marshal
-syscall number + args into the channel region, signal, block on the
-status slot, read the result). Keep it single-threaded.
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | `status` (u32) — the **atomic** slot |
+| 4 | 4 | `syscall_number` |
+| 8 | 48 | `args[6]`, each i64 (args are i64 even on wasm32) |
+| 56 | 8 | `return_value` (i64) |
+| 64 | 4 | `errno_value` (i32) |
+| 68 | 4 | `request_flags` (u32; 0 for plain syscalls) |
+| 72 | 65536 | `data_buffer` |
 
-**Step 3 (unit-ish verification where possible):** If a host test
-harness can drive a single syscall (e.g. a module that only does one
-`write` then `exit`), build such a fixture under `.context/` and assert
-the kernel observed the write. Otherwise defer to Task 8's end-to-end
-run.
+`ChannelStatus`: `Idle=0, Pending=1, Complete=2, Error=3`. Handshake
+(`__do_syscall_impl`, `channel_syscall.c:843-920`): plain-store
+number+args; `atomic.store` PENDING on `status`; `memory.atomic.notify`
+(count 1); `memory.atomic.wait32` (expected PENDING, timeout -1); read
+`return_value`/`errno_value`; `atomic.store` IDLE. Return to musl form
+`err ? -err : result`.
 
-**Step 4:** Rebuild toolchain; rebuild hello world.
+Syscall numbers are **Kandelo's own, not Linux**: `write=4`,
+`exit=34` (routed to the `kernel.kernel_exit` function import, not the
+channel), `clock_gettime=40`, `getrandom=120`.
 
-**Step 5:** Commit in the fork:
-`git commit -am "kandelo/runtime: channel-syscall backend for write/exit/clock/random"`.
+The three required atomic ops on `status`: `i32.atomic.store`
+(`0xFE 0x17`), `memory.atomic.notify` (`0xFE 0x00`),
+`memory.atomic.wait32` (`0xFE 0x01`) — all require a **shared** memory
+(Task 4 imports one) and the wasm threads/atomics feature.
+
+### Decision record: Option 1 vs Option 2 (revisit if Option 1 stalls)
+
+Two ways to perform the handshake. **We are pursuing Option 1**; Option
+2 is the documented fallback.
+
+**Option 1 — pure-guest atomics (preserves the zero-import native
+contract; chosen).** The Go runtime performs the handshake itself.
+Requires:
+- Adding the three `0xFE` atomic opcodes to Go's wasm assembler
+  (`src/cmd/internal/obj/wasm/a.out.go` opcode enum + `anames.go` + a
+  new `0xFE`-prefix branch in `writeOpcode`, `wasmobj.go:1418-1438`,
+  with memarg encoding: align = log2(access size) = 2 for wait32/notify
+  on i32). Go's wasm backend has **no** atomic opcodes today
+  (`internal/runtime/atomic/atomic_wasm.go` is all plain access), so
+  this is new capability, not a toggle.
+- A runtime helper (hand-written `.s`, or an SSA intrinsic) that emits
+  those ops for the `status` slot.
+- Solving `__channel_base`: it is an imported wasm **global**, and Go
+  cannot import a global. Path with no host change: synthesize a
+  `__tls_base` export so the host's `setupChannelBase`
+  (`host/src/worker-main.ts:4694-4733`) writes `channelOffset` into
+  linear memory (at `__tls_base + 0` when `__get_channel_base_addr`
+  detection fails), and read it from there in the runtime. (Go does not
+  use the clang `__tls_base` TLS model, so this needs linker synthesis.)
+- Ensuring the module validates with the atomics feature enabled (the
+  memory is already shared from Task 4; confirm the threads feature /
+  `target_features` is acceptable to the host).
+- Pros: no host change, no ABI bump, Go stays structurally identical to
+  C programs (zero syscall imports), and the atomic-opcode work is
+  **needed anyway** for the threads milestone (milestone 3).
+- Cons: unproven; touches the wasm backend and linker; the
+  `__channel_base` acquisition is fiddly for Go.
+
+**Option 2 — host function import (fallback).** Add a general host
+import `kernel_channel_syscall(n, a1..a6) -> i64` implemented like the
+existing `kernel_clone`/`kernel_exit` (`worker-main.ts:480-559`), which
+do the write+`Atomics.store/notify/wait`+read entirely in JS, closing
+over `channelOffset`. Go declares `//go:wasmimport kernel
+kernel_channel_syscall` and calls it.
+- Pros: zero assembler work, zero guest atomics, no `__channel_base`
+  needed; reuses a proven, tested host pattern; Go-native mechanism.
+- Cons: a host-runtime change (Node **and** browser), an **ABI bump
+  (43->44)** + regenerated snapshot, and Go programs carry a
+  `kernel.kernel_channel_syscall` import that C programs don't (a
+  documented divergence from the zero-import native contract). The
+  import is a *general* syscall-submit primitive, so it is an honest
+  platform capability, not program-specific behavior.
+
+**Chosen:** Option 1 (2026-09-07), to preserve the zero-import contract
+and because the atomic-opcode work is required for milestone 3 anyway.
+Fall back to Option 2 if the backend/`__channel_base` work stalls.
+
+### Steps
+
+**Step 1:** Add the three atomic opcodes to the wasm assembler and a
+runtime helper that emits them; write a tiny test that assembles a
+function using them and confirm `wasm-tools validate` accepts the
+module (with the atomics feature).
+
+**Step 2:** Implement `__channel_base` acquisition for Go (synthesize
+`__tls_base` export; verify the host's `setupChannelBase` writes the
+offset where the runtime reads it).
+
+**Step 3:** Implement the handshake helper in the runtime (marshal
+number + args, atomics on `status`, read result/errno) and wire
+`write` (4), `clock_gettime` (40), `getrandom` (120) through it; route
+`exit` (34) to the `kernel.kernel_exit` import.
+
+**Step 4:** Rebuild toolchain; rebuild hello world; verify shape.
+Full end-to-end run is Task 8 (needs kernel provisioning).
+
+**Step 5:** Commit in the fork.
+
+**Note:** this is exploratory — the goal is to make real progress on
+Option 1 and learn where it resists. Record findings (esp. the
+`__channel_base` mechanism that actually works and the atomics-feature
+validation result) back into this file.
 
 ---
 
