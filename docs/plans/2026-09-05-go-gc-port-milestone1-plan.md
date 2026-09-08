@@ -592,11 +592,31 @@ Memory` have independent mutable globals (`a=111`, `b=222`) while sharing
 linear memory (`b` reads `a`'s write `42`). So each Go M (its own
 instance) gets its own `g`/`SP` globals for free with a shared heap —
 the design's linchpin holds.
-*Next:* Phase 3 (real parking primitives) and Phase 4 (`newosproc` via
-`clone` + memory-layout rework) — paused pending the host-change/ABI
-decision (whether the existing `centralizedThreadWorkerMain`/`onClone`
-path drives a Go module unmodified, or requires Go export shims / a host
-change).
+*Host-change/ABI verdict (2026-09-07): (A) NO host change, NO ABI bump.*
+Go can drive the existing `centralizedThreadWorkerMain`/`onClone` clone
+path with a guest-only delta. The only hard-required child export Go
+lacks is `__indirect_function_table` (a one-line `writeExportSec`
+addition; `worker-main.ts:5915-5920` throws without it). `__wasm_init_tls`
+/`__wasm_thread_init`/`__stack_pointer` are all guarded/optional
+(`worker-main.ts:5880-5900`); Go's per-M state is the per-instance wasm
+globals SP/g, independent of musl TLS. `kernel_clone` is already a
+provided host import (`abi/snapshot.json:1880`); no snapshot/`ABI_VERSION`
+change. Per-M channel base: the host already delivers it per-instance via
+the `env.__channel_base` imported global (`worker-main.ts:2422-2441`), so
+the guest switches from the single-word `__tls_base` trick to importing
+that global (needs Go linker/codegen to import + read a wasm global — the
+one non-trivial guest-side item). Thread entry: `newosproc` calls
+`kernel_clone(fnPtr=PC_F of an exported mstart trampoline, stackPtr,...)`;
+host calls it via `table.get(fnPtr)()` (arity 0). Remaining true risks
+(guest-side, Phase 4): (1) reading an imported wasm global from Go;
+(2) whether the multi-M scheduler actually runs on wasm (unprecedented —
+the real unknown, provable only by building it); (3) a heap-ceiling vs
+host thread-slot-window memory partition; (4) `sbrk` stays under the
+mheap lock. Concurrent `memory.grow` is engine-atomic/monotonic and the
+host already handles view-detach — safe, not a blocker.
+
+*Phase 4 is a genuine architectural + novel-runtime commitment; paused
+for maintainer go/no-go before implementing.*
 
 ---
 
