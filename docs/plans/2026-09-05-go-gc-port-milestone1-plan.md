@@ -536,6 +536,23 @@ No new wasm imports (still only `env.memory` + `kernel.kernel_exit`);
   (`Mkdir`/`Unlink`/`Rename`/`Chdir`) still ENOSYS; no netpoll
   (synchronous blocking channel); plus the channel-vs-heap 16 MiB risk.
 
+**2026-09-07 — Real CLIs: `os.Args`/environ + path-mutating fs
+(fork `c1f2888`).** Independently reproduced: a program run with
+`argv:["prog","alpha","beta"]` prints `args: [prog alpha beta]`,
+`cwd: /`, and `mkdir`/`write`/`read`/`rename`/`rm`/`rmdir` all succeed
+(`<nil>`) against real kernel state, exit 0. `os.Args`/`os.Environ` come
+from the host `kernel_get_argc`/`kernel_argv_read`/
+`kernel_environ_count`/`kernel_environ_get` function imports (two-step
+length-query-then-copy, no trailing NUL) wired into `runtime.goenvs`;
+path ops (`mkdirat`/`unlinkat`+`AT_REMOVEDIR`/`renameat`/`chdir`/
+`getcwd`/`chmod`/`truncate`/`linkat`/`symlinkat`/`readlinkat`/
+`utimensat`) route through `kandeloSyscall6`, and
+`internal/syscall/unix/at_kandelo.go` was rewritten to drop the WASI
+`path_*` imports. Imports are now `env.memory` + 5 `kernel.*` functions,
+zero WASI; validates; `wasip1`/`js`/native `std` still build. Remaining
+std gaps (no kandelo port yet): `net`, `os/signal`, `path/filepath`,
+`crypto/internal/sysrand`; `Chown` is honest ENOSYS.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
