@@ -480,6 +480,36 @@ offset; read it in the runtime); (C) handshake helper using the atomic
 opcodes + wire `write`/`clock_gettime`/`getrandom`, route `exit` to
 `kernel.kernel_exit`; (D) Task 8 end-to-end (needs `./run.sh setup`).
 
+**2026-09-07 — MILESTONE 1 COMPLETE (Option 1, fork `7ac5bb3`).** A Go
+`println("hello, kandelo")` built with `GOOS=kandelo GOARCH=wasm` runs
+through the real `CentralizedKernelWorker` and prints, exit 0.
+Independently reproduced via a vitest smoke test
+(`runCentralizedProgram({programPath:"/tmp/k.wasm", useDefaultRootfs:
+false})`): `exitCode: 0`, `stderr: "hello, kandelo\n"` (`println` writes
+fd 2). Every stage passed: instantiation (imports `env.memory` shared +
+`kernel.kernel_exit`; `__abi_version`=43 matched), channel-base via
+`__tls_base` (host wrote the offset into `runtime.kandeloChannelBase` at
+0xDB2B8), `write`=4 through the atomic handshake, `clock_gettime`=40 +
+`getrandom`=120 during init, clean `kernel_exit`. Option 1 (pure-guest
+atomics, zero-import contract preserved) validated end-to-end; Option 2
+not needed. Prereqs built: `libc/musl` submodule init'd, `kernel.wasm`
+(ABI 43), `npm ci`. (`./run.sh setup` full rootfs is NOT required for a
+bare program; its failure was a transient upstream 502 fetching the
+`make` package.)
+
+**LATENT RISK — channel-region placement (fix before heavier programs).**
+The host pins the channel region at a fixed 16 MiB (Go exports no
+`__heap_base`, so the host uses `PROCESS_MEMORY_FALLBACK_BRK_BASE` = 16
+MiB; channel at page 257 = 0x1010000). Go assumes it owns linear memory
+from `runtime.end` upward and grows its heap into that space with
+nothing reserving the channel pages. hello-world (~1.9 MiB) is far below
+16 MiB so no collision, but a program whose live heap grows past ~16 MiB
+will grow memory across the channel pages and corrupt the syscall
+channel. Fix options: have the kandelo runtime reserve the channel
+region (learned from `kandeloChannelBase`) so the allocator avoids it,
+or export `__heap_base`/place the channel above Go's reservation. This
+is the top follow-up.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
