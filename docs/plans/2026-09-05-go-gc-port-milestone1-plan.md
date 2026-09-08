@@ -553,6 +553,27 @@ zero WASI; validates; `wasip1`/`js`/native `std` still build. Remaining
 std gaps (no kandelo port yet): `net`, `os/signal`, `path/filepath`,
 `crypto/internal/sysrand`; `Chown` is honest ENOSYS.
 
+**2026-09-07 — Channel-placement hardening (fork `0794818`).**
+Guest-only fix, no host change. (1) Linker synthesizes a `__heap_base`
+export (= `runtime.end`), so the host drops the channel from the fixed
+16 MiB fallback to just above Go's data (`host/src/process-memory.ts`
+`computeProcessMemoryLayout` reads `__heap_base`). (2) Runtime starts
+Go's break at `blocMax` (top of the host's initial linear memory) so the
+heap grows entirely ABOVE the channel; ~1.1 MiB reserved (mostly Go's
+own 1 MiB linker init headroom). Rejected the alternatives (freelist
+"hole" / 16 MiB placement) as brittle host-layout coupling or ~14 MiB
+waste. Independently reproduced: a program allocating 64 MiB then doing
+file + stdout syscalls exits 0 with `match: true` and `read:
+channel-ok` (no corruption). Exports now include `__heap_base` (global
+9) beside `__tls_base`; validates; `wasip1`/`js`/native unaffected; no
+ABI bump (`__heap_base` is a guest export the host already consumes).
+**Residual risk for MILESTONE 3 (threads):** the host would place a
+dynamic pthread thread-slot at `firstThreadSlotPage`, which now equals
+where the Go heap starts — so real wasm threads will collide with this
+layout and the memory model must be reworked as part of the threads
+work. (Go is single-M today; `newosproc` throws, so no thread slot is
+requested.)
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
