@@ -510,6 +510,32 @@ region (learned from `kandeloChannelBase`) so the allocator avoids it,
 or export `__heap_base`/place the channel above Go's reservation. This
 is the top follow-up.
 
+**2026-09-07 — MILESTONE 2 (real stdlib) — `fmt.Println` + file I/O run
+(fork `03d847f`, header fix `c3aeba7`).** Independently reproduced:
+`fmt.Println("hello, kandelo")` prints on **stdout** (fd 1), exit 0, via
+the real path `fmt` -> `os.Stdout.Write` -> `internal/poll.FD.Write` ->
+`syscall.Write` -> channel `write`. File I/O verified with a mounted VFS:
+`os.ReadFile("/etc/hostname")` drives `openat`->`fstat`->`read`->`close`
+over the channel and returns the bytes; a missing path returns a correct
+`ENOENT`. Changes: generalized the runtime handshake to `doSyscall6` and
+`//go:linkname`d it into `syscall` (`syscall.kandeloSyscall6`);
+implemented the `fs_kandelo.go` leaves (`Write`/`Read`/`Pread`/`Pwrite`/
+`Close`/`Seek`/`Fsync`/`Fstat`/`Ftruncate`/`getrandom`) plus
+`Open`/`Openat`/`Stat`/`Lstat` via kernel `openat`/`fstatat`; added
+`internal/poll`/`os`/`time`/`internal/syscall/unix` `*_kandelo.go` peers.
+No new wasm imports (still only `env.memory` + `kernel.kernel_exit`);
+`wasip1`/`js` unaffected.
+- **Key learning:** the Kandelo channel speaks **Linux/musl syscall
+  numbers AND errno values** (musl `__NR_write==4`; errno slot is generic
+  musl numbering) — required rewriting the kandelo errno table off WASI
+  numbering. Paths/buffers are read **directly from linear memory via raw
+  pointers** (NUL-terminated), so no `data_buffer` copy is needed.
+- **Remaining gaps for real CLIs:** `os.Args`/environ are empty (need a
+  host argc/argv mechanism — likely the `kernel_get_argc`/`kernel_argv_*`
+  imports); `usleep`/timers stubbed; path-mutating ops
+  (`Mkdir`/`Unlink`/`Rename`/`Chdir`) still ENOSYS; no netpoll
+  (synchronous blocking channel); plus the channel-vs-heap 16 MiB risk.
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
