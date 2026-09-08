@@ -574,6 +574,30 @@ layout and the memory model must be reworked as part of the threads
 work. (Go is single-M today; `newosproc` throws, so no thread slot is
 requested.)
 
+**2026-09-07 — MILESTONE 3 (threads) Phases 1-2 done.**
+*Phase 1 — real atomics (fork `f3d46f3`).* Added the `0xFE` atomic RMW
+opcode set (loads/stores/add/and/or/xchg/`cmpxchg`/`fence`) to Go's wasm
+assembler and a kandelo-only real-atomics implementation
+(`internal/runtime/atomic/atomic_kandelo.{go,s}`); `atomic_wasm.go`
+gated to `wasm && !kandelo` so `js`/`wasip1` keep plain-access. A `sync/
+atomic` program runs correct through the kernel (`add:15`, `cas:true
+100`, `swap:42 7`, `load:0xDEADBEEF`, `andor:15`), exit 0; no regression;
+`js`/`wasip1` unchanged. (Note: two and/or sub-opcode bytes in the task
+spec were wrong; spec-correct values used and proven by disassembly.
+`StorepNoWB` stays a plain store — minor shared-memory pointer-store
+soundness gap to revisit at multi-M.)
+*Phase 2 — per-M `g` pivot CONFIRMED.* Live host experiment: two
+`WebAssembly.Instance`s of one module over one shared `WebAssembly.
+Memory` have independent mutable globals (`a=111`, `b=222`) while sharing
+linear memory (`b` reads `a`'s write `42`). So each Go M (its own
+instance) gets its own `g`/`SP` globals for free with a shared heap —
+the design's linchpin holds.
+*Next:* Phase 3 (real parking primitives) and Phase 4 (`newosproc` via
+`clone` + memory-layout rework) — paused pending the host-change/ABI
+decision (whether the existing `centralizedThreadWorkerMain`/`onClone`
+path drives a Go module unmodified, or requires Go export shims / a host
+change).
+
 ---
 
 ## Task 7: Wire process start and args/env/stdout as needed
