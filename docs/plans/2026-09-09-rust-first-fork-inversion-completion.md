@@ -235,6 +235,34 @@ branch; nothing is lost. Main-loop tool calls (build/test/git) still work, but t
 remaining work is delicate native replay-seam surgery that should be done
 subagent-driven with full validation, not hand-hacked under the limit.
 
+## FLOOR REACHED (#3 done, pushed): 71 fm_* exports
+
+Empirical result after deleting the 13 callerless fine-grained drive exports
+(`1d2691358`/`3c7ac57b8`/`5f5fb0ec2`, pushed). Surviving `fm_*` = **71** (72 with
+the walrus-injected `fm_drive_execute`):
+- **9 coarse** per-phase drive entries (the inversion's win)
+- **43 reference-marshalling / reconstruction** — the genuine per-type guest↔module
+  reference ABI (capture builders `fm_capture_*` ×17, ref feed `fm_ref_*`/
+  `fm_funcref_ordinal`/`fm_externref_handle`/`fm_static_root_slot` ×10, decoded-graph
+  readout `fm_decoded_*` ×5, reconstruction drive/plan/install ×9, child-side seeding ×2)
+- **8 seeds** (`fm_set_*`)
+- **11 infra** (errno/stats/drive-table/journal/frame accessors)
+
+ABI: snapshot-consistent, NO bump (the co-resident module's host-facing `fm_*`
+surface is not tracked in `abi/snapshot.json`; `verify-fresh` + `check-abi`
+consistent). Validation: fork-codec 442, host-native --lib 45, local-build 98/98
+(real WordPress/MariaDB VFS forks through the coarse path), Vitest fork suite 154
+passed / 0 unexpected (2 expected-fail = pre-existing dlopen-e2e, 9 skipped).
+
+**#5 + endgame follow-ups (from #3 concerns):**
+- Two focused-unit assertions lost when obviated harnesses were removed
+  (wrong-activation-peek `EINVAL` gate; stray-`finishAbort` pairing). Invariants
+  still enforced in-impl + covered at integration; RESTORE as Rust unit tests
+  (tests where primitives live) in #5.
+- Stale gitignored `host/dist` blocked the first local-build (old required-exports
+  list); `scripts/build-host.sh` fixed it. A dist-freshness gap worth a
+  future-work note (the "stale artifact fails loud" contract should catch it).
+
 ## Standing rulings
 
 - Work in `/Users/brandon/kandelo-abi44-reconcile` on the PR branch. Commit per
