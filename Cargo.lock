@@ -2747,6 +2747,7 @@ dependencies = [
  "toml 0.8.23",
  "toml_edit",
  "ureq",
+ "wasi-abi",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
  "xz2",

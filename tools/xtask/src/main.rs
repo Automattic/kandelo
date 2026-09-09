@@ -60,6 +60,7 @@ mod bundle_program;
 mod cargo_closure;
 mod determinism_check;
 mod dump_abi;
+mod dump_wasi_translation;
 mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
@@ -91,6 +92,7 @@ fn main() -> ExitCode {
     }
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
+        "dump-wasi-translation" => dump_wasi_translation::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),

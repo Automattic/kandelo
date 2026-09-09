@@ -1623,3 +1623,27 @@ export {
   wasiModuleImportsMemory,
   wasiModuleDefinesMemory,
 } from "./wasi-detect";
+
+/**
+ * The module-private pure translation functions, exposed for the
+ * differential-equivalence harness only.
+ *
+ * `host/test/wasi-translation-equivalence.test.ts` asserts that these agree
+ * with the Rust `wasi-abi` crate over each function's FULL input domain,
+ * which is what licenses replacing them. Comparing against a re-implementation
+ * written inside the test would prove nothing, and driving them indirectly
+ * through `WasiShim`'s 46 entry points would not reach every input.
+ *
+ * Not part of the `kandelo/host` public surface: `host/src/index.ts` does not
+ * re-export it, and nothing outside the harness may depend on it.
+ */
+export const __wasiTranslationInternals = {
+  translateLinuxErrno,
+  modeToFiletype,
+  wasiWhenceToPosix,
+  wasiClockToPosix,
+  wasiOflagsToPosix,
+  posixFlagToWasiFdflags,
+  splitSignedI64Words,
+  checkedSignedI64Scalar,
+} as const;
