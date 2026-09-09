@@ -6,7 +6,10 @@ import {
 } from "../src/vfs/rootfs-manifest";
 import type { FileSystemBackend } from "../src/vfs/types";
 import type { RootfsLazyInput } from "../src/vfs/rootfs-manifest";
-import { decodeRootfsManifest as decode } from "./fixtures/rtfs-manifest-decode";
+import {
+  decodeRootfsManifest as decode,
+  RTFS_KIND_LAZY_FILE as KIND_LAZY_FILE,
+} from "./fixtures/rtfs-manifest-decode";
 
 const S_IFDIR = 0x4000;
 const S_IFREG = 0x8000;
