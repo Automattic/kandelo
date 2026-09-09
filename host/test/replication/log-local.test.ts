@@ -14,13 +14,17 @@ import { describe, expect, it, vi } from "vitest";
 import { ChunkedMessageChannel } from "../../src/migration/channel-chunked";
 import {
   LocalReplicationLog,
+  ReplicationHistory,
   type ReplicationLogSink,
+  type ReplicationWatchPosition,
+  type SuspendedRecording,
 } from "../../src/replication/log-local";
 import {
   ReplicationDivergence,
   ReplicationLogRecorder,
   type ReplicationLogEntry,
 } from "../../src/replication/log";
+import { encodeMessage } from "../../src/migration/codec";
 import { FakeDataChannel } from "../support/data-channel-pair";
 
 function fakeSink(): {
@@ -28,19 +32,23 @@ function fakeSink(): {
   taken: () => ReplicationLogEntry[];
   ended: () => number;
   divergences: () => ReplicationDivergence[];
+  position: () => ReplicationWatchPosition | null;
 } {
   const taken: ReplicationLogEntry[] = [];
   const divergences: ReplicationDivergence[] = [];
   let ended = 0;
+  let position: ReplicationWatchPosition | null = null;
   return {
     sink: {
       entries: (batch) => void taken.push(...batch),
       ended: () => void (ended += 1),
       diverged: (error) => void divergences.push(error),
+      advanced: (at) => void (position = at),
     },
     taken: () => taken,
     ended: () => ended,
     divergences: () => divergences,
+    position: () => position,
   };
 }
 
@@ -185,7 +193,7 @@ describe("local replication log", () => {
 
     const stale = fakeSink();
     const stopStale = replica.watch(stale.sink);
-    let stopServing = serveFrom(first, "the machine that was running");
+    let serving = serveFrom(first, "the machine that was running");
     try {
       await expect(replica.join(5_000)).resolves
         .toBe("the machine that was running");
@@ -195,14 +203,14 @@ describe("local replication log", () => {
       // Launching a demo destroys the machine a replica is a copy of and boots
       // a different one. The replica has to be told, because its own computer
       // shows nothing: it holds a machine before and after.
-      stopServing();
+      serving.stop();
       await vi.waitFor(() => expect(stale.ended()).toBe(1));
 
       // And it has to join the replacement rather than follow along on the
       // subscription it already has. A machine numbers its decisions from
       // zero, so the watcher that counted the first one's discards every one
       // of the second's as already seen.
-      stopServing = serveFrom(second, "the machine that replaced it");
+      serving = serveFrom(second, "the machine that replaced it");
       const fresh = fakeSink();
       const stopFresh = replica.watch(fresh.sink);
       await expect(replica.join(5_000)).resolves
@@ -214,7 +222,7 @@ describe("local replication log", () => {
       stopFresh();
     } finally {
       stopStale();
-      stopServing();
+      serving.stop();
       computer.close();
       replica.close();
     }
@@ -240,14 +248,14 @@ describe("local replication log", () => {
     // would win the machine's one recording for an attempt that no longer
     // watches, and the live join would be refused.
     const live = replica.join(5_000);
-    const stopServing = computer.serve(async (publish) => {
+    const serving = computer.serve(async (publish) => {
       const stopRecord = recorder.onRecord((entry) => publish([entry]));
       return { machine: "the machine", stop: async () => stopRecord() };
     });
     try {
       await expect(live).resolves.toBe("the machine");
     } finally {
-      stopServing();
+      serving.stop();
       computer.close();
       replica.close();
     }
@@ -259,7 +267,7 @@ describe("local replication log", () => {
     const replica = new LocalReplicationLog<string>(channel);
     const recorder = new ReplicationLogRecorder();
     let stops = 0;
-    const stopServing = computer.serve(async (publish) => {
+    const serving = computer.serve(async (publish) => {
       const stopRecord = recorder.onRecord((entry) => publish([entry]));
       return {
         machine: "the machine",
@@ -284,7 +292,7 @@ describe("local replication log", () => {
       await vi.waitFor(() => expect(stops).toBe(1));
       await expect(replica.join(5_000)).resolves.toBe("the machine");
     } finally {
-      stopServing();
+      serving.stop();
       computer.close();
       replica.close();
     }
@@ -472,55 +480,55 @@ describe("local replication log", () => {
   });
 });
 
-describe("local replication log chained digest", () => {
-  /**
-   * A channel wrapper that rewrites one recorded second in transit. The
-   * sequence numbers stay intact, so the corruption is invisible to the
-   * hole check and only the digest can catch it.
-   */
-  function tampering(channel: string): {
-    postMessage(message: unknown): void;
-    addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
-    removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
-    close(): void;
-  } {
-    const inner = new BroadcastChannel(channel);
-    const wrapped = new Map<
-      (event: MessageEvent) => void,
-      (event: MessageEvent) => void
-    >();
-    return {
-      postMessage: (message) => inner.postMessage(message),
-      addEventListener: (type, listener) => {
-        const tamper = (event: MessageEvent) => {
-          const message = event.data as {
-            kind: string;
-            entries?: Array<{ seq: number; decision: { sec?: number } }>;
-          };
-          if (message.kind !== "entries") {
-            listener(event);
-            return;
-          }
-          const entries = message.entries!.map((entry) =>
-            entry.seq === 1
-              ? { ...entry, decision: { ...entry.decision, sec: 9_999 } }
-              : entry,
-          );
-          listener({ data: { kind: "entries", entries } } as MessageEvent);
+/**
+ * A channel wrapper that rewrites one recorded second in transit. The
+ * sequence numbers stay intact, so the corruption is invisible to the
+ * hole check and only the digest can catch it.
+ */
+function tampering(channel: string, tamperSeq = 1): {
+  postMessage(message: unknown): void;
+  addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+  removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+  close(): void;
+} {
+  const inner = new BroadcastChannel(channel);
+  const wrapped = new Map<
+    (event: MessageEvent) => void,
+    (event: MessageEvent) => void
+  >();
+  return {
+    postMessage: (message) => inner.postMessage(message),
+    addEventListener: (type, listener) => {
+      const tamper = (event: MessageEvent) => {
+        const message = event.data as {
+          kind: string;
+          entries?: Array<{ seq: number; decision: { sec?: number } }>;
         };
-        wrapped.set(listener, tamper);
-        inner.addEventListener(type, tamper);
-      },
-      removeEventListener: (type, listener) => {
-        const tamper = wrapped.get(listener);
-        if (!tamper) return;
-        wrapped.delete(listener);
-        inner.removeEventListener(type, tamper);
-      },
-      close: () => inner.close(),
-    };
-  }
+        if (message.kind !== "entries") {
+          listener(event);
+          return;
+        }
+        const entries = message.entries!.map((entry) =>
+          entry.seq === tamperSeq
+            ? { ...entry, decision: { ...entry.decision, sec: 9_999 } }
+            : entry,
+        );
+        listener({ data: { kind: "entries", entries } } as MessageEvent);
+      };
+      wrapped.set(listener, tamper);
+      inner.addEventListener(type, tamper);
+    },
+    removeEventListener: (type, listener) => {
+      const tamper = wrapped.get(listener);
+      if (!tamper) return;
+      wrapped.delete(listener);
+      inner.removeEventListener(type, tamper);
+    },
+    close: () => inner.close(),
+  };
+}
 
+describe("local replication log chained digest", () => {
   it("verifies a healthy stream without a word", async () => {
     const channel = `replication-test-${crypto.randomUUID()}`;
     const publisher = new LocalReplicationLog(channel, { digestInterval: 2 });
@@ -611,5 +619,422 @@ describe("local replication log chained digest", () => {
       watcher.close();
       raw.close();
     }
+  });
+});
+
+describe("local replication log resume", () => {
+  /** The way the demo serves: the recorder's entries go out as it makes them. */
+  function serveRecorder(
+    wire: LocalReplicationLog<string>,
+    recorder: ReplicationLogRecorder,
+    stops: { count: number },
+  ) {
+    return wire.serve(async (publish) => {
+      const stopRecord = recorder.onRecord((entry) => publish([entry]));
+      return {
+        machine: "the machine",
+        stop: async () => {
+          stops.count += 1;
+          stopRecord();
+        },
+      };
+    });
+  }
+
+  it("resumes a replica from the ring, no second checkpoint", async () => {
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    const computerA = new LocalReplicationLog<string>(firstLink, {
+      digestInterval: 2,
+    });
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    let suspended: SuspendedRecording | null = null;
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      recordClocks(recorder, 3);
+      await vi.waitFor(() => expect(sinkA.taken()).toHaveLength(3));
+      const position = sinkA.position()!;
+      expect(position.nextSeq).toBe(3);
+
+      // The link dies. The wire is gone; the recording is not.
+      suspended = servingA.suspend();
+      expect(suspended).not.toBeNull();
+      stopWatchA();
+
+      // Decided while no wire existed — what the ring is for.
+      recordClocks(recorder, 2);
+
+      const computerB = new LocalReplicationLog<string>(secondLink, {
+        digestInterval: 2,
+      });
+      const replicaB = new LocalReplicationLog<string>(secondLink);
+      let resumedTold = 0;
+      const servingB = computerB.serve(
+        async () => {
+          throw new Error("a resume must not read the machine again");
+        },
+        { suspended, resumed: () => void (resumedTold += 1) },
+      );
+      suspended = null;
+      const sinkB = fakeSink();
+      const stopWatchB = replicaB.watch(sinkB.sink, { from: position });
+      try {
+        await replicaB.resume(position.nextSeq - 1, 5_000);
+        expect(resumedTold).toBe(1);
+        await vi.waitFor(() => expect(sinkB.taken()).toHaveLength(2));
+        expect(sinkB.taken().map((entry) => entry.seq)).toEqual([3, 4]);
+
+        // Live again: what the machine decides now still reaches the replica.
+        recordClocks(recorder, 2);
+        await vi.waitFor(() => expect(sinkB.taken()).toHaveLength(4));
+        expect(sinkB.divergences()).toEqual([]);
+        expect(stops.count).toBe(0);
+      } finally {
+        stopWatchB();
+        servingB.stop();
+        computerB.close();
+        replicaB.close();
+      }
+      expect(stops.count).toBe(1);
+    } finally {
+      if (suspended !== null) void suspended.stop();
+      computerA.close();
+      replicaA.close();
+    }
+  });
+
+  it("keeps verifying the digest chain across the resume", async () => {
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    const computerA = new LocalReplicationLog<string>(firstLink, {
+      digestInterval: 2,
+    });
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      recordClocks(recorder, 3);
+      await vi.waitFor(() => expect(sinkA.taken()).toHaveLength(3));
+      const position = sinkA.position()!;
+      const suspended = servingA.suspend()!;
+      stopWatchA();
+      recordClocks(recorder, 2);
+
+      // The successor wire rewrites one of the missed entries in transit.
+      // Sequence numbers survive the rewrite, so only a digest chain that
+      // truly continued across the resume can catch it.
+      const computerB = new LocalReplicationLog<string>(secondLink, {
+        digestInterval: 2,
+      });
+      const replicaB = new LocalReplicationLog<string>(tampering(secondLink, 3));
+      const servingB = computerB.serve(
+        async () => {
+          throw new Error("a resume must not read the machine again");
+        },
+        { suspended },
+      );
+      const sinkB = fakeSink();
+      const stopWatchB = replicaB.watch(sinkB.sink, { from: position });
+      try {
+        await replicaB.resume(position.nextSeq - 1, 5_000);
+        // The digest inside the replay batch cannot be checked by position,
+        // but the chain is cumulative: the rewrite stays in every later
+        // digest, and the first one after the batch is where it surfaces.
+        recordClocks(recorder, 1);
+        await vi.waitFor(() => expect(sinkB.divergences()).not.toHaveLength(0));
+        expect(sinkB.divergences()[0]!.message).toContain(
+          "does not match the publisher's",
+        );
+      } finally {
+        stopWatchB();
+        servingB.stop();
+        computerB.close();
+        replicaB.close();
+      }
+    } finally {
+      computerA.close();
+      replicaA.close();
+    }
+  });
+
+  it("refuses a position the ring lost, and the fallback join supersedes", async () => {
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    // A ring one byte deep evicts everything it is given: every position is
+    // already lost, which is the far end of any real eviction.
+    const computerA = new LocalReplicationLog<string>(firstLink, {
+      historyBytes: 1,
+    });
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      recordClocks(recorder, 3);
+      await vi.waitFor(() => expect(sinkA.taken()).toHaveLength(3));
+      const position = sinkA.position()!;
+      const suspended = servingA.suspend()!;
+      stopWatchA();
+      recordClocks(recorder, 2);
+
+      const computerB = new LocalReplicationLog<string>(secondLink);
+      const replicaB = new LocalReplicationLog<string>(secondLink);
+      const servingB = computerB.serve(
+        async (publish) => {
+          const stopRecord = recorder.onRecord((entry) => publish([entry]));
+          return {
+            machine: "the machine, read again",
+            stop: async () => stopRecord(),
+          };
+        },
+        { suspended },
+      );
+      const sinkB = fakeSink();
+      const stopWatchB = replicaB.watch(sinkB.sink, { from: position });
+      try {
+        await expect(
+          replicaB.resume(position.nextSeq - 1, 5_000),
+        ).rejects.toThrow("no longer holds the log after 2");
+        expect(stops.count).toBe(0);
+
+        // The fallback the refusal sends a replica to: a full join. It reads
+        // the machine again, and the recording nobody could resume stops
+        // rather than run for the rest of the session.
+        const freshSink = fakeSink();
+        const stopFresh = replicaB.watch(freshSink.sink);
+        await expect(replicaB.join(5_000)).resolves.toBe(
+          "the machine, read again",
+        );
+        expect(stops.count).toBe(1);
+        stopFresh();
+      } finally {
+        stopWatchB();
+        servingB.stop();
+        computerB.close();
+        replicaB.close();
+      }
+    } finally {
+      computerA.close();
+      replicaA.close();
+    }
+  });
+
+  it("resumes a replica that missed nothing", async () => {
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    const computerA = new LocalReplicationLog<string>(firstLink);
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      recordClocks(recorder, 2);
+      await vi.waitFor(() => expect(sinkA.taken()).toHaveLength(2));
+      const position = sinkA.position()!;
+      const suspended = servingA.suspend()!;
+      stopWatchA();
+
+      const computerB = new LocalReplicationLog<string>(secondLink);
+      const replicaB = new LocalReplicationLog<string>(secondLink);
+      const servingB = computerB.serve(
+        async () => {
+          throw new Error("a resume must not read the machine again");
+        },
+        { suspended },
+      );
+      const sinkB = fakeSink();
+      const stopWatchB = replicaB.watch(sinkB.sink, { from: position });
+      try {
+        await replicaB.resume(position.nextSeq - 1, 5_000);
+        recordClocks(recorder, 1);
+        await vi.waitFor(() => expect(sinkB.taken()).toHaveLength(1));
+        expect(sinkB.taken()[0]!.seq).toBe(2);
+        expect(sinkB.divergences()).toEqual([]);
+      } finally {
+        stopWatchB();
+        servingB.stop();
+        computerB.close();
+        replicaB.close();
+      }
+    } finally {
+      computerA.close();
+      replicaA.close();
+    }
+  });
+
+  it("resumes a replica whose recording never published", async () => {
+    // The browser's idle case: a captured shell sits at its prompt, decides
+    // nothing, and the link dies. The replica received no entry and has no
+    // position — it asks from -1, and the empty recording agrees.
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    const computerA = new LocalReplicationLog<string>(firstLink);
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      expect(sinkA.position()).toBeNull();
+      const suspended = servingA.suspend()!;
+      stopWatchA();
+
+      const computerB = new LocalReplicationLog<string>(secondLink);
+      const replicaB = new LocalReplicationLog<string>(secondLink);
+      const servingB = computerB.serve(
+        async () => {
+          throw new Error("a resume must not read the machine again");
+        },
+        { suspended },
+      );
+      const sinkB = fakeSink();
+      const stopWatchB = replicaB.watch(sinkB.sink);
+      try {
+        await replicaB.resume(-1, 5_000);
+        recordClocks(recorder, 2);
+        await vi.waitFor(() => expect(sinkB.taken()).toHaveLength(2));
+        expect(sinkB.taken().map((entry) => entry.seq)).toEqual([0, 1]);
+        expect(sinkB.divergences()).toEqual([]);
+      } finally {
+        stopWatchB();
+        servingB.stop();
+        computerB.close();
+        replicaB.close();
+      }
+    } finally {
+      computerA.close();
+      replicaA.close();
+    }
+  });
+
+  it("refuses a resume when no recording is suspended", async () => {
+    const link = `replication-test-${crypto.randomUUID()}`;
+    const computer = new LocalReplicationLog<string>(link);
+    const replica = new LocalReplicationLog<string>(link);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const serving = serveRecorder(computer, recorder, stops);
+    try {
+      await expect(replica.resume(4, 5_000)).rejects.toThrow(
+        "holds no recording to resume",
+      );
+    } finally {
+      serving.stop();
+      computer.close();
+      replica.close();
+    }
+  });
+
+  it("hands a recording nobody resumed on to the next wire", async () => {
+    const firstLink = `replication-test-${crypto.randomUUID()}`;
+    const secondLink = `replication-test-${crypto.randomUUID()}`;
+    const thirdLink = `replication-test-${crypto.randomUUID()}`;
+    const computerA = new LocalReplicationLog<string>(firstLink);
+    const replicaA = new LocalReplicationLog<string>(firstLink);
+    const recorder = new ReplicationLogRecorder();
+    const stops = { count: 0 };
+    const servingA = serveRecorder(computerA, recorder, stops);
+    const sinkA = fakeSink();
+    const stopWatchA = replicaA.watch(sinkA.sink);
+    try {
+      await expect(replicaA.join(5_000)).resolves.toBe("the machine");
+      recordClocks(recorder, 2);
+      await vi.waitFor(() => expect(sinkA.taken()).toHaveLength(2));
+      const position = sinkA.position()!;
+      const suspended = servingA.suspend()!;
+      stopWatchA();
+
+      // The second link opens and dies again before any resume arrives —
+      // two drops in a row must not cost the recording.
+      const computerB = new LocalReplicationLog<string>(secondLink);
+      const servingB = computerB.serve(
+        async () => {
+          throw new Error("nothing joins on this link");
+        },
+        { suspended },
+      );
+      const handedOn = servingB.suspend();
+      computerB.close();
+      expect(handedOn).toBe(suspended);
+      expect(stops.count).toBe(0);
+
+      const computerC = new LocalReplicationLog<string>(thirdLink);
+      const replicaC = new LocalReplicationLog<string>(thirdLink);
+      const servingC = computerC.serve(
+        async () => {
+          throw new Error("a resume must not read the machine again");
+        },
+        { suspended: handedOn },
+      );
+      const sinkC = fakeSink();
+      const stopWatchC = replicaC.watch(sinkC.sink, { from: position });
+      try {
+        await replicaC.resume(position.nextSeq - 1, 5_000);
+        recordClocks(recorder, 1);
+        await vi.waitFor(() => expect(sinkC.taken()).toHaveLength(1));
+      } finally {
+        stopWatchC();
+        servingC.stop();
+        computerC.close();
+        replicaC.close();
+      }
+      expect(stops.count).toBe(1);
+    } finally {
+      computerA.close();
+      replicaA.close();
+    }
+  });
+});
+
+describe("replication history", () => {
+  const clock = (seq: number): ReplicationLogEntry => ({
+    seq,
+    decision: { kind: "clock", pid: 102, clockId: 0, sec: 1_700_000 + seq, nsec: 0 },
+  });
+
+  it("hands back what follows a position, and refuses one it lost", () => {
+    const size = encodeMessage(clock(0)).byteLength;
+    const history = new ReplicationHistory(size * 2);
+    history.push([clock(0), clock(1), clock(2), clock(3)]);
+    // Two entries fit, so 0 and 1 were evicted — after they went to a wire.
+    expect(history.entries.map((entry) => entry.seq)).toEqual([2, 3]);
+    expect(history.after(3)).toEqual([]);
+    expect(history.after(2)).toEqual([clock(3)]);
+    expect(history.after(1)).toEqual([clock(2), clock(3)]);
+    expect(history.after(0)).toBeNull();
+    // A position ahead of the recording is a watcher this recording never
+    // fed; there is nothing to resume.
+    expect(history.after(7)).toBeNull();
+  });
+
+  it("folds each sequence number into the digest exactly once", () => {
+    const history = new ReplicationHistory();
+    expect(history.fold(clock(0))).toBe(true);
+    expect(history.fold(clock(1))).toBe(true);
+    const chain = history.digestHex;
+    expect(history.fold(clock(1))).toBe(false);
+    expect(history.fold(clock(0))).toBe(false);
+    expect(history.digestHex).toBe(chain);
+    expect(history.digestedThrough).toBe(1);
+    expect(history.sinceDigest).toBe(2);
+    history.settleDigest();
+    expect(history.sinceDigest).toBe(0);
   });
 });

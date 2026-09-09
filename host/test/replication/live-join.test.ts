@@ -17,7 +17,14 @@
  */
 import { describe, expect, it } from "vitest";
 import { NodeKernelHost } from "../../src/node-kernel-host";
-import type { ReplicationLogEntry } from "../../src/replication/log";
+import type {
+  ReplicationDivergence,
+  ReplicationLogEntry,
+} from "../../src/replication/log";
+import {
+  LocalReplicationLog,
+  type ReplicationWatchPosition,
+} from "../../src/replication/log-local";
 import {
   ReplicationLogQueueWriter,
   createReplicationLogQueue,
@@ -307,6 +314,164 @@ describe("live replica join", () => {
         expect(progress.consumed).toBeGreaterThan(0);
       } finally {
         writer.end();
+        await replica?.destroy();
+        await primary.destroy();
+      }
+    },
+  );
+
+  it(
+    "resumes a replica across a dropped wire without a second checkpoint",
+    { timeout: 300_000 },
+    async () => {
+      // The claim of the history ring: the wire dies mid-follow, the machine
+      // keeps deciding, and the wire that replaces it hands the replica every
+      // decision it missed — out of the ring, not out of another freeze.
+      const primaryOut = collectStdout();
+      const primary = new NodeKernelHost({
+        rootfsImage: "default",
+        onStdout: primaryOut.onStdout,
+      });
+      await primary.init();
+      const replicaOut = collectStdout();
+      let replica: NodeKernelHost | null = null;
+      const queue = createReplicationLogQueue();
+      const writer = new ReplicationLogQueueWriter(queue);
+      const firstLink = `replication-test-${crypto.randomUUID()}`;
+      const secondLink = `replication-test-${crypto.randomUUID()}`;
+      const user = new LocalReplicationLog<string>(firstLink);
+      const viewer = new LocalReplicationLog<string>(firstLink);
+      let userB: LocalReplicationLog<string> | null = null;
+      let viewerB: LocalReplicationLog<string> | null = null;
+      let captures = 0;
+      let joined:
+        | Awaited<ReturnType<typeof primary.captureAndStreamReplicationLog>>
+        | null = null;
+      const divergences: ReplicationDivergence[] = [];
+      let position: ReplicationWatchPosition | null = null;
+      try {
+        const guestExit = primary
+          .spawnFromVfs("/bin/sh", LIVE_GUEST)
+          .then(({ exit }) => exit);
+        await until(
+          () => printedSeconds(primaryOut.read()).length >= 2,
+          FOLLOW_LIMIT_MS,
+          () => `the guest printed ${primaryOut.read().trim().length} bytes`,
+        );
+
+        const serving = user.serve(async (publish) => {
+          captures += 1;
+          const streamed = await primary.captureAndStreamReplicationLog(
+            { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 },
+            (entries) => publish(entries),
+          );
+          if (streamed.capture.status !== "captured") return null;
+          joined = streamed;
+          return { machine: "the machine", stop: streamed.stop };
+        });
+        const stopWatching = viewer.watch({
+          entries: (entries) => writer.push(entries),
+          advanced: (at) => void (position = at),
+          diverged: (error) => void divergences.push(error),
+          ended: () => {},
+        });
+        await expect(viewer.join(60_000)).resolves.toBe("the machine");
+        expect(captures).toBe(1);
+        expect(joined).not.toBeNull();
+        if (joined === null || joined.capture.status !== "captured") return;
+
+        replica = new NodeKernelHost({
+          rootfsImage: "default",
+          restoreCheckpoint: joined.capture.checkpoint,
+          replicationReplay: { entries: [], queue },
+          onStdout: replicaOut.onStdout,
+        });
+        await replica.init();
+        await until(
+          () => printedSeconds(replicaOut.read()).length >= 1,
+          FOLLOW_LIMIT_MS,
+          () => `the replica printed ${JSON.stringify(replicaOut.read())}`,
+        );
+        const beforeDrop = printedSeconds(replicaOut.read()).length;
+
+        // The link dies mid-follow. The recording is suspended, not stopped,
+        // and the replica's queue is left open — it parks at the log's end.
+        const suspended = serving.suspend();
+        expect(suspended).not.toBeNull();
+        stopWatching();
+        user.close();
+        viewer.close();
+        expect(position).not.toBeNull();
+
+        // The machine finishes the whole workload while no wire exists, so
+        // every remaining decision lands only in the ring.
+        expect(await guestExit).toBe(0);
+        await until(
+          () => printedSeconds(primaryOut.read()).length === LIVE_READS,
+          FOLLOW_LIMIT_MS,
+          () => `the primary printed ${JSON.stringify(primaryOut.read())}`,
+        );
+        const printed = printedSeconds(primaryOut.read());
+
+        // The next link. Its serve never reads the machine: the resume is
+        // answered from the suspended recording alone.
+        userB = new LocalReplicationLog<string>(secondLink);
+        viewerB = new LocalReplicationLog<string>(secondLink);
+        const servingB = userB.serve(
+          async () => {
+            captures += 1;
+            return null;
+          },
+          { suspended },
+        );
+        const stopWatchingB = viewerB.watch(
+          {
+            entries: (entries) => writer.push(entries),
+            advanced: (at) => void (position = at),
+            diverged: (error) => void divergences.push(error),
+            ended: () => writer.end(),
+          },
+          { from: position! },
+        );
+        await viewerB.resume(position!.nextSeq - 1, 30_000);
+
+        // The replica drains the missed decisions and prints past where the
+        // drop parked it.
+        await until(
+          () => printedSeconds(replicaOut.read()).length > beforeDrop,
+          FOLLOW_LIMIT_MS,
+          () => `the replica printed ${JSON.stringify(replicaOut.read())}`,
+        );
+
+        // Ending the recording ends the queue behind it, and the replica
+        // consumes everything ahead of the end before it honors it.
+        servingB.stop();
+        await until(
+          () => {
+            const replicated = printedSeconds(replicaOut.read());
+            return replicated.length > beforeDrop
+              && replicated[replicated.length - 1] === printed[printed.length - 1]
+              && JSON.stringify(replicated) === JSON.stringify(
+                printed.slice(printed.length - replicated.length),
+              );
+          },
+          FOLLOW_LIMIT_MS,
+          () => `the replica printed ${JSON.stringify(replicaOut.read())} `
+            + `while the primary printed ${JSON.stringify(printed)}`,
+        );
+        stopWatchingB();
+
+        expect(divergences).toEqual([]);
+        expect(captures).toBe(1);
+        const progress = await replica.stopReplicationReplay();
+        expect(progress.consumed).toBe(progress.total);
+        expect(progress.borrowedClockReadings).toBe(0);
+        expect(progress.borrowedAcceptSelections).toBe(0);
+        expect(progress.scannedAheadClockReadings).toBe(0);
+      } finally {
+        writer.end();
+        userB?.close();
+        viewerB?.close();
         await replica?.destroy();
         await primary.destroy();
       }

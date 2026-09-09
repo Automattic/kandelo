@@ -462,6 +462,58 @@ list — "start from clean base and replay a command transcript" — is the
 same determinism requirement in single-machine form, so the two modes
 share the work.
 
+### How a replica survives a dropped link
+
+**Built 2026-09-09.** A recording used to last exactly as long as the peer
+link that carried it: the link died, `machine-replication.ts` stopped the
+recording on one side and dropped the replica on the other, and a reconnect
+paid a full checkpoint transfer for a machine the viewer had held one network
+hiccup earlier. Take-over makes that cost structural — promotion only works
+from a caught-up replica, and a scheme where one dropped link destroys the
+replica's lead destroys it exactly when the user reaches for it.
+
+What survives the link now lives in `ReplicationHistory`
+(`host/src/replication/log-local.ts`): a byte-bounded ring of the recently
+published entries and the digest chain over the whole stream. The recording
+pushes into it with or without a wire attached, and whichever wire currently
+serves the recording subscribes to it and folds digests out of it. On a link
+death the machine's side calls `suspend()` on its serve handle instead of
+`stop()`, keeps the returned `SuspendedRecording` for one resume window, and
+hands it to the next link's `serve`. The replica's side keeps its machine
+parked on its queue — the queue's writer is deliberately not ended — together
+with the position its watch last reported (`advanced` on the sink).
+
+The rejoin is a `resume(afterSeq)` instead of a `join`. A position the ring
+still holds is answered with the missed entries out of the ring, then the
+live stream, then `resumed` — no freeze, no checkpoint. The watcher continues
+its digest fold from the carried position, so the resumed stream stays
+verified end to end; the digest state travels in the history precisely so the
+chain survives the wire. A position the ring evicted is refused, and the
+refusal sends the viewer to the join it would have made anyway, which also
+stops the recording nobody could resume. A viewer that received nothing
+before the drop asks from `-1`: a recording that published nothing agrees and
+resumes empty, one that did publish refuses. Both halves give up after
+`RESUME_WINDOW_MS` (120 s): the machine must not record for nobody
+indefinitely, and a parked replica whose user never returns is let go.
+
+During the gap the viewer's page keeps calling itself the viewer — the parked
+replica still reports "running", but it is another computer's machine, so
+`replicating` survives the link in `useMachineReplication` and
+`KernelHost.holdsReplica()` is public so a page deciding roles on a new link
+can tell a parked replica from a machine of its own.
+
+`host/test/replication/log-local.test.ts` covers the wire — resume from the
+ring, digest continuity across the resume (a tampered ring replay is caught),
+eviction refusal with the join fallback, the empty-recording resume, and a
+recording handed across two dead links. `host/test/replication/live-join.test.ts`
+proves the platform claim with real machines: a wire dropped mid-follow, the
+workload finished into the ring alone, and the replica drained to a transcript
+equal to the primary's with one capture total and zero replay-tolerance
+borrows. `apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers
+the product surface; its reconnect half skips where headless Chromium refuses
+a second loopback ICE pair, which is an environment boundary, not a platform
+one.
+
 ## Surfaces, and what sharing each one needs
 
 The three machine surfaces are not equally shareable, and the reason is

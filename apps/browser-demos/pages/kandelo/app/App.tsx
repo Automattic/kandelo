@@ -513,13 +513,17 @@ export const App: React.FC = () => {
         networkOpen={networkOpen}
         networkConnected={peer.link !== null}
         // Only in a pair. A computer on its own is neither, and one machine
-        // with one person at it needs no word for that.
+        // with one person at it needs no word for that. A replica parked by
+        // a dropped link is the exception: the machine here is still the
+        // other computer's, and the word for that stays "viewer".
         role={
-          peer.link === null
-            ? null
-            : isEmpty || replication.replicating
-              ? "viewer"
-              : "user"
+          replication.replicating
+            ? "viewer"
+            : peer.link === null
+              ? null
+              : isEmpty
+                ? "viewer"
+                : "user"
         }
         themeOpen={themeOpen}
         // A machine on its way here is booting, whatever the surface it is

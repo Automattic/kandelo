@@ -917,6 +917,15 @@ export interface KernelHost {
    */
   stopReplicatingMachine(): Promise<{ consumed: number; total: number } | null>;
   /**
+   * Whether the machine this page runs is a replica of another computer's.
+   *
+   * A replica reports the same "running" status as a machine this computer
+   * decides for, because it is one — the difference is whose decisions drive
+   * it, and that is what a page resuming a dropped link needs to know before
+   * it takes "running" for a machine of its own.
+   */
+  holdsReplica(): boolean;
+  /**
    * Tell the replica this page runs that the user's log grew.
    *
    * Call it after pushing entries into the replay's queue. A keystroke or a
@@ -2080,7 +2089,7 @@ export class LiveKernelHost implements KernelHost {
    * has and a machine this computer holds does not: `attachKernel` sets it from
    * the arriving replay, and every path that lets go of a kernel clears it.
    */
-  private holdsReplica(): boolean {
+  holdsReplica(): boolean {
     return this.heldReplicaRelease !== null;
   }
 
