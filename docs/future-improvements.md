@@ -559,6 +559,22 @@ items reduce host surface, remove fixed caps, or close truthful-failure gaps.
   this PR reaches. **Files:** `crates/fork-module/src/lib.rs`,
   `crates/fork-codec`, `host/src`.
 
+- **Move the pre-launch externref-handle scan out of TypeScript into
+  fork-codec (Rust).** The browser/production path scans the segmented fork
+  reference wire for externref handles in TypeScript
+  (`host/src/fork-reference-wire.ts` `scanSegmentedForkReferenceExternrefHandles`
+  + `parseSegmentedForkReferenceTransaction`, consumed by
+  `host/src/fork-externref-process-owner.ts`), re-decoding the fork-codec wire
+  format (node-record kind byte, handle words, manifest/segment layout) in the
+  host — duplicating decode logic `fork-codec` owns. `6da756719` deleted the
+  unused Rust scanner (`fm_scan_externref_handles`) rather than wiring it. A
+  follow-up should have `fork-codec` own the scan and the host consume decoded
+  handles (host keeps only the externref-identity / process-ownership
+  bookkeeping, which is legitimately host-side). Not done in this PR: it is not
+  a correctness bug, and re-adding a module export now would work against this
+  PR's export-reduction goal. **Files:** `crates/fork-codec`,
+  `host/src/fork-reference-wire.ts`, `host/src/fork-externref-process-owner.ts`.
+
 - **Retire the remaining test-only fine-grained `fm_*` fork-module exports.**
   Two bounded, already-flagged reductions (~5 exports): (a) migrate the
   `fm_drive_execute` store-#2 GC-integrity trap regression from the Node-only

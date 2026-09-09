@@ -263,6 +263,42 @@ passed / 0 unexpected (2 expected-fail = pre-existing dlopen-e2e, 9 skipped).
   list); `scripts/build-host.sh` fixed it. A dist-freshness gap worth a
   future-work note (the "stale artifact fails loud" contract should catch it).
 
+## #5 cleanup — DONE (pushed)
+
+- `c2f5ba20b` harvested fork future-work into `docs/future-improvements.md` and
+  removed the 10 tracked `.superpowers/sdd/**` scratch files (0 tracked now);
+  fixed the dangling `host-native/Cargo.toml` doc pointer.
+- `c3cb828c4` recorded the maintainer's directive that 71 is NOT the true floor —
+  the ~43 per-type reference-marshalling exports get consolidated behind a
+  narrower encode/decode dispatch in a FOLLOW-UP PR.
+- `e4946db71` restored the two lost focused-unit invariants as Rust tests in
+  `crates/fork-codec` (`replay_journal.rs` wrong-activation/peek `EINVAL`,
+  `rewind_driver.rs` stray-finish pairing) — tests where the primitives live.
+- **Task C (externref-scan) — investigated, recommendation: FOLLOW-UP.**
+  `scanSegmentedForkReferenceExternrefHandles` DOES re-decode the fork-codec
+  segmented wire in TypeScript (duplicating decode `fork-codec` owns), so the
+  earlier "wrong-direction" flag holds — but the fix (fork-codec owns the scan;
+  host consumes decoded handles) belongs in a follow-up (not a correctness bug;
+  re-adding a module export now fights this PR's floor reduction). Recorded in
+  `docs/future-improvements.md`.
+
+## Endgame (remaining)
+
+Inversion items 1-5 are complete and pushed. Remaining before hand-off:
+1. **Full cross-host validation.** Node is extensively green. The BROWSER leg is
+   OWED — `./run.sh browser`, Chromium + WebKit fork validation (the inversion
+   changed the shared drive path; Node green does not prove browser).
+2. **Triage the pre-existing `fork-dlopen-replay-e2e` failure** (2 pthread-hosted
+   -dlopen tests, `__wpk_fork_frame_reserve` "requires a callable"; present at the
+   pre-campaign baseline) — real fix vs. documented tracked issue. Must not ship
+   as silently green.
+3. **Serve** a local dev build for maintainer manual testing (URL atop the summary).
+4. **Curate** the campaign onto a SEPARATE branch for review (byte-identical tree
+   via `git range-diff`; Brandon author; drop scratch). The curated force-push
+   WAITS for maintainer review — do not push it.
+
+Maintainer is SOLE MERGER. Forward-only pushes to the PR branch only.
+
 ## Standing rulings
 
 - Work in `/Users/brandon/kandelo-abi44-reconcile` on the PR branch. Commit per
