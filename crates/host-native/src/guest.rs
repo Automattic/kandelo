@@ -5340,30 +5340,40 @@ fn spawn_guest_thread(
                                 // ever commits a frame.
                                 capture_for_fork.lock().unwrap().reset();
                                 coord.set_mode(mode as u32);
-                                let root = fm.fm_begin_unwind.call(&mut caller, (0, ch as u32))?;
+                                // Coarse capture-begin: ONE module call opens the
+                                // capture (reclaiming any prior fork), publishes the
+                                // KFMS arena root into the module buffer, and drives
+                                // the guest's `wpk_fork_unwind_begin(root)` through the
+                                // injector shim (slot bound at instantiation) — folding
+                                // the former `fm_begin_unwind` + `caller_export_typed(
+                                // UNWIND_BEGIN)` + direct call. Native is single-
+                                // activation, so no side activations are passed
+                                // (`sides_count == 0`).
+                                let root = fm.fm_parent_begin_capture.call(
+                                    &mut caller,
+                                    (ch as u32, fm.empty_module_state_root, 0, 0),
+                                )?;
                                 let errno = fm.fm_last_errno.call(&mut caller, ())?;
                                 if errno != 0 {
                                     return Ok(-(errno));
                                 }
-                                let unwind_begin: wasmtime::TypedFunc<u32, ()> = caller_export_typed(
-                                    &mut caller,
-                                    wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
-                                )?;
-                                unwind_begin.call(&mut caller, root)?;
                                 coord.set_root(root);
                                 Ok(0) // ignored by the caller while unwinding
                             }
                             ForkCoordPhase::Replaying => {
-                                let rewind_end: wasmtime::TypedFunc<(), ()> = caller_export_typed(
-                                    &mut caller,
-                                    wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
-                                )?;
-                                rewind_end.call(&mut caller, ())?;
-                                fm.fm_finish_replay.call(&mut caller, ())?;
+                                // Coarse replay-finish: ONE module call drives the
+                                // guest's `wpk_fork_rewind_end()` (slot bound at
+                                // instantiation) then finishes the process replay —
+                                // folding the former `caller_export_typed(REWIND_END)` +
+                                // direct call + `fm_finish_replay`. `abort == 0`: native
+                                // models a failed/gated fork as a NORMAL parent replay
+                                // that returns a forced errno (never an abort-replay),
+                                // so this finish is always the rewind-end flip.
+                                fm.fm_parent_finish.call(&mut caller, 0)?;
                                 let errno = fm.fm_last_errno.call(&mut caller, ())?;
                                 if errno != 0 {
                                     return Err(wasmtime::Error::msg(format!(
-                                        "fm_finish_replay failed: errno {errno}"
+                                        "fm_parent_finish failed: errno {errno}"
                                     )));
                                 }
                                 coord.set_phase(ForkCoordPhase::Idle);
@@ -6871,78 +6881,13 @@ fn spawn_guest_thread(
             }
 
             // -- Drive-table phase-flip bind (activation 0 only) -------------
-            // Bind each guest fork phase-flip export into
-            // `__wpk_fork_drive_table` at `fm_drive_table_base(0) +
-            // DRIVE_SLOT_*`, so the coarse `fm_parent_*`/`fm_child_*` entries
-            // can `call_indirect` them through the injected `fm_drive_execute`
-            // shim (mirrors the TS `bindActivation{UnwindBegin,Seal,Begin,
-            // Finish}Drive` binds in `fork-process-continuation.ts`). This is
-            // the crux of the coarse mechanism on native: the ref-typed table
-            // bind is the irreducible host floor; the module owns the drive.
-            // A frames-only fork-instrumented guest exports all six; a
-            // non-instrumented guest exports none, so this is a byte-for-byte
-            // no-op for it (the `get_func` lookups all miss). Native is
-            // single-activation, so `fm_drive_table_base(0)` is always 0.
-            {
-                let phase_base = match fm.fm_drive_table_base.call(&mut store, 0) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!("fm_drive_table_base(0) failed: {e:#}");
-                        return;
-                    }
-                };
-                let Ok(phase_base) = u64::try_from(phase_base) else {
-                    eprintln!("fm_drive_table_base(0) returned a negative base {phase_base}");
-                    return;
-                };
-                let phase_flips: [(u32, &str); 6] = [
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_UNWIND_BEGIN,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
-                    ),
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_UNWIND_END,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END,
-                    ),
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_REWIND_BEGIN,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
-                    ),
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_REWIND_END,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
-                    ),
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_ABORT_BEGIN,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_BEGIN,
-                    ),
-                    (
-                        fork_codec::drive_plan::DRIVE_SLOT_ABORT_END,
-                        wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_END,
-                    ),
-                ];
-                for (slot_off, name) in phase_flips {
-                    let Some(func) = instance.get_func(&mut store, name) else {
-                        continue; // non-instrumented guest, or an omitted export
-                    };
-                    let slot = phase_base + u64::from(slot_off);
-                    let needed = slot + 1;
-                    let current = fm.drive_table.size(&mut store);
-                    if needed > current {
-                        if let Err(e) =
-                            fm.drive_table.grow(&mut store, needed - current, Ref::Func(None))
-                        {
-                            eprintln!(
-                                "growing fork-module __wpk_fork_drive_table for {name} failed: {e:#}"
-                            );
-                            return;
-                        }
-                    }
-                    if let Err(e) = fm.drive_table.set(&mut store, slot, Ref::Func(Some(func))) {
-                        eprintln!("binding __wpk_fork_drive_table[{slot}] ({name}) failed: {e:#}");
-                        return;
-                    }
-                }
+            // The crux of the coarse mechanism: bind each guest fork phase-flip
+            // export into `__wpk_fork_drive_table` so the coarse `fm_parent_*`/
+            // `fm_child_*` entries can `call_indirect` them. See
+            // `bind_fork_phase_flip_drive_table`'s doc comment.
+            if let Err(e) = bind_fork_phase_flip_drive_table(&mut store, &instance, fm) {
+                eprintln!("{e:#}");
+                return;
             }
 
             // -- Static-root catalog mirror (activation 0 only) --------------
@@ -7074,6 +7019,78 @@ where
             None
         }
     }
+}
+
+/// Bind each guest fork phase-flip export
+/// (`wpk_fork_{unwind,rewind,abort}_{begin,end}`) into the co-resident
+/// module's `__wpk_fork_drive_table` at `fm_drive_table_base(0) +
+/// DRIVE_SLOT_*`, so the coarse `fm_parent_*`/`fm_child_*` entries can
+/// `call_indirect` them through the injected `fm_drive_execute` shim (mirrors
+/// the TS `bindActivation{UnwindBegin,Seal,Begin,Finish}Drive` binds in
+/// `host/src/fork-process-continuation.ts`). This ref-typed table bind is the
+/// irreducible host floor of the coarse mechanism; the module owns the drive
+/// itself. Native is single-activation, so `fm_drive_table_base(0)` is always
+/// 0. A frames-only fork-instrumented guest exports all six flips; a
+/// non-instrumented guest exports none, so this is a byte-for-byte no-op for
+/// it. Called once per fork-capable guest instance (both fork drivers:
+/// `spawn_guest_thread` for the main thread and `run_worker_thread` for a
+/// pthread), after the guest instance exists and its bootstrap has run.
+fn bind_fork_phase_flip_drive_table(
+    store: &mut Store<()>,
+    instance: &wasmtime::Instance,
+    fm: &ForkModule,
+) -> anyhow::Result<()> {
+    let phase_base = fm
+        .fm_drive_table_base
+        .call(&mut *store, 0)
+        .map_err(|e| anyhow::anyhow!("fm_drive_table_base(0) failed: {e:#}"))?;
+    let phase_base = u64::try_from(phase_base)
+        .map_err(|_| anyhow::anyhow!("fm_drive_table_base(0) returned a negative base {phase_base}"))?;
+    let phase_flips: [(u32, &str); 6] = [
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_UNWIND_BEGIN,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
+        ),
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_UNWIND_END,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END,
+        ),
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_REWIND_BEGIN,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
+        ),
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_REWIND_END,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
+        ),
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_ABORT_BEGIN,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_BEGIN,
+        ),
+        (
+            fork_codec::drive_plan::DRIVE_SLOT_ABORT_END,
+            wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_END,
+        ),
+    ];
+    for (slot_off, name) in phase_flips {
+        let Some(func) = instance.get_func(&mut *store, name) else {
+            continue; // non-instrumented guest, or an omitted export
+        };
+        let slot = phase_base + u64::from(slot_off);
+        let needed = slot + 1;
+        let current = fm.drive_table.size(&mut *store);
+        if needed > current {
+            fm.drive_table
+                .grow(&mut *store, needed - current, Ref::Func(None))
+                .map_err(|e| {
+                    anyhow::anyhow!("growing __wpk_fork_drive_table for {name} failed: {e:#}")
+                })?;
+        }
+        fm.drive_table
+            .set(&mut *store, slot, Ref::Func(Some(func)))
+            .map_err(|e| anyhow::anyhow!("binding __wpk_fork_drive_table[{slot}] ({name}) failed: {e:#}"))?;
+    }
+    Ok(())
 }
 
 /// Read a guest export by name FROM WITHIN a host import closure — i.e. from
@@ -7595,7 +7612,6 @@ fn run_fork_capable_entry(
                 };
                 if !drive_fork_capture_seal_and_launch_child(
                     store,
-                    instance,
                     guest_mem,
                     channel_offset,
                     fm,
@@ -7672,39 +7688,46 @@ fn run_fork_capable_entry(
 /// resume.
 fn drive_fork_capture_seal_and_launch_child(
     store: &mut Store<()>,
-    instance: &wasmtime::Instance,
     guest_mem: &SharedMemory,
     ch: usize,
     fm: &ForkModule,
     coord: &Arc<ForkCoordState>,
     capture: &Arc<Mutex<NativeReferenceCapture>>,
 ) -> bool {
-    let Some(unwind_end) = get_guest_export_typed::<(), ()>(
-        &mut *store,
-        instance,
-        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END,
-    ) else {
-        return false;
+    // Coarse capture SEAL: ONE module call drives the guest's
+    // `wpk_fork_unwind_end()` (slot bound at instantiation), seals every frame
+    // writer + the process journal, and serializes the child-inheritable KFRE
+    // journal image into a freshly channel-mmap'd chunk — folding the former
+    // `get_guest_export_typed(UNWIND_END)` + direct call + `fm_finish_unwind` +
+    // `fm_serialize_journal_alloc`. Returns that chunk's guest offset (0 ==
+    // failure; `fm_journal_image_len` reports its byte length). A gated fork
+    // below never launches a child, so it ignores this image; serializing it
+    // unconditionally keeps the seal on ONE coarse phase entry and is harmless.
+    let image_ptr = match fm.fm_parent_seal_capture.call(&mut *store, ch as u32) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("fm_parent_seal_capture failed: {e:#}");
+            return false;
+        }
     };
-    if let Err(e) = unwind_end.call(&mut *store, ()) {
-        eprintln!("wpk_fork_unwind_end failed: {e:#}");
-        return false;
-    }
-    if let Err(e) = fm.fm_finish_unwind.call(&mut *store, ()) {
-        eprintln!("fm_finish_unwind failed: {e:#}");
-        return false;
-    }
     match fm.fm_last_errno.call(&mut *store, ()) {
         Ok(0) => {}
         Ok(errno) => {
-            eprintln!("fm_finish_unwind failed: errno {errno}");
+            eprintln!("fm_parent_seal_capture failed: errno {errno}");
             return false;
         }
         Err(e) => {
-            eprintln!("fm_last_errno after fm_finish_unwind failed: {e:#}");
+            eprintln!("fm_last_errno after fm_parent_seal_capture failed: {e:#}");
             return false;
         }
     }
+    let image_len = match fm.fm_journal_image_len.call(&mut *store, ()) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("fm_journal_image_len failed: {e:#}");
+            return false;
+        }
+    };
     // N1-I5b Task 1: seal the just-completed capture into the KFMS scratch
     // arena, BEFORE the real SYS_FORK/SYS_VFORK channel post below — see
     // this function's doc comment, step 3.
@@ -7742,21 +7765,11 @@ fn drive_fork_capture_seal_and_launch_child(
         // supported/rejected-fork paths, so it must still be replayed to
         // resume at the `fork()` call site, just with the FORCED errno
         // instead of a channel reply.
-        if let Err(e) = fm.fm_begin_replay.call(&mut *store, ()) {
-            eprintln!("fm_begin_replay (gated fork abort) failed: {e:#}");
-            return false;
-        }
-        match fm.fm_last_errno.call(&mut *store, ()) {
-            Ok(0) => {}
-            Ok(errno) => {
-                eprintln!("fm_begin_replay (gated fork abort) failed: errno {errno}");
-                return false;
-            }
-            Err(e) => {
-                eprintln!("fm_last_errno after fm_begin_replay (gated fork abort) failed: {e:#}");
-                return false;
-            }
-        }
+        // The PARENT's own frame rewind (begin_replay + the guest
+        // `wpk_fork_rewind_begin` drive) is folded into the coarse
+        // `fm_parent_replay` at the tail of this gated branch, AFTER the
+        // reference-state seeding below — the same ordering the child path
+        // uses (seed references, THEN reconstruct).
         // N1 refcomplete substrate (2026-09-05 gate-hang fix): seed
         // `reference_state()` (`begin_reference_replay_only`) but do NOT
         // drive `fm_build_gc_plan`/`fm_drive_execute` against the sealed
@@ -7889,47 +7902,33 @@ fn drive_fork_capture_seal_and_launch_child(
         if !begin_reference_replay_only(&mut *store, fm) {
             return false;
         }
-        let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
-            &mut *store,
-            instance,
-            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
-        ) else {
+        // Coarse parent replay: begin the parent rewind + drive the guest's
+        // `wpk_fork_rewind_begin(root)` (slot bound at instantiation) in ONE
+        // module call, folding the former `fm_begin_replay` + direct
+        // `wpk_fork_rewind_begin` call. The module drives from each
+        // activation's stored `module_buffer` (== `coord.root()` here).
+        if let Err(e) = fm.fm_parent_replay.call(&mut *store, ()) {
+            eprintln!("fm_parent_replay (gated fork abort) failed: {e:#}");
             return false;
-        };
-        let root = coord.root();
-        if let Err(e) = rewind_begin.call(&mut *store, root) {
-            eprintln!("wpk_fork_rewind_begin (gated fork abort) failed: {e:#}");
-            return false;
+        }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_parent_replay (gated fork abort) failed: errno {errno}");
+                return false;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_parent_replay (gated fork abort) failed: {e:#}");
+                return false;
+            }
         }
         coord.set_phase(ForkCoordPhase::Replaying);
         return true;
     }
 
-    let image_ptr = match fm.fm_serialize_journal_alloc.call(&mut *store, ch as u32) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("fm_serialize_journal_alloc failed: {e:#}");
-            return false;
-        }
-    };
-    match fm.fm_last_errno.call(&mut *store, ()) {
-        Ok(0) => {}
-        Ok(errno) => {
-            eprintln!("fm_serialize_journal_alloc failed: errno {errno}");
-            return false;
-        }
-        Err(e) => {
-            eprintln!("fm_last_errno after fm_serialize_journal_alloc failed: {e:#}");
-            return false;
-        }
-    }
-    let image_len = match fm.fm_journal_image_len.call(&mut *store, ()) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("fm_journal_image_len failed: {e:#}");
-            return false;
-        }
-    };
+    // The journal image was serialized by the coarse `fm_parent_seal_capture`
+    // above; validate it now that this fork WILL launch a child (a gated fork
+    // returned earlier and never reaches here).
     if image_ptr == 0 || image_len <= 0 {
         eprintln!("fork-module produced an invalid journal image (ptr={image_ptr}, len={image_len})");
         return false;
@@ -7971,37 +7970,38 @@ fn drive_fork_capture_seal_and_launch_child(
     let fork_result = if ret < 0 { -(errno as i32) } else { ret as i32 };
     coord.set_fork_result(fork_result);
 
-    if let Err(e) = fm.fm_begin_replay.call(&mut *store, ()) {
-        eprintln!("fm_begin_replay failed: {e:#}");
+    // N1-I5 Task 3: reconstruct the PARENT's own reference graph (its captured
+    // frames may hold reference-typed locals) BEFORE the guest rewind drive —
+    // the native reference floor, kept granular because the coarse
+    // `fm_parent_replay` does NOT fold reference reconstruction (see
+    // `drive_reference_replay`'s doc comment). Ordered before the coarse replay
+    // for the same reason the child path seeds references before
+    // `fm_child_reconstruct`: the guest is still in NORMAL state here, exactly
+    // as it was before `fm_begin_replay` in the former host sequence, so the
+    // reconstruction drive sees identical guest state.
+    if !drive_reference_replay(&mut *store, fm, guest_mem) {
+        return false;
+    }
+    // Coarse parent replay: begin the parent rewind + drive the guest's
+    // `wpk_fork_rewind_begin(root)` (slot bound at instantiation) in ONE module
+    // call, folding the former `fm_begin_replay` + direct
+    // `wpk_fork_rewind_begin(root)` call. `root` (== each activation's stored
+    // `module_buffer`, smuggled to the child above) is what the module's rewind
+    // plan drives from internally.
+    if let Err(e) = fm.fm_parent_replay.call(&mut *store, ()) {
+        eprintln!("fm_parent_replay failed: {e:#}");
         return false;
     }
     match fm.fm_last_errno.call(&mut *store, ()) {
         Ok(0) => {}
         Ok(errno) => {
-            eprintln!("fm_begin_replay failed: errno {errno}");
+            eprintln!("fm_parent_replay failed: errno {errno}");
             return false;
         }
         Err(e) => {
-            eprintln!("fm_last_errno after fm_begin_replay failed: {e:#}");
+            eprintln!("fm_last_errno after fm_parent_replay failed: {e:#}");
             return false;
         }
-    }
-    // N1-I5 Task 3: drive the same reference-replay sub-sequence for the
-    // PARENT's own rewind (its captured frames may hold reference-typed
-    // locals too — see `drive_reference_replay`'s doc comment).
-    if !drive_reference_replay(&mut *store, fm, guest_mem) {
-        return false;
-    }
-    let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
-        &mut *store,
-        instance,
-        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
-    ) else {
-        return false;
-    };
-    if let Err(e) = rewind_begin.call(&mut *store, root) {
-        eprintln!("wpk_fork_rewind_begin failed: {e:#}");
-        return false;
     }
     coord.set_phase(ForkCoordPhase::Replaying);
     true
@@ -8331,30 +8331,29 @@ fn run_worker_thread(
                     ForkCoordPhase::Idle => {
                         capture_for_fork.lock().unwrap().reset();
                         coord.set_mode(mode as u32);
-                        let root = fm.fm_begin_unwind.call(&mut caller, (0, ch as u32))?;
+                        // Coarse capture-begin (worker-thread mirror of the main
+                        // closure): open the capture + drive the guest's
+                        // `wpk_fork_unwind_begin(root)` in one module call.
+                        let root = fm.fm_parent_begin_capture.call(
+                            &mut caller,
+                            (ch as u32, fm.empty_module_state_root, 0, 0),
+                        )?;
                         let errno = fm.fm_last_errno.call(&mut caller, ())?;
                         if errno != 0 {
                             return Ok(-(errno));
                         }
-                        let unwind_begin: wasmtime::TypedFunc<u32, ()> = caller_export_typed(
-                            &mut caller,
-                            wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
-                        )?;
-                        unwind_begin.call(&mut caller, root)?;
                         coord.set_root(root);
                         Ok(0) // ignored by the caller while unwinding
                     }
                     ForkCoordPhase::Replaying => {
-                        let rewind_end: wasmtime::TypedFunc<(), ()> = caller_export_typed(
-                            &mut caller,
-                            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
-                        )?;
-                        rewind_end.call(&mut caller, ())?;
-                        fm.fm_finish_replay.call(&mut caller, ())?;
+                        // Coarse replay-finish (worker-thread mirror): drive the
+                        // guest's `wpk_fork_rewind_end()` + finish the replay in one
+                        // module call. `abort == 0` (native never abort-replays).
+                        fm.fm_parent_finish.call(&mut caller, 0)?;
                         let errno = fm.fm_last_errno.call(&mut caller, ())?;
                         if errno != 0 {
                             return Err(wasmtime::Error::msg(format!(
-                                "fm_finish_replay failed: errno {errno}"
+                                "fm_parent_finish failed: errno {errno}"
                             )));
                         }
                         coord.set_phase(ForkCoordPhase::Idle);
@@ -8459,6 +8458,15 @@ fn run_worker_thread(
                 dest.set(&mut store, slot, thunk)?;
             }
         }
+    }
+
+    // N1 residual #4a: bind this thread's guest fork phase-flip exports into
+    // the co-resident module's drive table so the shared coarse fork driver
+    // (`drive_fork_capture_seal_and_launch_child` + this thread's `kernel_fork`
+    // closure) can `call_indirect` them — the same bind `spawn_guest_thread`
+    // does for the main thread. See `bind_fork_phase_flip_drive_table`.
+    if let Some(fm) = fork_module.as_ref() {
+        bind_fork_phase_flip_drive_table(&mut store, &instance, fm)?;
     }
 
     // Thread prelude (mirrors the TS thread worker): initialize this thread's
@@ -8585,7 +8593,6 @@ fn run_worker_thread(
                 };
                 if !drive_fork_capture_seal_and_launch_child(
                     &mut store,
-                    &instance,
                     guest_mem,
                     channel_offset,
                     fm,
