@@ -70,6 +70,20 @@ export interface PlatformIO {
    * backing may omit this hook.
    */
   preparePath?(path: string): Promise<boolean>;
+  /**
+   * Keep every future file handle at or above `fileFloor` and every future
+   * directory handle at or above `dirFloor`. A restored kernel memory still
+   * names the captured machine's handles; a fresh allocation overlapping a
+   * stale value would make old and new indistinguishable before the remap
+   * rewrites them. Only hosts that restore checkpoints need this hook.
+   */
+  reserveHandleFloors?(fileFloor: number, dirFloor: number): void;
+  /**
+   * Keep every future CLOCK_MONOTONIC reading at or above `floorNs`. See
+   * `TimeProvider.advanceMonotonicFloor`; hosts that restore checkpoints
+   * need this hook.
+   */
+  advanceMonotonicFloor?(floorNs: number): void;
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   read(
@@ -166,6 +180,15 @@ export interface PlatformIO {
   // Time
   clockGettime(clockId: number): { sec: number; nsec: number };
   nanosleep(sec: number, nsec: number): void;
+
+  /**
+   * Randomness (optional — a platform without it draws from the host).
+   *
+   * The guest's random bytes are a platform value like its clock readings:
+   * a replicated machine serves recorded draws instead of its host's, so
+   * `host_getrandom` asks the platform before falling back to WebCrypto.
+   */
+  getRandomBytes?(length: number): Uint8Array;
 
   // Process (optional — only needed when process management is available)
   waitpid?(pid: number, options: number): { pid: number; status: number };
