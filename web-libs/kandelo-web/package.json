@@ -1,0 +1,35 @@
+{
+  "name": "@kandelo/web",
+  "version": "0.1.0",
+  "description": "Browser distribution of the Kandelo POSIX-compatible WebAssembly kernel runtime: BrowserKernel, a synchronous host-side VFS, and a loader that fetches the kernel/rootfs/program Wasm from a Kandelo binaries release.",
+  "license": "GPL-2.0-or-later",
+  "type": "module",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "fzstd": "^0.1.1"
+  }
+}

@@ -3,9 +3,7 @@
  *
  * Exposes window.__runSqliteTest("select1.test", timeoutMs) for Playwright.
  */
-import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
-import { writeVfsFile } from "@host/vfs/image-helpers";
+import { BrowserKernel, MemoryFileSystem, writeVfsFile } from "@kandelo/web";
 import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
 import {

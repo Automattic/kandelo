@@ -15,6 +15,7 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
+      "@kandelo/web": ["../../web-libs/kandelo-web/src/index.ts"],
       "@host/*": ["../../host/src/*"]
     }
   },

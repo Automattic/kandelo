@@ -11,7 +11,7 @@
  * bridge entirely on the main thread; the kernel worker no longer needs a
  * special direct port.
  */
-import type { BrowserKernel } from "@host/browser-kernel-host";
+import type { BrowserKernel } from "@kandelo/web";
 import { HttpBridgeHost, type HttpRequest } from "../http-bridge";
 import { initServiceWorkerBridge } from "./service-worker-bridge";
 

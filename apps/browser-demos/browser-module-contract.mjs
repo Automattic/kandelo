@@ -10,6 +10,16 @@ import { resolve } from "node:path";
 export function browserRepositoryAliases(repoRoot) {
   return Object.freeze({
     "@host": resolve(repoRoot, "host", "src"),
+    // Dogfood the published browser package: `@kandelo/web` resolves to its
+    // source entry, which re-exports the same host modules. Published
+    // consumers get the bundled `dist/` instead.
+    "@kandelo/web": resolve(
+      repoRoot,
+      "web-libs",
+      "kandelo-web",
+      "src",
+      "index.ts",
+    ),
   });
 }
 

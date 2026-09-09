@@ -5,7 +5,7 @@
  * Each call creates a fresh BrowserKernel, runs the program, cleans up,
  * and returns { exitCode, stdout, stderr, hostDiagnostics }.
  */
-import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserKernel } from "@kandelo/web";
 import type { HostDiagnostic } from "@host/host-diagnostic";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";

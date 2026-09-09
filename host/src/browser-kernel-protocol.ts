@@ -79,6 +79,13 @@ export interface InitMessage {
   closedLazyAssets?: ClosedLazyAsset[];
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
+  /**
+   * Ask the worker to report its VFS SharedArrayBuffer in the `ready` message
+   * so the main thread can build `BrowserKernel.hostFs`. Off by default: it
+   * makes the main thread a co-owner of the VFS SAB, which is exactly what the
+   * kernel-owned VFS avoids (see `BrowserKernelOptions.exposeHostFs`).
+   */
+  reportFsSab?: boolean;
   bridgePort?: MessagePort;
   config: {
     maxWorkers: number;
@@ -467,6 +474,14 @@ export interface ReadyMessage {
   type: "ready";
   /** Versioned PCM-only shared transport claimed by the kernel worker. */
   pcmTransport?: PcmTransportDescriptor;
+  /**
+   * The SharedArrayBuffer backing the kernel-owned VFS, sent only when the
+   * init message set `reportFsSab`. It lets the main thread build a
+   * synchronous host-side filesystem view over the same bytes (see
+   * `BrowserKernel.hostFs`); writes from either side are immediately visible
+   * to the other.
+   */
+  fsSab?: SharedArrayBuffer;
 }
 
 export interface InitErrorMessage {
