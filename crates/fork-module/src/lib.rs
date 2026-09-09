@@ -31,8 +31,10 @@
 //! reaches its own frame state through the activation-parameterized shared
 //! exports `fm_frame_{reserve,commit,peek,next}(act, ...)` / `fm_resume_peek(act)`
 //! — the targets a per-activation wasm TRAMPOLINE calls with a constant
-//! activation-id immediate (see `tests/fork-trampoline.mjs` /
-//! `tests/harness-multi-activation.mjs`). The FROZEN guest-facing
+//! activation-id immediate (the production port is
+//! `host/src/fork-module-trampoline.ts`, proven by
+//! `host/test/fork-module-trampoline.test.ts`; the multi-activation frame/journal
+//! primitives are unit-tested in `crates/fork-codec`). The FROZEN guest-facing
 //! `__wpk_fork_frame_*` exports remain the single-activation path (they route to
 //! `PRIMARY_ACTIVATION`), so no guest re-instrumentation is required. The LIVE
 //! host wiring of the trampolines, per-activation references, and the KFLA

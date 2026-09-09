@@ -189,10 +189,19 @@ else
 fi
 
 if [[ "${1:-}" == "--run" ]]; then
+  # The fine-grained frame/journal/replay drive that the former co-residency and
+  # multi-activation harnesses exercised in bare Node is now covered where the
+  # primitives live: crates/fork-codec (linked_frames_writer, rewind_driver,
+  # replay_journal, replay_events, catalogs). Those harnesses drove the deleted
+  # in-realm fixed-arena primitives (fm_begin_unwind_fixed_arena, fm_finish_unwind,
+  # fm_begin_replay/abort, fm_*_child_replay, ...); the coarse fm_parent_*/fm_child_*
+  # path they were meant to migrate to blocks on a channel servicer + guest drive
+  # table a single-threaded harness cannot provide. The two V8 harnesses that
+  # remain drive only RETAINED exports: harness.mjs (co-residency + retained
+  # coordinator surface) and harness-capture.mjs (the reference-capture marshalling
+  # surface no host-triple Rust test can exercise on the actual engine).
   echo "== running co-residency harness (wasm32) ==" >&2
   node crates/fork-module/tests/harness.mjs "$WASM32"
-  echo "== running multi-activation frame-routing harness (wasm32) ==" >&2
-  node crates/fork-module/tests/harness-multi-activation.mjs "$WASM32"
   echo "== running reference-capture session harness (wasm32) ==" >&2
   node crates/fork-module/tests/harness-capture.mjs "$WASM32"
 fi
