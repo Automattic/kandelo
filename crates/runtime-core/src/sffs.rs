@@ -145,7 +145,7 @@ pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>,
 
     let mut offset = sab_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
     // The lazy-file JSON section is unconditional; the other two are flagged.
-    let mut skip_section = |offset: &mut u64| -> Result<(), Errno> {
+    let skip_section = |offset: &mut u64| -> Result<(), Errno> {
         let len = source_u32(source, *offset).map_err(|_| Errno::EINVAL)? as u64;
         *offset = offset
             .checked_add(4)
@@ -341,7 +341,10 @@ impl<S: BlockSource> Sffs<S> {
         Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
     }
 
-    /// `block_map_in` for a caller that has only the inode number.
+    /// `block_map_in` for a caller that has only the inode number. Every
+    /// production path already holds the inode bytes (that is the point of the
+    /// cursor), so this exists for tests that name an inode directly.
+    #[cfg(test)]
     fn block_map(&self, ino: u32, file_block: u32) -> Result<u32, Errno> {
         let raw = self.read_inode(ino)?;
         self.block_map_in(&raw, file_block)
