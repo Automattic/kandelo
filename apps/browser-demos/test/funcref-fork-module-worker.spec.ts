@@ -117,6 +117,19 @@ async function runFuncrefFork(
             message: diagnostic.message,
           });
         },
+        // The per-kind reference proof-of-use rides the dedicated
+        // `fork_module_proof` channel (`onForkModuleProof`), NOT
+        // `onHostDiagnostic`. Mirror the Node `centralized-test-helper`
+        // collector so this browser proof reads the same channel.
+        onForkModuleProof: (diagnostic: {
+          source: string;
+          message: string;
+        }) => {
+          diagnostics.push({
+            source: diagnostic.source,
+            message: diagnostic.message,
+          });
+        },
       });
       let initialized = false;
 

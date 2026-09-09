@@ -127,6 +127,20 @@ async function runGcCycleFork(
             message: diagnostic.message,
           });
         },
+        // The typed-GC proof-of-use counters (gc_nodes_reconstructed /
+        // drive_steps_executed) ride the dedicated `fork_module_proof`
+        // channel (`onForkModuleProof`), NOT `onHostDiagnostic`. Mirror the
+        // Node `centralized-test-helper` collector so this browser proof reads
+        // the same channel.
+        onForkModuleProof: (diagnostic: {
+          source: string;
+          message: string;
+        }) => {
+          diagnostics.push({
+            source: diagnostic.source,
+            message: diagnostic.message,
+          });
+        },
       });
       let initialized = false;
 

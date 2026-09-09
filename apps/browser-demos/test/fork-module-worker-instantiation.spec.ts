@@ -70,6 +70,20 @@ async function runSingleFork(
             message: diagnostic.message,
           });
         },
+        // Proof-of-use frame counts ride the dedicated `fork_module_proof`
+        // channel (surfaced as `onForkModuleProof`), NOT `onHostDiagnostic`
+        // (a successful fork is telemetry, not a host problem). Mirror the
+        // Node `centralized-test-helper` collector so this browser proof reads
+        // the same channel.
+        onForkModuleProof: (diagnostic: {
+          source: string;
+          message: string;
+        }) => {
+          diagnostics.push({
+            source: diagnostic.source,
+            message: diagnostic.message,
+          });
+        },
       });
       let initialized = false;
 
