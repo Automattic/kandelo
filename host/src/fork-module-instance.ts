@@ -112,6 +112,15 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // remain exported for `sealForAbort` (partial-capture abort) and the
   // fine-grained module unit tests.
   "fm_parent_seal_capture",
+  // Control-flow inversion: the coarse ABORT-SEAL entry (the mid-unwind sibling
+  // of `fm_parent_seal_capture`). Seals every activation's frame writer + the
+  // process journal (`fm_finish_unwind`) WITHOUT driving the guest
+  // `wpk_fork_unwind_end` (the guest is mid-unwind) or serializing a
+  // child-inheritable image (no child), so the host abort path (`sealForAbort`)
+  // routes through a coarse phase entry rather than the fine-grained
+  // `fm_finish_unwind` directly. `fm_finish_unwind` remains exported for the
+  // fine-grained module unit tests + host-native.
+  "fm_parent_abort_seal",
   // Control-flow inversion: the coarse REPLAY-FINISH entry. Drives each open
   // activation's guest `wpk_fork_rewind_end` (or `wpk_fork_abort_end`) through
   // the injected `fm_drive_execute` shim, then finishes the process replay

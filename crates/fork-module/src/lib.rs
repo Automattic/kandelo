@@ -4543,6 +4543,29 @@ mod wasm {
         }
     }
 
+    /// Coarse ABORT-SEAL entry (the mid-unwind sibling of [`fm_parent_seal_capture`]).
+    /// A partial/aborted capture — a mid-unwind `__wpk_fork_frame_reserve` failure —
+    /// must seal every activation's frame writer + the process journal WITHOUT
+    /// driving the guest `wpk_fork_unwind_end` (the guest is still mid-unwind; that
+    /// flip would corrupt its unwind state machine) and WITHOUT serializing a
+    /// child-inheritable journal image (no child is launched). This wraps
+    /// `finish_unwind_impl` — the SAME seal `fm_parent_seal_capture` performs after
+    /// its unwind-end drive — so the host abort path (`sealForAbort`) routes through
+    /// a coarse phase entry rather than calling the fine-grained `fm_finish_unwind`
+    /// directly. It has NO guest drive and NO serialize to fold, so unlike the other
+    /// coarse entries it is a single-step phase entry, parallel to
+    /// `fm_parent_seal_capture`. After this the host drives the ordinary module
+    /// abort-replay (`fm_parent_abort`). A failed reserve leaves no pending frame
+    /// (`LinkedFrameWriter::reserve_frame` sets `pending` only after a successful
+    /// chunk allocation), so the committed chain is complete and seal-able.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_parent_abort_seal() {
+        match finish_unwind_impl() {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     /// Sequence a whole REPLAY FINISH in the module (control-flow inversion): drive
     /// each open activation's guest `wpk_fork_rewind_end()` (`abort` == 0, moving it
     /// from `REWINDING` back to `NORMAL`) or `wpk_fork_abort_end()` (`abort` != 0,

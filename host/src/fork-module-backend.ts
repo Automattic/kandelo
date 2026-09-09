@@ -918,10 +918,19 @@ export class ForkModuleContinuationBackend {
    * seal-able. After this the coordinator drives the ordinary module
    * abort-replay (`beginAbort`), which attaches drivers over the in-memory
    * journal to replay the already-committed frames.
+   *
+   * Control-flow inversion: routes through the coarse `fm_parent_abort_seal`
+   * phase entry rather than calling the fine-grained `fm_finish_unwind` directly
+   * — the mid-unwind sibling of `sealCaptureAndSerialize`'s
+   * `fm_parent_seal_capture`. The abort-seal has no guest `wpk_fork_unwind_end`
+   * drive and no journal serialization to fold (the guest is mid-unwind and no
+   * child is launched), so the coarse entry wraps the SAME `finish_unwind_impl`
+   * seal `fm_parent_seal_capture` performs after its unwind-end drive.
    */
   sealForAbort(): void {
-    this.exports.fm_finish_unwind();
-    this.requireOk("fm_finish_unwind");
+    this.requireSetup("seal for abort");
+    this.exports.fm_parent_abort_seal();
+    this.requireOk("fm_parent_abort_seal");
   }
 
   /**
