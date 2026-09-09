@@ -47,6 +47,12 @@ export default defineConfig({
     // Vitest's thread pool has historically made task reporting unreliable
     // under GitHub runner contention.
     pool: "forks",
+    // The SDK lowers exceptions and setjmp to modern wasm-EH
+    // (`-wasm-use-legacy-eh=false`), so every guest built from it needs
+    // V8's exnref support. The conformance runners pass this flag on
+    // their own node invocations; vitest workers default to an empty
+    // execArgv and must be given it explicitly.
+    execArgv: ["--experimental-wasm-exnref"],
     // Fork-heavy files launch their own process workers. Keep local runs
     // parallel, but serialize CI files so guest timeouts measure the runtime
     // behavior under test instead of runner oversubscription.
