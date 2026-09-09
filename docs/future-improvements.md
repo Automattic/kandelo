@@ -272,6 +272,62 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### WASI modules that define their own memory cannot be run (proven boundary)
+
+`host/src/worker-main.ts:3292` refuses any WASI module that defines and
+exports its own linear memory rather than importing one, and
+`host/src/wasi-detect.ts:44` (`wasiModuleDefinesMemory`) is what detects it.
+This is the shape a **default wasi-sdk link emits**, so it is the first thing
+someone trying to run an off-the-shelf WASI binary will hit. The refusal is a
+real platform boundary with a proven cause, not a conservative stub, and it
+should stay a loud failure.
+
+Measured 2026-09-09 on Node v24.15.0, Chromium 151, and WebKit 26.5 (all
+agree). Harness and raw results: `docs/plans/probes/2026-09-09-k10/`, probe 4.
+
+- **A self-defined memory is not shared.** Kandelo's syscall channel needs a
+  shared memory: the guest side blocks on `memory.atomic.wait32` and the
+  kernel worker wakes it with `Atomics.notify`. Neither works on a
+  non-shared memory, so there is no way to make a syscall at all.
+- **`memory.atomic.wait32` on a non-shared memory fails, and the engines
+  disagree on how.** Node and Chromium throw `Atomics.wait cannot be called
+  in this context`; WebKit traps `Out of bounds memory access`.
+- **The `Atomics.notify` half fails SILENTLY — it returns `0`** rather than
+  throwing. Any future code that reaches this path would look like a lost
+  wakeup rather than an unsupported configuration. If this category is ever
+  revisited, assert shared-ness explicitly instead of relying on a failure.
+- **The guest-side translation cannot be moved out of the way either.** A
+  co-resident side module (the `crates/wasi-module` design) must declare its
+  imported memory `shared` in order to use `memory.atomic.wait32`, so it
+  cannot even be *linked* against a self-defined non-shared memory:
+  instantiation fails with a shared-state mismatch on all three engines.
+  Separately, the wiring is circular — the side module needs the guest's
+  memory at its own instantiation, and the guest needs the side module's
+  exports at its own instantiation.
+- **The one serviceable sub-case is not worth having.** A guest that defines
+  its memory but declares it `shared` *can* be served, but only by breaking
+  the cycle with a JavaScript trampoline that forwards every WASI call —
+  reinstating the per-call JS frame the Rust migration exists to remove. No
+  such artifact exists in this repository.
+
+To actually support off-the-shelf WASI binaries, the fix is not to soften the
+check: it is to relink or rewrite the module to import a shared memory
+(`--import-memory --shared-memory`), which is what Kandelo's own
+`wasm32-posix` toolchain already does. A future improvement could detect this
+category and say exactly that in the error message.
+
+Related and separate: the repository has **no way to build a realistic WASI
+guest** today. There is no wasi-libc sysroot in `flake.nix`
+(`clang --target=wasm32-wasi` fails in the dev shell) and the pinned Rust
+toolchain carries std only for `aarch64-apple-darwin` and
+`wasm32-unknown-unknown`, not `wasm32-wasip1`. Every WASI test fixture is
+therefore hand-written `.wat`, which can call every entry point but cannot
+exercise a real libc's heap growth, path handling, or multi-batch directory
+reads. Adding a wasi-sdk to the flake was considered and **declined**
+2026-09-09: it changes the build-environment contract and pulls a large nix
+closure for a capability with no in-repo consumer. Revisit only when a real
+WASI binary needs to ship.
+
 ### Complete SpiderMonkey nonblocking TLS cancellation and write ordering
 
 The native Node compatibility layer now retries OpenSSL `WANT_READ` and
