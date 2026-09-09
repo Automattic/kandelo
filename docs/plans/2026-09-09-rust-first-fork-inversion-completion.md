@@ -135,6 +135,37 @@ NOT keep a production API surface to satisfy harnesses.
   `.superpowers`). Do NOT push it — it needs review + a force-push the
   maintainer approves.
 
+## Progress log
+
+- **#1 folds landed (Node-validated, ABI-neutral, not yet pushed):** replay-finish
+  → `fm_parent_finish`; abort-seal → `fm_parent_abort_seal` (`82c9af0ba`);
+  capture-begin → `fm_parent_begin_capture` (`d09dc4b66`); child-seed →
+  `fm_child_seed` (`ada5850f9`). Reference-replay drive was already coarse inside
+  `fm_parent_replay`/`fm_child_reconstruct`.
+- **#1 remaining (agent running):** abort-replay-begin (`backend.beginAbort`) and
+  borrowed/vfork child-seed (`beginBorrowedChildReplay`/`addActivationBorrowedChildReplay`)
+  — both mirror FOLD 1 / FOLD 2; being folded now.
+- **PROVEN GENUINE FLOOR (kept with proof, NOT a convenient hold):**
+  `setActivationResumeCatalog` (`worker-main.ts:853`) + the resume-catalog seeds
+  (`fm_set_resume_catalog` / `fm_set_activation_resume_catalog`). The host extracts
+  resume-catalog ordinals from the guest `WebAssembly.Module`'s fork-instrument
+  custom section — host-only; the co-resident module cannot parse the guest
+  binary — and seeds them once at instantiation so module slot numbering matches
+  `__wpk_fork_resume_table`. A setup seed, not a drive loop; both hosts +
+  host-native do it. This is legitimate bedrock.
+- **Two premise corrections (from the fold agent, with proof):** the module does
+  NOT own the KFMS arena write protocol (`fork-codec` is decode-only; reserve/
+  commit/seal live in host TS `ForkModuleStateArena`) — so JournalImage/
+  ActivationContinuations *appends* stay host-side (candidate for a later
+  TS→Rust push, but NOT an `fm_*` export floor). A side activation's `fixedPrefix`
+  is a genuine host residue (no KFMS record carries it) — the host passes it into
+  `fm_child_seed`.
+- **ENDGAME TRIAGE ITEM (pre-existing, NOT a campaign regression):**
+  `fork-dlopen-replay-e2e.test.ts` — 2 pthread-hosted-dlopen tests fail with
+  `__wpk_fork_frame_reserve` import "requires a callable"; confirmed identical at
+  the pre-fold baseline. Decide during endgame: real fix vs. documented tracked
+  issue. Must NOT be silently shipped as green.
+
 ## Standing rulings
 
 - Work in `/Users/brandon/kandelo-abi44-reconcile` on the PR branch. Commit per
