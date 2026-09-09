@@ -22,6 +22,7 @@ import type { MountSpec } from "./vfs/default-mounts";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { MachineCheckpoint } from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
+import type { MachineStateHash } from "./replication/state-hash";
 import type { ReplicationReplaySpec } from "./replication/worker";
 
 export type { HttpRequest, HttpResponse };
@@ -432,6 +433,56 @@ export interface ReplicationReplayDrainMessage {
 }
 
 /**
+ * Seal this machine's recording for a take-over.
+ *
+ * Freezes the machine, stops the streaming recorder while every process is
+ * parked — so the log's final entry and the frozen state name one instant —
+ * and hashes the checkpoint the freeze read. The machine then resumes and
+ * keeps running, unrecorded: a promotion that falls through leaves it
+ * exactly as a failed capture would, and the taker that adopts it discards
+ * everything the keeper decided after the seal, the way a checkpoint
+ * handover already does.
+ */
+export interface ReplicationSealMessage {
+  type: "replication_seal";
+  requestId: number;
+  unwindTimeoutMs: number;
+  vforkTimeoutMs: number;
+}
+
+/** What a seal produced. Response payload of {@link ReplicationSealMessage}. */
+export type ReplicationSealResponse =
+  | {
+      readonly status: "sealed";
+      /** The log position of the seal: the sequence the next entry would take. */
+      readonly seq: number;
+      readonly hash: MachineStateHash;
+    }
+  | { readonly status: "refused"; readonly reason: string };
+
+/**
+ * Freeze this replica at the seal and hash its state.
+ *
+ * Refused when the replica has not consumed the log through `seq` — the
+ * caller drains further and asks again — and when the machine is not
+ * replaying at all. The freeze is what pins the position: the check runs
+ * while every process is parked, so no read can move the replica between
+ * the check and the read.
+ */
+export interface ReplicationHashReplicaMessage {
+  type: "replication_hash_replica";
+  requestId: number;
+  seq: number;
+  unwindTimeoutMs: number;
+  vforkTimeoutMs: number;
+}
+
+/** Response payload of {@link ReplicationHashReplicaMessage}. */
+export type ReplicationReplicaHashResponse =
+  | { readonly status: "hashed"; readonly hash: MachineStateHash }
+  | { readonly status: "refused"; readonly reason: string };
+
+/**
  * What a replica took from the log it was replaying.
  *
  * `total` is what the replica had been given, which for a live replay is what
@@ -530,6 +581,8 @@ export type MainToKernelMessage =
   | ReplicationReplayStartMessage
   | ReplicationReplayStopMessage
   | ReplicationReplayDrainMessage
+  | ReplicationSealMessage
+  | ReplicationHashReplicaMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage;

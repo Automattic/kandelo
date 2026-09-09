@@ -27,6 +27,8 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
   ReplicationReplayProgress,
+  ReplicationReplicaHashResponse,
+  ReplicationSealResponse,
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
 import type { ReplicationLogEntry } from "./replication/log";
@@ -996,6 +998,51 @@ export class NodeKernelHost {
       entries,
       queue,
     });
+  }
+
+  /**
+   * Seal this machine's recording for a take-over.
+   *
+   * The freeze stops the recorder while every process is parked, so the
+   * log's final entry and the frozen state name one instant, and the hash
+   * covers exactly the machine a drained replica should hold. The machine
+   * resumes and keeps running, unrecorded: the taker that adopts it
+   * discards what the keeper decided after the seal, the way a checkpoint
+   * handover already discards what follows its freeze.
+   */
+  async sealReplicationRecording(
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+  ): Promise<ReplicationSealResponse> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_seal",
+      requestId,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+    });
+    return result as ReplicationSealResponse;
+  }
+
+  /**
+   * Freeze this replica at the seal and hash its state.
+   *
+   * Refused while the replica has not consumed the log through `seq`; the
+   * caller drains and asks again. The position check runs inside the
+   * freeze, so the hash covers the machine exactly at the seal.
+   */
+  async hashReplicaAtSeal(
+    seq: number,
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+  ): Promise<ReplicationReplicaHashResponse> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "replication_hash_replica",
+      requestId,
+      seq,
+      unwindTimeoutMs: options.unwindTimeoutMs,
+      vforkTimeoutMs: options.vforkTimeoutMs,
+    });
+    return result as ReplicationReplicaHashResponse;
   }
 
   /** Stop replaying, and report how much of the log this machine took. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MACHINE_STATE_HASH_FORMAT,
   compareMachineStateHashes,
+  comparePromotionStateHashes,
   hashMachineCheckpoint,
 } from "../../src/replication/state-hash";
 import {
@@ -167,5 +168,37 @@ describe("machine divergence report", () => {
     expect(() => compareMachineStateHashes(primary, stale)).toThrow(
       "a machine state hash comparison needs format",
     );
+  });
+});
+
+describe("promotion state hash comparison", () => {
+  it("exempts the kernel region, and nothing else", async () => {
+    // A keeper that never restored and a replica that did never match in
+    // kernel memory — the restore's own kernel calls move the heap — so the
+    // promotion gate compares everything the taker keeps and names the
+    // kernel exemption instead of failing every promotion ever attempted.
+    const keeper = await hashMachineCheckpoint(machine(), 7);
+    const replica = await hashMachineCheckpoint(
+      machine({ kernelMemory: new Uint8Array(128).fill(9) }),
+      7,
+    );
+    expect(compareMachineStateHashes(keeper, replica).diverged).toBe(true);
+    const gate = comparePromotionStateHashes(keeper, replica);
+    expect(gate.diverged).toBe(false);
+    expect(gate.summary).toContain("kernel region exempt");
+
+    // A filesystem that differs still refuses: the exemption is one named
+    // region, not a softer comparison.
+    const drifted = await hashMachineCheckpoint(
+      machine({
+        kernelMemory: new Uint8Array(128).fill(9),
+        filesystems: [mount("/", 8), mount("/home/maker", 3)],
+      }),
+      7,
+    );
+    const refused = comparePromotionStateHashes(keeper, drifted);
+    expect(refused.diverged).toBe(true);
+    expect(refused.regions.map((region) => region.region))
+      .toEqual(["filesystem:/"]);
   });
 });

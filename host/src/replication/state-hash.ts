@@ -230,3 +230,37 @@ export function compareMachineStateHashes(
         .join("; "),
   };
 }
+
+/**
+ * Whether a drained replica's sealed state matches the keeper's, at the
+ * boundary the platform can honestly compare today.
+ *
+ * The kernel region is exempt, and the exemption is a measured boundary
+ * rather than a shortcut: completing a restore makes kernel calls of its
+ * own, which grow the kernel heap and move its bookkeeping
+ * (`host/test/migration/restore-fidelity.test.ts` pins this), so a keeper
+ * that never restored and a replica that did never match there byte for
+ * byte even when they are semantically one machine. Every filesystem and
+ * every process memory must match exactly — those regions evolve only under
+ * the logged decisions, and they are what the person taking the machine
+ * over keeps. Closing the kernel gap means a restore path that leaves
+ * kernel memory untouched, which restore-fidelity names as the open
+ * question it is.
+ */
+export function comparePromotionStateHashes(
+  keeper: MachineStateHash,
+  replica: MachineStateHash,
+): MachineDivergenceReport {
+  const report = compareMachineStateHashes(keeper, replica);
+  const regions = report.regions.filter((item) => item.region !== "kernel");
+  if (regions.length === 0) {
+    return {
+      seq: report.seq,
+      diverged: false,
+      regions,
+      summary: `the two machines agree at log position ${report.seq}, at `
+        + `the promotion boundary (kernel region exempt)`,
+    };
+  }
+  return { ...report, diverged: true, regions };
+}

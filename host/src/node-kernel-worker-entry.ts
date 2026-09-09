@@ -192,7 +192,10 @@ import type {
   SpawnMessage,
   TerminateProcessMessage,
   HttpRequestMessage,
+  ReplicationSealResponse,
+  ReplicationReplicaHashResponse,
 } from "./node-kernel-protocol";
+import { hashMachineCheckpoint } from "./replication/state-hash";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { NodePcmDriver } from "./audio/node-pcm-driver";
 
@@ -866,6 +869,30 @@ function beginStreamAtCapture(): void {
  * no swappable clock. Refusing here is what keeps a caller from holding a log
  * that is silently empty, or a replay that silently read this host's time.
  */
+/**
+ * Stop the decision log at the state a checkpoint just read, and say where.
+ *
+ * `beginStreamAtCapture`'s other half, for the take-over seal: it runs inside
+ * the freeze, so the log's final entry and the frozen state name one instant.
+ * Returns the seal position — the sequence number the next entry would have
+ * taken.
+ */
+function endStreamAtCapture(): number {
+  const recorder = replicationRecorder;
+  if (!recorder) {
+    throw new Error("this machine is not recording a decision log to seal");
+  }
+  replicationRecorder = null;
+  if (replicationIO && baseTimeProvider) {
+    replicationIO.setTimeProvider(baseTimeProvider);
+  }
+  replicationIO?.setRandomProvider(baseRandomProvider);
+  kernelWorker?.setGlQueryTap(null);
+  kernelWorker?.setAcceptSelectionTap(null);
+  kernelWorker?.setHttpExchangeTap(null);
+  return recorder.nextSeq;
+}
+
 function respondToReplication(
   requestId: number,
   swap: (io: VirtualPlatformIO, clock: NodeTimeProvider) => void,
@@ -4927,6 +4954,88 @@ port.on("message", (msg: MainToKernelMessage) => {
         requestId: msg.requestId,
         result: recorder?.entries ?? [],
       });
+      break;
+    }
+    case "replication_seal": {
+      const { requestId, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => post({
+        type: "response",
+        requestId,
+        result: { status: "refused", reason } satisfies ReplicationSealResponse,
+      });
+      let sealSeq = -1;
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        onRead: () => {
+          sealSeq = endStreamAtCapture();
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, sealSeq);
+          post({
+            type: "response",
+            requestId,
+            result: {
+              status: "sealed",
+              seq: sealSeq,
+              hash,
+            } satisfies ReplicationSealResponse,
+          });
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
+      break;
+    }
+    case "replication_hash_replica": {
+      const { requestId, seq, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const refuse = (reason: string) => post({
+        type: "response",
+        requestId,
+        result: {
+          status: "refused",
+          reason,
+        } satisfies ReplicationReplicaHashResponse,
+      });
+      void captureMachineCheckpoint(checkpointMachine, {
+        unwindTimeoutMs,
+        vforkTimeoutMs,
+        // Inside the freeze, so no read can move the replica between the
+        // position check and the state the hash covers.
+        onRead: () => {
+          const reader = replicationReplay?.reader;
+          if (!reader) {
+            throw new Error("this machine is not replaying a decision log");
+          }
+          if (reader.nextSeq !== seq) {
+            throw new Error(
+              `this replica stands at ${reader.nextSeq}, not at the seal `
+                + `${seq}`,
+            );
+          }
+        },
+      }).then(
+        async (result) => {
+          if (result.status !== "captured") {
+            refuse(result.reason);
+            return;
+          }
+          const hash = await hashMachineCheckpoint(result.checkpoint, seq);
+          post({
+            type: "response",
+            requestId,
+            result: {
+              status: "hashed",
+              hash,
+            } satisfies ReplicationReplicaHashResponse,
+          });
+        },
+        (err: unknown) => refuse((err as Error)?.message ?? String(err)),
+      );
       break;
     }
     case "replication_replay_start": {
