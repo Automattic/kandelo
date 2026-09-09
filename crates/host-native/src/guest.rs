@@ -4103,6 +4103,50 @@ pub struct ForkModule {
     /// NOT guest-facing: resolves an externref recipe to its captured
     /// broker `handle`; TRAPS on inconsistency.
     pub fm_externref_handle: wasmtime::TypedFunc<u32, i32>,
+
+    // -- Coarse per-phase entries (the ONE module API every host drives) ----
+    //
+    // These fold the fine-grained `fm_*` sequences above into one call per
+    // fork phase, driving each activation's guest phase-flip export
+    // (`wpk_fork_{unwind,rewind,abort}_{begin,end}`) internally via the
+    // injector-wired `fm_drive_execute` shim through `__wpk_fork_drive_table`.
+    // The host binds those funcrefs into the drive table (see the drive-table
+    // phase-flip bind in `spawn_guest_thread`/`run_worker_thread`) and then
+    // issues these coarse calls, mirroring `host/src/fork-process-
+    // continuation.ts`'s coarse-only orchestration. Native is single-activation
+    // (base 0), so it never passes side activations (`sides_count == 0`).
+    /// `fm_parent_begin_capture(channel_base, arena_root, sides_ptr,
+    /// sides_count) -> act0_root` — opens the capture and drives each guest
+    /// `wpk_fork_unwind_begin(root)`.
+    pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32, u32, u32), u32>,
+    /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` — drives each
+    /// guest `wpk_fork_unwind_end()`, seals, and serializes the child image
+    /// (`fm_journal_image_len` reports its length; 0 return == failure).
+    pub fm_parent_seal_capture: wasmtime::TypedFunc<u32, u32>,
+    /// `fm_parent_abort_seal()` — the mid-unwind seal (no guest drive, no
+    /// serialize) for a partial/aborted capture.
+    pub fm_parent_abort_seal: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_replay()` — begins the parent rewind and drives each guest
+    /// `wpk_fork_rewind_begin(root)`.
+    pub fm_parent_replay: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_abort()` — the abort-tagged mirror of `fm_parent_replay`,
+    /// driving each guest `wpk_fork_abort_begin(root)`.
+    pub fm_parent_abort: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_finish(abort)` — drives each guest `wpk_fork_rewind_end()`
+    /// (abort==0) or `wpk_fork_abort_end()` (abort!=0), then finishes the
+    /// replay/abort.
+    pub fm_parent_finish: wasmtime::TypedFunc<u32, ()>,
+    /// `fm_child_seed(module_state_root, act0_root, sides_ptr, sides_count)` —
+    /// seeds a COW child's replay from the inherited journal image.
+    pub fm_child_seed: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    /// `fm_child_seed_borrowed(module_state_root, act0_root,
+    /// act0_private_prefix, sides_ptr, sides_count)` — the vfork borrowed
+    /// sibling of `fm_child_seed`.
+    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
+    /// `fm_child_reconstruct()` — drives each guest `wpk_fork_rewind_begin(root)`
+    /// from the child's seeded per-activation `child_rewind_root`.
+    pub fm_child_reconstruct: wasmtime::TypedFunc<(), ()>,
+
     /// The module's own module-defined, module-EXPORTED `(ref null any)`
     /// transit table (STORE #2) a guest's `_gc_allocate` publishes into and
     /// `_gc_fill` consumes. Bound into a fork-instrumented guest's own
@@ -4540,6 +4584,15 @@ pub(crate) fn instantiate_fork_module(
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_externref_handle: fm_func!("fm_externref_handle": u32 => i32),
+        fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
+        fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
+        fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
+        fm_parent_replay: fm_func!("fm_parent_replay": () => ()),
+        fm_parent_abort: fm_func!("fm_parent_abort": () => ()),
+        fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
+        fm_child_seed: fm_func!("fm_child_seed": (u32, u32, u32, u32) => ()),
+        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32, u32) => ()),
+        fm_child_reconstruct: fm_func!("fm_child_reconstruct": () => ()),
         gc_transit_table,
         function_catalog_table,
         drive_table,
@@ -6812,6 +6865,81 @@ fn spawn_guest_thread(
                         fm.drive_table.set(&mut store, base + 2, Ref::Func(Some(exception_materialize)))
                     {
                         eprintln!("binding __wpk_fork_drive_table[{}] (EXN) failed: {e:#}", base + 2);
+                        return;
+                    }
+                }
+            }
+
+            // -- Drive-table phase-flip bind (activation 0 only) -------------
+            // Bind each guest fork phase-flip export into
+            // `__wpk_fork_drive_table` at `fm_drive_table_base(0) +
+            // DRIVE_SLOT_*`, so the coarse `fm_parent_*`/`fm_child_*` entries
+            // can `call_indirect` them through the injected `fm_drive_execute`
+            // shim (mirrors the TS `bindActivation{UnwindBegin,Seal,Begin,
+            // Finish}Drive` binds in `fork-process-continuation.ts`). This is
+            // the crux of the coarse mechanism on native: the ref-typed table
+            // bind is the irreducible host floor; the module owns the drive.
+            // A frames-only fork-instrumented guest exports all six; a
+            // non-instrumented guest exports none, so this is a byte-for-byte
+            // no-op for it (the `get_func` lookups all miss). Native is
+            // single-activation, so `fm_drive_table_base(0)` is always 0.
+            {
+                let phase_base = match fm.fm_drive_table_base.call(&mut store, 0) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("fm_drive_table_base(0) failed: {e:#}");
+                        return;
+                    }
+                };
+                let Ok(phase_base) = u64::try_from(phase_base) else {
+                    eprintln!("fm_drive_table_base(0) returned a negative base {phase_base}");
+                    return;
+                };
+                let phase_flips: [(u32, &str); 6] = [
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_UNWIND_BEGIN,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_BEGIN,
+                    ),
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_UNWIND_END,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_UNWIND_END,
+                    ),
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_REWIND_BEGIN,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
+                    ),
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_REWIND_END,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_END,
+                    ),
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_ABORT_BEGIN,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_BEGIN,
+                    ),
+                    (
+                        fork_codec::drive_plan::DRIVE_SLOT_ABORT_END,
+                        wasm_posix_shared::abi::WPK_FORK_EXPORT_ABORT_END,
+                    ),
+                ];
+                for (slot_off, name) in phase_flips {
+                    let Some(func) = instance.get_func(&mut store, name) else {
+                        continue; // non-instrumented guest, or an omitted export
+                    };
+                    let slot = phase_base + u64::from(slot_off);
+                    let needed = slot + 1;
+                    let current = fm.drive_table.size(&mut store);
+                    if needed > current {
+                        if let Err(e) =
+                            fm.drive_table.grow(&mut store, needed - current, Ref::Func(None))
+                        {
+                            eprintln!(
+                                "growing fork-module __wpk_fork_drive_table for {name} failed: {e:#}"
+                            );
+                            return;
+                        }
+                    }
+                    if let Err(e) = fm.drive_table.set(&mut store, slot, Ref::Func(Some(func))) {
+                        eprintln!("binding __wpk_fork_drive_table[{slot}] ({name}) failed: {e:#}");
                         return;
                     }
                 }
