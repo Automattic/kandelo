@@ -54,6 +54,10 @@ import {
   type SuspendedRecording,
 } from "@host/replication/log-local";
 import {
+  comparePromotionStateHashes,
+  type MachineStateHash,
+} from "@host/replication/state-hash";
+import {
   ReplicationLogQueueWriter,
   createReplicationLogQueue,
 } from "@host/replication/log-queue";
@@ -113,6 +117,27 @@ const RESUME_WINDOW_MS = 120_000;
  * join carries the long wait.
  */
 const RESUME_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a taker waits for the keeper to seal its recording.
+ *
+ * A seal is one freeze — the parking a capture already pays, without the
+ * state crossing the wire — so it is quick or it is refused, and the
+ * checkpoint take behind the fallback carries the long wait.
+ */
+const PROMOTE_SEAL_TIMEOUT_MS = 30_000;
+
+/**
+ * How long a drained replica may take to stand exactly at the seal.
+ *
+ * A caught-up replica is milliseconds behind — the benchmark on this branch
+ * measured an ~18 ms drain — so a replica that cannot reach the seal in this
+ * window is one the checkpoint path serves better.
+ */
+const PROMOTE_DRAIN_LIMIT_MS = 15_000;
+
+/** How long the taker waits for the release after the hashes matched. */
+const PROMOTE_ADOPT_TIMEOUT_MS = 15_000;
 
 const pause = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -185,6 +210,17 @@ export interface MachineReplication {
    * mirror; switching to "join" serves the next ask.
    */
   readonly setGrant: (grant: ReplicationGrant) => void;
+  /**
+   * Take the user's machine by proof instead of by transfer.
+   *
+   * The replica this page runs is already the machine, milliseconds behind.
+   * The keeper seals its recording, this replica drains to the seal, both
+   * sides hash, and the keeper releases on a match — no checkpoint crosses
+   * the wire, and the screen never goes through a boot. False when this
+   * page runs no replica or anything in the proof fell through; the caller
+   * then takes by checkpoint, which still works after a seal.
+   */
+  readonly promote: () => Promise<boolean>;
 }
 
 const IDLE: MachineReplication = {
@@ -194,6 +230,7 @@ const IDLE: MachineReplication = {
   failure: null,
   grant: "join",
   setGrant: () => {},
+  promote: async () => false,
   navigation: { publish: () => {}, viewerPath: null },
   cursor: { publish: () => {}, viewerCursor: null },
   scroll: { publish: () => {}, viewerScroll: null },
@@ -234,6 +271,14 @@ export function useMachineReplication(
   // render's wire would post into a link that was already replaced.
   const wireRef = React.useRef<LocalReplicationLog<CapturedMachine> | null>(
     null,
+  );
+  // The viewer stint below owns the promotion — it holds the wire, the
+  // replica flag, and the role machinery — and renders outlive it, so the
+  // take button reaches it through a ref the stint installs and clears.
+  const promoteRef = React.useRef<(() => Promise<boolean>) | null>(null);
+  const promote = React.useCallback(
+    () => promoteRef.current?.() ?? Promise.resolve(false),
+    [],
   );
   // The two halves of a dropped link, each kept for one resume window. The
   // effect below tears down per link, so what must outlive the link lives
@@ -338,8 +383,38 @@ export function useMachineReplication(
       const stopServingMisses = wire.onMiss((key) => {
         serveMissedRequest(host, key);
       });
+      // A taker that runs a caught-up replica asks for the machine by proof
+      // instead of by transfer. The seal's hash is held for the adoption:
+      // this machine is released only when the drained replica matches it.
+      let sealedForTake: {
+        seq: number;
+        hash: MachineStateHash;
+      } | null = null;
+      const stopPromotions = wire.servePromotion({
+        seal: async () => {
+          const sealed = await host.sealMachineRecording();
+          if (sealed === null) {
+            return { refused: "this machine cannot seal its recording" };
+          }
+          if (sealed.status === "refused") return { refused: sealed.reason };
+          sealedForTake = {
+            seq: sealed.seq,
+            hash: sealed.hash as MachineStateHash,
+          };
+          return sealedForTake;
+        },
+        adopt: async (hash) => {
+          const sealedHash = sealedForTake;
+          if (sealedHash === null) return false;
+          const report = comparePromotionStateHashes(sealedHash.hash, hash);
+          if (report.diverged) return false;
+          await host.releaseMachine();
+          return true;
+        },
+      });
       leaveRole = () => {
         grantChangedRef.current = null;
+        stopPromotions();
         if (gone) {
           // The link died, not the role. The recording keeps running into
           // its ring for one resume window, so the viewer that reconnects
@@ -473,6 +548,51 @@ export function useMachineReplication(
         dropReplica();
         stopGrants();
         grantChanged();
+      };
+      promoteRef.current = async () => {
+        if (!replica || gone || left) return false;
+        try {
+          const sealed = await wire.requestPromotion(PROMOTE_SEAL_TIMEOUT_MS);
+          const deadline = Date.now() + PROMOTE_DRAIN_LIMIT_MS;
+          let hashed = await host.hashReplicaAtSeal(sealed.seq);
+          while (hashed !== null && hashed.status === "refused") {
+            if (Date.now() > deadline || gone || left || !replica) {
+              return false;
+            }
+            host.drainReplicationReplay();
+            await pause(50);
+            hashed = await host.hashReplicaAtSeal(sealed.seq);
+          }
+          if (hashed === null || !replica || gone || left) return false;
+          const report = comparePromotionStateHashes(
+            sealed.hash,
+            hashed.hash as MachineStateHash,
+          );
+          if (report.diverged) return false;
+          await wire.requestAdoption(
+            sealed.takeId,
+            hashed.hash as MachineStateHash,
+            PROMOTE_ADOPT_TIMEOUT_MS,
+          );
+          // The keeper released: the machine is this computer's own from
+          // here, whatever happens to this stint. Adopt before anything can
+          // drop what the person just took.
+          await host.promoteReplicaMachine();
+          replica = false;
+          live = null;
+          stopMisses?.();
+          stopMisses = null;
+          setReplicating(false);
+          // The machine's status never changes — it was running and still
+          // is — so the roles are flipped by hand: this page leaves the
+          // viewer stint and becomes the user, which serves the reverse
+          // join to the computer that just released.
+          leave();
+          decide(host.getStatus());
+          return true;
+        } catch {
+          return false;
+        }
       };
       void (async () => {
         const saved = suspendedReplicaRef.current;
@@ -693,6 +813,7 @@ export function useMachineReplication(
       const leaving = leaveRole;
       role = "none";
       leaveRole = null;
+      promoteRef.current = null;
       leaving?.();
     };
 
@@ -747,6 +868,7 @@ export function useMachineReplication(
     failure,
     grant,
     setGrant,
+    promote,
     navigation: { publish: publishNavigation, viewerPath },
     cursor: { publish: publishCursor, viewerCursor },
     scroll: { publish: publishScroll, viewerScroll },

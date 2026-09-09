@@ -108,7 +108,12 @@ export const App: React.FC = () => {
   // Replication first: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
   const replication = useMachineReplication(host, peer.link);
-  const handover = useMachineHandover(host, peer.link, replication.replicating);
+  const handover = useMachineHandover(
+    host,
+    peer.link,
+    replication.replicating,
+    replication.promote,
+  );
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {

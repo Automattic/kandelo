@@ -215,6 +215,34 @@ export interface KernelLike {
    */
   drainReplicationReplay?(): void;
   /**
+   * Seal this machine's recording for a take-over: stop the recorder inside
+   * a freeze and hash the frozen state. Mirrors
+   * `host/src/browser-kernel-host.ts: sealReplicationRecording`.
+   */
+  sealReplicationRecording?(options: {
+    unwindTimeoutMs: number;
+    vforkTimeoutMs: number;
+  }): Promise<
+    | {
+        readonly status: "sealed";
+        readonly seq: number;
+        readonly hash: MachineStateHashLike;
+      }
+    | { readonly status: "refused"; readonly reason: string }
+  >;
+  /**
+   * Freeze this replica at the seal and hash its state; refused while it has
+   * not consumed the log through `seq`. Mirrors
+   * `host/src/browser-kernel-host.ts: hashReplicaAtSeal`.
+   */
+  hashReplicaAtSeal?(
+    seq: number,
+    options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
+  ): Promise<
+    | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
+    | { readonly status: "refused"; readonly reason: string }
+  >;
+  /**
    * Subscribe to request lines a replaying machine has no replay of. Mirrors
    * `host/src/browser-kernel-host.ts: subscribeReplicationHttpMisses`.
    */
@@ -420,6 +448,22 @@ export interface MachineCheckpointLike {
  */
 export interface ReplicationLogEntryLike {
   readonly seq: number;
+}
+
+/**
+ * A machine's state digest at one log position, as the wrapped kernel took it.
+ *
+ * The session layer carries it between the two computers of a take-over and
+ * compares it with `comparePromotionStateHashes`; the host runtime owns its
+ * schema (`host/src/replication/state-hash.ts: MachineStateHash`). The
+ * position and the overall digest are named because the promotion handshake
+ * quotes them; the regions travel opaque.
+ */
+export interface MachineStateHashLike {
+  readonly format: number;
+  readonly seq: number;
+  readonly regions: readonly unknown[];
+  readonly sha256: string;
 }
 
 /**
@@ -925,6 +969,44 @@ export interface KernelHost {
    * it takes "running" for a machine of its own.
    */
   holdsReplica(): boolean;
+  /**
+   * Seal this machine's recording for a take-over, and hash the sealed
+   * state.
+   *
+   * Null when the wrapped kernel cannot seal one. A refusal is the kernel's
+   * own — the machine is not recording, or the freeze could not park it —
+   * and the caller falls back to the checkpoint handover.
+   */
+  sealMachineRecording(): Promise<
+    | {
+        readonly status: "sealed";
+        readonly seq: number;
+        readonly hash: MachineStateHashLike;
+      }
+    | { readonly status: "refused"; readonly reason: string }
+    | null
+  >;
+  /**
+   * Freeze the replica this page runs at the seal, and hash its state.
+   *
+   * Null on a page holding no replica. Refused while the replica has not
+   * consumed the log through `seq`; the caller drains and asks again.
+   */
+  hashReplicaAtSeal(seq: number): Promise<
+    | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
+    | { readonly status: "refused"; readonly reason: string }
+    | null
+  >;
+  /**
+   * Adopt the replica this page runs as this computer's own machine.
+   *
+   * The keeper released it: the replay ends, the machine keeps running on
+   * this host's own clock from here, and the input this page refused while
+   * the machine was another computer's flows again. Null on a page holding
+   * no replica. Returns how far the replay got, like
+   * {@link stopReplicatingMachine} — but the machine stays.
+   */
+  promoteReplicaMachine(): Promise<{ consumed: number; total: number } | null>;
   /**
    * Tell the replica this page runs that the user's log grew.
    *
@@ -2031,6 +2113,42 @@ export class LiveKernelHost implements KernelHost {
   drainReplicationReplay(): void {
     if (!this.holdsReplica()) return;
     this.kernel?.drainReplicationReplay?.();
+  }
+
+  async sealMachineRecording(): Promise<
+    | {
+        readonly status: "sealed";
+        readonly seq: number;
+        readonly hash: MachineStateHashLike;
+      }
+    | { readonly status: "refused"; readonly reason: string }
+    | null
+  > {
+    const kernel = this.kernel;
+    if (!kernel?.sealReplicationRecording) return null;
+    return kernel.sealReplicationRecording(HANDOVER_CAPTURE_TIMEOUTS);
+  }
+
+  async hashReplicaAtSeal(seq: number): Promise<
+    | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
+    | { readonly status: "refused"; readonly reason: string }
+    | null
+  > {
+    const kernel = this.kernel;
+    if (!this.holdsReplica() || !kernel?.hashReplicaAtSeal) return null;
+    return kernel.hashReplicaAtSeal(seq, HANDOVER_CAPTURE_TIMEOUTS);
+  }
+
+  async promoteReplicaMachine(): Promise<
+    { consumed: number; total: number } | null
+  > {
+    const kernel = this.kernel;
+    if (!this.holdsReplica() || !kernel?.stopReplicationReplay) return null;
+    const progress = await kernel.stopReplicationReplay();
+    // The gate the replica held its input behind opens here: the machine is
+    // this computer's own from this moment, and it never stopped running.
+    this.releaseReplica();
+    return progress;
   }
 
   /**

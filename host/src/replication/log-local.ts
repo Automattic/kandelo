@@ -43,6 +43,7 @@
 import type { MessageChannelLike } from "../migration/channel.js";
 import type { ReplicationLogEntry } from "./log.js";
 import { ReplicationDivergence } from "./log.js";
+import type { MachineStateHash } from "./state-hash.js";
 import { encodeMessage } from "../migration/codec.js";
 
 const LOCAL_REPLICATION_CHANNEL = "kandelo-replication-log";
@@ -337,6 +338,24 @@ type LocalReplicationMessage<TMachine> =
   | { readonly kind: "granted"; readonly grant: ReplicationGrant }
   | { readonly kind: "ended" }
   | { readonly kind: "join"; readonly joinId: string }
+  | { readonly kind: "promote"; readonly takeId: string }
+  | {
+      readonly kind: "promotion_sealed";
+      readonly takeId: string;
+      readonly seq: number;
+      readonly hash: MachineStateHash;
+    }
+  | {
+      readonly kind: "adopt";
+      readonly takeId: string;
+      readonly hash: MachineStateHash;
+    }
+  | { readonly kind: "promotion_released"; readonly takeId: string }
+  | {
+      readonly kind: "promotion_refused";
+      readonly takeId: string;
+      readonly reason: string;
+    }
   | {
       readonly kind: "resume";
       readonly joinId: string;
@@ -825,6 +844,189 @@ export class LocalReplicationLog<TMachine = never> {
       signal?.addEventListener("abort", abort);
       this.#channel.addEventListener("message", listener);
       this.#post({ kind: "resume", joinId, afterSeq });
+    });
+  }
+
+  /**
+   * Answer take-over promotions for the machine this computer holds.
+   *
+   * A taker that already runs a caught-up replica asks to be promoted
+   * instead of paying a checkpoint transfer. `seal` freezes the machine,
+   * stops the recording at the frozen instant, and answers with the seal
+   * position and the sealed state's hash; `adopt` receives the drained
+   * replica's hash and answers whether the machine was released — the
+   * keeper releases only on a match, so a mismatch or a refusal sends the
+   * taker to the checkpoint path it would have used anyway. One promotion
+   * runs at a time. Returns an unsubscribe.
+   */
+  servePromotion(handlers: {
+    seal: () => Promise<
+      | { readonly seq: number; readonly hash: MachineStateHash }
+      | { readonly refused: string }
+    >;
+    adopt: (hash: MachineStateHash) => Promise<boolean>;
+  }): () => void {
+    let activeTakeId: string | null = null;
+    const refuse = (takeId: string, reason: string) => {
+      this.#post({ kind: "promotion_refused", takeId, reason });
+    };
+    const listener = (event: MessageEvent) => {
+      const message = event.data as LocalReplicationMessage<TMachine>;
+      if (message.kind === "promote") {
+        if (message.takeId === activeTakeId) return;
+        if (activeTakeId !== null) {
+          refuse(message.takeId, "a take-over is already in progress");
+          return;
+        }
+        activeTakeId = message.takeId;
+        void handlers.seal().then(
+          (sealed) => {
+            if (activeTakeId !== message.takeId) return;
+            if ("refused" in sealed) {
+              activeTakeId = null;
+              refuse(message.takeId, sealed.refused);
+              return;
+            }
+            this.#post({
+              kind: "promotion_sealed",
+              takeId: message.takeId,
+              seq: sealed.seq,
+              hash: sealed.hash,
+            });
+          },
+          (error: unknown) => {
+            if (activeTakeId !== message.takeId) return;
+            activeTakeId = null;
+            refuse(
+              message.takeId,
+              error instanceof Error ? error.message : String(error),
+            );
+          },
+        );
+        return;
+      }
+      if (message.kind !== "adopt") return;
+      if (message.takeId !== activeTakeId) {
+        refuse(message.takeId, "this take-over is not the one being served");
+        return;
+      }
+      void handlers.adopt(message.hash).then(
+        (released) => {
+          if (activeTakeId !== message.takeId) return;
+          activeTakeId = null;
+          if (released) {
+            this.#post({ kind: "promotion_released", takeId: message.takeId });
+            return;
+          }
+          refuse(
+            message.takeId,
+            "the machine refused the adoption: the states do not match",
+          );
+        },
+        (error: unknown) => {
+          if (activeTakeId !== message.takeId) return;
+          activeTakeId = null;
+          refuse(
+            message.takeId,
+            error instanceof Error ? error.message : String(error),
+          );
+        },
+      );
+    };
+    this.#channel.addEventListener("message", listener);
+    return () => this.#channel.removeEventListener("message", listener);
+  }
+
+  /**
+   * Ask the machine on this channel to seal its recording for a take-over.
+   *
+   * Resolves with the seal position, the sealed state's hash, and the take
+   * id `requestAdoption` continues with. Rejects when the machine refused
+   * or never answered — the caller falls back to the checkpoint take.
+   */
+  requestPromotion(timeoutMs: number): Promise<{
+    takeId: string;
+    seq: number;
+    hash: MachineStateHash;
+  }> {
+    const takeId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new Error(`no machine sealed its recording within ${timeoutMs} ms`),
+        );
+      }, timeoutMs);
+      const listener = (event: MessageEvent) => {
+        const message = event.data as LocalReplicationMessage<TMachine>;
+        if (
+          message.kind === "promotion_refused"
+          && message.takeId === takeId
+        ) {
+          finish();
+          reject(new Error(`the machine refused the take-over: ${message.reason}`));
+          return;
+        }
+        if (message.kind !== "promotion_sealed" || message.takeId !== takeId) {
+          return;
+        }
+        finish();
+        resolve({ takeId, seq: message.seq, hash: message.hash });
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+      };
+      this.#channel.addEventListener("message", listener);
+      this.#post({ kind: "promote", takeId });
+    });
+  }
+
+  /**
+   * Report the drained replica's hash, and wait for the machine's release.
+   *
+   * Resolves when the keeper released the machine — the taker owns it from
+   * that moment. Rejects on a mismatch, a refusal, or silence, and the
+   * taker falls back to the checkpoint take, which still works after a
+   * seal: the keeper kept running, and a fresh capture reads it again.
+   */
+  requestAdoption(
+    takeId: string,
+    hash: MachineStateHash,
+    timeoutMs: number,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new Error(`the machine did not release within ${timeoutMs} ms`),
+        );
+      }, timeoutMs);
+      const listener = (event: MessageEvent) => {
+        const message = event.data as LocalReplicationMessage<TMachine>;
+        if (
+          message.kind === "promotion_refused"
+          && message.takeId === takeId
+        ) {
+          finish();
+          reject(new Error(`the machine refused the adoption: ${message.reason}`));
+          return;
+        }
+        if (
+          message.kind !== "promotion_released"
+          || message.takeId !== takeId
+        ) {
+          return;
+        }
+        finish();
+        resolve();
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        this.#channel.removeEventListener("message", listener);
+      };
+      this.#channel.addEventListener("message", listener);
+      this.#post({ kind: "adopt", takeId, hash });
     });
   }
 

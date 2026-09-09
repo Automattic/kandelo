@@ -518,6 +518,54 @@ the product surface; its reconnect half skips where headless Chromium refuses
 a second loopback ICE pair, which is an environment boundary, not a platform
 one.
 
+### Take-over promotion: adopt the replica instead of transferring the machine
+
+**Built 2026-09-09; promotion succeeds on Node, and the browser demo falls
+back with a named finding below.** A take-over was a checkpoint transfer even
+when the taker had been running a caught-up replica all along — the benchmark
+on this branch measured an 18.6 MB checkpoint and a ~245 ms restore against an
+~18 ms drain. Promotion replaces the transfer with a proof: seal → drain →
+hash → adopt, with the checkpoint take as the fallback, so the worst case
+equals the previous behavior plus one freeze.
+
+The platform half is two worker primitives. `replication_seal` (keeper) stops
+the streaming recorder inside a checkpoint freeze — the log's final entry and
+the frozen state name one instant — and hashes the captured state in the
+worker; only the seal position and hash reach the main thread, and the machine
+resumes unrecorded, its post-seal decisions discarded on adoption exactly as a
+checkpoint handover discards what follows its freeze.
+`replication_hash_replica` (taker) freezes the replica with a hook that
+refuses unless the replay stands exactly at the seal, then hashes. The gate is
+`comparePromotionStateHashes`: every filesystem and process region byte for
+byte, the kernel region exempt at the measured boundary restore-fidelity pins
+(a restore's own kernel calls move the kernel heap, so keeper and replica
+kernels never match even when they are one machine).
+
+The product half rides the replication wire — `promote` / `promotion_sealed`
+/ `adopt` / `promotion_released` / `promotion_refused`, `servePromotion` on
+the keeper and `requestPromotion`/`requestAdoption` on the taker — and the
+take button tries it first whenever the page runs a replica
+(`machine-handover.ts` falls through to the checkpoint take on any refusal,
+mismatch, or silence). On adoption the taker's host promotes the replica in
+place (`KernelHost.promoteReplicaMachine`: the replay ends, the input gate
+opens, the machine never stops running), the page flips roles by hand — the
+status never changes, so no status transition can flip them — and the
+released keeper walks the existing viewer path into the reverse join.
+
+`host/test/replication/promotion.test.ts` proves the protocol on real Node
+machines: sealed mid-workload recording, drained replica, hashes agreeing at
+the promotion boundary, and the machine running a fresh guest on its own
+clock afterward. Measured finding, open for the next pass: in the browser
+demo the gate currently refuses — `filesystem:/` digests differ between the
+keeper at seal and the replica after drain (kernel differing is the known
+exemption; the filesystem differing is not), so the browser take-over lands
+on the fallback today. Locating the unrecorded rootfs write behind that
+divergence is the path to promotion succeeding in the browser. The second
+open boundary: a seal under a still-running guest contends with the freeze
+exactly as any capture of a busy machine does; a reader that parks post-seal
+reads for the freeze instead of borrowing is the sketched fix, and it touches
+the freeze gate, so it wants a design pass.
+
 ## Surfaces, and what sharing each one needs
 
 The three machine surfaces are not equally shareable, and the reason is
