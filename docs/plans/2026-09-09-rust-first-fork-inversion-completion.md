@@ -58,6 +58,29 @@
 - **Re-check the wasmtime-exnref belief** — it may no longer be true. Deferring
   it is acceptable ONLY with an explicit entry in the repo future-work doc.
 
+## Findings (2026-09-09 read-only investigation)
+
+- **wasmtime-exnref belief is STALE.** wasmtime was upgraded 35 -> **48**
+  specifically to unblock the fork-instrumented module's `exnref`/`Exn` heap
+  type. On 48, `kernel_engine()` sets `wasm_gc(true)` + `wasm_exceptions(true)`,
+  the instrumented module **parses** (`smoke_loads_fork_instrumented_guest`
+  passes), and the throw/catch mechanism works
+  (`wasmtime::ThrownException` + `Store::take_pending_exception`, `guest.rs`).
+  The EXN reconstruction drive-thunk is wired in native (`guest.rs:6789,6806`).
+  What is **unproven — not proven-impossible** — is a real exnref-carrying fork
+  reconstructing end-to-end natively; today's native tests only assert
+  `exnrefs_reconstructed == 0` on frames-only fixtures. So #2 must **attempt the
+  full coarse migration including the exnref path and verify empirically**; only
+  a real, reproduced native failure justifies fail-loud + a future-work entry.
+- **Future-work doc target:** `docs/future-improvements.md` (repo-tracked). The
+  exnref item, if it survives empirical check, goes here. (`docs/fork-*.md` may
+  also warrant a known-limitations note.)
+- **`.superpowers` scratch = 10 tracked files** under `.superpowers/sdd/*`
+  (progress + task reports). Harvest genuine future-work notes into
+  `docs/future-improvements.md`, then `git rm` them. Note: `host-native/Cargo.toml`
+  comments reference `.superpowers/sdd/2026-09-05-n1-i4-native-fork-frames/wasmtime-upgrade-report.md`,
+  which is **not tracked** — a dangling doc pointer to fix when cleaning up.
+
 ## Work items
 
 ### 1. Finish TS-production coarse-ification  (IN PROGRESS — agent ae9c8f18eb66e43a4)
