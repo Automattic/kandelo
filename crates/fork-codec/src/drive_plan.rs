@@ -158,21 +158,43 @@ pub const DRIVE_OP_ABORT_BEGIN: u32 = 8;
 /// partial/aborted capture (that path stays on the host's `sealForAbort` +
 /// abort-replay, which must NOT drive unwind-end mid-unwind).
 pub const DRIVE_OP_UNWIND_END: u32 = 9;
+/// `op` value: run one activation's guest `wpk_fork_rewind_end()` — the
+/// parent/child REPLAY-FINISH state flip that returns the activation from
+/// `REWINDING` to `NORMAL` once every inherited frame has been replayed. Same
+/// shape as [`DRIVE_OP_UNWIND_END`] — a NO-argument `() -> ()` guest export (the
+/// instrumenter emits `wpk_fork_rewind_end` with an empty signature via
+/// `fork_instrument::runtime::emit_end_fn`) — so the injected shim
+/// `call_indirect`s it through the SAME `() -> ()` type, reading neither `arg`
+/// nor `recipe`. `slot` is `base(activation) + DRIVE_SLOT_REWIND_END`. Being
+/// `>= DRIVE_OP_RESTORE` it is excluded from the reconstruction drive-step
+/// counter (a control state-flip, not a reference reconstruction), and being
+/// `>= DRIVE_OP_UNWIND_END` it takes the injected shim's void `call_indirect`
+/// branch. Mirrors the host loop that called `wpk_fork_rewind_end()` per
+/// activation before `fm_finish_replay`.
+pub const DRIVE_OP_REWIND_END: u32 = 10;
+/// `op` value: run one activation's guest `wpk_fork_abort_end()` — the
+/// ABORT-replay-FINISH state flip (the abort-tagged sibling of
+/// [`DRIVE_OP_REWIND_END`]) that returns the activation from `ABORT_UNWINDING`
+/// to `NORMAL`. Same `() -> ()` void shape and shim branch; bound at
+/// `base(activation) + DRIVE_SLOT_ABORT_END`. Mirrors the host loop that called
+/// `wpk_fork_abort_end()` per activation before `fm_finish_abort`.
+pub const DRIVE_OP_ABORT_END: u32 = 11;
 
 /// Drive-table slots reserved per activation, in slot-offset order:
 /// `DRIVE_OP_ALLOC` (0) + `DRIVE_OP_FILL` (1) + `DRIVE_OP_EXN` (2) +
 /// `DRIVE_SLOT_RESTORE` (3) + `DRIVE_SLOT_FINISH_RESTORE` (4) +
 /// `DRIVE_SLOT_REWIND_BEGIN` (5) + `DRIVE_SLOT_ABORT_BEGIN` (6) +
-/// `DRIVE_SLOT_UNWIND_END` (7). Each activation `a` binds its
+/// `DRIVE_SLOT_UNWIND_END` (7) + `DRIVE_SLOT_REWIND_END` (8) +
+/// `DRIVE_SLOT_ABORT_END` (9). Each activation `a` binds its
 /// `_gc_allocate`/`_gc_fill`/`__wpk_fork_exception_materialize`/
 /// `wpk_fork_module_state_restore`/`wpk_fork_module_state_finish_restore`/
-/// `wpk_fork_rewind_begin`/`wpk_fork_abort_begin`/`wpk_fork_unwind_end` at
-/// `base(a)+offset`. The host reads `fm_drive_table_base` and binds the guest
-/// exports at these offsets, so bumping this count stays consistent as long as
-/// every side derives its slots from `drive_table_base`. This is an EPHEMERAL
-/// runtime host<->module table-binding contract (not a wire/ABI format, not
-/// serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 8;
+/// `wpk_fork_rewind_begin`/`wpk_fork_abort_begin`/`wpk_fork_unwind_end`/
+/// `wpk_fork_rewind_end`/`wpk_fork_abort_end` at `base(a)+offset`. The host reads
+/// `fm_drive_table_base` and binds the guest exports at these offsets, so bumping
+/// this count stays consistent as long as every side derives its slots from
+/// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
+/// contract (not a wire/ABI format, not serialized), so growing it is additive.
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 10;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -196,6 +218,15 @@ pub const DRIVE_SLOT_ABORT_BEGIN: u32 = 6;
 /// 9) so it never collides with the ALLOC/FILL/EXN/RESTORE/FINISH/REWIND/ABORT
 /// offsets.
 pub const DRIVE_SLOT_UNWIND_END: u32 = 7;
+/// Drive-table slot offset the host binds `wpk_fork_rewind_end` into, and a
+/// `DRIVE_OP_REWIND_END` step's `slot` field points at (see
+/// `DRIVE_SLOT_UNWIND_END`). Distinct from every other offset so a single drive
+/// table can hold an activation's begin AND end targets simultaneously.
+pub const DRIVE_SLOT_REWIND_END: u32 = 8;
+/// Drive-table slot offset the host binds `wpk_fork_abort_end` into, and a
+/// `DRIVE_OP_ABORT_END` step's `slot` field points at (see
+/// `DRIVE_SLOT_REWIND_END`).
+pub const DRIVE_SLOT_ABORT_END: u32 = 9;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -725,6 +756,33 @@ pub fn append_unwind_end_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) 
     }
 }
 
+/// Append one REPLAY-FINISH end step per `activation` — the module-owned
+/// finish-replay drive that replaces the host loop calling `wpk_fork_rewind_end()`
+/// (`abort` false) or `wpk_fork_abort_end()` (`abort` true) on each activation
+/// before `fm_finish_replay` / `fm_finish_abort`. Like [`append_unwind_end_steps`]
+/// each step drives a NO-argument `() -> ()` guest export, so `recipe` and `arg`
+/// are both 0 (the injected shim reads neither) and the shim routes it through the
+/// same void `call_indirect` branch (op `>= DRIVE_OP_UNWIND_END`). Emitted in the
+/// caller's activation order (ascending id), matching the host's former
+/// per-activation finish loop. Valid only once every inherited frame has been
+/// replayed (the guest is at `REWINDING` / `ABORT_UNWINDING`), so the end flip
+/// moves each activation cleanly back to `NORMAL`.
+pub fn append_replay_end_steps(steps: &mut Vec<DriveStep>, activations: &[u32], abort: bool) {
+    let (op, slot_off) = if abort {
+        (DRIVE_OP_ABORT_END, DRIVE_SLOT_ABORT_END)
+    } else {
+        (DRIVE_OP_REWIND_END, DRIVE_SLOT_REWIND_END)
+    };
+    for &activation in activations {
+        steps.push(DriveStep {
+            op,
+            slot: drive_table_base(activation) + slot_off,
+            recipe: 0,
+            arg: 0,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,12 +790,53 @@ mod tests {
 
     #[test]
     fn drive_table_base_reserves_slots_per_activation() {
-        // Eight slots per activation (ALLOC, FILL, EXN, RESTORE, FINISH_RESTORE,
-        // REWIND_BEGIN, ABORT_BEGIN, UNWIND_END).
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 8);
+        // Ten slots per activation (ALLOC, FILL, EXN, RESTORE, FINISH_RESTORE,
+        // REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END, ABORT_END).
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 10);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 8);
-        assert_eq!(drive_table_base(3), 24);
+        assert_eq!(drive_table_base(1), 10);
+        assert_eq!(drive_table_base(3), 30);
+    }
+
+    #[test]
+    fn append_replay_end_steps_emits_one_void_step_per_activation() {
+        // Non-abort: rewind-end at the REWIND_END slot, argument-free.
+        let mut steps = Vec::new();
+        append_replay_end_steps(&mut steps, &[0, 2], false);
+        assert_eq!(
+            steps,
+            vec![
+                DriveStep {
+                    op: DRIVE_OP_REWIND_END,
+                    slot: drive_table_base(0) + DRIVE_SLOT_REWIND_END,
+                    recipe: 0,
+                    arg: 0,
+                },
+                DriveStep {
+                    op: DRIVE_OP_REWIND_END,
+                    slot: drive_table_base(2) + DRIVE_SLOT_REWIND_END,
+                    recipe: 0,
+                    arg: 0,
+                },
+            ]
+        );
+        // Abort: abort-end at the ABORT_END slot. Distinct op AND slot so a drive
+        // table can hold both a rewind-end and an abort-end target per activation.
+        let mut abort_steps = Vec::new();
+        append_replay_end_steps(&mut abort_steps, &[0], true);
+        assert_eq!(
+            abort_steps[0],
+            DriveStep {
+                op: DRIVE_OP_ABORT_END,
+                slot: drive_table_base(0) + DRIVE_SLOT_ABORT_END,
+                recipe: 0,
+                arg: 0,
+            }
+        );
+        assert_ne!(DRIVE_SLOT_REWIND_END, DRIVE_SLOT_ABORT_END);
+        // Every end op takes the injected shim's void branch (op >= UNWIND_END).
+        assert!(DRIVE_OP_REWIND_END >= DRIVE_OP_UNWIND_END);
+        assert!(DRIVE_OP_ABORT_END >= DRIVE_OP_UNWIND_END);
     }
 
     #[test]
@@ -887,10 +986,10 @@ mod tests {
 
     #[test]
     fn trivial_struct_plan_uses_the_activation_base_slots() {
-        // Activation 2 -> base 16 (8 slots/activation): ALLOC slot 16, FILL slot 17.
+        // Activation 2 -> base 20 (10 slots/activation): ALLOC slot 20, FILL slot 21.
         let plan = trivial_struct_plan(2, 9);
-        assert_eq!(plan[0].slot, 16);
-        assert_eq!(plan[1].slot, 17);
+        assert_eq!(plan[0].slot, 20);
+        assert_eq!(plan[1].slot, 21);
     }
 
     #[test]
@@ -1224,10 +1323,10 @@ mod tests {
                 (DRIVE_OP_FILL, drive_table_base(2) + DRIVE_OP_FILL, 1),
             ]
         );
-        // Activation 5's base (40) and activation 2's base (16) do not overlap
-        // (eight slots per activation).
-        assert_eq!(drive_table_base(5), 40);
-        assert_eq!(drive_table_base(2), 16);
+        // Activation 5's base (50) and activation 2's base (20) do not overlap
+        // (ten slots per activation).
+        assert_eq!(drive_table_base(5), 50);
+        assert_eq!(drive_table_base(2), 20);
     }
 
     #[test]
