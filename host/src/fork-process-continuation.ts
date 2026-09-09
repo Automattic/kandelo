@@ -1202,20 +1202,36 @@ export class ForkProcessContinuationCoordinator {
     let failure: unknown;
     const backend = this.moduleBackend!;
     const activations = this.orderedActivations();
-    const endExport = abortReplay ? "wpk_fork_abort_end" : "wpk_fork_rewind_end";
+    // Control-flow inversion: bind each activation's guest finish exports into the
+    // drive table, then finish the WHOLE replay/abort in ONE module call
+    // (`parentFinish`). It drives each activation's `wpk_fork_rewind_end()`
+    // (replay) or `wpk_fork_abort_end()` (abort) through the injected shim in
+    // ascending id order (REWINDING/ABORT_UNWINDING -> NORMAL), then exhausts every
+    // driver, finishes the process journal, and releases this fork's chunks —
+    // replacing the former host per-activation end loop + `fm_finish_replay` /
+    // `fm_finish_abort`. The per-activation NORMAL assertion moves to a single
+    // post-drive sweep below, exactly as `beginModuleParentReplay` /
+    // `sealModuleCapture` sweep state after their coarse drives.
+    try {
+      for (const activation of activations) {
+        backend.bindActivationFinishDrive(
+          activation.activationId,
+          requireExportFunction(activation, "wpk_fork_rewind_end"),
+          requireExportFunction(activation, "wpk_fork_abort_end"),
+        );
+      }
+      backend.parentFinish(abortReplay);
+    } catch (error) {
+      failure ??= error;
+    }
+    // Post-drive sweep: the coarse finish left every activation back at NORMAL;
+    // assert it exactly as the host per-activation finish loop did.
     for (const activation of activations) {
       try {
-        requireExportFunction(activation, endExport)();
         this.requireActivationState(activation, WPK_FORK_NORMAL, "finish replay");
       } catch (error) {
         failure ??= error;
       }
-    }
-    try {
-      if (abortReplay) backend.finishAbort();
-      else backend.finishReplay();
-    } catch (error) {
-      failure ??= error;
     }
     try {
       this.registry.finishReplay();

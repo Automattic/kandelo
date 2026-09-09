@@ -135,6 +135,8 @@ export interface ForkModuleBackendOptions {
 const DRIVE_SLOT_REWIND_BEGIN = 5;
 const DRIVE_SLOT_ABORT_BEGIN = 6;
 const DRIVE_SLOT_UNWIND_END = 7;
+const DRIVE_SLOT_REWIND_END = 8;
+const DRIVE_SLOT_ABORT_END = 9;
 
 export class ForkModuleContinuationBackend {
   private readonly exports: ForkModuleExports;
@@ -768,6 +770,34 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Bind ONE activation's guest `wpk_fork_rewind_end` / `wpk_fork_abort_end` into
+   * the module's imported drive table at `fm_drive_table_base(activation) +
+   * DRIVE_SLOT_{REWIND,ABORT}_END`, so the coarse `parentFinish` drive can
+   * `call_indirect` the argument-free `() -> ()` replay-finish / abort-finish
+   * flip. Like `bindActivationBeginDrive`/`bindActivationSealDrive` the ref-typed
+   * `Table.set`/`Table.grow` is a host floor (Rust cannot hold a funcref).
+   * Idempotent. Call once per open activation before `parentFinish`.
+   */
+  bindActivationFinishDrive(
+    activationId: number,
+    rewindEnd: Function,
+    abortEnd: Function,
+  ): void {
+    this.requireSetup("bind activation finish drive");
+    const slotBase = this.toNum(
+      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
+        activationId,
+      ),
+    );
+    const needed = slotBase + DRIVE_SLOT_ABORT_END + 1;
+    if (this.driveTable.length < needed) {
+      this.driveTable.grow(needed - this.driveTable.length);
+    }
+    this.driveTable.set(slotBase + DRIVE_SLOT_REWIND_END, rewindEnd);
+    this.driveTable.set(slotBase + DRIVE_SLOT_ABORT_END, abortEnd);
+  }
+
+  /**
    * Parent REPLAY-begin, coarsened (control-flow inversion). ONE module call
    * sequences the whole phase internally: begin the parent rewind (attach every
    * activation's driver + register its resume slots), build the per-activation
@@ -1158,9 +1188,35 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * REPLAY FINISH, coarsened (control-flow inversion). ONE module call drives
+   * each open activation's guest `wpk_fork_rewind_end()` (`abort` false) or
+   * `wpk_fork_abort_end()` (`abort` true) through the injected `fm_drive_execute`
+   * shim (the argument-free `() -> ()` finish flip, ascending id order), then
+   * finishes the process replay/abort: exhausts every activation's driver,
+   * finishes the process journal, and releases this fork's channel-mapped chunks.
+   * Replaces the host's former per-activation `wpk_fork_rewind_end`/
+   * `wpk_fork_abort_end` loop + `fm_finish_replay`/`fm_finish_abort`. Each
+   * participating activation's `bindActivationFinishDrive` must have run first
+   * (the ref-typed table bind is a host floor). The abort finish keeps the
+   * `in_abort` pairing assertion `fm_parent_abort` armed, so a stray
+   * `parentFinish(true)` is a loud errno.
+   */
+  parentFinish(abort: boolean): void {
+    this.requireSetup("parent finish");
+    (this.exports.fm_parent_finish as (abort: number) => void)(abort ? 1 : 0);
+    this.requireOk("fm_parent_finish");
+    this.unwindActive = false;
+    this.moduleBuffer = 0;
+  }
+
+  /**
    * Finish the rewind. Option B: the MODULE owns the frame + image chunks it
    * mmap'd and releases them itself inside `fm_finish_replay` (a replay-only
    * child mapped nothing, so it releases nothing).
+   *
+   * FINE-GRAINED primitive: production uses the coarse `parentFinish` (which
+   * folds the per-activation guest `wpk_fork_rewind_end` drive + this finish into
+   * one module call). Retained for the module-only unit tests + host-native.
    */
   finishReplay(): void {
     this.exports.fm_finish_replay();
@@ -1173,6 +1229,9 @@ export class ForkModuleContinuationBackend {
    * Finish an abort-replay (mirror of `finishReplay`). A stray call without a
    * matching `beginAbort()` is a loud throw (`requireOk` surfaces the
    * module's `EINVAL` pairing guard), never a silent no-op (F1).
+   *
+   * FINE-GRAINED primitive (see `finishReplay`); production uses the coarse
+   * `parentFinish`.
    */
   finishAbort(): void {
     this.exports.fm_finish_abort();
