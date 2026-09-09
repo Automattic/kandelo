@@ -4661,6 +4661,23 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Every URL the lazy fetcher may be asked to serve, deduplicated and
+   * without mutation. Hosts that precompute per-URL serving decisions read
+   * this instead of running an identity transform through the rewriters.
+   */
+  lazyAssetUrls(): string[] {
+    const urls = new Set<string>();
+    for (const entry of this.lazyFiles.values()) urls.add(entry.url);
+    for (const group of this.lazyArchiveGroups) {
+      urls.add(group.url);
+      for (const transport of group.content?.transports ?? []) {
+        urls.add(transport);
+      }
+    }
+    return [...urls];
+  }
+
+  /**
    * Rewrite the URL of every registered lazy file. Useful when a VFS image
    * was built with placeholder URLs and the browser runtime needs to replace
    * them with bundler-produced asset URLs.

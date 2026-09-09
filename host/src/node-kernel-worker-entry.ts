@@ -55,7 +55,10 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
-import { findRepoRoot } from "./binary-resolver";
+import {
+  resolveLazyAssetPath,
+  resolveLazyAssetPaths,
+} from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {
@@ -908,6 +911,49 @@ async function resolveExecutableForLaunch(
 
 // --- Init ---
 
+function collectRelativeLazyAssetUrls(memfs: MemoryFileSystem): string[] {
+  return memfs.lazyAssetUrls().filter((url) => !/^[a-z][a-z0-9+.-]*:/i.test(url));
+}
+
+/**
+ * Serve the image's lazy assets from repository trees. Every image URL is
+ * resolved once here, at mount time, before any process runs: resolver
+ * lookups can shell out to the canonical freshness checker, and a
+ * syscall-driven lazy fetch on the kernel worker thread must never pay
+ * that. A URL whose resolution failed rethrows that failure only when the
+ * URL is actually fetched, so a latent bad artifact does not abort boot.
+ */
+function createRepoLazyAssetFetcher(
+  memfs: MemoryFileSystem,
+): (url: string) => Promise<Response> {
+  const resolutions = resolveLazyAssetPaths(collectRelativeLazyAssetUrls(memfs));
+  const pathFor = (url: string): string => {
+    let resolution = resolutions.get(url);
+    if (resolution === undefined) {
+      try {
+        resolution = { path: resolveLazyAssetPath(url) };
+      } catch (error) {
+        resolution = {
+          error: error instanceof Error ? error : new Error(String(error)),
+        };
+      }
+      resolutions.set(url, resolution);
+    }
+    if ("error" in resolution) throw resolution.error;
+    return resolution.path;
+  };
+  return async (url: string) => {
+    if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+    const path = url.startsWith("file://") ? fileURLToPath(url) : pathFor(url);
+    if (!existsSync(path)) return new Response(null, { status: 404 });
+    const bytes = new Uint8Array(readFileSync(path));
+    return new Response(bytes, {
+      status: 200,
+      headers: { "content-length": String(bytes.byteLength) },
+    });
+  };
+}
+
 /**
  * Materialise the default mount spec into a `VirtualPlatformIO` backed by
  * the rootfs image at `/` and per-boot host-fs scratch dirs everywhere
@@ -983,18 +1029,7 @@ async function buildVirtualPlatformIO(
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
-      : async (url: string) => {
-        if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
-        const path = url.startsWith("file://")
-          ? fileURLToPath(url)
-          : join(findRepoRoot(), url.replace(/^\/+/, ""));
-        if (!existsSync(path)) return new Response(null, { status: 404 });
-        const bytes = new Uint8Array(readFileSync(path));
-        return new Response(bytes, {
-          status: 200,
-          headers: { "content-length": String(bytes.byteLength) },
-        });
-      };
+      : createRepoLazyAssetFetcher(rootfsMemfs);
     rootfsMemfs.setLazyFetcher(lazyFetcher);
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());

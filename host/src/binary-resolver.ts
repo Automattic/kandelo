@@ -172,20 +172,23 @@ function isWellFormedUnicode(value: string): boolean {
  * could bypass package-level identity checks before `node:path.join` collapses
  * it back onto a declared member.
  */
+function isPortableResolverPath(relPath: string): boolean {
+  return isWellFormedUnicode(relPath)
+    && relPath.length > 0
+    && !relPath.startsWith("/")
+    && !/^[A-Za-z]:/.test(relPath)
+    && !relPath.includes("\\")
+    && !relPath.includes("\0")
+    && relPath.split("/").every((part) => part && part !== "." && part !== "..");
+}
+
 function requirePortableResolverPath(relPath: string): string {
   if (!isWellFormedUnicode(relPath)) {
     throw new Error(
       `Binary resolver path must be well-formed Unicode: ${JSON.stringify(relPath)}`,
     );
   }
-  if (
-    relPath.length === 0
-    || relPath.startsWith("/")
-    || /^[A-Za-z]:/.test(relPath)
-    || relPath.includes("\\")
-    || relPath.includes("\0")
-    || relPath.split("/").some((part) => !part || part === "." || part === "..")
-  ) {
+  if (!isPortableResolverPath(relPath)) {
     throw new Error(
       `Binary resolver path must be a normalized portable relative path: ${JSON.stringify(relPath)}`,
     );
@@ -3350,6 +3353,129 @@ export function tryResolveBinary(relPath: string): string | null {
     if (error instanceof BinaryNotFoundError) return null;
     throw error;
   }
+}
+
+/**
+ * The image builder's `lazy_url_prefix` for resolver-served lazy assets
+ * (`images/rootfs/PACKAGES.toml`). The prefix drift test in
+ * `host/test/binary-resolver.test.ts` keeps producer and consumer aligned.
+ */
+export const LAZY_BINARIES_URL_PREFIX = "binaries/";
+
+/**
+ * The resolver relPath a lazy asset URL names, or `null` when the URL is not
+ * resolver-eligible. The image builder percent-encodes each path segment
+ * (`encodeBinaryUrlPath` in `scripts/generate-rootfs-package-manifest.mjs`),
+ * so segments decode before the portable-path check. A URL whose decoded
+ * remainder is not a portable resolver path (aliases such as `..`, `.`, empty
+ * segments, malformed encoding) never reaches the resolver.
+ */
+function decodedLazyAssetRelPath(url: string): string | null {
+  const relative = url.replace(/^\/+/, "");
+  if (!relative.startsWith(LAZY_BINARIES_URL_PREFIX)) return null;
+  let decoded: string;
+  try {
+    decoded = relative
+      .slice(LAZY_BINARIES_URL_PREFIX.length)
+      .split("/")
+      .map(decodeURIComponent)
+      .join("/");
+  } catch {
+    return null;
+  }
+  return isPortableResolverPath(decoded) ? decoded : null;
+}
+
+/**
+ * Lazy asset URLs come from VFS images, which are untrusted input: a `..`
+ * segment could name any host file for the Node fetcher to read into the
+ * guest. Reject the escape loudly instead of serving it.
+ */
+function literalLazyAssetPath(url: string): string {
+  const relative = url.replace(/^\/+/, "");
+  if (
+    relative.includes("\0")
+    || relative.split(/[/\\]/).some((part) => part === "..")
+  ) {
+    throw new Error(
+      `Lazy asset URL must name a path inside the repository root: ${
+        JSON.stringify(url)
+      }`,
+    );
+  }
+  return join(resolverRepoRoot(), relative);
+}
+
+/**
+ * Absolute path serving an image-relative lazy asset URL on this host.
+ *
+ * VFS images name lazy assets by their deployment URL — `binaries/<relPath>`,
+ * from the image builder's `lazy_url_prefix` (`images/rootfs/PACKAGES.toml`).
+ * A deployed site really serves that path; a source checkout serves it
+ * through the resolver tiers, the same ordered
+ * `source-only-v1` → `local-binaries` → `binaries` lookup that selected the
+ * image itself.
+ *
+ * Error contract: a genuine absence (`BinaryNotFoundError`) falls back to the
+ * literal repo path, so a relative URL the resolver does not carry keeps its
+ * historical meaning and a missing artifact surfaces as the fetcher's 404 —
+ * under the default policy that literal path is a candidate the resolver
+ * already checked and found absent. Every other resolver failure (artifact
+ * policy rejection, an incomplete package closure, projection validation) is
+ * rethrown with the URL attached: serving the literal bytes instead would
+ * bypass the identity checks the resolver refused on.
+ *
+ * Boundary: resolution reads the tier state at call time, and plain lazy
+ * files carry no content hash, so a tier rebuilt after the image was built
+ * can serve bytes the image never recorded. Lazy archives and trees carry
+ * SHA-256 and fail loudly on that divergence in `MemoryFileSystem`.
+ */
+export function resolveLazyAssetPath(url: string): string {
+  const relPath = decodedLazyAssetRelPath(url);
+  if (relPath === null) return literalLazyAssetPath(url);
+  try {
+    return resolveBinary(relPath);
+  } catch (error) {
+    if (error instanceof BinaryNotFoundError) return literalLazyAssetPath(url);
+    throw new Error(
+      `Lazy asset ${JSON.stringify(url)} failed to resolve: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+export type LazyAssetResolution = { path: string } | { error: Error };
+
+/**
+ * Resolve every image lazy asset URL after one source-projection freshness
+ * check, capturing per-URL failures instead of throwing.
+ *
+ * The Node host calls this once at image-mount time, before any process
+ * runs: `resolveBinary` can shell out to the canonical Rust freshness
+ * checker, and the kernel worker thread must never pay that inside a
+ * syscall-driven lazy fetch. A captured error is rethrown by the fetcher
+ * only when its URL is actually fetched, so a latent bad artifact does not
+ * abort boot.
+ */
+export function resolveLazyAssetPaths(
+  urls: readonly string[],
+): Map<string, LazyAssetResolution> {
+  const relPaths = urls.flatMap((url) => decodedLazyAssetRelPath(url) ?? []);
+  const resolutions = new Map<string, LazyAssetResolution>();
+  withFreshProgramIndexes(relPaths, () => {
+    for (const url of urls) {
+      if (resolutions.has(url)) continue;
+      try {
+        resolutions.set(url, { path: resolveLazyAssetPath(url) });
+      } catch (error) {
+        resolutions.set(url, {
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
+    }
+  });
+  return resolutions;
 }
 
 /**
