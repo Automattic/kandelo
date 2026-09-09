@@ -662,7 +662,7 @@ fn grow_to_cover(mem: &SharedMemory, end_addr: usize) -> anyhow::Result<()> {
 /// see that function's doc comment.
 fn write_empty_module_state_arena(guest_mem: &SharedMemory, scratch_addr: u32) -> anyhow::Result<()> {
     let builder = fork_codec::ReferenceGraphBuilder::begin();
-    write_module_state_arena(guest_mem, scratch_addr, &builder)
+    write_module_state_arena(guest_mem, scratch_addr, &builder, None)
 }
 
 /// N1-I5b Task 1: write a genuinely-valid module-state (KFMS) arena at
@@ -681,6 +681,7 @@ fn write_module_state_arena(
     guest_mem: &SharedMemory,
     scratch_addr: u32,
     builder: &fork_codec::ReferenceGraphBuilder,
+    journal_image: Option<(u64, u64)>,
 ) -> anyhow::Result<()> {
     use wasm_posix_shared::abi;
 
@@ -704,6 +705,31 @@ fn write_module_state_arena(
         writer
             .write(&mut sink, builder)
             .map_err(|e| anyhow::anyhow!("ReferenceSegmentsWriter::write failed: {e:?}"))?;
+    }
+
+    // Coarse child-seed support: append a `JournalImage` (kind 14) record so a
+    // COW/borrowed child's `fm_child_seed`/`fm_child_seed_borrowed` can decode
+    // the inherited KFRE journal-image (ptr, len) straight from THIS arena
+    // (`journal_image_from_arena`), exactly as the Node/browser host does via
+    // `appendJournalImage`. The 32-byte KFJI payload is a fixed format (magic,
+    // version=1, header_size=16, then `ptr` u64 @16 and `len` u64 @24); the
+    // reference decoder ignores this non-reference record kind, so both the
+    // reference reconstruction and the journal-image lookup read the same arena.
+    // `write_empty_module_state_arena`'s instantiation-time floor passes `None`.
+    if let Some((image_ptr, image_len)) = journal_image {
+        let mut payload = vec![0u8; abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize];
+        payload[0..4].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_MAGIC);
+        payload[4..6].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_VERSION.to_le_bytes());
+        payload[6..8].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE.to_le_bytes());
+        // flags @8 (2), reserved @10 (2), reserved @12 (4) all stay zero.
+        payload[16..24].copy_from_slice(&image_ptr.to_le_bytes());
+        payload[24..32].copy_from_slice(&image_len.to_le_bytes());
+        kfms_records.push((
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+            0, // activation_id 0 (single-activation native)
+            abi::WPK_FORK_JOURNAL_IMAGE_OWNER,
+            payload,
+        ));
     }
 
     // Frame each KFMS record with its 24-byte KFMR TLV header, zero-padded to
@@ -3369,26 +3395,28 @@ enum ForkEntry {
     /// fallback stays.
     ChildPendingStub,
     /// N1-I4 Task 3: a REAL fork child. `root` is the parent's continuation
-    /// anchor (`fm_begin_unwind`'s return value, inherited verbatim via the
-    /// private memory copy); `image_ptr`/`image_len` locate the serialized
-    /// KFRE journal image `fm_serialize_journal_alloc` wrote into the SAME
-    /// copied memory. The child drives `fm_begin_child_replay(root,
-    /// image_ptr, image_len)` then `wpk_fork_rewind_begin(root)` then
-    /// `wpk_fork_resume_start()` — see `run_fork_capable_entry`.
-    ChildReplay { root: u32, image_ptr: u32, image_len: u32 },
-    /// Real vfork (N1 residual): a BORROWED child sharing the parked
-    /// parent's `SharedMemory` — the borrowed sibling of `ChildReplay`. Same
-    /// `root`/`image_ptr`/`image_len` (the parent's live continuation
-    /// anchor and journal image, read read-only, never copied), plus
-    /// `private_prefix`: the child-private region `fm_begin_borrowed_child_
-    /// replay` copies the parent's mutable fixed runtime prefix into, so the
-    /// guest's active-frame-pointer rewrites during replay never touch the
-    /// parked parent's own prefix. The child drives `fm_begin_borrowed_
-    /// child_replay(root, image_ptr, image_len, private_prefix)` then
-    /// `wpk_fork_rewind_begin(private_prefix)` (NOT `root` — see
-    /// `run_fork_capable_entry`'s doc comment on this arm) then
-    /// `wpk_fork_resume_start()`.
-    ChildBorrowedReplay { root: u32, image_ptr: u32, image_len: u32, private_prefix: u32 },
+    /// anchor (`fm_parent_begin_capture`'s return value, inherited verbatim via
+    /// the private memory copy). The child drives the coarse `fm_child_seed`
+    /// (which decodes the inherited `JournalImage` KFMS record from the child's
+    /// own COW-copied arena at `fm.empty_module_state_root`) then
+    /// `fm_child_reconstruct` (drives `wpk_fork_rewind_begin(root)`) then
+    /// `wpk_fork_resume_start()` — see `run_fork_capable_entry`. The journal
+    /// image location is no longer smuggled here: the parent appended it to the
+    /// inherited arena, so the module reads it from there.
+    ChildReplay { root: u32 },
+    /// Real vfork (N1 residual): a BORROWED child sharing the parked parent's
+    /// `SharedMemory` — the borrowed sibling of `ChildReplay`. `root` is the
+    /// parent's live continuation anchor (read read-only, never copied);
+    /// `private_prefix` is the child-private region `fm_child_seed_borrowed`
+    /// copies the parent's mutable fixed runtime prefix into (so the guest's
+    /// active-frame-pointer rewrites never touch the parked parent's prefix);
+    /// `arena_root` is the parent's KFMS arena address (smuggled, since the
+    /// borrowed child's OWN fork-module region is a distinct private address the
+    /// parent never wrote) from which `fm_child_seed_borrowed` decodes the
+    /// inherited `JournalImage` record. The child drives `fm_child_seed_borrowed`
+    /// then `fm_child_reconstruct` (drives `wpk_fork_rewind_begin(private_prefix)`,
+    /// NOT `root`) then `wpk_fork_resume_start()`.
+    ChildBorrowedReplay { root: u32, private_prefix: u32, arena_root: u32 },
 }
 
 /// `kernel_fork`'s two reachable phases on a native guest thread (N1-I4 Task
@@ -7463,102 +7491,127 @@ fn run_fork_capable_entry(
     }
 
     let mut entry_is_lexical = true;
-    if let ForkEntry::ChildReplay { root, image_ptr, image_len } = fork_entry {
+    if let ForkEntry::ChildReplay { root } = fork_entry {
         let Some(fm) = fork_module else {
             eprintln!("fork child replay requested with no fork-module");
             return;
         };
-        if let Err(e) = fm.fm_begin_child_replay.call(&mut *store, (root, image_ptr, image_len)) {
-            eprintln!("fm_begin_child_replay failed: {e:#}");
+        // Coarse child SEED: decode the inherited `JournalImage` record from
+        // THIS child's own (COW-copied) KFMS arena at `fm.empty_module_state_
+        // root` and seed activation 0's replay from it — folding the former
+        // `fm_begin_child_replay(root, image_ptr, image_len)`. The child's
+        // `fm.empty_module_state_root` is the SAME address the parent sealed
+        // into (identical layout + byte-for-byte memory copy), and the parent
+        // appended the journal-image record there, so the module reads
+        // (image_ptr, image_len) from the arena rather than from the now-
+        // redundant smuggled channel words. `root` is activation 0's inherited
+        // continuation anchor. Single-activation: `sides_count == 0`.
+        if let Err(e) =
+            fm.fm_child_seed.call(&mut *store, (fm.empty_module_state_root, root, 0, 0))
+        {
+            eprintln!("fm_child_seed failed: {e:#}");
             return;
         }
         match fm.fm_last_errno.call(&mut *store, ()) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_begin_child_replay failed: errno {errno}");
+                eprintln!("fm_child_seed failed: errno {errno}");
                 return;
             }
             Err(e) => {
-                eprintln!("fm_last_errno after fm_begin_child_replay failed: {e:#}");
+                eprintln!("fm_last_errno after fm_child_seed failed: {e:#}");
                 return;
             }
         }
-        // N1-I5 Task 3: drive the co-resident module's reference-replay
-        // sub-sequence BEFORE the rewind touches any reference — see
-        // `drive_reference_replay`'s doc comment for the exact order and why
-        // `root` doubles as this call's `module_state_root`.
+        // N1-I5 Task 3: reconstruct the child's reference graph BEFORE the
+        // rewind touches any reference — the native reference floor (kept
+        // granular; see `drive_reference_replay`'s doc comment). Ordered
+        // exactly as before: seed, THEN reconstruct references, THEN drive.
         if !drive_reference_replay(&mut *store, fm, guest_mem) {
             return;
         }
-        let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
-            &mut *store,
-            instance,
-            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
-        ) else {
+        // Coarse child RECONSTRUCT: drive the guest's `wpk_fork_rewind_begin(
+        // root)` from the seeded `child_rewind_root` (== `root` for a COW
+        // child) through the injector shim — folding the former direct
+        // `wpk_fork_rewind_begin(root)` call.
+        if let Err(e) = fm.fm_child_reconstruct.call(&mut *store, ()) {
+            eprintln!("fm_child_reconstruct failed: {e:#}");
             return;
-        };
-        if let Err(e) = rewind_begin.call(&mut *store, root) {
-            eprintln!("wpk_fork_rewind_begin failed: {e:#}");
-            return;
+        }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_child_reconstruct failed: errno {errno}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_child_reconstruct failed: {e:#}");
+                return;
+            }
         }
         coord.set_phase(ForkCoordPhase::Replaying);
         coord.set_fork_result(0);
         entry_is_lexical = false;
-    } else if let ForkEntry::ChildBorrowedReplay { root, image_ptr, image_len, private_prefix } =
+    } else if let ForkEntry::ChildBorrowedReplay { root, private_prefix, arena_root } =
         fork_entry
     {
-        // Real vfork (N1 residual): the borrowed sibling of the
-        // `ChildReplay` arm above. `module_buffer` is the parent's live,
-        // still-parked continuation anchor (`root`) — read-only; the guest's
-        // OWN mutable prefix state lands in `private_prefix` instead (see
-        // `ForkEntry::ChildBorrowedReplay`'s doc comment), so it never
-        // touches the parent's copy.
+        // Real vfork (N1 residual): the borrowed sibling of the `ChildReplay`
+        // arm above. `root` is the parent's live, still-parked continuation
+        // anchor (read-only); the guest's OWN mutable prefix state lands in
+        // `private_prefix` instead, so it never touches the parent's copy.
         let Some(fm) = fork_module else {
             eprintln!("vfork borrowed child replay requested with no fork-module");
             return;
         };
-        if let Err(e) = fm
-            .fm_begin_borrowed_child_replay
-            .call(&mut *store, (root, image_ptr, image_len, private_prefix))
-        {
-            eprintln!("fm_begin_borrowed_child_replay failed: {e:#}");
+        // Coarse borrowed child SEED: decode the inherited `JournalImage`
+        // record from the PARENT's shared-memory arena (`arena_root`, smuggled
+        // — the borrowed child's OWN fork-module region is a distinct private
+        // address the parent never wrote) and seed activation 0's borrowed
+        // replay, copying the parent's fixed prefix into `private_prefix`.
+        // Folds the former `fm_begin_borrowed_child_replay(root, image_ptr,
+        // image_len, private_prefix)`. Single-activation vfork: `sides_count
+        // == 0`.
+        if let Err(e) = fm.fm_child_seed_borrowed.call(
+            &mut *store,
+            (arena_root, root, private_prefix, 0, 0),
+        ) {
+            eprintln!("fm_child_seed_borrowed failed: {e:#}");
             return;
         }
         match fm.fm_last_errno.call(&mut *store, ()) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_begin_borrowed_child_replay failed: errno {errno}");
+                eprintln!("fm_child_seed_borrowed failed: errno {errno}");
                 return;
             }
             Err(e) => {
-                eprintln!("fm_last_errno after fm_begin_borrowed_child_replay failed: {e:#}");
+                eprintln!("fm_last_errno after fm_child_seed_borrowed failed: {e:#}");
                 return;
             }
         }
-        // N1 vfork residual scope: frames-only, matching this host's own
-        // COW-fork N1-I4 precedent (`smoke_fork_parent_child`) — reference
-        // reconstruction (funcref/externref/exnref/GC) for a BORROWED child
-        // is out of scope here (the fork-module's own borrowed-replay
-        // exports carry no module-state-arena/reference-graph handling —
-        // see `fm_begin_borrowed_child_replay`'s doc comment in
-        // `crates/fork-module/src/lib.rs`, which discusses only the
-        // continuation/frame state), so `drive_reference_replay` is
-        // deliberately NOT called on this path.
-        let Some(rewind_begin) = get_guest_export_typed::<u32, ()>(
-            &mut *store,
-            instance,
-            wasm_posix_shared::abi::WPK_FORK_EXPORT_REWIND_BEGIN,
-        ) else {
+        // N1 vfork residual scope: frames-only — reference reconstruction for a
+        // BORROWED child is out of scope, so `drive_reference_replay` is
+        // deliberately NOT called here (unchanged from the fine-grained path).
+        // Coarse child RECONSTRUCT: drive the guest's `wpk_fork_rewind_begin`
+        // from the seeded `child_rewind_root` (== `private_prefix` for a
+        // borrowed child, set by `fm_child_seed_borrowed`), so the active-frame-
+        // pointer write lands in the child-private prefix, never the parked
+        // parent's — folding the former direct `wpk_fork_rewind_begin(
+        // private_prefix)` call.
+        if let Err(e) = fm.fm_child_reconstruct.call(&mut *store, ()) {
+            eprintln!("fm_child_reconstruct (borrowed) failed: {e:#}");
             return;
-        };
-        // NOT `root`: the guest's active-frame-pointer rewrites during
-        // replay must land in the child-private prefix, never the parked
-        // parent's own copy — see `fm_begin_borrowed_child_replay`'s doc
-        // comment ("on success the host hands the guest `private_prefix` as
-        // the rewind root").
-        if let Err(e) = rewind_begin.call(&mut *store, private_prefix) {
-            eprintln!("wpk_fork_rewind_begin (borrowed) failed: {e:#}");
-            return;
+        }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_child_reconstruct (borrowed) failed: errno {errno}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_child_reconstruct (borrowed) failed: {e:#}");
+                return;
+            }
         }
         coord.set_phase(ForkCoordPhase::Replaying);
         coord.set_fork_result(0);
@@ -7733,7 +7786,15 @@ fn drive_fork_capture_seal_and_launch_child(
     // this function's doc comment, step 3.
     {
         let accumulated = capture.lock().unwrap();
-        if let Err(e) = write_module_state_arena(guest_mem, fm.empty_module_state_root, &accumulated.graph) {
+        // Append the coarse-seal journal image (ptr, len) as a KFMS record so
+        // the child's `fm_child_seed`/`fm_child_seed_borrowed` can decode it
+        // straight from this inherited arena (see `write_module_state_arena`).
+        if let Err(e) = write_module_state_arena(
+            guest_mem,
+            fm.empty_module_state_root,
+            &accumulated.graph,
+            Some((image_ptr as u64, image_len as u64)),
+        ) {
             eprintln!("sealing the captured reference graph into the KFMS scratch arena failed: {e:#}");
             return false;
         }
@@ -7951,6 +8012,13 @@ fn drive_fork_capture_seal_and_launch_child(
         write_bytes(guest_mem, ch + DATA_OFFSET, &root.to_le_bytes());
         write_bytes(guest_mem, ch + DATA_OFFSET + 4, &(image_ptr as u32).to_le_bytes());
         write_bytes(guest_mem, ch + DATA_OFFSET + 8, &image_len.to_le_bytes());
+        // Also smuggle THIS parent's KFMS arena root (where the journal-image
+        // record was just appended). A COW child reuses its own instance's
+        // identical `fm.empty_module_state_root` (same layout + memory copy),
+        // but a vfork BORROWED child's own fork-module region is a distinct
+        // private address the parent never wrote, so it must be told the
+        // parent's shared-memory arena address to feed `fm_child_seed_borrowed`.
+        write_bytes(guest_mem, ch + DATA_OFFSET + 16, &fm.empty_module_state_root.to_le_bytes());
         write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
         atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);
     }
@@ -10159,6 +10227,11 @@ fn handle_fork(
             let root = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET) };
             let image_ptr = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 4) };
             let image_len_i64 = unsafe { read_i64(&guest_mem, ch.offset + DATA_OFFSET + 8) };
+            // `image_ptr`/`image_len` are still validated as a seal-sanity check
+            // (a broken seal must fall back to the stub), but no longer stored in
+            // the `ForkEntry`: the parent appended the journal image to the KFMS
+            // arena, so the child's coarse `fm_child_seed`/`fm_child_seed_borrowed`
+            // reads it from there rather than from these smuggled words.
             if root == 0 || image_ptr == 0 || image_len_i64 <= 0 || image_len_i64 > u32::MAX as i64 {
                 eprintln!(
                     "[host-native] fork pid={parent_pid}: invalid smuggled continuation \
@@ -10167,7 +10240,7 @@ fn handle_fork(
                 );
                 ForkEntry::ChildPendingStub
             } else {
-                ForkEntry::ChildReplay { root, image_ptr, image_len: image_len_i64 as u32 }
+                ForkEntry::ChildReplay { root }
             }
         }
         None => ForkEntry::ChildPendingStub,
@@ -10198,7 +10271,7 @@ fn handle_fork(
     // unchanged from this host's pre-existing (POSIX-permissible, if
     // weaker) behavior for that case.
     if mode == MODE_VFORK {
-        if let ForkEntry::ChildReplay { root, image_ptr, image_len } = fork_entry {
+        if let ForkEntry::ChildReplay { root } = fork_entry {
             let vregion = match compute_vfork_borrowed_region(&layout) {
                 Ok(v) => v,
                 Err(e) => {
@@ -10227,11 +10300,14 @@ fn handle_fork(
             }
             let child_mem = guest_mem.clone();
             let child_module = processes[pi].module.clone();
+            // The parent smuggled its KFMS arena root at DATA_OFFSET+16 (see
+            // `drive_fork_capture_seal_and_launch_child`'s channel post) so the
+            // borrowed child can feed it to the coarse `fm_child_seed_borrowed`.
+            let arena_root = unsafe { read_u32(&guest_mem, ch.offset + DATA_OFFSET + 16) };
             let borrowed_entry = ForkEntry::ChildBorrowedReplay {
                 root,
-                image_ptr,
-                image_len,
                 private_prefix: vregion.private_prefix as u32,
+                arena_root,
             };
             wait_table.lock().unwrap().parent_of.insert(child_pid, parent_pid);
             let launched = launch_vfork_borrowed_child(
