@@ -2,11 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   emitRootfsManifest,
   createRootfsBlobProvider,
-  RTFS_MAGIC,
   RTFS_VERSION,
 } from "../src/vfs/rootfs-manifest";
 import type { FileSystemBackend } from "../src/vfs/types";
 import type { RootfsLazyInput } from "../src/vfs/rootfs-manifest";
+import { decodeRootfsManifest as decode } from "./fixtures/rtfs-manifest-decode";
 
 const S_IFDIR = 0x4000;
 const S_IFREG = 0x8000;
@@ -99,98 +99,6 @@ function makeFakeBackend(tree: Record<string, FakeNode>): FileSystemBackend {
   };
 
   return backend as unknown as FileSystemBackend;
-}
-
-const KIND_LAZY_FILE = 4;
-
-/** Decode the RTFS buffer back into entries (mirrors rootfs.rs load_manifest) so
- * the wire format is asserted from the consumer side, catching drift. Handles
- * both v2 (no archive table) and v3 (kind-4 archive_id/source_path fields plus
- * the trailing archive table). */
-function decode(buf: Uint8Array): {
-  version: number;
-  entries: Array<{
-    kind: number;
-    mode: number;
-    uid: number;
-    gid: number;
-    ino: bigint;
-    blobId: bigint;
-    size: bigint;
-    mtimeSec: bigint;
-    mtimeNsec: number;
-    path: string;
-    target: string;
-    archiveId?: number;
-    sourcePath?: string;
-  }>;
-  archives: Array<{ archiveId: number; archiveSize: bigint }>;
-} {
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  let p = 0;
-  const u8 = () => buf[p++];
-  const u32 = () => {
-    const v = dv.getUint32(p, true);
-    p += 4;
-    return v;
-  };
-  const u64 = () => {
-    const v = dv.getBigUint64(p, true);
-    p += 8;
-    return v;
-  };
-  const dec = new TextDecoder();
-  const str = (len: number) => {
-    const s = dec.decode(buf.subarray(p, p + len));
-    p += len;
-    return s;
-  };
-  expect(u32()).toBe(RTFS_MAGIC);
-  const version = u32();
-  const count = u32();
-  const entries = [];
-  for (let i = 0; i < count; i++) {
-    const kind = u8();
-    const mode = u32();
-    const uid = u32();
-    const gid = u32();
-    const ino = u64();
-    const blobId = u64();
-    const size = u64();
-    const mtimeSec = u64();
-    const mtimeNsec = u32();
-    const path = str(u32());
-    const target = str(u32());
-    const entry: (typeof entries)[number] = {
-      kind,
-      mode,
-      uid,
-      gid,
-      ino,
-      blobId,
-      size,
-      mtimeSec,
-      mtimeNsec,
-      path,
-      target,
-    };
-    if (kind === KIND_LAZY_FILE) {
-      entry.archiveId = u32();
-      entry.sourcePath = str(u32());
-    }
-    entries.push(entry);
-  }
-  const archives: Array<{ archiveId: number; archiveSize: bigint }> = [];
-  if (version >= 3) {
-    const archiveCount = u32();
-    for (let i = 0; i < archiveCount; i++) {
-      const archiveId = u32();
-      const archiveSize = u64();
-      archives.push({ archiveId, archiveSize });
-    }
-  }
-  expect(p).toBe(buf.length); // no trailing bytes
-  return { version, entries, archives };
 }
 
 describe("rootfs manifest emitter", () => {

@@ -11,11 +11,19 @@
  *    calls by fetching the whole raw archive once, caching it, and reporting
  *    `EAGAIN` while the fetch is outstanding.
  *
- * Both outputs share ONE `Map<archiveId, ...>` and one id-minting pass over
+ * Both outputs share ONE `Map<archiveId, ...>` and one reduction pass over
  * `entries`, so the manifest's archive table and the provider's lookup table
  * can never drift relative to each other.
+ *
+ * That reduction -- which groups are fetchable, which members are byte ranges,
+ * and what `archiveId` each group gets -- lives in `reduceLazyArchiveGroups`
+ * (`./kernel-lazy-section`), because the image's own binary `KLZY` section
+ * encodes the same ids. Sharing one definition is what makes "the image's
+ * archive table and the host's fetch table are the same table" structural
+ * rather than a coincidence between two copies of a filter rule.
  */
 
+import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
 import type { SerializedLazyArchiveEntry } from "./memory-fs";
 import type {
   RootfsLazyArchive,
@@ -58,37 +66,11 @@ export function buildRootfsLazyWiring(
   const archives: RootfsLazyArchive[] = [];
   const records = new Map<number, ArchiveRecord>();
 
-  let nextArchiveId = 1;
-
-  for (const group of entries) {
-    const size = group.content?.bytes ?? group.integrity?.bytes;
-    if (size === undefined) {
-      // Legacy group with no declared raw archive size: a truthful gap, not
-      // a guess. Skip it entirely — no id, no members, no archive entry.
-      continue;
-    }
-
-    const transports =
-      group.content?.transports && group.content.transports.length > 0
-        ? group.content.transports
-        : typeof group.url === "string" && group.url.length > 0
-          ? [group.url]
-          : undefined;
-    if (transports === undefined) {
-      // No transport mirrors and no legacy `url`: unfetchable. Skip.
-      continue;
-    }
-
-    const archiveId = nextArchiveId++;
+  for (const group of reduceLazyArchiveGroups(entries)) {
+    const { archiveId, archiveBytes: size, transports } = group;
     archives.push({ archiveId, size });
     records.set(archiveId, { transports, size, state: "idle" });
-
-    for (const member of group.entries) {
-      if (member.deleted) continue;
-      if (member.isSymlink) continue;
-      if (member.type !== undefined && member.type !== "file") continue;
-      if (!member.sourcePath) continue;
-
+    for (const member of group.members) {
       files.set(member.vfsPath, {
         archiveId,
         sourcePath: member.sourcePath,
