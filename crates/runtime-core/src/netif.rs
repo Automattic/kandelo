@@ -7,13 +7,27 @@
 //! (`VIRTUAL_INTERFACES`, a per-boot `crypto.getRandomValues` MAC, and
 //! hand-written `ifreq`/`ifconf` marshalling). The kernel is now the
 //! authoritative source for the interface list, the MAC, and the exact wire
-//! layout; the host retains only the two things it alone can do:
-//! - dereferencing the caller's `struct ifconf.ifc_buf` pointer (a
-//!   process-memory address the kernel's separate Wasm instance cannot
-//!   itself reach — the same reason `sendmsg`/`recvmsg` decompose `msghdr`
-//!   host-side elsewhere in this codebase), and
-//! - supplying the one genuinely host-owned fact: the machine's real
-//!   assigned IPv4 address (`HostIO::host_network_local_address`).
+//! layout.
+//!
+//! Exactly one genuinely host-owned fact remains: the machine's real assigned
+//! IPv4 address (`HostIO::host_network_local_address`). The host cannot know
+//! it from inside the kernel, so the kernel asks.
+//!
+//! The host also still dereferences the caller's `struct ifconf.ifc_buf`
+//! pointer for `SIOCGIFCONF`. This module's doc comment used to justify that
+//! by calling `ifc_buf` "a process-memory address the kernel's separate Wasm
+//! instance cannot itself reach". **That was false.**
+//! `HostIO::proc_read_bytes` and `HostIO::proc_write_bytes` — the
+//! `host_proc_read_bytes` / `host_proc_write_bytes` imports — read and write
+//! guest process memory from inside the kernel Wasm instance, and
+//! `crate::syscalls` has called them from seven DRI/KMS sites for as long as
+//! this module has existed. The reach was there the whole time; only the
+//! ioctl contract table's fixed-size model kept `SIOCGIFCONF` host-side.
+//!
+//! This is the fourth "floor" the Rust-first campaign inherited as stated
+//! fact and then disproved by reading the code. It is corrected in place, and
+//! named as such, so the next reader treats a claimed platform boundary as a
+//! claim to verify rather than a constraint to design around.
 
 use core::cell::UnsafeCell;
 
