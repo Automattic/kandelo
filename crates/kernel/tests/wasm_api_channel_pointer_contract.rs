@@ -131,18 +131,33 @@ fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     );
 }
 
+/// Slice out one `pub extern "C" fn` item's text, from its signature to the
+/// start of the next such item.
+///
+/// The boundary is the next item's own signature rather than a neighbouring
+/// doc comment's prose: doc comments belong to whichever export happens to sit
+/// next in the file, so a delimiter like `"\n/// Remap memory."` silently
+/// breaks -- with a confusing "start not found" panic -- the moment that
+/// neighbour is renamed or deleted. Deleting the dead `kernel_mremap` export
+/// in ABI 44 did exactly that.
+fn extern_item_body<'a>(source: &'a str, function: &str) -> &'a str {
+    let signature = format!("pub extern \"C\" fn {function}");
+    let start = source
+        .find(&signature)
+        .unwrap_or_else(|| panic!("{function} start"));
+    let after = start + signature.len();
+    let end = source[after..]
+        .find("\npub extern \"C\" fn ")
+        .map(|offset| after + offset)
+        .unwrap_or(source.len());
+    &source[start..end]
+}
+
 #[test]
 fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
     let source = include_str!("../src/wasm_api.rs");
 
-    let utimensat_start = source
-        .find("pub extern \"C\" fn kernel_utimensat(")
-        .expect("kernel_utimensat start");
-    let utimensat_end = source[utimensat_start..]
-        .find("\n/// Remap memory.")
-        .map(|offset| utimensat_start + offset)
-        .expect("kernel_utimensat end");
-    let utimensat = &source[utimensat_start..utimensat_end];
+    let utimensat = extern_item_body(source, "kernel_utimensat(");
     let path_guard = utimensat
         .find("let path = if path_len == 0 {")
         .expect("zero-length utimensat path guard");
@@ -154,18 +169,8 @@ fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
         .expect("positive-length utimensat path must retain the bounded slice");
     assert!(path_guard < empty_slice && empty_slice < path_raw_slice);
 
-    for (function, next_marker) in [
-        ("kernel_getsockname(", "\n/// getpeername"),
-        ("kernel_getpeername(", "\n/// Resolve a hostname"),
-    ] {
-        let start = source
-            .find(&format!("pub extern \"C\" fn {function}"))
-            .unwrap_or_else(|| panic!("{function} start"));
-        let end = source[start..]
-            .find(next_marker)
-            .map(|offset| start + offset)
-            .unwrap_or_else(|| panic!("{function} end"));
-        let body = &source[start..end];
+    for function in ["kernel_getsockname(", "kernel_getpeername("] {
+        let body = extern_item_body(source, function);
         let empty_guard = body
             .find("let result = if addrlen == 0 {")
             .unwrap_or_else(|| panic!("{function} zero-length guard"));
