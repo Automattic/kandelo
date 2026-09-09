@@ -2198,23 +2198,6 @@ pub extern "C" fn kernel_get_fork_count(pid: u32) -> u64 {
     }
 }
 
-/// Check if a process is a fork child.
-/// Returns 1 if fork child, 0 otherwise, -ESRCH if not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => {
-            if proc.fork_child {
-                1
-            } else {
-                0
-            }
-        }
-        None => -(Errno::ESRCH as i32),
-    }
-}
-
 /// Clear the fork_child flag for a process.
 /// Called by the host after returning 0 to a fork child's SYS_FORK call.
 #[unsafe(no_mangle)]
@@ -2494,32 +2477,6 @@ pub extern "C" fn kernel_has_sa_nocldstop(pid: u32) -> i32 {
     }
 }
 
-/// Check if a signal is blocked for a process.
-/// Returns 1 if blocked by *every* thread of `pid` (i.e. no thread can
-/// currently receive it), 0 if at least one thread has it unblocked,
-/// -ESRCH if the process does not exist.
-///
-/// The host consults this to decide whether to wake a process's channels
-/// after queuing a shared signal. If all threads block it, the signal
-/// stays queued in the shared-pending set until some thread unblocks it.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_is_signal_blocked(pid: u32, signum: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => {
-            if signum == 0 || signum >= 65 {
-                return 0;
-            }
-            if proc.pick_thread_for_shared_signal(signum).is_some() {
-                0
-            } else {
-                1
-            }
-        }
-        None => -(Errno::ESRCH as i32),
-    }
-}
-
 /// Find a thread of `pid` that currently has `signum` unblocked. Returns
 /// a positive TID (the process PID for the main thread, allocated TIDs for
 /// worker threads), 0 if no thread accepts it, or -ESRCH if the process
@@ -2606,25 +2563,6 @@ pub extern "C" fn kernel_generate_host_signal(pid: u32, signum: u32) -> i32 {
         );
     }
     0
-}
-
-/// Get fork exec path for a specific process.
-/// Writes path to buf, returns bytes written, 0 if no exec path, -ESRCH if not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => match &proc.fork_exec_path {
-            Some(path) => {
-                let len = path.len().min(buf_len as usize);
-                let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
-                buf.copy_from_slice(&path[..len]);
-                len as i32
-            }
-            None => 0,
-        },
-        None => -(Errno::ESRCH as i32),
-    }
 }
 
 /// Get the CWD for a specific process.
@@ -6893,18 +6831,6 @@ pub extern "C" fn kernel_ipc_shmdt_addr(addr: usize) -> i32 {
     }
 }
 
-/// Detach from shared memory segment.
-/// Host should call kernel_ipc_shm_write_chunk first to sync data back.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let pid = table.current_pid();
-    if !table.has_current_tid_binding(pid) {
-        return -(Errno::ESRCH as i32);
-    }
-    kernel_ipc_shmdt_for_process(pid, shmid)
-}
-
 /// Host-side SysV detach with an explicit retained process identity. Exited
 /// zombies remain eligible so teardown can release attachments after death.
 #[unsafe(no_mangle)]
@@ -7102,75 +7028,6 @@ pub extern "C" fn kernel_mq_drain_notification(out_ptr: *mut u8, out_capacity: u
         }
         None => 0,
     }
-}
-
-/// Check if an fd is a mqueue descriptor.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mq_is_mqd(fd: i32) -> i32 {
-    let table = unsafe { crate::mqueue::global_mqueue_table() };
-    if table.is_mqd(fd as u32) {
-        1
-    } else {
-        0
-    }
-}
-
-/// Serialize current process state for fork. Returns bytes written, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    match crate::fork::serialize_fork_state(proc, buf) {
-        Ok(written) => written as i32,
-        Err(e) => -(e as i32),
-    }
-}
-
-/// Convert a pipe's OFD from kernel-internal to host-delegated.
-/// After this, reads/writes for this OFD will go through host_read/host_write.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_convert_pipe_to_host(ofd_idx: u32, new_host_handle: i64) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let ofd = match proc.ofd_table.get_mut(ofd_idx as usize) {
-        Some(ofd) => ofd,
-        None => return -(Errno::EBADF as i32),
-    };
-    if ofd.file_type != FileType::Pipe {
-        return -(Errno::EINVAL as i32);
-    }
-    ofd.host_handle = new_host_handle;
-    0
-}
-
-/// Enumerate pipe OFDs. Writes (ofd_index: u32, host_handle: i64, is_read: u32) tuples to buf.
-/// Returns number of pipe OFDs found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let entry_size = 4 + 8 + 4; // ofd_index(u32) + host_handle(i64) + is_read(u32)
-    let max_entries = buf.len() / entry_size;
-    let mut count = 0usize;
-
-    for (idx, ofd) in proc.ofd_table.iter() {
-        if ofd.file_type == FileType::Pipe && count < max_entries {
-            let off = count * entry_size;
-            buf[off..off + 4].copy_from_slice(&(idx as u32).to_le_bytes());
-            buf[off + 4..off + 12].copy_from_slice(&ofd.host_handle.to_le_bytes());
-            // Pipes with offset 0 (or flag-based) are write ends; kernel uses
-            // positive host_handle index parity to distinguish read/write.
-            // Since pipe pairs share the same |host_handle|, we check status_flags
-            // for O_WRONLY (bit 0) to determine end.
-            let is_read = if ofd.status_flags() & 1 == 0 {
-                1u32
-            } else {
-                0u32
-            };
-            buf[off + 12..off + 16].copy_from_slice(&is_read.to_le_bytes());
-            count += 1;
-        }
-    }
-    count as i32
 }
 
 /// Open a file. Returns fd (>= 0) on success, or negative errno on error.
@@ -8177,46 +8034,6 @@ pub extern "C" fn kernel_getdents64(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> 
     result
 }
 
-/// Rewind a directory stream to the beginning. Returns 0 on success, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rewinddir(dir_handle: i32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_rewinddir(proc, &mut host, dir_handle) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Return current position in a directory stream. Returns position (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_telldir(dir_handle: i32) -> i64 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_telldir(proc, dir_handle) {
-        Ok(pos) => pos as i64,
-        Err(e) => -(e as i64),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Seek to a position in a directory stream. Returns 0 on success, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_seekdir(dir_handle: i32, loc_lo: u32, loc_hi: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let loc = (loc_hi as u64) << 32 | (loc_lo as u64);
-    let result = match syscalls::sys_seekdir(proc, &mut host, dir_handle, loc) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// Get the process ID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getpid() -> i32 {
@@ -8285,17 +8102,6 @@ pub extern "C" fn kernel_getpgrp() -> u32 {
     let mut host = WasmHostIO;
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-/// Get the process group ID of a process. Queries the ProcessTable directly
-/// (no current-process context needed). Returns pgid on success, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getpgid_direct(pid: u32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => proc.pgid as i32,
-        None => -(Errno::ESRCH as i32),
-    }
 }
 
 /// Set the process group ID. Returns 0 on success, or negative errno.
@@ -8803,21 +8609,6 @@ pub extern "C" fn kernel_tkill(tid: u32, sig: u32) -> i32 {
     kernel_tkill_with_value(tid, sig, 0, 0)
 }
 
-/// `tgkill(tgid, tid, sig)` — like `tkill` but verifies that `tid` belongs
-/// to the thread group identified by `tgid`. In the current threading model,
-/// this reduces to the same check plus an outer PID match.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_tgkill(tgid: u32, tid: u32, sig: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    if tgid != proc.pid {
-        // We don't support cross-process per-thread signalling.
-        let mut host = WasmHostIO;
-        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-        return -(Errno::ESRCH as i32);
-    }
-    kernel_tkill_with_value(tid, sig, 0, 0)
-}
-
 /// Shared implementation of tkill/tgkill/rt_tgsigqueueinfo.
 /// When `si_value != 0` or `si_code != 0` the signal is queued with
 /// `sigqueue`-style metadata.
@@ -9072,25 +8863,6 @@ pub extern "C" fn kernel_utimensat(
     let result = match syscalls::sys_utimensat(proc, &mut host, dirfd, path, times, flags) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Remap memory. Supports in-place resize and MREMAP_MAYMOVE; unsupported
-/// Linux-specific flag combinations are rejected by sys_mremap with EINVAL.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mremap(
-    old_addr: usize,
-    old_len: usize,
-    new_len: usize,
-    flags: u32,
-) -> usize {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_mremap(proc, old_addr, old_len, new_len, flags) {
-        Ok(addr) => addr,
-        Err(e) => (-(e as i32)) as usize,
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
@@ -9885,13 +9657,6 @@ pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32)
 // Argv support — host pushes args, program reads them at startup
 // ---------------------------------------------------------------------------
 
-/// Clear all argv entries.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_clear_argv() {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    proc.argv.clear();
-}
-
 /// Push an argument string. Called by host before _start.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) {
@@ -9933,36 +9698,6 @@ pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) 
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// mmap. Returns address or MAP_FAILED (0xFFFFFFFF).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mmap(
-    addr: usize,
-    len: usize,
-    prot: u32,
-    flags: u32,
-    fd: i32,
-    offset_lo: u32,
-    offset_hi: i32,
-) -> usize {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_mmap(proc, &mut host, addr, len, prot, flags, fd, offset) {
-        Ok(a) => a,
-        Err(_) => wasm_posix_shared::mmap::MAP_FAILED,
-    };
-
-    // Ensure Wasm memory covers the mapped region (skip PROT_NONE mappings
-    // which only reserve address space without needing physical backing).
-    if result != wasm_posix_shared::mmap::MAP_FAILED && prot != 0 {
-        let end = result.saturating_add(len);
-        ensure_memory_covers(end);
-    }
-
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
@@ -10077,13 +9812,6 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
     }
     #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
     unreachable!("kernel_exit should not return");
-}
-
-/// Get the exit status of the current process (set by kernel_exit).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_exit_status() -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    proc.exit_status
 }
 
 // ---------------------------------------------------------------------------
@@ -11365,26 +11093,6 @@ pub extern "C" fn kernel_time() -> i64 {
     result
 }
 
-/// gettimeofday() - writes sec and usec to the given pointers.
-/// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_gettimeofday(sec_ptr: *mut i64, usec_ptr: *mut i64) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_gettimeofday(proc, &mut host) {
-        Ok((sec, usec)) => {
-            unsafe {
-                *sec_ptr = sec;
-                *usec_ptr = usec;
-            }
-            0
-        }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// usleep() - sleep for usec microseconds.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
@@ -11678,13 +11386,6 @@ pub extern "C" fn kernel_network_ifconf_write(
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     let mut host = WasmHostIO;
     crate::netif::ifconf_write(pointer_width, out, &mut host) as i32
-}
-
-/// prctl — process control. Returns 0 on success, or negative errno.
-/// buf_ptr is used for PR_SET_NAME (read name from buf) and PR_GET_NAME (write name to buf).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u32) -> i32 {
-    kernel_prctl_from_channel(option, arg2 as usize, _arg3, _arg4)
 }
 
 /// Channel dispatcher implementation with the complete target-width `arg2`
@@ -12100,16 +11801,6 @@ fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, coun
     syscalls::finish_scm_rights_cleanup(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendfile(
-    out_fd: i32,
-    in_fd: i32,
-    offset_ptr: *mut u8,
-    count: usize,
-) -> i32 {
-    kernel_sendfile_with_count(out_fd, in_fd, offset_ptr, count)
 }
 
 /// statx -- extended file stat.
@@ -12618,48 +12309,6 @@ pub extern "C" fn kernel_get_fork_exec_argc() -> i32 {
         Some(argv) => argv.len() as i32,
         None => 0,
     }
-}
-
-/// Save exec path and argv to be used after fork in the child.
-/// argv is passed as a pointer to an array of (ptr, len) pairs.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_fork_exec(
-    path_ptr: *const u8,
-    path_len: u32,
-    argv_ptrs: *const u32,
-    argc: u32,
-) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-    proc.fork_exec_path = Some(path.to_vec());
-
-    let mut argv = alloc::vec::Vec::new();
-    for i in 0..argc {
-        let entry_ptr = unsafe { argv_ptrs.add((i * 2) as usize) };
-        let arg_ptr = unsafe { *entry_ptr } as *const u8;
-        let arg_len = unsafe { *entry_ptr.add(1) } as usize;
-        let arg = unsafe { slice::from_raw_parts(arg_ptr, arg_len) };
-        argv.push(arg.to_vec());
-    }
-    proc.fork_exec_argv = Some(argv);
-    0
-}
-
-/// Add an fd action to apply before exec in fork child.
-/// action_type: 0=DUP2(fd1→fd2), 1=CLOSE(fd1), 2=OPEN(fd1, path at fd2 interpreted as ptr+len)
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_fork_fd_action(action_type: u32, fd1: i32, fd2: i32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    use crate::process::FdAction;
-    match action_type {
-        0 => proc.fork_fd_actions.push(FdAction::Dup2 {
-            old_fd: fd1,
-            new_fd: fd2,
-        }),
-        1 => proc.fork_fd_actions.push(FdAction::Close { fd: fd1 }),
-        _ => return -(wasm_posix_shared::Errno::EINVAL as i32),
-    }
-    0
 }
 
 /// Apply saved fork fd actions (dup2, close). Returns 0 on success, negative errno on error.
@@ -13247,18 +12896,6 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
     0
 }
 
-/// Backward-compatible interval hook for hosts predating
-/// `kernel_posix_timer_fire`. Its return contract is unchanged: zero tells the
-/// legacy host to queue a process-wide signal, while one suppresses an overrun.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_posix_timer_interval_fire(pid: u32, timer_id: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.get_mut(pid) {
-        Some(proc) => proc.note_legacy_posix_timer_interval_fire(timer_id) as i32,
-        None => 0,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // sigsuspend
 // ---------------------------------------------------------------------------
@@ -13287,22 +12924,6 @@ pub extern "C" fn kernel_pause() -> i32 {
     let mut host = WasmHostIO;
     let result = match syscalls::sys_pause(proc, &mut host) {
         Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// rt_sigtimedwait -- wait for a signal from a specified set.
-/// mask is passed as (lo, hi) u32 halves. timeout_ms is in milliseconds (-1 for infinite).
-/// Returns signal number on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms: i32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
-    let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-        Ok((sig, ..)) => sig as i32,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
