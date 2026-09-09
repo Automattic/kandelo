@@ -203,7 +203,30 @@ reconstruction work natively through the coarse path.
 **Single-digit `fm_*` floor is NOT reached.** It is blocked on the above (#2
 residual), the `.mjs`→Rust migration (#4), and only then deletion (#3).
 
-## BLOCKER: account weekly usage limit
+## #2 host-native — DONE (verified), premise corrected
+
+Resumed under the work login (personal login's weekly limit was the block).
+Landed + pushed: `63f42ce9c` abort path → coarse `fm_parent_abort`; `d2d00a02f`
+exnref-capture gap documented in `docs/future-improvements.md`.
+
+**The "host-drive vs guest-pull divergence" I described was WRONG (verified in
+code).** Both hosts already reconstruct references the SAME way: funcref/externref
+= guest-pull (import shims); GC/exnref = HOST-DRIVE via `fm_begin_reference_replay`
++ `fm_build_gc_plan` + `fm_gc_plan_count` + `fm_drive_execute`. TS does this too
+(`fork-module-backend.ts:417-434`, `driveRestoredPlan`, `fork-table-snapshot.ts:365`)
+— I missed it earlier because it's named `driveTypedGraph`/`driveRestoredPlan`, not
+`driveExecute`. The agent REPRODUCED proof it is a genuine floor: removing the
+GC-drive traps `smoke_fork_gc_struct_reconstructs` with "undefined element: out of
+bounds table access" — the guest cannot pull GC nodes in dependency order without
+re-instrumentation. So native is already unified with TS; the 4 remaining native
+fine-grained calls == TS's reference/GC reconstruction. **KEPT with proof.**
+
+Native validation: host-native `--lib` 45/0 (4 ignored), fork-codec 442/0,
+fork-module-inject 2/0, check-abi consistent (ABI-neutral). exnref CAPTURE is a
+fail-loud documented deferral (capture import stubs unbound; no exnref fixture
+exists yet — follow-up in `docs/future-improvements.md`).
+
+## BLOCKER (RESOLVED via work login): account weekly usage limit
 
 Hit mid-#2; resets **Sep 11, 9pm America/Indianapolis**. Fresh subagent dispatch
 fails on the limit; the subagent-driven completion of #2's residual + #3/#4/#5 is
