@@ -33,8 +33,45 @@
 import type { MessageChannelLike } from "../migration/channel.js";
 import type { ReplicationLogEntry } from "./log.js";
 import { ReplicationDivergence } from "./log.js";
+import { encodeMessage } from "../migration/codec.js";
 
 const LOCAL_REPLICATION_CHANNEL = "kandelo-replication-log";
+
+/**
+ * How many entries one running digest covers before it crosses the wire.
+ *
+ * Small enough that a corrupted or misdecoded entry is caught within a
+ * couple of seconds of machine time, large enough that the digest traffic
+ * disappears next to the entries it covers.
+ */
+const DIGEST_INTERVAL = 256;
+
+/**
+ * The chained digest the publisher and every watcher fold entry by entry.
+ *
+ * The digest is FNV-1a over the codec's bytes for each entry, seeded with
+ * the digest so far, so one folded value covers the whole stream in order.
+ * It is deliberately synchronous and not cryptographic: the channel is
+ * ordered and trusted, so the failure this catches is a defect — a codec
+ * that rebuilt an entry differently than it was sent, a publisher and a
+ * watcher running builds that disagree about a decision's shape — and a
+ * defect has no incentive to search for a collision. Folding synchronously
+ * is what lets the publisher post a digest immediately after the entry it
+ * covers, which is what lets a watcher verify by position instead of
+ * holding hashes for every sequence number.
+ */
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const FNV_MASK = 0xffffffffffffffffn;
+
+function foldDigest(seed: bigint, entry: ReplicationLogEntry): bigint {
+  let hash = seed;
+  for (const byte of encodeMessage(entry)) {
+    hash ^= BigInt(byte);
+    hash = (hash * FNV_PRIME) & FNV_MASK;
+  }
+  return hash;
+}
 
 /** One running recording a publisher can read and follow. */
 export interface ReplicationLogSource {
@@ -124,6 +161,7 @@ export interface PreviewScroll {
 type LocalReplicationMessage<TMachine> =
   | { readonly kind: "hello" }
   | { readonly kind: "entries"; readonly entries: readonly ReplicationLogEntry[] }
+  | { readonly kind: "digest"; readonly seq: number; readonly hash: string }
   | { readonly kind: "navigated"; readonly path: string }
   | { readonly kind: "cursor"; readonly position: PreviewCursor | null }
   | { readonly kind: "scrolled"; readonly position: PreviewScroll }
@@ -153,10 +191,62 @@ type LocalReplicationMessage<TMachine> =
  */
 export class LocalReplicationLog<TMachine = never> {
   readonly #channel: MessageChannelLike;
+  readonly #digestInterval: number;
+  /** The running digest over every entry this publisher has put on the wire. */
+  #digest = FNV_OFFSET;
+  /** The last sequence number folded into the digest. */
+  #digestedThrough = -1;
+  /** Entries folded since the last digest crossed the wire. */
+  #sinceDigest = 0;
 
-  constructor(channel: string | MessageChannelLike = LOCAL_REPLICATION_CHANNEL) {
+  constructor(
+    channel: string | MessageChannelLike = LOCAL_REPLICATION_CHANNEL,
+    options: { digestInterval?: number } = {},
+  ) {
     this.#channel =
       typeof channel === "string" ? new BroadcastChannel(channel) : channel;
+    this.#digestInterval = options.digestInterval ?? DIGEST_INTERVAL;
+  }
+
+  /**
+   * Put entries on the wire, and fold each one into the running digest.
+   *
+   * Every path that publishes entries — a backlog, a live recording, a
+   * capture's held batch — goes through here, so the digest covers the
+   * stream a watcher receives, whatever mixture of paths produced it. A
+   * hello re-sends entries already folded, and the sequence guard keeps a
+   * re-send from folding twice. The digest goes out right after the entry
+   * that completes its interval, on the same ordered channel, which is what
+   * lets a watcher verify it against its own running digest by position.
+   */
+  #postEntries(entries: readonly ReplicationLogEntry[]): void {
+    this.#post({ kind: "entries", entries });
+    for (const entry of entries) {
+      if (entry.seq <= this.#digestedThrough) continue;
+      this.#digest = foldDigest(this.#digest, entry);
+      this.#digestedThrough = entry.seq;
+      this.#sinceDigest += 1;
+      if (this.#sinceDigest < this.#digestInterval) continue;
+      this.#flushDigest();
+    }
+  }
+
+  /** Publish the digest so far, so short intervals verify as whole ones do. */
+  #flushDigest(): void {
+    if (this.#sinceDigest === 0) return;
+    this.#sinceDigest = 0;
+    this.#post({
+      kind: "digest",
+      seq: this.#digestedThrough,
+      hash: this.#digest.toString(16),
+    });
+  }
+
+  /** Start the digest over, for a recording that begins on this channel. */
+  #resetDigest(): void {
+    this.#digest = FNV_OFFSET;
+    this.#digestedThrough = -1;
+    this.#sinceDigest = 0;
   }
 
   /**
@@ -167,12 +257,13 @@ export class LocalReplicationLog<TMachine = never> {
    * tells watchers the recording ended.
    */
   publish(source: ReplicationLogSource): () => void {
+    this.#resetDigest();
     const backlog = () => {
       if (source.entries.length === 0) return;
-      this.#post({ kind: "entries", entries: [...source.entries] });
+      this.#postEntries([...source.entries]);
     };
     const stopRecord = source.onRecord((entry) => {
-      this.#post({ kind: "entries", entries: [entry] });
+      this.#postEntries([entry]);
     });
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
@@ -183,6 +274,7 @@ export class LocalReplicationLog<TMachine = never> {
     return () => {
       stopRecord();
       this.#channel.removeEventListener("message", listener);
+      this.#flushDigest();
       this.#post({ kind: "ended" });
     };
   }
@@ -232,6 +324,7 @@ export class LocalReplicationLog<TMachine = never> {
           const stopping = serving;
           serving = null;
           void stopping.stop();
+          this.#flushDigest();
           this.#post({ kind: "ended" });
           this.#post({ kind: "serving" });
         }
@@ -255,12 +348,13 @@ export class LocalReplicationLog<TMachine = never> {
       // no other watcher absorbs sequence numbers from a recording that
       // never served anyone.
       let held: ReplicationLogEntry[] | null = [];
+      this.#resetDigest();
       void capture((entries) => {
         if (held !== null) {
           held.push(...entries);
           return;
         }
-        this.#post({ kind: "entries", entries });
+        this.#postEntries(entries);
       }).then(
         (joined) => {
           capturing = false;
@@ -283,7 +377,7 @@ export class LocalReplicationLog<TMachine = never> {
           const releasing = held;
           held = null;
           if (releasing !== null && releasing.length > 0) {
-            this.#post({ kind: "entries", entries: releasing });
+            this.#postEntries(releasing);
           }
           this.#post({
             kind: "joined",
@@ -315,6 +409,7 @@ export class LocalReplicationLog<TMachine = never> {
       servingId = null;
       if (stopping === null) return;
       void stopping.stop();
+      this.#flushDigest();
       this.#post({ kind: "ended" });
     };
   }
@@ -507,10 +602,44 @@ export class LocalReplicationLog<TMachine = never> {
    */
   watch(sink: ReplicationLogSink): () => void {
     let nextSeq = -1;
+    let digest = FNV_OFFSET;
+    // Verification needs the stream from its first entry: a watcher folding
+    // from the middle would disagree with every digest and report a healthy
+    // stream as corrupt. Every supported flow starts at zero — a backlog is
+    // resent whole, a capture's log starts at the capture — so folding is on
+    // until the stream proves it began earlier.
+    let verifying = true;
     const listener = (event: MessageEvent) => {
       const message = event.data as LocalReplicationMessage<TMachine>;
       if (message.kind === "ended") {
         sink.ended();
+        return;
+      }
+      if (message.kind === "digest") {
+        if (nextSeq < 0) {
+          verifying = false;
+          return;
+        }
+        if (!verifying || message.seq < nextSeq - 1) return;
+        if (message.seq > nextSeq - 1) {
+          sink.diverged(
+            new ReplicationDivergence(
+              message.seq,
+              `the publisher digested through ${message.seq} and this watcher `
+                + `received through ${nextSeq - 1}`,
+            ),
+          );
+          return;
+        }
+        if (message.hash !== digest.toString(16)) {
+          sink.diverged(
+            new ReplicationDivergence(
+              message.seq,
+              `the log's running digest through ${message.seq} does not `
+                + `match the publisher's`,
+            ),
+          );
+        }
         return;
       }
       if (message.kind === "navigated") {
@@ -538,6 +667,10 @@ export class LocalReplicationLog<TMachine = never> {
           ),
         );
         return;
+      }
+      if (nextSeq < 0 && fresh[0]!.seq !== 0) verifying = false;
+      if (verifying) {
+        for (const entry of fresh) digest = foldDigest(digest, entry);
       }
       nextSeq = fresh[fresh.length - 1]!.seq + 1;
       sink.entries(fresh);

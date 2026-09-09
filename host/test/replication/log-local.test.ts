@@ -471,3 +471,145 @@ describe("local replication log", () => {
     }
   });
 });
+
+describe("local replication log chained digest", () => {
+  /**
+   * A channel wrapper that rewrites one recorded second in transit. The
+   * sequence numbers stay intact, so the corruption is invisible to the
+   * hole check and only the digest can catch it.
+   */
+  function tampering(channel: string): {
+    postMessage(message: unknown): void;
+    addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+    removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+    close(): void;
+  } {
+    const inner = new BroadcastChannel(channel);
+    const wrapped = new Map<
+      (event: MessageEvent) => void,
+      (event: MessageEvent) => void
+    >();
+    return {
+      postMessage: (message) => inner.postMessage(message),
+      addEventListener: (type, listener) => {
+        const tamper = (event: MessageEvent) => {
+          const message = event.data as {
+            kind: string;
+            entries?: Array<{ seq: number; decision: { sec?: number } }>;
+          };
+          if (message.kind !== "entries") {
+            listener(event);
+            return;
+          }
+          const entries = message.entries!.map((entry) =>
+            entry.seq === 1
+              ? { ...entry, decision: { ...entry.decision, sec: 9_999 } }
+              : entry,
+          );
+          listener({ data: { kind: "entries", entries } } as MessageEvent);
+        };
+        wrapped.set(listener, tamper);
+        inner.addEventListener(type, tamper);
+      },
+      removeEventListener: (type, listener) => {
+        const tamper = wrapped.get(listener);
+        if (!tamper) return;
+        wrapped.delete(listener);
+        inner.removeEventListener(type, tamper);
+      },
+      close: () => inner.close(),
+    };
+  }
+
+  it("verifies a healthy stream without a word", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const publisher = new LocalReplicationLog(channel, { digestInterval: 2 });
+    const watcher = new LocalReplicationLog(channel);
+    const recorder = new ReplicationLogRecorder();
+    const stopPublish = publisher.publish(recorder);
+    const sink = fakeSink();
+    const stopWatch = watcher.watch(sink.sink);
+    try {
+      recordClocks(recorder, 5);
+      await vi.waitFor(() => expect(sink.taken()).toHaveLength(5));
+      expect(sink.divergences()).toEqual([]);
+    } finally {
+      stopPublish();
+      stopWatch();
+      publisher.close();
+      watcher.close();
+    }
+  });
+
+  it("catches an entry the wire rewrote, at the digest that covers it", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const publisher = new LocalReplicationLog(channel, { digestInterval: 2 });
+    const watcher = new LocalReplicationLog(tampering(channel));
+    const recorder = new ReplicationLogRecorder();
+    const stopPublish = publisher.publish(recorder);
+    const sink = fakeSink();
+    const stopWatch = watcher.watch(sink.sink);
+    try {
+      recordClocks(recorder, 4);
+      // The rewrite keeps every sequence number, so the entries all arrive.
+      await vi.waitFor(() => expect(sink.taken()).toHaveLength(4));
+      await vi.waitFor(() => expect(sink.divergences()).not.toHaveLength(0));
+      expect(sink.divergences()[0]!.message).toContain(
+        "the log's running digest through 1 does not match the publisher's",
+      );
+    } finally {
+      stopPublish();
+      stopWatch();
+      publisher.close();
+      watcher.close();
+    }
+  });
+
+  it("publishes the digest of a partial interval when the recording ends", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const publisher = new LocalReplicationLog(channel, { digestInterval: 100 });
+    const watcher = new LocalReplicationLog(tampering(channel));
+    const recorder = new ReplicationLogRecorder();
+    const stopPublish = publisher.publish(recorder);
+    const sink = fakeSink();
+    const stopWatch = watcher.watch(sink.sink);
+    try {
+      recordClocks(recorder, 3);
+      await vi.waitFor(() => expect(sink.taken()).toHaveLength(3));
+      // Three entries never fill the interval; the stop is what sends the
+      // digest, so a short recording is verified like a long one.
+      expect(sink.divergences()).toEqual([]);
+      stopPublish();
+      await vi.waitFor(() => expect(sink.divergences()).not.toHaveLength(0));
+    } finally {
+      stopWatch();
+      publisher.close();
+      watcher.close();
+    }
+  });
+
+  it("keeps quiet for a watcher that started mid-stream", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const raw = new BroadcastChannel(channel);
+    const watcher = new LocalReplicationLog(channel);
+    const sink = fakeSink();
+    const stopWatch = watcher.watch(sink.sink);
+    try {
+      // A stream joined at sequence 5: the watcher cannot fold what it never
+      // received, so the digest is ignored rather than reported against.
+      raw.postMessage({
+        kind: "entries",
+        entries: [
+          { seq: 5, decision: { kind: "clock", pid: 1, clockId: 0, sec: 1, nsec: 0 } },
+        ],
+      });
+      raw.postMessage({ kind: "digest", seq: 5, hash: "0" });
+      await vi.waitFor(() => expect(sink.taken()).toHaveLength(1));
+      expect(sink.divergences()).toEqual([]);
+    } finally {
+      stopWatch();
+      watcher.close();
+      raw.close();
+    }
+  });
+});
