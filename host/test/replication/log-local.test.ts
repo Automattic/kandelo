@@ -323,6 +323,39 @@ describe("local replication log", () => {
     }
   });
 
+  it("carries each person's nickname to the other, whichever attached first", async () => {
+    const channel = `replication-test-${crypto.randomUUID()}`;
+    const early = new LocalReplicationLog(channel);
+    const heardEarly: Array<string | null> = [];
+    const earlyName = early.announceNickname(
+      "garply",
+      (name) => void heardEarly.push(name),
+    );
+    // The other page attaches later, so its listener missed the first
+    // announcement; the reply to its own announcement is what carries the
+    // earlier name across.
+    const late = new LocalReplicationLog(channel);
+    const heardLate: Array<string | null> = [];
+    const lateName = late.announceNickname(
+      "waldo",
+      (name) => void heardLate.push(name),
+    );
+    try {
+      await vi.waitFor(() => expect(heardEarly).toContain("waldo"));
+      await vi.waitFor(() => expect(heardLate).toContain("garply"));
+
+      // A cleared name travels like a given one: the other side falls back
+      // to the role words rather than keeping a name that is gone.
+      earlyName.set(null);
+      await vi.waitFor(() => expect(heardLate).toContain(null));
+    } finally {
+      earlyName.stop();
+      lateName.stop();
+      early.close();
+      late.close();
+    }
+  });
+
   it("loses no entry to a wire that holds its bytes", async () => {
     const [near, far] = FakeDataChannel.pair({ auto: false });
     const publisher = new LocalReplicationLog(new ChunkedMessageChannel(near));
