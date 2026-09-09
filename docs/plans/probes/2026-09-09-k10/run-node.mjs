@@ -4,11 +4,19 @@ import { readFile } from "node:fs/promises";
 import { Worker } from "node:worker_threads";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runProbes } from "./probe-core.js";
+import { runProbe4 } from "./probe4-core.js";
 import { driveProbe } from "./chan-core.js";
 
 const load = async (f) => new Uint8Array(await readFile(new URL(f, import.meta.url)));
 
 const results = await runProbes(load);
+
+// ---- probe 4 (the guest-defines-its-own-memory category)
+try {
+  Object.assign(results, await runProbe4(load));
+} catch (e) {
+  results["P4.FATAL"] = String((e && e.stack) || e);
+}
 
 // ---- probe 2
 try {

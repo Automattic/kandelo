@@ -4,6 +4,7 @@
 <pre id="out">running…</pre>
 <script type="module">
 import { runProbes } from './probe-core.js';
+import { runProbe4 } from './probe4-core.js';
 import { driveProbe } from './chan-core.js';
 
 const load = async (f) => new Uint8Array(await (await fetch(f)).arrayBuffer());
@@ -17,6 +18,12 @@ try {
   Object.assign(results, await runProbes(load));
 } catch (e) {
   results['P1P3.FATAL'] = String((e && e.stack) || e);
+}
+
+try {
+  Object.assign(results, await runProbe4(load));
+} catch (e) {
+  results['P4.FATAL'] = String((e && e.stack) || e);
 }
 
 try {

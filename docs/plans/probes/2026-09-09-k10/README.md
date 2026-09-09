@@ -38,7 +38,12 @@ and PIC placement, not Wasm GC, so wabt 1.0.37 assembles them.
 | Chromium | 151.0.7922.34 |
 | WebKit | 26.5 |
 
-## Result: all three probes PASS, and all three engines agree
+## Result: probes 1-3 PASS; probe 4 finds a real boundary
+
+All engines agree on every row. Probes 1, 2, and 3 clear the design for the
+`wasiModuleImportsMemory` category — the only one Kandelo runs. Probe 4 shows
+the `wasiModuleDefinesMemory` category cannot be served by a co-resident side
+module at all, and that Kandelo's existing hard refusal of it is correct.
 
 Raw output in `results.json`. Every row below is **VERIFIED** — observed in
 that file — unless marked otherwise.
@@ -166,6 +171,54 @@ DOUBT 2).
 host-side that caches a view over process memory must re-derive it after a
 guest growth, or bound itself to the region it owns.
 
+### Probe 4 — the guest that DEFINES its own memory
+
+`host/src/wasi-detect.ts` distinguishes two categories:
+`wasiModuleImportsMemory` (`:34`) and `wasiModuleDefinesMemory` (`:44`).
+Probes 1-3 all test the first. The second is what a **default wasi-sdk link
+emits** — the module owns its linear memory outright and Kandelo never supplies
+it — and it is the category most likely to break the side-module recipe, so it
+gets its own probe. Two obstacles are separable, and the probe separates them.
+
+| observation | node | chromium | webkit |
+|---|---|---|---|
+| fixture exports its own memory / imports none | true / false | true / false | true / false |
+| **4a** side module cannot instantiate without a memory | throws | throws | throws |
+| 4a guest cannot instantiate without the side module | throws | throws | throws |
+| **4b** self-defined memory's buffer is shared | **false** (`ArrayBuffer`) | false | false |
+| 4b linking the side module to it | **fails: shared-state mismatch** | same | same |
+| **4c** `memory.atomic.wait32` on a non-shared memory | throws "Atomics.wait cannot be called in this context" | same | traps "Out of bounds memory access" |
+| 4c `Atomics.notify` on a non-shared buffer | **0 — silent no-op** | 0 | 0 |
+| **4d** self-defined but `shared`, via a JS trampoline | 11 (works) | 11 | 11 |
+
+**The recipe does NOT hold for this category — and the probe shows Kandelo's
+existing refusal is correct rather than merely cautious.**
+
+- **4a — the wiring is a cycle.** The side module needs the guest's memory at
+  *its* instantiation; the guest needs the side module's exports at *its*
+  instantiation. Neither order works. Direct wasm→wasm wiring is only possible
+  when the *host* owns the memory, i.e. category one.
+- **4b — the blocking obstacle is shared-ness, not the cycle.** A default
+  wasi-sdk memory is **not shared**, so the side module (which must declare
+  `shared` to use `memory.atomic.wait32`) cannot even be linked against it.
+  Instantiation fails on all three engines with a shared-state mismatch.
+- **4c — and the syscall channel is impossible there anyway**, in either
+  language. The wait half fails loudly; note that the **notify half fails
+  silently** (returns 0), which is the more dangerous of the two and worth an
+  assertion if this category is ever revisited.
+- **4d — the one serviceable sub-case is not worth having.** A guest that
+  defines its memory but declares it `shared` can be served, but only by
+  breaking the cycle with a JS trampoline that forwards every WASI call. That
+  reinstates exactly the per-call JS frame the migration exists to remove, so
+  it buys nothing. No such artifact exists in the repo.
+
+**Design consequence:** `worker-main.ts:3292` already throws for
+`wasiModuleDefinesMemory`, and that refusal must be **preserved as a loud
+failure**, not softened. Probe 4 upgrades it from a limitation to a documented
+platform boundary with a proven cause: without a host-supplied shared memory
+there is no syscall channel, so there is no way to run the guest at all. The
+migration neither widens nor narrows the set of WASI modules Kandelo accepts.
+
 ## Residual risk, stated rather than hidden
 
 **INFERRED, not probed:** 3b covers a guest whose heap comes from
@@ -201,7 +254,11 @@ probe in the campaign report.
 | `p1-shim.wat` / `.wasm` | stand-in for `crates/wasi-module`: PIC-shaped, imports memory + placement globals, exports WASI signatures incl. i64 |
 | `p1-guest.wat` / `.wasm` | stand-in for a WASI guest: imports `wasi_snapshot_preview1` + memory, grows its own memory |
 | `p2-chan.wat` / `.wasm` | the channel wait in wasm, mirroring `wasi-shim.ts:527-531` |
+| `p4-guest-owns.wat` / `.wasm` | guest defining + exporting its own NON-shared memory (default wasi-sdk shape) |
+| `p4-guest-owns-shared.wat` / `.wasm` | the same but declaring the memory `shared`, isolating the cycle from shared-ness |
+| `p4-chan-unshared.wat` / `.wasm` | the channel wait over a non-shared memory |
 | `probe-core.js` | probes 1 and 3 (non-blocking, runs on any thread) |
+| `probe4-core.js` | probe 4 (the defines-its-own-memory category) |
 | `chan-core.js` | probe 2 waiter + driver |
 | `chan-waiter-node.mjs`, `chan-waiter.js` | worker entry points (Node / browser) |
 | `run-node.mjs`, `run-browsers.mjs`, `index.html` | per-engine drivers |
