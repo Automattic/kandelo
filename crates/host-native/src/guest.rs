@@ -3470,6 +3470,15 @@ struct ForkCoordState {
     /// `SYS_VFORK` when it finally posts the real channel request (AFTER
     /// capture completes — see `drive_fork_capture_seal_and_launch_child`).
     mode: AtomicU32,
+    /// Whether the PARENT's pending replay is an ABORT-replay (`1`) rather than
+    /// a NORMAL rewind-replay (`0`). Set when the entry loop drives the parent
+    /// through `fm_parent_abort` — an unsupported-reference (gated) fork or a
+    /// failed child launch, mirroring TS `beginAbortReplay` — so the
+    /// `Replaying`-phase finish drives `fm_parent_finish(1)` (the guest's
+    /// `wpk_fork_abort_end` flip) instead of `fm_parent_finish(0)`
+    /// (`wpk_fork_rewind_end`). Reset to `0` at the start of every capture and
+    /// after each finish. Stored as a `u32` (0/1) to match the other fields.
+    abort_replay: AtomicU32,
 }
 
 const FORK_COORD_PHASE_IDLE: u32 = 0;
@@ -3482,6 +3491,7 @@ impl ForkCoordState {
             fork_result: AtomicU32::new(0),
             root: AtomicU32::new(0),
             mode: AtomicU32::new(0),
+            abort_replay: AtomicU32::new(0),
         })
     }
 
@@ -3522,6 +3532,14 @@ impl ForkCoordState {
 
     fn set_mode(&self, value: u32) {
         self.mode.store(value, Ordering::SeqCst);
+    }
+
+    fn is_abort_replay(&self) -> bool {
+        self.abort_replay.load(Ordering::SeqCst) != 0
+    }
+
+    fn set_abort_replay(&self, value: bool) {
+        self.abort_replay.store(u32::from(value), Ordering::SeqCst);
     }
 }
 
@@ -5368,6 +5386,7 @@ fn spawn_guest_thread(
                                 // ever commits a frame.
                                 capture_for_fork.lock().unwrap().reset();
                                 coord.set_mode(mode as u32);
+                                coord.set_abort_replay(false);
                                 // Coarse capture-begin: ONE module call opens the
                                 // capture (reclaiming any prior fork), publishes the
                                 // KFMS arena root into the module buffer, and drives
@@ -5390,20 +5409,21 @@ fn spawn_guest_thread(
                             }
                             ForkCoordPhase::Replaying => {
                                 // Coarse replay-finish: ONE module call drives the
-                                // guest's `wpk_fork_rewind_end()` (slot bound at
-                                // instantiation) then finishes the process replay —
+                                // guest's `wpk_fork_rewind_end()` (normal replay) or
+                                // `wpk_fork_abort_end()` (abort replay — a gated or
+                                // failed-launch fork) then finishes the process replay,
                                 // folding the former `caller_export_typed(REWIND_END)` +
-                                // direct call + `fm_finish_replay`. `abort == 0`: native
-                                // models a failed/gated fork as a NORMAL parent replay
-                                // that returns a forced errno (never an abort-replay),
-                                // so this finish is always the rewind-end flip.
-                                fm.fm_parent_finish.call(&mut caller, 0)?;
+                                // direct call + `fm_finish_replay`. The entry loop
+                                // recorded which via `coord.is_abort_replay()`.
+                                let abort = coord.is_abort_replay();
+                                fm.fm_parent_finish.call(&mut caller, u32::from(abort))?;
                                 let errno = fm.fm_last_errno.call(&mut caller, ())?;
                                 if errno != 0 {
                                     return Err(wasmtime::Error::msg(format!(
                                         "fm_parent_finish failed: errno {errno}"
                                     )));
                                 }
+                                coord.set_abort_replay(false);
                                 coord.set_phase(ForkCoordPhase::Idle);
                                 Ok(coord.fork_result())
                             }
@@ -7963,23 +7983,26 @@ fn drive_fork_capture_seal_and_launch_child(
         if !begin_reference_replay_only(&mut *store, fm) {
             return false;
         }
-        // Coarse parent replay: begin the parent rewind + drive the guest's
-        // `wpk_fork_rewind_begin(root)` (slot bound at instantiation) in ONE
-        // module call, folding the former `fm_begin_replay` + direct
-        // `wpk_fork_rewind_begin` call. The module drives from each
-        // activation's stored `module_buffer` (== `coord.root()` here).
-        if let Err(e) = fm.fm_parent_replay.call(&mut *store, ()) {
-            eprintln!("fm_parent_replay (gated fork abort) failed: {e:#}");
+        // Coarse parent ABORT-replay: begin the abort + drive the guest's
+        // `wpk_fork_abort_begin(root)` (slot bound at instantiation) in ONE
+        // module call, mirroring TS `beginAbortReplay` for an unsupported-
+        // reference (gated) fork. The module drives from each activation's
+        // stored `module_buffer` (== `coord.root()` here); the paired
+        // `Replaying`-phase finish then drives `fm_parent_finish(1)` (the
+        // guest's `wpk_fork_abort_end` flip), so `coord` records the abort here.
+        coord.set_abort_replay(true);
+        if let Err(e) = fm.fm_parent_abort.call(&mut *store, ()) {
+            eprintln!("fm_parent_abort (gated fork abort) failed: {e:#}");
             return false;
         }
         match fm.fm_last_errno.call(&mut *store, ()) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_parent_replay (gated fork abort) failed: errno {errno}");
+                eprintln!("fm_parent_abort (gated fork abort) failed: errno {errno}");
                 return false;
             }
             Err(e) => {
-                eprintln!("fm_last_errno after fm_parent_replay (gated fork abort) failed: {e:#}");
+                eprintln!("fm_last_errno after fm_parent_abort (gated fork abort) failed: {e:#}");
                 return false;
             }
         }
@@ -8050,24 +8073,36 @@ fn drive_fork_capture_seal_and_launch_child(
     if !drive_reference_replay(&mut *store, fm, guest_mem) {
         return false;
     }
-    // Coarse parent replay: begin the parent rewind + drive the guest's
-    // `wpk_fork_rewind_begin(root)` (slot bound at instantiation) in ONE module
-    // call, folding the former `fm_begin_replay` + direct
-    // `wpk_fork_rewind_begin(root)` call. `root` (== each activation's stored
-    // `module_buffer`, smuggled to the child above) is what the module's rewind
-    // plan drives from internally.
-    if let Err(e) = fm.fm_parent_replay.call(&mut *store, ()) {
-        eprintln!("fm_parent_replay failed: {e:#}");
+    // Coarse parent replay: begin the parent rewind/abort + drive the guest's
+    // `wpk_fork_rewind_begin(root)` / `wpk_fork_abort_begin(root)` (slots bound
+    // at instantiation) in ONE module call, folding the former `fm_begin_replay`
+    // + direct guest-export call. `root` (== each activation's stored
+    // `module_buffer`, smuggled to the child above) is what the module's plan
+    // drives from internally. A FAILED child launch (`fork_result < 0`) resumes
+    // the parent at `fork()` with the errno via ABORT-replay (`fm_parent_abort`),
+    // mirroring TS `beginAbortReplay(-childPid)`; a successful launch resumes via
+    // NORMAL rewind-replay (`fm_parent_replay`). `coord` records which, so the
+    // paired `Replaying`-phase finish drives the matching `wpk_fork_{rewind,
+    // abort}_end` via `fm_parent_finish(abort)`.
+    let abort = fork_result < 0;
+    coord.set_abort_replay(abort);
+    let (entry, name): (&wasmtime::TypedFunc<(), ()>, &str) = if abort {
+        (&fm.fm_parent_abort, "fm_parent_abort")
+    } else {
+        (&fm.fm_parent_replay, "fm_parent_replay")
+    };
+    if let Err(e) = entry.call(&mut *store, ()) {
+        eprintln!("{name} failed: {e:#}");
         return false;
     }
     match fm.fm_last_errno.call(&mut *store, ()) {
         Ok(0) => {}
         Ok(errno) => {
-            eprintln!("fm_parent_replay failed: errno {errno}");
+            eprintln!("{name} failed: errno {errno}");
             return false;
         }
         Err(e) => {
-            eprintln!("fm_last_errno after fm_parent_replay failed: {e:#}");
+            eprintln!("fm_last_errno after {name} failed: {e:#}");
             return false;
         }
     }
@@ -8399,6 +8434,7 @@ fn run_worker_thread(
                     ForkCoordPhase::Idle => {
                         capture_for_fork.lock().unwrap().reset();
                         coord.set_mode(mode as u32);
+                        coord.set_abort_replay(false);
                         // Coarse capture-begin (worker-thread mirror of the main
                         // closure): open the capture + drive the guest's
                         // `wpk_fork_unwind_begin(root)` in one module call.
@@ -8415,15 +8451,19 @@ fn run_worker_thread(
                     }
                     ForkCoordPhase::Replaying => {
                         // Coarse replay-finish (worker-thread mirror): drive the
-                        // guest's `wpk_fork_rewind_end()` + finish the replay in one
-                        // module call. `abort == 0` (native never abort-replays).
-                        fm.fm_parent_finish.call(&mut caller, 0)?;
+                        // guest's `wpk_fork_rewind_end()` (normal) or
+                        // `wpk_fork_abort_end()` (abort — gated/failed-launch) then
+                        // finish the replay in one module call, per
+                        // `coord.is_abort_replay()`.
+                        let abort = coord.is_abort_replay();
+                        fm.fm_parent_finish.call(&mut caller, u32::from(abort))?;
                         let errno = fm.fm_last_errno.call(&mut caller, ())?;
                         if errno != 0 {
                             return Err(wasmtime::Error::msg(format!(
                                 "fm_parent_finish failed: errno {errno}"
                             )));
                         }
+                        coord.set_abort_replay(false);
                         coord.set_phase(ForkCoordPhase::Idle);
                         Ok(coord.fork_result())
                     }
