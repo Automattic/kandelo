@@ -1,4 +1,4 @@
-import type { MachineCheckpoint } from "../../src/migration/checkpoint";
+import type { MachineCheckpoint } from "../migration/checkpoint.js";
 
 /**
  * A digest of everything a Kandelo machine holds, region by region.

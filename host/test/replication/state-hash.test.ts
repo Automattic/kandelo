@@ -3,7 +3,7 @@ import {
   MACHINE_STATE_HASH_FORMAT,
   compareMachineStateHashes,
   hashMachineCheckpoint,
-} from "../support/state-hash";
+} from "../../src/replication/state-hash";
 import {
   MACHINE_CHECKPOINT_FORMAT,
   type CheckpointMount,
