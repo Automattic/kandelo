@@ -43,6 +43,7 @@ import {
   DeviceFileSystem,
   ensureMountParentDirectories,
   HostFileSystem,
+  HostRandomProvider,
   MemoryFileSystem,
   readPreparedPlatformFile,
 } from "./vfs";
@@ -56,6 +57,7 @@ import {
   type ReplicationPushedDecision,
 } from "./replication/log";
 import { RecordingTimeProvider } from "./replication/clock";
+import { RecordingRandomProvider } from "./replication/random";
 import {
   acceptSelectionRecordTap,
   beginReplicationReplay,
@@ -250,6 +252,11 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  * origin behind readings the guest has already seen.
  */
 let baseTimeProvider: NodeTimeProvider | null = null;
+/**
+ * This machine's own randomness, kept so recording can be turned off again.
+ * Stateless, unlike the clock, so one instance serves boot and restore alike.
+ */
+const baseRandomProvider = new HostRandomProvider();
 let replicationIO: VirtualPlatformIO | null = null;
 let replicationRecorder: ReplicationLogRecorder | null = null;
 let replicationReplay: { reader: ReplicationLogReader } | null = null;
@@ -1289,7 +1296,7 @@ async function buildVirtualPlatformIO(
     rootfsMemfs.setLazyFetcher(lazyFetcher);
   }
   baseTimeProvider = new NodeTimeProvider();
-  return new VirtualPlatformIO(mounts, baseTimeProvider);
+  return new VirtualPlatformIO(mounts, baseTimeProvider, baseRandomProvider);
 }
 
 function cleanupSessionDir(): void {
@@ -4883,6 +4890,10 @@ port.on("message", (msg: MainToKernelMessage) => {
           new RecordingTimeProvider(clock, replicationRecorder, () =>
             kernelWorker.currentGuestPid()),
         );
+        io.setRandomProvider(
+          new RecordingRandomProvider(baseRandomProvider, replicationRecorder,
+            () => kernelWorker.currentGuestPid()),
+        );
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
         kernelWorker.setAcceptSelectionTap(
           acceptSelectionRecordTap(replicationRecorder),
@@ -4899,6 +4910,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       if (replicationIO && baseTimeProvider) {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
+      replicationIO?.setRandomProvider(baseRandomProvider);
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setHttpExchangeTap(null);
@@ -4930,6 +4942,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       if (replicationIO && baseTimeProvider) {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
+      replicationIO?.setRandomProvider(baseRandomProvider);
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setReplicationAheadProbe(null);

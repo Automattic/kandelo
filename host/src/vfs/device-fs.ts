@@ -8,7 +8,8 @@ import type {
 import { checkedHostFileOffset } from "../file-offset";
 import { filesystemPathconf } from "../pathconf";
 import { DIRENT_TYPES, FILE_MODES } from "../generated/abi";
-import type { FileSystemBackend, DirEntry } from "./types";
+import type { FileSystemBackend, DirEntry, RandomProvider } from "./types";
+import { HostRandomProvider } from "./random";
 import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
 
 const { DT_CHR, DT_DIR, DT_LNK } = DIRENT_TYPES;
@@ -44,19 +45,13 @@ const ttyDevice: DeviceNode = {
   mode: S_IFCHR | 0o666,
 };
 
-function makeRandomDevice(): DeviceNode {
+function makeRandomDevice(random: () => RandomProvider): DeviceNode {
   return {
     reader: (buf, len) => {
-      if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
-        // crypto.getRandomValues rejects SharedArrayBuffer-backed views in browsers,
-        // so generate into a temporary non-shared buffer and copy.
-        const tmp = new Uint8Array(len);
-        globalThis.crypto.getRandomValues(tmp);
-        buf.set(tmp, 0);
-      } else {
-        // Fallback: not cryptographically secure, but functional
-        for (let i = 0; i < len; i++) buf[i] = (Math.random() * 256) | 0;
-      }
+      // The provider draws into a non-shared buffer, because
+      // crypto.getRandomValues rejects SharedArrayBuffer-backed views in
+      // browsers; copy the draw into the caller's view.
+      buf.set(random().getRandomBytes(len), 0);
       return len;
     },
     writer: (_buf, len) => len, // writes accepted, discarded (matches Linux)
@@ -90,9 +85,10 @@ export class DeviceFileSystem implements FileSystemBackend {
   private handles = new Map<number, OpenHandle>();
   private nextHandle = 1;
   private deviceNames: string[];
+  private randomProvider: RandomProvider = new HostRandomProvider();
 
   constructor() {
-    const random = makeRandomDevice();
+    const random = makeRandomDevice(() => this.randomProvider);
     this.devices.set("null", nullDevice);
     this.devices.set("zero", zeroDevice);
     this.devices.set("urandom", random);
@@ -100,6 +96,10 @@ export class DeviceFileSystem implements FileSystemBackend {
     this.devices.set("console", ttyDevice);
     this.devices.set("tty", ttyDevice);
     this.deviceNames = [...this.devices.keys()];
+  }
+
+  setRandomProvider(random: RandomProvider): void {
+    this.randomProvider = random;
   }
 
   private getDevice(path: string): DeviceNode {

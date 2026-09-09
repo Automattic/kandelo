@@ -9,7 +9,8 @@
  */
 import type { AcceptSelectionTap, GlQueryTap } from "../kernel.js";
 import type { HttpExchangeTap } from "../networking/in-kernel-http.js";
-import type { TimeProvider } from "../vfs/types.js";
+import type { RandomProvider, TimeProvider } from "../vfs/types.js";
+import { HostRandomProvider } from "../vfs/random.js";
 import {
   ReplicationLogReader,
   ReplicationLogRecorder,
@@ -20,6 +21,10 @@ import {
   type ReplicationPushedDecision,
 } from "./log.js";
 import { RecordingTimeProvider, ReplayingTimeProvider } from "./clock.js";
+import {
+  RecordingRandomProvider,
+  ReplayingRandomProvider,
+} from "./random.js";
 import { ReplicationLogQueueReader } from "./log-queue.js";
 
 /**
@@ -53,6 +58,18 @@ export interface ReplicationMachineTaps {
    * computers never share.
    */
   currentGuestPid(): number;
+}
+
+/**
+ * The two platform sources replication swaps on the machine's IO.
+ *
+ * The clock and the randomness travel together: both are host-produced
+ * values the guest consumes, so a machine that records or replays one
+ * without the other is a machine that is half its own.
+ */
+export interface ReplicationSwappableIO {
+  setTimeProvider(provider: TimeProvider): void;
+  setRandomProvider(random: RandomProvider): void;
 }
 
 /** Record every GL query answer the guest is handed, on the shared log. */
@@ -338,7 +355,7 @@ function createStreamingRecorder(
  * the browser have to do it identically in both.
  */
 export function beginReplicationStream(
-  io: { setTimeProvider(provider: TimeProvider): void },
+  io: ReplicationSwappableIO,
   clock: TimeProvider,
   publish: (entries: readonly ReplicationLogEntry[]) => void,
   taps: ReplicationMachineTaps,
@@ -346,6 +363,10 @@ export function beginReplicationStream(
   const recorder = createStreamingRecorder(publish);
   io.setTimeProvider(
     new RecordingTimeProvider(clock, recorder, () => taps.currentGuestPid()),
+  );
+  io.setRandomProvider(
+    new RecordingRandomProvider(new HostRandomProvider(), recorder, () =>
+      taps.currentGuestPid()),
   );
   taps.setGlQueryTap(glQueryRecordTap(recorder));
   taps.setAcceptSelectionTap(acceptSelectionRecordTap(recorder));
@@ -415,7 +436,7 @@ export interface ReplicationReplaySpec {
  * own host is not the same machine.
  */
 export function beginReplicationReplay(
-  io: { setTimeProvider(provider: TimeProvider): void },
+  io: ReplicationSwappableIO,
   clock: TimeProvider,
   spec: ReplicationReplaySpec,
   taps: ReplicationMachineTaps,
@@ -435,6 +456,9 @@ export function beginReplicationReplay(
   );
   io.setTimeProvider(
     new ReplayingTimeProvider(clock, reader, () => taps.currentGuestPid()),
+  );
+  io.setRandomProvider(
+    new ReplayingRandomProvider(reader, () => taps.currentGuestPid()),
   );
   taps.setGlQueryTap(glQueryReplayTap(reader));
   taps.setAcceptSelectionTap(acceptSelectionReplayTap(reader));

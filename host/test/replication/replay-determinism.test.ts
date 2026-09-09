@@ -7,10 +7,10 @@
  * on purpose: the first job is to measure how far from deterministic the
  * machine already is, not to assume it.
  *
- * The subject is the guest clock, because it is the only pulled decision the
- * log carries today. A guest that also read randomness or external bytes would
- * produce a log that is complete for its clock and silent about the rest, so
- * these tests use a guest that reads neither.
+ * The subject is the guest clock, the first pulled decision the log carried.
+ * Randomness travels the same way now — `random.test.ts` covers the draw
+ * providers — and a guest that read external bytes would still produce a log
+ * silent about them, so these tests use a guest that reads neither.
  *
  * The design is `docs/plans/2026-08-23-state-machine-replication-design.md`
  * § "Core model" and § "Divergence detection and resync", implementation-path

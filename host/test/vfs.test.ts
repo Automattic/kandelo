@@ -25,10 +25,12 @@ import {
 } from "../src/vfs/sharedfs-vendor";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { askMountsForCheckpointBytes } from "../src/migration/checkpoint";
+import { HostRandomProvider } from "../src/vfs/random";
 import {
   ST_NOSUID,
   type FileSystemBackend,
   type MountConfig,
+  type RandomProvider,
   type TimeProvider,
 } from "../src/vfs/types";
 import type { StatResult, StatfsResult } from "../src/types";
@@ -1427,6 +1429,51 @@ describe("VirtualPlatformIO clock routing", () => {
           new NodeTimeProvider(),
         ),
     ).not.toThrow();
+  });
+});
+
+describe("VirtualPlatformIO randomness routing", () => {
+  function randomBackend(): FileSystemBackend & { adopted: RandomProvider[] } {
+    const backend = createMockBackend() as FileSystemBackend & {
+      adopted: RandomProvider[];
+    };
+    backend.adopted = [];
+    backend.setRandomProvider = (random) => void backend.adopted.push(random);
+    return backend;
+  }
+
+  it("hands the machine's randomness to every mount that serves a random device", () => {
+    const root = randomBackend();
+    const dev = randomBackend();
+    const random = new HostRandomProvider();
+    new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/dev", backend: dev },
+      ],
+      new NodeTimeProvider(),
+      random,
+    );
+    expect(root.adopted).toEqual([random]);
+    expect(dev.adopted).toEqual([random]);
+  });
+
+  it("hands every mount the replacement randomness too", () => {
+    // A replicated machine swaps the provider after the mounts exist, so a
+    // backend given only the boot provider would go on serving /dev/urandom
+    // from the host it happens to be running on.
+    const backend = randomBackend();
+    const io = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend }],
+      new NodeTimeProvider(),
+    );
+    const replacement: RandomProvider = {
+      getRandomBytes: (length) => new Uint8Array(length).fill(3),
+    };
+    io.setRandomProvider(replacement);
+    expect(backend.adopted).toHaveLength(2);
+    expect(backend.adopted[1]).toBe(replacement);
+    expect(io.getRandomBytes(2)).toEqual(new Uint8Array([3, 3]));
   });
 });
 

@@ -29,6 +29,9 @@ const glAnswer = (op: number, rc: number, ...bytes: number[]) =>
 const accepted = (listener: number, pid: number) =>
   ({ kind: "accept", listener, pid }) as const;
 
+const drawn = (pid: number, ...bytes: number[]) =>
+  ({ kind: "random", pid, bytes: new Uint8Array(bytes) }) as const;
+
 describe("replication log recorder", () => {
   it("numbers decisions from the position it was given", () => {
     const recorder = new ReplicationLogRecorder(41);
@@ -218,6 +221,99 @@ describe("replication log GL query answers", () => {
 
     expect(reader.takeGlQuery(5)).toEqual(glAnswer(5, 4, 1, 0, 0, 0));
     expect(delivered).toEqual([input("/dev/pts/0", 13)]);
+  });
+});
+
+describe("replication log random draws", () => {
+  it("serves the recorded draws in order, interleaved with the clock", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0));
+    recorder.record(drawn(1, 9, 8));
+    recorder.record(drawn(1, 7));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeRandom(1, 2)).toEqual(new Uint8Array([9, 8]));
+    expect(reader.takeRandom(1, 1)).toEqual(new Uint8Array([7]));
+    expect(reader.consumed).toBe(3);
+  });
+
+  // Which process reaches its next draw first is the host's scheduling of
+  // their workers, the same thing per-process clock streams exist for.
+  it("serves each process its own draws, in whatever order they run", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(drawn(102, 1, 2));
+    recorder.record(drawn(103, 3, 4));
+    recorder.record(drawn(102, 5, 6));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.takeRandom(103, 2)).toEqual(new Uint8Array([3, 4]));
+    expect(reader.takeRandom(102, 2)).toEqual(new Uint8Array([1, 2]));
+    expect(reader.takeRandom(102, 2)).toEqual(new Uint8Array([5, 6]));
+  });
+
+  it("reports the position when the replica asks for a different size", () => {
+    const recorder = new ReplicationLogRecorder(6);
+    recorder.record(drawn(1, 1, 2, 3, 4));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(() => reader.takeRandom(1, 16)).toThrow(
+      "replication log diverged at 6: the replica asked for 16 random bytes "
+        + "where the primary drew 4",
+    );
+  });
+
+  it("reports the position when the replica draws past the recording", () => {
+    const recorder = new ReplicationLogRecorder(3);
+    recorder.record(drawn(1, 1));
+    const reader = new ReplicationLogReader(recorder.entries);
+    reader.takeRandom(1, 1);
+
+    expect(() => reader.takeRandom(1, 1)).toThrow(
+      "replication log diverged at 4: the replica drew 1 random bytes past "
+        + "the end of the log",
+    );
+  });
+
+  it("delivers what the primary pushed before a draw, before it", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(input("/dev/pts/0", 13));
+    recorder.record(drawn(1, 5));
+    const delivered: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(
+      recorder.entries,
+      (decision) => delivered.push(decision),
+    );
+
+    expect(reader.takeRandom(1, 1)).toEqual(new Uint8Array([5]));
+    expect(delivered).toEqual([input("/dev/pts/0", 13)]);
+  });
+
+  it("waits for the primary's draw instead of reading past the log", () => {
+    const arriving: ReplicationLogEntry[] = [
+      { seq: 0, decision: reading(1, 7, 0, 1) },
+      { seq: 1, decision: drawn(1, 4, 2) },
+    ];
+    const reader = new ReplicationLogReader(
+      [],
+      undefined,
+      () => arriving.shift() ?? null,
+    );
+
+    // A live replica is given an empty log and grows it as the primary
+    // records. The draw below was not in the log when the guest asked.
+    expect(reader.takeRandom(1, 2)).toEqual(new Uint8Array([4, 2]));
+    // The reading the draw arrived behind is still there for its own read.
+    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0, 1));
+  });
+
+  it("stops the replay when the primary stopped recording", () => {
+    const reader = new ReplicationLogReader([], () => {}, () => null);
+
+    expect(() => reader.takeRandom(1, 8)).toThrow(
+      "replication log diverged at 0: the replica drew 8 random bytes after "
+        + "the primary stopped recording",
+    );
   });
 });
 

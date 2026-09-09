@@ -11,8 +11,10 @@ import {
   ST_NOSUID,
   type FileSystemBackend,
   type MountConfig,
+  type RandomProvider,
   type TimeProvider,
 } from "./types";
+import { HostRandomProvider } from "./random";
 import { OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
@@ -60,6 +62,7 @@ function parentPath(path: string): string {
 export class VirtualPlatformIO implements PlatformIO {
   private mounts: MountEntry[];
   private time: TimeProvider;
+  private random: RandomProvider;
   private fileHandles = new Map<number, HandleInfo>();
   private dirHandles = new Map<number, HandleInfo>();
   private nextFileHandle = 100;
@@ -71,7 +74,11 @@ export class VirtualPlatformIO implements PlatformIO {
   private nextQualifiedDeviceId = 1n;
   network?: NetworkIO;
 
-  constructor(mounts: MountConfig[], time: TimeProvider) {
+  constructor(
+    mounts: MountConfig[],
+    time: TimeProvider,
+    random: RandomProvider = new HostRandomProvider(),
+  ) {
     // Scope inode numbers to the backend object that owns them. Assigning the
     // id per backend (rather than per mount point) keeps aliases intact when
     // one backend is deliberately exposed at more than one mount point.
@@ -93,15 +100,24 @@ export class VirtualPlatformIO implements PlatformIO {
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
     this.time = time;
+    this.random = random;
     if (this.mounts.length === 0) {
       throw new Error("VirtualPlatformIO requires at least one mount");
     }
     this.publishTimeProvider();
+    this.publishRandomProvider();
   }
 
   /** Hand the machine's clock to every mount that stamps its own file times. */
   private publishTimeProvider(): void {
     for (const mount of this.mounts) mount.backend.setTimeProvider?.(this.time);
+  }
+
+  /** Hand the machine's randomness to every mount that serves a random device. */
+  private publishRandomProvider(): void {
+    for (const mount of this.mounts) {
+      mount.backend.setRandomProvider?.(this.random);
+    }
   }
 
   /** Whether the mount owning an absolute guest path ignores set-ID bits. */
@@ -459,6 +475,23 @@ export class VirtualPlatformIO implements PlatformIO {
 
   nanosleep(sec: number, nsec: number): void {
     this.time.nanosleep(sec, nsec);
+  }
+
+  /**
+   * Replace the randomness this machine draws.
+   *
+   * The guest's random bytes belong to the platform for the reason the clock
+   * does: a replicated machine takes its draws from a log rather than from
+   * its own host, and swapping the provider is how a machine changes that
+   * without the `getrandom` path or the random devices having to know.
+   */
+  setRandomProvider(random: RandomProvider): void {
+    this.random = random;
+    this.publishRandomProvider();
+  }
+
+  getRandomBytes(length: number): Uint8Array {
+    return this.random.getRandomBytes(length);
   }
 }
 

@@ -1891,11 +1891,18 @@ export class WasmPosixKernel {
               bufLen,
               "host_getrandom destination",
             );
+            // The owned temporary ensures no host callback retains a live
+            // view of kernel memory. The platform draws the bytes so a
+            // replicated machine serves its recorded ones; a platform
+            // without its own randomness draws from the host.
             const random = new IntrinsicUint8Array(destination.capacity);
-            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
+            if (this.io.getRandomBytes !== undefined) {
+              const drawn = this.io.getRandomBytes(destination.capacity);
+              if (drawn.byteLength !== destination.capacity) return -5; // EIO
+              random.set(drawn);
+            } else if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               // crypto.getRandomValues rejects SharedArrayBuffer-backed views
-              // in browsers. The owned temporary also ensures no host callback
-              // retains a live view of kernel memory.
+              // in browsers.
               globalThis.crypto.getRandomValues(random);
             } else {
               for (let i = 0; i < destination.capacity; i++) {

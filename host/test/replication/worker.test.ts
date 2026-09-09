@@ -7,11 +7,12 @@ import {
   beginReplicationReplay,
   beginReplicationStream,
 } from "../../src/replication/worker";
-import type { TimeProvider } from "../../src/vfs/types";
+import type { RandomProvider, TimeProvider } from "../../src/vfs/types";
 
 function machineSurface() {
   const installed: {
     provider: TimeProvider | null;
+    random: RandomProvider | null;
     tap: GlQueryTap | null;
     acceptTap: AcceptSelectionTap | null;
     aheadProbe: ((pid: number) => number | null) | null;
@@ -19,6 +20,7 @@ function machineSurface() {
     pid: number;
   } = {
     provider: null,
+    random: null,
     tap: null,
     acceptTap: null,
     aheadProbe: null,
@@ -30,6 +32,9 @@ function machineSurface() {
     io: {
       setTimeProvider: (provider: TimeProvider) => {
         installed.provider = provider;
+      },
+      setRandomProvider: (random: RandomProvider) => {
+        installed.random = random;
       },
     },
     taps: {
@@ -68,6 +73,7 @@ describe("beginReplicationStream", () => {
     );
 
     surface.installed.provider!.clockGettime(1);
+    expect(surface.installed.random!.getRandomBytes(4).byteLength).toBe(4);
     expect(surface.installed.tap?.mode).toBe("record");
     if (surface.installed.tap?.mode !== "record") return;
     surface.installed.tap.record(5, 4, new Uint8Array([1, 0, 0, 0]));
@@ -85,6 +91,7 @@ describe("beginReplicationStream", () => {
 
     expect(published.map((entry) => entry.decision.kind)).toEqual([
       "clock",
+      "random",
       "gl",
       "accept",
       "http",
@@ -105,6 +112,10 @@ describe("beginReplicationReplay", () => {
         decision: { kind: "gl", op: 5, rc: 4, bytes: new Uint8Array([1, 0, 0, 0]) },
       },
       { seq: 2, decision: { kind: "accept", listener: 3, pid: 104 } },
+      {
+        seq: 3,
+        decision: { kind: "random", pid: 102, bytes: new Uint8Array([9, 8, 7]) },
+      },
     ];
     beginReplicationReplay(
       surface.io,
@@ -127,6 +138,9 @@ describe("beginReplicationReplay", () => {
     if (surface.installed.acceptTap?.mode !== "replay") return;
     expect(surface.installed.acceptTap.select(3, 101)).toBe(false);
     expect(surface.installed.acceptTap.select(3, 104)).toBe(true);
+    expect(surface.installed.random!.getRandomBytes(3)).toEqual(
+      new Uint8Array([9, 8, 7]),
+    );
     expect(surface.installed.aheadProbe?.(0)).toBeNull();
     expect(surface.installed.httpTap?.mode).toBe("replay");
   });

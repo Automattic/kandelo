@@ -88,6 +88,28 @@ export interface ReplicationAcceptSelection {
 }
 
 /**
+ * One draw of random bytes the host produced for a guest.
+ *
+ * Randomness is host-produced exactly like a clock reading — two computers
+ * never draw the same bytes — and it lands in guest memory, where a session
+ * key or a hash seed derived from it steers every branch that follows. The
+ * primary records the bytes its guest was handed, from `getrandom` and from
+ * the random devices alike; a replica hands its guest the recorded bytes and
+ * draws nothing of its own.
+ *
+ * `pid` keys the draw the way it keys a clock reading, and for the same
+ * reason: which process reaches its next draw first is host scheduling, so
+ * each process replays its own draws in its own order. There is no borrowing
+ * here, though — a borrowed reading is still a time the machine observed,
+ * but bytes other than the recorded ones are a different machine.
+ */
+export interface ReplicationRandomBytes {
+  readonly kind: "random";
+  readonly pid: number;
+  readonly bytes: Uint8Array;
+}
+
+/**
  * Bytes the host delivered to a device, at the position it delivered them.
  *
  * `device` is the path the bytes were appended to, so the log stays
@@ -193,14 +215,16 @@ export type ReplicationPushedDecision =
 /**
  * A value the host produced that the guest could not have derived itself.
  *
- * Two shapes travel together here. A clock reading, a GL answer, and an
- * accept selection are *pulled*: the guest asks and the log answers. A pushed
- * decision arrives between two guest requests, and the log records where.
+ * Two shapes travel together here. A clock reading, a GL answer, an accept
+ * selection, and a random draw are *pulled*: the guest asks and the log
+ * answers. A pushed decision arrives between two guest requests, and the log
+ * records where.
  */
 export type ReplicationDecision =
   | ReplicationClockReading
   | ReplicationGlQueryAnswer
   | ReplicationAcceptSelection
+  | ReplicationRandomBytes
   | ReplicationPushedDecision;
 
 /** Whether `decision` is one the host delivered rather than the guest asked for. */
@@ -372,6 +396,8 @@ export class ReplicationLogReader {
   readonly #taken: boolean[];
   /** Where each process's next clock reading is looked for. */
   readonly #clockAt = new Map<number, number>();
+  /** Where each process's next random draw is looked for. */
+  readonly #randomAt = new Map<number, number>();
   /** Where each listener's next accept selection is looked for. */
   readonly #acceptAt = new Map<number, number>();
   /** Selections a listener owes, one per accept it took without the log. */
@@ -667,6 +693,62 @@ export class ReplicationLogReader {
   }
 
   /**
+   * The bytes the primary handed this process for its next random draw.
+   *
+   * The search runs over this process's own draws, the way a clock read runs
+   * over its own readings and for the same reason: which process draws first
+   * is host scheduling, not machine state.
+   *
+   * The wait for a draw that has not arrived is unbounded, like a GL query's
+   * and unlike a clock read's. A clock read can be served the machine-latest
+   * reading when its counterpart stopped reading, because a borrowed reading
+   * is still a time this machine observed; there is no such thing as a
+   * borrowed draw — any bytes but the recorded ones are a different machine —
+   * so the read waits for the primary, and a primary that never draws them
+   * is a divergence that surfaces at this reader's next mismatched take.
+   */
+  takeRandom(pid: number, length: number): Uint8Array {
+    for (;;) {
+      const at = this.#findRandom(pid);
+      // Everything the primary pushed before this draw, first — and over the
+      // entries other processes have not taken, because a process that may
+      // never ask again must not hold the primary's input.
+      this.#deliverPushed(at ?? this.#entries.length, { over: true });
+      if (at !== null) {
+        const entry = this.#entries[at]!;
+        const decision = entry.decision as ReplicationRandomBytes;
+        if (decision.bytes.byteLength !== length) {
+          this.#diverge(
+            entry.seq,
+            `the replica asked for ${length} random bytes where the primary `
+              + `drew ${decision.bytes.byteLength}`,
+          );
+        }
+        this.#randomAt.set(pid, at + 1);
+        this.#take(at);
+        if (this.#index <= at) this.#index = at + 1;
+        return decision.bytes;
+      }
+      if (this.#extend === undefined || this.#ended) {
+        this.#diverge(
+          this.nextSeq,
+          this.#ended
+            ? `the replica drew ${length} random bytes after the primary `
+              + `stopped recording`
+            : `the replica drew ${length} random bytes past the end of the `
+              + `log`,
+        );
+      }
+      const arrived = this.#extend();
+      if (arrived === null) {
+        this.#ended = true;
+        continue;
+      }
+      this.#append(arrived);
+    }
+  }
+
+  /**
    * Whether this process is the one the primary let take the connection at
    * the head of this listener's shared accept queue.
    *
@@ -843,6 +925,27 @@ export class ReplicationLogReader {
       }
     }
     this.#clockAt.set(pid, at);
+    return null;
+  }
+
+  /**
+   * Where this process's next unserved random draw sits, or null when the
+   * log holds none yet.
+   *
+   * The search resumes from where the last one stopped, so a process does
+   * not rescan the whole log on every draw.
+   */
+  #findRandom(pid: number): number | null {
+    let at = this.#randomAt.get(pid) ?? 0;
+    for (; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      const decision = this.#entries[at]!.decision;
+      if (decision.kind === "random" && decision.pid === pid) {
+        this.#randomAt.set(pid, at);
+        return at;
+      }
+    }
+    this.#randomAt.set(pid, at);
     return null;
   }
 

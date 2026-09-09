@@ -181,6 +181,15 @@ export interface PlatformIO {
   clockGettime(clockId: number): { sec: number; nsec: number };
   nanosleep(sec: number, nsec: number): void;
 
+  /**
+   * Randomness (optional — a platform without it draws from the host).
+   *
+   * The guest's random bytes are a platform value like its clock readings:
+   * a replicated machine serves recorded draws instead of its host's, so
+   * `host_getrandom` asks the platform before falling back to WebCrypto.
+   */
+  getRandomBytes?(length: number): Uint8Array;
+
   // Process (optional — only needed when process management is available)
   waitpid?(pid: number, options: number): { pid: number; status: number };
 

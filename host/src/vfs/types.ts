@@ -30,6 +30,8 @@ export interface FileSystemBackend {
   preparePath?(path: string): Promise<boolean>;
   /** Stamp file times from the machine's clock rather than the host's. */
   setTimeProvider?(time: TimeProvider): void;
+  /** Serve device randomness from the machine's source rather than the host's. */
+  setRandomProvider?(random: RandomProvider): void;
   /**
    * The bytes a machine checkpoint carries for this mount, or why there are none.
    *
@@ -113,6 +115,20 @@ export interface TimeProvider {
    */
   advanceMonotonicFloor?(floorNs: number): void;
   nanosleep(sec: number, nsec: number): void;
+}
+
+/**
+ * The guest's source of randomness.
+ *
+ * Random bytes are host-produced values the guest consumes, like a clock
+ * reading: two computers never draw the same bytes, so a replica that draws
+ * its own diverges on its first `getrandom`. Every guest draw — the
+ * `getrandom` syscall and a `/dev/urandom` read — crosses this one interface,
+ * so a machine swaps where its randomness comes from without any syscall
+ * path having to know.
+ */
+export interface RandomProvider {
+  getRandomBytes(length: number): Uint8Array;
 }
 
 export interface MountConfig {

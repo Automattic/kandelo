@@ -43,6 +43,7 @@ import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
+import { HostRandomProvider } from "./vfs/random";
 import {
   ReplicationLogRecorder,
   ptsDeviceIndex,
@@ -53,6 +54,7 @@ import {
   type ReplicationPushedDecision,
 } from "./replication/log";
 import { RecordingTimeProvider } from "./replication/clock";
+import { RecordingRandomProvider } from "./replication/random";
 import {
   acceptSelectionRecordTap,
   beginReplicationReplay,
@@ -192,6 +194,11 @@ let io: VirtualPlatformIO;
  * origin would sit behind the readings the guest has already seen.
  */
 let baseTimeProvider: BrowserTimeProvider | null = null;
+/**
+ * This machine's own randomness, kept so recording can be turned off again.
+ * Stateless, unlike the clock, so one instance serves boot and restore alike.
+ */
+const baseRandomProvider = new HostRandomProvider();
 /** The decision log this machine is taking, or null when it is taking none. */
 let replicationRecorder: ReplicationLogRecorder | null = null;
 /** The decision log this machine is following, or null when it leads. */
@@ -1381,7 +1388,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     post({ type: "lazy_download", event });
   });
   baseTimeProvider = new BrowserTimeProvider();
-  io = new VirtualPlatformIO(mounts, baseTimeProvider);
+  io = new VirtualPlatformIO(mounts, baseTimeProvider, baseRandomProvider);
   if (msg.restoreCheckpoint) {
     // The adopted kernel memory carries monotonic deadlines measured on the
     // captured machine's clock, and a guest's monotonic clock must never run
@@ -5455,6 +5462,10 @@ sw.onmessage = (e: MessageEvent) => {
           new RecordingTimeProvider(clock, replicationRecorder, () =>
             kernelWorker.currentGuestPid()),
         );
+        target.setRandomProvider(
+          new RecordingRandomProvider(baseRandomProvider, replicationRecorder,
+            () => kernelWorker.currentGuestPid()),
+        );
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
         kernelWorker.setAcceptSelectionTap(
           acceptSelectionRecordTap(replicationRecorder),
@@ -5469,6 +5480,7 @@ sw.onmessage = (e: MessageEvent) => {
       const recorder = replicationRecorder;
       replicationRecorder = null;
       if (io && baseTimeProvider) io.setTimeProvider(baseTimeProvider);
+      if (io) io.setRandomProvider(baseRandomProvider);
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setHttpExchangeTap(null);
@@ -5494,6 +5506,7 @@ sw.onmessage = (e: MessageEvent) => {
       const replay = replicationReplay;
       replicationReplay = null;
       if (io && baseTimeProvider) io.setTimeProvider(baseTimeProvider);
+      if (io) io.setRandomProvider(baseRandomProvider);
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setReplicationAheadProbe(null);
