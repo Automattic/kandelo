@@ -138,14 +138,17 @@ const DRIVE_OP_RESTORE: i32 = 5;
 /// `recipe` (high 32) / `arg` (low 32) fields and `call_indirect`s it through a
 /// `(ptr) -> ()` type. MUST match `fork_codec::drive_plan::DRIVE_OP_REWIND_BEGIN`.
 const DRIVE_OP_REWIND_BEGIN: i32 = 7;
-/// op == run one activation's guest `wpk_fork_unwind_end()` — the capture-SEAL
-/// state flip. UNLIKE every other guest-drive op it takes NO argument, so the
-/// shim `call_indirect`s it through a distinct `() -> ()` type, reading neither
-/// `arg` nor `recipe`. It shares the `>= DRIVE_OP_RESTORE` "install/control"
-/// class (excluded from the reconstruction counter), so it is checked BEFORE the
-/// `>= DRIVE_OP_REWIND_BEGIN` pointer-drive branch (its op value, 9, is also
-/// `>= DRIVE_OP_REWIND_BEGIN`). MUST match
-/// `fork_codec::drive_plan::DRIVE_OP_UNWIND_END`.
+/// op == the FIRST no-argument `() -> ()` guest-drive op. Every op
+/// `>= DRIVE_OP_UNWIND_END` drives a NO-argument guest state flip
+/// (`wpk_fork_unwind_end` capture-seal = 9, `wpk_fork_rewind_end` replay-finish =
+/// 10, `wpk_fork_abort_end` abort-finish = 11), so the shim `call_indirect`s it
+/// through a distinct `() -> ()` type reading neither `arg` nor `recipe`. These
+/// share the `>= DRIVE_OP_RESTORE` "install/control" class (excluded from the
+/// reconstruction counter), so the `>= DRIVE_OP_UNWIND_END` void check runs
+/// BEFORE the `>= DRIVE_OP_REWIND_BEGIN` pointer-drive branch (their op values,
+/// 9/10/11, are all also `>= DRIVE_OP_REWIND_BEGIN`). MUST match
+/// `fork_codec::drive_plan::DRIVE_OP_UNWIND_END` (and its REWIND_END/ABORT_END
+/// successors, which take the SAME void branch).
 const DRIVE_OP_UNWIND_END: i32 = 9;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
@@ -683,10 +686,11 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                                     );
                             },
                             // Real guest drive. Three shapes, split on the op:
-                            //   op == DRIVE_OP_UNWIND_END (capture seal):
+                            //   op >= DRIVE_OP_UNWIND_END (UNWIND_END capture-seal,
+                            //     REWIND_END replay-finish, ABORT_END abort-finish):
                             //     the guest export takes NO argument,
-                            //     `call_indirect ()->()`. Checked FIRST because its
-                            //     op value (9) is also `>= DRIVE_OP_REWIND_BEGIN`.
+                            //     `call_indirect ()->()`. Checked FIRST because these
+                            //     op values (9/10/11) are also `>= DRIVE_OP_REWIND_BEGIN`.
                             //   op >= DRIVE_OP_REWIND_BEGIN (REWIND_BEGIN/ABORT_BEGIN):
                             //     the guest export takes the continuation ROOT pointer,
                             //     `call_indirect (ptr)->()`; the root is reconstructed
@@ -695,12 +699,14 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                             //     `call_indirect (i32)->()` with `arg`, then (if ALLOC)
                             //     the store-#2 published-object assert.
                             |drive| {
-                        drive.local_get(op).i32_const(DRIVE_OP_UNWIND_END).binop(BinaryOp::I32Eq);
+                        drive.local_get(op).i32_const(DRIVE_OP_UNWIND_END).binop(BinaryOp::I32GeU);
                         drive.if_else(
                             None,
                             // () -> () drive: call_indirect guest[slot]() — no argument
-                            // (the capture-seal `wpk_fork_unwind_end` flip). Reads only
-                            // the step's slot; `recipe`/`arg` are ignored.
+                            // (the capture-seal `wpk_fork_unwind_end` flip and the
+                            // replay-finish `wpk_fork_rewind_end`/`wpk_fork_abort_end`
+                            // flips, ops >= DRIVE_OP_UNWIND_END). Reads only the step's
+                            // slot; `recipe`/`arg` are ignored.
                             |void_drive| {
                                 void_drive
                                     .local_get(step)
