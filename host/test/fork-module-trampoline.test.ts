@@ -16,9 +16,7 @@ import {
   ForkModuleTrampolines,
 } from "../src/fork-module-trampoline";
 
-const PAGE = 65536;
 const MiB = 1024 * 1024;
-const EINVAL = 22;
 
 function loadForkModule32(): WebAssembly.Module {
   return new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm")));
@@ -51,118 +49,20 @@ describe("fork-module trampoline (production TS port)", () => {
     }
   });
 
-  it("routes two activations' frames to independent per-activation drivers", () => {
-    const module = loadForkModule32();
-    const ARENA_END = 32 * MiB;
-    const memory = new WebAssembly.Memory({
-      initial: Math.ceil((ARENA_END + PAGE) / PAGE),
-      maximum: 16384,
-      shared: true,
-    });
-    // Reserve the shared module region low; carve two disjoint frame arenas high.
-    let next = 8 * MiB;
-    const fm = instantiateForkModule({
-      module,
-      memory,
-      ptrWidth: 4,
-      reserve: (size) => {
-        const base = next;
-        next += size;
-        return base;
-      },
-      label: "trampoline-test",
-    });
-    const x = fm.exports as ForkModuleExports;
-    const call = (fn: keyof ForkModuleExports, ...args: number[]): number =>
-      Number((x[fn] as (...a: number[]) => number)(...args));
-    const errno = (): number => call("fm_last_errno");
-
-    const ARENA0_BASE = 20 * MiB;
-    const ARENA1_BASE = 26 * MiB;
-    const ARENA_LEN = 4 * MiB;
-    const PREFIX0 = 128;
-    const PREFIX1 = 256;
-
-    // Drive the unwind over caller-owned FIXED arenas, NOT the production
-    // channel-mmap growing arena: this is a single-threaded in-process harness
-    // with no worker to service the module's blocking `memory_atomic_wait32`
-    // channel handshake, so the fixed-arena entries bump-allocate within the two
-    // disjoint high regions carved above instead. The journal / writer / resume
-    // table are byte-identical to the channel path, so this still exercises the
-    // exact multi-activation frame routing the production `fm_begin_unwind` does.
-    call("fm_set_format", 4, PREFIX0);
-    expect(errno()).toBe(0);
-    const mb0 = call("fm_begin_unwind_fixed_arena", 0, ARENA0_BASE, ARENA_LEN) >>> 0;
-    expect(errno()).toBe(0);
-    expect(mb0).toBeGreaterThanOrEqual(ARENA0_BASE);
-    const mb1 =
-      call("fm_add_activation_unwind_fixed_arena", 1, ARENA1_BASE, ARENA_LEN, PREFIX1) >>> 0;
-    expect(errno()).toBe(0);
-    expect(mb1).toBeGreaterThanOrEqual(ARENA1_BASE);
-
-    const trampolines = new ForkModuleTrampolines(x);
-    const t = (act: number): Record<string, (...a: number[]) => number> =>
-      trampolines.instanceFor(act).exports as unknown as Record<
-        string,
-        (...a: number[]) => number
-      >;
-
-    const dv = (): DataView => new DataView(memory.buffer);
-    const u8 = (): Uint8Array => new Uint8Array(memory.buffer);
-    const writePayload = (
-      payload: number,
-      func: number,
-      fill: number,
-      size: number,
-    ): void => {
-      dv().setUint32(payload + 0, func, true);
-      dv().setUint32(payload + 4, 1, true);
-      dv().setUint32(payload + 8, 0, true);
-      dv().setUint32(payload + 12, 0, true);
-      const buf = u8();
-      for (let i = 16; i < size; i++) buf[payload + i] = fill;
-    };
-
-    const commits = [
-      { act: 0, func: 101, fill: 0xa1, size: 40 },
-      { act: 1, func: 301, fill: 0xc1, size: 48 },
-      { act: 0, func: 202, fill: 0xb2, size: 40 },
-      { act: 1, func: 302, fill: 0xc2, size: 56 },
-    ];
-    for (const c of commits) {
-      const payload = t(c.act).__wpk_fork_frame_reserve(c.size) >>> 0;
-      expect(errno()).toBe(0);
-      const base = c.act === 0 ? ARENA0_BASE : ARENA1_BASE;
-      expect(payload).toBeGreaterThanOrEqual(base);
-      expect(payload).toBeLessThan(base + ARENA_LEN);
-      writePayload(payload, c.func, c.fill, c.size);
-      t(c.act).__wpk_fork_frame_commit(payload);
-      expect(errno()).toBe(0);
-    }
-
-    call("fm_finish_unwind");
-    expect(errno()).toBe(0);
-    call("fm_begin_replay");
-    expect(errno()).toBe(0);
-
-    const replay = [...commits].reverse();
-    for (const c of replay) {
-      const wrong = c.act === 0 ? 1 : 0;
-      // Wrong activation's peek is rejected by the journal activation gate.
-      expect(t(wrong).__wpk_fork_frame_peek(c.size) >>> 0).toBe(0);
-      expect(errno()).toBe(EINVAL);
-      // The correct activation reconstructs its own frame.
-      const peeked = t(c.act).__wpk_fork_frame_peek(c.size) >>> 0;
-      expect(errno()).toBe(0);
-      expect(dv().getUint32(peeked, true)).toBe(c.func);
-      const advanced = t(c.act).__wpk_fork_frame_next(c.size) >>> 0;
-      expect(errno()).toBe(0);
-      expect(advanced).toBe(peeked);
-      expect(u8()[advanced + 16]).toBe(c.fill);
-    }
-    call("fm_finish_replay");
-    expect(errno()).toBe(0);
-  });
+  // The former in-process multi-activation frame-ROUTING case that drove a full
+  // unwind -> replay cycle here used the module's in-realm FIXED-arena harness
+  // exports (`fm_begin_unwind_fixed_arena` / `fm_add_activation_unwind_fixed_arena`
+  // / `fm_finish_unwind` / `fm_begin_replay` / `fm_finish_replay`). Those
+  // fine-grained DRIVE exports and the fixed-arena machinery were deleted once
+  // every fork phase routed through the coarse `fm_parent_*` per-phase entries
+  // (control-flow inversion), which drive the guest phase-flip exports through the
+  // injected `fm_drive_execute` shim and cannot be driven without a real guest +
+  // channel responder. Per-activation frame routing (independent writers, no
+  // cross-activation aliasing, the journal activation gate) is now covered
+  // end-to-end by the coarse two-activation dlopen forks in
+  // `fork-from-dlopen-side-module-e2e.test.ts` / `fork-dlopen-replay-e2e.test.ts`
+  // and the host-native `--lib` runner. This file retains the guest-independent
+  // trampoline emit/validate and per-activation instance caching coverage.
 
   it("caches one instance per activation id and evicts on request", () => {
     const module = loadForkModule32();

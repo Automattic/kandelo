@@ -4070,20 +4070,7 @@ pub struct ForkModule {
     // not at instantiation) -----------------------------------------------
     pub fm_set_format: wasmtime::TypedFunc<(u32, u32), ()>,
     pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
-    pub fm_begin_unwind: wasmtime::TypedFunc<(u32, u32), u32>,
-    pub fm_finish_unwind: wasmtime::TypedFunc<(), ()>,
-    pub fm_serialize_journal_alloc: wasmtime::TypedFunc<u32, u32>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
-    pub fm_begin_replay: wasmtime::TypedFunc<(), ()>,
-    pub fm_finish_replay: wasmtime::TypedFunc<(), ()>,
-    pub fm_begin_child_replay: wasmtime::TypedFunc<(u32, u32, u32), ()>,
-    /// Real vfork (N1 residual): the borrowed sibling of `fm_begin_child_
-    /// replay` — see `crates/fork-module/src/lib.rs`'s `fm_begin_borrowed_
-    /// child_replay` doc comment. `(module_buffer, image_ptr, image_len,
-    /// private_prefix)`; on success the guest's `wpk_fork_rewind_begin` must
-    /// be called with `private_prefix`, NOT `module_buffer` — see
-    /// `run_fork_capable_entry`'s `ForkEntry::ChildBorrowedReplay` arm.
-    pub fm_begin_borrowed_child_replay: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
     /// Proof-of-use statistics: the single folded counter accessor
     /// (`fm_stats(field) -> i64`), replacing the former 11 individual `fm_*`
@@ -4601,14 +4588,7 @@ pub(crate) fn instantiate_fork_module(
         catalog_scratch_base,
         fm_set_format: fm_func!("fm_set_format": (u32, u32) => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
-        fm_begin_unwind: fm_func!("fm_begin_unwind": (u32, u32) => u32),
-        fm_finish_unwind: fm_func!("fm_finish_unwind": () => ()),
-        fm_serialize_journal_alloc: fm_func!("fm_serialize_journal_alloc": u32 => u32),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
-        fm_begin_replay: fm_func!("fm_begin_replay": () => ()),
-        fm_finish_replay: fm_func!("fm_finish_replay": () => ()),
-        fm_begin_child_replay: fm_func!("fm_begin_child_replay": (u32, u32, u32) => ()),
-        fm_begin_borrowed_child_replay: fm_func!("fm_begin_borrowed_child_replay": (u32, u32, u32, u32) => ()),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
         fm_stats: fm_func!("fm_stats": u32 => i64),
         fm_begin_reference_replay: fm_func!("fm_begin_reference_replay": (u32, u32) => ()),

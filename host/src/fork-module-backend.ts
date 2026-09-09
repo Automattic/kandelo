@@ -706,105 +706,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Parent: begin the module unwind. The module channel-mmaps its linked frame
-   * chunks on demand via `SYS_mmap` → the kernel `find_gap` allocator (Option B:
-   * dynamic, kernel-tracked placement — no fork-depth cap and no carved-out guest
-   * region), so a deep continuation grows cleanly and a genuine `find_gap`/
-   * admission exhaustion surfaces as a truthful `-ENOMEM` (the parent survives).
-   * Returns the module-buffer anchor (the continuation root) the coordinator
-   * writes into the module-state prefix and passes to `wpk_fork_unwind_begin`.
-   */
-  beginUnwind(): number {
-    this.requireSetup("begin unwind");
-    if (this.unwindActive) {
-      throw new Error(`${this.label}: fork-module unwind already active`);
-    }
-    const moduleBuffer = this.toNum(
-      this.exports.fm_begin_unwind(0, this.wptr(this.channelBase)),
-    );
-    this.requireOk("fm_begin_unwind");
-    if (!Number.isSafeInteger(moduleBuffer) || moduleBuffer <= 0) {
-      throw new Error(`${this.label}: fm_begin_unwind returned invalid anchor`);
-    }
-    this.unwindActive = true;
-    this.moduleBuffer = moduleBuffer;
-    return moduleBuffer;
-  }
-
-  /**
-   * Parent: close the unwind and serialize the sealed journal as a KFRE image
-   * into a FRESH chunk the module channel-mmaps itself (Option B). Returns the
-   * image chunk's guest offset and byte length; the coordinator records both in
-   * a `JournalImage` KFMS record so the forked child finds the inherited image
-   * (it no longer sits at a host-computed arena offset). The chunk is released
-   * with the frame chunks on `finishReplay`/`abort`.
-   */
-  finishUnwindAndSerialize(): ForkModuleJournalImage {
-    this.exports.fm_finish_unwind();
-    this.requireOk("fm_finish_unwind");
-    // Option B: the module channel-mmaps the KFRE journal-image chunk itself via
-    // SYS_mmap (kernel find_gap). A genuine allocation failure is a truthful
-    // module `ENOMEM`, never a silent overrun.
-    const ptr = this.toNum(
-      this.exports.fm_serialize_journal_alloc(this.wptr(this.channelBase)),
-    );
-    // SEAL-TIME TRUTHFUL FAILURE (Phase 4 / Phase 2 carry): `fm_finish_unwind`
-    // has ALREADY sealed every activation's frame writer + the process journal,
-    // and the guest is back at NORMAL — but the module could not channel-mmap
-    // the child-inheritable journal-image chunk. A plain `requireOk` throw here
-    // would escape `sealCapture` at the worker completion handler and TRAP the
-    // whole worker once the JS continuation fallback is gone. Surface a TYPED
-    // allocation error instead so the coordinator routes this fork through the
-    // same abort-replay path a mid-unwind reserve failure uses (parent
-    // preserved, `fork()` returns `-errno`, no child launched). There is no
-    // module failure site left that traps.
-    const serializeErrno = this.lastErrno();
-    if (serializeErrno !== 0) {
-      throw new ContinuationAllocationError(
-        serializeErrno,
-        0,
-        `${this.label}: fm_serialize_journal_alloc failed with errno=${serializeErrno}`,
-      );
-    }
-    const len = this.toNum(this.exports.fm_journal_image_len());
-    if (!Number.isSafeInteger(ptr) || ptr <= 0) {
-      throw new Error(
-        `${this.label}: fm_serialize_journal_alloc returned invalid image ptr ${ptr}`,
-      );
-    }
-    if (!Number.isSafeInteger(len) || len <= 0) {
-      throw new Error(
-        `${this.label}: fm_journal_image_len returned invalid length ${len}`,
-      );
-    }
-    return { ptr, len };
-  }
-
-  /**
-   * Parent: begin the rewind (attach the driver + register resume slots).
-   * FINE-GRAINED primitive: it does NOT drive the guest `wpk_fork_rewind_begin`.
-   * Production uses the coarse `parentReplay` (which folds this begin + the
-   * per-activation guest drive into one module call); this wrapper is retained
-   * for the module-only unit tests that exercise the begin without any guest
-   * instance / drive-table binding to `call_indirect`.
-   */
-  beginParentReplay(): void {
-    this.exports.fm_begin_replay();
-    this.requireOk("fm_begin_replay");
-  }
-
-  /**
-   * Parent abort-replay: begin (mirror of `beginParentReplay`, abort-tagged).
-   * FINE-GRAINED primitive (see `beginParentReplay`); production uses the coarse
-   * `parentAbort`. The module records the drive as an abort internally so
-   * `finishAbort` can assert the pairing (F1).
-   */
-  beginAbort(): void {
-    this.exports.fm_begin_abort();
-    this.requireOk("fm_begin_abort");
-  }
-
-  /**
    * Bind ONE activation's guest `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
    * into the module's imported drive table at
    * `fm_drive_table_base(activation) + DRIVE_SLOT_{REWIND,ABORT}_BEGIN`, so the
@@ -1215,76 +1116,6 @@ export class ForkModuleContinuationBackend {
     }
   }
 
-  beginChildReplay(root: number, imagePtr: number, imageLen: number): void {
-    this.requireSetup("begin child replay");
-    if (!Number.isSafeInteger(root) || root <= 0) {
-      throw new Error(`${this.label}: inherited continuation root ${root} is invalid`);
-    }
-    if (!Number.isSafeInteger(imagePtr) || imagePtr <= 0) {
-      throw new Error(`${this.label}: inherited journal image ptr ${imagePtr} is invalid`);
-    }
-    if (!Number.isSafeInteger(imageLen) || imageLen <= 0) {
-      throw new Error(`${this.label}: inherited journal image length ${imageLen} is invalid`);
-    }
-    if (imagePtr + imageLen > this.memory.buffer.byteLength) {
-      throw new Error(`${this.label}: inherited journal image escapes guest memory`);
-    }
-    this.moduleBuffer = root;
-    this.exports.fm_begin_child_replay(
-      this.wptr(root),
-      this.wptr(imagePtr),
-      this.wptr(imageLen),
-    );
-    this.requireOk("fm_begin_child_replay");
-  }
-
-  /**
-   * vfork BORROWED child: seed replay from the parked parent's LIVE (shared)
-   * memory rather than a private copy. `root` is the parent's continuation anchor
-   * (borrowed, read-only); `imagePtr`/`imageLen` locate the KFRE image the parent
-   * serialized (still live in shared memory); `privatePrefix` is a child-private,
-   * pre-reserved region the module copies the parent's fixed runtime prefix into,
-   * so the guest's rewind writes its active-frame pointer THERE and never touches
-   * the parent's prefix. The built replay owns no chunks, so this backend's
-   * `finishReplay`/`abort` (`fm_finish_replay`/`fm_abort`) munmap nothing — the
-   * parent's storage is never released. On success the host hands the guest
-   * `privatePrefix` as the rewind root.
-   */
-  beginBorrowedChildReplay(
-    root: number,
-    imagePtr: number,
-    imageLen: number,
-    privatePrefix: number,
-  ): void {
-    this.requireSetup("begin borrowed child replay");
-    if (!Number.isSafeInteger(root) || root <= 0) {
-      throw new Error(`${this.label}: borrowed continuation root ${root} is invalid`);
-    }
-    if (!Number.isSafeInteger(imagePtr) || imagePtr <= 0) {
-      throw new Error(`${this.label}: borrowed journal image ptr ${imagePtr} is invalid`);
-    }
-    if (!Number.isSafeInteger(imageLen) || imageLen <= 0) {
-      throw new Error(`${this.label}: borrowed journal image length ${imageLen} is invalid`);
-    }
-    if (imagePtr + imageLen > this.memory.buffer.byteLength) {
-      throw new Error(`${this.label}: borrowed journal image escapes guest memory`);
-    }
-    if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
-      throw new Error(`${this.label}: borrowed private prefix ${privatePrefix} is invalid`);
-    }
-    if (privatePrefix + this.format.fixedPrefixSize > this.memory.buffer.byteLength) {
-      throw new Error(`${this.label}: borrowed private prefix escapes guest memory`);
-    }
-    this.moduleBuffer = root;
-    this.exports.fm_begin_borrowed_child_replay(
-      this.wptr(root),
-      this.wptr(imagePtr),
-      this.wptr(imageLen),
-      this.wptr(privatePrefix),
-    );
-    this.requireOk("fm_begin_borrowed_child_replay");
-  }
-
   /**
    * Phase 6 D7a.1a: seed ONE side activation's resume catalog once per worker,
    * before any fork (mirrors `setup()`'s global catalog seed for activation 0).
@@ -1361,36 +1192,6 @@ export class ForkModuleContinuationBackend {
     this.requireSetup("set activation static-root base");
     this.exports.fm_set_activation_static_root_base(activationId, base);
     this.requireOk("fm_set_activation_static_root_base");
-  }
-
-  /**
-   * Parent: add a dlopen fork's SIDE activation to the capture begun by
-   * `beginUnwind`. The activation channel-mmaps its OWN frame chunks on demand
-   * via `SYS_mmap` → the kernel `find_gap` allocator (Option B), disjoint from
-   * every other activation's chunks. Returns the activation's module-buffer
-   * anchor (the continuation root the coordinator writes into its module-state
-   * prefix and passes to `wpk_fork_unwind_begin`).
-   */
-  addActivationUnwind(activationId: number, fixedPrefix: number): number {
-    this.requireSetup("add activation unwind");
-    if (activationId === 0) {
-      throw new Error(`${this.label}: activation 0 uses beginUnwind, not addActivationUnwind`);
-    }
-    const moduleBuffer = this.toNum(
-      this.exports.fm_add_activation_unwind(
-        this.wptr(activationId),
-        this.wptr(this.channelBase),
-        this.wptr(fixedPrefix),
-      ),
-    );
-    this.requireOk("fm_add_activation_unwind");
-    if (!Number.isSafeInteger(moduleBuffer) || moduleBuffer <= 0) {
-      throw new Error(
-        `${this.label}: add-activation-unwind returned invalid anchor for `
-          + `activation ${activationId}`,
-      );
-    }
-    return moduleBuffer;
   }
 
   /**
@@ -1479,37 +1280,6 @@ export class ForkModuleContinuationBackend {
     this.requireSetup("parent finish");
     (this.exports.fm_parent_finish as (abort: number) => void)(abort ? 1 : 0);
     this.requireOk("fm_parent_finish");
-    this.unwindActive = false;
-    this.moduleBuffer = 0;
-  }
-
-  /**
-   * Finish the rewind. Option B: the MODULE owns the frame + image chunks it
-   * mmap'd and releases them itself inside `fm_finish_replay` (a replay-only
-   * child mapped nothing, so it releases nothing).
-   *
-   * FINE-GRAINED primitive: production uses the coarse `parentFinish` (which
-   * folds the per-activation guest `wpk_fork_rewind_end` drive + this finish into
-   * one module call). Retained for the module-only unit tests + host-native.
-   */
-  finishReplay(): void {
-    this.exports.fm_finish_replay();
-    this.requireOk("fm_finish_replay");
-    this.unwindActive = false;
-    this.moduleBuffer = 0;
-  }
-
-  /**
-   * Finish an abort-replay (mirror of `finishReplay`). A stray call without a
-   * matching `beginAbort()` is a loud throw (`requireOk` surfaces the
-   * module's `EINVAL` pairing guard), never a silent no-op (F1).
-   *
-   * FINE-GRAINED primitive (see `finishReplay`); production uses the coarse
-   * `parentFinish`.
-   */
-  finishAbort(): void {
-    this.exports.fm_finish_abort();
-    this.requireOk("fm_finish_abort");
     this.unwindActive = false;
     this.moduleBuffer = 0;
   }

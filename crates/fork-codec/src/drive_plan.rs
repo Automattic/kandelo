@@ -184,14 +184,16 @@ pub const DRIVE_OP_UNWIND_END: u32 = 10;
 /// counter (a control state-flip, not a reference reconstruction), and being
 /// `>= DRIVE_OP_UNWIND_END` it takes the injected shim's void `call_indirect`
 /// branch. Mirrors the host loop that called `wpk_fork_rewind_end()` per
-/// activation before `fm_finish_replay`.
+/// activation before the process replay finish (now folded into the coarse
+/// `fm_parent_finish`).
 pub const DRIVE_OP_REWIND_END: u32 = 11;
 /// `op` value: run one activation's guest `wpk_fork_abort_end()` — the
 /// ABORT-replay-FINISH state flip (the abort-tagged sibling of
 /// [`DRIVE_OP_REWIND_END`]) that returns the activation from `ABORT_UNWINDING`
 /// to `NORMAL`. Same `() -> ()` void shape and shim branch; bound at
 /// `base(activation) + DRIVE_SLOT_ABORT_END`. Mirrors the host loop that called
-/// `wpk_fork_abort_end()` per activation before `fm_finish_abort`.
+/// `wpk_fork_abort_end()` per activation before the process abort finish (now
+/// folded into the coarse `fm_parent_finish`).
 pub const DRIVE_OP_ABORT_END: u32 = 12;
 
 /// Drive-table slots reserved per activation, in slot-offset order:
@@ -801,7 +803,8 @@ pub fn append_unwind_end_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) 
 /// Append one REPLAY-FINISH end step per `activation` — the module-owned
 /// finish-replay drive that replaces the host loop calling `wpk_fork_rewind_end()`
 /// (`abort` false) or `wpk_fork_abort_end()` (`abort` true) on each activation
-/// before `fm_finish_replay` / `fm_finish_abort`. Like [`append_unwind_end_steps`]
+/// before the process replay/abort finish (now folded into the coarse
+/// `fm_parent_finish`). Like [`append_unwind_end_steps`]
 /// each step drives a NO-argument `() -> ()` guest export, so `recipe` and `arg`
 /// are both 0 (the injected shim reads neither) and the shim routes it through the
 /// same void `call_indirect` branch (op `>= DRIVE_OP_UNWIND_END`). Emitted in the

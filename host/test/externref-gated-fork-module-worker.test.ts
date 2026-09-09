@@ -10,7 +10,8 @@
 // across `kernel_fork` with NO recorded mint-time provenance — must, with the
 // co-resident fork MODULE enabled (`forkModuleEnabled: true`), abort the fork
 // cleanly THROUGH THE MODULE'S OWN continuation-journal abort path
-// (`beginAbortReplay` -> `beginModuleAbortReplay` -> `fm_begin_abort`), NOT
+// (`beginAbortReplay` -> `beginModuleAbortReplay` -> the coarse `fm_parent_abort`
+// per-phase entry), NOT
 // the JS reconstruction engine (which P6 deletes). The claim proven here:
 //
 //   * the fork returns EXACTLY -EOPNOTSUPP (the fixture asserts pid == -95 and

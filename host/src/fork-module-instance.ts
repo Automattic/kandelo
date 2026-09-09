@@ -54,56 +54,34 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // module (a funcref minted in one activation but held by another's frame
   // resolves against its own activation's catalog slice).
   "fm_set_activation_catalog_base",
-  // Option B (dynamic mmap frame allocation — the production capture path): the
-  // module channel-mmaps each activation's linked frame chunks on demand via
-  // `SYS_mmap` -> the kernel `find_gap` allocator (kernel-tracked placement, no
-  // fork-depth cap, no carved-out guest region).
-  "fm_begin_unwind",
-  // Control-flow inversion: the coarse capture-BEGIN entry. Opens activation 0's
-  // fresh capture, adds each side activation from the seeded (id, fixedPrefix)
-  // list, publishes each activation's arena root into its module-buffer prefix,
-  // then drives each guest `wpk_fork_unwind_begin` through the injected
-  // `fm_drive_execute` shim in ONE module call — replacing the host's
-  // per-activation `fm_begin_unwind` / `fm_add_activation_unwind` +
-  // `writeForkModuleStateRoot` + `wpk_fork_unwind_begin` loop. `fm_begin_unwind` /
-  // `fm_add_activation_unwind` remain exported for the fine-grained module unit
-  // tests + host-native.
+  // Control-flow inversion: the coarse capture-BEGIN entry (Option B, the
+  // production capture path). Opens activation 0's fresh capture, adds each side
+  // activation from the seeded (id, fixedPrefix) list, publishes each
+  // activation's arena root into its module-buffer prefix, then drives each guest
+  // `wpk_fork_unwind_begin` through the injected `fm_drive_execute` shim in ONE
+  // module call. The module channel-mmaps each activation's linked frame chunks
+  // on demand via `SYS_mmap` -> the kernel `find_gap` allocator (kernel-tracked
+  // placement, no fork-depth cap, no carved-out guest region). This coarse entry
+  // OWNS the whole begin sequence internally; the former fine-grained
+  // `fm_begin_unwind` / `fm_add_activation_unwind` DRIVE exports were deleted once
+  // every fork phase routed through the coarse entries.
   "fm_parent_begin_capture",
   // The coarse begin-capture entry returns only activation 0's module-buffer
   // anchor; the host reads each SIDE activation's anchor back with this getter to
   // build the activation-continuation manifest.
   "fm_activation_module_buffer",
-  // The bounded fixed-arena siblings of the channel unwind/serialize exports are
-  // NO LONGER driven by the host (Fix X was retired in favor of Option B's
-  // growing channel allocator). They remain in the module's export surface —
-  // and therefore in this required-presence list — so removing the host wiring
-  // does not change the module ABI; they are simply unused.
-  "fm_begin_unwind_fixed_arena",
-  // Phase 6 D7a.1a: add ANOTHER activation (a dlopen fork's side module) to the
-  // capture begun by `fm_begin_unwind`, with its own channel-mmap'd frame chunks
-  // + prefix.
-  "fm_add_activation_unwind",
-  "fm_add_activation_unwind_fixed_arena",
-  "fm_finish_unwind",
-  // Option B (minimize host surface): serialize the sealed journal into a chunk
-  // the module channel-mmaps itself, returning its guest offset; the host reads
-  // `fm_journal_image_len` and records both in a `JournalImage` KFMS record.
-  "fm_serialize_journal_alloc",
-  // Retained-but-unused fixed-arena sibling (see the note above the fixed-arena
-  // unwind exports); kept in the export surface to avoid a module ABI change.
-  "fm_serialize_journal_fixed_arena",
+  // The byte length of the KFRE journal image the coarse capture-seal entry
+  // serialized (paired with the pointer it returns for the `JournalImage` KFMS
+  // record).
   "fm_journal_image_len",
   // Release every channel-mapped frame/image chunk on the host abort path.
   "fm_abort",
-  "fm_begin_replay",
-  // Control-flow inversion: coarse per-phase entries that sequence the parent
-  // REPLAY-begin / ABORT-replay-begin phase INTERNALLY — begin the rewind, build
-  // the per-activation begin drive plan, then drive each activation's guest
-  // `wpk_fork_rewind_begin` / `wpk_fork_abort_begin` through the injected
-  // `fm_drive_execute` shim. They replace the host's `fm_begin_replay` +
-  // per-activation begin loop with ONE module call. `fm_begin_replay` /
-  // `fm_begin_abort` remain exported for the fine-grained module unit tests and
-  // the native (`host-native`) runner.
+  // Control-flow inversion: the coarse parent REPLAY-begin / ABORT-replay-begin
+  // per-phase entries. Each begins the rewind, builds the per-activation begin
+  // drive plan, then drives each activation's guest `wpk_fork_rewind_begin` /
+  // `wpk_fork_abort_begin` through the injected `fm_drive_execute` shim — the
+  // whole begin sequence in ONE module call. The former fine-grained
+  // `fm_begin_replay` / `fm_begin_abort` DRIVE exports were deleted.
   "fm_parent_replay",
   "fm_parent_abort",
   // Control-flow inversion: the coarse CHILD reconstruct rewind-begin entry (the
@@ -113,74 +91,57 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // guest `wpk_fork_rewind_begin` through the injected `fm_drive_execute` shim in
   // ONE module call, replacing the host's per-activation rewind loop in
   // `attachModuleChild` / `attachBorrowedModuleChild`. The child's replay state
-  // is seeded by `fm_begin_child_replay` / `fm_add_activation_child_replay` (or
-  // the borrowed variants) first, so this has NO begin step.
+  // is seeded by the coarse `fm_child_seed` / `fm_child_seed_borrowed` entries
+  // first, so this has NO begin step.
   "fm_child_reconstruct",
   // Control-flow inversion: the coarse capture-SEAL entry. Drives each open
   // activation's guest `wpk_fork_unwind_end` through the injected
-  // `fm_drive_execute` shim, then seals the writers + journal
-  // (`fm_finish_unwind`) and serializes the child-inheritable image
-  // (`fm_serialize_journal_alloc`) in ONE module call, replacing the host's
-  // per-activation `wpk_fork_unwind_end` loop + `fm_finish_unwind` +
-  // `fm_serialize_journal_alloc`. `fm_finish_unwind` / `fm_serialize_journal_alloc`
-  // remain exported for `sealForAbort` (partial-capture abort) and the
-  // fine-grained module unit tests.
+  // `fm_drive_execute` shim, then seals the writers + journal and serializes the
+  // child-inheritable image into a chunk the module channel-mmaps itself, in ONE
+  // module call. A seal-time serialize OOM returns 0 with `fm_last_errno` set so
+  // the host reroutes to abort-replay rather than trapping. Owns the whole seal
+  // sequence internally; the former fine-grained `fm_finish_unwind` /
+  // `fm_serialize_journal_alloc` DRIVE exports were deleted.
   "fm_parent_seal_capture",
   // Control-flow inversion: the coarse ABORT-SEAL entry (the mid-unwind sibling
   // of `fm_parent_seal_capture`). Seals every activation's frame writer + the
-  // process journal (`fm_finish_unwind`) WITHOUT driving the guest
-  // `wpk_fork_unwind_end` (the guest is mid-unwind) or serializing a
-  // child-inheritable image (no child), so the host abort path (`sealForAbort`)
-  // routes through a coarse phase entry rather than the fine-grained
-  // `fm_finish_unwind` directly. `fm_finish_unwind` remains exported for the
-  // fine-grained module unit tests + host-native.
+  // process journal WITHOUT driving the guest `wpk_fork_unwind_end` (the guest is
+  // mid-unwind) or serializing a child-inheritable image (no child), so the host
+  // abort path (`sealForAbort`) routes through a coarse phase entry.
   "fm_parent_abort_seal",
   // Control-flow inversion: the coarse REPLAY-FINISH entry. Drives each open
   // activation's guest `wpk_fork_rewind_end` (or `wpk_fork_abort_end`) through
-  // the injected `fm_drive_execute` shim, then finishes the process replay
-  // (`fm_finish_replay`) or abort (`fm_finish_abort`) in ONE module call,
-  // replacing the host's per-activation `wpk_fork_rewind_end`/`wpk_fork_abort_end`
-  // loop + `fm_finish_replay`/`fm_finish_abort`. Those fine-grained exports
-  // remain for the module unit tests + host-native.
+  // the injected `fm_drive_execute` shim, then finishes the process replay or
+  // abort in ONE module call. The abort finish still asserts the `in_abort`
+  // pairing `fm_parent_abort` set, so a stray `fm_parent_finish(abort=1)` is a
+  // loud `EINVAL`. The former fine-grained `fm_finish_replay` / `fm_finish_abort`
+  // DRIVE exports were deleted.
   "fm_parent_finish",
-  // F1: parent abort-replay begin/finish. Mirror `fm_begin_replay`/
-  // `fm_finish_replay` exactly (same frame/journal mechanics), tagging the
-  // drive as an abort so `fm_finish_abort` can assert a matching
-  // `fm_begin_abort` ran first (a stray call is a loud `EINVAL`, not a
-  // silent no-op).
-  "fm_begin_abort",
-  "fm_finish_abort",
   // Control-flow inversion: the coarse CHILD-SEED entry. Decodes the inherited
   // JournalImage record from the copied KFMS arena and seeds activation 0's
   // replay, then seeds each side activation from the host-passed (id, root,
-  // fixedPrefix) list — replacing the host's `fm_begin_child_replay` +
+  // fixedPrefix) list — replacing the host's former `fm_begin_child_replay` +
   // per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
-  // with ONE module call. Those fine-grained exports remain for the module unit
-  // tests + host-native.
+  // with ONE module call. The fine-grained `fm_begin_child_replay` DRIVE export
+  // was deleted; `fm_add_activation_child_replay` (below) is retained.
   "fm_child_seed",
   // Control-flow inversion: the coarse BORROWED (vfork) CHILD-SEED entry.
   // Decodes the inherited JournalImage record from the KFMS arena and seeds
   // activation 0's borrowed replay, then seeds each side activation from the
   // host-passed (id, root, fixedPrefix, privatePrefix) list — replacing the
-  // host's `fm_begin_borrowed_child_replay` + per-activation
+  // host's former `fm_begin_borrowed_child_replay` + per-activation
   // `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
-  // with ONE module call. Those fine-grained exports remain for the module unit
-  // tests + host-native.
+  // with ONE module call. The fine-grained `fm_begin_borrowed_child_replay` DRIVE
+  // export was deleted; `fm_add_activation_borrowed_child_replay` (below) is
+  // retained.
   "fm_child_seed_borrowed",
-  "fm_begin_child_replay",
-  // Phase 6 item 4: seed a vfork BORROWED child's replay from the parked
-  // parent's LIVE shared memory (its own instance at a distinct __memory_base),
-  // copying the parent's fixed prefix into a child-private region and owning no
-  // chunks so finish/abort release nothing.
-  "fm_begin_borrowed_child_replay",
   // Phase 6 item 4: add a dlopen-vfork ("mode-1") SIDE activation to a borrowed
-  // child replay, with its own child-private prefix (borrowed sibling of
-  // fm_add_activation_child_replay).
+  // child replay seeded by `fm_child_seed_borrowed`, with its own child-private
+  // prefix (borrowed sibling of `fm_add_activation_child_replay`).
   "fm_add_activation_borrowed_child_replay",
   // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay
-  // begun by `fm_begin_child_replay`, at its inherited continuation anchor.
+  // seeded by `fm_child_seed`, at its inherited continuation anchor.
   "fm_add_activation_child_replay",
-  "fm_finish_replay",
   "fm_last_errno",
   // The single folded proof-of-use counter accessor (fm_stats(field) -> i64),
   // replacing the former 11 individual fm_* counter exports (frames committed/

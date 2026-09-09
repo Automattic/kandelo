@@ -6,7 +6,7 @@
 ;; recorded mint-time provenance, and — the property this fixture proves under
 ;; the co-resident fork MODULE (`forkModuleEnabled: true`) — the fork aborts
 ;; cleanly through the module's OWN continuation-journal abort path
-;; (`beginModuleAbortReplay` -> `fm_begin_abort`), the PARENT survives
+;; (`beginModuleAbortReplay` -> the coarse `fm_parent_abort`), the PARENT survives
 ;; UNAFFECTED, and no partial child is spawned. It is the module-mode gated-
 ;; ABORT end-to-end coverage deferred from P3b (review Finding D) and the
 ;; V8 parity mate of native's `smoke_fork_gated_externref_parent_survives`.
