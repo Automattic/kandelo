@@ -1830,6 +1830,41 @@ describe("kernel scratch static contract", () => {
       "kernel_preadv",
       "kernel_pwritev",
       "kernel_prepare_write_operation",
+      // ABI 44: exports deleted because nothing called them -- not the
+      // kernel, not the TypeScript host, not crates/host-native, not any
+      // test, script or .mjs harness, and no dynamic export lookup. Listing
+      // them here keeps the deletion permanent: a reintroduced name would
+      // have to come back in wasm_api.rs, one of the two legacy glue files,
+      // or the ABI snapshot, and all four are asserted below.
+      //
+      // kernel_ipc_shmdt is the one entry with live prefix relatives
+      // (kernel_ipc_shmdt_addr, _for_process, _for_task, ...). The \b
+      // anchors below stop those from masking the exact obsolete name,
+      // because "_" is a word character.
+      "kernel_clear_argv",
+      "kernel_convert_pipe_to_host",
+      "kernel_get_exit_status",
+      "kernel_get_fork_exec_path_pid",
+      "kernel_get_fork_state",
+      "kernel_get_pipe_ofds",
+      "kernel_getpgid_direct",
+      "kernel_gettimeofday",
+      "kernel_ipc_shmdt",
+      "kernel_is_fork_child_pid",
+      "kernel_is_signal_blocked",
+      "kernel_mmap",
+      "kernel_mq_is_mqd",
+      "kernel_mremap",
+      "kernel_posix_timer_interval_fire",
+      "kernel_prctl",
+      "kernel_rewinddir",
+      "kernel_rt_sigtimedwait",
+      "kernel_seekdir",
+      "kernel_sendfile",
+      "kernel_set_fork_exec",
+      "kernel_set_fork_fd_action",
+      "kernel_telldir",
+      "kernel_tgkill",
     ]) {
       expect(kernelWasmApiSource).not.toMatch(
         new RegExp(
