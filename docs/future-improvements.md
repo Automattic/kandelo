@@ -648,3 +648,28 @@ items reduce host surface, remove fixed caps, or close truthful-failure gaps.
   teardown.** References held across a borrowed vfork child are out of scope
   today, and there is no nuclear-teardown path if a process crashes mid-borrow.
   **Files:** `crates/host-native/src/guest.rs`.
+
+- **Wire the pthread worker's fork-module frame imports so a dlopen'd
+  fork-instrumented side module can instantiate on a foreign pthread.** The
+  two pthread-hosted dlopen tests in `host/test/fork-dlopen-replay-e2e.test.ts`
+  ("replays pthread-hosted dlopen table state into a fresh fork child" and
+  "blocks a foreign pthread until the staged loader owner commits") fail with
+  `WebAssembly.Instance(): Import "env" "__wpk_fork_frame_reserve": function
+  import requires a callable`. This is pre-existing (baseline red before the
+  fork control-flow inversion, not caused by it); the three main-thread dlopen
+  siblings in the same file pass. Root cause: the pthread worker in
+  `host/src/worker-main.ts` builds `threadForkModuleInstance` /
+  `threadForkModuleBackend` but never constructs a thread-side
+  `ForkModuleTrampolines`, and `replicaActivationOwner` is created without a
+  `forkModuleFrameFlip`, so a dlopen'd fork-instrumented side module on a
+  foreign pthread instantiates with `__wpk_fork_frame_reserve === undefined`.
+  Fix (host-side import wiring only, no ABI bump — mirror the main process
+  worker's path): (1) declare a thread-side `threadForkModuleTrampolines:
+  ForkModuleTrampolines | null` alongside the existing thread fork-module
+  instance/backend; (2) after `threadForkModuleBackend.setup()` construct
+  `new ForkModuleTrampolines(threadForkModuleInstance.exports)` and pass the
+  eviction callback on the thread `enableModuleBacking` call, mirroring the
+  main-worker call; (3) add `forkModuleFrameFlip` (the thread trampolines plus
+  backend, when both exist) to the `replicaActivationOwner` options. Deferred
+  because it is pre-existing and a shared pthread-worker-lifecycle change beyond
+  this PR's inversion scope. **Files:** `host/src/worker-main.ts`.
