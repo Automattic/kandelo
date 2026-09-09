@@ -9,10 +9,16 @@ import {
   type ReplicationPushedDecision,
 } from "../../src/replication/log";
 
-// One process reads unless a test says otherwise: the log now names the
-// reader of every reading, and a single-process machine is the simple case.
-const reading = (clockId: number, sec: number, nsec: number, pid = 1) =>
-  ({ kind: "clock", pid, clockId, sec, nsec }) as const;
+// One task reads unless a test says otherwise: the log names the reader of
+// every reading, and a single-threaded single-process machine is the simple
+// case. A leader thread's tid is its pid.
+const reading = (
+  clockId: number,
+  sec: number,
+  nsec: number,
+  pid = 1,
+  tid = pid,
+) => ({ kind: "clock", pid, tid, clockId, sec, nsec }) as const;
 
 const input = (device: string, ...bytes: number[]) =>
   ({ kind: "input", device, bytes: new Uint8Array(bytes) }) as const;
@@ -30,7 +36,7 @@ const accepted = (listener: number, pid: number) =>
   ({ kind: "accept", listener, pid }) as const;
 
 const drawn = (pid: number, ...bytes: number[]) =>
-  ({ kind: "random", pid, bytes: new Uint8Array(bytes) }) as const;
+  ({ kind: "random", pid, tid: pid, bytes: new Uint8Array(bytes) }) as const;
 
 describe("replication log recorder", () => {
   it("numbers decisions from the position it was given", () => {
@@ -107,8 +113,8 @@ describe("replication log reader", () => {
     recorder.record(reading(1, 7, 500));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 500));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 500));
   });
 
   it("reports the position when the replica reads a different clock", () => {
@@ -116,8 +122,8 @@ describe("replication log reader", () => {
     recorder.record(reading(1, 7, 0));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeClock(0, 1)).toThrow(ReplicationDivergence);
-    expect(() => reader.takeClock(0, 1)).toThrow(
+    expect(() => reader.takeClock(0, 1, 1)).toThrow(ReplicationDivergence);
+    expect(() => reader.takeClock(0, 1, 1)).toThrow(
       "replication log diverged at 9: the replica read clock 0 where the "
         + "primary read clock 1",
     );
@@ -127,9 +133,9 @@ describe("replication log reader", () => {
     const recorder = new ReplicationLogRecorder(9);
     recorder.record(reading(1, 7, 0));
     const reader = new ReplicationLogReader(recorder.entries);
-    reader.takeClock(1, 1);
+    reader.takeClock(1, 1, 1);
 
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 10: the replica read clock 1 past the end "
         + "of the log",
     );
@@ -137,7 +143,7 @@ describe("replication log reader", () => {
 
   it("reports position zero when there is nothing recorded at all", () => {
     const reader = new ReplicationLogReader([]);
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 0:",
     );
   });
@@ -147,11 +153,80 @@ describe("replication log reader", () => {
     recorder.record(reading(1, 7, 0));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeClock(0, 1)).toThrow(ReplicationDivergence);
+    expect(() => reader.takeClock(0, 1, 1)).toThrow(ReplicationDivergence);
     // A refused read must not advance the log, or the divergence report and
     // the recovery that follows it would name different positions.
     expect(reader.nextSeq).toBe(0);
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
+  });
+});
+
+describe("replication log task streams", () => {
+  it("serves each thread of one process its own readings, in its own order", () => {
+    // Two threads of pid 1 read the same clock, interleaved. The replica's
+    // host schedules its thread workers differently, so thread 8 reaches its
+    // read first — and must get its own reading, not its sibling's. A
+    // pid-keyed stream would hand it sec 7, which belongs to thread 1, and
+    // the two threads' memories would swap values without any divergence.
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0, 1, 1));
+    recorder.record(reading(1, 8, 0, 1, 8));
+    recorder.record(reading(1, 9, 0, 1, 1));
+    recorder.record(reading(1, 10, 0, 1, 8));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.takeClock(1, 1, 8)).toEqual(reading(1, 8, 0, 1, 8));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0, 1, 1));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 9, 0, 1, 1));
+    expect(reader.takeClock(1, 1, 8)).toEqual(reading(1, 10, 0, 1, 8));
+    expect(reader.scannedAheadClockReadings).toBe(0);
+    expect(reader.consumed).toBe(4);
+  });
+
+  it("keeps a thread's readings apart from another process's leader", () => {
+    // Thread 8 of pid 1 and the leader of pid 8 are different tasks even
+    // where a single number could confuse them.
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0, 1, 8));
+    recorder.record(reading(1, 8, 0, 8, 8));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.takeClock(1, 8, 8)).toEqual(reading(1, 8, 0, 8, 8));
+    expect(reader.takeClock(1, 1, 8)).toEqual(reading(1, 7, 0, 1, 8));
+  });
+
+  it("serves each thread its own random draws", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record({
+      kind: "random",
+      pid: 1,
+      tid: 1,
+      bytes: new Uint8Array([1, 1]),
+    });
+    recorder.record({
+      kind: "random",
+      pid: 1,
+      tid: 8,
+      bytes: new Uint8Array([8, 8]),
+    });
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.takeRandom(1, 8, 2)).toEqual(new Uint8Array([8, 8]));
+    expect(reader.takeRandom(1, 1, 2)).toEqual(new Uint8Array([1, 1]));
+  });
+
+  it("answers aheadMs for the process across its threads", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0, 1, 8));
+    recorder.record(reading(1, 9, 500_000_000, 1, 8));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    // Nothing served yet: the process has a next reading and no position.
+    expect(reader.aheadMs(1)).toBeNull();
+    reader.takeClock(1, 1, 8);
+    // The next reading belongs to thread 8, and the gap is measured against
+    // what that thread was served — the process's question, one level down.
+    expect(reader.aheadMs(1)).toBe(2_500);
   });
 });
 
@@ -164,7 +239,7 @@ describe("replication log GL query answers", () => {
     const reader = new ReplicationLogReader(recorder.entries);
 
     expect(reader.takeGlQuery(5)).toEqual(glAnswer(5, 4, 1, 0, 0, 0));
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
     expect(reader.takeGlQuery(1)).toEqual(glAnswer(1, 4, 0, 0, 0, 0));
   });
 
@@ -189,7 +264,7 @@ describe("replication log GL query answers", () => {
     expect(() => reader.takeGlQuery(5)).toThrow(
       "the replica ran a GL query where the primary recorded clock",
     );
-    expect(() => reader.takeClock(1, 1)).not.toThrow();
+    expect(() => reader.takeClock(1, 1, 1)).not.toThrow();
   });
 
   it("reports the position when the replica runs a query past the end", () => {
@@ -232,9 +307,9 @@ describe("replication log random draws", () => {
     recorder.record(drawn(1, 7));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
-    expect(reader.takeRandom(1, 2)).toEqual(new Uint8Array([9, 8]));
-    expect(reader.takeRandom(1, 1)).toEqual(new Uint8Array([7]));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeRandom(1, 1, 2)).toEqual(new Uint8Array([9, 8]));
+    expect(reader.takeRandom(1, 1, 1)).toEqual(new Uint8Array([7]));
     expect(reader.consumed).toBe(3);
   });
 
@@ -247,9 +322,9 @@ describe("replication log random draws", () => {
     recorder.record(drawn(102, 5, 6));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(reader.takeRandom(103, 2)).toEqual(new Uint8Array([3, 4]));
-    expect(reader.takeRandom(102, 2)).toEqual(new Uint8Array([1, 2]));
-    expect(reader.takeRandom(102, 2)).toEqual(new Uint8Array([5, 6]));
+    expect(reader.takeRandom(103, 103, 2)).toEqual(new Uint8Array([3, 4]));
+    expect(reader.takeRandom(102, 102, 2)).toEqual(new Uint8Array([1, 2]));
+    expect(reader.takeRandom(102, 102, 2)).toEqual(new Uint8Array([5, 6]));
   });
 
   it("reports the position when the replica asks for a different size", () => {
@@ -257,7 +332,7 @@ describe("replication log random draws", () => {
     recorder.record(drawn(1, 1, 2, 3, 4));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeRandom(1, 16)).toThrow(
+    expect(() => reader.takeRandom(1, 1, 16)).toThrow(
       "replication log diverged at 6: the replica asked for 16 random bytes "
         + "where the primary drew 4",
     );
@@ -267,9 +342,9 @@ describe("replication log random draws", () => {
     const recorder = new ReplicationLogRecorder(3);
     recorder.record(drawn(1, 1));
     const reader = new ReplicationLogReader(recorder.entries);
-    reader.takeRandom(1, 1);
+    reader.takeRandom(1, 1, 1);
 
-    expect(() => reader.takeRandom(1, 1)).toThrow(
+    expect(() => reader.takeRandom(1, 1, 1)).toThrow(
       "replication log diverged at 4: the replica drew 1 random bytes past "
         + "the end of the log",
     );
@@ -285,7 +360,7 @@ describe("replication log random draws", () => {
       (decision) => delivered.push(decision),
     );
 
-    expect(reader.takeRandom(1, 1)).toEqual(new Uint8Array([5]));
+    expect(reader.takeRandom(1, 1, 1)).toEqual(new Uint8Array([5]));
     expect(delivered).toEqual([input("/dev/pts/0", 13)]);
   });
 
@@ -302,15 +377,15 @@ describe("replication log random draws", () => {
 
     // A live replica is given an empty log and grows it as the primary
     // records. The draw below was not in the log when the guest asked.
-    expect(reader.takeRandom(1, 2)).toEqual(new Uint8Array([4, 2]));
+    expect(reader.takeRandom(1, 1, 2)).toEqual(new Uint8Array([4, 2]));
     // The reading the draw arrived behind is still there for its own read.
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0, 1));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0, 1));
   });
 
   it("stops the replay when the primary stopped recording", () => {
     const reader = new ReplicationLogReader([], () => {}, () => null);
 
-    expect(() => reader.takeRandom(1, 8)).toThrow(
+    expect(() => reader.takeRandom(1, 1, 8)).toThrow(
       "replication log diverged at 0: the replica drew 8 random bytes after "
         + "the primary stopped recording",
     );
@@ -329,11 +404,11 @@ describe("replication log pushed decisions", () => {
       applied.push(decision),
     );
 
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
     // Nothing asks for a pointer movement, so the next clock read is what
     // pulls it through — and it must arrive before that reading does.
     expect(applied).toEqual([]);
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 500));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 500));
     expect(applied).toEqual([pointer(5, -3, 1)]);
   });
 
@@ -346,7 +421,7 @@ describe("replication log pushed decisions", () => {
     const reader = new ReplicationLogReader(recorder.entries, (decision) =>
       applied.push(decision),
     );
-    reader.takeClock(1, 1);
+    reader.takeClock(1, 1, 1);
     // A trailing movement has no later reading to pull it through, so a
     // driver that only ever served clock reads would strand it.
     expect(applied).toEqual([]);
@@ -397,7 +472,7 @@ describe("replication log pushed decisions", () => {
       input("/dev/pts/0", 0x6c, 0x73),
       resize("/dev/pts/0", 39, 158),
     ]);
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
   });
 
   it("refuses to pass over a device write when the replica installed no sink", () => {
@@ -408,7 +483,7 @@ describe("replication log pushed decisions", () => {
 
     // Dropping it would leave a replica that is quietly no longer the same
     // machine, so the reader stops instead of serving the clock behind it.
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 4: the log carries input for /dev/tty1 "
         + "and the replica installed no input sink",
     );
@@ -420,7 +495,7 @@ describe("replication log pushed decisions", () => {
     recorder.record(pointer(2, 2, 0));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 4: the log carries a pointer movement "
         + "and the replica installed no input sink",
     );
@@ -431,7 +506,7 @@ describe("replication log pushed decisions", () => {
     recorder.record(pointer(1, 1, 0));
     const reader = new ReplicationLogReader(recorder.entries, () => {});
 
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 3: the replica read clock 1 past the end "
         + "of the log",
     );
@@ -449,9 +524,9 @@ describe("replication log reader, one machine with many processes", () => {
     recorder.record(reading(1, 7, 500, 102));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(reader.takeClock(0, 103)).toEqual(reading(0, 1_700_000_000, 0, 103));
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 500, 102));
+    expect(reader.takeClock(0, 103, 103)).toEqual(reading(0, 1_700_000_000, 0, 103));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 500, 102));
     expect(reader.consumed).toBe(3);
   });
 
@@ -463,7 +538,7 @@ describe("replication log reader, one machine with many processes", () => {
 
     // Another process's reading is not this process's, so the log is read
     // past it — and the divergence names this process's own next reading.
-    expect(() => reader.takeClock(0, 102)).toThrow(
+    expect(() => reader.takeClock(0, 102, 102)).toThrow(
       "replication log diverged at 10: the replica read clock 0 where the "
         + "primary read clock 1",
     );
@@ -482,7 +557,7 @@ describe("replication log reader, one machine with many processes", () => {
       applied.push(decision),
     );
 
-    expect(() => reader.takeClock(1, 103)).toThrow(ReplicationDivergence);
+    expect(() => reader.takeClock(1, 103, 103)).toThrow(ReplicationDivergence);
     expect(applied).toEqual([pointer(1, 1, 0)]);
   });
 
@@ -491,7 +566,7 @@ describe("replication log reader, one machine with many processes", () => {
     recorder.record(reading(1, 7, 0, 102));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeClock(1, 103)).toThrow(
+    expect(() => reader.takeClock(1, 103, 103)).toThrow(
       "replication log diverged at 4: the replica read clock 1 past the end "
         + "of the log",
     );
@@ -512,10 +587,10 @@ describe("replication log reader, one machine with many processes", () => {
       applied.push(decision),
     );
 
-    expect(reader.takeClock(1, 103)).toEqual(reading(1, 7, 0, 103));
+    expect(reader.takeClock(1, 103, 103)).toEqual(reading(1, 7, 0, 103));
     expect(applied).toEqual([pointer(4, 4, 1)]);
     // The reading pid 102 never took is still there for it.
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 0, 102));
   });
 });
 
@@ -533,7 +608,7 @@ describe("replication log divergence reports", () => {
       (error) => reported.push(error),
     );
 
-    expect(() => reader.takeClock(0, 1)).toThrow(ReplicationDivergence);
+    expect(() => reader.takeClock(0, 1, 1)).toThrow(ReplicationDivergence);
     expect(reported.map((error) => error.message)).toEqual([
       "replication log diverged at 5: the replica read clock 0 where the "
         + "primary read clock 1",
@@ -578,8 +653,8 @@ describe("replication log reader, following a primary that is still running", ()
 
     // A live replica is given an empty log and grows it as the primary
     // records. Neither reading below was in the log when the guest asked.
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 900));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 900));
     expect(applied).toEqual([pointer(3, 4, 1)]);
     expect(reader.known).toBe(3);
     expect(reader.consumed).toBe(3);
@@ -590,7 +665,7 @@ describe("replication log reader, following a primary that is still running", ()
 
     // Reaching the end of a recording that ended is the end of the replay.
     // Reading this host's clock instead would make it a different machine.
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 0: the replica read clock 1 after the "
         + "primary stopped recording",
     );
@@ -607,10 +682,10 @@ describe("replication log reader, following a primary that is still running", ()
       () => arriving.shift() ?? null,
     );
 
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
     // Seq 1 never arrives. Serving what follows it would advance the replica
     // past a decision the primary made.
-    expect(() => reader.takeClock(1, 1)).toThrow(
+    expect(() => reader.takeClock(1, 1, 1)).toThrow(
       "replication log diverged at 2: the log jumped to 2 where 1 was next",
     );
   });
@@ -621,7 +696,7 @@ describe("replication log reader, following a primary that is still running", ()
     ]);
 
     expect(reader.entryReady()).toBe(true);
-    reader.takeClock(1, 1);
+    reader.takeClock(1, 1, 1);
     expect(reader.entryReady()).toBe(false);
   });
 
@@ -637,7 +712,7 @@ describe("replication log reader, following a primary that is still running", ()
     );
 
     expect(reader.entryReady()).toBe(true);
-    expect(reader.takeClock(1, 1)).toEqual(reading(1, 7, 0));
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
     expect(reader.entryReady()).toBe(false);
   });
 });
@@ -659,7 +734,7 @@ describe("replication log reader, how long the primary spent waiting", () => {
       { seq: 2, decision: reading(1, 8, 0, 102) },
     ]);
 
-    reader.takeClock(1, 102);
+    reader.takeClock(1, 102, 102);
     // The primary spent a second between this process's two readings, and
     // another process reading in between says nothing about this one's wait.
     expect(reader.aheadMs(102)).toBe(1000);
@@ -670,7 +745,7 @@ describe("replication log reader, how long the primary spent waiting", () => {
       { seq: 0, decision: reading(1, 7, 0, 102) },
     ]);
 
-    reader.takeClock(1, 102);
+    reader.takeClock(1, 102, 102);
     // The primary has not read this process's clock again, so it has not
     // finished the wait this process is entering. A replica shortening it
     // here would spend readings the primary never made.
@@ -684,8 +759,8 @@ describe("replication log reader, how long the primary spent waiting", () => {
       { seq: 2, decision: reading(1, 7, 250_000_000, 102) },
     ]);
 
-    reader.takeClock(0, 102);
-    reader.takeClock(1, 102);
+    reader.takeClock(0, 102, 102);
+    reader.takeClock(1, 102, 102);
     // The next reading is of clock 1, so the answer is the gap since this
     // process's last reading of clock 1 — not since its reading of clock 0.
     expect(reader.aheadMs(102)).toBe(250);
@@ -699,7 +774,7 @@ describe("replication log reader, how long the primary spent waiting", () => {
     // Host work belongs to no guest, so it asks whether the log carries
     // anything this replica has not reached.
     expect(reader.aheadMs(0)).toBe(Number.POSITIVE_INFINITY);
-    reader.takeClock(1, 102);
+    reader.takeClock(1, 102, 102);
     expect(reader.aheadMs(0)).toBeNull();
   });
 });
@@ -740,13 +815,13 @@ describe("replication log clock borrowing", () => {
       extendWithin,
     );
 
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 9, 250, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 9, 250, 107));
     expect(reader.borrowedClockReadings).toBe(1);
     // The readings pid 102 was given are still its own, untaken.
     expect(reader.consumed).toBe(0);
     // A process that borrowed once is off the stream: its next miss waits
     // the short bound, not the full one.
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 9, 250, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 9, 250, 107));
     expect(budgets).toEqual([2_000, 100]);
   });
 
@@ -775,13 +850,13 @@ describe("replication log clock borrowing", () => {
       },
     );
 
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 5, 0, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 5, 0, 107));
     expect(reader.borrowedClockReadings).toBe(1);
     // Its own reading arrives inside the short window and is served as
     // recorded, which puts the process back on its stream: the next miss
     // waits the full bound again, and borrows what the log carries last.
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 9, 0, 107));
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 9, 0, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 9, 0, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 9, 0, 107));
     expect(budgets).toEqual([2_000, 100, 2_000]);
     expect(reader.borrowedClockReadings).toBe(2);
   });
@@ -811,7 +886,7 @@ describe("replication log clock borrowing", () => {
 
     // There is nothing to borrow, so the read waits through two whole
     // windows and takes its own reading when it arrives.
-    expect(reader.takeClock(1, 107)).toEqual(reading(1, 7, 0, 107));
+    expect(reader.takeClock(1, 107, 107)).toEqual(reading(1, 7, 0, 107));
     expect(reader.borrowedClockReadings).toBe(0);
   });
 
@@ -832,8 +907,8 @@ describe("replication log clock borrowing", () => {
     // The replica's process reads its clocks in the other order. Each read
     // is served the process's own next reading of that clock, so no reading
     // is borrowed and none is lost.
-    expect(reader.takeClock(0, 102)).toEqual(reading(0, 40, 0, 102));
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.takeClock(0, 102, 102)).toEqual(reading(0, 40, 0, 102));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 0, 102));
     expect(reader.borrowedClockReadings).toBe(0);
     expect(reader.consumed).toBe(2);
   });
@@ -857,10 +932,10 @@ describe("replication log clock borrowing", () => {
     // follows, so after the bounded wait the read is served the
     // machine-latest clock-0 reading, and pid 102's own clock-1 reading
     // stays for its later read.
-    expect(reader.takeClock(0, 102)).toEqual(reading(0, 40, 0, 102));
+    expect(reader.takeClock(0, 102, 102)).toEqual(reading(0, 40, 0, 102));
     expect(reader.borrowedClockReadings).toBe(1);
     expect(budgets).toEqual([2_000]);
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 0, 102));
   });
 
   it("keeps the strict order when replaying a finished recording", () => {
@@ -869,7 +944,7 @@ describe("replication log clock borrowing", () => {
       { seq: 1, decision: reading(0, 40, 0, 102) },
     ]);
 
-    expect(() => reader.takeClock(0, 102)).toThrow(
+    expect(() => reader.takeClock(0, 102, 102)).toThrow(
       "replication log diverged at 0: the replica read clock 0 where the "
         + "primary read clock 1",
     );
@@ -894,12 +969,12 @@ describe("replication log clock borrowing", () => {
       extendWithin,
     );
 
-    expect(reader.takeClock(0, 102)).toEqual(reading(0, 40, 0, 102));
+    expect(reader.takeClock(0, 102, 102)).toEqual(reading(0, 40, 0, 102));
     expect(reader.scannedAheadClockReadings).toBe(1);
     expect(reader.borrowedClockReadings).toBe(0);
     // The reading it stepped over stays for its own later read, and a read
     // served as recorded moves no counter.
-    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.takeClock(1, 102, 102)).toEqual(reading(1, 7, 0, 102));
     expect(reader.scannedAheadClockReadings).toBe(1);
   });
 });

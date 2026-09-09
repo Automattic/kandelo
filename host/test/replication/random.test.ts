@@ -33,13 +33,14 @@ describe("recording random provider", () => {
       countingRandom(),
       recorder,
       GUEST,
+      GUEST,
     );
 
     expect(provider.getRandomBytes(3)).toEqual(new Uint8Array([1, 2, 3]));
     expect(provider.getRandomBytes(2)).toEqual(new Uint8Array([4, 5]));
     expect(recorder.entries.map((entry) => entry.decision)).toEqual([
-      { kind: "random", pid: 102, bytes: new Uint8Array([1, 2, 3]) },
-      { kind: "random", pid: 102, bytes: new Uint8Array([4, 5]) },
+      { kind: "random", pid: 102, tid: 102, bytes: new Uint8Array([1, 2, 3]) },
+      { kind: "random", pid: 102, tid: 102, bytes: new Uint8Array([4, 5]) },
     ]);
   });
 
@@ -48,6 +49,7 @@ describe("recording random provider", () => {
     const provider = new RecordingRandomProvider(
       countingRandom(),
       recorder,
+      GUEST,
       GUEST,
     );
 
@@ -67,6 +69,7 @@ describe("replaying random provider", () => {
       countingRandom(),
       recorder,
       GUEST,
+      GUEST,
     );
     const first = primary.getRandomBytes(4);
     const second = primary.getRandomBytes(4);
@@ -75,6 +78,7 @@ describe("replaying random provider", () => {
     const replica = new ReplayingRandomProvider(
       new ReplicationLogReader(recorder.entries),
       GUEST,
+      GUEST,
     );
     expect(replica.getRandomBytes(4)).toEqual(first);
     expect(replica.getRandomBytes(4)).toEqual(second);
@@ -82,10 +86,11 @@ describe("replaying random provider", () => {
 
   it("refuses to invent a draw the primary never made", () => {
     const recorder = new ReplicationLogRecorder();
-    new RecordingRandomProvider(countingRandom(), recorder, GUEST)
+    new RecordingRandomProvider(countingRandom(), recorder, GUEST, GUEST)
       .getRandomBytes(4);
     const replica = new ReplayingRandomProvider(
       new ReplicationLogReader(recorder.entries),
+      GUEST,
       GUEST,
     );
     replica.getRandomBytes(4);
@@ -95,10 +100,11 @@ describe("replaying random provider", () => {
 
   it("refuses a draw of a different size than the primary's", () => {
     const recorder = new ReplicationLogRecorder();
-    new RecordingRandomProvider(countingRandom(), recorder, GUEST)
+    new RecordingRandomProvider(countingRandom(), recorder, GUEST, GUEST)
       .getRandomBytes(4);
     const replica = new ReplayingRandomProvider(
       new ReplicationLogReader(recorder.entries),
+      GUEST,
       GUEST,
     );
 
@@ -109,10 +115,10 @@ describe("replaying random provider", () => {
 
   it("serves a copy, so a caller writing into its draw rewrites nothing", () => {
     const recorder = new ReplicationLogRecorder();
-    new RecordingRandomProvider(countingRandom(), recorder, GUEST)
+    new RecordingRandomProvider(countingRandom(), recorder, GUEST, GUEST)
       .getRandomBytes(2);
     const reader = new ReplicationLogReader(recorder.entries);
-    const replica = new ReplayingRandomProvider(reader, GUEST);
+    const replica = new ReplayingRandomProvider(reader, GUEST, GUEST);
 
     const served = replica.getRandomBytes(2);
     served[0] = 0xff;

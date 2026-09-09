@@ -125,9 +125,13 @@ own memory:
   item above this one and is not in the log yet, so a machine with more
   than one process reads its clocks in an order the two computers never
   share; without the reader's identity such a machine diverges on its
-  first reading. Threads of one process share one stream and can still
-  diverge, which needs the current thread id at the syscall the same way
-  this needed the current process.
+  first reading. Threads of one process are the same boundary one level
+  down, and closed the same way since 2026-09-09: the kernel worker binds
+  the channel's thread before every dispatch, so readings and random
+  draws carry the tid alongside the pid and every task replays its own
+  stream. A byte-identical replica is what the take-over hash gate
+  requires, and same-clock readings swapped between two threads of one
+  pid would fail it without ever tripping a divergence check.
 - **Accept selection.** Which process took each connection off a shared
   accept queue. A pre-fork server — nginx, php-fpm — leaves every worker
   blocked in `accept` on one queue, and the connection goes to whichever

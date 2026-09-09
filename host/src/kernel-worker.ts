@@ -2947,6 +2947,8 @@ export class CentralizedKernelWorker {
   private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
+  /** The task the last channel bind named; see `currentGuestTid`. */
+  private lastBoundTask: { pid: number; tid: number } | null = null;
   /**
    * Bind the kernel's view of "which thread is executing this syscall" to the
    * already-selected channel. The channel offset is the transport identity; TID
@@ -2989,6 +2991,7 @@ export class CentralizedKernelWorker {
     tid: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    this.lastBoundTask = { pid, tid };
     const setTid = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
       .kernel_set_current_tid as
       ((pid: number, tid: number) => number) | undefined;
@@ -34525,6 +34528,22 @@ export class CentralizedKernelWorker {
    */
   currentGuestPid(): number {
     return this.currentHandlePid;
+  }
+
+  /**
+   * The thread of that process, from the channel bound for this dispatch.
+   *
+   * The same scheduling freedom separates the threads of one process, so
+   * replication keys readings one level further down. Dispatch paths that
+   * bind no channel — host-driven work on a process's behalf — run as the
+   * process leader, whose tid is the pid; a bound task left over from an
+   * earlier dispatch of a different process answers the same way.
+   */
+  currentGuestTid(): number {
+    const pid = this.currentHandlePid;
+    if (pid === 0) return 0;
+    const bound = this.lastBoundTask;
+    return bound !== null && bound.pid === pid ? bound.tid : pid;
   }
 
   /** CRTCs whose canvas a GL context owns.

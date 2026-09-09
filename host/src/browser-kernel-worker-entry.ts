@@ -5459,12 +5459,20 @@ sw.onmessage = (e: MessageEvent) => {
         }
         replicationRecorder = new ReplicationLogRecorder();
         target.setTimeProvider(
-          new RecordingTimeProvider(clock, replicationRecorder, () =>
-            kernelWorker.currentGuestPid()),
+          new RecordingTimeProvider(
+            clock,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         target.setRandomProvider(
-          new RecordingRandomProvider(baseRandomProvider, replicationRecorder,
-            () => kernelWorker.currentGuestPid()),
+          new RecordingRandomProvider(
+            baseRandomProvider,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
         kernelWorker.setAcceptSelectionTap(

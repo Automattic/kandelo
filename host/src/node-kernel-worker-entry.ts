@@ -4887,12 +4887,20 @@ port.on("message", (msg: MainToKernelMessage) => {
         }
         replicationRecorder = new ReplicationLogRecorder();
         io.setTimeProvider(
-          new RecordingTimeProvider(clock, replicationRecorder, () =>
-            kernelWorker.currentGuestPid()),
+          new RecordingTimeProvider(
+            clock,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         io.setRandomProvider(
-          new RecordingRandomProvider(baseRandomProvider, replicationRecorder,
-            () => kernelWorker.currentGuestPid()),
+          new RecordingRandomProvider(
+            baseRandomProvider,
+            replicationRecorder,
+            () => kernelWorker.currentGuestPid(),
+            () => kernelWorker.currentGuestTid(),
+          ),
         );
         kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
         kernelWorker.setAcceptSelectionTap(
