@@ -2300,6 +2300,63 @@ pub mod abi {
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
     pub const WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS: u8 = WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64;
 
+    /// Kernel-facing lazy-linkage section of a VFS image ("KLZY").
+    ///
+    /// A VFS image's trailing sections are otherwise JSON, and JSON is the
+    /// host's persistence form for host authority: fetch URLs, transports,
+    /// integrity digests, activation seals, and per-builder image metadata.
+    /// Exactly two facts in it are kernel-relevant — a lazy file's real size,
+    /// and an archive member's `(archive_id, source_path, size)` — and the
+    /// kernel already consumes both in binary today through RTFS v3's
+    /// `KIND_LAZY_FILE` entries. `KLZY` moves that same kernel-needed subset
+    /// into the image itself, so the kernel can read an image's lazy linkage
+    /// without a JSON parser and without the host walking the tree first.
+    ///
+    /// The section is appended after the image-metadata section and announced
+    /// by `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`. Readers that predate it stop at
+    /// the metadata section and never observe either the flag or the bytes.
+    ///
+    /// Layout (all little-endian), following the `KFIG` idiom:
+    ///
+    /// Header (`VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE` = 20 bytes): `+0` magic
+    /// `KLZY`, `+4` version (u16), `+6` header size (u16), `+8` archive-group
+    /// count (u32), `+12` file-record count (u32), `+16` reserved (u32, 0).
+    ///
+    /// Then `group_count` group records
+    /// (`VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE` = 24 bytes + name): `+0`
+    /// record size (u32, `24 + mount_prefix_len`), `+4` archive id (nonzero
+    /// u32, strictly increasing), `+8` archive byte length (u64), `+16` flags
+    /// (u16), `+18` reserved (u16, 0), `+20` mount-prefix length (u32),
+    /// followed by the UTF-8 mount prefix.
+    ///
+    /// Then `file_count` file records
+    /// (`VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE` = 24 bytes + path): `+0`
+    /// record size (u32, `24 + source_path_len`), `+4` inode number (nonzero
+    /// u32, unique), `+8` real size in bytes (u64), `+16` archive id (u32; `0`
+    /// means a URL-backed single lazy file rather than an archive member),
+    /// `+20` source-path length (u32; zero exactly when the archive id is
+    /// zero), followed by the UTF-8 source path relative to the archive root.
+    ///
+    /// `archive_id` is assigned by the image writer rather than minted at
+    /// boot, so the kernel's archive table and the host's fetch table cannot
+    /// drift. It is an image-local ordinal and carries no transport meaning.
+    pub const VFS_IMAGE_KERNEL_LAZY_MAGIC: [u8; 4] = *b"KLZY";
+    pub const VFS_IMAGE_KERNEL_LAZY_VERSION: u16 = 1;
+    pub const VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE: u16 = 20;
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE: u16 = 24;
+    pub const VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE: u16 = 24;
+    /// No group flag is defined yet. A `SOURCE_PATH_DERIVED` bit — "every
+    /// member's source path is its VFS path with `mount_prefix + '/'`
+    /// stripped" — is reachable here, but only for a writer that PROVES the
+    /// invariant per group and falls back to explicit paths otherwise. Today's
+    /// images satisfy it, but that is a property of today's builders, not of
+    /// the format, so the writer encodes every source path explicitly.
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_KNOWN_FLAGS: u16 = 0;
+    /// Announces the trailing `KLZY` section in the VFS image header's flags
+    /// word. Bits 0-3 are `HAS_LAZY`, `HAS_LAZY_ARCHIVES`, `HAS_METADATA`, and
+    /// `HAS_TYPED_LAZY_ARCHIVES` (see `host/src/vfs/memory-fs.ts`).
+    pub const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY: u32 = 1 << 4;
+
     /// ABI 43 structural Wasm GC reconstruction catalog.
     ///
     /// GC object identities cannot cross Store or worker boundaries. The

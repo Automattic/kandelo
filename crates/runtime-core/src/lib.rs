@@ -25,6 +25,7 @@ pub mod fifo;
 pub mod fork;
 pub mod ipc;
 pub mod ipc_wire;
+pub mod klzy;
 pub mod lock;
 pub mod memory;
 pub mod mouse;

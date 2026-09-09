@@ -1,6 +1,17 @@
 //! Read-only parser for the on-disk SFFS ("SharedFileSystem") image and its
 //! VFSI container. Ported from host/src/vfs/sharedfs-vendor.ts. no_std + alloc.
 //! Consumes DECOMPRESSED bytes (zstd is a host-side transport codec).
+//!
+//! The reader is a positioned cursor over a [`BlockSource`], not a resident
+//! buffer. A `/` image is 16-256 MiB, but a full tree build reads only its
+//! superblock, the inode-table blocks it actually touches, directory data
+//! blocks, and indirect blocks: under 9.5 MiB even for the largest image in
+//! the repo. Holding the whole image resident in kernel memory would duplicate
+//! a decompressed copy the host already owns, which is exactly the pathology
+//! `docs/plans/2026-09-09-k1b-image-format-grounding.md` §6.2 measured away.
+//!
+//! `impl BlockSource for [u8]` keeps a plain slice a first-class source, so a
+//! resident image costs a small `memcpy` per field read rather than a fetch.
 
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno; // same import syscalls.rs uses
@@ -8,6 +19,60 @@ use wasm_posix_shared::Errno; // same import syscalls.rs uses
 const VFSI_MAGIC: u32 = 0x5646_5349; // "VFSI" LE
 const VFSI_VERSION: u32 = 1;
 const VFSI_HEADER: usize = 16;
+
+/// A positioned, read-only byte source for one image.
+///
+/// Every read must answer synchronously: the decompressed image already lives
+/// in the kernel worker's own memory on both hosts, so an image read is a
+/// `memcpy`, never a parked syscall. A source that could park would make the
+/// whole tree build restartable, which is a much larger design than this.
+pub trait BlockSource {
+    /// Total length of the image in bytes.
+    fn len(&self) -> u64;
+
+    /// Fill `dst` from `offset`. Any range that is not wholly within the
+    /// source is `EIO` — the same failure a short slice index produced before
+    /// this became a cursor.
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno>;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl BlockSource for [u8] {
+    fn len(&self) -> u64 {
+        <[u8]>::len(self) as u64
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+        let end = start.checked_add(dst.len()).ok_or(Errno::EIO)?;
+        let src = self.get(start..end).ok_or(Errno::EIO)?;
+        dst.copy_from_slice(src);
+        Ok(())
+    }
+}
+
+impl BlockSource for Vec<u8> {
+    fn len(&self) -> u64 {
+        self.as_slice().len() as u64
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        <[u8] as BlockSource>::read_exact_at(self.as_slice(), offset, dst)
+    }
+}
+
+impl<T: BlockSource + ?Sized> BlockSource for &T {
+    fn len(&self) -> u64 {
+        (**self).len()
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        (**self).read_exact_at(offset, dst)
+    }
+}
 
 pub(crate) fn r32(b: &[u8], off: usize) -> Option<u32> {
     let e = off.checked_add(4)?;
@@ -23,19 +88,107 @@ pub(crate) fn r64(b: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_le_bytes(a))
 }
 
+fn source_u32(source: &impl BlockSource, offset: u64) -> Result<u32, Errno> {
+    let mut buf = [0u8; 4];
+    source.read_exact_at(offset, &mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+/// Byte span of the inner SFFS filesystem inside a VFSI container.
+///
+/// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
+/// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
+pub fn sffs_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
+    if source_u32(source, 0).map_err(|_| Errno::EINVAL)? != VFSI_MAGIC {
+        return Err(Errno::EINVAL);
+    }
+    if source_u32(source, 4).map_err(|_| Errno::EINVAL)? != VFSI_VERSION {
+        return Err(Errno::EINVAL);
+    }
+    let sab_len = source_u32(source, 12).map_err(|_| Errno::EINVAL)? as u64;
+    let end = (VFSI_HEADER as u64).checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    if end > source.len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok((VFSI_HEADER as u64, sab_len))
+}
+
 pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
-    if r32(image, 0) != Some(VFSI_MAGIC) { return Err(Errno::EINVAL); }
-    if r32(image, 4) != Some(VFSI_VERSION) { return Err(Errno::EINVAL); }
-    let sab_len = r32(image, 12).ok_or(Errno::EINVAL)? as usize;
-    let end = VFSI_HEADER.checked_add(sab_len).ok_or(Errno::EINVAL)?;
-    if end > image.len() { return Err(Errno::EINVAL); }
-    Ok(&image[VFSI_HEADER..end])
+    let (offset, len) = sffs_span(&image)?;
+    let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+    let end = start
+        .checked_add(usize::try_from(len).map_err(|_| Errno::EINVAL)?)
+        .ok_or(Errno::EINVAL)?;
+    image.get(start..end).ok_or(Errno::EINVAL)
+}
+
+const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES: u32 = 1 << 1;
+const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
+
+/// Byte span of the image's kernel-facing lazy-linkage section ("KLZY"), or
+/// `None` when the image does not declare one.
+///
+/// An image without the flag predates the section; that is a legitimate older
+/// image, not a corrupt one, so it reads as `Ok(None)`. A flag set over
+/// truncated or self-inconsistent framing is corruption and reads as `EINVAL`.
+///
+/// The section sits after the three JSON sections, whose lengths must be
+/// walked to find it: `u32 lazyLen | lazyJson` (always present), then
+/// `u32 archiveLen | archiveJson` and `u32 metadataLen | metadataJson` when
+/// their flags are set. See [`crate::klzy`] for the section's own contents.
+pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
+    let (sab_offset, sab_len) = sffs_span(source)?;
+    let flags = source_u32(source, 8).map_err(|_| Errno::EINVAL)?;
+    if flags & wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY == 0 {
+        return Ok(None);
+    }
+
+    let mut offset = sab_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    // The lazy-file JSON section is unconditional; the other two are flagged.
+    let mut skip_section = |offset: &mut u64| -> Result<(), Errno> {
+        let len = source_u32(source, *offset).map_err(|_| Errno::EINVAL)? as u64;
+        *offset = offset
+            .checked_add(4)
+            .and_then(|value| value.checked_add(len))
+            .ok_or(Errno::EINVAL)?;
+        if *offset > source.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    };
+    skip_section(&mut offset)?;
+    if flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0 {
+        skip_section(&mut offset)?;
+    }
+    if flags & VFS_IMAGE_FLAG_HAS_METADATA != 0 {
+        skip_section(&mut offset)?;
+    }
+
+    let len = source_u32(source, offset).map_err(|_| Errno::EINVAL)? as u64;
+    let start = offset.checked_add(4).ok_or(Errno::EINVAL)?;
+    let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+    if end > source.len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(Some((start, len)))
+}
+
+/// Slice form of [`kernel_lazy_span`] for a resident image.
+pub fn kernel_lazy_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
+    let Some((offset, len)) = kernel_lazy_span(&image)? else {
+        return Ok(None);
+    };
+    let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+    let end = start
+        .checked_add(usize::try_from(len).map_err(|_| Errno::EINVAL)?)
+        .ok_or(Errno::EINVAL)?;
+    image.get(start..end).map(Some).ok_or(Errno::EINVAL)
 }
 
 const SFFS_MAGIC: u32 = 0x5346_4653; // "SFFS"
 const SFFS_VERSION: u32 = 1;
 pub(crate) const BLOCK_SIZE: usize = 4096;
-const SB_INODE_TABLE_START: usize = 36;
+const SB_INODE_TABLE_START: u64 = 36;
 
 pub const ROOT_INO: u32 = 1;
 const INODES_PER_BLOCK: u32 = 32;
@@ -57,6 +210,12 @@ const INO_INDIRECT: usize = 88;
 const INO_DOUBLE_INDIRECT: usize = 92;
 const INLINE_SYMLINK_SIZE: u64 = 40;
 
+/// One inode's raw 128 bytes, read in a single positioned fetch. Every field
+/// accessor below indexes this buffer rather than the image, so a `stat` costs
+/// one read instead of nine and a whole-file `read_at` costs one instead of
+/// one per 4 KiB chunk.
+type RawInode = [u8; INODE_SIZE];
+
 pub struct SffsStat {
     pub ino: u32,
     pub mode: u32,
@@ -74,60 +233,74 @@ pub fn file_type(mode: u32) -> u32 {
     mode & 0xf000
 }
 
-pub struct Sffs<'a> {
-    bytes: &'a [u8],
+pub struct Sffs<S: BlockSource> {
+    source: S,
     pub(crate) inode_table_start: u32,
     total_inodes: u32,
 }
 
-const SB_TOTAL_INODES: usize = 16;
+const SB_TOTAL_INODES: u64 = 16;
 
-impl<'a> Sffs<'a> {
-    pub fn mount(bytes: &'a [u8]) -> Result<Sffs<'a>, Errno> {
-        if r32(bytes, 0) != Some(SFFS_MAGIC) { return Err(Errno::EINVAL); }
-        if r32(bytes, 4) != Some(SFFS_VERSION) { return Err(Errno::EINVAL); }
-        if r32(bytes, 8) != Some(BLOCK_SIZE as u32) { return Err(Errno::EINVAL); }
-        let inode_table_start = r32(bytes, SB_INODE_TABLE_START).ok_or(Errno::EINVAL)?;
-        let total_inodes = r32(bytes, SB_TOTAL_INODES).ok_or(Errno::EINVAL)?;
+impl<S: BlockSource> Sffs<S> {
+    pub fn mount(source: S) -> Result<Sffs<S>, Errno> {
+        if source_u32(&source, 0).map_err(|_| Errno::EINVAL)? != SFFS_MAGIC {
+            return Err(Errno::EINVAL);
+        }
+        if source_u32(&source, 4).map_err(|_| Errno::EINVAL)? != SFFS_VERSION {
+            return Err(Errno::EINVAL);
+        }
+        if source_u32(&source, 8).map_err(|_| Errno::EINVAL)? != BLOCK_SIZE as u32 {
+            return Err(Errno::EINVAL);
+        }
+        let inode_table_start =
+            source_u32(&source, SB_INODE_TABLE_START).map_err(|_| Errno::EINVAL)?;
+        let total_inodes = source_u32(&source, SB_TOTAL_INODES).map_err(|_| Errno::EINVAL)?;
         // The inode table spans `total_inodes.div_ceil(32)` blocks starting at
-        // `inode_table_start`; require the whole region to fit in the buffer
+        // `inode_table_start`; require the whole region to fit in the source
         // so every accepted `ino < total_inodes` yields an in-bounds
         // `inode_offset` without further per-call bounds checking.
         let table_blocks = (total_inodes as u64).div_ceil(INODES_PER_BLOCK as u64);
         let table_end = (inode_table_start as u64 + table_blocks)
             .checked_mul(BLOCK_SIZE as u64)
             .ok_or(Errno::EINVAL)?;
-        if table_end > bytes.len() as u64 { return Err(Errno::EINVAL); }
-        Ok(Sffs { bytes, inode_table_start, total_inodes })
+        if table_end > source.len() { return Err(Errno::EINVAL); }
+        Ok(Sffs { source, inode_table_start, total_inodes })
     }
 
     /// Invariant relied on by callers: `ino` has already been checked by
     /// `stat_ino` against `0 < ino < total_inodes`, and `mount` validated
     /// that the whole inode-table region (through `total_inodes`) fits in
-    /// `bytes`. So the offset computed here is provably in-bounds and needs
-    /// no further self-check.
-    fn inode_offset(&self, ino: u32) -> usize {
-        let block = self.inode_table_start + ino / INODES_PER_BLOCK;
-        block as usize * BLOCK_SIZE + (ino % INODES_PER_BLOCK) as usize * INODE_SIZE
+    /// the source. So the offset computed here is provably in-bounds and
+    /// needs no further self-check.
+    pub(crate) fn inode_offset(&self, ino: u32) -> u64 {
+        let block = self.inode_table_start as u64 + (ino / INODES_PER_BLOCK) as u64;
+        block * BLOCK_SIZE as u64 + (ino % INODES_PER_BLOCK) as u64 * INODE_SIZE as u64
+    }
+
+    /// Fetch one inode's raw bytes. `ENOENT` for an out-of-range or free slot,
+    /// matching what a caller of `stat_ino` observes.
+    fn read_inode(&self, ino: u32) -> Result<RawInode, Errno> {
+        if ino == 0 || ino >= self.total_inodes { return Err(Errno::ENOENT); }
+        let mut raw = [0u8; INODE_SIZE];
+        self.source.read_exact_at(self.inode_offset(ino), &mut raw)?;
+        Ok(raw)
     }
 
     pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
-        if ino == 0 || ino >= self.total_inodes { return Err(Errno::ENOENT); }
-        let o = self.inode_offset(ino);
-        let mode = r32(self.bytes, o + INO_MODE).ok_or(Errno::EIO)?;
-        let nlink = r32(self.bytes, o + INO_LINK_COUNT).ok_or(Errno::EIO)?;
+        let raw = self.read_inode(ino)?;
+        let nlink = r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)?;
         if nlink == 0 { return Err(Errno::ENOENT); } // free/orphaned slot
         Ok(SffsStat {
             ino,
-            mode,
+            mode: r32(&raw, INO_MODE).ok_or(Errno::EIO)?,
             nlink,
-            size: r64(self.bytes, o + INO_SIZE).ok_or(Errno::EIO)?,
-            mtime_ms: r64(self.bytes, o + INO_MTIME).ok_or(Errno::EIO)?,
-            ctime_ms: r64(self.bytes, o + INO_CTIME).ok_or(Errno::EIO)?,
-            atime_ms: r64(self.bytes, o + INO_ATIME).ok_or(Errno::EIO)?,
-            uid: r32(self.bytes, o + INO_UID).ok_or(Errno::EIO)?,
-            gid: r32(self.bytes, o + INO_GID).ok_or(Errno::EIO)?,
-            generation: r64(self.bytes, o + INO_GENERATION).ok_or(Errno::EIO)?,
+            size: r64(&raw, INO_SIZE).ok_or(Errno::EIO)?,
+            mtime_ms: r64(&raw, INO_MTIME).ok_or(Errno::EIO)?,
+            ctime_ms: r64(&raw, INO_CTIME).ok_or(Errno::EIO)?,
+            atime_ms: r64(&raw, INO_ATIME).ok_or(Errno::EIO)?,
+            uid: r32(&raw, INO_UID).ok_or(Errno::EIO)?,
+            gid: r32(&raw, INO_GID).ok_or(Errno::EIO)?,
+            generation: r64(&raw, INO_GENERATION).ok_or(Errno::EIO)?,
         })
     }
 
@@ -139,42 +312,48 @@ impl<'a> Sffs<'a> {
         if block == 0 {
             return Ok(0); // missing indirect block => sparse hole
         }
-        // Computed in u64 to avoid wrapping a 32-bit `usize` on wasm32 for a
-        // huge (corrupt) `block`, which could otherwise alias a small
-        // in-bounds offset and pass `r32`'s length check on the wrong bytes.
+        // Computed in u64 so a huge (corrupt) `block` cannot wrap a 32-bit
+        // offset and alias a small in-bounds one.
         let off = block as u64 * BLOCK_SIZE as u64 + index as u64 * 4;
-        let off = usize::try_from(off).map_err(|_| Errno::EIO)?;
-        r32(self.bytes, off).ok_or(Errno::EIO)
+        source_u32(&self.source, off)
     }
 
-    /// Resolve a file block number to a physical block number.
+    /// Resolve a file block number to a physical block number, given the
+    /// inode's already-fetched bytes.
     /// Direct blocks 0..9, single-indirect 10..1033, double-indirect 1034+.
     /// ptr 0 = sparse hole; returns 0. Otherwise returns the block number.
-    fn block_map(&self, ino: u32, file_block: u32) -> Result<u32, Errno> {
-        let o = self.inode_offset(ino);
+    fn block_map_in(&self, raw: &RawInode, file_block: u32) -> Result<u32, Errno> {
         if file_block < DIRECT_BLOCKS {
-            return r32(self.bytes, o + INO_DIRECT + file_block as usize * 4).ok_or(Errno::EIO);
+            return r32(raw, INO_DIRECT + file_block as usize * 4).ok_or(Errno::EIO);
         }
         let fb = file_block - DIRECT_BLOCKS;
         if fb < PTRS_PER_BLOCK {
-            let ind = r32(self.bytes, o + INO_INDIRECT).ok_or(Errno::EIO)?;
+            let ind = r32(raw, INO_INDIRECT).ok_or(Errno::EIO)?;
             return self.block_ptr_in(ind, fb);
         }
         let fb = fb - PTRS_PER_BLOCK;
         let max = PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
         if (fb as u64) < max {
-            let dind = r32(self.bytes, o + INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
+            let dind = r32(raw, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
             let l1 = self.block_ptr_in(dind, fb / PTRS_PER_BLOCK)?;
             return self.block_ptr_in(l1, fb % PTRS_PER_BLOCK);
         }
         Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
     }
 
+    /// `block_map_in` for a caller that has only the inode number.
+    fn block_map(&self, ino: u32, file_block: u32) -> Result<u32, Errno> {
+        let raw = self.read_inode(ino)?;
+        self.block_map_in(&raw, file_block)
+    }
+
     /// Positioned read: fills `dst` from file data starting at `offset`,
     /// clamped to the file size. Sparse holes (physical block 0) read as
     /// zeros. Returns the number of bytes read (0 at or after EOF).
     pub fn read_at(&self, ino: u32, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
-        let size = self.stat_ino(ino)?.size;
+        let raw = self.read_inode(ino)?;
+        if r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 { return Err(Errno::ENOENT); }
+        let size = r64(&raw, INO_SIZE).ok_or(Errno::EIO)?;
         if offset >= size { return Ok(0); }
         let mut remaining = core::cmp::min(dst.len() as u64, size - offset) as usize;
         let mut pos = offset;
@@ -183,17 +362,13 @@ impl<'a> Sffs<'a> {
             let file_block = (pos / BLOCK_SIZE as u64) as u32;
             let block_off = (pos % BLOCK_SIZE as u64) as usize;
             let chunk = core::cmp::min(BLOCK_SIZE - block_off, remaining);
-            let phys = self.block_map(ino, file_block)?;
+            let phys = self.block_map_in(&raw, file_block)?;
             if phys == 0 {
                 for b in &mut dst[out..out + chunk] { *b = 0; } // sparse hole
             } else {
-                // Computed in u64 to avoid wrapping a 32-bit `usize` on
-                // wasm32 for a huge (corrupt) `phys`.
-                let src_u64 = phys as u64 * BLOCK_SIZE as u64 + block_off as u64;
-                let src = usize::try_from(src_u64).map_err(|_| Errno::EIO)?;
-                let end = src.checked_add(chunk).ok_or(Errno::EIO)?;
-                if end > self.bytes.len() { return Err(Errno::EIO); }
-                dst[out..out + chunk].copy_from_slice(&self.bytes[src..end]);
+                // Computed in u64 so a huge (corrupt) `phys` cannot wrap.
+                let src = phys as u64 * BLOCK_SIZE as u64 + block_off as u64;
+                self.source.read_exact_at(src, &mut dst[out..out + chunk])?;
             }
             out += chunk; pos += chunk as u64; remaining -= chunk;
         }
@@ -257,14 +432,15 @@ impl<'a> Sffs<'a> {
         if file_type(st.mode) != 0xa000 { return Err(Errno::EINVAL); }
         let size = st.size;
         if size <= INLINE_SYMLINK_SIZE {
-            let o = self.inode_offset(ino) + INO_DIRECT;
-            let end = o.checked_add(size as usize).ok_or(Errno::EIO)?;
-            if end > self.bytes.len() { return Err(Errno::EIO); }
-            return Ok(self.bytes[o..end].to_vec());
+            // `INO_DIRECT + 40 <= INODE_SIZE`, so an inline target is wholly
+            // inside the inode bytes already fetched.
+            let raw = self.read_inode(ino)?;
+            let end = INO_DIRECT.checked_add(size as usize).ok_or(Errno::EIO)?;
+            return raw.get(INO_DIRECT..end).map(<[u8]>::to_vec).ok_or(Errno::EIO);
         }
         // A symlink target cannot exceed the whole image; caps `size` before
         // it drives an allocation.
-        if size > self.bytes.len() as u64 { return Err(Errno::EIO); }
+        if size > self.source.len() { return Err(Errno::EIO); }
         let mut buf = alloc::vec![0u8; size as usize];
         let n = self.read_at(ino, 0, &mut buf)?;
         buf.truncate(n);
@@ -361,7 +537,16 @@ mod tests {
     fn mount_rejects_wrong_block_size() {
         let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
         bad[8] = 0; bad[9] = 0; bad[10] = 0; bad[11] = 0; // BLOCK_SIZE=0
-        assert!(Sffs::mount(&bad).is_err());
+        assert!(Sffs::mount(bad.as_slice()).is_err());
+    }
+
+    #[test]
+    fn mount_accepts_an_owned_source() {
+        // `Vec<u8>` is a `BlockSource` too, so a caller that owns the image
+        // does not have to keep a borrow alive alongside the mount.
+        let owned = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let fs = Sffs::mount(owned).expect("mount owned");
+        assert_eq!(fs.stat_ino(ROOT_INO).unwrap().mode & 0xf000, 0x4000);
     }
 
     #[test]
@@ -393,6 +578,29 @@ mod tests {
         assert!(n > 0 && (n as u64) <= size);
         // beyond EOF returns 0
         assert_eq!(fs.read_at(ROOT_INO, size + 10, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_at_spans_indirect_blocks() {
+        // /big.txt is 45000 bytes (big[i] = i % 251), which exceeds the ten
+        // direct blocks, so a whole-file read walks the single-indirect
+        // block. Under the cursor the inode is fetched once for the whole
+        // read rather than once per 4 KiB chunk; the bytes must be identical.
+        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let ino = fs.resolve(b"/big.txt", true).unwrap();
+        let size = fs.stat_ino(ino).unwrap().size as usize;
+        assert_eq!(size, 45000);
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(ino, 0, &mut buf).unwrap(), size);
+        for (i, b) in buf.iter().enumerate() {
+            assert_eq!(*b, (i % 251) as u8, "byte {i}");
+        }
+        // A read that starts mid-block and crosses the direct/indirect
+        // boundary returns the same bytes as the whole-file read.
+        let mut mid = alloc::vec![0u8; 8192];
+        let n = fs.read_at(ino, 40_000, &mut mid).unwrap();
+        assert_eq!(n, size - 40_000);
+        assert_eq!(&mid[..n], &buf[40_000..]);
     }
 
     #[test]
@@ -475,13 +683,42 @@ mod tests {
         // `read_link` fails rather than allocating/reading garbage.
         let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let link = fs.lookup(ROOT_INO, b"link").unwrap();
-        let size_off = fs.inode_offset(link) + INO_SIZE;
+        let size_off = fs.inode_offset(link) as usize + INO_SIZE;
         drop(fs);
         let mut img = TINY_VFS.to_vec();
         let abs = VFSI_HEADER + size_off;
         img[abs..abs + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         let fs2 = Sffs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
         assert!(fs2.read_link(link).is_err());
+    }
+
+    #[test]
+    fn kernel_lazy_span_absent_when_the_flag_is_clear() {
+        // The fixture predates the section, so a reader must report "not
+        // declared" rather than inventing one out of the bytes that follow.
+        assert_eq!(kernel_lazy_section(TINY_VFS).unwrap(), None);
+    }
+
+    #[test]
+    fn kernel_lazy_span_reads_an_appended_section() {
+        // Append a section to the fixture the way `saveImage` does and check
+        // the container walk lands on exactly those bytes. `tiny.vfs` sets no
+        // archive/metadata flags, so its trailer is the lazy JSON length alone.
+        let payload: &[u8] = b"KLZY-payload-bytes";
+        let mut img = TINY_VFS.to_vec();
+        let flags = u32::from_le_bytes([img[8], img[9], img[10], img[11]]);
+        img[8..12].copy_from_slice(
+            &(flags | wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY).to_le_bytes(),
+        );
+        img.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        img.extend_from_slice(payload);
+        assert_eq!(kernel_lazy_section(&img).unwrap(), Some(payload));
+
+        // A declared section whose length runs past the end of the image is
+        // corruption, not an older image.
+        let mut truncated = img.clone();
+        truncated.truncate(truncated.len() - 1);
+        assert!(kernel_lazy_section(&truncated).is_err());
     }
 
     #[test]
