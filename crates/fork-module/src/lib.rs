@@ -1102,6 +1102,54 @@ mod wasm {
         serialize_journal_alloc_impl(channel_base)
     }
 
+    /// Build a REPLAY-FINISH drive plan: one `DRIVE_OP_REWIND_END` (`abort` false)
+    /// or `DRIVE_OP_ABORT_END` (`abort` true) step per open activation (ascending
+    /// id order — a `BTreeMap` iterates sorted keys), so the injected shim
+    /// `call_indirect`s each activation's guest `wpk_fork_rewind_end()` /
+    /// `wpk_fork_abort_end()` in the same order the host's former per-activation
+    /// finish loop used. Each step is argument-free (`() -> ()`), so it carries no
+    /// root. Serialized through the shared plan scratch; the step count is read
+    /// back via `GC_PLAN_COUNT` exactly as the seal plan.
+    fn build_finish_plan_impl(abort: bool) -> Result<usize, Errno> {
+        let st = state().as_ref().ok_or(Errno::EINVAL)?;
+        let activations: alloc::vec::Vec<u32> = st.activations.keys().copied().collect();
+        let mut steps = alloc::vec::Vec::new();
+        drive_plan::append_replay_end_steps(&mut steps, &activations, abort);
+        serialize_and_store_plan(&steps)
+    }
+
+    /// Sequence a whole REPLAY FINISH in the module (control-flow inversion): drive
+    /// each open activation's guest `wpk_fork_rewind_end()` (`abort` false, moving
+    /// it from `REWINDING` back to `NORMAL`) or `wpk_fork_abort_end()` (`abort`
+    /// true, `ABORT_UNWINDING` back to `NORMAL`) through the injector-wired shim,
+    /// then finish the process replay/abort — exhaust every activation's driver +
+    /// finish the process journal + release this fork's channel-mapped chunks
+    /// (`finish_replay_impl` / `finish_abort_impl`).
+    ///
+    /// This folds the host's former two-part finish — a per-activation
+    /// `wpk_fork_rewind_end()` / `wpk_fork_abort_end()` loop, then
+    /// `fm_finish_replay` / `fm_finish_abort` — into ONE module call. Order is
+    /// identical to that host sequence: drive FIRST (every activation to `NORMAL`),
+    /// THEN finish. The abort finish still asserts the `in_abort` pairing
+    /// `fm_parent_abort` set (`finish_abort_impl`), so a `fm_parent_finish(abort=1)`
+    /// without a matching abort begin is a loud `EINVAL`, never a silent no-op.
+    ///
+    /// A guest end flip that traps (e.g. finishing before the rewind consumed
+    /// every frame) traps inside the shim exactly as it did under the host loop; a
+    /// driver-not-exhausted / journal error is a truthful errno.
+    fn finish_transaction_impl(abort: bool) -> Result<(), Errno> {
+        let plan = build_finish_plan_impl(abort)?;
+        let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
+        if count > 0 {
+            drive_plan_via_injector(plan, count);
+        }
+        if abort {
+            finish_abort_impl()
+        } else {
+            finish_replay_impl()
+        }
+    }
+
     // The step count of the plan `fm_build_gc_plan` last serialized (the `count`
     // argument for `fm_drive_execute`).
     static GC_PLAN_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -4492,6 +4540,34 @@ mod wasm {
                 set_err(errno);
                 0
             }
+        }
+    }
+
+    /// Sequence a whole REPLAY FINISH in the module (control-flow inversion): drive
+    /// each open activation's guest `wpk_fork_rewind_end()` (`abort` == 0, moving it
+    /// from `REWINDING` back to `NORMAL`) or `wpk_fork_abort_end()` (`abort` != 0,
+    /// `ABORT_UNWINDING` back to `NORMAL`) through the injector-wired
+    /// `fm_drive_execute` shim (one `DRIVE_OP_REWIND_END`/`DRIVE_OP_ABORT_END` step
+    /// per activation, ascending id order — the argument-free `() -> ()` finish
+    /// flip), then finish the process replay/abort (`finish_replay_impl` /
+    /// `finish_abort_impl`): exhaust every activation's driver, finish the process
+    /// journal, and release this fork's channel-mapped chunks.
+    ///
+    /// This replaces the host's former two-part finish — a per-activation
+    /// `wpk_fork_rewind_end()` / `wpk_fork_abort_end()` loop, then `fm_finish_replay`
+    /// / `fm_finish_abort` — with ONE module call. The host must have bound each
+    /// activation's `wpk_fork_rewind_end` / `wpk_fork_abort_end` into
+    /// `__wpk_fork_drive_table` at `fm_drive_table_base(activation) +
+    /// DRIVE_SLOT_{REWIND,ABORT}_END` before calling this (the ref-typed table bind
+    /// is a host floor). Behaviourally identical to the old host sequence: same
+    /// guest export, same ascending order, drive FIRST then finish. The abort finish
+    /// still asserts the `in_abort` pairing `fm_parent_abort` set, so a stray
+    /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_parent_finish(abort: u32) {
+        match finish_transaction_impl(abort != 0) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
         }
     }
 
