@@ -117,6 +117,15 @@ export const Dock: React.FC<{
    * keyboard do nothing" lives here instead.
    */
   role: "user" | "viewer" | null;
+  /**
+   * The current user's nickname, or null while neither person gave one.
+   *
+   * It replaces the role word for the eye: the badge names who the user is,
+   * and a name that is not yours is what says someone else types. The role
+   * itself stays in the aria-label and the data-role styling, so the
+   * read-only state is still said and shown whatever the name is.
+   */
+  roleName: string | null;
   machineTitle?: string;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
   onSelectPane: (pane: DockPaneId | null) => void;
@@ -146,6 +155,7 @@ export const Dock: React.FC<{
   networkOpen,
   networkConnected,
   role,
+  roleName,
   themeOpen,
   status,
   machineTitle,
@@ -483,9 +493,10 @@ export const Dock: React.FC<{
               type="button"
               className="kdock-status"
               data-role={role ?? undefined}
+              data-named={role !== null && roleName !== null ? "" : undefined}
               onClick={() => onSelectPane(null)}
               title={`${title}: ${statusLabel}`}
-              aria-label={`Current machine: ${title}, ${statusLabel}${role === null ? "" : role === "user" ? ", User" : ", Viewer"}`}
+              aria-label={`Current machine: ${title}, ${statusLabel}${role === null ? "" : `${role === "user" ? ", User" : ", Viewer"}${roleName === null ? "" : ` (${roleName})`}`}`}
             >
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
@@ -497,7 +508,7 @@ export const Dock: React.FC<{
               </span>
               {role !== null && (
                 <span className="kdock-role">
-                  {role === "user" ? "User" : "Viewer"}
+                  {roleName ?? (role === "user" ? "User" : "Viewer")}
                 </span>
               )}
             </button>
