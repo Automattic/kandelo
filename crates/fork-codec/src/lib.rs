@@ -87,7 +87,8 @@ pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
 pub use module_state_records::{
-    decode_data_segments, decode_element_segments, decode_module_record, decode_mutable_global,
+    decode_data_segments, decode_element_segments, decode_journal_image, decode_module_record,
+    decode_mutable_global,
     decode_record_payload, decode_table_descriptor, decode_table_page, record_payload_bytes,
     GlobalSnapshot, ModuleDescriptor, ModuleStateRecordPayload, SegmentBitmap, SparseTablePage,
     SparseTableRun, TableDescriptor,

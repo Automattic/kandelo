@@ -921,23 +921,21 @@ export class ForkProcessContinuationCoordinator {
         }
       }
 
-      // Seed activation 0's replay from the copied KFRE journal image, then add
-      // each side activation at its inherited continuation anchor. All seeding
-      // happens before any guest rewind drives a frame. Option B: the image was
-      // channel-mmap'd, so its location comes from the inherited `JournalImage`
-      // KFMS record, not a host-computed arena offset.
-      const journalImage = journalImageForChild(
-        this.registry.currentArena().recordViews(),
-        this.getActivation(0).continuation.format.ptrWidth,
-      );
+      // Control-flow inversion: seed the WHOLE child replay in ONE module call
+      // (`childSeed`). The module decodes the inherited `JournalImage` KFMS record
+      // from the copied arena itself (Option B: the image was channel-mmap'd, so
+      // its location comes from that record, not a host-computed offset) and seeds
+      // activation 0's replay, then seeds each side activation from the passed
+      // `(id, root, fixedPrefix)` list — replacing the former host
+      // `beginChildReplay` + per-activation `addActivationChildReplay` loop. The
+      // module cannot derive a side activation's fixedPrefix (a static property of
+      // the child's loaded side module, absent from every inherited KFMS record —
+      // see `add_activation_child_replay_impl`), so the host supplies it. All
+      // seeding happens before any guest rewind drives a frame.
       const act0 = this.getActivation(0);
       act0.root = act0Root;
       act0.replayRoot = act0Root;
-      backend.beginChildReplay(
-        act0Root,
-        Number(journalImage.ptr),
-        Number(journalImage.len),
-      );
+      const sideSeeds: { id: number; root: number; fixedPrefix: number }[] = [];
       for (const activation of activations) {
         if (activation.activationId === 0) continue;
         const root = roots.get(activation.activationId);
@@ -949,12 +947,17 @@ export class ForkProcessContinuationCoordinator {
         }
         activation.root = root;
         activation.replayRoot = root;
-        backend.addActivationChildReplay(
-          activation.activationId,
+        sideSeeds.push({
+          id: activation.activationId,
           root,
-          activation.continuation.format.fixedPrefixSize,
-        );
+          fixedPrefix: activation.continuation.format.fixedPrefixSize,
+        });
       }
+      backend.childSeed(
+        this.registry.currentArena().rootAddress(),
+        act0Root,
+        sideSeeds,
+      );
 
       // Control-flow inversion (the child-worker mirror of
       // `beginModuleParentReplay`): bind each activation's guest

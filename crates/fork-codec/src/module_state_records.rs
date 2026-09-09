@@ -157,6 +157,44 @@ pub fn decode_module_record(payload: &[u8]) -> Result<ModuleDescriptor, Errno> {
     Ok(ModuleDescriptor { template_id, flags })
 }
 
+// --- Journal image record (kind 14) --------------------------------------
+
+/// Decode a `JournalImage` (kind 14) record payload into `(image_ptr,
+/// image_len)`: the guest offset and byte length of the channel-mmap'd KFRE
+/// journal image the forked child inherits. Mirrors the TS
+/// `journalImageForChild` / `encodeForkJournalImage` — a fixed 32-byte payload:
+/// KFJI magic (4), version (2) = 1, header_size (2) = 16, flags (2), reserved
+/// (2 + 4), then `ptr` u64 @16 and `len` u64 @24. A zero ptr/len, wrong magic,
+/// unsupported version, or nonzero reserved field is a framing failure
+/// (`EINVAL`), matching the TS decoder's `throw`.
+pub fn decode_journal_image(payload: &[u8]) -> Result<(u64, u64), Errno> {
+    if payload.len() != abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize {
+        return Err(Errno::EINVAL); // truncated / oversized
+    }
+    if payload[0..4] != abi::WPK_FORK_JOURNAL_IMAGE_MAGIC {
+        return Err(Errno::EINVAL); // wrong magic
+    }
+    if r_u16(payload, 4)? != abi::WPK_FORK_JOURNAL_IMAGE_VERSION {
+        return Err(Errno::EINVAL); // unsupported version
+    }
+    if r_u16(payload, 6)? != abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE {
+        return Err(Errno::EINVAL); // header size inconsistent
+    }
+    let flags = r_u16(payload, 8)?;
+    if flags & !abi::WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS != 0 {
+        return Err(Errno::EINVAL); // unknown flags
+    }
+    if r_u16(payload, 10)? != 0 || r_u32(payload, 12)? != 0 {
+        return Err(Errno::EINVAL); // reserved fields nonzero
+    }
+    let ptr = r_u64(payload, 16)?;
+    let len = r_u64(payload, 24)?;
+    if ptr == 0 || len == 0 {
+        return Err(Errno::EINVAL); // zero ptr/len is malformed
+    }
+    Ok((ptr, len))
+}
+
 // --- Mutable global record (kind 3) --------------------------------------
 
 /// Decoded `MutableGlobal` record payload: a value-type-tagged snapshot of one

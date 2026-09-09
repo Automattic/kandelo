@@ -1059,6 +1059,70 @@ export class ForkModuleContinuationBackend {
    * host-computed arena offset to derive it from). Both are inherited verbatim
    * by the fork memory copy.
    */
+  /**
+   * Child SEED, coarsened (control-flow inversion). ONE module call decodes the
+   * inherited `JournalImage` record from the copied KFMS arena and seeds
+   * activation 0's replay from it, then seeds each side activation from the
+   * passed list — replacing the host's former `beginChildReplay` +
+   * per-activation `addActivationChildReplay` loop. `sideActivations` carries
+   * each side activation's id, inherited continuation root, and own module-buffer
+   * fixed prefix. The module cannot derive the fixed prefix (a static property of
+   * the child's loaded side module, absent from every inherited KFMS record — see
+   * `add_activation_child_replay_impl`'s doc), so the host supplies it. A
+   * single-activation fork passes an empty `sideActivations`.
+   */
+  childSeed(
+    arenaRoot: number,
+    act0Root: number,
+    sideActivations: readonly { id: number; root: number; fixedPrefix: number }[],
+  ): void {
+    this.requireSetup("child seed");
+    if (!Number.isSafeInteger(act0Root) || act0Root <= 0) {
+      throw new Error(`${this.label}: child seed act0 root ${act0Root} is invalid`);
+    }
+    const count = sideActivations.length;
+    let scratch = 0;
+    let regionBytes = 0;
+    if (count > 0) {
+      regionBytes = alignUpPage(count * 16);
+      scratch = this.reserveRegion(regionBytes);
+    }
+    try {
+      if (count > 0) {
+        const view = new DataView(this.memory.buffer);
+        for (let i = 0; i < count; i++) {
+          const side = sideActivations[i]!;
+          if (!Number.isSafeInteger(side.root) || side.root <= 0) {
+            throw new Error(
+              `${this.label}: child seed side activation ${side.id} root `
+                + `${side.root} is invalid`,
+            );
+          }
+          view.setUint32(scratch + i * 16, side.id >>> 0, true);
+          view.setUint32(scratch + i * 16 + 4, side.fixedPrefix >>> 0, true);
+          // Split the (possibly wasm64) root into low/high words; the module
+          // recombines `(high << 32) | low`.
+          view.setUint32(scratch + i * 16 + 8, side.root >>> 0, true);
+          view.setUint32(
+            scratch + i * 16 + 12,
+            Math.floor(side.root / 0x1_0000_0000) >>> 0,
+            true,
+          );
+        }
+      }
+      this.moduleBuffer = act0Root;
+      this.exports.fm_child_seed(
+        this.wptr(arenaRoot),
+        this.wptr(act0Root),
+        this.wptr(scratch),
+        this.wptr(count),
+      );
+      this.requireOk("fm_child_seed");
+    } finally {
+      if (count > 0) this.releaseRegion(scratch, regionBytes);
+    }
+  }
+
   beginChildReplay(root: number, imagePtr: number, imageLen: number): void {
     this.requireSetup("begin child replay");
     if (!Number.isSafeInteger(root) || root <= 0) {

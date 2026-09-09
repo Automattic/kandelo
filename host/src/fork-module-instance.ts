@@ -150,6 +150,14 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // silent no-op).
   "fm_begin_abort",
   "fm_finish_abort",
+  // Control-flow inversion: the coarse CHILD-SEED entry. Decodes the inherited
+  // JournalImage record from the copied KFMS arena and seeds activation 0's
+  // replay, then seeds each side activation from the host-passed (id, root,
+  // fixedPrefix) list — replacing the host's `fm_begin_child_replay` +
+  // per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
+  // with ONE module call. Those fine-grained exports remain for the module unit
+  // tests + host-native.
+  "fm_child_seed",
   "fm_begin_child_replay",
   // Phase 6 item 4: seed a vfork BORROWED child's replay from the parked
   // parent's LIVE shared memory (its own instance at a distinct __memory_base),

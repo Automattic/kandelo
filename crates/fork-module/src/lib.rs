@@ -145,7 +145,8 @@ mod wasm {
     use alloc::vec::Vec;
 
     use fork_codec::{
-        decode_module_state, decode_replay_events_image, decode_segmented_reference_transaction,
+        decode_journal_image, decode_module_state, decode_replay_events_image,
+        decode_segmented_reference_transaction,
         drive_plan, encode_replay_events, AggregateKind, ChunkAllocator, GcProvenance,
         LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
@@ -3008,6 +3009,96 @@ mod wasm {
         Ok(())
     }
 
+    /// Decode the inherited `JournalImage` KFMS record from the COPIED module-state
+    /// arena rooted at `module_state_root`, returning `(image_ptr, image_len)` — the
+    /// guest offset and byte length of the channel-mmap'd KFRE journal image the
+    /// forked child inherits. Scans the sealed KFMS envelope for the single
+    /// `JournalImage` record and decodes its payload via `fork_codec`. Exactly one
+    /// such record must exist (the parent wrote it at seal); zero or many is a
+    /// malformed inheritance (`EINVAL`). The module-side of the host
+    /// `journalImageForChild`.
+    fn journal_image_from_arena(module_state_root: u64) -> Result<(u64, u64), Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        let mut found: Option<(u64, u64)> = None;
+        for record in &module_state.records {
+            if record.kind != abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE {
+                continue;
+            }
+            if found.is_some() {
+                return Err(Errno::EINVAL); // more than one JournalImage record
+            }
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            found = Some(decode_journal_image(payload)?);
+        }
+        found.ok_or(Errno::EINVAL)
+    }
+
+    /// Sequence a whole CHILD SEED in the module (control-flow inversion): decode
+    /// the inherited `JournalImage` record from the COPIED KFMS arena and seed
+    /// activation 0's replay from it (`begin_child_replay_impl`), then seed each
+    /// side activation (a dlopen fork's side module) from the host-passed scratch
+    /// (`add_activation_child_replay_impl`). Folds the host's former
+    /// `beginChildReplay` + per-activation `addActivationChildReplay` loop in
+    /// `attachModuleChild` into ONE module call.
+    ///
+    /// `act0_root` is activation 0's inherited continuation anchor (the launch
+    /// anchor the host reads). The `sides` scratch is an array of 16-byte records
+    /// `[sides_ptr, sides_ptr + sides_count*16)`, each `(id: u32, fixed_prefix: u32,
+    /// root_lo: u32, root_hi: u32)`: a side activation's id, its own module-buffer
+    /// fixed prefix, and its inherited continuation anchor (low/high words). The
+    /// `fixed_prefix` is a static property of the child's loaded side module —
+    /// absent from every inherited KFMS record (see `add_activation_child_replay_impl`),
+    /// so the host supplies it. A single-activation fork passes `sides_count == 0`
+    /// (only activation 0 is seeded from the launch anchor + journal image).
+    /// Truthful failure: a malformed inheritance or an already-seeded activation is
+    /// a `fm_last_errno`.
+    fn child_seed_impl(
+        module_state_root: u64,
+        act0_root: u64,
+        sides_ptr: u64,
+        sides_count: u64,
+    ) -> Result<(), Errno> {
+        let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
+        begin_child_replay_impl(act0_root, image_ptr, image_len)?;
+        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
+        if count > 0 {
+            let bytes = (count as u64).checked_mul(16).ok_or(Errno::EINVAL)?;
+            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
+            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
+                return Err(Errno::EINVAL);
+            }
+            for i in 0..count {
+                let base = (i as u64) * 16;
+                let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
+                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
+                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
+                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
+                let root = ((root_hi as u64) << 32) | root_lo as u64;
+                if id == 0 {
+                    // Activation 0 is seeded from the launch anchor + journal image
+                    // above; a side entry naming it is a host bug.
+                    return Err(Errno::EINVAL);
+                }
+                add_activation_child_replay_impl(id, root, fixed_prefix)?;
+            }
+        }
+        Ok(())
+    }
+
     // -- Reference reconstruction impls (Phase 6 D6.1) ----------------------
 
     /// Decode the funcref/null reference graph for this fork from the KFMS
@@ -4080,6 +4171,35 @@ mod wasm {
     /// dictates. This is the module equivalent of JS `attachChild` ->
     /// `replayEventsForChild(records)` -> `events.attachChild`. On success the
     /// guest then drives `__wpk_fork_frame_peek/next` + `__wpk_fork_resume_peek`.
+    /// Sequence a whole CHILD SEED in the module (control-flow inversion): decode
+    /// the inherited `JournalImage` record from the COPIED KFMS arena rooted at
+    /// `module_state_root` and seed activation 0's replay from it, then seed each
+    /// side activation from the host-passed `sides` scratch (`[sides_ptr, sides_ptr
+    /// + sides_count*16)`, each a `(id, fixed_prefix, root_lo, root_hi)` 16-byte
+    /// record). Folds the host's former `fm_begin_child_replay` +
+    /// per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
+    /// into ONE module call. `act0_root` is activation 0's inherited launch anchor.
+    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`;
+    /// the fine-grained `fm_begin_child_replay` / `fm_add_activation_child_replay`
+    /// remain exported for the module unit tests + host-native.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_seed(
+        module_state_root: usize,
+        act0_root: usize,
+        sides_ptr: usize,
+        sides_count: usize,
+    ) {
+        match child_seed_impl(
+            module_state_root as u64,
+            act0_root as u64,
+            sides_ptr as u64,
+            sides_count as u64,
+        ) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_begin_child_replay(
         module_buffer: usize,
