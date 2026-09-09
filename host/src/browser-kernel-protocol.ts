@@ -540,6 +540,12 @@ export interface ReplicationReplayProgress {
    * which one won. See `ReplicationLogReader.borrowedAcceptSelections`.
    */
   readonly borrowedAcceptSelections: number;
+  /**
+   * Clock reads served their process's own next reading of the asked clock,
+   * out of the recorded order. See
+   * `ReplicationLogReader.scannedAheadClockReadings`.
+   */
+  readonly scannedAheadClockReadings: number;
 }
 
 /** Send an HTTP request to a server running in the kernel and wait for the

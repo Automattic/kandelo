@@ -4957,6 +4957,8 @@ port.on("message", (msg: MainToKernelMessage) => {
           borrowedClockReadings: replay?.reader.borrowedClockReadings ?? 0,
           borrowedAcceptSelections:
             replay?.reader.borrowedAcceptSelections ?? 0,
+          scannedAheadClockReadings:
+            replay?.reader.scannedAheadClockReadings ?? 0,
         },
       });
       break;

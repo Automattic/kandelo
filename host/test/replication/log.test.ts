@@ -874,6 +874,34 @@ describe("replication log clock borrowing", () => {
         + "primary read clock 1",
     );
   });
+
+  // A live replica's process can interleave its reads of two clocks
+  // differently than its primary counterpart did. The reading it is served
+  // is still its own next reading of the clock it asked for, and the count
+  // is what makes the reordering visible: a replay with every tolerance
+  // counter at zero consumed the log exactly as recorded.
+  it("counts a reading served out of its recorded order", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0, 102));
+    recorder.record(reading(0, 40, 0, 102));
+    const { extend, extendWithin } = timedOutExtenders([]);
+    const reader = new ReplicationLogReader(
+      recorder.entries,
+      undefined,
+      extend,
+      undefined,
+      undefined,
+      extendWithin,
+    );
+
+    expect(reader.takeClock(0, 102)).toEqual(reading(0, 40, 0, 102));
+    expect(reader.scannedAheadClockReadings).toBe(1);
+    expect(reader.borrowedClockReadings).toBe(0);
+    // The reading it stepped over stays for its own later read, and a read
+    // served as recorded moves no counter.
+    expect(reader.takeClock(1, 102)).toEqual(reading(1, 7, 0, 102));
+    expect(reader.scannedAheadClockReadings).toBe(1);
+  });
 });
 
 describe("replication log accept selection", () => {

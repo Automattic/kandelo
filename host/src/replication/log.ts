@@ -413,6 +413,7 @@ export class ReplicationLogReader {
   /** Processes that borrowed: their primary counterpart stopped reading. */
   readonly #offStream = new Set<number>();
   #borrowedClockReadings = 0;
+  #scannedAheadClockReadings = 0;
   /** How far pushed decisions have been delivered. */
   #index = 0;
   #firstUnconsumed = 0;
@@ -641,6 +642,7 @@ export class ReplicationLogReader {
           this.#take(ahead);
           if (this.#index <= ahead) this.#index = ahead + 1;
           this.#offStream.delete(pid);
+          this.#scannedAheadClockReadings += 1;
           return this.#serve(served);
         }
       }
@@ -690,6 +692,19 @@ export class ReplicationLogReader {
    */
   get borrowedClockReadings(): number {
     return this.#borrowedClockReadings;
+  }
+
+  /**
+   * How many clock reads were served their process's next reading of the
+   * asked clock, out of the recorded order, because the process interleaved
+   * its clocks differently than its primary counterpart. Every served
+   * reading is still one the primary recorded for that process; the count is
+   * what makes the reordering visible, so a replay that used no tolerance —
+   * this one, and both borrow counters at zero — can be told apart from one
+   * that is only probably the same machine.
+   */
+  get scannedAheadClockReadings(): number {
+    return this.#scannedAheadClockReadings;
   }
 
   /**
