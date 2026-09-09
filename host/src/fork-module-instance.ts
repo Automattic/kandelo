@@ -158,6 +158,15 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // with ONE module call. Those fine-grained exports remain for the module unit
   // tests + host-native.
   "fm_child_seed",
+  // Control-flow inversion: the coarse BORROWED (vfork) CHILD-SEED entry.
+  // Decodes the inherited JournalImage record from the KFMS arena and seeds
+  // activation 0's borrowed replay, then seeds each side activation from the
+  // host-passed (id, root, fixedPrefix, privatePrefix) list — replacing the
+  // host's `fm_begin_borrowed_child_replay` + per-activation
+  // `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
+  // with ONE module call. Those fine-grained exports remain for the module unit
+  // tests + host-native.
+  "fm_child_seed_borrowed",
   "fm_begin_child_replay",
   // Phase 6 item 4: seed a vfork BORROWED child's replay from the parked
   // parent's LIVE shared memory (its own instance at a distinct __memory_base),

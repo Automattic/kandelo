@@ -13,7 +13,6 @@ import {
   decodeForkActivationContinuations,
   type ForkModuleStateArena,
   ForkModuleStateRecordKind,
-  journalImageForChild,
 } from "./fork-module-state";
 import type { ForkModuleContinuationBackend } from "./fork-module-backend";
 import {
@@ -484,7 +483,8 @@ export class ForkProcessContinuationCoordinator {
       throw error;
     }
     // Reuse the proven module abort-replay path (drives `beginModuleAbortReplay`
-    // → `backend.beginAbort()` + `wpk_fork_abort_begin` on each activation).
+    // → the coarse `backend.parentAbort()`, which internally begins the abort and
+    // drives each activation's `wpk_fork_abort_begin`).
     this.beginAbortReplay(errno);
   }
 
@@ -1057,7 +1057,6 @@ export class ForkProcessContinuationCoordinator {
           `${this.label}: borrowed process launch root ${parentLaunchRoot} is invalid`,
         );
       }
-      const records = arena.recordViews();
       this.phase = "child-replay";
       // Reference reconstruction runs through the module (never a JS fallback),
       // mirroring `attachModuleChild`: the child-install ENTRY seeds the reference
@@ -1078,10 +1077,6 @@ export class ForkProcessContinuationCoordinator {
       this.registry.restoreModuleState(typedDrive, this.moduleReferenceReplay);
 
       const activations = this.orderedActivations();
-      const journalImage = journalImageForChild(
-        records,
-        this.getActivation(0).continuation.format.ptrWidth,
-      );
       // Side activations' borrowed anchors come from the manifest the parent
       // wrote at seal (activation 0's is the launch root). A single-activation
       // fork writes no manifest and needs none.
@@ -1131,18 +1126,31 @@ export class ForkProcessContinuationCoordinator {
         }
         privatePrefixes.set(activation.activationId, prefix);
       }
-      // Seed activation 0 from the inherited journal image, then add each side
-      // activation against the SAME journal, each at its own borrowed anchor and
-      // child-private prefix.
+      // Control-flow inversion (the borrowed mirror of `attachModuleChild`'s
+      // `childSeed`): seed the WHOLE borrowed child replay in ONE module call
+      // (`childSeedBorrowed`). The module decodes the inherited `JournalImage`
+      // KFMS record from the arena itself (Option B: the image was channel-mmap'd,
+      // so its location comes from that record, not a host-computed offset) and
+      // seeds activation 0's borrowed replay, then seeds each side activation from
+      // the passed `(id, root, fixedPrefix, privatePrefix)` list — replacing the
+      // former host `beginBorrowedChildReplay` + per-activation
+      // `addActivationBorrowedChildReplay` loop. Unlike the COW `childSeed`, each
+      // activation carries its child-PRIVATE prefix (`replayRoot`): the module
+      // copies the parent's fixed prefix into it, so the guest's rewind writes its
+      // active-frame pointer there and never the parked parent's prefix. The
+      // module cannot derive a side activation's fixedPrefix (a static property of
+      // the child's loaded side module, absent from every inherited KFMS record),
+      // so the host supplies it. All seeding happens before any guest rewind
+      // drives a frame.
       const act0 = this.getActivation(0);
       act0.root = parentLaunchRoot;
       act0.replayRoot = privatePrefixes.get(0)!;
-      backend.beginBorrowedChildReplay(
-        parentLaunchRoot,
-        Number(journalImage.ptr),
-        Number(journalImage.len),
-        act0.replayRoot,
-      );
+      const sideSeeds: {
+        id: number;
+        root: number;
+        fixedPrefix: number;
+        privatePrefix: number;
+      }[] = [];
       for (const activation of activations) {
         if (activation.activationId === 0) continue;
         const root = roots.get(activation.activationId);
@@ -1154,20 +1162,26 @@ export class ForkProcessContinuationCoordinator {
         }
         activation.root = root;
         activation.replayRoot = privatePrefixes.get(activation.activationId)!;
-        backend.addActivationBorrowedChildReplay(
-          activation.activationId,
+        sideSeeds.push({
+          id: activation.activationId,
           root,
-          activation.continuation.format.fixedPrefixSize,
-          activation.replayRoot,
-        );
+          fixedPrefix: activation.continuation.format.fixedPrefixSize,
+          privatePrefix: activation.replayRoot,
+        });
       }
+      backend.childSeedBorrowed(
+        arena.rootAddress(),
+        parentLaunchRoot,
+        act0.replayRoot,
+        sideSeeds,
+      );
       // Control-flow inversion (mirror of `attachModuleChild`, borrowed): bind
       // each activation's guest `wpk_fork_rewind_begin` into the drive table,
       // then drive the WHOLE borrowed child rewind-begin phase in ONE module call
       // (`childReconstruct`). The module builds the per-activation plan from each
       // activation's stored `child_rewind_root` — which for a borrowed child is
       // its child-PRIVATE prefix (== `activation.replayRoot` here, seeded above by
-      // `beginBorrowedChildReplay` / `addActivationBorrowedChildReplay`), so the
+      // `childSeedBorrowed`), so the
       // guest's active-frame-pointer write lands in private scratch and never the
       // parked parent's prefix. Replaces the former host per-activation rewind
       // loop; the post-drive REWINDING assertion sweep is unchanged.

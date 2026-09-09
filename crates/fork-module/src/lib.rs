@@ -3099,6 +3099,68 @@ mod wasm {
         Ok(())
     }
 
+    /// Sequence a whole BORROWED (vfork) CHILD SEED in the module (control-flow
+    /// inversion): decode the inherited `JournalImage` record from the KFMS arena
+    /// and seed activation 0's borrowed replay from it
+    /// (`begin_borrowed_child_replay_impl`), then seed each side activation from
+    /// the host-passed scratch (`add_activation_borrowed_child_replay_impl`).
+    /// Folds the host's former `beginBorrowedChildReplay` + per-activation
+    /// `addActivationBorrowedChildReplay` loop in `attachBorrowedModuleChild` into
+    /// ONE module call — the borrowed sibling of `child_seed_impl`.
+    ///
+    /// Unlike the COW `child_seed_impl`, a borrowed child shares the PARKED
+    /// parent's live memory read-only, so every activation additionally carries a
+    /// child-PRIVATE prefix the module copies the parent's fixed runtime prefix
+    /// into (so the guest's per-activation rewind writes its active-frame pointer
+    /// THERE, never the parked parent's prefix). `act0_root` is activation 0's
+    /// borrowed continuation anchor (the parent launch anchor); `act0_private_prefix`
+    /// its child-private prefix. The `sides` scratch is an array of 24-byte records
+    /// `[sides_ptr, sides_ptr + sides_count*24)`, each `(id: u32, fixed_prefix: u32,
+    /// root_lo: u32, root_hi: u32, private_lo: u32, private_hi: u32)`: a side
+    /// activation's id, its own module-buffer fixed prefix, its inherited borrowed
+    /// continuation anchor (low/high words), and its child-private prefix (low/high
+    /// words). The `fixed_prefix` and `private_prefix` are host-supplied for the
+    /// same reasons as the fine-grained path. A single-activation vfork passes
+    /// `sides_count == 0`. Truthful failure: a malformed inheritance, an
+    /// already-seeded activation, or an out-of-range/aliasing private prefix is a
+    /// `fm_last_errno`.
+    fn child_seed_borrowed_impl(
+        module_state_root: u64,
+        act0_root: u64,
+        act0_private_prefix: u64,
+        sides_ptr: u64,
+        sides_count: u64,
+    ) -> Result<(), Errno> {
+        let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
+        begin_borrowed_child_replay_impl(act0_root, image_ptr, image_len, act0_private_prefix)?;
+        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
+        if count > 0 {
+            let bytes = (count as u64).checked_mul(24).ok_or(Errno::EINVAL)?;
+            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
+            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
+                return Err(Errno::EINVAL);
+            }
+            for i in 0..count {
+                let base = (i as u64) * 24;
+                let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
+                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
+                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
+                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
+                let priv_lo = unsafe { ch_read_u32(sides_ptr, (base + 16) as usize) };
+                let priv_hi = unsafe { ch_read_u32(sides_ptr, (base + 20) as usize) };
+                let root = ((root_hi as u64) << 32) | root_lo as u64;
+                let private_prefix = ((priv_hi as u64) << 32) | priv_lo as u64;
+                if id == 0 {
+                    // Activation 0 is seeded from the launch anchor + journal image
+                    // above; a side entry naming it is a host bug.
+                    return Err(Errno::EINVAL);
+                }
+                add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
+            }
+        }
+        Ok(())
+    }
+
     // -- Reference reconstruction impls (Phase 6 D6.1) ----------------------
 
     /// Decode the funcref/null reference graph for this fork from the KFMS
@@ -4192,6 +4254,40 @@ mod wasm {
         match child_seed_impl(
             module_state_root as u64,
             act0_root as u64,
+            sides_ptr as u64,
+            sides_count as u64,
+        ) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Sequence a whole BORROWED (vfork) CHILD SEED in the module (control-flow
+    /// inversion): decode the inherited `JournalImage` record from the KFMS arena
+    /// rooted at `module_state_root` and seed activation 0's borrowed replay from
+    /// it, then seed each side activation from the host-passed `sides` scratch
+    /// (`[sides_ptr, sides_ptr + sides_count*24)`, each a `(id, fixed_prefix,
+    /// root_lo, root_hi, private_lo, private_hi)` 24-byte record). Folds the host's
+    /// former `fm_begin_borrowed_child_replay` + per-activation
+    /// `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
+    /// into ONE module call — the borrowed sibling of `fm_child_seed`. `act0_root`
+    /// is activation 0's borrowed launch anchor; `act0_private_prefix` its
+    /// child-private prefix. A single-activation vfork passes `sides_count == 0`.
+    /// Check `fm_last_errno`; the fine-grained `fm_begin_borrowed_child_replay` /
+    /// `fm_add_activation_borrowed_child_replay` remain exported for the module
+    /// unit tests + host-native.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_seed_borrowed(
+        module_state_root: usize,
+        act0_root: usize,
+        act0_private_prefix: usize,
+        sides_ptr: usize,
+        sides_count: usize,
+    ) {
+        match child_seed_borrowed_impl(
+            module_state_root as u64,
+            act0_root as u64,
+            act0_private_prefix as u64,
             sides_ptr as u64,
             sides_count as u64,
         ) {

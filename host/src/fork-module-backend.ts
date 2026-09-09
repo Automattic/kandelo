@@ -1123,6 +1123,98 @@ export class ForkModuleContinuationBackend {
     }
   }
 
+  /**
+   * Borrowed (vfork) child SEED, coarsened (control-flow inversion). ONE module
+   * call decodes the inherited `JournalImage` record from the KFMS arena and
+   * seeds activation 0's BORROWED replay from it, then seeds each side activation
+   * from the passed list — replacing the host's former `beginBorrowedChildReplay`
+   * + per-activation `addActivationBorrowedChildReplay` loop. The borrowed
+   * sibling of `childSeed`: unlike the COW copy, a borrowed child shares the
+   * parked parent's LIVE memory read-only, so every activation additionally
+   * carries a child-PRIVATE prefix the module copies the parent's fixed runtime
+   * prefix into (so the guest's rewind writes its active-frame pointer there,
+   * never the parked parent's prefix). `act0PrivatePrefix` is activation 0's
+   * child-private prefix; each `sideActivations` entry carries its id, inherited
+   * borrowed continuation root, own module-buffer fixed prefix, and its own
+   * child-private prefix. A single-activation vfork passes an empty
+   * `sideActivations`.
+   */
+  childSeedBorrowed(
+    arenaRoot: number,
+    act0Root: number,
+    act0PrivatePrefix: number,
+    sideActivations: readonly {
+      id: number;
+      root: number;
+      fixedPrefix: number;
+      privatePrefix: number;
+    }[],
+  ): void {
+    this.requireSetup("borrowed child seed");
+    if (!Number.isSafeInteger(act0Root) || act0Root <= 0) {
+      throw new Error(`${this.label}: borrowed child seed act0 root ${act0Root} is invalid`);
+    }
+    if (!Number.isSafeInteger(act0PrivatePrefix) || act0PrivatePrefix <= 0) {
+      throw new Error(
+        `${this.label}: borrowed child seed act0 private prefix ${act0PrivatePrefix} is invalid`,
+      );
+    }
+    const count = sideActivations.length;
+    let scratch = 0;
+    let regionBytes = 0;
+    if (count > 0) {
+      regionBytes = alignUpPage(count * 24);
+      scratch = this.reserveRegion(regionBytes);
+    }
+    try {
+      if (count > 0) {
+        const view = new DataView(this.memory.buffer);
+        for (let i = 0; i < count; i++) {
+          const side = sideActivations[i]!;
+          if (!Number.isSafeInteger(side.root) || side.root <= 0) {
+            throw new Error(
+              `${this.label}: borrowed child seed side activation ${side.id} root `
+                + `${side.root} is invalid`,
+            );
+          }
+          if (!Number.isSafeInteger(side.privatePrefix) || side.privatePrefix <= 0) {
+            throw new Error(
+              `${this.label}: borrowed child seed side activation ${side.id} private `
+                + `prefix ${side.privatePrefix} is invalid`,
+            );
+          }
+          view.setUint32(scratch + i * 24, side.id >>> 0, true);
+          view.setUint32(scratch + i * 24 + 4, side.fixedPrefix >>> 0, true);
+          // Split the (possibly wasm64) root + private prefix into low/high words;
+          // the module recombines `(high << 32) | low`.
+          view.setUint32(scratch + i * 24 + 8, side.root >>> 0, true);
+          view.setUint32(
+            scratch + i * 24 + 12,
+            Math.floor(side.root / 0x1_0000_0000) >>> 0,
+            true,
+          );
+          view.setUint32(scratch + i * 24 + 16, side.privatePrefix >>> 0, true);
+          view.setUint32(
+            scratch + i * 24 + 20,
+            Math.floor(side.privatePrefix / 0x1_0000_0000) >>> 0,
+            true,
+          );
+        }
+      }
+      this.moduleBuffer = act0Root;
+      this.exports.fm_child_seed_borrowed(
+        this.wptr(arenaRoot),
+        this.wptr(act0Root),
+        this.wptr(act0PrivatePrefix),
+        this.wptr(scratch),
+        this.wptr(count),
+      );
+      this.requireOk("fm_child_seed_borrowed");
+    } finally {
+      if (count > 0) this.releaseRegion(scratch, regionBytes);
+    }
+  }
+
   beginChildReplay(root: number, imagePtr: number, imageLen: number): void {
     this.requireSetup("begin child replay");
     if (!Number.isSafeInteger(root) || root <= 0) {

@@ -3732,8 +3732,8 @@ export async function centralizedWorkerMain(
         }
         useForkModule = true;
         // Phase 6 item 4: a borrowed (vfork) child is admitted like any other —
-        // single-activation via `beginBorrowedChildReplay`, and multi-activation
-        // dlopen-vfork ("mode-1") via `addActivationBorrowedChildReplay`. The
+        // single-activation and multi-activation dlopen-vfork ("mode-1") are both
+        // seeded through the coarse `childSeedBorrowed` module entry. The
         // coordinator's `attachBorrowedModuleChild` handles both.
         if (useForkModule) {
           // Stage the backend's small pre-fork guest buffers into the dedicated
