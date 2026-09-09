@@ -39,9 +39,7 @@ path = "src/lib.rs"
 # Wasmtime 48 supports the exceptions proposal (see
 # `kernel_engine`'s `Config::wasm_exceptions` call in `src/lib.rs`), which is
 # the whole point of this bump: native `fork()` needs the fork-instrumented
-# guest to load in the first place. See
-# `.superpowers/sdd/2026-09-05-n1-i4-native-fork-frames/wasmtime-upgrade-report.md`
-# for the full reconciliation of the 35->48 API churn.
+# guest to load in the first place.
 wasmtime = "48"
 
 # The authoritative ABI: syscall numbers, channel offsets, and the pointer-arg

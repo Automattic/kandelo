@@ -541,3 +541,83 @@ Recommended follow-up:
 binding block in `spawn_guest_thread`, and `NativeReferenceCapture`);
 `crates/host-native/fixtures/` (a new exnref fixture); `crates/host-native/src/
 lib.rs` (a new test).
+
+## Fork control-flow inversion and rust-first migration
+
+Deferred follow-ups from the fork control-flow-inversion / rust-first campaign.
+The behaviors below are enforced today (fail-loud or documented boundary); these
+items reduce host surface, remove fixed caps, or close truthful-failure gaps.
+
+- **Retire the remaining test-only fine-grained `fm_*` fork-module exports.**
+  Two bounded, already-flagged reductions (~5 exports): (a) migrate the
+  `fm_drive_execute` store-#2 GC-integrity trap regression from the Node-only
+  `host/test/fork-module-drive-shim.test.ts` (driven by `fm_build_trivial_plan` /
+  `fm_trivial_plan_count`) into a host-native wasmtime instantiation test built on
+  `fork_codec::drive_plan::{trivial_struct_plan, serialize_plan}`, then delete both
+  exports; (b) retire the three V8 build-time `.mjs` harnesses and move their
+  fixed-arena unwind/serialize coverage into Rust wasmtime tests, then delete
+  `fm_begin_unwind_fixed_arena`, `fm_add_activation_unwind_fixed_arena`, and
+  `fm_serialize_journal_fixed_arena`. **Files:** `crates/fork-module/src/lib.rs`,
+  `crates/host-native`, `host/test/fork-module-drive-shim.test.ts`, the
+  fork-module `.mjs` harnesses.
+
+- **Migrate host-native's fork engine onto the coarse drive-table entries
+  (major).** `crates/host-native` is a second, complete fork engine that drives
+  the guest through the fine-grained reference-decode import plane, interleaved
+  wasmtime-native reference materialization, and direct guest phase calls, so it
+  cannot adopt the coarse `fm_parent_*` / `fm_child_*` entries without a ground-up
+  rewrite; roughly 29 native seed/phase exports stay on the fine-grained surface
+  until then (and about 10 reference-decode import exports are irreducible on
+  native regardless). **Files:** `crates/host-native/src/guest.rs`.
+
+- **Fold the capture-begin and child-seed fork phases into coarse module
+  entries.** `fm_begin_unwind` / `fm_add_activation_unwind` (capture-begin) and
+  `fm_begin_child_replay` / `fm_add_activation_child_replay` (+ borrowed variants,
+  child-seed) still run as host-called seed ops because they exchange KFMS
+  arena-root, journal-image, and continuation-manifest metadata bidirectionally
+  with the host. Folding them requires moving KFMS arena-root ownership and
+  journal/manifest decode into the Rust module; the child-seed fold is on the
+  browser-gated reentrant child-drive path and must be validated on browser, not
+  Node alone. **Files:** `crates/fork-module/src/lib.rs`, `crates/fork-codec`,
+  `host/src/fork-process-continuation.ts`.
+
+- **Make the fork resume-catalog cap dynamic.** The per-activation resume catalog
+  is a fixed 65536-entry fork-module BSS array (`RESUME_CATALOG_CAP` /
+  `ACTIVATION_CATALOG_ORD_CAP`), sized to survive the per-fork bump-heap reset; a
+  guest with more fork-instrumented functions fails loud (`E2BIG`) rather than
+  growing. A module-owned catalog backed by a host-provided persistent
+  (non-bump-reset) region would remove the cap if a future guest approaches it.
+  **Files:** `crates/fork-module/src/lib.rs`, `host/src/fork-module-backend.ts`,
+  `crates/host-native/src/guest.rs`.
+
+- **Bound or reclaim the native externref/GC provenance registry.** Wasmtime 48
+  has no weak GC-ref primitive, so the native reference-provenance registry uses a
+  4096-entry cap with a loud diagnostic instead of the TypeScript hosts' WeakMap;
+  revisit if wasmtime gains weak references or a guest exceeds the cap.
+  **Files:** `crates/host-native/src/guest.rs`.
+
+- **Preempt the pre-exec thread and memory leaked by native `execve`.** A
+  successful native (wasmtime) `execve` cannot preempt the old guest's parked OS
+  thread — no engine epoch-interruption or fuel is configured — so each call
+  permanently leaks one OS thread plus its backing `SharedMemory`; a guest that
+  `execve`s in a loop leaks unboundedly. A multi-threaded `execve` also does not
+  reconcile the old process's worker/pthread channels against the kernel's
+  `clear_threads`. Both need engine-wide epoch interruption. **Files:**
+  `crates/host-native/src/guest.rs`.
+
+- **Close the fork/exec-from-thread and concurrent-fork residuals (post-ship
+  truthful-failure boundaries).** (a) Instrumented fork-from-thread parent replay
+  traps in `RewindDriver::resume_peek` / `ResumeSlotTable::slot_for` for a
+  `wpk_fork_resume_thread`-reached (non-`_start`) resume chain the host resume
+  table does not cover — cross-crate and high blast radius. (b) `execve` from a
+  non-main thread and compute-bound sibling-thread teardown on multi-threaded
+  `execve` need engine-wide epoch interruption. (c) Concurrent `fork()` from two
+  threads of one process contends on the shared fork-module region. (d) Nested
+  `pthread_create` / `kernel_clone` from a worker thread hits the same
+  unwired-import shape as (a). **Files:** `crates/fork-codec`,
+  `crates/host-native/src/guest.rs`, `host/src/worker-main.ts`.
+
+- **Support references held across a borrowed vfork child and mid-borrow
+  teardown.** References held across a borrowed vfork child are out of scope
+  today, and there is no nuclear-teardown path if a process crashes mid-borrow.
+  **Files:** `crates/host-native/src/guest.rs`.
