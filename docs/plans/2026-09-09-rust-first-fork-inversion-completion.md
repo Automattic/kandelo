@@ -166,6 +166,52 @@ NOT keep a production API surface to satisfy harnesses.
   the pre-fold baseline. Decide during endgame: real fix vs. documented tracked
   issue. Must NOT be silently shipped as green.
 
+## #2 host-native — PARTIAL (green + pushed), blocked by usage limit
+
+Commits (pushed to PR branch, all green — host-native `--lib` 45 pass / 0 fail):
+`67b588270` coarse TypedFunc handles + drive-table phase-flip bind; `83e5cbfd9`
+native PARENT path → coarse; `cfebb27ee` native CHILD path (COW + vfork) → coarse.
+Parent capture/seal/replay-rewind/finish and child seed/reconstruct/finish now
+drive the coarse entries. `smoke_fork_externref_reconstructs`, GC array/struct/
+cycle, and `smoke_loads_fork_instrumented_guest` pass — externref + GC
+reconstruction work natively through the coarse path.
+
+**Remaining #2 (REDUCIBLE, not an architectural floor — do NOT mislabel):**
+1. **Reference/GC-reconstruction model divergence.** `fm_parent_replay`
+   deliberately does NOT fold reference reconstruction; it is a separate phase in
+   BOTH hosts, driven two different ways: TS uses a **guest-pull** model (the guest
+   calls `decodeFuncref`/`decodeExternref`/`routeGc`/`loadGc` import shims during
+   rewind — `host/src/fork-activation-registry.ts:397+`), native uses an
+   **explicit host-drive** (`guest.rs` `drive_reference_replay` = `fm_begin_reference_replay`
+   + `fm_build_gc_plan` + `fm_drive_execute`). The shared reconstruction API
+   (~15 exports: `fm_begin_reference_replay`, `fm_build_gc_plan`, `fm_drive_execute`,
+   `fm_gc_plan_count`, `fm_ref_*`, `fm_funcref_ordinal`, `fm_externref_handle`,
+   `fm_static_root_slot`, `fm_decoded_*`) is used by BOTH. Reaching the single-digit
+   floor needs native unified onto the shared model (or both hosts onto ONE coarse
+   "reconstruct references" entry). This is a substantive native rearchitecture,
+   NOT a mechanical fold — deferred here ONLY because the usage limit blocks the
+   subagent-driven work it needs, not because it is irreducible.
+2. **Abort path.** `fm_parent_abort`/`fm_parent_abort_seal` handles are bound but
+   no confirmed call site in `guest.rs`; native's gated-abort/parent-abort-replay
+   path (`guest.rs` ~3554-3611) needs verification and wiring to the coarse entries.
+3. **exnref (exception-ref) CAPTURE — the maintainer's pre-authorized deferral.**
+   Reconstruct side is wired; wasmtime-48 parse + throw/catch work. The agent's open
+   question ("can native CAPTURE a live exnref at all") is unverified. Verify
+   empirically when unblocked; if it genuinely fails, native fails loud +
+   `docs/future-improvements.md` entry with the reproduced error.
+
+**Single-digit `fm_*` floor is NOT reached.** It is blocked on the above (#2
+residual), the `.mjs`→Rust migration (#4), and only then deletion (#3).
+
+## BLOCKER: account weekly usage limit
+
+Hit mid-#2; resets **Sep 11, 9pm America/Indianapolis**. Fresh subagent dispatch
+fails on the limit; the subagent-driven completion of #2's residual + #3/#4/#5 is
+blocked until reset. Everything green is committed and pushed forward to the PR
+branch; nothing is lost. Main-loop tool calls (build/test/git) still work, but the
+remaining work is delicate native replay-seam surgery that should be done
+subagent-driven with full validation, not hand-hacked under the limit.
+
 ## Standing rulings
 
 - Work in `/Users/brandon/kandelo-abi44-reconcile` on the PR branch. Commit per
