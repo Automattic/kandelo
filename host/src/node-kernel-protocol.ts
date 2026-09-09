@@ -358,11 +358,10 @@ export interface DrainSyscallTraceMessage {
 /**
  * Start recording the machine's decision log.
  *
- * Only the guest clock is recorded today, because it is the only pulled
- * decision routed through the log. A machine that also reads randomness or
- * external bytes produces a log that is complete for its clock and silent
- * about the rest, so a replay of such a machine will diverge rather than
- * mislead. See `host/src/replication/log.ts`.
+ * The log carries every host-produced value a replay needs: clock readings
+ * and random draws per task, GL query answers, accept selections, injected
+ * HTTP exchanges, and the pushed input decisions. See
+ * `host/src/replication/log.ts`.
  */
 export interface ReplicationRecordStartMessage {
   type: "replication_record_start";

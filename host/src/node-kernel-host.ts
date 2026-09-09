@@ -882,9 +882,9 @@ export class NodeKernelHost {
    * checkpoint and replays this log runs the same machine, and renders it
    * itself rather than being sent pixels.
    *
-   * Only the guest clock is recorded today. Randomness and external bytes are
-   * not routed through the log yet, so a machine that reads either produces a
-   * log that is complete for its clock and silent about the rest.
+   * The log carries every host-produced value a replay needs: clock
+   * readings and random draws per task, GL query answers, accept
+   * selections, injected HTTP exchanges, and the pushed input decisions.
    */
   async startReplicationRecording(): Promise<void> {
     const requestId = this._nextRequestId++;
