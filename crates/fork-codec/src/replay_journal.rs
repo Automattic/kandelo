@@ -744,6 +744,30 @@ mod tests {
         assert_eq!(journal.finish_replay(), Err(Errno::EINVAL));
     }
 
+    /// The stray-finish pairing invariant the removed V8 `.mjs` harnesses drove
+    /// through `fm_finish_abort`, restored as a focused unit test at the
+    /// `replay_journal` primitive it reduces to. A finish with no matching begin
+    /// is a stray, unpaired finish and must be loud (EINVAL), never a silent
+    /// no-op. This is the portable pairing the co-resident fork-module's
+    /// `finish_abort_impl` `in_abort` guard sits atop: an `fm_finish_abort` with
+    /// no preceding `fm_begin_abort` is rejected the same way.
+    #[test]
+    fn stray_finish_replay_without_matching_begin_errs() {
+        let mut journal = ReplayEventJournal::new();
+        // Never began replay: a stray finish is rejected, not silently accepted.
+        assert_eq!(journal.finish_replay(), Err(Errno::EINVAL));
+
+        // A correctly-paired begin/replay/finish cycle succeeds...
+        journal.attach_child(&[ev(1, 10)]).unwrap();
+        journal.require_selected_event(1).unwrap();
+        journal.consume(1, 10).unwrap();
+        journal.finish_replay().unwrap();
+
+        // ...but a SECOND finish (now back at Idle, no matching begin) is again a
+        // stray, unpaired finish and is rejected.
+        assert_eq!(journal.finish_replay(), Err(Errno::EINVAL));
+    }
+
     #[test]
     fn abort_returns_to_idle_and_allows_recapture() {
         let mut journal = ReplayEventJournal::new();

@@ -783,6 +783,39 @@ mod tests {
         assert_eq!(driver.drive_peek(&mem, &mut journal, ACT + 1, 24), Err(Errno::EINVAL));
     }
 
+    /// Multi-activation anti-aliasing: the wrong-activation peek gate the removed
+    /// V8 `.mjs` harnesses drove through `fm_frame_peek`, restored as a focused
+    /// unit test at the `rewind_driver` primitive it reduces to. Even an
+    /// activation that is itself present in the replay stream cannot peek/operate
+    /// on the frame the journal currently selects for a *different* activation;
+    /// only the id the current event names may proceed, every other is EINVAL.
+    #[test]
+    fn drive_peek_rejects_a_different_registered_activation() {
+        const ACT_A: u32 = 4;
+        const ACT_B: u32 = 9;
+        const FUNC_A: u32 = 77;
+
+        // A driver over ACT_A's single committed frame.
+        let specs = [FrameSpec { func: FUNC_A, call: 1, fill: 0x77, scalar: 8 }];
+        let (mem, module_buffer, _addrs, _journal_a, _table) = build_closed_loop(ACT_A, &specs);
+        let driver = RewindDriver::attach(&mem, module_buffer, &wasm32_format()).unwrap();
+
+        // A journal whose events name TWO activations. Replay is tail-first, so
+        // the first selected event is the last-committed one — ACT_A's frame.
+        let mut journal = ReplayEventJournal::new();
+        journal.begin_capture().unwrap();
+        journal.record_commit(ACT_B, 123).unwrap(); // innermost (committed first)
+        journal.record_commit(ACT_A, FUNC_A).unwrap(); // outermost (committed last)
+        journal.seal_capture().unwrap();
+        journal.begin_parent_replay().unwrap();
+
+        // ACT_B — a real activation in this fork — must not alias ACT_A's frame.
+        assert_eq!(driver.drive_peek(&mem, &mut journal, ACT_B, 24), Err(Errno::EINVAL));
+        // The owning activation peeks its own frame fine.
+        let payload = driver.drive_peek(&mem, &mut journal, ACT_A, 24).unwrap();
+        assert_eq!(RewindDriver::read_function_ordinal(&mem, payload).unwrap(), FUNC_A);
+    }
+
     #[test]
     fn attach_rejects_misaligned_module_buffer() {
         let mem = fixture_memory();
