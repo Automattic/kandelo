@@ -54,9 +54,21 @@ pub const KERNEL_MEMORY_MIN_PAGES: u32 = 18;
 pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 
 /// Number of `env.host_*` function imports the kernel expects the host to
-/// provide (the `HostCapabilities` surface). The native host stubs them as
-/// traps for now; the full implementation lands in later phases. This count is
-/// asserted by the smoke test so an ABI/import-surface change surfaces here.
+/// provide (the `HostCapabilities` surface). Imports this host does not
+/// implement are stubbed as traps, so calling one is a loud, truthful
+/// boundary rather than a silent wrong answer. This count is asserted by the
+/// smoke test so an ABI/import-surface change surfaces here.
+///
+/// **The count is of DECLARED imports, not implemented ones.** Implementing an
+/// import moves it from the trapped bucket to the implemented bucket without
+/// moving this number, so the coverage change has to be recorded in prose.
+/// The native host implements 21 of the 84 as of the cross-memory work below;
+/// it was 19 before `host_proc_read_bytes` / `host_proc_write_bytes` were
+/// implemented in `guest.rs` (`define_kernel_host_imports`). Those two are the
+/// kernel's general mechanism for reading and writing a guest process's linear
+/// memory; trapping them meant the native host could not run any kernel path
+/// that reaches for process memory, which by now includes DRI/KMS and
+/// everything the Rust-first campaign moves onto the same primitive.
 ///
 /// The 2026-08-25 feasibility spike measured 83 on the ABI-43 kernel; the
 /// ABI-44 opaque-transport flip dropped one (→82), and the Phase-5 in-kernel
