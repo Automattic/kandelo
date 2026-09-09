@@ -7,7 +7,6 @@ import {
 } from "./fork-activation-registry";
 import {
   ContinuationAllocationError,
-  invokeForkContinuationBegin,
   type LinkedFrameFormatDescriptor,
 } from "./fork-continuation";
 import {
@@ -15,7 +14,6 @@ import {
   type ForkModuleStateArena,
   ForkModuleStateRecordKind,
   journalImageForChild,
-  writeForkModuleStateRoot,
 } from "./fork-module-state";
 import type { ForkModuleContinuationBackend } from "./fork-module-backend";
 import {
@@ -606,37 +604,51 @@ export class ForkProcessContinuationCoordinator {
       this.publishProcessLaunchRoot(0);
       this.registry.beginCapture(arena);
       this.phase = "capture";
-      // Phase 6 D7a.1a: a dlopen fork has N activations. Activation 0 opens the
-      // module capture (`beginUnwind`); each side activation is added to the SAME
-      // capture with its own prefix (`addActivationUnwind`). Every activation's
-      // root is written into ITS module-state prefix and its guest instance is
-      // put into UNWINDING, exactly mirroring the JS path. Each activation's
-      // linked frame chunks are channel-mmap'd on demand by the module (Option
-      // B: dynamic, kernel-tracked `find_gap` placement), so a deep continuation
-      // grows without a fork-depth cap and a genuine exhaustion is a truthful
-      // `-ENOMEM`.
-      for (const activation of this.orderedActivations()) {
+      // Control-flow inversion: bind each activation's guest `wpk_fork_unwind_begin`
+      // into the drive table, then open the WHOLE capture in ONE module call
+      // (`parentBeginCapture`). It opens activation 0's fresh capture, adds each
+      // side activation (a dlopen fork's side module) from the seeded
+      // `(id, fixedPrefix)` list, publishes each activation's arena root into ITS
+      // module-state prefix internally, and `call_indirect`s each guest
+      // `wpk_fork_unwind_begin(root)` (`NORMAL` -> `UNWINDING`) through the injected
+      // shim in ascending id order — replacing the former host per-activation
+      // `beginUnwind`/`addActivationUnwind` + `writeForkModuleStateRoot` +
+      // `wpk_fork_unwind_begin` loop. Each activation's linked frame chunks are
+      // channel-mmap'd on demand by the module (Option B: dynamic, kernel-tracked
+      // `find_gap` placement), so a deep continuation grows without a fork-depth cap
+      // and a genuine exhaustion is a truthful `-ENOMEM`.
+      const activations = this.orderedActivations();
+      for (const activation of activations) {
+        backend.bindActivationUnwindBeginDrive(
+          activation.activationId,
+          requireExportFunction(activation, "wpk_fork_unwind_begin"),
+        );
+      }
+      const sideActivations = activations
+        .filter((activation) => activation.activationId !== 0)
+        .map((activation) => ({
+          id: activation.activationId,
+          fixedPrefix: activation.continuation.format.fixedPrefixSize,
+        }));
+      const act0Root = backend.parentBeginCapture(arena.rootAddress(), sideActivations);
+      // Record each activation's root for the seal-time activation-continuation
+      // manifest (`sealModuleCapture`). Activation 0's root is the coarse entry's
+      // return; each side activation's is read back from the module
+      // (`parentBeginCapture` returns only activation 0's). The arena-root prefix
+      // write now happens inside the module, so the host no longer calls
+      // `writeForkModuleStateRoot` here.
+      for (const activation of activations) {
         const root =
           activation.activationId === 0
-            ? backend.beginUnwind()
-            : backend.addActivationUnwind(
-                activation.activationId,
-                activation.continuation.format.fixedPrefixSize,
-              );
+            ? act0Root
+            : backend.activationModuleBuffer(activation.activationId);
         activation.root = root;
         activation.replayRoot = root;
-        writeForkModuleStateRoot(
-          this.memory,
-          root,
-          activation.continuation.format.ptrWidth,
-          arena.rootAddress(),
-        );
-        invokeForkContinuationBegin(
-          requireExportFunction(activation, "wpk_fork_unwind_begin"),
-          root,
-          activation.continuation.format.ptrWidth,
-          `${this.label}: activation ${activation.activationId} unwind (module)`,
-        );
+      }
+      // Post-drive sweep: the coarse begin left every activation in UNWINDING;
+      // assert it exactly as the host per-activation loop did (moved after the
+      // coarse drive, mirroring `beginModuleParentReplay` / `sealModuleCapture`).
+      for (const activation of activations) {
         this.requireActivationState(activation, WPK_FORK_UNWINDING, "unwind");
       }
     } catch (error) {

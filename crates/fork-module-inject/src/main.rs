@@ -146,10 +146,13 @@ const DRIVE_OP_REWIND_BEGIN: i32 = 7;
 /// share the `>= DRIVE_OP_RESTORE` "install/control" class (excluded from the
 /// reconstruction counter), so the `>= DRIVE_OP_UNWIND_END` void check runs
 /// BEFORE the `>= DRIVE_OP_REWIND_BEGIN` pointer-drive branch (their op values,
-/// 9/10/11, are all also `>= DRIVE_OP_REWIND_BEGIN`). MUST match
-/// `fork_codec::drive_plan::DRIVE_OP_UNWIND_END` (and its REWIND_END/ABORT_END
-/// successors, which take the SAME void branch).
-const DRIVE_OP_UNWIND_END: i32 = 9;
+/// 10/11/12, are all also `>= DRIVE_OP_REWIND_BEGIN`). The capture-BEGIN op
+/// `DRIVE_OP_UNWIND_BEGIN` (9) is a POINTER-argument drive that sits in the
+/// `[DRIVE_OP_REWIND_BEGIN, DRIVE_OP_UNWIND_END)` band, so it takes the
+/// pointer-drive branch (not this void one) with no dedicated injector constant.
+/// MUST match `fork_codec::drive_plan::DRIVE_OP_UNWIND_END` (and its
+/// REWIND_END/ABORT_END successors, which take the SAME void branch).
+const DRIVE_OP_UNWIND_END: i32 = 10;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
 /// ordinal (or the null sentinel). Exported by `crates/fork-module/src/lib.rs`.
@@ -690,8 +693,9 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
                             //     REWIND_END replay-finish, ABORT_END abort-finish):
                             //     the guest export takes NO argument,
                             //     `call_indirect ()->()`. Checked FIRST because these
-                            //     op values (9/10/11) are also `>= DRIVE_OP_REWIND_BEGIN`.
-                            //   op >= DRIVE_OP_REWIND_BEGIN (REWIND_BEGIN/ABORT_BEGIN):
+                            //     op values (10/11/12) are also `>= DRIVE_OP_REWIND_BEGIN`.
+                            //   op >= DRIVE_OP_REWIND_BEGIN (REWIND_BEGIN/ABORT_BEGIN/
+                            //     UNWIND_BEGIN — the capture-begin drive, op 9):
                             //     the guest export takes the continuation ROOT pointer,
                             //     `call_indirect (ptr)->()`; the root is reconstructed
                             //     from recipe (high 32) / arg (low 32).

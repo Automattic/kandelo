@@ -59,6 +59,20 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // `SYS_mmap` -> the kernel `find_gap` allocator (kernel-tracked placement, no
   // fork-depth cap, no carved-out guest region).
   "fm_begin_unwind",
+  // Control-flow inversion: the coarse capture-BEGIN entry. Opens activation 0's
+  // fresh capture, adds each side activation from the seeded (id, fixedPrefix)
+  // list, publishes each activation's arena root into its module-buffer prefix,
+  // then drives each guest `wpk_fork_unwind_begin` through the injected
+  // `fm_drive_execute` shim in ONE module call — replacing the host's
+  // per-activation `fm_begin_unwind` / `fm_add_activation_unwind` +
+  // `writeForkModuleStateRoot` + `wpk_fork_unwind_begin` loop. `fm_begin_unwind` /
+  // `fm_add_activation_unwind` remain exported for the fine-grained module unit
+  // tests + host-native.
+  "fm_parent_begin_capture",
+  // The coarse begin-capture entry returns only activation 0's module-buffer
+  // anchor; the host reads each SIDE activation's anchor back with this getter to
+  // build the activation-continuation manifest.
+  "fm_activation_module_buffer",
   // The bounded fixed-arena siblings of the channel unwind/serialize exports are
   // NO LONGER driven by the host (Fix X was retired in favor of Option B's
   // growing channel allocator). They remain in the module's export surface —

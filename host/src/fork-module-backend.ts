@@ -130,13 +130,16 @@ export interface ForkModuleBackendOptions {
  * DRIVE_SLOT_UNWIND_END and the DRIVE_SLOTS_PER_ACTIVATION stride the module's
  * `fm_drive_table_base` reserves). ALLOC/FILL/EXN/RESTORE/FINISH_RESTORE occupy
  * slots 0..=4; the per-activation REPLAY/ABORT begin drive occupies 5/6; the
- * capture-SEAL `wpk_fork_unwind_end` drive occupies 7.
+ * capture-SEAL `wpk_fork_unwind_end` drive occupies 7; the REPLAY/ABORT finish
+ * drives occupy 8/9; the capture-BEGIN `wpk_fork_unwind_begin` drive occupies 10
+ * (appended so the earlier assignments are unchanged).
  */
 const DRIVE_SLOT_REWIND_BEGIN = 5;
 const DRIVE_SLOT_ABORT_BEGIN = 6;
 const DRIVE_SLOT_UNWIND_END = 7;
 const DRIVE_SLOT_REWIND_END = 8;
 const DRIVE_SLOT_ABORT_END = 9;
+const DRIVE_SLOT_UNWIND_BEGIN = 10;
 
 export class ForkModuleContinuationBackend {
   private readonly exports: ForkModuleExports;
@@ -620,6 +623,89 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Capture BEGIN, coarsened (control-flow inversion). ONE module call sequences
+   * the whole capture-begin phase internally: open activation 0's fresh capture,
+   * add each side activation (a dlopen fork's side module) from the seeded
+   * `(id, fixedPrefix)` list, publish each activation's arena root into its
+   * module-buffer prefix, then drive each activation's guest
+   * `wpk_fork_unwind_begin(root)` through the injected `fm_drive_execute` shim in
+   * ascending id order (`NORMAL` -> `UNWINDING`). Replaces the host's former
+   * per-activation `beginUnwind` / `addActivationUnwind` + `writeForkModuleStateRoot`
+   * + `wpk_fork_unwind_begin` loop. Each participating activation's
+   * `bindActivationUnwindBeginDrive` must have run first (the ref-typed table bind
+   * is a host floor). Returns activation 0's module-buffer anchor; side anchors are
+   * read back with `activationModuleBuffer`. A guest reconstruction failure traps
+   * inside the shim exactly as it did under the host loop.
+   */
+  parentBeginCapture(
+    arenaRoot: number,
+    sideActivations: readonly { id: number; fixedPrefix: number }[],
+  ): number {
+    this.requireSetup("parent begin capture");
+    if (this.unwindActive) {
+      throw new Error(`${this.label}: fork-module unwind already active`);
+    }
+    const count = sideActivations.length;
+    let scratch = 0;
+    let regionBytes = 0;
+    if (count > 0) {
+      regionBytes = alignUpPage(count * 8);
+      scratch = this.reserveRegion(regionBytes);
+    }
+    try {
+      if (count > 0) {
+        const view = new DataView(this.memory.buffer);
+        for (let i = 0; i < count; i++) {
+          const side = sideActivations[i]!;
+          view.setUint32(scratch + i * 8, side.id >>> 0, true);
+          view.setUint32(scratch + i * 8 + 4, side.fixedPrefix >>> 0, true);
+        }
+      }
+      const root0 = this.toNum(
+        this.exports.fm_parent_begin_capture(
+          this.wptr(this.channelBase),
+          this.wptr(arenaRoot),
+          this.wptr(scratch),
+          this.wptr(count),
+        ),
+      );
+      this.requireOk("fm_parent_begin_capture");
+      if (!Number.isSafeInteger(root0) || root0 <= 0) {
+        throw new Error(`${this.label}: fm_parent_begin_capture returned invalid anchor`);
+      }
+      this.unwindActive = true;
+      this.moduleBuffer = root0;
+      return root0;
+    } finally {
+      if (count > 0) this.releaseRegion(scratch, regionBytes);
+    }
+  }
+
+  /**
+   * Read one activation's module-buffer anchor (its continuation root) from the
+   * module's current fork state. `parentBeginCapture` returns only activation 0's
+   * anchor; the host reads each SIDE activation's back with this to build the
+   * activation-continuation manifest. Fails loudly if no fork is open or the
+   * activation is not registered.
+   */
+  activationModuleBuffer(activationId: number): number {
+    this.requireSetup("activation module buffer");
+    const root = this.toNum(
+      (this.exports.fm_activation_module_buffer as (id: number) => number | bigint)(
+        activationId,
+      ),
+    );
+    this.requireOk("fm_activation_module_buffer");
+    if (!Number.isSafeInteger(root) || root <= 0) {
+      throw new Error(
+        `${this.label}: fm_activation_module_buffer returned invalid anchor for `
+          + `activation ${activationId}`,
+      );
+    }
+    return root;
+  }
+
+  /**
    * Parent: begin the module unwind. The module channel-mmaps its linked frame
    * chunks on demand via `SYS_mmap` → the kernel `find_gap` allocator (Option B:
    * dynamic, kernel-tracked placement — no fork-depth cap and no carved-out guest
@@ -767,6 +853,29 @@ export class ForkModuleContinuationBackend {
       this.driveTable.grow(needed - this.driveTable.length);
     }
     this.driveTable.set(slotBase + DRIVE_SLOT_UNWIND_END, unwindEnd);
+  }
+
+  /**
+   * Bind ONE activation's guest `wpk_fork_unwind_begin` into the module's imported
+   * drive table at `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_BEGIN`, so
+   * the coarse `parentBeginCapture` drive can `call_indirect` the `(ptr) -> ()`
+   * capture-begin flip (the guest export takes its continuation root). Like
+   * `bindActivationBeginDrive` / `bindActivationSealDrive` the ref-typed
+   * `Table.set`/`Table.grow` is a host floor (Rust cannot hold a funcref).
+   * Idempotent. Call once per activation before `parentBeginCapture`.
+   */
+  bindActivationUnwindBeginDrive(activationId: number, unwindBegin: Function): void {
+    this.requireSetup("bind activation unwind-begin drive");
+    const slotBase = this.toNum(
+      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
+        activationId,
+      ),
+    );
+    const needed = slotBase + DRIVE_SLOT_UNWIND_BEGIN + 1;
+    if (this.driveTable.length < needed) {
+      this.driveTable.grow(needed - this.driveTable.length);
+    }
+    this.driveTable.set(slotBase + DRIVE_SLOT_UNWIND_BEGIN, unwindBegin);
   }
 
   /**

@@ -2219,6 +2219,127 @@ mod wasm {
         register_unwind_activation(st, activation_id, fmt, arena)
     }
 
+    /// Publish the sealed KFMS arena root into an activation's module-buffer
+    /// prefix word (`WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET`) — the
+    /// module-side of the host `writeForkModuleStateRoot`. Word 0 of the prefix is
+    /// the activation-frame cursor (owned by the frame writer); this writes the
+    /// arena root into word 1 so a COW child copy finds the inherited arena from
+    /// its module buffer. `module_buffer` is the activation's continuation anchor;
+    /// `arena_root` the sealed KFMS arena root (page-aligned, host-checked before
+    /// the call). Writes `pointer_width` little-endian bytes.
+    fn write_module_state_root(module_buffer: u64, arena_root: u64) -> Result<(), Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw != 4 && pw != 8 {
+            return Err(Errno::EINVAL);
+        }
+        let off = module_buffer
+            .checked_add(abi::WPK_FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET as u64 * pw as u64)
+            .ok_or(Errno::EINVAL)?;
+        let end = off.checked_add(pw as u64).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() as u64 {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: `[off, off + pw)` is within guest linear memory (checked above);
+        // the same guest-offset-as-pointer idiom the frame paths use.
+        unsafe {
+            let ptr = core::hint::black_box(off as usize) as *mut u8;
+            if pw == 4 {
+                core::ptr::copy_nonoverlapping(
+                    (arena_root as u32).to_le_bytes().as_ptr(),
+                    ptr,
+                    4,
+                );
+            } else {
+                core::ptr::copy_nonoverlapping(arena_root.to_le_bytes().as_ptr(), ptr, 8);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
+    /// the fork's activations, publish each activation's arena root into its
+    /// module-buffer prefix, then drive each activation's guest
+    /// `wpk_fork_unwind_begin(root)` through the injector-wired `fm_drive_execute`
+    /// shim in ascending id order. Folds the host's former per-activation
+    /// `fm_begin_unwind` / `fm_add_activation_unwind` + `writeForkModuleStateRoot`
+    /// + `wpk_fork_unwind_begin` loop into ONE module call.
+    ///
+    /// Activation 0 opens the FRESH capture (`begin_unwind_impl`, which reclaims
+    /// the previous fork's state). Each side activation (a dlopen fork's side
+    /// module) is read as an `(id: u32, fixed_prefix: u32)` pair from the
+    /// host-seeded `sides` scratch (`[sides_ptr, sides_ptr + sides_count*8)`) and
+    /// added to the SAME capture (`add_activation_unwind_impl`). A single-activation
+    /// fork passes `sides_count == 0`. Returns activation 0's module-buffer anchor
+    /// (0 on failure; check `fm_last_errno`) — the host publishes it as the process
+    /// launch root and records `forkBufAddr`. The host reads each side activation's
+    /// anchor back via `fm_activation_module_buffer` for the activation-continuation
+    /// manifest. A guest reconstruction failure traps inside the shim exactly as it
+    /// did under the host loop; a create/plan-build failure is a truthful errno.
+    fn begin_capture_impl(
+        channel_base: u64,
+        arena_root: u64,
+        sides_ptr: u64,
+        sides_count: u64,
+    ) -> Result<u64, Errno> {
+        // Activation 0: open the fresh capture (reclaims prior fork state) and
+        // publish its arena root.
+        let root0 = begin_unwind_impl(0, channel_base)?;
+        write_module_state_root(root0, arena_root)?;
+
+        // Side activations (a dlopen fork): read each (id, fixed_prefix) pair from
+        // the host-seeded scratch, add it to the SAME capture, publish its root.
+        let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
+        if count > 0 {
+            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
+            let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
+            if sides_ptr == 0 || end > mem_len_bytes() as u64 {
+                return Err(Errno::EINVAL);
+            }
+            for i in 0..count {
+                let off = (i as u64) * 8;
+                let id = unsafe { ch_read_u32(sides_ptr, off as usize) };
+                let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (off + 4) as usize) };
+                if id == 0 {
+                    // Activation 0 is opened above; a side entry naming it is a
+                    // host bug, not a silent double-open.
+                    return Err(Errno::EINVAL);
+                }
+                let root = add_activation_unwind_impl(id, channel_base, fixed_prefix)?;
+                write_module_state_root(root, arena_root)?;
+            }
+        }
+
+        // Drive each activation's guest `wpk_fork_unwind_begin(root)` in ascending
+        // id order (a `BTreeMap` iterates sorted keys) through the injected shim —
+        // ONE control-flow-inverted drive replacing the host per-activation loop.
+        let roots: Vec<(u32, u64)> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations
+                .iter()
+                .map(|(id, act)| (*id, act.module_buffer))
+                .collect()
+        };
+        let mut steps = Vec::new();
+        drive_plan::append_unwind_begin_steps(&mut steps, &roots);
+        let plan = serialize_and_store_plan(&steps)?;
+        let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
+        if count > 0 {
+            drive_plan_via_injector(plan, count);
+        }
+        Ok(root0)
+    }
+
+    /// Read one activation's module-buffer anchor (its continuation root) from the
+    /// current fork's state. The host reads a side activation's anchor back after
+    /// `fm_parent_begin_capture` (which returns only activation 0's) for the
+    /// activation-continuation manifest. `EINVAL` if no fork is open or the
+    /// activation is not registered.
+    fn activation_module_buffer_impl(activation_id: u32) -> Result<u64, Errno> {
+        let st = state().as_ref().ok_or(Errno::EINVAL)?;
+        let act = st.activations.get(&activation_id).ok_or(Errno::EINVAL)?;
+        Ok(act.module_buffer)
+    }
+
     fn reserve_impl(activation_id: u32, size: u64) -> Result<u64, Errno> {
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         let act = st.activations.get_mut(&activation_id).ok_or(Errno::EINVAL)?;
@@ -4535,6 +4656,68 @@ mod wasm {
             Ok(ptr) => {
                 set_ok();
                 ptr as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
+    /// activation 0 (`begin_unwind_impl`, reclaiming the previous fork), add each
+    /// side activation read as an `(id: u32, fixed_prefix: u32)` pair from the
+    /// host-seeded scratch `[sides_ptr, sides_ptr + sides_count*8)`
+    /// (`add_activation_unwind_impl`), publish each activation's `arena_root` into
+    /// its module-buffer prefix (the module-side `writeForkModuleStateRoot`), then
+    /// DRIVE each activation's guest `wpk_fork_unwind_begin(root)` through the
+    /// injector-wired `fm_drive_execute` shim in ascending id order.
+    ///
+    /// This replaces the host's former per-activation `fm_begin_unwind` /
+    /// `fm_add_activation_unwind` + `writeForkModuleStateRoot` +
+    /// `wpk_fork_unwind_begin` loop with ONE module call. The host must have bound
+    /// each activation's `wpk_fork_unwind_begin` into `__wpk_fork_drive_table` at
+    /// `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_BEGIN` before calling
+    /// this (the ref-typed table bind is a host floor). Returns activation 0's
+    /// module-buffer anchor (0 on failure; check `fm_last_errno`); side anchors are
+    /// read back via `fm_activation_module_buffer`. A guest reconstruction failure
+    /// traps inside the shim exactly as it did under the host loop; a create /
+    /// plan-build failure is a truthful errno.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_parent_begin_capture(
+        channel_base: usize,
+        arena_root: usize,
+        sides_ptr: usize,
+        sides_count: usize,
+    ) -> usize {
+        match begin_capture_impl(
+            channel_base as u64,
+            arena_root as u64,
+            sides_ptr as u64,
+            sides_count as u64,
+        ) {
+            Ok(root) => {
+                set_ok();
+                root as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Read one activation's module-buffer anchor (its continuation root) from the
+    /// current fork's state. The host reads a side activation's anchor back after
+    /// `fm_parent_begin_capture` (which returns only activation 0's) to build the
+    /// activation-continuation manifest. Returns 0 on failure (check
+    /// `fm_last_errno`): no fork open, or the activation is not registered.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_activation_module_buffer(activation_id: u32) -> usize {
+        match activation_module_buffer_impl(activation_id) {
+            Ok(module_buffer) => {
+                set_ok();
+                module_buffer as usize
             }
             Err(errno) => {
                 set_err(errno);
