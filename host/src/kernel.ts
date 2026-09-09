@@ -2413,9 +2413,30 @@ export class WasmPosixKernel {
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
+        // `addr` is a GUEST address and arrives as a BigInt, because the
+        // kernel declares it `u64` so that one import signature serves both a
+        // wasm32 and a wasm64 guest.
+        //
+        // The width passed to `checkedWasmImportMemoryRange` below is
+        // therefore 8, and that 8 describes HOW THE VALUE ARRIVED (an i64
+        // import parameter), not how wide the target process's address space
+        // is. It used to be a hardcoded 4, which was consistent only while the
+        // kernel-side type was `u32`; left at 4 against an i64 parameter it
+        // would reject every call, and "fixed" by narrowing the BigInt it
+        // would alias a wasm64 address above 4 GiB onto its low 32 bits —
+        // exactly the failure `checkHandwrittenProcessAddressArguments` warns
+        // about in `kernel-worker.ts`.
+        //
+        // Width 8 needs no per-process width lookup, because it is not
+        // standing in for one: the real bound is the target process's OWN
+        // current buffer length, which `checkedRange` enforces against
+        // `procMem` directly. A wasm32 process's buffer never exceeds 4 GiB,
+        // so an out-of-range address is rejected by the buffer it misses
+        // rather than by an assumed pointer width — a truer check, and one
+        // that needs no new callback on this class.
         host_proc_write_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           src_ptr: KernelPointer,
           len: number,
         ): number => {
@@ -2426,7 +2447,7 @@ export class WasmPosixKernel {
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
             );
             const src = this.#readKernelBytes(src_ptr, len);
@@ -2436,7 +2457,7 @@ export class WasmPosixKernel {
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
             );
             intrinsicApply(
@@ -2449,9 +2470,11 @@ export class WasmPosixKernel {
             return -14;
           }
         },
+        // `addr` arrives as a BigInt and is checked at width 8 for the same
+        // reason as `host_proc_write_bytes` above.
         host_proc_read_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           dst_ptr: KernelPointer,
           len: number,
         ): number => {
@@ -2469,7 +2492,7 @@ export class WasmPosixKernel {
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_read_bytes process source",
             );
             const processView = new IntrinsicUint8Array(

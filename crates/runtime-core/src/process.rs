@@ -393,7 +393,7 @@ pub trait HostIO {
     /// exit can interleave and rebind the pid's memory. Targeting a peer
     /// process is a separate contract change with its own liveness proof.
     #[allow(unused_variables)]
-    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+    fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -406,7 +406,7 @@ pub trait HostIO {
     /// the copy-once rule binds hardest in this direction: the bytes this call
     /// delivers are the only trustworthy view of that guest range.
     #[allow(unused_variables)]
-    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+    fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 

@@ -1032,13 +1032,42 @@ fn handle_drm_version(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Convert a fixed-width DRM UAPI pointer to the process-memory bridge.
+/// Prove a DRM UAPI output pointer is writable BEFORE any output is written.
 ///
-/// WHY: KMS structs use `u64` pointers even for wasm32 compatibility, while
-/// the current host bridge accepts only a lossless `u32` process address.
-/// Truncation would redirect a wasm64 pointer into unrelated low memory.
-fn checked_dri_process_pointer(pointer: u64) -> Result<u32, Errno> {
-    u32::try_from(pointer).map_err(|_| Errno::EFAULT)
+/// WHY: `DRM_IOCTL_MODE_GETRESOURCES` and `MODE_GETCONNECTOR` each hand back
+/// several independently-addressed nested buffers. If the third one turns out
+/// to be a bad address, the caller must see a clean `EFAULT` with none of its
+/// buffers touched, not two of three filled in. So every nested address is
+/// validated up front and the writes only begin once all of them have passed.
+///
+/// This used to be a pure narrowing check (`u32::try_from`), because the
+/// process-memory bridge accepted only a 32-bit guest address while KMS
+/// structs carry `u64` pointers on every guest width; the check existed to
+/// turn a wasm64 pointer above 4 GiB into `EFAULT` instead of silently
+/// redirecting it into unrelated low memory. `HostIO::proc_read_bytes` /
+/// `proc_write_bytes` now take the guest address at its full `u64` width, so
+/// there is nothing left to narrow — but the ordering guarantee still has to
+/// come from somewhere, and only the host knows a process's real extent.
+///
+/// So the pre-pass now probes each address with a `proc_read_bytes` of the
+/// exact length that will later be written. Reading is side-effect-free, and
+/// a range that is inside the process's memory now is still inside it when
+/// the writes begin a few instructions later: linear memory only ever grows,
+/// and the host dispatches this syscall synchronously without re-entering the
+/// kernel. A concurrent thread may change the *bytes* in between — that is
+/// inherent and documented on `HostIO::proc_write_bytes` — but it cannot
+/// shrink the range out from under the write.
+fn probe_dri_process_pointer(
+    host: &mut dyn HostIO,
+    pid: i32,
+    pointer: u64,
+    len: usize,
+) -> Result<u64, Errno> {
+    let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
+    if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    Ok(pointer)
 }
 
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
@@ -1462,7 +1491,7 @@ fn handle_dri_ioctl(
             // the host needs to dispatch.
             let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
             if info.in_buf_len > 0 {
-                let rc = host.proc_read_bytes(pid, info.in_buf_ptr, &mut in_buf);
+                let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1474,7 +1503,7 @@ fn handle_dri_ioctl(
             }
             let n = (written as usize).min(out_buf.len());
             if n > 0 && info.out_buf_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, info.out_buf_ptr, &out_buf[..n]);
+                let rc = host.proc_write_bytes(pid, u64::from(info.out_buf_ptr), &out_buf[..n]);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1527,13 +1556,13 @@ fn handle_dri_card_ioctl(
             // unrepresentable wasm64 pointer cannot leave earlier outputs
             // partially updated.
             let crtc_id_ptr = (req.count_crtcs >= 1 && req.crtc_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.crtc_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.crtc_id_ptr, 4))
                 .transpose()?;
             let connector_id_ptr = (req.count_connectors >= 1 && req.connector_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.connector_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.connector_id_ptr, 4))
                 .transpose()?;
             let encoder_id_ptr = (req.count_encoders >= 1 && req.encoder_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoder_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoder_id_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = crtc_id_ptr {
                 let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
@@ -1617,10 +1646,17 @@ fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.modes_ptr))
+                .then(|| {
+                    probe_dri_process_pointer(
+                        host,
+                        pid,
+                        req.modes_ptr,
+                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                    )
+                })
                 .transpose()?;
             let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoders_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
                 let mode = host.kms_mode_info(1);
@@ -19274,7 +19310,7 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
-        proc_write_calls: Vec<(i32, u32, Vec<u8>)>,
+        proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
@@ -20165,7 +20201,7 @@ mod tests {
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
             self.gl_submit_rc
         }
-        fn proc_write_bytes(&mut self, pid: i32, ptr: u32, bytes: &[u8]) -> i32 {
+        fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
             self.proc_write_calls.push((pid, ptr, bytes.to_vec()));
             0
         }

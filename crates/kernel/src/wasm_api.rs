@@ -248,8 +248,8 @@ unsafe extern "C" {
     ) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
-    fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
-    fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
+    fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
+    fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     fn host_kms_addfb(
         pid: i32,
@@ -1110,11 +1110,11 @@ impl HostIO for WasmHostIO {
         unsafe { host_kms_drop_master(pid) }
     }
 
-    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+    fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
         unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
     }
 
-    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+    fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
         unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
     }
 

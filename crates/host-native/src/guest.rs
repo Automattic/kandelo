@@ -1856,7 +1856,21 @@ fn define_kernel_host_imports(
     // host_proc_read_bytes(pid, addr, dst_ptr, len) -> i32 and
     // host_proc_write_bytes(pid, addr, src_ptr, len) -> i32: the kernel's
     // general cross-memory primitive. `addr` is an address in the GUEST
-    // process `pid`; `dst_ptr`/`src_ptr` are addresses in KERNEL memory. Until
+    // process `pid`; `dst_ptr`/`src_ptr` are addresses in KERNEL memory.
+    //
+    // The two address widths are deliberately different, and the closures'
+    // parameter types say so. `addr` is `u64` because it names a location in a
+    // guest whose width the kernel does not control — one signature covers a
+    // wasm32 and a wasm64 guest, and an address above 4 GiB from a wasm64
+    // guest must be rejectable rather than silently aliased down to its low 32
+    // bits. `dst_ptr`/`src_ptr` are `u32` because they name a location in the
+    // kernel's OWN linear memory, and this host runs the wasm32 kernel build
+    // (`target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`, see
+    // `crate::EXPECTED_HOST_IMPORT_COUNT`'s neighbours in `lib.rs`), where a
+    // kernel pointer is an `i32`. A wasm64 kernel would import these with an
+    // `i64` in that position; matching the module's declared type is what
+    // `Linker::func_wrap` checks, so that build would need its own closure
+    // rather than silently mismatching here. Until
     // now both fell to `define_unknown_imports_as_traps`, so any kernel path
     // reaching for process memory killed a native run — truthful, but it meant
     // the native host could not run the DRI/KMS paths that have used this
@@ -1891,12 +1905,12 @@ fn define_kernel_host_imports(
         linker.func_wrap(
             "env",
             "host_proc_read_bytes",
-            move |_c: Caller<'_, ()>, pid: i32, addr: u32, dst_ptr: u32, len: u32| -> i32 {
+            move |_c: Caller<'_, ()>, pid: i32, addr: u64, dst_ptr: u32, len: u32| -> i32 {
                 if pid < 0 || pid as u32 != *current_pid.lock().unwrap() {
                     return -(libc_errno::ESRCH);
                 }
                 let guest = current_memory.lock().unwrap().clone();
-                proc_copy_in(&guest, u64::from(addr), &kmem, u64::from(dst_ptr), len)
+                proc_copy_in(&guest, addr, &kmem, u64::from(dst_ptr), len)
             },
         )?;
     }
@@ -1907,12 +1921,12 @@ fn define_kernel_host_imports(
         linker.func_wrap(
             "env",
             "host_proc_write_bytes",
-            move |_c: Caller<'_, ()>, pid: i32, addr: u32, src_ptr: u32, len: u32| -> i32 {
+            move |_c: Caller<'_, ()>, pid: i32, addr: u64, src_ptr: u32, len: u32| -> i32 {
                 if pid < 0 || pid as u32 != *current_pid.lock().unwrap() {
                     return -(libc_errno::ESRCH);
                 }
                 let guest = current_memory.lock().unwrap().clone();
-                proc_copy_out(&kmem, u64::from(src_ptr), &guest, u64::from(addr), len)
+                proc_copy_out(&kmem, u64::from(src_ptr), &guest, addr, len)
             },
         )?;
     }
