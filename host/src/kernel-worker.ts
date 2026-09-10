@@ -934,20 +934,6 @@ const SIGSEGV = 11;
  *  docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
-/**
- * `SIOCGIFCONF` request code. The other network-interface ioctls
- * (`SIOCGIFNAME`/`SIOCGIFHWADDR`/`SIOCGIFADDR`/`SIOCGIFINDEX`) are fixed-size
- * `struct ifreq` requests that now flow through the ordinary generic ioctl
- * path (`IOCTL_REQUESTS`, generated from `crates/shared/src/
- * ioctl_contract.rs`) straight into the Rust kernel — no named constant or
- * host-side handler needed for them any more (Workstream H4). `SIOCGIFCONF`
- * stays host-intercepted because its `struct ifconf.ifc_buf` is a second,
- * dynamically-sized process-memory pointer nested inside the first, which the
- * generic one-static-size ioctl contract can't express; see
- * `handleIoctlIfconf` below.
- */
-const SIOCGIFCONF = 0x8912;
-
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
 
@@ -6074,13 +6060,6 @@ export class CentralizedKernelWorker {
           || command === F_OFD_SETLKW
         ) {
           pointer(2, "fcntl flock pointer");
-        }
-        return;
-      }
-      case SYS_IOCTL: {
-        const request = Number(BigInt.asUintN(32, rawArgs[1] ?? 0n));
-        if (request === SIOCGIFCONF) {
-          pointer(2, "network ioctl pointer");
         }
         return;
       }
@@ -12239,23 +12218,6 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_RECVMSG) {
       this.handleRecvmsg(channel, origArgs, processMem, entry);
       return;
-    }
-
-    // --- ioctl: intercept SIOCGIFCONF only ---
-    // struct ifconf contains ifc_buf, a pointer to a *second* process-memory
-    // buffer whose size depends on the caller-supplied ifc_len — a nested,
-    // dynamically-sized indirection the generic one-static-size ioctl
-    // contract can't express (the same reason sendmsg/recvmsg decompose
-    // msghdr host-side elsewhere). SIOCGIFNAME/SIOCGIFHWADDR/SIOCGIFADDR/
-    // SIOCGIFINDEX are plain fixed-size `struct ifreq` requests and now flow
-    // through the ordinary generic ioctl path straight into the Rust kernel
-    // (Workstream H4).
-    if (syscallNr === SYS_IOCTL) {
-      const request = origArgs[1] >>> 0;
-      if (request === SIOCGIFCONF) {
-        this.handleIoctlIfconf(channel, origArgs, entry);
-        return;
-      }
     }
 
     // --- fcntl with struct flock pointer ---
@@ -20146,141 +20108,6 @@ export class CentralizedKernelWorker {
         deadline,
       });
     });
-  }
-
-  // ---- Network interface ioctl host-side handlers ----
-
-  private finishNetworkIoctl(
-    channel: ChannelInfo,
-    entry: KernelWorkerEntryContext,
-    retVal = 0,
-    errno = 0,
-  ): void {
-    this.completeChannelRawAndRelisten(channel, retVal, errno, entry);
-  }
-
-  private checkedNetworkIoctlProcessRange(
-    channel: ChannelInfo,
-    pointer: number | bigint,
-    length: number | bigint,
-    field: string,
-    entry: KernelWorkerEntryContext,
-  ): { pointer: number; length: number; end: number } | null {
-    try {
-      return this.checkedProcessRange(channel, pointer, length, field);
-    } catch (error) {
-      if (!(error instanceof KernelScratchError)) throw error;
-      this.finishNetworkIoctl(channel, entry, -EFAULT, EFAULT);
-      return null;
-    }
-  }
-
-  /**
-   * Handle SIOCGIFCONF: enumerate network interfaces.
-   * struct ifconf { int ifc_len; union { char *ifc_buf; struct ifreq *ifc_req; }; }
-   * The ifc_buf pointer is a *second*, dynamically-sized process-memory
-   * buffer nested inside the first, so the host still decodes both pointers
-   * and proves their ranges — the kernel's separate Wasm instance cannot
-   * reach process memory directly. But the interface table, MAC generation,
-   * and every byte written into `ifc_buf` are produced by the Rust kernel
-   * (`crates/runtime-core/src/netif.rs`, `kernel_network_ifconf_write`),
-   * not by host-side logic (Workstream H4).
-   */
-  private handleIoctlIfconf(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const pw = this.getPtrWidth(channel.pid);
-    const ifconfSize = pw === 8 ? 16 : 8;
-    const ifconfRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      origArgs[2],
-      ifconfSize,
-      "network ioctl ifconf",
-      entry,
-    );
-    if (!ifconfRange) return;
-    const ifconfPtr = ifconfRange.pointer;
-
-    const processView = new DataView(channel.memory.buffer);
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const ifcLen = processView.getInt32(ifconfPtr, true);
-    if (ifcLen < 0) {
-      this.finishNetworkIoctl(channel, entry, -EINVAL, EINVAL);
-      return;
-    }
-    const ifcBufValue = pw === 8
-      ? processView.getBigUint64(ifconfPtr + 8, true)
-      : processView.getUint32(ifconfPtr + 4, true);
-
-    const kernelInstance = this.#kernelInstanceForEntry(entry);
-    const ifconfSizeExport = kernelInstance.exports.kernel_network_ifconf_size as
-      ((pointerWidth: number) => number) | undefined;
-    const ifreqSizeExport = kernelInstance.exports.kernel_network_ifreq_size as
-      ((pointerWidth: number) => number) | undefined;
-    if (!ifconfSizeExport || !ifreqSizeExport) {
-      this.finishNetworkIoctl(channel, entry, -ENOSYS, ENOSYS);
-      return;
-    }
-
-    // Linux permits a null nested buffer as a size query. The outer ifconf is
-    // still a required caller-owned structure and was proved above.
-    if (ifcBufValue === 0 || ifcBufValue === 0n) {
-      processView.setInt32(ifconfPtr, ifconfSizeExport(pw), true);
-      this.finishNetworkIoctl(channel, entry);
-      return;
-    }
-
-    const ifreqSize = ifreqSizeExport(pw);
-    if (ifreqSize <= 0 || ifcLen < ifreqSize) {
-      processView.setInt32(ifconfPtr, 0, true);
-      this.finishNetworkIoctl(channel, entry);
-      return;
-    }
-
-    const capacity = Math.floor(ifcLen / ifreqSize);
-    const bytesRequested = capacity * ifreqSize;
-    // WHY: the nested wasm64 pointer must remain bigint until the complete
-    // caller-owned output range is proved. Converting first could round an
-    // unsafe value or let a high address alias unrelated low process bytes.
-    const ifcBufRange = this.checkedNetworkIoctlProcessRange(
-      channel,
-      ifcBufValue,
-      bytesRequested,
-      "network ioctl ifconf output",
-      entry,
-    );
-    if (!ifcBufRange) return;
-    const ifcBuf = ifcBufRange.pointer;
-
-    const scratch = this.#requireMainScratchRegion();
-    const result = scratch.withLease((lease) => {
-      const request = Math.min(bytesRequested, scratch.capacity);
-      const written = this.#invokeEntryScratchExport(
-        entry,
-        lease,
-        "kernel_network_ifconf_write",
-        [pw, lease.exportPointer(0, request), request],
-      );
-      if (written < 0) {
-        return { ok: false as const, retVal: written, errno: -written };
-      }
-      if (!Number.isSafeInteger(written) || written > request) {
-        throw new KernelScratchError(
-          "kernel network ifconf write exceeded scratch capacity",
-          EIO,
-        );
-      }
-      return { ok: true as const, bytes: lease.copyOut(0, written) };
-    });
-    if (!result.ok) {
-      this.finishNetworkIoctl(channel, entry, result.retVal, result.errno);
-      return;
-    }
-    processMem.set(result.bytes, ifcBuf);
-    processView.setInt32(ifconfPtr, result.bytes.length, true);
-    this.finishNetworkIoctl(channel, entry);
   }
 
   /** Map scalar and vector variants to one contiguous kernel operation. */

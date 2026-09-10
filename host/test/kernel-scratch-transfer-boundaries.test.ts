@@ -108,7 +108,6 @@ const SCALAR_IOCTL_REQUESTS = Object.entries(IOCTL_REQUESTS)
   .filter(([, contract]) => contract.argKind === "scalar-i32")
   .map(([request]) => Number(request));
 const SIOCGIFNAME = 0x8910;
-const SIOCGIFCONF = 0x8912;
 const SIOCGIFADDR = 0x8915;
 const SIOCGIFHWADDR = 0x8927;
 const SIOCGIFINDEX = 0x8933;
@@ -381,33 +380,6 @@ function makeScratchHarness(
       _offset: bigint,
       _retryToken: bigint,
     ) => Number(length),
-    // Workstream H4: mirror `crates/runtime-core/src/netif.rs`'s fixed
-    // two-interface table ("lo", "eth0") closely enough for the
-    // SIOCGIFCONF boundary tests below, which assert on the returned
-    // `ifc_len` and the first bytes of the written buffer.
-    kernel_network_ifreq_size: (pointerWidth: number) =>
-      pointerWidth === 8 ? 40 : 32,
-    kernel_network_ifconf_size: (pointerWidth: number) =>
-      2 * (pointerWidth === 8 ? 40 : 32),
-    kernel_network_ifconf_write: (
-      pointerWidth: number,
-      outPtr: number | bigint,
-      outLen: number,
-    ) => {
-      const entrySize = pointerWidth === 8 ? 40 : 32;
-      const names = ["lo", "eth0"];
-      const count = Math.min(Math.floor(outLen / entrySize), names.length);
-      const base = Number(outPtr);
-      for (let i = 0; i < count; i++) {
-        const entryOffset = base + i * entrySize;
-        kernelBytes.fill(0, entryOffset, entryOffset + entrySize);
-        kernelBytes.set(
-          new TextEncoder().encode(names[i]),
-          entryOffset,
-        );
-      }
-      return count * entrySize;
-    },
   };
   worker =
     createCentralizedKernelWorkerTestDouble() as CentralizedKernelWorker &
@@ -561,22 +533,6 @@ function dispatchScratchBoundarySyscallWithArgs(
   dispatchScratchBoundarySyscall(harness);
 }
 
-function writeIfconf(
-  bytes: Uint8Array,
-  pointerWidth: 4 | 8,
-  pointer: number,
-  capacity: number,
-  outputPointer: number | bigint,
-): void {
-  const view = new DataView(bytes.buffer);
-  view.setInt32(pointer, capacity, true);
-  if (pointerWidth === 8) {
-    view.setBigUint64(pointer + 8, BigInt(outputPointer), true);
-  } else {
-    view.setUint32(pointer + 4, Number(outputPointer), true);
-  }
-}
-
 function invokeNetworkIoctlHandler(
   harness: ScratchHarness,
   handler: string,
@@ -585,7 +541,7 @@ function invokeNetworkIoctlHandler(
   const path = NETWORK_IFREQ_HANDLERS.find(
     (candidate) => candidate.handler === handler,
   );
-  const request = handler === "handleIoctlIfconf" ? SIOCGIFCONF : path?.request;
+  const request = path?.request;
   if (request === undefined) {
     throw new Error(`unknown network ioctl test handler ${handler}`);
   }
@@ -7766,27 +7722,6 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "rejects a null wasm%s outer ifconf without touching address zero",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const ifconfSize = pointerWidth === 8 ? 16 : 8;
-      harness.processBytes.fill(0x6d, 0, ifconfSize + 16);
-      writeIfconf(harness.processBytes, pointerWidth, 0, 0, 0);
-      const before = harness.processBytes.slice(0, ifconfSize + 16);
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", 0);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(harness.processBytes.slice(0, ifconfSize + 16)).toEqual(before);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
     // SIOCGIFNAME/SIOCGIFHWADDR/SIOCGIFADDR/SIOCGIFINDEX are plain
     // fixed-size `struct ifreq` requests and, since Workstream H4, are no
     // longer host-intercepted at all: they flow through the same generic
@@ -7821,53 +7756,6 @@ describe("kernel scratch transfer capacity regressions", () => {
         expect(harness.processBytes.slice(0, ifreqSize + 16)).toEqual(before);
         expectScratchTailUntouched(harness);
       }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "accepts an exact wasm%s outer ifconf and rejects one byte short",
-    (pointerWidth) => {
-      const ifconfSize = pointerWidth === 8 ? 16 : 8;
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-
-      const exact = makeScratchHarness(pointerWidth);
-      const exactPointer = exact.processBytes.byteLength - ifconfSize;
-      exact.processBytes.fill(0x6d, exactPointer - 16, exactPointer);
-      writeIfconf(exact.processBytes, pointerWidth, exactPointer, 0, 0);
-      const exactPrefix = exact.processBytes.slice(
-        exactPointer - 16,
-        exactPointer,
-      );
-
-      invokeNetworkIoctlHandler(exact, "handleIoctlIfconf", exactPointer);
-
-      expect(exact.completeChannelRaw).toHaveBeenCalledWith(
-        exact.channel,
-        0,
-        0,
-      );
-      expect(
-        new DataView(exact.processBytes.buffer).getInt32(exactPointer, true),
-      ).toBe(2 * ifreqSize);
-      expect(exact.processBytes.slice(exactPointer - 16, exactPointer)).toEqual(
-        exactPrefix,
-      );
-      expectScratchTailUntouched(exact);
-
-      const short = makeScratchHarness(pointerWidth);
-      const shortPointer = short.processBytes.byteLength - ifconfSize + 1;
-      short.processBytes.fill(0x6d, shortPointer - 16);
-      const shortBefore = short.processBytes.slice(shortPointer - 16);
-
-      invokeNetworkIoctlHandler(short, "handleIoctlIfconf", shortPointer);
-
-      expect(short.completeChannelRaw).toHaveBeenCalledWith(
-        short.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(short.processBytes.slice(shortPointer - 16)).toEqual(shortBefore);
-      expectScratchTailUntouched(short);
     },
   );
 
@@ -7935,130 +7823,6 @@ describe("kernel scratch transfer capacity regressions", () => {
         );
         expectScratchTailUntouched(short);
       }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "bounds wasm%s nested ifconf output at exact capacity and capacity + 1",
-    (pointerWidth) => {
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-      for (const extraCapacity of [0, 1]) {
-        const harness = makeScratchHarness(pointerWidth);
-        const ifconfPointer = 4096;
-        const outputPointer = 8192;
-        const guardStart = outputPointer - 16;
-        const guardEnd = outputPointer + ifreqSize + extraCapacity + 16;
-        harness.processBytes.fill(0x6d, guardStart, guardEnd);
-        writeIfconf(
-          harness.processBytes,
-          pointerWidth,
-          ifconfPointer,
-          ifreqSize + extraCapacity,
-          outputPointer,
-        );
-        const prefix = harness.processBytes.slice(guardStart, outputPointer);
-        const suffix = harness.processBytes.slice(
-          outputPointer + ifreqSize,
-          guardEnd,
-        );
-
-        invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-        expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-          harness.channel,
-          0,
-          0,
-        );
-        expect(
-          new DataView(harness.processBytes.buffer).getInt32(
-            ifconfPointer,
-            true,
-          ),
-        ).toBe(ifreqSize);
-        expect(
-          new TextDecoder().decode(
-            harness.processBytes.slice(outputPointer, outputPointer + 2),
-          ),
-        ).toBe("lo");
-        expect(harness.processBytes.slice(guardStart, outputPointer)).toEqual(
-          prefix,
-        );
-        expect(
-          harness.processBytes.slice(outputPointer + ifreqSize, guardEnd),
-        ).toEqual(suffix);
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "rejects a one-byte-short wasm%s nested ifconf output without mutation",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-      const ifconfPointer = 4096;
-      const outputPointer = harness.processBytes.byteLength - ifreqSize + 1;
-      harness.processBytes.fill(0x6d, outputPointer - 16);
-      const outputBefore = harness.processBytes.slice(outputPointer - 16);
-      writeIfconf(
-        harness.processBytes,
-        pointerWidth,
-        ifconfPointer,
-        ifreqSize,
-        outputPointer,
-      );
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(harness.processBytes.slice(outputPointer - 16)).toEqual(
-        outputBefore,
-      );
-      expect(
-        new DataView(harness.processBytes.buffer).getInt32(ifconfPointer, true),
-      ).toBe(ifreqSize);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["high", 0x1_0000_2000n],
-    ["unsafe", 0x20_0000_0000_2000n],
-  ] as const)(
-    "rejects wasm64 nested ifconf pointer class %s without a low-address alias",
-    (_kind, nestedPointer) => {
-      const harness = makeScratchHarness(8);
-      const ifconfPointer = 4096;
-      const lowAlias = Number(nestedPointer & 0xffff_ffffn);
-      const ifreqSize = 40;
-      harness.processBytes.fill(0x6d, lowAlias - 16, lowAlias + ifreqSize + 16);
-      const lowBefore = harness.processBytes.slice(
-        lowAlias - 16,
-        lowAlias + ifreqSize + 16,
-      );
-      writeIfconf(
-        harness.processBytes,
-        8,
-        ifconfPointer,
-        ifreqSize,
-        nestedPointer,
-      );
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(
-        harness.processBytes.slice(lowAlias - 16, lowAlias + ifreqSize + 16),
-      ).toEqual(lowBefore);
-      expectScratchTailUntouched(harness);
     },
   );
 
