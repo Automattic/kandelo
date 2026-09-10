@@ -363,7 +363,10 @@ pub(crate) struct BootstrapStep {
 }
 
 /// The ordered host-plus-engine build closure for `xtask bootstrap` /
-/// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
+/// `./run.sh setup`. Pure and testable: `root-npm` must come first (the
+/// `engine` step's `node-browser-bundle` package and the `rootfs` step's
+/// `build-rootfs.sh` both hard-require the repository's locked ROOT npm
+/// dependencies, and neither installs them); `fork-instrument-tool` must precede
 /// `engine` (the `msmtpd` package node consumes the built
 /// `wasm-fork-instrument` CLI); `sysroot`/`sysroot64`/`sdk` must precede
 /// `engine` (every package build script in the local-supported set reads the
@@ -380,6 +383,7 @@ pub(crate) struct BootstrapStep {
 /// the engine regenerates).
 pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     vec![
+        BootstrapStep { name: "root-npm" },
         BootstrapStep {
             name: "fork-instrument-tool",
         },
@@ -504,10 +508,11 @@ pub(crate) enum Selection {
 /// "does this actually exist" to the engine/host-step runner, which already
 /// has the real registry and product catalog available to validate against.
 ///
-/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, and `sdk` are
-/// the non-graph host steps `./run.sh`'s `need_host`/`need_fork_instrument`/
-/// `need_rootfs`/`need_sysroot`/`need_sysroot64`/`need_sdk` used to build by
-/// hand; everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
+/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, `sdk` and
+/// `root-npm` are the non-graph host steps `./run.sh`'s `need_host`/
+/// `need_fork_instrument`/`need_rootfs`/`need_sysroot`/`need_sysroot64`/
+/// `need_sdk` used to build by hand (`root-npm` is named here so the root
+/// dependency install can be run and verified on its own); everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
 /// package or product name the engine's own graph already understands.
 pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
     match target {
@@ -517,6 +522,7 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
         "sysroot" => Selection::HostStep("sysroot"),
         "sysroot64" => Selection::HostStep("sysroot64"),
         "sdk" => Selection::HostStep("sdk"),
+        "root-npm" => Selection::HostStep("root-npm"),
         other => Selection::Package(other.to_string()),
     }
 }
@@ -612,6 +618,82 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     }
 }
 
+/// The sentinel that decides whether the repository's ROOT npm dependencies
+/// are installed. `node_modules/tsx/dist/cli.mjs` is the exact file
+/// `scripts/build-rootfs.sh` and
+/// `packages/registry/node-browser-bundle/build-node-browser-bundle.sh` both
+/// refuse to run without, so keying on it means the check this bootstrap step
+/// makes and the check those build scripts make cannot disagree.
+///
+/// Pure, so the "is it needed" decision is unit-testable without running npm.
+pub(crate) fn root_npm_install_needed(repo: &Path) -> bool {
+    !repo.join("node_modules/tsx/dist/cli.mjs").is_file()
+}
+
+/// Install the repository's ROOT npm dependencies when they are absent.
+///
+/// WHY THIS IS A BOOTSTRAP STEP: `tsx`, `fflate`, `fzstd` and `vite` are ROOT
+/// dependencies, not `host/` ones, and two engine-driven builds hard-require
+/// them — `scripts/build-rootfs.sh` (the `rootfs` step) and the
+/// `node-browser-bundle` package (inside the `engine` step). Before this step
+/// existed, `./run.sh setup` bootstrapped `host/` and `tools/mkrootfs/` (both
+/// from inside `build-rootfs.sh`) but never the root, so a fresh worktree's
+/// `setup` failed on `rootfs`, and `rootfs` failing cascade-blocks every
+/// browser product — `platform-rootfs`, `browser-main-shell`, `browser-nginx`,
+/// `browser-wordpress`, `shell`, `node-vfs`, `nginx-vfs`, `lamp` and
+/// `coreutils-docs`. A provisioning step that cannot do its job reported
+/// success, and the resulting failure named a locked `tsx` CLI rather than
+/// the missing step.
+///
+/// WHY THIS DOES NOT WEAKEN THE SEALED CONTRACT: `build-rootfs.sh` refuses to
+/// install anything when `ROOTFS_SEALED_BUILD=1`, on the documented ground
+/// that "resolver-owned package builds must be read-only with respect to the
+/// source checkout". That rule is about *package builds*, and it is untouched
+/// here: those guards stay exactly as they are. `bootstrap` is the opposite
+/// kind of step — it is the front door whose whole job is to provision the
+/// checkout (it already builds musl sysroots, the SDK, the kernel and the
+/// rootfs image into the tree), so installing the locked root dependencies is
+/// the same class of work, not an exception to the sealed rule.
+///
+/// `npm ci` (not `npm install`) because the guards' own messages name it and
+/// because it installs the lockfile exactly instead of rewriting it — a
+/// bootstrap step must not mutate tracked source. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`
+/// matches `scripts/ci-run-test-suite.sh`'s `install_node_deps`, so `setup`
+/// does not silently pull hundreds of megabytes of browser binaries that only
+/// the Playwright suites need; `npx playwright install` remains their explicit
+/// step.
+fn run_root_npm_step(repo: &Path) -> Result<(), String> {
+    if !root_npm_install_needed(repo) {
+        return Ok(());
+    }
+    eprintln!("==> Installing the repository's locked root npm dependencies (npm ci)...");
+    let status = Command::new("npm")
+        .args(["ci", "--no-audit", "--no-fund"])
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("bootstrap root-npm: spawn npm ci: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "bootstrap root-npm: `npm ci` in {} exited with {}",
+            repo.display(),
+            match status.code() {
+                Some(code) => code.to_string(),
+                None => "no exit code (terminated by signal)".to_string(),
+            }
+        ));
+    }
+    if root_npm_install_needed(repo) {
+        return Err(format!(
+            "bootstrap root-npm: `npm ci` reported success but {} is still absent. \
+             The root dependencies are not installed; `rootfs` and \
+             `node-browser-bundle` will fail on the locked tsx CLI.",
+            repo.join("node_modules/tsx/dist/cli.mjs").display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
 /// loop and single-target selection, so a target built alone (e.g.
 /// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
@@ -658,6 +740,7 @@ fn run_bootstrap_step(
                 if rebuild { "1" } else { "0" },
             )],
         ),
+        "root-npm" => run_root_npm_step(repo),
         "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
         "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
         "sdk" => {
@@ -706,6 +789,12 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         Selection::HostStep(name) => {
+            // Same root-npm prerequisite the whole-tree plan runs first: a
+            // standalone `./run.sh rebuild rootfs` reaches `build-rootfs.sh`
+            // without passing through `Selection::All`, and that script's
+            // locked-tsx guard is the failure this step exists to prevent.
+            // No-op once the root dependencies are installed.
+            run_bootstrap_step(&repo, "root-npm", jobs, rebuild, verify_cache, Vec::new())?;
             // The old `need_host` built the kernel before the TypeScript host
             // (`host/dist` embeds/tests against it); preserve that edge for a
             // standalone `bootstrap host` the same way `bootstrap_step_plan`
@@ -724,6 +813,10 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
         }
         Selection::Package(name) => {
+            // Same root-npm prerequisite as above: `node-browser-bundle` (and
+            // every product whose closure contains it, e.g. `shell`) reads the
+            // repository's locked root `tsx` directly.
+            run_bootstrap_step(&repo, "root-npm", jobs, rebuild, verify_cache, Vec::new())?;
             // Preserve the exact universal prerequisite set every `run.sh`
             // `build_<pkg>` relied on (`need_kernel` + `need_sdk`, which
             // itself ensures `need_sysroot`), except for the kernel itself,
@@ -6368,6 +6461,7 @@ materialization = "lazy"
         assert_eq!(
             names,
             vec![
+                "root-npm",
                 "fork-instrument-tool",
                 "sysroot",
                 "sysroot64",
@@ -6376,7 +6470,10 @@ materialization = "lazy"
                 "rootfs",
                 "host-dist",
             ],
-            "fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
+            "root-npm must come first (the engine's node-browser-bundle package and \
+             build-rootfs.sh both hard-require the repository's locked ROOT npm \
+             dependencies, and neither installs them); \
+             fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
              sysroot64/sdk must precede the engine (every package build script reads \
              the ambient musl sysroot and wasm{{32,64}}posix-cc directly, which the \
              engine's own dependency graph does not model as an edge) and sdk must \
@@ -6386,6 +6483,29 @@ materialization = "lazy"
              rootfs image); host-dist must follow the engine (needs the regenerated \
              program index)"
         );
+    }
+
+    #[test]
+    fn root_npm_install_needed_keys_on_the_same_file_the_build_scripts_guard_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        assert!(
+            root_npm_install_needed(repo),
+            "an unprovisioned checkout needs the root install"
+        );
+
+        // The exact path `scripts/build-rootfs.sh` and
+        // `build-node-browser-bundle.sh` refuse to run without. Anything short
+        // of it must still read as "needed", or `setup` would report success
+        // and leave `rootfs`/`node-browser-bundle` to fail on the locked tsx.
+        std::fs::create_dir_all(repo.join("node_modules/tsx/dist")).unwrap();
+        assert!(
+            root_npm_install_needed(repo),
+            "a node_modules tree without the tsx CLI is still not provisioned"
+        );
+
+        std::fs::write(repo.join("node_modules/tsx/dist/cli.mjs"), b"//\n").unwrap();
+        assert!(!root_npm_install_needed(repo));
     }
 
     #[test]
@@ -6446,6 +6566,10 @@ materialization = "lazy"
         assert_eq!(
             bootstrap_target_to_selection("sysroot64"),
             Selection::HostStep("sysroot64")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("root-npm"),
+            Selection::HostStep("root-npm")
         );
         assert_eq!(
             bootstrap_target_to_selection("sdk"),
