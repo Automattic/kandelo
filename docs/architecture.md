@@ -578,15 +578,25 @@ select musl's target structure from the process pointer width:
 | `semid_ds` | 72 bytes | 88 bytes |
 | `shmid_ds` | 88 bytes | 112 bytes |
 
-The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
-command and passes that process pointer width in the otherwise host-private
-sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
-because one kernel may serve both guest widths.
-`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
-permission-aware GETALL/SETALL size preflight. All four sizing exports are
-required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
-arrays: a process may have permission to write a semaphore set without
-permission to read its metadata.
+The kernel reads and writes these structures in the caller's memory itself,
+through `host_proc_read_bytes` / `host_proc_write_bytes`, and takes the caller's
+pointer width from the otherwise host-private sixth dispatch slot. The kernel
+Wasm's own width is not a valid substitute because one kernel may serve both
+guest widths.
+
+The arguments are declared `SyscallArgSize::KernelDereferenced`, which is what
+makes that possible: the host copies nothing and passes the raw guest address
+through. No static size rule could describe them, because `msgctl`'s buffer is
+an input for `IPC_SET` and an output for `IPC_STAT`, and `semctl`'s fourth
+argument is a `union semun` whose GETALL/SETALL form is an `unsigned short`
+array sized by the set's own `nsems` — a fact that appears nowhere in the
+syscall arguments.
+
+There is still no `IPC_STAT` sizing fallback for semaphore arrays, and the
+reason is unchanged: a process may have permission to write a semaphore set
+without permission to read its metadata, so sizing the array through IPC_STAT
+would impose a read permission POSIX does not require. `semctl_array_bytes`
+applies the requested command's own permission check instead.
 
 Other caller-native records use the generated
 `SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes

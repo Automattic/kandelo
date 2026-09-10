@@ -32,6 +32,7 @@ pub mod lock;
 pub mod memory;
 pub mod mouse;
 pub mod mqueue;
+pub mod msghdr;
 pub mod netif;
 pub mod ofd;
 pub mod path;

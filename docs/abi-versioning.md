@@ -706,12 +706,25 @@ ABI 43 also makes System V IPC control-structure sizing explicit. Required
 pointer-width queries report the target musl layouts: `msqid_ds` is 96 bytes
 on wasm32 time64 and 120 bytes on wasm64 LP64, `semid_ds` is 72/88 bytes, and
 `shmid_ds` is 88/112 bytes. The process width is authoritative even when it
-differs from the kernel Wasm width. The host stages `msgctl`/`shmctl`
-`IPC_STAT` and `IPC_SET` according to the command and carries that width in its
-private sixth kernel-dispatch slot. The required
-`kernel_semctl_array_bytes(pid, tid, semid, command)` export performs the
-permission-aware GETALL/SETALL size preflight; the host does not substitute a
-read-only `IPC_STAT` query for a write-only SETALL operation.
+differs from the kernel Wasm width.
+
+**ABI 44 changes who applies that rule.** These arguments are now declared
+`SyscallArgSize::KernelDereferenced`: the host copies nothing and passes the
+caller's raw guest address, and the kernel reads and writes the structure
+itself through `host_proc_read_bytes` / `host_proc_write_bytes`, taking the
+caller's width from the private sixth kernel-dispatch slot. The five ABI 43
+sizing exports — `kernel_semid_ds_bytes`, `kernel_msqid_ds_bytes`,
+`kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`, and
+`kernel_mq_descriptor_msgsize` — answered a question the host no longer asks
+and are removed from `kernel_exports`. That is a snapshot change without an
+`ABI_VERSION` bump, which the ABI-44 epoch decision permits, but it is an
+export REMOVAL rather than a purely additive change: a host validating
+`required_kernel_exports` against an ABI 43 list will see five fewer entries.
+
+The GETALL/SETALL permission rule is unchanged and still explicit: a process
+may have permission to write a semaphore set without permission to read its
+metadata, so the array length comes from the requested command's own
+permission-checked query, never from a read-only `IPC_STAT`.
 
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
