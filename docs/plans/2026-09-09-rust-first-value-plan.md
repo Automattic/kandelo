@@ -591,6 +591,77 @@ Rust **206,833**.
 
 Both deferrals were correct. Neither is done until the owner item lands.
 
+## 2j. K5 grounding — outcomes and decisions (2026-09-09)
+
+`docs/plans/2026-09-09-k5-dynamic-linker-grounding.md` (885 lines).
+
+**It disproved a claim written in THIS plan set, not an inherited one.** The
+census said the floor under `dylink.ts` was four JS-API acts. It is **eight act
+kinds at 16 call sites** — the omissions were `new WebAssembly.Module`,
+`new WebAssembly.Global` + `Global.value` get/set (every GOT cell; `intl.so`
+alone forces **2,469** Global allocations, VERIFIED by `wasm-objdump`), and
+import-object construction, which is a *stateful counting `Proxy`* whose `get`
+order is engine-observable. **Fifth disproved floor; first one that was ours.**
+The number had been asserted from a symbol overview instead of from the call
+sites. Census and ledger corrected.
+
+Verdict survives: all eight have wasmtime-48 equivalents (`Tag::new` already in
+use at `guest.rs:5276`) and collapse into **one** typed `LinkAct` executor.
+
+**A second ported-but-unwired Rust module.** `crates/fork-codec/src/dylink_archive.rs`
+— 1,318 lines, decoder-complete, **zero callers** — exactly the shape `sffs.rs`
+was in before K1. That is now a *pattern*, not an accident: work gets ported to
+Rust and never wired, so the repo accumulates Rust that proves nothing. Worth
+sweeping for more.
+
+### Decisions
+
+**D1 — re-scope ACCEPTED.** `patchWasmForThread`, `encodeStartupMetadata` and
+`verifyProgramAbi` (~900 lines) are **not** dlopen work; they move to **K4**
+(process lifecycle), where they belong. K5 shrinks accordingly.
+
+**D2 — redis reclassified, ACCEPTED on evidence.** No Redis module `.so` is
+built anywhere; its `dlopen` caller is upstream's own module API pulled in by
+`-ldl`. **The real dlopen consumer is one product: PHP** (`php`/`php-fpm` + 6
+`.so`). Browser regression gate is WordPress / LAMP / nginx-php, all of which
+`dlopen` `opcache.so`. This materially shrinks K5's blast radius — and the
+earlier "php, php-fpm and redis-server" framing was wrong.
+
+**D3 — shape DECIDED: a pure `crates/dylink` planner, not a co-resident
+module.** It emits an **ordered** `Vec<LinkAct>` / `ImportBinding` — which is
+exactly what both `Instance::new`'s positional slice and the counting Proxy
+need — consumed by three thin executors (Node, browser, wasmtime). K10's
+co-resident precedent does **not** transfer: WASI's acts are channel syscalls
+wasm can perform unaided, whereas K5's are JS-API object constructions wasm
+fundamentally cannot, so a co-resident dylink module would need **new imports**
+— a V4 regression. The pure planner is also testable without a wasm host.
+K10's mmap caveat does not apply here: VERIFIED that dlopen guests are
+SDK-built and `allocateMemory` is a synchronous `SYS_MMAP`
+(`worker-main.ts:1516-1560`).
+
+**D4 — GOT zero-write: adjudicate, do NOT port blind. DECIDED.**
+`refreshGlobalGotEntries` (`dylink.ts:1022`) writes `0` for an unresolved
+`GOT.mem`/`GOT.func` symbol, which the guest later dereferences as NULL. That is
+either correct `RTLD_LAZY` semantics or exactly the silent success the
+platform-values contract forbids — and the comment at `:1605-1614` records that
+the seeding case was already a real bug (`opcache.so` reading `sapi_module.name`
+as NULL, `accel_find_sapi` failing at startup), so the zero path has bitten
+before. Investigate during I1 and use **K10's defect shape**: implement the
+correct behaviour, pin the old one in the differential harness as a documented
+divergence. Three implementations of the same ambiguity is the outcome to avoid.
+
+**D5 — the O(n)→O(1) table-scan change: measure, claim nothing. DECIDED.**
+`intl.so` performs 1,646 linear scans of a ≥2,357-entry table today, on the PHP
+boot path in three browser demos. The change is not optional — a Rust core has
+no reason to reproduce the scan — but per `docs/agent-guidance/performance.md`
+no "faster" claim may be made without before/after evidence on Node **and**
+browser. Measure at I6's gate; until then, say nothing about speed. Watch for
+the opposite risk too: `intl.so`'s 2,469 Global constructions could regress.
+
+**Native `dlopen` ≈ 650-900 lines** over the pure core, no wasmtime wall, no ABI
+bump, no new host capability — so the V1 prize (host-native gains `dlopen`,
+which it has never had) is real and affordable.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.

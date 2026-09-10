@@ -87,7 +87,7 @@ All four were assertions no one had re-tested.
 | part | verdict | reason |
 |---|---|---|
 | `parseDylinkSection`, symbol scoping/resolution, GOT maintenance, dependency graph, memory/table allocation arithmetic, the dlopen fork-activation state machine | **MIGRATE** | a complete `ld.so` in TypeScript. Deterministic computation with POSIX-visible semantics. **host-native has no linker at all**, so this *gains* native `dlopen` rather than relocating a capability — the clearest V1 win after the duplicated entries |
-| `new WebAssembly.Instance`, `Memory.grow`/`Table.grow`, `new WebAssembly.Tag`, table get/set | **KEEP** | §2.2 — four JS-API acts, and only these four |
+| **Eight** JS-API act kinds at 16 call sites — `new WebAssembly.Instance`, `new WebAssembly.Module`, `Memory.grow`/`Table.grow`, `new WebAssembly.Tag`, table get/set, `new WebAssembly.Global` + `Global.value` get/set, and the stateful counting-`Proxy` import object | **KEEP (executor only)** | §2.2. **Corrected 2026-09-09 from "four" — the fifth disproved floor, and this one was authored here.** All eight have wasmtime-48 equivalents and collapse into one typed `LinkAct` executor, so the *planner* is still pure Rust |
 
 ### `host/src/vfs/**` — 22,599 lines
 

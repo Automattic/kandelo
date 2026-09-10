@@ -128,9 +128,24 @@ machine (`DylinkForkState`, `DylinkForkTransactionState`,
 `PreparedDylinkForkActivation`, `PendingDlopenTransaction`).
 
 This is loader logic over bytes and tables — deterministic computation with
-POSIX-visible semantics. The floor beneath it is four JS-API acts:
-`new WebAssembly.Instance`, `Memory.grow` / `Table.grow`,
-`new WebAssembly.Tag`, and table-entry set/get. Everything else is Rust.
+POSIX-visible semantics.
+
+**CORRECTED 2026-09-09 by the K5 grounding
+(`docs/plans/2026-09-09-k5-dynamic-linker-grounding.md`).** This section
+originally claimed the floor beneath it was *four* JS-API acts. That was wrong,
+and it is the **fifth** inherited "floor" this campaign has disproved — this one
+authored here rather than inherited. Walking every `WebAssembly.` site finds
+**eight act kinds across 16 call sites**. The four omitted were:
+`new WebAssembly.Module`; **`new WebAssembly.Global` plus `Global.value`
+get/set** — every GOT cell, and `intl.so` alone forces **2,469** Global
+allocations (VERIFIED by `wasm-objdump`); and **import-object construction**,
+which is not a plain object but a *stateful counting `Proxy`* whose `get` order
+is engine-observable (`dylink.ts:1793-1888`, reasoning at `:1877-1881`).
+
+The verdict is unchanged: all eight have wasmtime-48 equivalents (VERIFIED in
+vendored source; `Tag::new` is already used at `guest.rs:5276`), and they
+collapse into **one** typed `LinkAct` executor. But the count was asserted from
+a symbol overview rather than from reading the call sites, and it was wrong.
 
 It is also a pure portability win: host-native has no linker today, so
 `dlopen` on native is unimplemented — moving this to Rust *gains* a

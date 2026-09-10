@@ -60,10 +60,20 @@ if [ "${1:-}" = "--step" ]; then
     a="$2"; b="$3"
     read -r tadd tdel tnet <<<"$(step "$a" "$b" '\.ts$' "${TS_PATHS[@]}")"
     read -r radd rdel rnet <<<"$(step "$a" "$b" '\.rs$' "${RS_PATHS[@]}")"
+    # Rust TEST code counted separately. Counting tests as "Rust added"
+    # reads as implementation bloat when it is the opposite: the Bar demands
+    # that coverage, and for a migration the differential harness IS the
+    # gate that licenses deleting the TypeScript. Split so the number means
+    # what a reader will take it to mean.
+    read -r tsadd tsdel tsnet <<<"$(git diff --numstat "$a".."$b" -- "${RS_PATHS[@]}" 2>/dev/null \
+        | awk '$3 ~ /\.rs$/ && ($3 ~ /\/tests\// || $3 ~ /test/) {add+=$1; del+=$2}
+               END{printf "%d %d %d\n", add+0, del+0, (add+0)-(del+0)}')"
     printf 'step %s..%s\n' "$(git rev-parse --short "$a")" "$(git rev-parse --short "$b")"
     printf '  %-12s %8s %8s %8s\n' '' added removed net
     printf '  %-12s %8s %8s %+8d\n' 'in-scope TS' "$tadd" "$tdel" "$tnet"
-    printf '  %-12s %8s %8s %+8d\n' 'Rust'        "$radd" "$rdel" "$rnet"
+    printf '  %-12s %8s %8s %+8d\n' 'Rust (all)'  "$radd" "$rdel" "$rnet"
+    printf '  %-12s %8s %8s %+8d\n' '  of which test' "$tsadd" "$tsdel" "$tsnet"
+    printf '  %-12s %8s %8s %+8d\n' '  production'  "$((radd-tsadd))" "$((rdel-tsdel))" "$((rnet-tsnet))"
     read -r ts rs fork <<<"$(totals "$b")"
     printf '  aggregate at %s: TS %s  Rust %s  (fork TS %s)\n' \
         "$(git rev-parse --short "$b")" "$ts" "$rs" "$fork"
