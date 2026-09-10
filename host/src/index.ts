@@ -80,7 +80,8 @@ export {
   PROCESS_MMAP_BASE,
 } from "./process-memory";
 export type { ProcessMemoryLayout } from "./process-memory";
-export { WasiShim, WasiExit } from "./wasi-shim";
+export { WasiExit } from "./wasi-module-instance";
+export type { WasiModuleInstance } from "./wasi-module-instance";
 export { isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-detect";
 export { NodeKernelHost } from "./node-kernel-host";
 export type { NodeKernelHostOptions, SpawnOptions } from "./node-kernel-host";

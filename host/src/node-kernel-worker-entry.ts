@@ -188,9 +188,37 @@ const forkModuleModuleByWidth = new Map<4 | 8, WebAssembly.Module>();
 // identical regardless of source, so caching by width stays sound whether a
 // width was first compiled from injected bytes or from the resolver.
 let injectedForkModuleBytesByWidth: Partial<Record<4 | 8, ArrayBuffer>> = {};
-function forkModuleInitFields(
-  ptrWidth: 4 | 8,
-): { forkModuleModule: WebAssembly.Module } {
+/**
+ * The co-resident WASI module, compiled once per kernel host. WASI Preview 1
+ * is a wasm32 ABI, so there is one module rather than one per pointer width.
+ *
+ * Resolved lazily: a host that never runs a WASI guest never needs the
+ * artifact, and a host that does gets a loud resolver error naming the build
+ * script rather than a silent loss of WASI support.
+ */
+let wasiModuleModule32Node: WebAssembly.Module | null = null;
+function wasiModuleModule(): WebAssembly.Module {
+  if (!wasiModuleModule32Node) {
+    wasiModuleModule32Node = new WebAssembly.Module(
+      readFileSync(resolveBinary("wasi_module32.wasm")),
+    );
+  }
+  return wasiModuleModule32Node;
+}
+
+/**
+ * The pre-compiled co-resident side modules a process worker may need.
+ *
+ * Both the fork module and the WASI module are PIC side modules placed into
+ * the guest's address space by the process worker. They travel together
+ * because they are supplied the same way and consumed at the same point, so a
+ * third side module is one field here rather than a new spread at every
+ * worker-launch site.
+ */
+function sideModuleInitFields(ptrWidth: 4 | 8): {
+  forkModuleModule: WebAssembly.Module;
+  wasiModuleModule?: WebAssembly.Module;
+} {
   let mod = forkModuleModuleByWidth.get(ptrWidth);
   if (!mod) {
     const injected = injectedForkModuleBytesByWidth[ptrWidth];
@@ -202,7 +230,24 @@ function forkModuleInitFields(
     }
     forkModuleModuleByWidth.set(ptrWidth, mod);
   }
-  return { forkModuleModule: mod };
+  // WASI Preview 1 is wasm32-only. A wasm64 worker gets no module, and a
+  // wasm64 WASI guest fails loud in the worker rather than here.
+  if (ptrWidth !== 4) {
+    return { forkModuleModule: mod };
+  }
+  // Resolving the artifact must not fail a worker launch for the overwhelming
+  // majority of programs, which are not WASI guests. The worker reports the
+  // missing capability when it actually has a WASI module to host.
+  let wasiModule: WebAssembly.Module | undefined;
+  try {
+    wasiModule = wasiModuleModule();
+  } catch {
+    wasiModule = undefined;
+  }
+  return {
+    forkModuleModule: mod,
+    ...(wasiModule ? { wasiModuleModule: wasiModule } : {}),
+  };
 }
 
 // --- State ---
@@ -1513,7 +1558,7 @@ async function handleSpawn(msg: SpawnMessage) {
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     // A constructor may expose Memory to a partially created Worker before it
@@ -1906,7 +1951,7 @@ async function handleVfork(
       // `!borrowedForkChild` gate). Without this the child would silently fall
       // back to the JS engine and fail against the module-backed parent's
       // Option-B journal image (which has no JS replay-event manifest).
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2282,7 +2327,7 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2623,7 +2668,7 @@ async function handleExec(
         ptrWidth: newPtrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-        ...forkModuleInitFields(newPtrWidth),
+        ...sideModuleInitFields(newPtrWidth),
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -2985,7 +3030,7 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     newWorker = new DeferredWorkerHandle(
@@ -3187,7 +3232,7 @@ async function handleClone(
     // Phase 6 D7b: ship the same co-resident fork-module decision the process
     // worker receives, so a fork issued FROM this pthread unwinds through the
     // module (the parent side of a fork-from-thread).
-    ...forkModuleInitFields(processInfo.ptrWidth),
+    ...sideModuleInitFields(processInfo.ptrWidth),
     fnPtr,
     argPtr,
     stackPtr,

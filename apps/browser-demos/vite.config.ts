@@ -23,6 +23,7 @@ import {
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
+  browserWasiModule32ModuleSpecifier,
 } from "./browser-module-contract.mjs";
 import {
   createBinaryDevAccess,
@@ -336,6 +337,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const KERNEL = browserKernelModuleSpecifier;
   const ROOTFS = browserRootfsModuleSpecifier;
   const FORK_MODULE32 = browserForkModule32ModuleSpecifier;
+  const WASI_MODULE32 = browserWasiModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -375,6 +377,24 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         this.error(
           "fork_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh`.\n" +
+            `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === WASI_MODULE32) {
+        // The wasm32 co-resident WASI module, staged next to the kernel by
+        // `crates/wasi-module/build-wasm.sh`. This is the browser's entire
+        // WASI Preview 1 implementation, so a missing artifact is a loud
+        // error pointing at the build script rather than a silent fallback.
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("wasi_module32.wasm");
+        }
+        const resolved = tryResolveBinary("wasi_module32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        const local = path.resolve(repoRoot, "local-binaries/wasi_module32.wasm");
+        const hosted = path.resolve(repoRoot, "host/wasm/wasi_module32.wasm");
+        this.error(
+          "wasi_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/wasi-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
         );
       }

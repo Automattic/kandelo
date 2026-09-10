@@ -530,11 +530,23 @@ const ownershipSeeds: OwnershipSeed[] = [
     why: "This browser message replaces a framebuffer process-memory binding after growth, not kernel memory.",
   },
   {
-    declaration: "host/src/wasi-shim.ts::WasiShim.memory",
+    declaration:
+      "host/src/wasi-module-instance.ts::InstantiateWasiModuleOptions.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
-    why: "The WASI shim operates on its guest process memory.",
+    why:
+      "Placing the co-resident WASI side module writes its static data and " +
+      "argv/env blobs into the guest process memory it will run against.",
+  },
+  {
+    declaration: "host/src/pic-side-module.ts::placeSideModule.memory",
+    target: "value",
+    owner: "process-memory",
+    form: "memory",
+    why:
+      "The placement bounds check reads the guest process memory's length to " +
+      "refuse a region that would not fit.",
   },
   {
     declaration: "host/src/dylink.ts::LoadSharedLibraryOptions.memory",

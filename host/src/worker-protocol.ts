@@ -47,6 +47,14 @@ export interface CentralizedWorkerInitMessage {
    * fails loud.
    */
   forkModuleModule?: WebAssembly.Module;
+  /**
+   * The pre-compiled co-resident `wasi-module`. The kernel host resolves and
+   * compiles it once and ships it here so a worker whose program turns out to
+   * be a WASI module instantiates without recompiling. WASI Preview 1 is a
+   * wasm32 ABI, so this is absent for a wasm64 worker; a wasm64 WASI guest
+   * fails loud rather than silently losing WASI.
+   */
+  wasiModuleModule?: WebAssembly.Module;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
@@ -177,6 +185,14 @@ export interface CentralizedThreadInitMessage {
    * co-resident module the process worker gets.
    */
   forkModuleModule?: WebAssembly.Module;
+  /**
+   * The pre-compiled co-resident `wasi-module`. The kernel host resolves and
+   * compiles it once and ships it here so a worker whose program turns out to
+   * be a WASI module instantiates without recompiling. WASI Preview 1 is a
+   * wasm32 ABI, so this is absent for a wasm64 worker; a wasm64 WASI guest
+   * fails loud rather than silently losing WASI.
+   */
+  wasiModuleModule?: WebAssembly.Module;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;

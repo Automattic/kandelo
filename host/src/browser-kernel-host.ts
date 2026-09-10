@@ -223,6 +223,24 @@ async function fetchDefaultBrowserForkModule32(): Promise<ArrayBuffer> {
   );
 }
 
+/**
+ * Fetch the wasm32 WASI module bytes from its bundler URL.
+ *
+ * Kept behind its own dynamic import for the same reason the fork-module's is:
+ * one nameable dependency edge on the staged artifact. The module is the
+ * browser's entire WASI Preview 1 implementation, so this is not an optional
+ * capability — a failure here means a WASI guest cannot run, and the boot says
+ * so rather than continuing with something that only resembles WASI.
+ */
+async function fetchDefaultBrowserWasiModule32(): Promise<ArrayBuffer> {
+  const { browserWasiModule32ArtifactUrl } = await import(
+    "./browser-wasi-module-artifact"
+  );
+  return fetch(browserWasiModule32ArtifactUrl).then((response) =>
+    response.arrayBuffer()
+  );
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -427,6 +445,11 @@ export class BrowserKernel {
     // every fork-instrumented process worker. There is no kill switch and no JS
     // reference engine behind it.
     const forkModuleBytes = await fetchDefaultBrowserForkModule32();
+    // The co-resident WASI module is the browser's WASI Preview 1 support:
+    // fetch its bytes and ship them alongside the fork-module so the kernel
+    // worker can hand a compiled module to any process worker that turns out
+    // to be running a WASI guest.
+    const wasiModuleBytes = await fetchDefaultBrowserWasiModule32();
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     this.workerStarted = true;
@@ -500,6 +523,7 @@ export class BrowserKernel {
           type: "init",
           kernelWasmBytes: transferBuf,
           ...(forkModuleBytes ? { forkModuleBytes } : {}),
+          ...(wasiModuleBytes ? { wasiModuleBytes } : {}),
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
@@ -525,6 +549,9 @@ export class BrowserKernel {
         const transfer: Transferable[] = [transferBuf];
         if (forkModuleBytes) {
           transfer.push(forkModuleBytes);
+        }
+        if (wasiModuleBytes) {
+          transfer.push(wasiModuleBytes);
         }
         if (opts.takeVfsImageOwnership) {
           // WHY: this API is used at durable reboot boundaries where the main

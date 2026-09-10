@@ -168,8 +168,8 @@ import {
   type WasmGuestPointer,
 } from "./wasm-guest-pointer";
 // WASI detection helpers are tiny and live in their own file so we can
-// import them eagerly without dragging in the 1300-line WasiShim class.
-// The shim itself is dynamically imported below, only when a worker
+// import them eagerly without dragging in the WASI hosting path.
+// `wasi-module-instance.ts` is dynamically imported below, only when a worker
 // actually needs to host a wasi_snapshot_preview1 module — which our
 // native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
 // everything compiled by wasm32-posix) never trigger.
@@ -3243,22 +3243,37 @@ export async function centralizedWorkerMain(
       // Lazy-import the heavy shim only when we actually have a WASI
       // module to host. Native channel-syscall workers (the common
       // case) skip this import entirely.
-      const { WasiShim, WasiExit } = await import("./wasi-shim");
-
-      const wasiShim = new WasiShim(
-        memory,
-        channelOffset,
-        initData.argv || [],
-        initData.env || [],
+      const { instantiateWasiModule, startWasiModule, WasiExit } = await import(
+        "./wasi-module-instance"
       );
-      const wasiImports = wasiShim.getImports();
+
+      // WASI Preview 1 is implemented by the co-resident Rust `wasi-module`,
+      // the exact counterpart of `libc/glue/channel_syscall.c` for a guest
+      // that was not built against Kandelo's libc. The host's job here is to
+      // place and instantiate it; every WASI call is then a wasm->wasm call
+      // into Rust with no JavaScript frame in between.
+      const wasiModuleModule = initData.wasiModuleModule;
+      if (!wasiModuleModule) {
+        throw new Error(
+          `pid=${pid}: this program is a WASI module, but the kernel host ` +
+            "supplied no `wasi-module` to run it with. Build it with " +
+            "`scripts/dev-shell.sh bash crates/wasi-module/build-wasm.sh`.",
+        );
+      }
+      const wasiModule = instantiateWasiModule({
+        module: wasiModuleModule,
+        memory,
+        ptrWidth,
+        reserve: (size) =>
+          continuationMmap(memory, channelOffset, size, `pid=${pid} wasi`),
+        label: `pid=${pid}`,
+        argv: initData.argv || [],
+        env: initData.env || [],
+      });
 
       // Build import object: provide wasi_snapshot_preview1 namespace + env.memory
       const importObject: WebAssembly.Imports = {
-        wasi_snapshot_preview1: wasiImports as Record<
-          string,
-          WebAssembly.ExportValue
-        >,
+        wasi_snapshot_preview1: wasiModule.wasiImports,
         env: { memory },
       };
 
@@ -3281,8 +3296,10 @@ export async function centralizedWorkerMain(
 
       const instance = await WebAssembly.instantiate(module, importObject);
 
-      // Initialize preopened directories
-      wasiShim.init();
+      // Seed the module with the channel and the argv/env blob locations, then
+      // open its `/` preopen. Separate from instantiation because the preopen
+      // issues a syscall, and the module has to exist before the guest does.
+      startWasiModule(wasiModule, { channelOffset, label: `pid=${pid}` });
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);

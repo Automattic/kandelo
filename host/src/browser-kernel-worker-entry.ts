@@ -159,16 +159,39 @@ let kernelWorker: CentralizedKernelWorker;
 // (handleInit, below). The module is the UNCONDITIONAL fork reconstructor;
 // browser workers cannot read `process.env`, so there is no kill switch here.
 let forkModuleModule32Browser: WebAssembly.Module | null = null;
-function forkModuleInitFields(
-  ptrWidth: 4 | 8,
-): { forkModuleModule?: WebAssembly.Module } {
-  // Only the wasm32 module ships in the browser; wasm32 is the guest width. A
+/**
+ * The co-resident wasm32 WASI module, compiled once at kernel init from the
+ * bytes the main thread ships. Handed to every process worker; the worker
+ * instantiates it only if the program it is about to run is a WASI module.
+ */
+let wasiModuleModule32Browser: WebAssembly.Module | null = null;
+/**
+ * The pre-compiled co-resident side modules a process worker may need.
+ *
+ * Both the fork module and the WASI module are wasm32-only PIC side modules
+ * placed into the guest's address space by the process worker. They travel
+ * together because they are supplied the same way and consumed at the same
+ * point, so a third side module is one field here rather than a new spread at
+ * every worker-launch site.
+ */
+function sideModuleInitFields(ptrWidth: 4 | 8): {
+  forkModuleModule?: WebAssembly.Module;
+  wasiModuleModule?: WebAssembly.Module;
+} {
+  // Only the wasm32 modules ship in the browser; wasm32 is the guest width. A
   // wasm64 guest gets no module and a fork-instrumented wasm64 worker fails loud
   // (browser guests are wasm32).
-  if (ptrWidth !== 4 || !forkModuleModule32Browser) {
+  if (ptrWidth !== 4) {
     return {};
   }
-  return { forkModuleModule: forkModuleModule32Browser };
+  return {
+    ...(forkModuleModule32Browser
+      ? { forkModuleModule: forkModuleModule32Browser }
+      : {}),
+    ...(wasiModuleModule32Browser
+      ? { wasiModuleModule: wasiModuleModule32Browser }
+      : {}),
+  };
 }
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
@@ -1287,6 +1310,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   if (msg.forkModuleBytes) {
     forkModuleModule32Browser = await WebAssembly.compile(msg.forkModuleBytes);
   }
+  // The co-resident WASI module, compiled once here for the same reason: a
+  // process worker that turns out to be running a WASI guest instantiates from
+  // a pre-compiled module rather than recompiling per process.
+  if (msg.wasiModuleBytes) {
+    wasiModuleModule32Browser = await WebAssembly.compile(msg.wasiModuleBytes);
+  }
 
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
   // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
@@ -1529,7 +1558,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     workerCreationAttempted = true;
@@ -2095,7 +2124,7 @@ async function handleVfork(
       // fork-module, so it needs the flag + compiled module like a COW child.
       // Without this it would silently fall back to the JS engine and fail
       // against the module-backed parent's Option-B journal image.
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(() => {
@@ -2485,7 +2514,7 @@ async function handleOrdinaryFork(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     childWorker = new DeferredWorkerHandle(
@@ -2860,7 +2889,7 @@ async function handleExec(
         ptrWidth,
         kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
         kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-        ...forkModuleInitFields(ptrWidth),
+        ...sideModuleInitFields(ptrWidth),
       };
 
       replacementWorker = new DeferredWorkerHandle(() => {
@@ -3244,7 +3273,7 @@ async function handlePosixSpawn(
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...forkModuleInitFields(ptrWidth),
+      ...sideModuleInitFields(ptrWidth),
     };
 
     newWorker = new DeferredWorkerHandle(
@@ -3456,7 +3485,7 @@ async function handleClone(
     // Phase 6 D7b: ship the same co-resident fork-module decision the process
     // worker receives, so a fork issued FROM this pthread unwinds through the
     // module (the parent side of a fork-from-thread). Mirrors the Node host.
-    ...forkModuleInitFields(processInfo.ptrWidth),
+    ...sideModuleInitFields(processInfo.ptrWidth),
     fnPtr,
     argPtr,
     stackPtr,

@@ -75,6 +75,13 @@ export interface InitMessage {
    */
   forkModuleBytes?: ArrayBuffer;
   /**
+   * The wasm32 WASI module bytes. The kernel worker compiles them once and
+   * ships the compiled module to each process worker, which instantiates it
+   * only when the program it is about to run is a WASI module. These bytes are
+   * the browser's whole WASI Preview 1 implementation.
+   */
+  wasiModuleBytes?: ArrayBuffer;
+  /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
    * restores and authenticates an owned memfs through the verified image-mount
    * resolver — no VFS SAB is shared with the main thread. Demos that need

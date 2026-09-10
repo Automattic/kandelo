@@ -451,6 +451,22 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
     let out = out.ok_or("--out <path> is required")?;
 
+    let json = render()?;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&out, &json)
+        .map_err(|e| format!("writing {}: {e}", out.display()))?;
+    eprintln!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Build the dump exactly as `--out` would write it.
+///
+/// Separate from `run` so the committed fixture can be pinned by a test
+/// rather than only by whoever last remembered to regenerate it.
+pub(crate) fn render() -> Result<String, String> {
     let mut tables = serde_json::Map::new();
     let mut put = |name: &str, table: Table| {
         tables.insert(
@@ -479,12 +495,46 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     let json = serde_json::to_string_pretty(&dump)
         .map_err(|e| format!("serializing: {e}"))?;
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    Ok(json + "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render;
+
+    /// The committed dump must be what today's `wasi-abi` actually produces.
+    ///
+    /// K10's differential harness compared this dump against the TypeScript
+    /// WASI shim over every enumerated input. That comparison licensed
+    /// deleting the shim -- and died with it, because after the deletion there
+    /// is no second implementation to differ from.
+    ///
+    /// What survives, and what this test keeps alive, is the fixture's OTHER
+    /// role: it is a reviewed record of the answer Rust gives for all 1,358
+    /// inputs, including the five inputs sets where Rust deliberately differs
+    /// from the shim's known defects. Pinning it here means a change to any
+    /// translation table fails a test until someone regenerates the fixture
+    /// and reviews the diff, instead of silently redefining the baseline. A
+    /// stale fixture was the one failure mode the Vitest harness could not
+    /// see: it compared TypeScript against whatever JSON happened to be
+    /// checked in.
+    #[test]
+    fn the_committed_fixture_is_what_wasi_abi_produces_today() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("xtask lives at <repo>/tools/xtask");
+        let fixture = repo.join("host/test/fixtures/wasi-translation-rust.json");
+        let committed = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", fixture.display()));
+        let generated = render().expect("render");
+        assert_eq!(
+            committed,
+            generated,
+            "host/test/fixtures/wasi-translation-rust.json is stale. \
+             Regenerate it with `scripts/xtask.sh dump-wasi-translation --out \
+             host/test/fixtures/wasi-translation-rust.json` and review the diff \
+             -- every line of it is a change to observable WASI behavior."
+        );
     }
-    std::fs::write(&out, json + "\n")
-        .map_err(|e| format!("writing {}: {e}", out.display()))?;
-    eprintln!("wrote {}", out.display());
-    Ok(())
 }
