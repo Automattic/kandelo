@@ -169,20 +169,34 @@ pub fn describe_facts_policy_failures(
         // against. A hardcoded number silently keeps naming the old one after a
         // bump, telling whoever reads the failure that a stale artifact belongs
         // to an epoch nobody is running.
-        let epoch = policy
-            .expected_abi
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| String::from("this"));
+        // ALWAYS this build's epoch, never the caller's `expected_abi`.
+        //
+        // The surface being recognized here is defined by the requirement
+        // tables compiled into THIS binary (`WPK_FORK_REQUIRED_*`). A caller
+        // asking "is this artifact ABI 12?" does not change which contract's
+        // metadata was found, so naming 12 would assert something false: that
+        // the reader recognized ABI 12 fork surface, which it has no tables to
+        // recognize.
+        let epoch = wasm_posix_shared::ABI_VERSION.to_string();
         report.failures.push(format!(
             "contains ABI {epoch} wasm-fork-instrument metadata, imports, or exports"
         ));
     }
 
+    // An unlinked OBJECT is exempt; a linked side module is not. See
+    // `ArtifactFacts::is_relocatable_object` for why those are different
+    // questions -- using the side-module flag here would exempt exactly the
+    // artifacts whose reconstruction recipe most needs checking.
     let require_fork = policy
         .require_fork_instrumentation
-        .unwrap_or(!facts.is_relocatable);
+        .unwrap_or(!facts.is_relocatable_object);
     if require_fork && (has_fork_surface || facts.imports_kernel_fork) {
-        let epoch = policy.expected_abi.unwrap_or(0);
+        // Same rule, and for the same reason: every requirement
+        // `describe_fork_contract_failures` checks comes from this build's
+        // tables, so every message about them names this build's epoch. The
+        // caller's `expected_abi` answers a different question -- what the
+        // artifact's own `__abi_version` must equal -- and is checked above.
+        let epoch = wasm_posix_shared::ABI_VERSION;
         report
             .failures
             .extend(describe_fork_contract_failures(facts, epoch));

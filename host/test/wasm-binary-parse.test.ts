@@ -922,7 +922,11 @@ describe("extractAbiVersion", () => {
 
   it("follows an instrumented command-export wrapper to the real ABI marker", () => {
     const wasm = buildWasm({
-      funcTypes: [0],
+      // TWO defined functions, because two bodies follow. The function and code
+      // sections must declare the same count, and a module where they do not is
+      // rejected by any conforming decoder -- the hand-rolled reader this
+      // replaced simply never compared them.
+      funcTypes: [0, 0],
       funcBodies: [
         {
           locals: [0x00],

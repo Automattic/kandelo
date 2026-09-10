@@ -63,7 +63,7 @@ pub fn describe_fork_contract_failures(facts: &ArtifactFacts, epoch: u32) -> Vec
 
     let declared_pointer_width = check_linked_frames(facts, &mut failures);
     check_module_state(facts, declared_pointer_width, &mut failures);
-    check_memory_agreement(facts, declared_pointer_width, &mut failures);
+    check_memory_agreement(facts, epoch, declared_pointer_width, &mut failures);
     check_frame_imports_and_unwind(facts, epoch, pointer_width, &mut failures);
 
     failures
@@ -194,9 +194,8 @@ fn check_module_state(
             if let Some(expected) = expected_pointer_width {
                 if format.pointer_width != expected {
                     failures.push(format!(
-                        "{section} declares pointer width {} but {} declares {expected}",
-                        format.pointer_width,
-                        abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION
+                        "{section} pointer width {} does not match linked frames {expected}",
+                        format.pointer_width
                     ));
                 }
             }
@@ -213,6 +212,7 @@ fn check_module_state(
 /// model than the binary it is attached to, which traps on the first frame.
 fn check_memory_agreement(
     facts: &ArtifactFacts,
+    epoch: u32,
     declared_pointer_width: Option<u8>,
     failures: &mut Vec<String>,
 ) {
@@ -230,9 +230,13 @@ fn check_memory_agreement(
     }
     let actual = facts.pointer_width();
     if actual != declared {
+        // Both widths are named in BYTES, and the epoch with them. A reader
+        // seeing only "wasm32" has to know which descriptor disagreed and by
+        // how much before the message tells them anything actionable.
+        let article = if declared == 8 { "an" } else { "a" };
         failures.push(format!(
-            "fork artifact descriptors declare pointer width {declared} but its memory is wasm{}",
-            if actual == 8 { "64" } else { "32" }
+            "ABI {epoch} linked-frame descriptor declares {article} {declared}-byte \
+             pointer but the module memory uses {actual}-byte addresses"
         ));
     }
 }
@@ -731,8 +735,12 @@ fn check_frame_imports_and_unwind(
         }
     }
     if !missing.is_empty() {
+        // Names the epoch for the same reason the export failure does: an
+        // artifact missing these imports was built for a DIFFERENT epoch's
+        // runtime, and a message that does not say which one leaves the reader
+        // without the one fact that identifies the rebuild.
         failures.push(format!(
-            "incomplete wasm-fork-instrument imports; missing {}",
+            "incomplete ABI {epoch} fork-runtime imports; missing {}",
             missing.join(", ")
         ));
     }

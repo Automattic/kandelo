@@ -505,9 +505,18 @@ pub struct ArtifactFacts {
     /// Whether the module imports `kernel.kernel_fork`, which is what makes it
     /// a main-program fork participant rather than a side module.
     pub imports_kernel_fork: bool,
-    /// Whether a `dylink.0` section is present, i.e. this is a relocatable
-    /// (side) module rather than a linked program.
+    /// Whether a `dylink.0` section is present, i.e. this is a position-
+    /// independent SIDE MODULE.
     pub is_relocatable: bool,
+    /// Whether this is an unlinked relocatable OBJECT: it carries `linking`
+    /// and/or `reloc.*` sections and has not been through `wasm-ld`.
+    ///
+    /// Distinct from [`Self::is_relocatable`], and the distinction decides
+    /// policy. A side module has been linked and must carry the fork contract;
+    /// an object file has not been linked at all, so requiring the contract of
+    /// it would reject every intermediate artifact the build produces. Both are
+    /// "relocatable" in ordinary speech and neither substitutes for the other.
+    pub is_relocatable_object: bool,
     /// Whether any export name begins with `asyncify_`, the legacy transform
     /// this epoch does not support.
     pub contains_legacy_asyncify: bool,
@@ -834,9 +843,13 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
             Payload::CustomSection(section) => {
                 let name = section.name();
                 facts.custom_section_names.push(name.to_string());
+                if name.starts_with("reloc.") {
+                    facts.is_relocatable_object = true;
+                }
                 let data = section.data().to_vec();
                 match name {
                     "dylink.0" | "dylink" => facts.is_relocatable = true,
+                    "linking" => facts.is_relocatable_object = true,
                     n if n == abi::WPK_FORK_CAPABILITIES_SECTION => {
                         facts.fork_capabilities.push(data)
                     }
@@ -1062,34 +1075,100 @@ pub fn read_i32_const_export(bytes: &[u8], export_name: &str) -> Option<i32> {
     }
 
     let index = function_index?;
+    read_i32_const_from_function(index, imported_functions, &bodies, 0)
+}
+
+/// How far a wrapper chain is followed before giving up.
+///
+/// `wasm-fork-instrument` wraps exported command functions, so the marker a
+/// caller asks for may be one `call` away from the export. In practice the
+/// chain is one link; four is generous and bounds a malformed or hostile
+/// artifact that made its markers mutually recursive.
+const MAX_MARKER_WRAPPER_DEPTH: u32 = 4;
+
+/// Read the constant a trivial marker export returns, following a wrapper.
+///
+/// # Why this walks instructions rather than requiring a bare body
+///
+/// A marker export is *conceptually* `i32.const N; end`, and requiring exactly
+/// that is what the first version of this function did. Real artifacts are not
+/// that shape: the SDK emits a constructors `call` ahead of the constant, and
+/// `wasm-fork-instrument` may replace the body with a wrapper that calls the
+/// real marker. Requiring the bare shape reads `None` from both, and `None`
+/// means "this binary predates the marker" — so an instrumented artifact would
+/// have silently downgraded a hard ABI-epoch MISMATCH into a rollout warning.
+/// That is the exact failure mode the marker exists to prevent.
+///
+/// The rule is therefore the one the artifact's shape actually implies: the
+/// value a marker returns is the constant, or the callee's constant, that is
+/// immediately followed by a `return` or by the body's final `end`.
+fn read_i32_const_from_function(
+    function_index: u32,
+    imported_functions: u32,
+    bodies: &[(u32, Vec<u8>)],
+    depth: u32,
+) -> Option<i32> {
+    if depth > MAX_MARKER_WRAPPER_DEPTH {
+        return None;
+    }
     // A constant accessor is always module-defined; an imported function has no
     // body to read.
-    let defined_ordinal = index.checked_sub(imported_functions)?;
+    let defined_ordinal = function_index.checked_sub(imported_functions)?;
     let (_, body) = bodies.iter().find(|(ord, _)| *ord == defined_ordinal)?;
-    decode_i32_const_body(body)
+
+    // `OperatorsReader` decodes each instruction's immediates properly, which is
+    // the whole reason this is not a hand-rolled byte skipper: the previous
+    // TypeScript had to enumerate every opcode's immediate shape, and an opcode
+    // it did not know desynchronized the walk silently.
+    let reader = wasmparser::BinaryReader::new(body, 0);
+    let mut body_reader = wasmparser::FunctionBody::new(reader);
+    let mut locals = body_reader.get_locals_reader().ok()?;
+    for _ in 0..locals.get_count() {
+        locals.read().ok()?;
+    }
+    let operators = body_reader.get_operators_reader().ok()?;
+
+    let mut pending: Option<Pending> = None;
+    for operator in operators.into_iter() {
+        let operator = operator.ok()?;
+        match (&pending, &operator) {
+            // A value immediately returned, or falling out of the body's final
+            // `end`, is the marker's answer.
+            (Some(_), wasmparser::Operator::Return)
+            | (Some(_), wasmparser::Operator::End) => {
+                return match pending.take()? {
+                    Pending::Constant(value) => Some(value),
+                    Pending::Call(callee) => read_i32_const_from_function(
+                        callee,
+                        imported_functions,
+                        bodies,
+                        depth + 1,
+                    ),
+                };
+            }
+            _ => {}
+        }
+        pending = match operator {
+            wasmparser::Operator::I32Const { value } => Some(Pending::Constant(value)),
+            wasmparser::Operator::Call { function_index } => {
+                Some(Pending::Call(function_index))
+            }
+            // Anything else discards the candidate: only a value produced
+            // immediately before the return is the one the marker yields.
+            _ => None,
+        };
+    }
+    None
+}
+
+/// A value that would be the marker's answer if a `return` or the final `end`
+/// came next.
+enum Pending {
+    Constant(i32),
+    Call(u32),
 }
 
 /// Decode a function body that must be `(local decls) i32.const N end`.
-fn decode_i32_const_body(body: &[u8]) -> Option<i32> {
-    let mut reader = wasmparser::BinaryReader::new(body, 0);
-    // Local declaration groups, all of which must be empty for a constant
-    // accessor, but are tolerated so a debug build with locals still reads.
-    let local_groups = reader.read_var_u32().ok()?;
-    for _ in 0..local_groups {
-        let _count = reader.read_var_u32().ok()?;
-        let _ty = reader.read::<ValType>().ok()?;
-    }
-    let opcode = reader.read_u8().ok()?;
-    if opcode != 0x41 {
-        return None;
-    }
-    let value = reader.read_var_i32().ok()?;
-    let end = reader.read_u8().ok()?;
-    if end != 0x0b {
-        return None;
-    }
-    Some(value)
-}
 
 /// Read the `__heap_base` global's address.
 ///

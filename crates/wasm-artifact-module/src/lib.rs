@@ -220,6 +220,64 @@ pub extern "C" fn wa_custom_section(artifact_len: u32, name_len: u32) -> i32 {
     }
 }
 
+/// The `__heap_base` export's value.
+///
+/// Returns 1 with the eight-byte little-endian value in the output buffer when
+/// present, and 0 with an empty output buffer when the artifact does not export
+/// it, its initializer is not a plain constant, or the container cannot be
+/// read at all.
+///
+/// # Why this is TOLERANT where [`wa_read_facts`] is strict
+///
+/// A caller asking for a heap base is asking a question that has a legitimate
+/// "no": a program with no `__heap_base` runs perfectly well, and so does a
+/// buffer that turns out not to be a module. Routing it through the facts walk
+/// would turn every such answer into a thrown error, which is a behaviour
+/// change disguised as a refactor — the TypeScript this replaces returned
+/// `null` for all three cases.
+#[unsafe(no_mangle)]
+pub extern "C" fn wa_heap_base(len: u32) -> i32 {
+    buffers().output.clear();
+    let Some(bytes) = artifact(len) else {
+        return 0;
+    };
+    match read_heap_base(bytes) {
+        Some(value) => {
+            buffers().output.extend_from_slice(&value.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
+/// The value of a trivial `i32`-returning marker export named by the trailer.
+///
+/// Returns 1 with the four-byte little-endian value in the output buffer when
+/// the export exists and yields a constant, and 0 otherwise. Tolerant for the
+/// same reason as [`wa_heap_base`], and for a sharper one: absence means "this
+/// binary predates the marker", which the policy treats as a documented rollout
+/// state rather than a failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn wa_i32_const_export(artifact_len: u32, name_len: u32) -> i32 {
+    buffers().output.clear();
+    let Some(bytes) = artifact(artifact_len) else {
+        return 0;
+    };
+    let Some(name_bytes) = trailer(artifact_len, name_len) else {
+        return 0;
+    };
+    let Ok(name) = core::str::from_utf8(name_bytes) else {
+        return 0;
+    };
+    match wasm_artifact::facts::read_i32_const_export(bytes, name) {
+        Some(value) => {
+            buffers().output.extend_from_slice(&value.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Facts
 // ---------------------------------------------------------------------------
@@ -247,6 +305,7 @@ fn encode_facts(bytes: &[u8], facts: &ArtifactFacts) -> Vec<u8> {
     writer.bool(facts.contains_legacy_asyncify);
     writer.bool(facts.imports_kernel_fork);
     writer.bool(facts.is_relocatable);
+    writer.bool(facts.is_relocatable_object);
     writer.bool(facts.has_fork_artifact_surface());
 
     writer.strings(&facts.custom_section_names);

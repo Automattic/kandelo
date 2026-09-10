@@ -213,7 +213,8 @@ fn facts_decode_at_the_layout_the_driver_expects() {
 
     assert!(!reader.bool().expect("legacy asyncify"));
     assert!(reader.bool().expect("imports kernel.kernel_fork"));
-    assert!(!reader.bool().expect("relocatable"));
+    assert!(!reader.bool().expect("relocatable side module"));
+    assert!(!reader.bool().expect("relocatable object"));
     let _fork_surface = reader.bool().expect("fork surface");
 
     let _custom = reader.strings().expect("custom section names");

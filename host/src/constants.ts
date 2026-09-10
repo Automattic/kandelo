@@ -47,8 +47,11 @@ import {
   describeWasmArtifactPolicy,
   describeWasmForkArtifactContractFailures,
   readWasmArtifactFacts,
+  readWasmHeapBase,
+  readWasmI32ConstExport,
   type WasmArtifactFacts,
 } from "./wasm-artifact-driver";
+import { PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT } from "./generated/abi";
 
 // ---------------------------------------------------------------------------
 // Process memory and channel constants
@@ -211,9 +214,7 @@ export function wasmHasCompleteForkInstrumentation(
  * other, so this asks the object-file question explicitly.
  */
 export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
-  const names = readWasmArtifactFacts(programBytes).customSectionNames;
-  return names.includes("linking")
-    || names.some((name) => name.startsWith("reloc."));
+  return readWasmArtifactFacts(programBytes).isRelocatableObject;
 }
 
 /**
@@ -226,12 +227,12 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
  * JavaScript number's integer range.
  */
 export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
-  return readWasmArtifactFacts(programBytes).heapBase;
+  return readWasmHeapBase(programBytes);
 }
 
 /** The artifact's declared ABI epoch, or `null` for a pre-marker binary. */
 export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
-  return readWasmArtifactFacts(programBytes).abiVersion;
+  return readWasmI32ConstExport(programBytes, "__abi_version");
 }
 
 /**
@@ -243,7 +244,10 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
 export function extractThreadSlotDeclaration(
   programBytes: ArrayBuffer,
 ): number | null {
-  return readWasmArtifactFacts(programBytes).threadSlotDeclaration;
+  return readWasmI32ConstExport(
+    programBytes,
+    PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  );
 }
 
 // ---------------------------------------------------------------------------

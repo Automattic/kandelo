@@ -70,6 +70,8 @@ interface ArtifactModuleExports {
   readonly wa_is_wasm_module: (len: number) => number;
   readonly wa_detect_pointer_width: (len: number) => number;
   readonly wa_custom_section: (artifactLen: number, nameLen: number) => number;
+  readonly wa_heap_base: (len: number) => number;
+  readonly wa_i32_const_export: (artifactLen: number, nameLen: number) => number;
   readonly wa_read_facts: (len: number) => number;
   readonly wa_fork_contract: (len: number) => number;
   readonly wa_policy: (artifactLen: number, requestLen: number) => number;
@@ -472,6 +474,8 @@ export interface WasmArtifactFacts {
   readonly containsLegacyAsyncify: boolean;
   readonly importsKernelFork: boolean;
   readonly isRelocatable: boolean;
+  /** An unlinked relocatable OBJECT: `linking` and/or `reloc.*` present. */
+  readonly isRelocatableObject: boolean;
   readonly hasForkArtifactSurface: boolean;
   readonly customSectionNames: readonly string[];
   readonly importDescriptors: readonly DecodedWasmImportDescriptor[];
@@ -524,6 +528,7 @@ export function readWasmArtifactFacts(
   const containsLegacyAsyncify = reader.bool();
   const importsKernelFork = reader.bool();
   const isRelocatable = reader.bool();
+  const isRelocatableObject = reader.bool();
   const hasForkArtifactSurface = reader.bool();
 
   const customSectionNames = reader.strings();
@@ -593,6 +598,7 @@ export function readWasmArtifactFacts(
     containsLegacyAsyncify,
     importsKernelFork,
     isRelocatable,
+    isRelocatableObject,
     hasForkArtifactSurface,
     customSectionNames,
     importDescriptors,
@@ -674,6 +680,57 @@ export function readWasmCustomSectionPayload(
     throw new WasmArtifactModuleError("wa_custom_section", readOutputText(api));
   }
   return status === 1 ? readOutput(api) : null;
+}
+
+/**
+ * The `__heap_base` export's value, or `null`.
+ *
+ * TOLERANT of an artifact that is not a readable container, matching every
+ * other narrow question here: a caller asking for a heap base is asking
+ * something with a legitimate "no", and a program with no `__heap_base` runs
+ * perfectly well. Turning that into a thrown error would be a behaviour change
+ * disguised as a refactor.
+ */
+export function readWasmHeapBase(
+  programBytes: ArrayBuffer | Uint8Array,
+): bigint | null {
+  const api = required();
+  const bytes = asBytes(programBytes);
+  writeInput(api, bytes);
+  if (api.wa_heap_base(bytes.byteLength) !== 1) return null;
+  const answer = readOutput(api);
+  return new DataView(
+    answer.buffer,
+    answer.byteOffset,
+    answer.byteLength,
+  ).getBigUint64(0, true);
+}
+
+/**
+ * The value of a trivial `i32`-returning marker export, or `null`.
+ *
+ * Tolerant for the same reason, and a sharper one: absence means "this binary
+ * predates the marker", which the policy treats as a documented rollout state
+ * rather than a failure. A thrown error here would turn a legacy binary into a
+ * crash instead of a warning.
+ */
+export function readWasmI32ConstExport(
+  programBytes: ArrayBuffer | Uint8Array,
+  exportName: string,
+): number | null {
+  const api = required();
+  const bytes = asBytes(programBytes);
+  const nameBytes = TEXT_ENCODER.encode(exportName);
+  writeInput(api, bytes, nameBytes);
+  if (api.wa_i32_const_export(bytes.byteLength, nameBytes.byteLength) !== 1) {
+    return null;
+  }
+  const answer = readOutput(api);
+  return new DataView(
+    answer.buffer,
+    answer.byteOffset,
+    answer.byteLength,
+  ).getInt32(0, true);
 }
 
 /**
