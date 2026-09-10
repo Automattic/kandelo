@@ -23288,10 +23288,18 @@ export class CentralizedKernelWorker {
     // from whether the calling task happens to be a thread worker. Guessing
     // left a process `Running` whenever a non-main thread called `exit()`,
     // which libc routes to `exit_group`.
-    const commitExportName = syscallNr === SYS_EXIT_GROUP
+    // Select the export by a static branch rather than indexing the exports
+    // namespace with a computed name. Both identities then stay visible to
+    // the kernel-scratch audit, which otherwise cannot tell which export a
+    // computed key resolves to and must assume the pointer-bearing case --
+    // reporting this scalar-only status commit as a pointer-export bypass.
+    const isGroupExit = syscallNr === SYS_EXIT_GROUP;
+    const commitExportName = isGroupExit
       ? "kernel_commit_process_group_exit"
       : "kernel_commit_process_exit";
-    const commitProcessExit = exitExports[commitExportName] as
+    const commitProcessExit = (isGroupExit
+      ? exitExports.kernel_commit_process_group_exit
+      : exitExports.kernel_commit_process_exit) as
       ((status: number) => number) | undefined;
     if (!commitProcessExit) {
       throw new KernelExitCommitProtocolError(
