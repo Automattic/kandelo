@@ -512,6 +512,11 @@ static FOREIGN_MOUNTS: ForeignMounts = ForeignMounts::new();
 /// that are empty, non-absolute, or exactly `/` are ignored (`/` is the
 /// overlay's own root, never foreign); trailing slashes are trimmed and
 /// duplicates dropped. Returns the number of prefixes registered.
+///
+/// Registering also makes each prefix *reachable*: see
+/// [`ensure_foreign_mount_parents`]. The two belong together because a mount
+/// point the overlay refuses to claim but cannot be walked to is not a mount —
+/// it is an `ENOENT` the guest sees instead of the mounted filesystem.
 pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
     let mut prefixes: Vec<Vec<u8>> = Vec::new();
     for part in buf.split(|&b| b == 0) {
@@ -531,6 +536,7 @@ pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
     }
     let count = prefixes.len();
     FOREIGN_MOUNTS.with(|slot| *slot = prefixes);
+    ensure_foreign_mount_parents();
     count
 }
 
@@ -673,6 +679,88 @@ pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
         }
         best
     })
+}
+
+/// Synthesise the directories leading down to every registered foreign mount
+/// point, so the kernel's per-component search-permission checks can reach a
+/// mount point the `/` image itself has no path to.
+///
+/// A foreign mount at `/usr/local/lib/kandelo` needs `/usr`, `/usr/local` and
+/// `/usr/local/lib` to exist even though the mounted backend owns the final
+/// component. The mount point itself is deliberately NOT created: it belongs to
+/// the foreign filesystem, which the overlay does not claim
+/// (see [`path_under_foreign`]).
+///
+/// This is the kernel half of what the TypeScript hosts used to do to their own
+/// copy of the image (`ensureMountParentDirectories`). It belongs here: the
+/// namespace is the kernel's, the kernel is the one enforcing the search
+/// permissions, and doing it here gives every host — Node, browser, and native
+/// wasmtime — the same behaviour instead of three chances to forget it. It also
+/// applies to *every* registered prefix rather than only the host's "extra"
+/// mounts, because reachability is a property of the mount, not of which host
+/// list a mount arrived on.
+///
+/// It hangs off [`ForeignMounts`] and NOT off [`MountRoots`], deliberately.
+/// Those registries answer different questions — *which paths are host-owned*
+/// versus *which host directory anchors a path* — and reachability is the first
+/// question: it is about the shape of the kernel's own namespace, not about
+/// where a mount's bytes come from. A mount point still has to be walkable when
+/// no handle was ever published for it. Driving it from the handle registry
+/// would also impose exactly the publication order `MountRoots` documents itself
+/// as avoiding, since the ancestors have to exist before any host path below
+/// them resolves.
+///
+/// Per component, from the shallowest:
+///
+/// * missing — create a `0755` root-owned directory;
+/// * an existing directory — descend into it;
+/// * an existing symlink — follow it within the overlay and descend if it
+///   resolves to a directory (the host's `stat`-based check followed symlinks
+///   too, and a `/usr/local -> /opt/local` image is a normal shape);
+/// * anything else — stop descending this prefix. A regular file where a
+///   directory must go is a real conflict between the image and the mount
+///   table; inventing a directory over it would hide it, and the mount then
+///   fails visibly at the missing component, which is the truthful result.
+///
+/// Returns the number of directories created.
+pub fn ensure_foreign_mount_parents() -> usize {
+    let prefixes: Vec<Vec<u8>> = FOREIGN_MOUNTS.with(|slot| slot.clone());
+    let mut created = 0usize;
+    for prefix in &prefixes {
+        let comps = split_components(prefix);
+        // `comps.len() <= 1` means the mount sits directly under `/`, whose
+        // only ancestor is the root itself and always exists.
+        if comps.len() <= 1 {
+            continue;
+        }
+        // Canonical path walked so far; empty means the mount root.
+        let mut base: Vec<u8> = Vec::new();
+        for comp in &comps[..comps.len() - 1] {
+            let mut candidate = base.clone();
+            candidate.push(b'/');
+            candidate.extend_from_slice(comp);
+            match lstat(&candidate) {
+                Err(_) => {
+                    if mkdir(&candidate, 0o755, 0, 0).is_err() {
+                        break;
+                    }
+                    created += 1;
+                    base = candidate;
+                }
+                Ok(st) if st.st_mode & S_IFMT == S_IFDIR => {
+                    base = candidate;
+                }
+                Ok(st) if st.st_mode & S_IFMT == S_IFLNK => {
+                    match resolve_read_symlinks(&candidate) {
+                        Ok(resolved) if is_dir(&resolved) => base = resolved,
+                        _ => break,
+                    }
+                }
+                Ok(_) => break,
+            }
+        }
+    }
+    created
 }
 
 /// Whether `path` lies at or under a registered foreign mount prefix. The match
@@ -3122,6 +3210,73 @@ mod tests {
         assert_eq!(n, 1);
         assert!(!owns_path(b"/dev/shm/x"));
         assert!(owns_path(b"/")); // root is never foreign
+    }
+
+    #[test]
+    fn registering_a_foreign_prefix_creates_its_parent_directories() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/usr", 0o755, 0, 0, 2).unwrap();
+
+        // `/usr/local` and `/usr/local/lib` are missing from the image; the
+        // mount point `/usr/local/lib/kandelo` itself belongs to the foreign
+        // filesystem and must NOT be created.
+        assert_eq!(set_foreign_prefixes(b"/usr/local/lib/kandelo\0"), 1);
+
+        assert!(is_dir(b"/usr/local"));
+        assert!(is_dir(b"/usr/local/lib"));
+        assert_eq!(lstat(b"/usr/local").unwrap().st_mode & 0o7777, 0o755);
+        assert_eq!(lstat(b"/usr/local").unwrap().st_uid, 0);
+        assert!(lstat(b"/usr/local/lib/kandelo").is_err());
+
+        // And the created parents are walkable, which is the point: without
+        // them the kernel's per-component search cannot reach the mount.
+        assert!(!owns_path(b"/usr/local/lib/kandelo/x"));
+    }
+
+    #[test]
+    fn foreign_mount_parents_are_idempotent_and_top_level_is_a_no_op() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+
+        // A mount directly under `/` has no ancestor to synthesise.
+        assert_eq!(set_foreign_prefixes(b"/dev\0"), 1);
+        assert_eq!(ensure_foreign_mount_parents(), 0);
+
+        // Re-registering an already-satisfied prefix creates nothing more.
+        assert_eq!(set_foreign_prefixes(b"/a/b/c\0"), 1);
+        assert!(is_dir(b"/a/b"));
+        assert_eq!(ensure_foreign_mount_parents(), 0);
+    }
+
+    #[test]
+    fn foreign_mount_parents_follow_a_symlinked_component() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_dir(b"/opt", 0o755, 0, 0, 2).unwrap();
+        insert_base_dir(b"/opt/local", 0o755, 0, 0, 3).unwrap();
+        insert_base_symlink(b"/usr", b"/opt", 0o777, 0, 0, 4).unwrap();
+
+        assert_eq!(set_foreign_prefixes(b"/usr/local/lib/kandelo\0"), 1);
+
+        // `/usr` resolved to `/opt`, so the synthesised `lib` lands under the
+        // real directory rather than as a sibling of the symlink.
+        assert!(is_dir(b"/opt/local/lib"));
+        assert!(lstat(b"/usr/local").is_err()); // still only reachable via the link
+    }
+
+    #[test]
+    fn foreign_mount_parents_stop_at_a_non_directory_rather_than_hide_it() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/usr", 0, 0, 0o644, 0, 0, 2).unwrap();
+
+        assert_eq!(set_foreign_prefixes(b"/usr/local/lib/kandelo\0"), 1);
+
+        // The image says `/usr` is a regular file. That conflict stays visible:
+        // the file is untouched and no directory is invented over it.
+        assert_eq!(lstat(b"/usr").unwrap().st_mode & S_IFMT, S_IFREG);
+        assert!(lstat(b"/usr/local").is_err());
     }
 
     #[test]
