@@ -1160,6 +1160,7 @@ dependencies = [
  "dlmalloc",
  "runtime-core",
  "spin",
+ "wasm-artifact",
  "wasm-posix-shared",
 ]
 
@@ -2076,6 +2077,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
  "wit-bindgen 0.51.0",
+]
+
+[[package]]
+name = "wasm-artifact"
+version = "0.1.0"
+dependencies = [
+ "fork-codec",
+ "wasm-posix-shared",
+ "wasmparser 0.247.0",
 ]
 
 [[package]]

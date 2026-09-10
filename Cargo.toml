@@ -13,6 +13,7 @@ members = [
     "crates/wasm-local-root-spill",
     "crates/wasi-abi",
     "crates/wasi-module",
+    "crates/wasm-artifact",
     "crates/host-native",
     "tools/xtask",
 ]

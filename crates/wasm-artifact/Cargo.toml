@@ -1,0 +1,36 @@
+[package]
+name = "wasm-artifact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Kandelo's single authority for reading a WebAssembly artifact and judging it against the ABI epoch"
+publish = false
+
+[lib]
+name = "wasm_artifact"
+crate-type = ["rlib"]
+
+[dependencies]
+# The ABI epoch, the WPK_FORK_* section names, and the required import/export
+# requirement tables. `no_std`, dependency-free.
+wasm-posix-shared = { path = "../shared" }
+
+# The six committed `wpk_fork` descriptor decoders (linked frames, module
+# state, exception codec, imported globals, imported tables, static-root
+# catalog). This crate NEVER re-decodes a descriptor byte format: it walks the
+# container, hands each descriptor payload to the decoder that already owns it,
+# and adds only the cross-module invariants that need module facts.
+fork-codec = { path = "../fork-codec" }
+
+# The container walk itself. `default-features = false` keeps wasmparser in its
+# `no_std + alloc` configuration, which is what lets one walker serve the
+# wasm32 kernel, the native host, and the build tooling.
+#
+# WHY a spec parser rather than a hand-rolled one: this crate replaces a
+# hand-rolled TypeScript reader whose LEB128 accumulator was 32-bit (so a
+# section length at or above 2^31 read back negative) and whose byte reads were
+# unbounded past the end of the buffer. Artifact validation has to be correct
+# against the WebAssembly specification, not against the artifacts that happen
+# to exist today, and a maintained spec parser is how that stays true as the
+# GC, exception-handling and memory64 proposals move.
+wasmparser = { version = "0.247", default-features = false }
