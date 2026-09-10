@@ -17,13 +17,13 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::mem::{offset_of, size_of};
+use core::mem::size_of;
 use core::slice;
 
 use wasm_posix_shared::{
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
-    platform_limits, process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
+    process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
     WasmStatfs, WasmTimespec,
 };
 
@@ -5075,23 +5075,38 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let output = channel_mut_ptr!(2, u8);
             kernel_fstatfs(a1, output, args[5])
         }
-        81 => channel_writev(a1, channel_const_ptr!(1, u8), a3, scratch_region), // SYS_WRITEV
-        82 => channel_readv(a1, channel_mut_ptr!(1, u8), a3, scratch_region),    // SYS_READV
-        295 => channel_preadv(
+        // SYS_WRITEV / SYS_READV: the `struct iovec` table is a raw guest
+        // address. The kernel walks it in the caller's data model, which the
+        // private sixth channel slot names.
+        81 => channel_writev(
             a1,
-            channel_mut_ptr!(1, u8),
-            a3,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
+            caller_pointer_width!(),
+        ),
+        82 => channel_readv(
+            a1,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
+            caller_pointer_width!(),
+        ),
+        295 => channel_preadv(
+            295,
+            a1,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
             channel_scalar::split_i64_low_argument(295, args, 3),
             channel_scalar::split_i64_high_argument(295, args, 4),
-            scratch_region,
+            caller_pointer_width!(),
         ), // SYS_PREADV
         296 => channel_pwritev(
+            296,
             a1,
-            channel_const_ptr!(1, u8),
-            a3,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
             channel_scalar::split_i64_low_argument(296, args, 3),
             channel_scalar::split_i64_high_argument(296, args, 4),
-            scratch_region,
+            caller_pointer_width!(),
         ), // SYS_PWRITEV
         294 => kernel_sendfile_with_count(
             a1,
@@ -6208,22 +6223,28 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let _count = process_size!(2);
             0
         } // SYS_READAHEAD: advisory, always succeed
+        // SYS_PREADV2 / SYS_PWRITEV2: Linux extensions whose sixth argument is
+        // `flags`. That slot now carries the caller's pointer width, so no
+        // RWF_* value reaches here; none is implemented, and the host reads the
+        // guest's own copy for the one flag that changes its parking policy.
         297 => channel_preadv(
+            297,
             a1,
-            channel_mut_ptr!(1, u8),
-            a3,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
             channel_scalar::split_i64_low_argument(297, args, 3),
             channel_scalar::split_i64_high_argument(297, args, 4),
-            scratch_region,
-        ), // SYS_PREADV2 (ignore flags in a6)
+            caller_pointer_width!(),
+        ),
         298 => channel_pwritev(
+            298,
             a1,
-            channel_const_ptr!(1, u8),
-            a3,
+            guest_address!(1),
+            crate::msghdr::caller_iovec_count(a3),
             channel_scalar::split_i64_low_argument(298, args, 3),
             channel_scalar::split_i64_high_argument(298, args, 4),
-            scratch_region,
-        ), // SYS_PWRITEV2 (ignore flags in a6)
+            caller_pointer_width!(),
+        ),
 
         // -- Scheduling stubs (single-CPU Wasm) --
         237 => {
@@ -6941,31 +6962,6 @@ mod channel_pointer_tests {
             );
             assert_eq!(checked_channel_pointer(-1), Ok(usize::MAX));
         }
-    }
-
-    #[test]
-    fn zero_kernel_iovec_count_does_not_require_a_table_pointer() {
-        let region = ChannelScratchRegion::new(0x1000, 16).unwrap();
-        assert_eq!(
-            checked_kernel_iovec_entries(core::ptr::null(), 0, region),
-            Ok((Vec::new(), 0)),
-        );
-        assert_eq!(
-            checked_kernel_iovec_entries(core::ptr::null(), -1, region),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            checked_kernel_iovec_entries(
-                core::ptr::null(),
-                i32::try_from(platform_limits::IOV_MAX + 1).unwrap(),
-                region,
-            ),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            checked_kernel_iovec_entries(core::ptr::null(), 1, region),
-            Err(Errno::EFAULT),
-        );
     }
 
     #[test]
@@ -12254,60 +12250,194 @@ pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
     result
 }
 
-// WHY: Vector parsing is private to channel dispatch and always carries the
-// allocation-bearing region beside the table pointer. The former public raw
-// exports could prove only that a pointer fit somewhere in total kernel
-// memory, not that it belonged to the live channel allocation. Current user
-// programs use channel_syscall.c and cannot import those obsolete functions.
-unsafe fn kernel_iovec_wire_at(iov_ptr: *const u8, index: usize) -> (usize, usize) {
-    use wasm_posix_shared::KernelIovecWire;
+// Scatter/gather I/O, walked in the caller's own address space.
+//
+// WHY the kernel walks the table rather than the host. A `struct iovec` array
+// is caller-native and every entry holds another guest pointer sized by the
+// same entry, so no static argument descriptor can describe it. Argument 1 is
+// declared `SyscallArgSize::KernelDereferenced`: the host copies nothing and
+// hands over the caller's raw guest address plus its pointer width, and the
+// kernel reads and writes caller memory through the cross-memory primitives.
+//
+// WHY one gathered buffer instead of per-entry transfers. POSIX defines
+// `writev` as `write` applied to the concatenation of the buffers, so issuing
+// one scalar operation is what preserves PIPE_BUF atomicity and datagram
+// boundaries; iterating per entry would create several operations with
+// observably different boundaries. `readv` likewise makes one observation and
+// scatters only the returned prefix.
 
-    let offset = index * size_of::<KernelIovecWire>();
-    let iov = unsafe { slice::from_raw_parts(iov_ptr.add(offset), size_of::<KernelIovecWire>()) };
-    (
-        read_wire_u32(iov, offset_of!(KernelIovecWire, base)) as usize,
-        read_wire_u32(iov, offset_of!(KernelIovecWire, len)) as usize,
-    )
+/// One scatter/gather request, either freshly read from the caller or restored
+/// from the binding a previous EAGAIN left behind.
+struct VectorRequest {
+    entries: alloc::vec::Vec<crate::msghdr::NativeIovec>,
+    outgoing: alloc::vec::Vec<u8>,
+    total: usize,
 }
 
-fn checked_kernel_iovec_entries(
-    iov_ptr: *const u8,
-    iovcnt: i32,
-    region: ChannelScratchRegion,
-) -> Result<(Vec<(usize, usize)>, usize), Errno> {
-    if iovcnt < 0 || iovcnt as usize > platform_limits::IOV_MAX {
-        return Err(Errno::EINVAL);
-    }
-    if iovcnt == 0 {
-        // POSIX permits a null iovec pointer when no table entries exist.
-        // Return before inspecting the pointer or channel allocation.
-        return Ok((Vec::new(), 0));
-    }
-    if iov_ptr.is_null() {
-        return Err(Errno::EFAULT);
-    }
-
-    let count = iovcnt as usize;
-    let table_bytes = count
-        .checked_mul(size_of::<wasm_posix_shared::KernelIovecWire>())
-        .ok_or(Errno::EFAULT)?;
-    region.checked_range(iov_ptr as usize, table_bytes)?;
-
-    let mut entries = Vec::new();
-    entries
-        .try_reserve_exact(count)
-        .map_err(|_| Errno::ENOMEM)?;
-    let mut total = 0usize;
-    for index in 0..count {
-        let (base, length) = unsafe { kernel_iovec_wire_at(iov_ptr, index) };
-        region.checked_range(base, length)?;
-        total = total.checked_add(length).ok_or(Errno::EINVAL)?;
-        if total > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
-            return Err(Errno::EINVAL);
+impl VectorRequest {
+    fn into_pending(self) -> crate::blocked_retry::PendingVectorIo {
+        crate::blocked_retry::PendingVectorIo {
+            entries: self.entries,
+            outgoing: self.outgoing,
+            total: self.total,
         }
-        entries.push((base, length));
     }
-    Ok((entries, total))
+
+    fn from_pending(pending: crate::blocked_retry::PendingVectorIo) -> Self {
+        Self {
+            entries: pending.entries,
+            outgoing: pending.outgoing,
+            total: pending.total,
+        }
+    }
+}
+
+fn caller_pointer_width_byte(pointer_width: u32) -> Result<u8, Errno> {
+    match pointer_width {
+        4 => Ok(4),
+        8 => Ok(8),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// Read the caller's iovec table, and for a write also gather its bytes.
+///
+/// Both happen once, at entry. A retry reuses what this produced rather than
+/// re-reading caller memory a peer thread may have changed in the meantime.
+fn read_vector_request(
+    host: &mut dyn crate::process::HostIO,
+    pid: i32,
+    iov_addr: u64,
+    iovcnt: u32,
+    width: u8,
+    gather_input: bool,
+) -> Result<VectorRequest, Errno> {
+    let entries = crate::msghdr::read_iovecs(host, pid, iov_addr, iovcnt, width)?;
+    let total = crate::msghdr::iovec_total(&entries)?;
+    let outgoing = if gather_input {
+        crate::msghdr::gather(host, pid, &entries)?
+    } else {
+        alloc::vec::Vec::new()
+    };
+    Ok(VectorRequest {
+        entries,
+        outgoing,
+        total,
+    })
+}
+
+/// What one vector syscall does once its request has been assembled.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VectorIoKind {
+    Write,
+    Read,
+    Pwrite { offset: i64 },
+    Pread { offset: i64 },
+}
+
+impl VectorIoKind {
+    fn is_write(self) -> bool {
+        matches!(self, Self::Write | Self::Pwrite { .. })
+    }
+}
+
+/// Run one scatter/gather syscall against the caller's own iovec table.
+fn channel_vector_io(
+    syscall_nr: u32,
+    fd: i32,
+    iov_addr: u64,
+    iovcnt: u32,
+    pointer_width: u32,
+    kind: VectorIoKind,
+) -> i32 {
+    let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
+    let mut host = WasmHostIO;
+    let pid = proc.pid as i32;
+
+    let result = 'done: {
+        let width = match caller_pointer_width_byte(pointer_width) {
+            Ok(width) => width,
+            Err(error) => break 'done -(error as i32),
+        };
+        let operation = match crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)
+        {
+            Ok(operation) => operation,
+            Err(error) => break 'done -(error as i32),
+        };
+        // A retry must transfer the request the caller made, not whatever its
+        // buffers hold now. `take_active_vector_io` returns None on the first
+        // attempt and moves the retained request out on every later one.
+        let request = match syscalls::take_active_vector_io(proc, tid, operation) {
+            Ok(Some(pending)) => VectorRequest::from_pending(pending),
+            Ok(None) => {
+                match read_vector_request(&mut host, pid, iov_addr, iovcnt, width, kind.is_write())
+                {
+                    Ok(request) => request,
+                    Err(error) => break 'done -(error as i32),
+                }
+            }
+            Err(error) => break 'done -(error as i32),
+        };
+
+        let outcome = match kind {
+            VectorIoKind::Write => syscalls::sys_write(proc, &mut host, fd, &request.outgoing),
+            VectorIoKind::Pwrite { offset } => {
+                syscalls::sys_pwrite(proc, &mut host, fd, &request.outgoing, offset)
+            }
+            VectorIoKind::Read | VectorIoKind::Pread { .. } => {
+                let mut staging = match try_initialized_kernel_io_bytes(request.total) {
+                    Ok(bytes) => bytes,
+                    Err(error) => break 'done -(error as i32),
+                };
+                let read = match kind {
+                    VectorIoKind::Read => syscalls::sys_read(proc, &mut host, fd, &mut staging),
+                    VectorIoKind::Pread { offset } => {
+                        syscalls::sys_pread(proc, &mut host, fd, &mut staging, offset)
+                    }
+                    _ => unreachable!("write kinds are handled above"),
+                };
+                match read {
+                    Ok(n) => match staging.get(..n) {
+                        Some(prefix) => {
+                            crate::msghdr::scatter(&mut host, pid, &request.entries, prefix)
+                                .map(|_| n)
+                        }
+                        None => Err(Errno::EIO),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
+        };
+
+        match outcome {
+            Ok(n) => match i32::try_from(n) {
+                Ok(n) => n,
+                Err(_) => -(Errno::EOVERFLOW as i32),
+            },
+            Err(Errno::EAGAIN) => {
+                // Nothing was transferred: `sys_write` returns a short count
+                // whenever any byte moved, so replaying the whole retained
+                // request can never write a byte twice.
+                match syscalls::ensure_blocking_retry_vector_binding(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    tid,
+                    syscall_nr,
+                    fd,
+                    request.into_pending(),
+                ) {
+                    Ok(_) => -(Errno::EAGAIN as i32),
+                    Err(error) => -(error as i32),
+                }
+            }
+            Err(error) => -(error as i32),
+        }
+    };
+
+    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
 }
 
 fn try_initialized_kernel_io_bytes(length: usize) -> Result<Vec<u8>, Errno> {
@@ -12317,171 +12447,76 @@ fn try_initialized_kernel_io_bytes(length: usize) -> Result<Vec<u8>, Errno> {
     Ok(bytes)
 }
 
-unsafe fn gather_kernel_iovec_bytes(
-    entries: &[(usize, usize)],
-    total: usize,
-) -> Result<Vec<u8>, Errno> {
-    let mut gathered = Vec::new();
-    gathered
-        .try_reserve_exact(total)
-        .map_err(|_| Errno::ENOMEM)?;
-    for &(base, length) in entries {
-        if length != 0 {
-            let source = unsafe { slice::from_raw_parts(base as *const u8, length) };
-            gathered.extend_from_slice(source);
-        }
-    }
-    Ok(gathered)
+fn joined_positioned_offset(offset_lo: u32, offset_hi: i32) -> i64 {
+    ((offset_hi as i64) << 32) | (offset_lo as u64 as i64)
 }
 
-unsafe fn scatter_kernel_iovec_prefix(
-    entries: &[(usize, usize)],
-    source: &[u8],
-    length: usize,
-) -> Result<(), Errno> {
-    let source = source.get(..length).ok_or(Errno::EIO)?;
-    let mut copied = 0usize;
-    for &(base, capacity) in entries {
-        if copied == source.len() {
-            break;
-        }
-        let count = capacity.min(source.len() - copied);
-        if count != 0 {
-            // `copy`, unlike `copy_nonoverlapping`, remains sound if a raw
-            // compatibility caller supplies overlapping destination iovecs.
-            // The table/ranges were checked before the scalar read.
-            unsafe {
-                core::ptr::copy(source.as_ptr().add(copied), base as *mut u8, count);
-            }
-            copied += count;
-        }
-    }
-    if copied == source.len() {
-        Ok(())
-    } else {
-        Err(Errno::EIO)
-    }
+/// writev -- gather the caller's buffers and write them as one operation.
+fn channel_writev(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32 {
+    channel_vector_io(
+        wasm_posix_shared::Syscall::Writev as u32,
+        fd,
+        iov_addr,
+        iovcnt,
+        pointer_width,
+        VectorIoKind::Write,
+    )
 }
 
-/// Write data from multiple fixed kernel-wire buffers in one live channel.
-/// Returns total bytes written (>= 0) or negative errno.
-fn channel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32, region: ChannelScratchRegion) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-
-    let result = 'done: {
-        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
-            Ok(entries) => entries,
-            Err(error) => break 'done -(error as i32),
-        };
-        let gathered = match unsafe { gather_kernel_iovec_bytes(&entries, total) } {
-            Ok(bytes) => bytes,
-            Err(error) => break 'done -(error as i32),
-        };
-        match syscalls::sys_write(proc, &mut host, fd, &gathered) {
-            Ok(n) => n as i32,
-            Err(e) => -(e as i32),
-        }
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+/// readv -- one read, whose returned prefix scatters into the caller's buffers.
+fn channel_readv(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32 {
+    channel_vector_io(
+        wasm_posix_shared::Syscall::Readv as u32,
+        fd,
+        iov_addr,
+        iovcnt,
+        pointer_width,
+        VectorIoKind::Read,
+    )
 }
 
-/// Read data into multiple fixed kernel-wire buffers in one live channel.
-/// Returns total bytes read (>= 0) or negative errno.
-fn channel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, region: ChannelScratchRegion) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-
-    let result = 'done: {
-        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
-            Ok(entries) => entries,
-            Err(error) => break 'done -(error as i32),
-        };
-        let mut gathered = match try_initialized_kernel_io_bytes(total) {
-            Ok(bytes) => bytes,
-            Err(error) => break 'done -(error as i32),
-        };
-        match syscalls::sys_read(proc, &mut host, fd, &mut gathered) {
-            Ok(n) => match unsafe { scatter_kernel_iovec_prefix(&entries, &gathered, n) } {
-                Ok(()) => n as i32,
-                Err(error) => -(error as i32),
-            },
-            Err(e) => -(e as i32),
-        }
-    };
-    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// preadv -- scatter-gather read from one live channel at an exact offset.
-/// offset is split into (lo, hi) u32 pair.
-/// Returns total bytes read or negative errno.
+/// preadv/preadv2 -- positioned scatter read. The offset arrives split.
 fn channel_preadv(
+    syscall_nr: u32,
     fd: i32,
-    iov_ptr: *mut u8,
-    iovcnt: i32,
+    iov_addr: u64,
+    iovcnt: u32,
     offset_lo: u32,
     offset_hi: i32,
-    region: ChannelScratchRegion,
+    pointer_width: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
-
-    let result = 'done: {
-        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
-            Ok(entries) => entries,
-            Err(error) => break 'done -(error as i32),
-        };
-        let mut gathered = match try_initialized_kernel_io_bytes(total) {
-            Ok(bytes) => bytes,
-            Err(error) => break 'done -(error as i32),
-        };
-        match syscalls::sys_pread(proc, &mut host, fd, &mut gathered, offset) {
-            Ok(n) => match unsafe { scatter_kernel_iovec_prefix(&entries, &gathered, n) } {
-                Ok(()) => n as i32,
-                Err(error) => -(error as i32),
-            },
-            Err(e) => -(e as i32),
-        }
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+    channel_vector_io(
+        syscall_nr,
+        fd,
+        iov_addr,
+        iovcnt,
+        pointer_width,
+        VectorIoKind::Pread {
+            offset: joined_positioned_offset(offset_lo, offset_hi),
+        },
+    )
 }
 
-/// pwritev -- scatter-gather write from one live channel at an exact offset.
-/// offset is split into (lo, hi) u32 pair.
-/// Returns total bytes written or negative errno.
+/// pwritev/pwritev2 -- positioned gather write. The offset arrives split.
 fn channel_pwritev(
+    syscall_nr: u32,
     fd: i32,
-    iov_ptr: *const u8,
-    iovcnt: i32,
+    iov_addr: u64,
+    iovcnt: u32,
     offset_lo: u32,
     offset_hi: i32,
-    region: ChannelScratchRegion,
+    pointer_width: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
-
-    let result = 'done: {
-        let (entries, total) = match checked_kernel_iovec_entries(iov_ptr, iovcnt, region) {
-            Ok(entries) => entries,
-            Err(error) => break 'done -(error as i32),
-        };
-        let gathered = match unsafe { gather_kernel_iovec_bytes(&entries, total) } {
-            Ok(bytes) => bytes,
-            Err(error) => break 'done -(error as i32),
-        };
-        match syscalls::sys_pwrite(proc, &mut host, fd, &gathered, offset) {
-            Ok(n) => n as i32,
-            Err(e) => -(e as i32),
-        }
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+    channel_vector_io(
+        syscall_nr,
+        fd,
+        iov_addr,
+        iovcnt,
+        pointer_width,
+        VectorIoKind::Pwrite {
+            offset: joined_positioned_offset(offset_lo, offset_hi),
+        },
+    )
 }
 
 /// sendfile -- copy data between file descriptors.

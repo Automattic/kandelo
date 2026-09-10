@@ -233,6 +233,17 @@ pub fn write_msghdr_results(
 /// A count above `IOV_MAX` is EINVAL, as POSIX requires, and it is checked
 /// before the table is read so an absurd count cannot size a kernel
 /// allocation.
+/// Widen a caller's `int iovcnt` for [`read_iovecs`].
+///
+/// POSIX requires EINVAL for a negative count, and this conversion preserves
+/// that without a separate check: every negative `i32` widens to a value far
+/// above `IOV_MAX`, which [`read_iovecs`] already rejects. Naming the
+/// conversion keeps that reasoning attached to it instead of leaving a bare
+/// cast at each dispatch arm.
+pub fn caller_iovec_count(iovcnt: i32) -> u32 {
+    iovcnt as u32
+}
+
 pub fn read_iovecs(
     host: &mut dyn HostIO,
     pid: i32,
@@ -468,6 +479,38 @@ mod tests {
     use alloc::vec;
 
     const BASE: u64 = 0x1_0000;
+
+    #[test]
+    fn caller_iovec_counts_reject_negative_and_oversized_tables() {
+        let mut guest = GuestMemoryHost::new(BASE, 4096);
+        // A negative `int iovcnt` must be EINVAL, and must not alias a legal
+        // table size through the widening the dispatch arms perform.
+        for count in [-1i32, i32::MIN, -1024] {
+            assert_eq!(
+                read_iovecs(&mut guest, 1, BASE, caller_iovec_count(count), 4),
+                Err(Errno::EINVAL),
+                "iovcnt {count} widened into a legal table size",
+            );
+        }
+        assert_eq!(
+            read_iovecs(
+                &mut guest,
+                1,
+                BASE,
+                caller_iovec_count(
+                    i32::try_from(platform_limits::IOV_MAX + 1).unwrap()
+                ),
+                4,
+            ),
+            Err(Errno::EINVAL),
+        );
+        // POSIX ignores the table pointer entirely when the count is zero, so
+        // a null table with no entries is a legal request for zero bytes.
+        assert_eq!(
+            read_iovecs(&mut guest, 1, 0, caller_iovec_count(0), 4),
+            Ok(Vec::new()),
+        );
+    }
 
     fn write_msghdr(
         guest: &mut GuestMemoryHost,

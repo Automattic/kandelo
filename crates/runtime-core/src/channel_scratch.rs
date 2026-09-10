@@ -2072,91 +2072,47 @@ mod tests {
     }
 
     #[test]
-    fn record_iovec_array_writev_lays_table_and_buffers_and_rewrites_args() {
-        let bufs: [&[u8]; 3] = [b"one", b"twotwo", b"three!!"];
-        let region = encode_iovec_region(SINGLE_SPAN_REGION_OFF, &bufs);
-        let region_len = region.len() as u32;
-        let mut data = build_single_span_record(
+    fn a_record_iovec_span_is_refused_now_that_the_kernel_walks_the_table() {
+        // writev/readv/preadv/pwritev used to arrive as an IOVEC_ARRAY span:
+        // the guest flattened its buffers into a `KernelIovecWire` table the
+        // kernel then read out of scratch. Their `struct iovec *` is
+        // KernelDereferenced now — the record carries only the caller's raw
+        // address, and the kernel walks the caller's own table in the caller's
+        // data model.
+        //
+        // A record still offering a span for it is stale or hostile. Honouring
+        // it would overwrite the guest address with a scratch offset, and the
+        // kernel would then read the CALLER's memory at an address the caller
+        // never named.
+        for syscall in [
             wasm_posix_shared::Syscall::Writev as u16,
-            [7, 0, 0, 0, 0, 0], // fd, iov(overwritten), iovcnt(overwritten), ...
-            SPAN_KIND_IOVEC_ARRAY,
-            1,
-            &region,
-            region_len,
-            REC_CAP,
-        );
-        let start = data.as_mut_ptr() as usize;
-        let scratch = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-
-        let prep = match unsafe { prepare_channel_record(scratch) } {
-            Some(Ok(prep)) => prep,
-            other => panic!("expected prepared record, got {other:?}"),
-        };
-        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Writev as u32);
-        assert_eq!(prep.args[0], 7);
-        // iov pointer rewritten to the table base (== allocation base) and the
-        // iovcnt rewritten to the decoded entry count.
-        assert_eq!(prep.args[1] as usize, start);
-        assert_eq!(prep.args[2], 3);
-        // writev only reads; no output copy-back.
-        assert!(prep.copy_back.is_empty());
-
-        // The KernelIovecWire table (3 * { u32 base, u32 len }) sits at the
-        // allocation base, followed by the buffers, each 4-byte aligned.
-        let base0 = start + 24; // after the 3-entry table
-        let base1 = (base0 + 3 + 3) & !3; // align_up(base0 + 3, 4)
-        let base2 = (base1 + 6 + 3) & !3; // align_up(base1 + 6, 4)
-        for (i, (base, len)) in [(base0, 3usize), (base1, 6), (base2, 7)]
-            .into_iter()
-            .enumerate()
-        {
-            assert_eq!(read_scratch_u32(&data, i * 8), base as u32, "entry {i} base");
-            assert_eq!(read_scratch_u32(&data, i * 8 + 4), len as u32, "entry {i} len");
-        }
-        assert_eq!(&data[base0 - start..base0 - start + 3], b"one");
-        assert_eq!(&data[base1 - start..base1 - start + 6], b"twotwo");
-        assert_eq!(&data[base2 - start..base2 - start + 7], b"three!!");
-    }
-
-    #[test]
-    fn record_iovec_array_readv_plans_copyback_per_subbuffer() {
-        let bufs: [&[u8]; 3] = [&[0u8; 3], &[0u8; 6], &[0u8; 7]];
-        let region = encode_iovec_region(SINGLE_SPAN_REGION_OFF, &bufs);
-        let region_len = region.len() as u32;
-        let mut data = build_single_span_record(
             wasm_posix_shared::Syscall::Readv as u16,
-            [3, 0, 0, 0, 0, 0],
-            SPAN_KIND_IOVEC_ARRAY,
-            1,
-            &region,
-            region_len,
-            REC_CAP,
-        );
-        let start = data.as_mut_ptr() as usize;
-        let scratch = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-
-        let prep = match unsafe { prepare_channel_record(scratch) } {
-            Some(Ok(prep)) => prep,
-            other => panic!("expected prepared record, got {other:?}"),
-        };
-        assert_eq!(prep.args[1] as usize, start);
-        assert_eq!(prep.args[2], 3);
-        // readv scatters into every buffer, so each records a copy-back to its
-        // original record offset.
-        assert_eq!(prep.copy_back.len(), 3);
-
-        // Original record offsets: after region struct (4 + 3*8 = 28 bytes).
-        let buffers_base = SINGLE_SPAN_REGION_OFF + 28;
-        let expected_dests = [buffers_base, buffers_base + 3, buffers_base + 3 + 6];
-        let scratch_bases = [start + 24, (start + 24 + 3 + 3) & !3, {
-            let b1 = (start + 24 + 3 + 3) & !3;
-            (b1 + 6 + 3) & !3
-        }];
-        let lens = [3usize, 6, 7];
-        for (i, cb) in prep.copy_back.iter().enumerate() {
-            assert_eq!(cb.channel_dest, start + expected_dests[i], "copy-back {i} dest");
-            assert_eq!(cb.scratch_src, scratch_bases[i], "copy-back {i} src");
-            assert_eq!(cb.len, lens[i], "copy-back {i} len");
+            extended_syscalls::SYS_PREADV as u16,
+            extended_syscalls::SYS_PWRITEV as u16,
+            extended_syscalls::SYS_PREADV2 as u16,
+            extended_syscalls::SYS_PWRITEV2 as u16,
+        ] {
+            let bufs: [&[u8]; 3] = [b"one", b"twotwo", b"three!!"];
+            let region = encode_iovec_region(SINGLE_SPAN_REGION_OFF, &bufs);
+            let region_len = region.len() as u32;
+            let mut data = build_single_span_record(
+                syscall,
+                [7, 0, 0, 0, 0, 0],
+                SPAN_KIND_IOVEC_ARRAY,
+                1,
+                &region,
+                region_len,
+                REC_CAP,
+            );
+            let scratch =
+                ChannelScratchRegion::new(data.as_mut_ptr() as usize, REC_CAP).unwrap();
+            assert!(
+                matches!(
+                    unsafe { prepare_channel_record(scratch) },
+                    Some(Err(Errno::EINVAL))
+                ),
+                "syscall {syscall} must refuse a span for its kernel-dereferenced iovec table"
+            );
         }
     }
 
@@ -2348,9 +2304,15 @@ mod tests {
     }
 
     #[test]
-    fn golden_writev_iovec_array() {
-        // writev(fd=3, iov, iovcnt=2) with buffers ["ab", "cde"]. The C encoder
-        // emits one IOVEC_ARRAY span at arg 1 whose region is
+    fn golden_writev_iovec_array_decodes_but_is_refused_by_preparation() {
+        // The C encoder's IOVEC_ARRAY region layout is still decoded exactly —
+        // the decoder is a format reader and must keep proving that. What
+        // changed is what the kernel will DO with it: writev's `struct iovec *`
+        // is KernelDereferenced, so preparation refuses the span rather than
+        // replacing the caller's address with a scratch table.
+        //
+        // writev(fd=3, iov, iovcnt=2) with buffers ["ab", "cde"]. One
+        // IOVEC_ARRAY span at arg 1 whose region is
         //   [u32 count][2 * {u32 buf_off, u32 buf_len}][buffers...]
         // with absolute (record-relative) buffer offsets, len = whole region.
         let region_off = (RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES) as u32; // 76
@@ -2372,7 +2334,8 @@ mod tests {
         iovec_region.extend_from_slice(buf1);
         assert_eq!(iovec_region.len() as u32, region_len);
 
-        let mut record = golden_header(wasm_posix_shared::Syscall::Writev as u16, 1, [3, 0, 2, 0, 0, 0]);
+        let mut record =
+            golden_header(wasm_posix_shared::Syscall::Writev as u16, 1, [3, 0, 2, 0, 0, 0]);
         record.extend_from_slice(&golden_descriptor(
             SPAN_KIND_IOVEC_ARRAY,
             1,
@@ -2394,18 +2357,11 @@ mod tests {
         }
 
         let mut data = golden_region(&record);
-        let start = data.as_mut_ptr() as usize;
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let prep = match unsafe { prepare_channel_record(region) } {
-            Some(Ok(prep)) => prep,
-            other => panic!("expected prepared record, got {other:?}"),
-        };
-        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Writev as u32);
-        // iov pointer rewritten to the scratch table base; count word set.
-        assert_eq!(prep.args[1] as usize, start);
-        assert_eq!(prep.args[2], 2);
-        // writev only reads the buffers -> no copy-back.
-        assert!(prep.copy_back.is_empty());
+        let region = ChannelScratchRegion::new(data.as_mut_ptr() as usize, REC_CAP).unwrap();
+        assert!(matches!(
+            unsafe { prepare_channel_record(region) },
+            Some(Err(Errno::EINVAL))
+        ));
     }
 
     // -----------------------------------------------------------------------

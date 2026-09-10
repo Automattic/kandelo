@@ -45,8 +45,10 @@ pub enum BlockingRetryOperation {
 }
 
 impl BlockingRetryOperation {
-    /// Normalize vector variants to the one scalar operation Rust executes
-    /// after the host has flattened their iovecs.
+    /// Normalize vector variants onto the one scalar operation the kernel
+    /// executes once it has gathered the caller's iovec table itself. Their
+    /// retained request is distinguished by the target, not the operation:
+    /// see [`BlockingRetryTarget::Vector`].
     pub fn from_syscall(syscall: u32) -> Result<Self, Errno> {
         use wasm_posix_shared::abi::extended_syscalls;
 
