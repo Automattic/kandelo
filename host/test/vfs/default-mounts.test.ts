@@ -301,7 +301,12 @@ describe("resolveForNode", () => {
     }
   });
 
-  it("adds the nobody group to legacy dinit images", async () => {
+  // The image is restored verbatim: the host does not amend `/etc/group`.
+  // `normalizeLegacyRootfs` used to append a `nobody` line here for
+  // already-published demo images, and it was deleted with the boot cutover —
+  // every image builder emits the line, and the kernel now builds its tree from
+  // the image bytes, so a host-side amendment would silently do nothing.
+  it("restores a legacy dinit image's /etc/group verbatim", async () => {
     const legacyImage = await buildLegacyDinitImage();
     const mounts = await resolveForNode(
       DEFAULT_MOUNT_SPEC,
@@ -311,7 +316,7 @@ describe("resolveForNode", () => {
     const root = mounts.find((m) => m.mountPoint === "/")!;
     const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
     expect(group).toContain("nogroup:x:65534:");
-    expect(group).toContain("nobody:x:65534:");
+    expect(group).not.toContain("nobody:x:65534:");
   });
 
   it.each(["member", "cohort"] as const)(
@@ -800,7 +805,8 @@ describe("resolveForBrowser", () => {
     expect(admin.stat("/").gid).toBe(0);
   });
 
-  it("adds the nobody group to legacy dinit images", async () => {
+  // See the Node case above: the host restores `/etc/group` verbatim.
+  it("restores a legacy dinit image's /etc/group verbatim", async () => {
     const legacyImage = await buildLegacyDinitImage();
     const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, legacyImage, {
       scratchSabBytes: tinyScratch,
@@ -808,7 +814,7 @@ describe("resolveForBrowser", () => {
     const root = mounts.find((m) => m.mountPoint === "/")!;
     const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
     expect(group).toContain("nogroup:x:65534:");
-    expect(group).toContain("nobody:x:65534:");
+    expect(group).not.toContain("nobody:x:65534:");
   });
 
   it.each(["member", "cohort"] as const)(
