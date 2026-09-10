@@ -3036,6 +3036,44 @@ instantiated against a real host:
 This is the "do not stop at unit tests" rule earning its place: the Rust suites
 were 1834/1834 green while all three were live.
 
+### Rebased onto K9's handle-only contract (2026-09-10)
+
+Rebased from `c27cf9657` onto `1b9d806e1`. The collision the coordinator saw was
+real but textual, not architectural: K9 and this item each inserted a block into
+the same gap in `rootfs.rs`, and each half lost its closing brace to the other,
+so neither "keep both" nor "take one" compiled. Resolved by giving each block its
+brace back and keeping both. The same shape recurred in `wasm_api.rs` (two new
+exports in one gap) and `kernel-scratch.ts` (two names in one sorted list).
+
+**`ensure_foreign_mount_parents` stays on `ForeignMounts`, not on K9's
+`MountRoots`, and the reasoning is now in the code.** The two registries answer
+different questions, exactly as K9's own comment says — *which paths are
+host-owned* versus *which host directory anchors a path*. Reachability is the
+first question: it is about the shape of the kernel's namespace, not about where
+a mount's bytes come from, and a mount point still has to be walkable when no
+handle was ever published for it. Driving it from the handle registry would also
+impose the very publication order `MountRoots` documents itself as avoiding,
+since the ancestors must exist before any host path below them resolves. So
+K9's registry is not a cleaner place to hang it; it is a place that would couple
+two deliberately independent things.
+
+The behaviour is unchanged by the rebase: every prefix rather than only the
+host's "extras", symlinked components followed, and a non-directory stops the
+walk instead of being papered over.
+
+### A base defect this surfaced: `tar` cannot rebuild against the current libc
+
+`tar/wasm32` fails with `readdir.c:38: incomplete definition of type 'DIR'`, and
+it blocks `shell` and the images below it. **Reproduced on a clean
+`1b9d806e1` with no changes applied**, so it is the branch's, not K8's.
+
+It is latent rather than new: `tar` had a cached artifact from an older sysroot,
+and the base's own `libc/glue` changes require `scripts/build-musl.sh`, which
+changes the sysroot and therefore `tar`'s cache key. Anyone who rebuilds musl —
+which `CLAUDE.md` requires after a `libc/` change, and which `./run.sh setup`
+deliberately does not do — meets it. A cached artifact was the only thing hiding
+it.
+
 ### Validation actually run
 
 - `cargo test -p runtime-core -p kandelo -p host-native
