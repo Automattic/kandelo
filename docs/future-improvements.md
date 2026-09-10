@@ -966,3 +966,25 @@ they are recognized rather than investigated as defects in the current tree:
 
 Both cost one agent several build cycles and three consecutive
 `prepare-browser` attempts.
+
+### `./run.sh setup` does not install the repository's root npm dependencies
+
+`rootfs` and `node-browser-bundle` both fail in a fresh worktree because
+`node_modules/tsx/dist/cli.mjs` is absent at the **repository root**. Neither
+message said so, and the campaign's own recorded recipe —
+`npm --prefix host install`, which exists because `vitest` is a `host/`
+devDependency — does not satisfy it.
+
+`rootfs` failing then **cascade-blocks every browser product**:
+`platform-rootfs`, `browser-main-shell`, `browser-nginx`, `browser-wordpress`,
+`shell`, `node-vfs`, `nginx-vfs`, `lamp`, `coreutils-docs`. An agent told not to
+fight browser provisioning hits this and reasonably reads it as the browser
+being broken.
+
+Both messages now name `npm ci` at the repo root and say explicitly that
+`npm --prefix host install` is not enough. **That is the diagnostic half.** The
+open question is whether `./run.sh setup` should install root dependencies
+itself, the way it already bootstraps `host/` and `tools/mkrootfs/` in the
+non-sealed path. It is the one provisioning step a fresh worktree needs that
+`setup` does not perform, which makes it the odd one out rather than a
+deliberate boundary.
