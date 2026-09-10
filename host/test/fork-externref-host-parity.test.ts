@@ -10,15 +10,35 @@ function source(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), "utf8");
 }
 
+/**
+ * Slice one top-level function's body out of an entry file.
+ *
+ * `nextName` is optional and only narrows the slice further. The default
+ * bound is the entry's own structure — the next declaration at column 0 —
+ * because naming a neighbouring function couples this assertion to code it
+ * is not testing: moving that neighbour (for instance into
+ * `host/src/process-lifecycle.ts`) silently turns the slice into `-1` and
+ * fails a test whose subject has not changed at all.
+ */
 function functionSource(
   text: string,
   startName: string,
-  nextName: string,
+  nextName?: string,
 ): string {
   const start = text.indexOf(startName);
-  const end = text.indexOf(nextName, start + startName.length);
   expect(start, `missing ${startName}`).toBeGreaterThanOrEqual(0);
-  expect(end, `missing ${nextName} after ${startName}`).toBeGreaterThan(start);
+  const bodyStart = start + startName.length;
+  let end: number;
+  if (nextName !== undefined) {
+    end = text.indexOf(nextName, bodyStart);
+    expect(end, `missing ${nextName} after ${startName}`).toBeGreaterThan(start);
+  } else {
+    const next = text.slice(bodyStart).search(
+      /\n(?:export )?(?:async )?(?:function|const|let|class|interface|type) /,
+    );
+    end = next === -1 ? text.length : bodyStart + next;
+    expect(end, `no declaration follows ${startName}`).toBeGreaterThan(start);
+  }
   return text.slice(start, end);
 }
 
@@ -52,11 +72,7 @@ describe.each([
   });
 
   it("gives pthread Workers the main process image generation", () => {
-    const clone = functionSource(
-      entry,
-      "async function handleClone(",
-      "function handleThreadExit(",
-    );
+    const clone = functionSource(entry, "async function handleClone(");
     expect(clone).toContain(
       "externrefGenerationId: processInfo.externrefGeneration.id",
     );

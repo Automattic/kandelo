@@ -63,10 +63,27 @@ function execHandlerSource(src: string): string {
 }
 
 function cloneHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleClone(");
-  const end = src.indexOf("\nfunction handleThreadExit(", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
+  return topLevelFunctionSource(src, "async function handleClone(");
+}
+
+/**
+ * Slice one top-level function's body out of an entry file.
+ *
+ * Bounded by the entry's own structure — the next declaration at column 0 —
+ * rather than by naming whichever function happens to follow. Naming a
+ * neighbour couples this assertion to code it is not testing, so moving an
+ * unrelated function (for instance into `host/src/process-lifecycle.ts`)
+ * silently turns the slice into `-1` and fails a test that still holds.
+ */
+function topLevelFunctionSource(src: string, startName: string): string {
+  const start = src.indexOf(startName);
+  expect(start, `missing ${startName}`).toBeGreaterThanOrEqual(0);
+  const bodyStart = start + startName.length;
+  const next = src.slice(bodyStart).search(
+    /\n(?:export )?(?:async )?(?:function|const|let|class|interface|type) /,
+  );
+  const end = next === -1 ? src.length : bodyStart + next;
+  expect(end, `no declaration follows ${startName}`).toBeGreaterThan(start);
   return src.slice(start, end);
 }
 
