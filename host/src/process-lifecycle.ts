@@ -46,6 +46,7 @@ import {
   CAPTURED_STDIO,
   TERMINAL_STDIO,
   type CentralizedKernelWorker,
+  type ForkBorrowedReplayWorkspace,
   type ForkContinuationContext,
   type ResolvedSpawnProgram,
   type SpawnProgramResolution,
@@ -61,7 +62,11 @@ import {
   extractAbiVersion,
   isWasmModuleBytes,
 } from "./constants";
-import { FILE_MODES, type ProcessForkMode } from "./generated/abi";
+import {
+  FILE_MODES,
+  PROCESS_FORK_MODE_VFORK,
+  type ProcessForkMode,
+} from "./generated/abi";
 import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
 import type { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
@@ -84,6 +89,7 @@ import {
 import {
   VforkAddressSpaceBusyError,
   type VforkExactCompletionReason,
+  type VforkLifetime,
   type VforkLifetimeCoordinator,
   type VforkLifetimeDisposition,
 } from "./vfork-lifetime";
@@ -98,6 +104,7 @@ import { extractHeapBase } from "./constants";
 import {
   acquireForkMemoryClone,
   computeProcessMemoryLayout,
+  FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryCapacityError,
   ProcessMemoryRetirementBacklogError,
 } from "./process-memory";
@@ -484,6 +491,7 @@ export interface ProcessLifecycleHost<W extends LifecycleWorkerHandle> {
    */
   createDeferredProcessWorker(
     init: CentralizedWorkerInitMessage,
+    purpose: "spawn" | "fork" | "vfork",
   ): W & { start(): boolean };
 
   /**
@@ -2190,7 +2198,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ...host.sideModuleInitFields(ptrWidth),
       };
 
-      newWorker = host.createDeferredProcessWorker(initData);
+      newWorker = host.createDeferredProcessWorker(initData, "spawn");
       const worker = newWorker;
       bindForkHostImports(worker, processForkHostImports);
       childGeneration = {
@@ -2472,7 +2480,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ...host.sideModuleInitFields(ptrWidth),
       };
 
-      childWorker = host.createDeferredProcessWorker(childInitData);
+      childWorker = host.createDeferredProcessWorker(childInitData, "fork");
       const worker = childWorker;
       launchedWorker = worker;
       bindForkHostImports(worker, forkHostImports);
@@ -2613,9 +2621,430 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     return [childChannelOffset];
   }
 
+  /**
+   * Construct a vfork child: it borrows the parent's address space and the
+   * parent stays suspended until the child execs or exits.
+   *
+   * Shared verbatim apart from three things. Two are the launch family's
+   * standing corrections — the exact finalized signal on a dead-child
+   * teardown, in both places this path reaches one. The third is a rewrite of
+   * Node's `finalizeProcessWorker` call into the `finishProcessExit` it
+   * reduces to on this path, so the borrowing-phase trap is one call on both
+   * hosts rather than a Node wrapper around it.
+   *
+   * The browser's vfork worker-constructor fault injection survives as the
+   * `purpose` argument to `createDeferredProcessWorker`: it is a test seam for
+   * the rollback below, and it must stay scoped to vfork rather than firing
+   * for every deferred worker.
+   */
+  async function handleVfork(
+    parentPid: number,
+    childPid: number,
+    parentMemory: WebAssembly.Memory,
+    continuation: ForkContinuationContext,
+    borrowedReplay: ForkBorrowedReplayWorkspace,
+    releaseCreatorAdmission: (() => void) | undefined,
+  ): Promise<number[]> {
+    const kernelWorker = host.kernel();
+    const parentInfo = host.processes.get(parentPid);
+    if (!parentInfo || parentInfo.memory !== parentMemory) {
+      throw new Error(`Unknown parent generation for pid ${parentPid}`);
+    }
+    if (host.vforkLifetimes.hasActiveAddressSpace(parentMemory)) {
+      throw new VforkAddressSpaceBusyError();
+    }
+    if (
+      borrowedReplay.prefixBytes <= 0
+      || borrowedReplay.prefixBytes > FORK_SAVE_BUFFER_SIZE
+      || borrowedReplay.scratchBytes < 0
+      || borrowedReplay.scratchBytes > WASM_PAGE_SIZE
+    ) {
+      throw new VforkAddressSpaceBusyError(
+        "vfork replay workspace exceeds one host control slot",
+      );
+    }
+
+    if (!parentInfo.programModule) {
+      // Stay synchronous until the alias lease, child generation, and lifetime
+      // are all installed. A sibling pthread may otherwise replace the parent
+      // generation in the first yielded turn.
+      parentInfo.programModule = new WebAssembly.Module(parentInfo.programBytes);
+    }
+
+    const memoryStatsBefore = sampleProcessMemoryStats(
+      host.isVforkMechanismTraceEnabled(),
+      host.processMemoryAllocator(),
+    );
+    const childMemoryLease = parentInfo.memoryLease.retainAlias();
+    const memoryStatsAfterAlias = sampleProcessMemoryStats(
+      host.isVforkMechanismTraceEnabled(),
+      host.processMemoryAllocator(),
+    );
+    let childMemoryLeaseConsumed = false;
+    let workspaceAllocation: ReturnType<ThreadPageAllocator["allocate"]>;
+    try {
+      workspaceAllocation =
+        parentInfo.threadAllocator.allocateHostControl(parentMemory);
+    } catch (error) {
+      childMemoryLease.release();
+      throw new VforkAddressSpaceBusyError(
+        `vfork control workspace is unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const workspaceOwnership: VforkWorkspaceOwnership = {
+      allocator: parentInfo.threadAllocator,
+      slotStartPage: workspaceAllocation.slotStartPage,
+      released: false,
+    };
+    const childChannelOffset = workspaceAllocation.channelOffset;
+    const childLayout = parentInfo.layout;
+    const ptrWidth = parentInfo.ptrWidth;
+    let childWorker: (W & { start(): boolean }) | undefined;
+    let childGeneration: Info | undefined;
+    let childExternrefGeneration: ForkExternrefGeneration | undefined;
+    let childForkHostImports: ForkHostImportOwnerWorker | undefined;
+    let registered = false;
+    let lifetimeStarted = false;
+    let lifetime: VforkLifetime<Info> | undefined;
+    const forkReplay = new ForkReplayGateCoordinator(
+      `vfork child pid=${childPid}`,
+    );
+
+    try {
+      const workspaceAddress =
+        workspaceAllocation.slotStartPage * WASM_PAGE_SIZE;
+      kernelWorker.reserveHostRegionAt(
+        childPid,
+        workspaceAddress,
+        PAGES_PER_THREAD * WASM_PAGE_SIZE,
+      );
+      // Fork-child registration is a void ingress: it must observe an empty
+      // deferred FIFO. Under a php-fpm-style fork burst with the in-kernel tmpfs
+      // serving scratch, sibling syscall-channel ingress piles into that FIFO
+      // and the drain is starved by continuously-pending fork transaction-starts,
+      // so a single synchronous attempt loses the microtask race and the launch
+      // is rolled back. Retry on a later host turn — matching exec, vfork start,
+      // and signal launch continuations — so the bounded burst drains and the
+      // registration lands instead of failing the guest's fork.
+      await retryKernelEntryResult(() =>
+        kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
+          ptrWidth,
+          maxAddr: childLayout.maxAddr,
+          mmapBase: childLayout.mmapBase,
+          borrowedAddressSpace: true,
+        }),
+      );
+      registered = true;
+      kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+
+      const forkBufAddr = continuation.forkBufAddr;
+      const forkReplayContext: ForkReplayContext | undefined =
+        continuation.kind === "thread"
+          ? {
+              fnPtr: continuation.fnPtr,
+              argPtr: continuation.argPtr,
+              forkBufAddr,
+            }
+          : parentInfo.forkReplayContext
+            ? { ...parentInfo.forkReplayContext, forkBufAddr }
+            : undefined;
+      const externrefGrant =
+        host.externrefProcessOwner.forkGenerationFromContinuation(
+          parentInfo.externrefGeneration,
+          childPid,
+          parentMemory,
+          ptrWidth,
+          forkBufAddr,
+        );
+      childExternrefGeneration = externrefGrant.generation;
+      let launchedWorker: W & { start(): boolean };
+      const forkHostImports = host.forkHostImportOwnerRuntime.createWorker({
+        pid: childPid,
+        generationId: externrefGrant.generation.id,
+        authorizeSender: () => {
+          const current = host.processes.get(childPid);
+          if (
+            !current
+            || current.worker !== launchedWorker
+            || current.externrefGeneration !== externrefGrant.generation
+          ) {
+            throw new Error(
+              `stale fork host-import sender for vfork child pid=${childPid}`,
+            );
+          }
+        },
+      });
+      childForkHostImports = forkHostImports;
+      const childInitData: CentralizedWorkerInitMessage = {
+        type: "centralized_init",
+        pid: childPid,
+        programBytes: parentInfo.programBytes,
+        programModule: parentInfo.programModule,
+        memory: parentMemory,
+        channelOffset: childChannelOffset,
+        secureExec: kernelWorker.processSecureExec(childPid),
+        externrefGenerationId: externrefGrant.generation.id,
+        forkHostImports: forkHostImports.init,
+        isForkChild: true,
+        forkMode: PROCESS_FORK_MODE_VFORK,
+        forkMemoryOwnership: "borrowed",
+        forkBufAddr,
+        forkOwnerControlAddr:
+          parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+        forkPrivatePrefixAddr:
+          childChannelOffset - FORK_SAVE_BUFFER_SIZE,
+        forkPrivatePrefixBytes: borrowedReplay.prefixBytes,
+        forkScratchAddr: workspaceAllocation.tlsOffset,
+        forkScratchBytes: borrowedReplay.scratchBytes,
+        forkReplayGate: forkReplay.gate,
+        forkChildThreadFnPtr: forkReplayContext?.fnPtr,
+        forkChildThreadArgPtr: forkReplayContext?.argPtr,
+        ptrWidth,
+        kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        // Phase 6 item 4: the borrowed (vfork) child now drives its continuation
+        // replay through the co-resident fork-module, so it needs the flag + the
+        // compiled module just like a COW child (`worker-main` relaxed the
+        // `!borrowedForkChild` gate). Without this the child would silently fall
+        // back to the JS engine and fail against the module-backed parent's
+        // Option-B journal image (which has no JS replay-event manifest).
+        ...host.sideModuleInitFields(ptrWidth),
+      };
+
+      childWorker = host.createDeferredProcessWorker(childInitData, "vfork");
+      launchedWorker = childWorker;
+      bindForkHostImports(childWorker, forkHostImports);
+      childGeneration = {
+        generation: host.allocateProcessGeneration(),
+        memory: parentMemory,
+        memoryLease: childMemoryLease,
+        workerQuiescence: createWorkerQuiescence(),
+        execRetirement: createWorkerQuiescence(),
+        memoryRetirementSafe: true,
+        aliasExposed: false,
+        argv: parentInfo.argv,
+        programBytes: parentInfo.programBytes,
+        programModule: parentInfo.programModule,
+        worker: childWorker,
+        channelOffset: childChannelOffset,
+        ptrWidth,
+        secureExec: childInitData.secureExec,
+        layout: childLayout,
+        threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+        forkReplayContext,
+        externrefGeneration: externrefGrant.generation,
+        vforkWorkspace: workspaceOwnership,
+      };
+      if (memoryStatsBefore && memoryStatsAfterAlias) {
+        traceVforkMechanism(
+          "vfork_prepared",
+          `mode=1 parent=${parentPid} child=${childPid} memory_identity=${
+            childGeneration.memory === parentMemory ? "same" : "distinct"
+          } live_memory_delta=${
+            memoryStatsAfterAlias.liveMemories - memoryStatsBefore.liveMemories
+          } alias_delta=${
+            memoryStatsAfterAlias.liveAliases - memoryStatsBefore.liveAliases
+          } parent_channel=${parentInfo.channelOffset} child_channel=${childChannelOffset} `
+            + `owner_control=${childInitData.forkOwnerControlAddr} `
+            + `child_prefix=${childInitData.forkPrivatePrefixAddr} `
+            + `scratch=${childInitData.forkScratchAddr} `
+            + `externref_parent=${parentInfo.externrefGeneration.id} `
+            + `externref_child=${childGeneration.externrefGeneration.id}`,
+        );
+      }
+      lifetime = host.vforkLifetimes.begin(
+        parentPid,
+        childPid,
+        parentInfo,
+        childGeneration,
+      );
+      lifetimeStarted = true;
+      host.processes.set(childPid, childGeneration);
+      // The exact generation is now sweepable by terminal host destroy. Keep the
+      // onFork promise pending to park only the calling guest thread.
+      releaseCreatorAdmission?.();
+
+      observeForkReplayWorker(
+        forkReplay,
+        launchedWorker,
+        childPid,
+        () => host.processes.get(childPid)?.worker === launchedWorker,
+      );
+      host.installProcessWorkerListeners(childWorker, childPid);
+      let startFailure: unknown;
+      const startDisposition = await retryKernelEntryResult(() =>
+        kernelWorker.startProcessWorkerWhenRunnable(
+          childPid,
+          parentMemory,
+          () => {
+            host.vforkLifetimes.markChildMayAccessMemory(childGeneration!);
+            traceVforkMechanism(
+              "child_may_access_memory",
+              `parent=${parentPid} child=${childPid}`,
+            );
+            try {
+              launchedWorker.start();
+            } catch (error) {
+              // Worker construction can partially publish a realm before throwing.
+              // Once marked borrowing, only whole-address-space containment may
+              // release the parent's parked syscall.
+              startFailure = error;
+              forkReplay.cancel(error);
+              host.vforkLifetimes.requireAddressSpaceContainment(
+                childGeneration!,
+                error,
+              );
+              traceVforkMechanism(
+                "worker_start_failed",
+                `parent=${parentPid} child=${childPid}`,
+              );
+            }
+          },
+          () => {
+            forkReplay.cancel(
+              new Error(`Vfork child ${childPid} launch was cancelled`),
+            );
+            forkHostImports.close();
+            void launchedWorker.terminate();
+          },
+        ),
+      );
+      if (startDisposition === "stale") {
+        throw new VforkAddressSpaceBusyError(
+          `Vfork child ${childPid} changed generation before Worker launch`,
+        );
+      }
+      if (startDisposition === "dead") {
+        forkReplay.cancel(
+          new Error(`Vfork child ${childPid} exited before Worker launch`),
+        );
+        forkHostImports.close();
+        await terminateTrackedWorker(childWorker);
+        childGeneration.workerQuiescence.settle();
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizePendingChildTermination(childPid),
+        );
+        await awaitFinalizedProcessTeardown(
+          childPid,
+          signal > 0 ? signalExitStatus(signal) : 0,
+          childWorker,
+          signal > 0 ? signal : undefined,
+          signal > 0 ? "signal" : "exit",
+        );
+        return finishVforkDisposition(
+          await lifetime.completion,
+          childGeneration,
+          parentPid,
+        );
+      }
+
+      try {
+        await forkReplay.waitUntilReady();
+      } catch (error) {
+        const phase = host.vforkLifetimes.phaseForChild(childGeneration);
+        if (phase === "starting") {
+          childGeneration.workerQuiescence.settle();
+          const signal = await retryKernelEntryResult(
+            () => kernelWorker.finalizePendingChildTermination(childPid),
+          );
+          await awaitFinalizedProcessTeardown(
+            childPid,
+            signal > 0 ? signalExitStatus(signal) : 0,
+            childWorker,
+            signal > 0 ? signal : undefined,
+            signal > 0 ? "signal" : "exit",
+          );
+        } else if (phase === "borrowing" && startFailure === undefined) {
+          // The Node entry reached this through `finalizeProcessWorker`,
+          // which reduces to exactly this call here: its extra guards are the
+          // ones `finishProcessExit` already applies, and its
+          // `notifyHostProcessCrashed` is what passing `SIGSEGV` performs.
+          await finishProcessExit(
+            childPid,
+            signalExitStatus(SIGSEGV),
+            SIGSEGV,
+            childWorker,
+            "trap",
+          );
+        }
+        return finishVforkDisposition(
+          await lifetime.completion,
+          childGeneration,
+          parentPid,
+        );
+      }
+      if (host.processes.get(childPid) !== childGeneration) {
+        throw new Error(
+          `Vfork child ${childPid} changed generation before replay commit`,
+        );
+      }
+      if (!await retryKernelEntryResult(
+        () => kernelWorker.shouldLaunchPendingChild(childPid),
+      )) {
+        throw new Error(`Vfork child ${childPid} exited before replay commit`);
+      }
+      forkReplay.commit();
+      return finishVforkDisposition(
+        await lifetime.completion,
+        childGeneration,
+        parentPid,
+      );
+    } catch (error) {
+      if (childGeneration && lifetimeStarted) {
+        const phase = host.vforkLifetimes.phaseForChild(childGeneration);
+        if (phase === "borrowing") {
+          host.vforkLifetimes.requireAddressSpaceContainment(childGeneration, error);
+          return finishVforkDisposition(
+            await lifetime!.completion,
+            childGeneration,
+            parentPid,
+          );
+        }
+      }
+
+      forkReplay.cancel(error);
+      childForkHostImports?.close();
+      if (childWorker) await terminateTrackedWorker(childWorker);
+      if (childExternrefGeneration) {
+        host.externrefProcessOwner.releaseGeneration(childExternrefGeneration);
+      }
+      if (childGeneration && registered) {
+        const detachResult = await detachExactProcessGeneration({
+          pid: childPid,
+          generation: childGeneration,
+          operation: "deactivate",
+          retire: (commit) => {
+            childMemoryLease.release();
+            childMemoryLeaseConsumed = true;
+            commit();
+          },
+        });
+        if (detachResult.status !== "released") {
+          reportRetainedProcessGeneration(
+            childPid,
+            "vfork launch rollback",
+            detachResult,
+          );
+        }
+      }
+      if (!childMemoryLeaseConsumed) childMemoryLease.release();
+      if (!workspaceOwnership.released) {
+        workspaceOwnership.released = true;
+        workspaceOwnership.allocator.free(workspaceOwnership.slotStartPage);
+      }
+      if (childGeneration && lifetimeStarted) {
+        host.vforkLifetimes.abortBeforeChildStart(childGeneration, 11);
+      }
+      throw error;
+    }
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
+    handleVfork,
     handleSpawn,
     handlePosixSpawn,
     handleOrdinaryFork,
