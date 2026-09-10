@@ -263,6 +263,10 @@ pub trait HostIO {
     /// Set timestamps on an entry named by one component of a directory handle.
     /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
     /// target.
+    /// Set timestamps on an entry named by one component of a directory handle.
+    /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
+    /// target.
+    #[allow(clippy::too_many_arguments)]
     fn host_utimensat(
         &mut self,
         _dir: i64,
@@ -2494,9 +2498,6 @@ pub mod test_host {
     pub struct NoopHost;
 
     impl HostIO for NoopHost {
-        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -2512,51 +2513,12 @@ pub mod test_host {
         fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
             Err(Errno::ENOSYS)
         }
-        fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-            Err(Errno::ENOENT)
-        }
-        fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-            Err(Errno::ENOENT)
-        }
-        fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_link(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_symlink(&mut self, _t: &[u8], _l: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_readdir(
             &mut self,
             _h: i64,
             _b: &mut [u8],
         ) -> Result<Option<(u64, u32, usize)>, Errno> {
             Ok(None)
-        }
-        fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
@@ -2596,16 +2558,6 @@ pub mod test_host {
                 *x = 0;
             }
             Ok(b.len())
-        }
-        fn host_utimensat(
-            &mut self,
-            _p: &[u8],
-            _as: i64,
-            _an: i64,
-            _ms: i64,
-            _mn: i64,
-        ) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)

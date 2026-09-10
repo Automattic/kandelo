@@ -19386,9 +19386,225 @@ mod tests {
     }
 
     /// Mock host I/O for testing.
+
+    // ---- Handle-only contract support for the path-shaped test doubles ----
+    //
+    // The host contract is handle-only: the kernel resolves the namespace and
+    // asks a host to resolve ONE component relative to a directory handle the
+    // host issued. These doubles were written against the old path-taking
+    // contract, so each keeps its path behaviour as inherent methods and gains
+    // the `*at` methods on top — which is exactly the shape of a real host:
+    // join one component to a directory you already hold.
+    //
+    // The anchor table is shared rather than a field so unit-struct doubles
+    // (`SymlinkMock`, `LoopMock`, ...) stay unit structs.
+    thread_local! {
+        static MOCK_DIR_ANCHORS: core::cell::RefCell<
+            std::collections::HashMap<i64, Vec<u8>>
+        > = core::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// Publish the double's root anchor, as a real host does at boot through
+    /// `kernel_rootfs_set_foreign_mount_roots`. Without it the kernel has
+    /// nowhere to start a walk and every host path answers `ENOSYS` — correct
+    /// for a host with no directory capability, which these doubles are not.
+    fn mock_publish_root_anchor() {
+        let mut payload = 0i64.to_le_bytes().to_vec();
+        payload.extend_from_slice(b"/\0");
+        crate::rootfs::set_foreign_mount_roots(&payload);
+        MOCK_DIR_ANCHORS.with(|a| {
+            let mut a = a.borrow_mut();
+            a.clear();
+            a.insert(0, b"/".to_vec());
+        });
+        MOCK_NEXT_DIR_HANDLE.with(|n| n.set(200));
+    }
+
+    /// Allocate a distinct directory handle.
+    ///
+    /// Distinct open directories must get distinct handles: the kernel's
+    /// per-component walk holds several at once, so a double returning a
+    /// constant would alias them. Every real host already satisfies this — it
+    /// is the same rule file handles have always followed.
+    fn mock_next_dir_handle() -> i64 {
+        MOCK_NEXT_DIR_HANDLE.with(|n| {
+            let handle = n.get();
+            n.set(handle + 1);
+            handle
+        })
+    }
+
+    thread_local! {
+        static MOCK_NEXT_DIR_HANDLE: core::cell::Cell<i64> = const { core::cell::Cell::new(200) };
+    }
+
+    /// Every directory handle a double has issued so far.
+    ///
+    /// Asserting that the closed set equals this is stronger than a literal
+    /// list and independent of how many directories the kernel's per-component
+    /// walk opened on the way: it says no directory handle leaked.
+    fn mock_all_issued_dir_handles() -> Vec<i64> {
+        (200..MOCK_NEXT_DIR_HANDLE.with(|n| n.get())).collect()
+    }
+
+    /// Record the path a newly issued directory handle names.
+    fn mock_bind_dir_anchor(handle: i64, path: Vec<u8>) {
+        MOCK_DIR_ANCHORS.with(|a| {
+            a.borrow_mut().insert(handle, path);
+        });
+    }
+
+    /// Resolve a directory anchor plus one component to a full path.
+    fn mock_at(dir: i64, name: &[u8]) -> Vec<u8> {
+        let base = MOCK_DIR_ANCHORS
+            .with(|a| a.borrow().get(&dir).cloned())
+            .unwrap_or_else(|| b"/".to_vec());
+        if name == b"." || name.is_empty() {
+            return base;
+        }
+        let mut path = base;
+        if path.len() > 1 {
+            path.push(b'/');
+        }
+        path.extend_from_slice(name);
+        path
+    }
+
+    /// The handle-only trait methods, delegating to a double's inherent
+    /// path methods. One definition, shared by every path-shaped double.
+    macro_rules! mock_hostio_at_over_paths {
+        () => {
+            fn host_openat(
+                &mut self,
+                dir: i64,
+                name: &[u8],
+                flags: u32,
+                mode: u32,
+            ) -> Result<i64, Errno> {
+                let path = mock_at(dir, name);
+                if flags & wasm_posix_shared::flags::O_DIRECTORY != 0 {
+                    let handle = self.host_opendir(&path)?;
+                    mock_bind_dir_anchor(handle, path);
+                    return Ok(handle);
+                }
+                self.host_open(&path, flags, mode)
+            }
+
+            fn host_fstatat(
+                &mut self,
+                dir: i64,
+                name: &[u8],
+                flags: u32,
+            ) -> Result<WasmStat, Errno> {
+                let path = mock_at(dir, name);
+                if flags & wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW != 0 {
+                    self.host_lstat(&path)
+                } else {
+                    self.host_stat(&path)
+                }
+            }
+
+            fn host_mkdirat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+                let path = mock_at(dir, name);
+                self.host_mkdir(&path, mode)
+            }
+
+            fn host_unlinkat(&mut self, dir: i64, name: &[u8], flags: u32) -> Result<(), Errno> {
+                let path = mock_at(dir, name);
+                if flags & wasm_posix_shared::flags::AT_REMOVEDIR != 0 {
+                    self.host_rmdir(&path)
+                } else {
+                    self.host_unlink(&path)
+                }
+            }
+
+            fn host_renameat(
+                &mut self,
+                old_dir: i64,
+                old_name: &[u8],
+                new_dir: i64,
+                new_name: &[u8],
+            ) -> Result<(), Errno> {
+                let old_path = mock_at(old_dir, old_name);
+                let new_path = mock_at(new_dir, new_name);
+                self.host_rename(&old_path, &new_path)
+            }
+
+            fn host_linkat(
+                &mut self,
+                old_dir: i64,
+                old_name: &[u8],
+                new_dir: i64,
+                new_name: &[u8],
+                _flags: u32,
+            ) -> Result<(), Errno> {
+                let old_path = mock_at(old_dir, old_name);
+                let new_path = mock_at(new_dir, new_name);
+                self.host_link(&old_path, &new_path)
+            }
+
+            fn host_symlinkat(
+                &mut self,
+                target: &[u8],
+                dir: i64,
+                name: &[u8],
+            ) -> Result<(), Errno> {
+                let link_path = mock_at(dir, name);
+                self.host_symlink(target, &link_path)
+            }
+
+            fn host_readlinkat(
+                &mut self,
+                dir: i64,
+                name: &[u8],
+                buf: &mut [u8],
+            ) -> Result<usize, Errno> {
+                let path = mock_at(dir, name);
+                self.host_readlink(&path, buf)
+            }
+
+            fn host_fchmodat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+                let path = mock_at(dir, name);
+                self.host_chmod(&path, mode)
+            }
+
+            fn host_fchownat(
+                &mut self,
+                dir: i64,
+                name: &[u8],
+                uid: u32,
+                gid: u32,
+                flags: u32,
+            ) -> Result<(), Errno> {
+                let path = mock_at(dir, name);
+                if flags & wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW != 0 {
+                    self.host_lchown(&path, uid, gid)
+                } else {
+                    self.host_chown(&path, uid, gid)
+                }
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn host_utimensat(
+                &mut self,
+                dir: i64,
+                name: &[u8],
+                atime_sec: i64,
+                atime_nsec: i64,
+                mtime_sec: i64,
+                mtime_nsec: i64,
+                _flags: u32,
+            ) -> Result<(), Errno> {
+                let path = mock_at(dir, name);
+                self.host_utimensat_path(&path, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
+            }
+        };
+    }
+
     struct MockHostIO {
+        /// Every directory this double was asked to open, in order.
+        opendir_paths: Vec<Vec<u8>>,
         next_handle: i64,
-        next_dir_handle: i64,
         dir_entry_returned: bool,
         dir_entry_index: usize, // current position in mock directory
         dir_entry_indices: std::collections::HashMap<i64, usize>,
@@ -19510,9 +19726,17 @@ mod tests {
         }
 
         fn new() -> Self {
+            // A host with a filesystem publishes its directory anchors before
+            // the kernel can reach it, exactly as a real host does at boot
+            // through `kernel_rootfs_set_foreign_mount_roots`. This mock serves
+            // `/`, so it publishes one anchor for `/` with handle 0. Without
+            // it the kernel has nowhere to start a walk and every host path
+            // answers ENOSYS — which is the correct behaviour for a host that
+            // exposes no directory capability, and would make this mock one.
+            mock_publish_root_anchor();
             MockHostIO {
+                opendir_paths: Vec::new(),
                 next_handle: 100,
-                next_dir_handle: 200,
                 dir_entry_returned: false,
                 dir_entry_index: 0,
                 dir_entry_indices: std::collections::HashMap::new(),
@@ -19639,7 +19863,14 @@ mod tests {
         }
     }
 
-    impl HostIO for MockHostIO {
+    /// The path-shaped behaviour this mock has always had, kept as inherent
+    /// methods now that the host contract itself is handle-only.
+    ///
+    /// The `*at` trait implementations below resolve a directory anchor to a
+    /// path and delegate here, which is exactly what a real host does: the
+    /// kernel does the namespace work, and the host joins one component to a
+    /// directory it already holds.
+    impl MockHostIO {
         fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
             let handle = self.next_handle;
             self.next_handle += 1;
@@ -19676,8 +19907,303 @@ mod tests {
             }
             Ok(handle)
         }
+        fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            let mode = self
+                .file_modes
+                .get(path)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(path));
+            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) =
+                self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
+            Ok(WasmStat {
+                st_dev: 0,
+                st_ino: 1,
+                st_mode: mode,
+                st_nlink: 1,
+                st_uid: uid,
+                st_gid: gid,
+                st_size: 1024,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
+                st_ctime_sec: 0,
+                st_ctime_nsec: 0,
+                _pad: 0,
+            })
+        }
+        fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            self.lstat_paths.push(path.to_vec());
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            let is_symlink = self.symlink_targets.contains_key(path);
+            let mode = if is_symlink {
+                S_IFLNK | 0o777
+            } else {
+                test_default_mode(path)
+            };
+            let mode = self.file_modes.get(path).copied().unwrap_or(mode);
+            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) =
+                self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
+            Ok(WasmStat {
+                st_dev: 0,
+                st_ino: 2,
+                st_mode: mode,
+                st_nlink: 1,
+                st_uid: uid,
+                st_gid: gid,
+                st_size: 1024,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
+                st_ctime_sec: 0,
+                st_ctime_nsec: 0,
+                _pad: 0,
+            })
+        }
+        fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            Ok(self
+                .statfs_by_path
+                .get(path)
+                .copied()
+                .unwrap_or_else(default_statfs))
+        }
+        fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
+            self.pathconf_calls.push((path.to_vec(), name));
+            self.pathconf_result
+        }
+        fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            self.missing_paths.remove(path);
+            self.file_modes
+                .insert(path.to_vec(), S_IFDIR | (mode & 0o7777));
+            Ok(())
+        }
+        fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            self.file_modes.remove(path);
+            self.file_owners.remove(path);
+            self.file_times.remove(path);
+            self.symlink_targets.remove(path);
+            self.missing_paths.insert(path.to_vec());
+            Ok(())
+        }
+        fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
 
+            let old_mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            let moved_modes: Vec<_> = self
+                .file_modes
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_modes {
+                self.file_modes.remove(&from);
+                self.file_modes.insert(to, value);
+            }
+            let moved_owners: Vec<_> = self
+                .file_owners
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_owners {
+                self.file_owners.remove(&from);
+                self.file_owners.insert(to, value);
+            }
+            let moved_times: Vec<_> = self
+                .file_times
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_times {
+                self.file_times.remove(&from);
+                self.file_times.insert(to, value);
+            }
+            if !self.file_modes.contains_key(newpath) {
+                self.file_modes.insert(newpath.to_vec(), old_mode);
+            }
+            self.missing_paths.insert(oldpath.to_vec());
+            self.missing_paths.remove(newpath);
+            for handle_path in self.handle_paths.values_mut() {
+                if let Some(rebased) = crate::fifo::rebase_path(handle_path, oldpath, newpath) {
+                    *handle_path = rebased;
+                }
+            }
+            Ok(())
+        }
+        fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
+            let mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            self.file_modes.insert(newpath.to_vec(), mode);
+            if let Some(owner) = self.file_owners.get(oldpath).copied() {
+                self.file_owners.insert(newpath.to_vec(), owner);
+            }
+            if let Some(times) = self.file_times.get(oldpath).copied() {
+                self.file_times.insert(newpath.to_vec(), times);
+            }
+            self.missing_paths.remove(newpath);
+            Ok(())
+        }
+        fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
+            self.set_symlink(linkpath, target);
+            Ok(())
+        }
+        fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+            let target = self
+                .symlink_targets
+                .get(path)
+                .map(Vec::as_slice)
+                .unwrap_or(b"/target");
+            let n = buf.len().min(target.len());
+            buf[..n].copy_from_slice(&target[..n]);
+            Ok(n)
+        }
+        fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            let old = self
+                .file_modes
+                .get(path)
+                .copied()
+                .unwrap_or(S_IFREG | 0o644);
+            self.file_modes
+                .insert(path.to_vec(), (old & S_IFMT) | (mode & 0o7777));
+            Ok(())
+        }
+        fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            // Mirror the host VFS: chown updates owner state. A subsequent
+            // host_stat(path) must return the new uid/gid. Tests rely on this
+            // to verify sys_chown propagates through to the host VFS.
+            self.chown_calls.push((path.to_vec(), uid, gid));
+            self.file_owners.insert(path.to_vec(), (uid, gid));
+            for (handle, handle_path) in &self.handle_paths {
+                if handle_path.as_slice() == path {
+                    self.handle_owners.insert(*handle, (uid, gid));
+                }
+            }
+            Ok(())
+        }
+        fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            self.lchown_calls.push((path.to_vec(), uid, gid));
+            self.file_owners.insert(path.to_vec(), (uid, gid));
+            Ok(())
+        }
+        /// Record that this double issued `handle` as a directory, for tests
+        /// that fabricate kernel state naming a handle they never opened. A
+        /// real host knows its own table; a double must be told.
+        fn seed_dir_handle(&mut self, handle: i64) {
+            self.dir_entry_indices.insert(handle, 0);
+        }
+
+        fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno> {
+            self.opendir_paths.push(path.to_vec());
+            if let Some(err) = self.dir_opendir_error {
+                return Err(err);
+            }
+            let handle = mock_next_dir_handle();
+            self.dir_entry_returned = false;
+            self.dir_entry_index = 0;
+            self.dir_entry_indices.insert(handle, 0);
+            Ok(handle)
+        }
+        fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
+            if let Some(err) = self.dir_closedir_error_once.take() {
+                return Err(err);
+            }
+            self.dir_entry_indices.remove(&handle);
+            self.closed_dir_handles.push(handle);
+            Ok(())
+        }
+        fn host_utimensat_path(
+            &mut self,
+            path: &[u8],
+            atime_sec: i64,
+            atime_nsec: i64,
+            mtime_sec: i64,
+            mtime_nsec: i64,
+        ) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            const UTIME_NOW: i64 = 0x3fff_ffff;
+            const UTIME_OMIT: i64 = 0x3fff_fffe;
+            let current = self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
+            let now = self.clock_time;
+            let normalize = |current_sec: u64,
+                             current_nsec: u32,
+                             requested_sec: i64,
+                             requested_nsec: i64|
+             -> Result<(u64, u32), Errno> {
+                match requested_nsec {
+                    UTIME_OMIT => Ok((current_sec, current_nsec)),
+                    UTIME_NOW => Ok((
+                        u64::try_from(now.0).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(now.1).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    0..=999_999_999 => Ok((
+                        u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    _ => Err(Errno::EINVAL),
+                }
+            };
+            let atime = normalize(current.0, current.1, atime_sec, atime_nsec)?;
+            let mtime = normalize(current.2, current.3, mtime_sec, mtime_nsec)?;
+            self.file_times
+                .insert(path.to_vec(), (atime.0, atime.1, mtime.0, mtime.1));
+            Ok(())
+        }
+    }
+
+    impl HostIO for MockHostIO {
         fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
+            // One import closes both kinds of handle, so this double dispatches
+            // on which kind it issued — exactly as `VirtualPlatformIO` and
+            // `NodePlatformIO` do. Directory closes stay in their own list so a
+            // test asserting "this file handle was released" is not perturbed
+            // by the directory handles the kernel's per-component walk opens
+            // and releases on the way to it.
+            if self.dir_entry_indices.contains_key(&handle) {
+                if let Some(err) = self.dir_closedir_error_once.take() {
+                    return Err(err);
+                }
+                self.dir_entry_indices.remove(&handle);
+                self.closed_dir_handles.push(handle);
+                return Ok(());
+            }
             self.closed_handles.push(handle);
             Ok(())
         }
@@ -19825,69 +20351,6 @@ mod tests {
             })
         }
 
-        fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-            if self.missing_paths.contains(path) {
-                return Err(Errno::ENOENT);
-            }
-            let mode = self
-                .file_modes
-                .get(path)
-                .copied()
-                .unwrap_or_else(|| test_default_mode(path));
-            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
-            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) =
-                self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
-            Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 1,
-                st_mode: mode,
-                st_nlink: 1,
-                st_uid: uid,
-                st_gid: gid,
-                st_size: 1024,
-                st_atime_sec: atime_sec,
-                st_atime_nsec: atime_nsec,
-                st_mtime_sec: mtime_sec,
-                st_mtime_nsec: mtime_nsec,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            })
-        }
-
-        fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-            self.lstat_paths.push(path.to_vec());
-            if self.missing_paths.contains(path) {
-                return Err(Errno::ENOENT);
-            }
-            let is_symlink = self.symlink_targets.contains_key(path);
-            let mode = if is_symlink {
-                S_IFLNK | 0o777
-            } else {
-                test_default_mode(path)
-            };
-            let mode = self.file_modes.get(path).copied().unwrap_or(mode);
-            let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
-            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) =
-                self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
-            Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 2,
-                st_mode: mode,
-                st_nlink: 1,
-                st_uid: uid,
-                st_gid: gid,
-                st_size: 1024,
-                st_atime_sec: atime_sec,
-                st_atime_nsec: atime_nsec,
-                st_mtime_sec: mtime_sec,
-                st_mtime_nsec: mtime_nsec,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            })
-        }
-
         fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
             let data = self.base_blobs.get(&blob_id).ok_or(Errno::EIO)?;
             let start = offset as usize;
@@ -19899,185 +20362,38 @@ mod tests {
             Ok(n)
         }
 
-        fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
-            if self.missing_paths.contains(path) {
-                return Err(Errno::ENOENT);
-            }
-            Ok(self
-                .statfs_by_path
-                .get(path)
-                .copied()
-                .unwrap_or_else(default_statfs))
-        }
-
         fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
+            // `statfs` of a path now reaches the host as `fstatfs` of a
+            // directory on the same filesystem. Answer those from the same
+            // source as a file handle rather than rejecting them as unknown.
+            if let Some(path) = MOCK_DIR_ANCHORS.with(|a| a.borrow().get(&handle).cloned()) {
+                if self.missing_paths.contains(&path) {
+                    return Err(Errno::ENOENT);
+                }
+                return Ok(self
+                    .statfs_by_path
+                    .get(&path)
+                    .copied()
+                    .unwrap_or_else(default_statfs));
+            }
             self.handle_statfs
                 .get(&handle)
                 .copied()
                 .ok_or(Errno::EBADF)
         }
 
-        fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
-            self.pathconf_calls.push((path.to_vec(), name));
-            self.pathconf_result
-        }
-
         fn host_fpathconf(&mut self, handle: i64, name: i32) -> Result<Option<i64>, Errno> {
+            // `pathconf` of a path now reaches the host as `fpathconf` of the
+            // directory containing it — the answer is a property of the
+            // filesystem, which that directory shares. Record it as a pathconf
+            // query against the directory so a test can still assert *which*
+            // filesystem was consulted, and answer from `pathconf_result`.
+            if let Some(path) = MOCK_DIR_ANCHORS.with(|a| a.borrow().get(&handle).cloned()) {
+                self.pathconf_calls.push((path, name));
+                return self.pathconf_result;
+            }
             self.fpathconf_calls.push((handle, name));
             self.fpathconf_result
-        }
-
-        fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-            self.missing_paths.remove(path);
-            self.file_modes
-                .insert(path.to_vec(), S_IFDIR | (mode & 0o7777));
-            Ok(())
-        }
-        fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
-            if self.missing_paths.contains(path) {
-                return Err(Errno::ENOENT);
-            }
-            self.file_modes.remove(path);
-            self.file_owners.remove(path);
-            self.file_times.remove(path);
-            self.symlink_targets.remove(path);
-            self.missing_paths.insert(path.to_vec());
-            Ok(())
-        }
-        fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-            if self.missing_paths.contains(oldpath) {
-                return Err(Errno::ENOENT);
-            }
-
-            let old_mode = self
-                .file_modes
-                .get(oldpath)
-                .copied()
-                .unwrap_or_else(|| test_default_mode(oldpath));
-            let moved_modes: Vec<_> = self
-                .file_modes
-                .iter()
-                .filter_map(|(path, value)| {
-                    crate::fifo::rebase_path(path, oldpath, newpath)
-                        .map(|rebased| (path.clone(), rebased, *value))
-                })
-                .collect();
-            for (from, to, value) in moved_modes {
-                self.file_modes.remove(&from);
-                self.file_modes.insert(to, value);
-            }
-            let moved_owners: Vec<_> = self
-                .file_owners
-                .iter()
-                .filter_map(|(path, value)| {
-                    crate::fifo::rebase_path(path, oldpath, newpath)
-                        .map(|rebased| (path.clone(), rebased, *value))
-                })
-                .collect();
-            for (from, to, value) in moved_owners {
-                self.file_owners.remove(&from);
-                self.file_owners.insert(to, value);
-            }
-            let moved_times: Vec<_> = self
-                .file_times
-                .iter()
-                .filter_map(|(path, value)| {
-                    crate::fifo::rebase_path(path, oldpath, newpath)
-                        .map(|rebased| (path.clone(), rebased, *value))
-                })
-                .collect();
-            for (from, to, value) in moved_times {
-                self.file_times.remove(&from);
-                self.file_times.insert(to, value);
-            }
-            if !self.file_modes.contains_key(newpath) {
-                self.file_modes.insert(newpath.to_vec(), old_mode);
-            }
-            self.missing_paths.insert(oldpath.to_vec());
-            self.missing_paths.remove(newpath);
-            for handle_path in self.handle_paths.values_mut() {
-                if let Some(rebased) = crate::fifo::rebase_path(handle_path, oldpath, newpath) {
-                    *handle_path = rebased;
-                }
-            }
-            Ok(())
-        }
-        fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-            if self.missing_paths.contains(oldpath) {
-                return Err(Errno::ENOENT);
-            }
-            let mode = self
-                .file_modes
-                .get(oldpath)
-                .copied()
-                .unwrap_or_else(|| test_default_mode(oldpath));
-            self.file_modes.insert(newpath.to_vec(), mode);
-            if let Some(owner) = self.file_owners.get(oldpath).copied() {
-                self.file_owners.insert(newpath.to_vec(), owner);
-            }
-            if let Some(times) = self.file_times.get(oldpath).copied() {
-                self.file_times.insert(newpath.to_vec(), times);
-            }
-            self.missing_paths.remove(newpath);
-            Ok(())
-        }
-        fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
-            self.set_symlink(linkpath, target);
-            Ok(())
-        }
-
-        fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
-            let target = self
-                .symlink_targets
-                .get(path)
-                .map(Vec::as_slice)
-                .unwrap_or(b"/target");
-            let n = buf.len().min(target.len());
-            buf[..n].copy_from_slice(&target[..n]);
-            Ok(n)
-        }
-
-        fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-            let old = self
-                .file_modes
-                .get(path)
-                .copied()
-                .unwrap_or(S_IFREG | 0o644);
-            self.file_modes
-                .insert(path.to_vec(), (old & S_IFMT) | (mode & 0o7777));
-            Ok(())
-        }
-        fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-            // Mirror the host VFS: chown updates owner state. A subsequent
-            // host_stat(path) must return the new uid/gid. Tests rely on this
-            // to verify sys_chown propagates through to the host VFS.
-            self.chown_calls.push((path.to_vec(), uid, gid));
-            self.file_owners.insert(path.to_vec(), (uid, gid));
-            for (handle, handle_path) in &self.handle_paths {
-                if handle_path.as_slice() == path {
-                    self.handle_owners.insert(*handle, (uid, gid));
-                }
-            }
-            Ok(())
-        }
-        fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-            self.lchown_calls.push((path.to_vec(), uid, gid));
-            self.file_owners.insert(path.to_vec(), (uid, gid));
-            Ok(())
-        }
-        fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
-            if let Some(err) = self.dir_opendir_error {
-                return Err(err);
-            }
-            let handle = self.next_dir_handle;
-            self.next_dir_handle += 1;
-            self.dir_entry_returned = false;
-            self.dir_entry_index = 0;
-            self.dir_entry_indices.insert(handle, 0);
-            Ok(handle)
         }
 
         fn host_readdir(
@@ -20122,15 +20438,6 @@ mod tests {
             } else {
                 Ok(None) // end of directory
             }
-        }
-
-        fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
-            if let Some(err) = self.dir_closedir_error_once.take() {
-                return Err(err);
-            }
-            self.dir_entry_indices.remove(&handle);
-            self.closed_dir_handles.push(handle);
-            Ok(())
         }
 
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
@@ -20200,45 +20507,6 @@ mod tests {
                 *b = (i & 0xFF) as u8;
             }
             Ok(buf.len())
-        }
-        fn host_utimensat(
-            &mut self,
-            path: &[u8],
-            atime_sec: i64,
-            atime_nsec: i64,
-            mtime_sec: i64,
-            mtime_nsec: i64,
-        ) -> Result<(), Errno> {
-            if self.missing_paths.contains(path) {
-                return Err(Errno::ENOENT);
-            }
-            const UTIME_NOW: i64 = 0x3fff_ffff;
-            const UTIME_OMIT: i64 = 0x3fff_fffe;
-            let current = self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
-            let now = self.clock_time;
-            let normalize = |current_sec: u64,
-                             current_nsec: u32,
-                             requested_sec: i64,
-                             requested_nsec: i64|
-             -> Result<(u64, u32), Errno> {
-                match requested_nsec {
-                    UTIME_OMIT => Ok((current_sec, current_nsec)),
-                    UTIME_NOW => Ok((
-                        u64::try_from(now.0).map_err(|_| Errno::EINVAL)?,
-                        u32::try_from(now.1).map_err(|_| Errno::EINVAL)?,
-                    )),
-                    0..=999_999_999 => Ok((
-                        u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
-                        u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
-                    )),
-                    _ => Err(Errno::EINVAL),
-                }
-            };
-            let atime = normalize(current.0, current.1, atime_sec, atime_nsec)?;
-            let mtime = normalize(current.2, current.3, mtime_sec, mtime_nsec)?;
-            self.file_times
-                .insert(path.to_vec(), (atime.0, atime.1, mtime.0, mtime.1));
-            Ok(())
         }
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)
@@ -20343,7 +20611,9 @@ mod tests {
             dst.copy_from_slice(&self.proc_memory[offset..offset + dst.len()]);
             0
         }
-    }
+    
+        mock_hostio_at_over_paths!();
+}
 
     fn user_process(pid: u32) -> Process {
         let mut proc = Process::new(pid);
@@ -20401,7 +20671,7 @@ mod tests {
         .unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
 
-        let st = crate::hostdir::stat(host, b"/home/user/new-file").unwrap();
+        let st = crate::hostdir::stat(&mut host, b"/home/user/new-file").unwrap();
         assert_eq!(st.st_uid, 1000);
         assert_eq!(st.st_gid, 1000);
         assert_eq!(st.st_mode & 0o777, 0o644);
@@ -22688,7 +22958,11 @@ mod tests {
                 ofd.dir_pending_entry.clone(),
             )
         };
-        assert_eq!(snapshot.0, 200);
+        // A host-issued directory handle. The exact number depends on how many
+        // directories the kernel's per-component walk opened on the way here,
+        // which is not what this test is about — what matters is that the same
+        // handle survives the failures below.
+        assert!(snapshot.0 >= 200, "expected a host directory handle");
 
         host.dir_opendir_error = Some(Errno::EACCES);
         assert_eq!(
@@ -22728,7 +23002,11 @@ mod tests {
             ),
             snapshot,
         );
-        assert_eq!(host.closed_dir_handles, [201]);
+        assert_eq!(
+            host.closed_dir_handles,
+            [snapshot.0 + 1],
+            "the failed replay closed its replacement, not the live iterator",
+        );
 
         let mut next_two = [0u8; 64];
         let len = sys_getdents64(&mut proc, &mut host, fd, &mut next_two).unwrap();
@@ -26681,7 +26959,11 @@ mod tests {
         );
         let sender_ofd_idx = sender.fd_table.get(sender_fd).unwrap().ofd_ref.0;
         let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
-        assert_eq!(sender_ofd.dir_host_handle, 200);
+        // A host-issued directory handle; its exact number depends on how many
+        // directories the kernel's per-component walk opened on the way, so
+        // later assertions compare against it rather than against a literal.
+        let sender_live_dir_handle = sender_ofd.dir_host_handle;
+        assert!(sender_live_dir_handle >= 200);
         assert_eq!(sender_ofd.dir_entry_offset, 3);
         assert_eq!(sender_ofd.offset(), 3);
         assert_eq!(
@@ -26723,13 +27005,15 @@ mod tests {
                 .get(received_ofd_idx)
                 .unwrap()
                 .dir_host_handle,
-            201,
+            sender_live_dir_handle + 1,
+            "the recipient reopened its own iterator rather than adopting the \
+             sender's",
         );
 
         // The recipient's reopen/replay did not consume or replace the
         // sender's live iterator and pending snapshot.
         let sender_ofd = sender.ofd_table.get(sender_ofd_idx).unwrap();
-        assert_eq!(sender_ofd.dir_host_handle, 200);
+        assert_eq!(sender_ofd.dir_host_handle, sender_live_dir_handle);
         assert_eq!(sender_ofd.dir_entry_offset, 3);
         assert_eq!(
             sender_ofd.dir_pending_entry.as_ref().unwrap().name,
@@ -26738,13 +27022,31 @@ mod tests {
 
         sys_close(&mut receiver, &mut host, received_fd).unwrap();
         sys_close(&mut sender, &mut host, sender_fd).unwrap();
-        assert_eq!(host.closed_dir_handles, [201, 200]);
+        // The two live iterators close in that order. Handles the kernel's
+        // per-component walk opened and released are filtered out; that no
+        // handle leaks at all is asserted separately below.
         assert_eq!(
-            host.closed_handles
+            host.closed_dir_handles
                 .iter()
-                .filter(|&&handle| handle == 100)
-                .count(),
-            1,
+                .copied()
+                .filter(|h| *h == sender_live_dir_handle || *h == sender_live_dir_handle + 1)
+                .collect::<Vec<_>>(),
+            [sender_live_dir_handle + 1, sender_live_dir_handle],
+        );
+        let mut closed = host.closed_dir_handles.clone();
+        closed.sort_unstable();
+        assert_eq!(
+            closed,
+            mock_all_issued_dir_handles(),
+            "every directory handle the host issued was closed exactly once",
+        );
+        // A directory no longer has a separate backing *file* handle to close
+        // alongside its iterator: `host_openat(..., O_DIRECTORY)` issues one
+        // handle that serves both, which is what retiring `opendir`/`closedir`
+        // bought. So no file handle is closed on this path at all.
+        assert!(
+            host.closed_handles.is_empty(),
+            "a directory has no separate backing file handle",
         );
     }
 
@@ -26839,7 +27141,11 @@ mod tests {
             b"/real-owned/final",
         );
         assert_eq!(
-            host.next_handle, 101,
+            host.opendir_paths
+                .iter()
+                .filter(|p| p.as_slice() == b"/real-owned/final")
+                .count(),
+            1,
             "the credential-sensitive open/chdir/fchdir action list runs once",
         );
         assert_eq!(
@@ -26887,16 +27193,18 @@ mod tests {
             ),
             Ok(prefix.len()),
         );
-        assert_eq!(
-            table
-                .get(parent_pid)
-                .unwrap()
-                .ofd_table
-                .get(parent_ofd_idx)
-                .unwrap()
-                .dir_host_handle,
-            200,
-        );
+        // A host-issued directory handle. The exact number depends on how many
+        // directories the kernel's per-component walk opened on the way here;
+        // what this test is about is that the fork and spawn children go on to
+        // share this one cookie.
+        let parent_dir_handle = table
+            .get(parent_pid)
+            .unwrap()
+            .ofd_table
+            .get(parent_ofd_idx)
+            .unwrap()
+            .dir_host_handle;
+        assert!(parent_dir_handle >= 200);
 
         let fork_child = table
             .fork_process_for_caller(parent_pid, parent_pid)
@@ -26999,13 +27307,18 @@ mod tests {
             sys_close(table.get_mut(pid).unwrap(), &mut host, parent_fd).unwrap();
         }
         host.closed_dir_handles.sort_unstable();
-        assert_eq!(host.closed_dir_handles, [200, 201, 202, 203]);
         assert_eq!(
-            host.closed_handles
-                .iter()
-                .filter(|&&handle| handle == 100)
-                .count(),
-            1,
+            host.closed_dir_handles,
+            mock_all_issued_dir_handles(),
+            "every directory handle the host issued was closed exactly once",
+        );
+        // A directory no longer has a separate backing *file* handle to close
+        // alongside its iterator: `host_openat(..., O_DIRECTORY)` issues one
+        // handle that serves both, which is what retiring `opendir`/`closedir`
+        // bought. So no file handle is closed on this path at all.
+        assert!(
+            host.closed_handles.is_empty(),
+            "a directory has no separate backing file handle",
         );
         table.remove_process(fork_child).unwrap();
         table.remove_process(spawn_child).unwrap();
@@ -29149,6 +29462,11 @@ mod tests {
             });
         }
         let dir_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
+        // Both fabricated handles must be ones this double believes it issued,
+        // or it cannot dispatch their closes: 88 is the live iterator, 77 the
+        // raw directory fd's own stream.
+        host.seed_dir_handle(88);
+        host.seed_dir_handle(77);
         proc.dir_streams.push(Some(DirStream {
             host_handle: 88,
             path: b"/tmp".to_vec(),
@@ -31886,6 +32204,11 @@ mod tests {
             sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::NAME_MAX),
             Ok(Some(123))
         );
+        // The host is asked through a directory handle rather than a path:
+        // `pathconf` describes the filesystem, so the kernel walks to the
+        // deepest directory on the way to the target and queries that. This
+        // double reports every path as openable as a directory, so the deepest
+        // one reached is `/tmp/foo` itself.
         assert_eq!(
             host.pathconf_calls,
             vec![(b"/tmp/foo".to_vec(), pc::NAME_MAX)]
@@ -32203,25 +32526,31 @@ mod tests {
     }
 
     #[test]
-    fn test_synthetic_pathconf_and_fpathconf_use_root_backend() {
+    fn test_synthetic_pathconf_and_fpathconf_are_answered_by_the_kernel() {
         use wasm_posix_shared::pathconf as pc;
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        // Seed a distinctive host answer so consulting the host would show.
         host.pathconf_result = Ok(Some(777));
 
+        // A synthetic dynamic file such as `/etc/mtab` lives in `/`'s
+        // namespace, and `/` is owned by the in-kernel rootfs overlay. Its
+        // limits are therefore the kernel's own. This used to ask the host
+        // about `/`, which stopped being the right authority when the overlay
+        // took ownership of the root.
         assert_eq!(
             sys_pathconf(&proc, &mut host, b"/etc/mtab", pc::PATH_MAX),
-            Ok(Some(777))
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
         );
         let fd = sys_open(&mut proc, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
         assert_eq!(
             sys_fpathconf(&proc, &mut host, fd, pc::PATH_MAX),
-            Ok(Some(777))
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
         );
-        assert_eq!(
-            host.pathconf_calls,
-            vec![(b"/".to_vec(), pc::PATH_MAX), (b"/".to_vec(), pc::PATH_MAX)]
+        assert!(
+            host.pathconf_calls.is_empty(),
+            "the host is not the authority for a kernel-owned namespace",
         );
         assert!(host.fpathconf_calls.is_empty());
     }
@@ -32430,7 +32759,10 @@ mod tests {
         let result = sys_fsync(&mut proc, &mut host, fd);
 
         assert!(result.is_ok());
-        assert_eq!(host.fsync_calls, vec![100]);
+        // `O_DIRECTORY` now yields a directory handle (the 200 band) rather
+        // than a separate file handle: one handle serves both iteration and
+        // `fsync`, which is the point of retiring `opendir`/`closedir`.
+        assert_eq!(host.fsync_calls, vec![200]);
     }
 
     #[test]
@@ -34648,6 +34980,12 @@ mod tests {
     }
 
     impl TrackingHostIO {
+        /// This double never implemented `lchown`; the old trait default
+        /// was `ENOSYS`, and keeping that preserves what its tests assert.
+        fn host_lchown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+
         fn new() -> Self {
             TrackingHostIO {
                 next_handle: 100,
@@ -34673,57 +35011,14 @@ mod tests {
         }
     }
 
-    impl HostIO for TrackingHostIO {
+        /// Path behaviour retained as inherent methods; the `*at` trait
+    /// methods below delegate here through a directory anchor.
+    impl TrackingHostIO {
         fn host_open(&mut self, path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
             self.last_open_path = path.to_vec();
             let h = self.next_handle;
             self.next_handle += 1;
             Ok(h)
-        }
-        fn host_close(&mut self, _handle: i64) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn host_read(&mut self, _handle: i64, buf: &mut [u8]) -> Result<usize, Errno> {
-            let n = buf.len().min(5);
-            buf[..n].copy_from_slice(&b"hello"[..n]);
-            Ok(n)
-        }
-        fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
-            Ok(buf.len())
-        }
-        fn host_pread(
-            &mut self,
-            _handle: i64,
-            buf: &mut [u8],
-            _offset: i64,
-        ) -> Result<usize, Errno> {
-            let n = buf.len().min(5);
-            buf[..n].copy_from_slice(&b"hello"[..n]);
-            Ok(n)
-        }
-        fn host_pwrite(&mut self, _handle: i64, buf: &[u8], _offset: i64) -> Result<usize, Errno> {
-            Ok(buf.len())
-        }
-        fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
-            Ok(0)
-        }
-        fn host_fstat(&mut self, _handle: i64) -> Result<WasmStat, Errno> {
-            Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 0,
-                st_mode: S_IFREG | 0o644,
-                st_nlink: 1,
-                st_uid: 0,
-                st_gid: 0,
-                st_size: 1024,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            })
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_stat_path = path.to_vec();
@@ -34809,7 +35104,68 @@ mod tests {
             Ok(())
         }
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
-            Ok(200)
+            Ok(mock_next_dir_handle())
+        }
+        fn host_closedir(&mut self, _handle: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_utimensat_path(
+            &mut self,
+            _path: &[u8],
+            _atime_sec: i64,
+            _atime_nsec: i64,
+            _mtime_sec: i64,
+            _mtime_nsec: i64,
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+    }
+
+impl HostIO for TrackingHostIO {
+        fn host_close(&mut self, _handle: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_read(&mut self, _handle: i64, buf: &mut [u8]) -> Result<usize, Errno> {
+            let n = buf.len().min(5);
+            buf[..n].copy_from_slice(&b"hello"[..n]);
+            Ok(n)
+        }
+        fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
+            Ok(buf.len())
+        }
+        fn host_pread(
+            &mut self,
+            _handle: i64,
+            buf: &mut [u8],
+            _offset: i64,
+        ) -> Result<usize, Errno> {
+            let n = buf.len().min(5);
+            buf[..n].copy_from_slice(&b"hello"[..n]);
+            Ok(n)
+        }
+        fn host_pwrite(&mut self, _handle: i64, buf: &[u8], _offset: i64) -> Result<usize, Errno> {
+            Ok(buf.len())
+        }
+        fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
+            Ok(0)
+        }
+        fn host_fstat(&mut self, _handle: i64) -> Result<WasmStat, Errno> {
+            Ok(WasmStat {
+                st_dev: 0,
+                st_ino: 0,
+                st_mode: S_IFREG | 0o644,
+                st_nlink: 1,
+                st_uid: 0,
+                st_gid: 0,
+                st_size: 1024,
+                st_atime_sec: 0,
+                st_atime_nsec: 0,
+                st_mtime_sec: 0,
+                st_mtime_nsec: 0,
+                st_ctime_sec: 0,
+                st_ctime_nsec: 0,
+                _pad: 0,
+            })
         }
         fn host_readdir(
             &mut self,
@@ -34817,9 +35173,6 @@ mod tests {
             _name_buf: &mut [u8],
         ) -> Result<Option<(u64, u32, usize)>, Errno> {
             Ok(None)
-        }
-        fn host_closedir(&mut self, _handle: i64) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
@@ -34864,16 +35217,6 @@ mod tests {
                 *b = (i & 0xFF) as u8;
             }
             Ok(buf.len())
-        }
-        fn host_utimensat(
-            &mut self,
-            _path: &[u8],
-            _atime_sec: i64,
-            _atime_nsec: i64,
-            _mtime_sec: i64,
-            _mtime_nsec: i64,
-        ) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)
@@ -34948,6 +35291,7 @@ mod tests {
                 len: bytes.len(),
             });
         }
+            mock_hostio_at_over_paths!();
     }
 
     /// Helper: open a directory and return its fd.
@@ -35896,24 +36240,17 @@ mod tests {
     fn test_inet_write_after_connect_succeeds() {
         // Create a mock that accepts connect and send
         struct NetMock;
-        impl HostIO for NetMock {
+                /// Path behaviour retained as inherent methods; the `*at` trait
+        /// methods below delegate here through a directory anchor.
+        impl NetMock {
+            /// This double never implemented `lchown`; the old trait default
+            /// was `ENOSYS`, and keeping that preserves what its tests assert.
+            fn host_lchown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+
             fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> {
                 Ok(100)
-            }
-            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
-                Ok(0)
-            }
-            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
-                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
                 Ok(unsafe { core::mem::zeroed() })
@@ -35949,7 +36286,38 @@ mod tests {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-                Ok(200)
+                Ok(mock_next_dir_handle())
+            }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_utimensat_path(
+                &mut self,
+                _p: &[u8],
+                _as: i64,
+                _an: i64,
+                _ms: i64,
+                _mn: i64,
+            ) -> Result<(), Errno> {
+                Ok(())
+            }
+        }
+
+impl HostIO for NetMock {
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
+                Ok(0)
+            }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
+                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_readdir(
                 &mut self,
@@ -35957,9 +36325,6 @@ mod tests {
                 _n: &mut [u8],
             ) -> Result<Option<(u64, u32, usize)>, Errno> {
                 Ok(None)
-            }
-            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
@@ -35999,16 +36364,6 @@ mod tests {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_utimensat(
-                &mut self,
-                _p: &[u8],
-                _as: i64,
-                _an: i64,
-                _ms: i64,
-                _mn: i64,
-            ) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
                 Err(Errno::ECHILD)
@@ -36056,6 +36411,7 @@ mod tests {
             }
             fn unbind_framebuffer(&mut self, _pid: i32) {}
             fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+                    mock_hostio_at_over_paths!();
         }
 
         let mut proc = Process::new(1);
@@ -40068,24 +40424,17 @@ mod tests {
     fn test_realpath_resolves_symlink() {
         // Custom mock where /tmp/mylink is a symlink to /tmp/realfile
         struct SymlinkMock;
-        impl HostIO for SymlinkMock {
+                /// Path behaviour retained as inherent methods; the `*at` trait
+        /// methods below delegate here through a directory anchor.
+        impl SymlinkMock {
+            /// This double never implemented `lchown`; the old trait default
+            /// was `ENOSYS`, and keeping that preserves what its tests assert.
+            fn host_lchown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+
             fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> {
                 Ok(100)
-            }
-            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
-                Ok(0)
-            }
-            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
-                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 Ok(test_default_stat(path))
@@ -40149,7 +40498,38 @@ mod tests {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-                Ok(200)
+                Ok(mock_next_dir_handle())
+            }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_utimensat_path(
+                &mut self,
+                _p: &[u8],
+                _as: i64,
+                _an: i64,
+                _ms: i64,
+                _mn: i64,
+            ) -> Result<(), Errno> {
+                Ok(())
+            }
+        }
+
+impl HostIO for SymlinkMock {
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
+                Ok(0)
+            }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
+                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_readdir(
                 &mut self,
@@ -40157,9 +40537,6 @@ mod tests {
                 _n: &mut [u8],
             ) -> Result<Option<(u64, u32, usize)>, Errno> {
                 Ok(None)
-            }
-            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
@@ -40199,16 +40576,6 @@ mod tests {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_utimensat(
-                &mut self,
-                _p: &[u8],
-                _as: i64,
-                _an: i64,
-                _ms: i64,
-                _mn: i64,
-            ) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
                 Err(Errno::ECHILD)
@@ -40256,6 +40623,7 @@ mod tests {
             }
             fn unbind_framebuffer(&mut self, _pid: i32) {}
             fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+                    mock_hostio_at_over_paths!();
         }
 
         let mut proc = Process::new(1);
@@ -40271,24 +40639,17 @@ mod tests {
     fn test_realpath_eloop() {
         // Mock where /tmp/loop1 -> /tmp/loop2 -> /tmp/loop1 (circular)
         struct LoopMock;
-        impl HostIO for LoopMock {
+                /// Path behaviour retained as inherent methods; the `*at` trait
+        /// methods below delegate here through a directory anchor.
+        impl LoopMock {
+            /// This double never implemented `lchown`; the old trait default
+            /// was `ENOSYS`, and keeping that preserves what its tests assert.
+            fn host_lchown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+
             fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> {
                 Ok(100)
-            }
-            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
-                Ok(0)
-            }
-            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
-                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 Ok(test_default_stat(path))
@@ -40354,7 +40715,38 @@ mod tests {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-                Ok(200)
+                Ok(mock_next_dir_handle())
+            }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_utimensat_path(
+                &mut self,
+                _p: &[u8],
+                _as: i64,
+                _an: i64,
+                _ms: i64,
+                _mn: i64,
+            ) -> Result<(), Errno> {
+                Ok(())
+            }
+        }
+
+impl HostIO for LoopMock {
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
+                Ok(0)
+            }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
+                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_readdir(
                 &mut self,
@@ -40362,9 +40754,6 @@ mod tests {
                 _n: &mut [u8],
             ) -> Result<Option<(u64, u32, usize)>, Errno> {
                 Ok(None)
-            }
-            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
@@ -40404,16 +40793,6 @@ mod tests {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_utimensat(
-                &mut self,
-                _p: &[u8],
-                _as: i64,
-                _an: i64,
-                _ms: i64,
-                _mn: i64,
-            ) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
                 Err(Errno::ECHILD)
@@ -40461,6 +40840,7 @@ mod tests {
             }
             fn unbind_framebuffer(&mut self, _pid: i32) {}
             fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+                    mock_hostio_at_over_paths!();
         }
 
         let mut proc = Process::new(1);
@@ -40475,24 +40855,17 @@ mod tests {
     fn test_realpath_relative_symlink() {
         // Mock where /a/b/sym -> ../c/target (relative symlink)
         struct RelSymlinkMock;
-        impl HostIO for RelSymlinkMock {
+                /// Path behaviour retained as inherent methods; the `*at` trait
+        /// methods below delegate here through a directory anchor.
+        impl RelSymlinkMock {
+            /// This double never implemented `lchown`; the old trait default
+            /// was `ENOSYS`, and keeping that preserves what its tests assert.
+            fn host_lchown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+
             fn host_open(&mut self, _p: &[u8], _f: u32, _m: u32) -> Result<i64, Errno> {
                 Ok(100)
-            }
-            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
-                Ok(0)
-            }
-            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
-                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 Ok(test_default_stat(path))
@@ -40556,7 +40929,38 @@ mod tests {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-                Ok(200)
+                Ok(mock_next_dir_handle())
+            }
+            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_utimensat_path(
+                &mut self,
+                _p: &[u8],
+                _as: i64,
+                _an: i64,
+                _ms: i64,
+                _mn: i64,
+            ) -> Result<(), Errno> {
+                Ok(())
+            }
+        }
+
+impl HostIO for RelSymlinkMock {
+            fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
+                Ok(())
+            }
+            fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_write(&mut self, _h: i64, _b: &[u8]) -> Result<usize, Errno> {
+                Ok(0)
+            }
+            fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
+                Ok(0)
+            }
+            fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
+                Ok(unsafe { core::mem::zeroed() })
             }
             fn host_readdir(
                 &mut self,
@@ -40564,9 +40968,6 @@ mod tests {
                 _n: &mut [u8],
             ) -> Result<Option<(u64, u32, usize)>, Errno> {
                 Ok(None)
-            }
-            fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
@@ -40606,16 +41007,6 @@ mod tests {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_utimensat(
-                &mut self,
-                _p: &[u8],
-                _as: i64,
-                _an: i64,
-                _ms: i64,
-                _mn: i64,
-            ) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
                 Err(Errno::ECHILD)
@@ -40663,6 +41054,7 @@ mod tests {
             }
             fn unbind_framebuffer(&mut self, _pid: i32) {}
             fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+                    mock_hostio_at_over_paths!();
         }
 
         let mut proc = Process::new(1);
@@ -46181,8 +46573,8 @@ mod tests {
         host.freeze_exec_handles = true;
         let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/original");
 
-        crate::hostdir::rename(host, b"/bin/original", b"/bin/moved").unwrap();
-        crate::hostdir::unlink(host, b"/bin/moved").unwrap();
+        crate::hostdir::rename(&mut host, b"/bin/original", b"/bin/moved").unwrap();
+        crate::hostdir::unlink(&mut host, b"/bin/moved").unwrap();
         host.set_file_with_owner(b"/bin/original", 0, 0, S_IFREG | 0o755, b"world");
         host.prepared_exec_bytes = Some(b"world".to_vec());
 
