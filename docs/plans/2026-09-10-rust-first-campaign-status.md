@@ -997,6 +997,41 @@ removed, followed by work on whatever it finds. The mid-campaign census run
 early found six uncovered items and a false KEEP in our own ledger, so the
 end-of-campaign one is not expected to come back empty.
 
+## A design collision, not a merge conflict (2026-09-10)
+
+K10 I6 and K5 I6a **independently generalized the same pipeline**, in parallel,
+for the same reason. Each needed a second module built, projected and
+freshness-checked; each refused to copy fork-module's ~250 lines; each turned it
+into a table. K10 produced `CORESIDENT_SIDE_MODULES`, K5 produced
+`STANDALONE_MODULES`, both in `tools/xtask/src/local_build.rs`.
+
+Cherry-picking the second produced **30 conflicting hunks** — competing
+abstractions, not textual drift.
+
+**The coordinator did not resolve it.** Choosing an architecture from inside a
+conflict marker is the wrong place to make that decision: neither side's
+reasoning is visible there, and whichever half survives does so for merge-order
+reasons rather than design ones. The merge was aborted, the branch left clean at
+`0d443572b`, and the item handed back to the agent that holds the context, with
+the incumbent named (`CORESIDENT_SIDE_MODULES` is merged and ships the WASI
+module today) and the constraint stated: one table, three modules, and do not
+regress K10's four browser registration points.
+
+**The generalizable lesson:** parallel agents converging on the same
+abstraction is a *success signal* — two independent designs agreeing that a
+table is the right shape is stronger evidence than either alone. But it arrives
+disguised as a conflict, and the merge tool presents it at exactly the moment
+and place where it is hardest to judge. **Merge-order is not an architecture
+decision.**
+
+### Eighth silent-success defect, found by the same agent
+
+**fork-module's `--verify-fresh` exited 0 when the artifact did not exist.** So
+the auto-build never fired, and fresh worktrees died later at finalization
+telling the developer to run the build script by hand. A freshness check that
+passes on a missing artifact is the purest form of this campaign's recurring
+defect: the gate reports success because it never looked.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
