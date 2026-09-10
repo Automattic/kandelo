@@ -72,12 +72,30 @@
 //! SAME loop drains the release requests and then sees `Finished`. There is one
 //! drive loop, not two.
 //!
-//! # Scope of this crate
+//! # Scope of this crate, and what is NOT here
 //!
-//! The entry points and the session state. The KFLA fork-archive encoder, the
-//! JavaScript driver and act executor, and the `worker-main.ts` rewire that
-//! retires `host/src/dylink.ts` are the NEXT increment, and nothing in the host
-//! runtime calls this module yet.
+//! This crate is the entry points and the session state, and the surrounding
+//! commit wires the module through the build pipeline so both hosts resolve,
+//! compile, and hand it to every process worker.
+//!
+//! Nothing DRIVES it. `host/src/dylink.ts` still performs every load on every
+//! host. The JavaScript act executor, the KFLA fork-archive encoder, and the
+//! `worker-main.ts` rewire that retires that file are the next increment.
+//!
+//! Two things a caller might expect and will not find, so that their absence is
+//! a stated boundary rather than a surprise:
+//!
+//! - **Nested loader transactions.** [`dylink::PendingTransaction`] models a
+//!   `dlopen` the parent had open when it forked. The planner carries it; this
+//!   module has no entry point that begins or resumes one, and
+//!   [`dl_open_begin`] refuses a second concurrent load rather than nesting.
+//! - **Scope snapshot/restore.** `LinkerScope::snapshot`/`restore` exist for
+//!   transaction rollback inside the planner. [`dl_open_abort`] uses the plan's
+//!   own rollback, which is the whole-load case; a partial-scope rewind has no
+//!   entry point.
+//!
+//! Neither is needed to drive a `dlopen` to completion or to unwind a failed
+//! one, which is why they are omitted rather than stubbed.
 
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 #![forbid(unsafe_op_in_unsafe_fn)]
