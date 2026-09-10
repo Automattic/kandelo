@@ -179,6 +179,48 @@ Against a kernel rebuilt from this branch and installed into
 | `scripts/check-abi-version.sh` | snapshot in sync, version consistent |
 | `tsc --noEmit -p host` | 32 errors, all pre-existing (identical count at `44f321ae4`) |
 | `host/test/sigpending.test.ts`, `chown-sentinel.test.ts` | 3/3 once `rootfs.vfs` existed |
+| `host/test/kernel.test.ts` | 6/6 — after fixing a real regression, below |
+| `host/test/ifhwaddr.test.ts` | 2/2 run alone, **wasm32 + wasm64** — the `ifconf` proof |
+
+### The regression the targeted suites caught
+
+`probeMqueueNotificationCapacityForTest` fires a real `mq_timedsend` to
+make a notification pending. It staged the message byte in kernel scratch
+and passed a **scratch** offset in arg 1 — correct while the host
+marshalled the message, and wrong the moment that argument became
+`KernelDereferenced`, after which the kernel read the CALLER's memory at
+that offset.
+
+It is worth naming because of how it hid. The probe hand-builds its
+channel instead of going through the marshaller, so nothing in the
+descriptor change reached it and no grep for the syscall name would have
+found it — only running the test did. All 17 hand-built `CH_SYSCALL`
+dispatch sites in `kernel-worker.ts` were then audited: this was the only
+one naming a K6 syscall, and the generic paths replay saved
+`adjustedArgs`, which carry the guest address unchanged.
+
+### On the full `vitest run host/test` numbers — do not use them
+
+Three full runs were attempted and none is usable as evidence about this
+change. Two were destroyed by the concurrency trap above. The third was
+otherwise-idle for this worktree but ran on a machine with six agents:
+**64 of its 145 test failures are bare timeouts**, 33 more are missing
+browser aliases, and the failing SET changed between runs — suites that
+pass in isolation appeared and disappeared. A changing failure set across
+identical runs measures the machine, not the tree.
+
+Every file in K6's blast radius was therefore accounted for individually,
+by re-running it alone or by reproducing its failure on the base commit:
+
+| suite | verdict |
+|---|---|
+| `kernel.test.ts` | real regression, mine — fixed, 6/6 |
+| `ifhwaddr` | passes alone, both widths (17–19 s/case; 30 s timeout is marginal under load) |
+| `kernel-export-failure-audit` | **fails at `44f321ae4` too** — reproduced on base source |
+| `kernel-reservation-export-contract` | pre-existing, reproduced on base |
+| `kernel-scratch-transfer-boundaries` | only the known pre-existing epoll case |
+| `wasi-shim` | `ENOENT` on a missing `host/test/fixtures/wasi-hello.wasm` |
+| `abi-version` | 5 s timeout under load |
 
 The 22 end-to-end cases are real compiled C programs running under the
 kernel, not host-side mocks — which matters here, because the mocks are
@@ -205,11 +247,24 @@ end-to-end suite above runs both widths against the one wasm32 kernel.
    that the flag exists to avoid. Fixed and verified both ways. An
    isolation flag that quietly does nothing is worse than no flag: it makes
    the hazard unfalsifiable.
-2. **A full `vitest run host/test` overlapping `./run.sh rebuild kernel` is
-   worthless.** The rebuild's `[>>] Cleaned kernel` step removes the ambient
-   `local-binaries/kernel.wasm`, so 74 test files failed with "package
-   resolver did not materialize" / missing-projection errors. Re-run alone
-   after the artifact is installed.
+2. **A full `vitest run host/test` shares mutable state with any build
+   command, and loses to it.** Two runs were destroyed this way before the
+   pattern was obvious:
+
+   - overlapping `./run.sh rebuild kernel`, whose `[>>] Cleaned kernel` step
+     removes the ambient `local-binaries/kernel.wasm` — 74 files failed with
+     "package resolver did not materialize";
+   - overlapping `scripts/check-abi-version.sh`, which **rebuilds the kernel
+     wasm on every invocation** (§2d already said so, and the trap was
+     re-triggered anyway) and republishes the program index — 60 files failed
+     with "program package index target changed before publication: local
+     mirror identity or contents changed:
+     `packages/registry/program-packages.json`".
+
+   The tell in both cases is that suites which pass in isolation appear in the
+   failing set, and the errors name provisioning rather than behaviour. **The
+   full suite needs an otherwise-idle tree.** Do the builds first, then run it
+   and touch nothing.
 3. **Provision with `./run.sh setup`, not piecemeal.** `sigpending` and
    `chown-sentinel` sat for ~50s each and then failed on a missing
    `rootfs.vfs`. `docs/agent-guidance/validation.md` step 2 already says
