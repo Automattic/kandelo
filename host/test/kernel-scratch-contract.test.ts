@@ -2096,17 +2096,46 @@ describe("kernel scratch static contract", () => {
       );
     }
 
+    // The host consumes only the limits it still legitimately applies. Under
+    // ABI 44 the kernel became the authoritative `posix_spawn` blob parser
+    // (`crate::spawn::parse_blob`, reached through `kernel_spawn_blob_decode`),
+    // and the host stopped interpreting the guest spawn ABI at all. The argv
+    // and envp counts, the action count, and the wire record/header sizes are
+    // therefore kernel-owned now.
+    //
+    // WHY this list shrank rather than the host being "fixed" to match it:
+    // requiring the host to reference those symbols again would require the
+    // host to re-derive limits the kernel already enforces -- pushing an
+    // authority back out of the kernel to satisfy a test. That is backwards
+    // from the direction this contract exists to protect.
     for (const name of [
       "POSIX_ARG_MAX_BYTES",
       "POSIX_PATH_MAX_BYTES",
+      "SPAWN_WIRE_MAX_BYTES",
+    ]) {
+      expect(hostKernelWorkerSource).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+
+    // The authority really did move: the host must reach the kernel's parser
+    // rather than growing its own. Without this, the shrunken list above would
+    // be indistinguishable from the host quietly dropping the constants while
+    // still parsing spawn blobs itself.
+    expect(hostKernelWorkerSource).toMatch(/\bkernel_spawn_blob_decode\b/);
+
+    // And it must not reintroduce kernel-owned spawn limits under any local
+    // spelling.
+    for (const name of [
       "SPAWN_MAX_ARGV_COUNT",
       "SPAWN_MAX_ENVP_COUNT",
       "SPAWN_MAX_ACTION_COUNT",
       "SPAWN_WIRE_HEADER_BYTES",
       "SPAWN_WIRE_ACTION_RECORD_BYTES",
-      "SPAWN_WIRE_MAX_BYTES",
     ]) {
-      expect(hostKernelWorkerSource).toMatch(new RegExp(`\\b${name}\\b`));
+      expect(
+        hostKernelWorkerSource,
+        `${name} is kernel-owned under ABI 44; the host must not consume or ` +
+          "redefine it",
+      ).not.toMatch(new RegExp(`\\b${name}\\b`));
     }
   });
 });

@@ -2162,27 +2162,27 @@ fn spawn_parsed_for_caller(
 ///
 /// Returns the framed byte length written (positive), or a negated errno:
 /// `parse_blob`'s `EINVAL`/`E2BIG`/`ENAMETOOLONG` for a malformed blob, or
-/// `EOVERFLOW` when `buf_cap` cannot hold the complete framing (the host then
+/// `EOVERFLOW` when `buf_capacity` cannot hold the complete framing (the host then
 /// retries with a larger buffer or reports the argv/envp as too large).
 ///
-/// SAFETY: `buf_ptr`/`buf_cap` must name one kernel-owned range fully inside
+/// SAFETY: `buf_ptr`/`buf_capacity` must name one kernel-owned range fully inside
 /// current linear memory whose bytes cannot change for the duration of the
-/// call, and `blob_len <= buf_cap`. The blob's shared borrow is dropped before
+/// call, and `blob_len <= buf_capacity`. The blob's shared borrow is dropped before
 /// the mutable output slice is formed, so no live reference aliases the bytes
 /// the serializer overwrites.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_blob_decode(
     buf_ptr: usize,
-    buf_cap: usize,
+    buf_capacity: usize,
     blob_len: usize,
 ) -> i32 {
-    if blob_len == 0 || blob_len > buf_cap {
+    if blob_len == 0 || blob_len > buf_capacity {
         return -(Errno::EINVAL as i32);
     }
-    if buf_cap > i32::MAX as usize {
+    if buf_capacity > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
-    if buf_ptr == 0 || buf_ptr.checked_add(buf_cap).is_none() {
+    if buf_ptr == 0 || buf_ptr.checked_add(buf_capacity).is_none() {
         return -(Errno::EFAULT as i32);
     }
     // Parse into an owned representation, then drop the blob borrow before the
@@ -2194,7 +2194,7 @@ pub extern "C" fn kernel_spawn_blob_decode(
             Err(error) => return -(error as i32),
         }
     };
-    let out = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_cap) };
+    let out = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_capacity) };
     match crate::spawn::serialize_argv_envp(&parsed, out) {
         Ok(written) => written as i32,
         Err(error) => -(error as i32),

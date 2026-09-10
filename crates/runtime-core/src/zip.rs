@@ -596,7 +596,27 @@ mod tests {
         let (path_out, node) = derive_entry(&data, mandoc).expect("bin/mandoc should classify");
         assert_eq!(path_out, b"bin/mandoc".to_vec());
         match node {
-            ZipNode::Regular { bytes, .. } => assert_eq!(bytes.len(), 1_397_299),
+            // Check the inflated length against the archive's OWN recorded
+            // uncompressed size, not against a pasted constant. `mandoc` is a
+            // locally built artifact, so its exact byte count moves whenever
+            // the toolchain rebuilds it -- a constant here fails on a correct
+            // reader and says nothing about the reader at all. The central
+            // directory carries the truth this test is actually for.
+            ZipNode::Regular { bytes, .. } => {
+                assert_eq!(
+                    bytes.len(),
+                    mandoc.uncompressed_size as usize,
+                    "inflated length must match the central directory's uncompressed_size",
+                );
+                // Keep the property the test exists to exercise: a member
+                // large enough to span multiple DEFLATE blocks.
+                assert!(
+                    bytes.len() > 1024 * 1024,
+                    "bin/mandoc should be a >1 MiB member (got {}); this test's purpose is \
+                     to exercise multi-block DEFLATE",
+                    bytes.len(),
+                );
+            }
             other => panic!("expected Regular for bin/mandoc, got {other:?}"),
         }
 
@@ -605,7 +625,11 @@ mod tests {
         let (path_out, node) = derive_entry(&data, man_conf).expect("etc/man.conf should classify");
         assert_eq!(path_out, b"etc/man.conf".to_vec());
         match node {
-            ZipNode::Regular { bytes, .. } => assert_eq!(bytes.len(), 23),
+            ZipNode::Regular { bytes, .. } => assert_eq!(
+                bytes.len(),
+                man_conf.uncompressed_size as usize,
+                "stored length must match the central directory's uncompressed_size",
+            ),
             other => panic!("expected Regular for etc/man.conf, got {other:?}"),
         }
     }
