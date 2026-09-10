@@ -138,6 +138,15 @@ import {
   initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import {
+  createProcessLifecycle,
+  execOverlayRetryDelay,
+  handleThreadExit,
+  isMissingPathError,
+  signalFromExitStatus,
+  type ProcessGenerationOwnership,
+  type VforkWorkspaceOwnership,
+} from "./process-lifecycle";
 
 const PAGE_SIZE = 65536;
 const O_WRONLY_CREAT_TRUNC =
@@ -194,27 +203,11 @@ let injectedVforkWorkerStartFailure = false;
 let injectExecWorkerConstructionFailure = false;
 let injectedExecWorkerConstructionFailure = false;
 
-function traceVforkMechanism(event: string, fields: string): void {
-  if (!vforkMechanismTraceEnabled) return;
-  console.log(`[vfork-mechanism] event=${event} ${fields}`);
-}
-
 // Process tracking
 interface ForkReplayContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
-}
-
-interface ProcessGenerationOwnership {
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-}
-
-interface VforkWorkspaceOwnership {
-  readonly allocator: ThreadPageAllocator;
-  readonly slotStartPage: number;
-  released: boolean;
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
@@ -302,6 +295,41 @@ const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
+
+/**
+ * The shared lifecycle implementation both host entries call.
+ *
+ * `terminationProvesQuiescence` is `false` here: `Worker.terminate()` returns
+ * `void`, gives no completion signal, and cannot be observed to have stopped a
+ * guest parked in `Atomics.wait`, so `BrowserWorkerHandle` has to synthesize
+ * the `exit` event itself. Anything released after a browser termination must
+ * be force-retired rather than exactly released. The Node entry declares
+ * `true` for the same field, and that one difference is why its thread-slot
+ * reclaim and exec-rollback paths look different from these.
+ */
+const lifecycle = createProcessLifecycle<ProcessInfo>({
+  post: (message) => post(message),
+  terminationProvesQuiescence: false,
+  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
+  vforkLifetimes,
+  vmInterruptTimers,
+  reserveThreadSlotStartPage: (pid, bytes) =>
+    kernelWorker.reserveHostRegion(pid, bytes),
+  forkHostImportsByWorker,
+});
+const {
+  bindForkHostImports,
+  completeVforkGenerationTeardown,
+  dispatchForkHostImport,
+  handleVmInterruptTimer,
+  postForkModuleProof,
+  releaseVforkWorkspace,
+  reportHostDiagnostic,
+  respond,
+  respondError,
+  threadAllocatorForLayout,
+  traceVforkMechanism,
+} = lifecycle;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -416,16 +444,6 @@ function reportProcessExit(
   post({ type: "exit", pid, generation, status });
 }
 
-function handleVmInterruptTimer(msg: {
-  pid: number;
-  timedOutPtr: number;
-  vmInterruptPtr: number;
-  seconds: number;
-}, pid: number, process: ProcessInfo): void {
-  if (msg.pid !== pid) return;
-  vmInterruptTimers.handleRequest(pid, process, msg);
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -504,29 +522,6 @@ async function terminateTrackedWorker(
   workerTeardowns.add(teardown);
   void teardown.finally(() => workerTeardowns.delete(teardown));
   await teardown;
-}
-
-function bindForkHostImports(
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
-  owner: ForkHostImportOwnerWorker,
-): void {
-  forkHostImportsByWorker.set(worker as object, owner);
-}
-
-function dispatchForkHostImport(
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
-  message: Extract<WorkerToHostMessage, { type: "fork_host_import" }>,
-): void {
-  const owner = forkHostImportsByWorker.get(worker as object);
-  if (!owner || !owner.dispatch(message.wake)) {
-    reportHostDiagnostic({
-      pid: message.wake.pid,
-      source: "fork host-import protocol",
-      message:
-        `[kernel-worker] ignored stale or unbound fork host-import wake `
-        + `pid=${message.wake.pid} sender=${message.wake.senderId}`,
-    }, "warn");
-  }
 }
 
 async function terminateThreadWorkers(
@@ -719,25 +714,6 @@ function acknowledgeMainFramebufferRelease(requestId: number): void {
   pending.resolve(true);
 }
 
-function reportHostDiagnostic(
-  diagnostic: HostDiagnostic,
-  level: "error" | "warn" = "error",
-): void {
-  if (level === "warn") console.warn(diagnostic.message);
-  else console.error(diagnostic.message);
-  post({ type: "host_diagnostic", ...diagnostic });
-}
-
-// Forward co-resident fork-module proof-of-use on its OWN channel. This is an
-// informational success signal, not a host PROBLEM, so it must not ride the
-// `host_diagnostic` stream a caller inspects for failures (a clean fork would
-// otherwise pollute `onHostDiagnostic` on every process). Only a consumer that
-// opts in via `onForkModuleProof` receives it. Mirrors node-kernel-worker-entry
-// so both hosts report identically.
-function postForkModuleProof(diagnostic: HostDiagnostic): void {
-  post({ type: "fork_module_proof", ...diagnostic });
-}
-
 function terminatePoisonedKernelWorker(error: Error): void {
   if (kernelFatalReported) return;
   kernelFatalReported = true;
@@ -806,32 +782,11 @@ function formatError(err: unknown): string {
   return String(err);
 }
 
-function isMissingPathError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const code = (err as { code?: unknown }).code;
-  if (code === -2 || code === "ENOENT") return true;
-  // With the overlay owning `/`, the host `/` mount is dropped, so a `/`-owned
-  // path the overlay disowns hits `VirtualPlatformIO` with no covering mount
-  // ("ENOENT: no mount for path: ..."). That is a missing-path condition, not a
-  // hard failure — treat it as ENOENT so exec resolution falls through cleanly.
-  const message = (err as { message?: unknown }).message;
-  return typeof message === "string" &&
-    message.startsWith("ENOENT: no mount for path");
-}
-
-function respond(requestId: number, result: unknown) {
-  post({ type: "response", requestId, result });
-}
-
 function respondTransferredBytes(requestId: number, result: Uint8Array) {
   post(
     { type: "response", requestId, result },
     [result.buffer as ArrayBuffer],
   );
-}
-
-function respondError(requestId: number, error: string) {
-  post({ type: "response", requestId, result: null, error });
 }
 
 function respondIfRequested(
@@ -936,21 +891,6 @@ async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<voi
   } catch (err) {
     reportLazyRegistrationFailure(msg, err);
   }
-}
-
-function threadAllocatorForLayout(
-  layout: ProcessMemoryLayout,
-  ptrWidth: 4 | 8,
-  pid: number,
-): ThreadPageAllocator {
-  return new ThreadPageAllocator({
-    firstSlotStartPage: layout.firstThreadSlotPage,
-    maxPageExclusive: layout.threadArenaEndPage,
-    ptrWidth,
-    reservedSlots: layout.threadSlotCount,
-    reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * PAGE_SIZE) / PAGE_SIZE,
-  });
 }
 
 interface ProcessMemoryAllocationContext {
@@ -1980,43 +1920,6 @@ async function handleFork(
     parentMemory,
     continuation,
   );
-}
-
-function releaseVforkWorkspace(info: ProcessInfo): void {
-  const workspace = info.vforkWorkspace;
-  if (!workspace || workspace.released) return;
-  workspace.released = true;
-  workspace.allocator.free(workspace.slotStartPage);
-}
-
-function completeVforkGenerationTeardown(
-  info: ProcessInfo,
-  exact: boolean,
-  reason: VforkExactCompletionReason,
-  cause?: unknown,
-): void {
-  const phase = vforkLifetimes.phaseForChild(info);
-  if (phase === undefined) return;
-  if (!exact) {
-    vforkLifetimes.requireAddressSpaceContainment(
-      info,
-      cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
-    );
-    return;
-  }
-  traceVforkMechanism(
-    "exact_teardown",
-    `child_channel=${info.channelOffset} reason=${reason}`,
-  );
-  releaseVforkWorkspace(info);
-  if (phase === "starting") {
-    vforkLifetimes.completeWithoutBorrow(
-      info,
-      reason === "exit" ? "exit" : "signal",
-    );
-  } else {
-    vforkLifetimes.completeAfterExactTeardown(info, reason);
-  }
 }
 
 async function containVforkAddressSpace(
@@ -3795,19 +3698,6 @@ async function handleClone(
 
 }
 
-function handleThreadExit(pid: number, channelOffset: number): boolean {
-  // The kernel has completed the exit syscall, but the browser Worker may not
-  // yet have resumed from Atomics.wait. The worker-entry memory_quiescent
-  // message, not Worker.terminate(), authorizes slot reclamation.
-  void pid;
-  void channelOffset;
-  return true;
-}
-
-function signalFromExitStatus(exitStatus: number): number | null {
-  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
-}
-
 function handleExit(
   pid: number,
   exitStatus: number,
@@ -4588,10 +4478,6 @@ const EXEC_OVERLAY_RETRY_DELAY_MS = 10;
 // terminal errno well before this. It exists so a hypothetical stuck fetch
 // fails with a truthful timeout instead of hanging exec forever.
 const EXEC_OVERLAY_RETRY_MAX_WAIT_MS = 30_000;
-
-function execOverlayRetryDelay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 class ExecOverlayReadTimeoutError extends Error {
   readonly errno = EXEC_OVERLAY_ETIMEDOUT_ERRNO;
