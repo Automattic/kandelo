@@ -54,6 +54,7 @@ pub mod terminal;
 pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
+pub mod wait_queue;
 pub mod wakeup;
 pub mod zip;
 
