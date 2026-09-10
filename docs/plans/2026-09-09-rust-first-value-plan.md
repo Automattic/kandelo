@@ -2663,6 +2663,67 @@ gated on measurement.** K7's cutover must benchmark before adding it.
 12. **Hold the curation.** The maintainer wants to cross-examine the work and
     the repo state before agreeing to a curated commit set. Do not squash.
 
+### Three defects only the guest-ABI tests could find
+
+Unit tests would have passed on all three. Each needs a real kernel
+instantiated against a real host:
+
+1. **Every handle-taking operation rejected a directory handle with `EBADF`** —
+   `fstat`, `fstatfs`, `fpathconf`, `fchmod`, `fchown`, `fsync` resolved only
+   from the file table. `pathconf` of any path on a host mount failed outright,
+   because the kernel now answers it from the containing directory.
+2. **`kernel_rootfs_set_foreign_mount_roots` was not approved for scratch
+   borrowing.** The name reached the allowlist array and the pointer-argument
+   table but not the runtime validator, so publishing the anchors threw and
+   *the kernel worker failed to boot at all*.
+3. **Closing a directory stopped dropping its staged `readdir` entry.**
+   `host_closedir` cleared `pendingDirectoryEntries` in a `finally`; `host_close`
+   did not inherit that when the pair was retired. Backends reuse numeric
+   handles, so the next directory at the same number would have served the
+   previous one's record.
+
+This is the "do not stop at unit tests" rule earning its place: the Rust suites
+were 1834/1834 green while all three were live.
+
+### Validation actually run
+
+- `cargo test -p runtime-core -p kandelo -p host-native
+  --target aarch64-apple-darwin` — **green** (runtime-core 1834/1834;
+  host-native 52/52 with 4 pre-existing ignores).
+- `host-native`'s `smoke_loads_real_kernel_and_reads_abi` — **green against a
+  freshly built and installed artifact**, which is the pinned-import-surface
+  proof. `EXPECTED_HOST_IMPORT_COUNT` = 75.
+- `wasm-objdump` on the artifact, before and after: **83 → 75**.
+- `xtask verify-fresh` — **green** (ambient `local-binaries/kernel.wasm` fresh
+  against the source closure).
+- Host Vitest: the VFS/path suites green, including the `pathconf` and
+  `fstatat-empty-path` **guest-ABI** suites, which run real `.wasm` guests
+  through a real kernel worker; and `chown-sentinel`, which exercises
+  `chown`/`fchown`/`lchown` ownership and set-ID semantics end-to-end.
+- **Not run: the browser.** See below.
+
+### Browser: not validated, and what that leaves unproven
+
+`./run.sh browser` plus Playwright was not run. What is unproven is the browser
+boot path end to end.
+
+Two things bound the risk, and neither is a substitute for running it:
+
+- **Both hosts share one implementation.** `VirtualPlatformIO` serves Node and
+  browser alike, so the `*at` methods, the unified handle space, and the
+  directory-handle cases are exercised identically by the Node suites. The
+  browser-specific code (`browser-kernel-worker-entry.ts`) was not touched.
+- **The publication path is order-independent by construction.** `kernel.ts`
+  publishes anchors at instantiation, which is *before* either worker entry
+  registers foreign prefixes. That is safe only because the anchor registry is
+  deliberately independent of the prefix registry — had they been coupled, the
+  browser would have been the host most likely to break on ordering.
+
+The browser still has foreign mounts after K8 (`/dev/shm` over a
+`SharedArrayBuffer`, and a shadowed `/dev`), so the claim that a browser host
+implements *zero* of the family is not yet true — it becomes true when the
+in-kernel shmfs lands and `/dev/shm` stops being a host mount.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
