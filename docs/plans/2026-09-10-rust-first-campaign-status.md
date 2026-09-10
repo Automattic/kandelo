@@ -59,7 +59,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
 | K10 | **PARTIAL; I6 RUNNING** | I1/I2/I3/I7 landed; I6 re-examines its own fixtures gate |
 | K14 | **DONE** | |
-| K5 | **Rust landed 2026-09-10; NOT cut over** | Placement adjudicated; re-cut as I6a + I6b. See the correction below |
+| K5 | **Rust landed; I6a RUNNING** | Placement adjudicated (standalone module, 14 pipeline points). I6b = rewire + delete 6,340 lines |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
@@ -68,7 +68,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
 | K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
-| K13b | **NOT STARTED** | Export cull |
+| K13b | **NOT STARTED — held deliberately** | Export cull. Seven agents already contend on the build cache; an eighth costs more than it gains |
 
 ## Host import surface
 
