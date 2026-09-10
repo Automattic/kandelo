@@ -89,7 +89,11 @@ describe("restoring a `/` image for a kernel that parses it", () => {
     expect(restored.get(spec[0]), "the `/` image mount was restored").toBeDefined();
 
     expect(image).toEqual(pristine);
-  });
+    // `restoreVerifiedImageMounts` cryptographically verifies the imported
+    // seals of a 2 MiB image. That is real work, and vitest's 5s default is not
+    // a statement about how long it should take — it is the default. Stated
+    // explicitly so a busy machine reports a slow test rather than a failing one.
+  }, 30_000);
 
   it("restores exactly what the image describes, repairing nothing", async () => {
     // The kernel builds its tree from these bytes. If the host quietly amended
@@ -105,7 +109,7 @@ describe("restoring a `/` image for a kernel that parses it", () => {
     expect(readText(memfs, "/etc/group")).not.toContain("nobody:");
     expect(() => memfs.stat("/usr/local")).toThrow();
     expect(() => memfs.stat("/etc/ssl/certs")).toThrow();
-  });
+  }, 30_000);
 
   it("is not vacuous: the restore is a copy, so a mutation cannot reach the image", async () => {
     // If restore aliased the image instead of copying it, the first test would
@@ -126,5 +130,5 @@ describe("restoring a `/` image for a kernel that parses it", () => {
     expect(
       readText(MemoryFileSystem.fromImage(resaved), "/usr/local/marker"),
     ).toBe("written after restore");
-  });
+  }, 30_000);
 });
