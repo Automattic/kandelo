@@ -31,15 +31,43 @@ function asyncFunction(source: string, name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
+/**
+ * Slice `performDestroy` out of an entry file.
+ *
+ * Bounded by the entry's own structure — the next declaration at column 0 —
+ * rather than by naming whichever function follows. Naming a neighbour couples
+ * this assertion to code it is not testing: moving that neighbour (for
+ * instance into `host/src/process-lifecycle.ts`) silently turns the slice into
+ * `-1` and fails a test whose subject has not changed.
+ */
 function destroyFunction(source: string): string {
   const start = source.indexOf("async function performDestroy(");
-  const end = source.indexOf("\nfunction handlePtyWrite(", start);
   expect(start, "performDestroy must exist").toBeGreaterThanOrEqual(0);
-  expect(end, "handlePtyWrite must follow performDestroy").toBeGreaterThan(
-    start,
+  // The destroy surface is `performDestroy` plus its caller `handleDestroy`,
+  // which is where the admission gate wrapping the two lives. Bound the slice
+  // at the declaration following `handleDestroy` rather than at whichever
+  // function happens to sit after it.
+  const caller = "async function handleDestroy(";
+  const callerStart = source.indexOf(caller, start);
+  expect(callerStart, "handleDestroy must follow performDestroy")
+    .toBeGreaterThan(start);
+  const bodyStart = callerStart + caller.length;
+  const next = source.slice(bodyStart).search(
+    /\n(?:export )?(?:async )?(?:function|const|let|class|interface|type) /,
   );
+  const end = next === -1 ? source.length : bodyStart + next;
   return source.slice(start, end);
 }
+
+/**
+ * The shared lifecycle module both entries delegate to. The exact-detach
+ * wrapper lives here now, so the "no ad-hoc detach calls" invariant is checked
+ * across an entry and this module together.
+ */
+const sharedLifecycle = readFileSync(
+  join(repoRoot, "host/src/process-lifecycle.ts"),
+  "utf8",
+);
 
 describe("process generation detach host parity", () => {
   for (const { host, source, terminate } of entries) {
@@ -106,15 +134,24 @@ describe("process generation detach host parity", () => {
     });
 
     it(`${host} keeps exact kernel detach calls inside the shared wrapper`, () => {
-      // One exact deactivate and one exact unregister belong to the wrapper.
-      // The second unregister is the intentional no-generation case for a PID
-      // absent from the host map.
-      expect(source.match(/kernelWorker\.deactivateProcess\(/g)).toHaveLength(
+      // The exact-detach wrapper moved into `host/src/process-lifecycle.ts`,
+      // which strengthens this invariant rather than weakening it: the pair of
+      // kernel detach calls now exists ONCE for both hosts instead of once per
+      // entry. So an entry must retain only the intentional no-generation
+      // unregister — the case for a PID absent from the host map — and no
+      // deactivate at all.
+      expect(source.match(/kernelWorker\.deactivateProcess\(/g)).toBeNull();
+      expect(source.match(/kernelWorker\.unregisterProcess\(/g)).toHaveLength(
         1,
       );
-      expect(source.match(/kernelWorker\.unregisterProcess\(/g)).toHaveLength(
-        2,
-      );
+      // ...and the wrapper itself holds exactly one of each, so no third path
+      // can reach the kernel's detach surface unmediated.
+      expect(
+        sharedLifecycle.match(/host\.kernel\(\)\.deactivateProcess\(/g),
+      ).toHaveLength(1);
+      expect(
+        sharedLifecycle.match(/host\.kernel\(\)\.unregisterProcess\(/g),
+      ).toHaveLength(1);
       expect(source).not.toMatch(
         /processes\.delete\((?:createdPid|childPid)\)/,
       );
