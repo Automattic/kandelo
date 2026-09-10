@@ -3147,7 +3147,12 @@ export class CentralizedKernelWorker {
    *  Maintained by intercepting epoll_ctl results.
    *
    *  This is a SECOND AUTHORITY for state the kernel already owns
-   *  (`Process::epolls[].interests`). It exists because epoll_pwait was once
+   *  (`descriptor_backing::with_epolls`). It is also a WEAKER model of it:
+   *  the kernel owns an instance per open file description and keys each
+   *  interest on `(fd, OfdId)`, so it survives fork, dup, and descriptor
+   *  reuse correctly, while this map is keyed `pid:epfd` on numeric fds and
+   *  is copied per process at fork. Any divergence is the mirror being
+   *  wrong. It exists because epoll_pwait was once
    *  routed around `kernel_handle_channel`, on the belief that call crashed
    *  Chrome through a V8 shared-memory Wasm bug. That belief is DISPROVED
    *  (`docs/plans/probes/2026-09-09-k0c-epoll/`) and the routing is already
@@ -9007,9 +9012,10 @@ export class CentralizedKernelWorker {
       if (fdIsOpen(pid, epfd) !== 1) {
         nextEpollInterests.delete(key);
       } else {
-        // The current epoll model stores numeric fds rather than OFD identity.
-        // Dropping closed targets prevents later fd reuse from observing a
-        // stale registration; duplicate-fd retention remains a documented gap.
+        // This MIRROR stores numeric fds rather than OFD identity; the
+        // kernel it mirrors no longer does. Dropping closed targets keeps the
+        // mirror's wake-index hints from observing a stale registration after
+        // fd reuse. It is a property of the mirror, not of epoll.
         nextEpollInterests.set(
           key,
           interests.filter(
