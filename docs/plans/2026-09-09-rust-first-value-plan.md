@@ -1173,6 +1173,141 @@ is copied, one is an explicit-versus-emergent guarantee, and exactly one
 (D17) is a real ordering fix. That is a materially cheaper and more honest
 entry gate than the grounding assumed.
 
+### K4a — STARTED, two tranches landed (2026-09-09/10)
+
+`host/src/process-lifecycle.ts` now exists as the single implementation both
+kernel worker entries call, and two tranches have moved into it. This is the
+seam §4.3 asked for; the bulk of the algorithm has not moved yet.
+
+#### The census, re-measured at `4cc15a99b` (the grounding drifted)
+
+The grounding's bucket counts are from an earlier tree. Re-running the
+extraction at the actual base gives **55 common-named pairs**, and the split
+is worse than the grounding recorded:
+
+| bucket | grounding | measured at `4cc15a99b` | lines (browser side) |
+|---|---|---|---|
+| byte-identical | 13 | **13** | 130 |
+| cosmetic-only | 17 | **3** | 35 |
+| substantively differing | 16 | **39** | **3,430** |
+
+So the "56% already equivalent" reassurance does not hold at this commit:
+**71% of the pairs now differ**, and the differing ones carry 3,430 lines. The
+duplication is not drifting slowly — it is drifting faster than the grounding
+measured a day earlier. That strengthens the case for finishing K4a rather
+than stopping at the seam.
+
+#### What landed
+
+- **Tranche 1** — the 13 byte-identical and 3 cosmetic-only functions, plus
+  the two duplicated interfaces (`ProcessGenerationOwnership`,
+  `VforkWorkspaceOwnership`): 15 functions, −156 lines from Node, −158 from
+  the browser.
+- **Tranche 2** — `detachExactProcessGeneration`,
+  `reportRetainedProcessGeneration`, `handlePtyWrite`, `handlePtyResize`:
+  −87 from Node, −89 from the browser.
+
+#### The shape, and why it is the shape
+
+`createProcessLifecycle(host)` takes an explicit `ProcessLifecycleHost`
+record and is generic over each entry's `ProcessInfo`, constrained
+structurally to only the fields the shared code reads. Two consequences worth
+keeping:
+
+1. **Every genuine host difference is now a named field**, readable in one
+   place rather than inferred from two 4,000-line files. The list so far is
+   short: `post`, `diagnosticPrefix`, `isVforkMechanismTraceEnabled`, and
+   `terminationProvesQuiescence`.
+2. **`terminationProvesQuiescence` is the drift adjudication made
+   structural.** Node declares `true`, the browser `false`. Later tranches
+   derive thread-slot reclaim, exec-rollback lease release and the
+   `memoryRetirementSafe` model from that one field instead of carrying two
+   hand-written variants — which is the generic-first form of the D1/D10/D16
+   verdict below.
+
+`kernel()` is deliberately *not* a host difference: `CentralizedKernelWorker`
+is the same class on both hosts, so the record passes it whole rather than
+sprouting a new narrow hook per tranche. It is a function because both
+entries assign `kernelWorker` during `handleInit`.
+
+#### Ledger: **+59 TS, and the owner is named**
+
+| | added | removed | net |
+|---|---|---|---|
+| in-scope TS | 617 | 558 | **+59** |
+
+Positive, and honestly so. `process-lifecycle.ts` is **456 lines, of which 279
+are code and 139 are documentation** — a one-time fixed cost (the host record,
+the shared types, the rationale for the boundary) paid once. Against it, 490
+lines left the two entries and 60 left `worker-main.ts`.
+
+The arithmetic flips with the next tranche and keeps flipping: a shared
+function of N lines replaces 2N, so every tranche after the module exists is
+pure subtraction. **The owner of the +59 is K4a's remaining tranches** — the
+39 differing pairs holding 3,430 lines — which is an existing item in this
+plan, not an intention.
+
+#### Not yet done, and not to be forgotten
+
+- The 39 differing pairs, including all of `handleInit`, `handleExec`,
+  `handleVfork`, `handleClone`, `handleSpawn`, `handleOrdinaryFork`,
+  `finishProcessExit`, `performDestroy`.
+- **The test helper is a fourth lifecycle implementation.**
+  `host/test/centralized-test-helper.ts` (1,521 lines) re-implements
+  `onResolveSpawn`/`onSpawn`/`onFork`/`onExec`/`onClone`/`onExit`, and 85 of
+  ~330 `host/test` files use it — so those suites prove kernel semantics, not
+  entry semantics, and pass identically before and after unification.
+  §7.1 is right that it must become a third caller of the shared module, or
+  the unification leaves a copy behind.
+- **`parseShebang` is NOT deletable as cheaply as §3.5 claims.** The existing
+  `kernel_exec_target_shebang` export takes a *prepared exec target token*
+  (`crates/kernel/src/wasm_api.rs:3111`), and the spawn preflight has no such
+  token — it works on bytes read from the host FS, and its whole job is to
+  answer "will this launch?" without the side effects that preparing a target
+  would incur. Routing it through the kernel therefore needs either a
+  prepare/cancel pair on the preflight path or a bytes-oriented parse export.
+  Neither is "no host surface, no ABI, today". **See NDD-K4-1.**
+
+#### NDD-K4-1 — `parseShebang` cannot be deleted on the terms the plan assumed
+
+Not self-deferred. The plan says *"Delete both `parseShebang` copies now via
+`kernel_exec_target_shebang`"*, on the grounding's §3.5 finding that this
+costs **no host surface and no ABI motion**. That premise does not survive
+contact with the export's signature.
+
+- **What:** `kernel_exec_target_shebang(owner_pid, token, out_ptr, out_len)`
+  decodes the `#!` line of a **retained, prepared exec target**
+  (`crates/kernel/src/wasm_api.rs:3111`; host binding
+  `host/src/kernel-worker.ts:8824`). The exec path has a token because
+  `launchPreparedExecTarget` prepared one. The **spawn preflight has none.**
+  `resolveExecutableForLaunch` runs on bytes read from the host FS, and
+  exists precisely to be *side-effect-free*: `kernel-worker.ts:2250-2264`
+  records that it is what keeps `posix_spawnp`'s PATH walk from applying
+  `file_actions` on every doomed candidate, which POSIX requires to happen
+  exactly once. Preparing a kernel target per candidate is the side effect the
+  preflight exists to avoid.
+- **Why it needs a decision:** closing it needs one of — (a) a
+  prepare/cancel pair on the preflight path, which must be proven free of the
+  `file_actions` side effect the preflight guards against; (b) a new
+  bytes-oriented shebang export (no new `env.host_*` import, but a new kernel
+  export, so ABI-adjacent); or (c) leaving the TS copies until the
+  observable-depth-1 gap is fixed, since that item touches the same code and
+  would otherwise be done twice. Each is a different cost, and (b) is exactly
+  the kind of "small" export that should not be added without the maintainer
+  seeing it.
+- **Cost now:** (a) is an afternoon plus a careful argument about spawn side
+  effects; (b) is small Rust plus an ABI-adjacent review; (c) is free.
+- **Cost later:** the two TS copies stay, and they keep *masking* the real
+  POSIX gap — they read files 4 levels deep and their answer is then discarded
+  by `kernel-worker.ts:22427`, so observable depth is 1 on every host where
+  Linux allows 4, and preflight exhaustion surfaces as **ENOENT for a file
+  that plainly exists**.
+- **Recommendation:** **(c)** — fold the deletion into the
+  observable-depth-1 item rather than doing it twice, and do not let that item
+  quietly close the discrepancy by deleting the copies without fixing the
+  depth and the errno. The plan already says the depth gap "gets its own
+  item"; this says the deletion belongs *with* it, not before it.
+
 ## 2m. K8 grounding — outcomes and decisions (2026-09-09)
 
 `docs/plans/2026-09-09-k8-vfs-authority-grounding.md` (1,287 lines).
