@@ -1032,6 +1032,45 @@ telling the developer to run the build script by hand. A freshness check that
 passes on a missing artifact is the purest form of this campaign's recurring
 defect: the gate reports success because it never looked.
 
+## The SysV regression's cheap remedy — analysed, not yet applied
+
+K7 measured a **3.7× regression** on a clean shared-mapping boundary with a
+live peer (793 µs → 2,965 µs) and named a remedy needing no import:
+`host_proc_read_bytes` "copies its range twice and allocates per call".
+
+**Confirmed, at `host/src/kernel.ts:2598-2599`:** `sliceUint8Array(processView)`
+allocates a new array and copies the whole range, then `#writeKernelBytes`
+copies it again into kernel memory. Two copies, one allocation, per call.
+
+**But the intermediate is not gratuitous, and this is the part K7's summary did
+not have.** The sibling write path carries the reason explicitly
+(`kernel.ts:2549`): *"Reacquire the process buffer after copying the kernel
+source: another process worker may have grown it in the meantime."* Growing a
+`WebAssembly.Memory` replaces its `.buffer`, detaching every view taken before.
+The slice takes its snapshot **early**, before `#writeKernelBytes` does its
+WeakMap lookup, range check and length validation — so it narrows the window in
+which a concurrent grow can invalidate the source view.
+
+**Removing the slice naively would widen that window**, trading a measured
+throughput problem for an unmeasured correctness one on a concurrency-sensitive
+path. That is the wrong trade.
+
+**The correct shape is the one the write path already uses:** hoist all
+destination validation *before* the source view is created, then create the
+view and copy immediately — one `set()`, no allocation, and a window no wider
+than today's.
+
+**Not applied here, deliberately.** The performance contract requires
+before/after evidence, and K7's targeted shared-mapping benchmark lives in its
+worktree; a general syscall benchmark exercises only the early-out and cannot
+see this path at all. **This should be done with that benchmark in hand, not
+before it.** The analysis above is the item — the next agent should not
+re-derive why the slice exists.
+
+**And it should be tried before spending `host_proc_compare_bytes`.** The
+sanctioned import is now evidence-backed, but a fix costing zero imports
+deserves to fail first.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
