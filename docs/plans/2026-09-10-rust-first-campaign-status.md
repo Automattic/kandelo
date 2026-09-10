@@ -1099,7 +1099,7 @@ coordinator.** Reclassify: **MIGRATE**.
 | 2 | `pathconf.ts` + `statfs.ts` | 115 + 23 | ~~V4~~ **DONE 2026-09-10, and this row was wrong** — see value plan §2y. Two of the four imports no longer exist (K9 took them; the census read a stale doc comment at `host/src/kernel.ts:16`), and the surviving two are **real host capabilities**: host-native answers `host_fstatfs` with `fstatvfs(2)` and `host_fpathconf` with `fpathconf(3)`. The genuine defect was the JavaScript hosts answering `host_fpathconf` from a *copy* of the kernel's table — deleted; and `_PC_PIPE_BUF`, which **both** copies got wrong |
 | 3 | `trap-signals.ts` | 139 | **V1 — DONE 2026-09-10.** Confirmed exactly as stated. Policy now in `wasm_posix_shared::trap_signal`; host-native maps wasmtime's typed `Trap` structurally and posts a real process exit, the JavaScript hosts pass the engine message to `kernel_classify_wasm_trap_signal`. Two residual host-native limits logged in `docs/future-improvements.md` |
 | 4 | `thread-allocator.ts` | 186 | **V2/V4** — pthread slot arena, growth direction, and the `pthread_create` EAGAIN quota: address-space allocation and a POSIX resource limit, in TS, over ABI constants Rust already owns |
-| 5 | `vfs/device-fs.ts` | 339 | **V4** — ELIMINATE; see duplicated authority #2 below |
+| 5 | `vfs/device-fs.ts` | 339 | **V4** — delete the *host copy*; `/dev` stays, served by `crates/runtime-core/src/devfs.rs`. See duplicated authority #2 below |
 | 6 | `shell-runtime-layout.ts` | 60 | **None — it is toolchain**, mis-located. Its only callers are `images/vfs/scripts/*`, explicitly out of scope, but it sits in `host/src` so `migration-ledger.sh` counts it as in-scope runtime TS. **Moving it corrects the headline metric.** |
 
 `file-offset.ts` (179) and `append-contract.ts` (33) judged **KEEP**: they
@@ -2269,7 +2269,7 @@ session that ends takes its briefs with it.
 | A3 | K4b — remaining worker-entry declarations (21, not 16) | **DONE, merged.** Left NDD-K4-3 open |
 | A4 | pthread slot arena unification + dead surface | **DONE, merged.** `shell-config.ts` deleted; `host_call_signal_handler` struck, imports **76 → 75**; NDD open on slot *placement* |
 | A5 | Reconciliation — `usePolling` + poller, 16 memory-authority sites, epoch strings | **DONE, merged** |
-| A6 | `hostname.ts` MIGRATE · `device-fs.ts` ELIMINATE · `boot-descriptor.ts` scope-check | **DONE, merge pending** — `d5f2ba584..f88504243`, TS −421 / Rust +560. Boot descriptor **not started** — NDD-BOOT-1 below |
+| A6 | `hostname.ts` MIGRATE · `device-fs.ts` — delete the host copy, `/dev` stays kernel-served · `boot-descriptor.ts` scope-check | **DONE, merge pending** — `d5f2ba584..f88504243`, TS −421 / Rust +560. Boot descriptor **not started** — NDD-BOOT-1 below |
 | A7 | **B7** — epoll instances to OFD ownership; fork inheritance | **DONE, merged.** Unblocks B6. Explicitly **not** conformance-validated — rests on 8 unit tests |
 | A8 | **B17+B18+B19** — `tar/wasm32` compile, root npm install, stale-tier install | B17 and B18 closed. **B19 did not close** — the same ID now names a different, measured defect. See B19 below |
 
