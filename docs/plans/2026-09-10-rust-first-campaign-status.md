@@ -3001,7 +3001,7 @@ keep their row so they are not re-opened.
 | B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
 | B19 | **RE-OPENED, and now measured exactly** | The *install* defect closed. A **different** defect wears the same ID: the resolver refuses the entire `source-only-v1` tier the moment a program closure needs a multi-member package, because a locally built tier holds **regular files** where `host/src/binary-resolver.ts` requires **symlinks** into `.kandelo-local-generations`. It reports `programs/wasm32/dash.wasm (missing)` while `dash.wasm` is present among 108 built programs, so "build it and continue" cannot clear it. Re-measured against a near-complete package tree (only `gzip`/`xz` failing, `dash`/`coreutils`/`login`/`perl`/`node`/`rootfs` all green): **identical tier-identity error.** This is what blocks every Sortix, libc and POSIX suite in any locally built worktree. See "B19, measured" |
 | B20 | **Tier-end browser pass** | Split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed that way |
-| B21 | **`gzip` and `xz` fail to build** | Found alongside B19 on the same setup run; `nginx` and `php` block behind them. They are what stop the `shell` product and every image below it. Adjacent to B17 in shape, not chased |
+| B21 | **CLOSED — never `gzip`, never `xz`** | Both build green on a fresh sysroot; the report was a broken sysroot wearing a package's clothes, exactly B17's shape. The VFS images were missing because this campaign's own deletion of the TypeScript WebAssembly reader left two Node entry points without it: a VFS image builder, and a process worker running as a temp-dir esbuild bundle (which stops `coreutils-docs`, a direct `shell` dependency). Both fixed; `shell`, `nginx-vfs`, `node-vfs`, `kandelo-sdk` and `mariadb-test` images now build. See "B21, measured" |
 | B22 | **libc-test cannot be fetched in the dev shell** | Its submodule URL is `git@github.com:` and ssh is unavailable there. A second, independent reason no conformance suite has run in this campaign — B19 is not the only one |
 
 ### B12 / D-K8-4 — `privileged-projection.ts` is superseded, not merely unused
@@ -3138,18 +3138,64 @@ two fixed, one missed, and the miss was invisible until an install was actually
 attempted. The census counted implementations of *authority*; it did not count
 implementations of *guards*.
 
-### B21 — not reproducible here
+### B21 — measured: not gzip, not xz, and not a race
 
 Reported as "`gzip` and `xz` fail to build, `nginx` and `php` blocked behind
-them". In the coordinator worktree after a setup exiting 0, `gzip.wasm`,
-`xz.wasm`, `nginx.wasm`, `php` and `dash.wasm` are all present, and gzip/xz are
-dated **Sep 9 21:09** — *before* the run that reported them failing.
+them". Measured on `ba3ea8d76` in a fresh worktree, against an isolated
+`KANDELO_SOURCE_CACHE_ROOT` verified to take effect (the branch's
+`--keep KANDELO_SOURCE_CACHE_ROOT` in `dev-shell.sh` carries it through
+`nix develop --ignore-environment`, and every build-stage path in the log is
+under the isolated root).
 
-Most likely the shared build-cache race, which is a recorded trap of this
-campaign, rather than a package defect. **Kept open** rather than closed: "did
-not reproduce in one worktree" is weaker evidence than the failure that was
-observed in another. Anyone picking it up should first confirm an isolated
-`KANDELO_SOURCE_CACHE_ROOT` actually took effect.
+**`gzip`, `xz`, `nginx`, `dash` and `coreutils` all build green** on a freshly
+built sysroot. That reading is dead, and it was the same shape as B17: a
+broken sysroot wearing a package's clothes.
+
+The products were never being built because two Node entry points lost the
+artifact reader when this campaign deleted the TypeScript WebAssembly reader
+(`72fa12438`). Every artifact read now goes through
+`wasm_artifact_module32.wasm`, which a host entry point must install first:
+
+| where | symptom |
+|---|---|
+| VFS image builders (`serializeImage` inspects every `.wasm` in an image) | `Refusing to save VFS image with stale wasm artifacts: /usr/wasm32posix/sysroot/lib/Scrt1.o: cannot inspect Wasm artifact: the wasm-artifact module has not been installed in this realm` — `kandelo-sdk` fails, and so would every other image |
+| a Node process worker running as an esbuild bundle in the OS temp dir | `Could not find repo root` — `coreutils-docs` cannot boot its kernel, and `coreutils-docs` is a direct dependency of `shell` |
+
+The second one is reached on *every* `./run.sh setup`, because
+`bootstrap_step_plan` builds `engine` before `host-dist`: the packages that
+boot a kernel mid-build run before the compiled worker entry exists, so
+`worker-adapter.ts` bundles the entry into `tmpdir()` and the realm it starts
+has no path back to the checkout.
+
+With both closed, one `./run.sh setup` produced `kandelo-sdk.vfs.zst`,
+`mariadb-test.vfs.zst`, `shell.vfs.zst`, `nginx-vfs.vfs.zst` and
+`node-vfs.vfs.zst`. `examples/mqueue_test.wasm` was never a defect at all: it
+comes from `scripts/build-programs.sh`, which `setup` does not run and
+`docs/agent-guidance/validation.md` already lists as a separate provisioning
+step.
+
+**`./run.sh setup` exits 1 in this state**, not 0. A failing package node
+makes the aggregate `Failed`, and `run_aggregate` returns `Err`. So the
+"setup exited 0 with products missing" observation cannot have been a
+completed run of the whole plan.
+
+Two further findings from the same measurement, both still open:
+
+* **An isolated cache root must contain a `kandelo/` segment.**
+  `sdk/src/bin/pkg-config.ts` filters `PKG_CONFIG_PATH` to paths containing
+  that literal, so `~/.cache/kandelo-agent-b21/...` had every dependency
+  `.pc` directory dropped and `php` failed with
+  `No package 'icu-uc' found` — naming neither the cache root nor the filter.
+  Proven by pointing the SDK wrapper at one directory by two paths. Documented
+  in `docs/package-management.md`; the code fix is deferred because `sdk/src`
+  is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` and repairing it rebuilds the whole
+  tree.
+* **`ncurses` is not reproducible under concurrent rebuild.** On a cold cache
+  `vim`'s nested `ncurses` resolve raced the top-level `ncurses` node and
+  failed with `concurrent cache winner differs from staged build`, writing a
+  `.kandelo-rebuild-mismatch` record. Both `vim` and `php` built green on the
+  second, warm run. The shared cache carries older mismatch records for
+  `ncurses` too, so this is not new.
 
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
