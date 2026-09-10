@@ -129,22 +129,8 @@ const THREAD_SLOT_TLS_PAGE: usize =
 const THREAD_SLOT_CHANNEL_PRIMARY_PAGE: usize =
     wasm_posix_shared::process_memory::THREAD_SLOT_CHANNEL_PRIMARY_PAGE as usize;
 
-/// Thread slots reserved below `brk_base`, so a spawned thread's channel/TLS
-/// pages never collide with the guest's brk/mmap allocations.
-///
-/// This is a **host** limit, not ABI and not a POSIX constant: it is how many
-/// per-thread control slots this host can place in a process address space
-/// whose layout is fixed at launch. It bounds *concurrent* threads only --
-/// slots are returned to `GuestProcess::free_thread_slot_pages` when a thread
-/// exits -- and it is reported to the kernel as this process's concurrent
-/// ceiling (`kernel_set_thread_slot_quota`) so a guest that asks for more gets
-/// a POSIX EAGAIN from `pthread_create` rather than an abort from the pump.
-///
-/// The JavaScript hosts do not have this ceiling: they reserve each slot from
-/// the kernel's own address-space allocator (`kernel_reserve_host_region`) and
-/// so honour a program's full `__wasm_posix_thread_slots` declaration. Lifting
-/// it here means giving this host dynamic slot placement too.
-const RESERVED_THREAD_SLOTS: usize = 16;
+/// Bytes one pthread control slot occupies.
+const THREAD_SLOT_BYTES: usize = PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
 
 /// The kernel imports `env.memory` with these bounds (see increment 1).
 const KERNEL_MEMORY_MIN_PAGES: u32 = 18;
@@ -163,14 +149,17 @@ pub(crate) struct ProcessLayout {
     channel_offset: usize,
     brk_base: usize,
     max_addr: usize,
-    /// First page of the thread-slot arena (just past the main channel); thread
-    /// slot N begins at `first_thread_slot_page + N * PAGES_PER_THREAD_SLOT`.
-    first_thread_slot_page: usize,
+    /// The program's declared concurrent-pthread ceiling
+    /// (`__wasm_posix_thread_slots`), or the host default when it declares
+    /// none. Reported to the kernel as this process's quota; the kernel
+    /// refuses `clone` past it with POSIX EAGAIN.
+    thread_slot_count: u32,
 }
 
 impl ProcessLayout {
-    /// `imported_min_pages` is the guest's imported `env.memory` minimum.
-    fn compute(imported_min_pages: usize) -> Self {
+    /// `imported_min_pages` is the guest's imported `env.memory` minimum;
+    /// `guest_bytes` is the program itself, read for its pthread declaration.
+    fn compute(imported_min_pages: usize, guest_bytes: &[u8]) -> anyhow::Result<Self> {
         let min_pages = DEFAULT_INITIAL_PAGES.max(imported_min_pages);
         // No `__heap_base` export → fall back to the fixed control base, exactly
         // like `heapBase ?? PROCESS_FALLBACK_BRK_BASE` in the TS host.
@@ -178,24 +167,44 @@ impl ProcessLayout {
         let control_base_page = first_free_byte.div_ceil(WASM_PAGE_SIZE);
         let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE;
         let channel_offset = channel_page * WASM_PAGE_SIZE;
-        // The thread-slot arena sits between the main channel and brk_base, so
-        // thread channels/TLS never collide with the guest's brk/mmap region.
-        let first_thread_slot_page = channel_page + CHANNEL_PAGES;
-        let thread_arena_end_page =
-            first_thread_slot_page + RESERVED_THREAD_SLOTS * PAGES_PER_THREAD_SLOT;
-        // Initial memory need only cover the main channel; thread slots and brk
-        // grow lazily. brk starts above the reserved thread arena.
-        let initial_pages = min_pages.max(first_thread_slot_page);
-        let brk_base = thread_arena_end_page * WASM_PAGE_SIZE;
+        // Nothing follows the main control area. A pthread's control slot is
+        // placed by the kernel out of the process address space (`sys_clone` ->
+        // `kernel_thread_slot_addr`), so this host no longer carves an arena
+        // for them and brk starts directly above the main channel -- the same
+        // layout `computeProcessMemoryLayout` produces in the TypeScript hosts.
+        let control_end_page = channel_page + CHANNEL_PAGES;
+        let initial_pages = min_pages.max(control_end_page);
+        let brk_base = control_end_page * WASM_PAGE_SIZE;
         let max_addr = DEFAULT_MAX_PAGES * WASM_PAGE_SIZE;
-        Self {
+        Ok(Self {
             initial_pages,
             channel_offset,
             brk_base,
             max_addr,
-            first_thread_slot_page,
-        }
+            thread_slot_count: resolve_thread_slot_count(guest_bytes)?,
+        })
     }
+}
+
+/// A program's declared concurrent-pthread ceiling.
+///
+/// `THREAD_SLOTS_USE_HOST_DEFAULT` (-1) and a missing declaration -- a binary
+/// predating the declaration -- both take the host default, matching
+/// `resolveProcessThreadSlotCount` in the TypeScript hosts. A declaration of 0
+/// (`THREAD_SLOTS_NONE`) is honoured as zero: such a program gets EAGAIN from
+/// the kernel for any `pthread_create`, which is the truthful answer, not an
+/// accident of how much room a host had.
+fn resolve_thread_slot_count(guest_bytes: &[u8]) -> anyhow::Result<u32> {
+    use wasm_posix_shared::process_memory::{
+        DEFAULT_THREAD_SLOTS, THREAD_SLOTS_USE_HOST_DEFAULT,
+    };
+    let declared = wasm_artifact::read_thread_slot_declaration(guest_bytes);
+    Ok(match declared {
+        None => DEFAULT_THREAD_SLOTS,
+        Some(THREAD_SLOTS_USE_HOST_DEFAULT) => DEFAULT_THREAD_SLOTS,
+        Some(value) if value >= 0 => value as u32,
+        Some(value) => anyhow::bail!("invalid process thread slot declaration: {value}"),
+    })
 }
 
 /// Captured host I/O for the process's stdout/stderr host pipes.
@@ -1586,7 +1595,7 @@ pub fn run_guest(
     // --- Guest module, layout, and memory (created first so kernel host imports
     // that touch process memory — e.g. host_futex_wake — can reference it) -----
     let guest_module = Module::new(&engine, guest_wasm)?;
-    let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module)?;
+    let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
     let kernel_module = Module::from_file(&engine, kernel_wasm)?;
@@ -1676,6 +1685,12 @@ pub fn run_guest(
         kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_exit")?;
     let thread_parent_tid_target = kernel
         .get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_parent_tid_target")?;
+    // Where the kernel placed a thread's control slot, and the release that
+    // returns that range to its allocator once the thread is gone.
+    let thread_slot_addr = kernel
+        .get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_slot_addr")?;
+    let release_host_region = kernel
+        .get_typed_func::<(u32, i32, i32), i32>(&mut kernel_store, "kernel_release_host_region")?;
     let set_thread_slot_quota = kernel
         .get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_set_thread_slot_quota")?;
     // The sandboxed in-memory VFS toggles (crates/kernel/src/wasm_api.rs). No
@@ -2012,6 +2027,8 @@ pub fn run_guest(
         &blocking_retry_release,
         &thread_exit,
         &thread_parent_tid_target,
+        &thread_slot_addr,
+        &release_host_region,
         &alloc_scratch,
         &set_thread_slot_quota,
         &set_brk_base,
@@ -3736,7 +3753,11 @@ struct WaitTable {
 /// such ordering constraint (the kernel instance already exists), but calls
 /// this same helper first for consistency, then [`launch_process`] with the
 /// result.
-fn compute_guest_memory(engine: &Engine, guest_module: &Module) -> anyhow::Result<(SharedMemory, ProcessLayout)> {
+fn compute_guest_memory(
+    engine: &Engine,
+    guest_module: &Module,
+    guest_bytes: &[u8],
+) -> anyhow::Result<(SharedMemory, ProcessLayout)> {
     let imported_min_pages = guest_module
         .imports()
         .find_map(|i| match i.ty() {
@@ -3746,7 +3767,7 @@ fn compute_guest_memory(engine: &Engine, guest_module: &Module) -> anyhow::Resul
             _ => None,
         })
         .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
-    let layout = ProcessLayout::compute(imported_min_pages);
+    let layout = ProcessLayout::compute(imported_min_pages, guest_bytes)?;
     let memory = new_shared(engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
     Ok((memory, layout))
 }
@@ -5717,7 +5738,7 @@ pub(crate) fn compute_fork_module_region(layout: &ProcessLayout) -> anyhow::Resu
 /// Real vfork (N1 residual): the child-private region a BORROWED vfork
 /// child needs, reserved up front (whether or not a vfork ever actually
 /// happens) for every `use_fork_module` process — the same "reserve now,
-/// use lazily" precedent as [`RESERVED_THREAD_SLOTS`].
+/// use lazily" precedent as the co-resident fork-module region itself.
 ///
 /// A COW fork child reuses the PARENT's exact numeric [`ProcessLayout`]
 /// (`handle_fork`'s `let layout = processes[pi].layout;`), because it gets
@@ -6139,7 +6160,7 @@ fn launch_process(
     // fork-module instance would need inside this SAME `SharedMemory` (see
     // `compute_vfork_borrowed_region`'s doc comment) — reserved here, up
     // front, for every `use_fork_module` process regardless of whether it
-    // ever actually vforks, exactly like `RESERVED_THREAD_SLOTS`.
+    // ever actually vforks.
     let max_addr = if use_fork_module {
         compute_vfork_borrowed_region(&layout)?.guest_ceiling
     } else {
@@ -6147,17 +6168,17 @@ fn launch_process(
     };
 
     for (name, val) in [
-        // POSIX: the concurrent-thread ceiling this host can actually honour.
-        // Slots are placed in a fixed arena carved below `brk_base` at launch,
-        // so RESERVED_THREAD_SLOTS is the real limit; telling the kernel means
-        // a guest asking for more gets EAGAIN out of `pthread_create` -- with
-        // no thread and no tid created, which is what POSIX requires -- rather
-        // than an abort from the pump. It bounds live threads only: an exited
-        // thread's slot returns to `free_thread_slot_pages` and stops counting.
+        // POSIX: the program's own concurrent-thread ceiling. This host used
+        // to report its arena size (16) instead, because a fixed arena was all
+        // it could place; with placement in the kernel it honours the
+        // declaration like the JavaScript hosts do. The kernel refuses a clone
+        // past it with EAGAIN, before a tid exists, which is what POSIX
+        // requires of a failed `pthread_create`. It bounds live threads only:
+        // an exited thread stops counting the moment it is reaped.
         (
             "kernel_set_thread_slot_quota",
             set_thread_slot_quota
-                .call(&mut *kernel_store, (pid, RESERVED_THREAD_SLOTS as u32))?,
+                .call(&mut *kernel_store, (pid, layout.thread_slot_count))?,
         ),
         ("kernel_set_brk_base", set_brk_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
         ("kernel_set_mmap_base", set_mmap_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
@@ -6191,8 +6212,6 @@ fn launch_process(
         scratch_base,
         layout,
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
-        next_thread_slot: 0,
-        free_thread_slot_pages: Vec::new(),
         thread_handles,
         fork_format,
         vfork_parent_release: None,
@@ -6245,17 +6264,17 @@ fn launch_vfork_borrowed_child(
     let scratch_base = scratch_ptr as u32 as usize;
 
     for (name, val) in [
-        // POSIX: the concurrent-thread ceiling this host can actually honour.
-        // Slots are placed in a fixed arena carved below `brk_base` at launch,
-        // so RESERVED_THREAD_SLOTS is the real limit; telling the kernel means
-        // a guest asking for more gets EAGAIN out of `pthread_create` -- with
-        // no thread and no tid created, which is what POSIX requires -- rather
-        // than an abort from the pump. It bounds live threads only: an exited
-        // thread's slot returns to `free_thread_slot_pages` and stops counting.
+        // POSIX: the program's own concurrent-thread ceiling. This host used
+        // to report its arena size (16) instead, because a fixed arena was all
+        // it could place; with placement in the kernel it honours the
+        // declaration like the JavaScript hosts do. The kernel refuses a clone
+        // past it with EAGAIN, before a tid exists, which is what POSIX
+        // requires of a failed `pthread_create`. It bounds live threads only:
+        // an exited thread stops counting the moment it is reaped.
         (
             "kernel_set_thread_slot_quota",
             set_thread_slot_quota
-                .call(&mut *kernel_store, (pid, RESERVED_THREAD_SLOTS as u32))?,
+                .call(&mut *kernel_store, (pid, parent_layout.thread_slot_count))?,
         ),
         (
             "kernel_set_brk_base",
@@ -6302,8 +6321,6 @@ fn launch_vfork_borrowed_child(
         scratch_base,
         layout: child_layout,
         channels: vec![PumpChannel { offset: child_layout.channel_offset, tid: pid, is_main: true }],
-        next_thread_slot: 0,
-        free_thread_slot_pages: Vec::new(),
         thread_handles,
         fork_format,
         vfork_parent_release: None,
@@ -10336,21 +10353,6 @@ struct GuestProcess {
     scratch_base: usize,
     layout: ProcessLayout,
     channels: Vec<PumpChannel>,
-    /// Next never-yet-used slot index in this process's reserved thread-slot
-    /// arena (`layout.first_thread_slot_page`). Per-process because the arena
-    /// itself is carved out of this process's own memory layout.
-    next_thread_slot: usize,
-    /// Slot start pages returned by threads that have exited, available for
-    /// the next `pthread_create`.
-    ///
-    /// POSIX limits *concurrent* threads, not threads ever created, so a
-    /// joined thread's control slot has to come back. Without this the arena
-    /// was a lifetime budget: 16 `pthread_create` calls per process however
-    /// briefly each thread lived, which a worker-thread-per-item program
-    /// exhausts for no reason it can observe. The kernel refuses a clone past
-    /// the declared concurrent ceiling (`kernel_set_thread_slot_quota`); this
-    /// list is only the placement bookkeeping for slots inside that ceiling.
-    free_thread_slot_pages: Vec<usize>,
     /// The OS `JoinHandle` backing each live entry in `channels`, keyed by
     /// that channel's `offset` (the same key `reclaim_parked_thread` writes
     /// the teardown sentinel to). Normally these threads are never joined —
@@ -10801,6 +10803,8 @@ fn run_pump(
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
     thread_parent_tid_target: &wasmtime::TypedFunc<(u32, u32), i64>,
+    thread_slot_addr: &wasmtime::TypedFunc<(u32, u32), i64>,
+    release_host_region: &wasmtime::TypedFunc<(u32, i32, i32), i32>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
     set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -11000,13 +11004,25 @@ fn run_pump(
                         &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
                     )?;
                     // Drop this worker's JoinHandle alongside its channel, and
-                    // return its control slot to the process's free list: POSIX
-                    // counts threads that exist now, so an exited thread's slot
-                    // must be available to the next `pthread_create`.
+                    // hand its control slot back to the kernel's address-space
+                    // allocator: POSIX counts threads that exist now, so an
+                    // exited thread's slot must be available to the next
+                    // `pthread_create`. The kernel deliberately does not free
+                    // it at `kernel_thread_exit` -- only a host knows when a
+                    // worker can no longer touch its slot, and here it can:
+                    // this thread reached its `exit` syscall on this channel.
                     processes[pi].thread_handles.remove(&ch.offset);
-                    let slot_page =
-                        ch.offset / WASM_PAGE_SIZE - THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
-                    processes[pi].free_thread_slot_pages.push(slot_page);
+                    let slot_addr =
+                        ch.offset - THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+                    let released = release_host_region.call(
+                        &mut *kernel_store,
+                        (pid, slot_addr as i32, THREAD_SLOT_BYTES as i32),
+                    )?;
+                    anyhow::ensure!(
+                        released >= 0,
+                        "kernel refused release of thread control slot {slot_addr:#x} for \
+                         pid={pid}: {released}"
+                    );
                     processes[pi].channels.remove(ci);
                     continue; // the vec shifted; do not advance ci
                 }
@@ -11052,40 +11068,31 @@ fn run_pump(
                         }
                     }
 
-                    // Reuse a slot a previous thread released before taking a
-                    // fresh one. The kernel has already refused any clone past
-                    // this process's declared concurrent ceiling
-                    // (`kernel_set_thread_slot_quota`, set to at most
-                    // RESERVED_THREAD_SLOTS at launch), so a slot is always
-                    // available here and running out is a host bug rather than
-                    // a resource limit -- POSIX's EAGAIN was returned to the
-                    // guest long before this point.
-                    let slot_page = match processes[pi].free_thread_slot_pages.pop() {
-                        Some(page) => page,
-                        None => {
-                            let next_thread_slot = processes[pi].next_thread_slot;
-                            anyhow::ensure!(
-                                next_thread_slot < RESERVED_THREAD_SLOTS,
-                                "thread-slot arena exhausted at slot {next_thread_slot} despite \
-                                 the kernel's concurrent-thread quota; the quota and the arena \
-                                 have drifted apart"
-                            );
-                            processes[pi].next_thread_slot += 1;
-                            layout.first_thread_slot_page
-                                + next_thread_slot * PAGES_PER_THREAD_SLOT
-                        }
-                    };
+                    // Where the slot goes is the kernel's decision, taken
+                    // inside the `clone` just dispatched: it reserved the range
+                    // from the same address-space allocator that answers mmap,
+                    // so the slot cannot collide with a mapping, the brk heap,
+                    // or a sibling thread's slot. This host used to compute the
+                    // address itself out of a fixed 16-slot arena, which is why
+                    // its real concurrent ceiling was 16 rather than whatever
+                    // the program declared.
+                    //
+                    // What is left is the part only a host can do: grow the
+                    // memory until the range is addressable, and zero it.
+                    let slot_addr = thread_slot_addr.call(&mut *kernel_store, (pid, tid as u32))?;
+                    anyhow::ensure!(
+                        slot_addr > 0
+                            && (slot_addr as usize) % WASM_PAGE_SIZE == 0,
+                        "kernel placed no control slot for pid={pid} tid={tid}: {slot_addr}"
+                    );
+                    let slot_addr = slot_addr as usize;
                     let thread_channel_offset =
-                        (slot_page + THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
-                    let tls_offset = (slot_page + THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
+                        slot_addr + THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+                    let tls_offset = slot_addr + THREAD_SLOT_TLS_PAGE * WASM_PAGE_SIZE;
                     // Materialize + zero the whole slot (TLS, fork-save, channel).
-                    grow_to_cover(&guest_mem, (slot_page + PAGES_PER_THREAD_SLOT) * WASM_PAGE_SIZE)?;
+                    grow_to_cover(&guest_mem, slot_addr + THREAD_SLOT_BYTES)?;
                     unsafe {
-                        write_bytes(
-                            &guest_mem,
-                            slot_page * WASM_PAGE_SIZE,
-                            &vec![0u8; PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE],
-                        );
+                        write_bytes(&guest_mem, slot_addr, &vec![0u8; THREAD_SLOT_BYTES]);
                     }
                     let worker_handle = spawn_worker_thread(
                         engine,
@@ -11679,7 +11686,7 @@ fn handle_spawn(
         );
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -commit);
     }
-    let (child_mem, child_layout) = compute_guest_memory(engine, &child_module)?;
+    let (child_mem, child_layout) = compute_guest_memory(engine, &child_module, &program_bytes)?;
     let child_import_exit_status = Arc::new(Mutex::new(None::<i32>));
     let child = launch_process(
         engine,
@@ -12362,7 +12369,7 @@ fn handle_exec_common(
     // caller (the kernel has already committed the new program; there is no
     // "old image" left to truthfully resume) — see
     // `terminate_process_after_failed_exec_commit`'s doc comment.
-    let (new_mem, new_layout) = match compute_guest_memory(engine, &new_module) {
+    let (new_mem, new_layout) = match compute_guest_memory(engine, &new_module, &program_bytes) {
         Ok(v) => v,
         Err(error) => {
             return Ok(Some(terminate_process_after_failed_exec_commit(
@@ -13135,7 +13142,7 @@ mod fork_module_tests {
         let engine = crate::kernel_engine()?;
         let guest_wasm = include_bytes!("../fixtures/native_hello.wasm");
         let guest_module = Module::new(&engine, guest_wasm)?;
-        let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module)?;
+        let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
         let mut fm_store = Store::new(&engine, ());
         let fork_module = instantiate_fork_module(

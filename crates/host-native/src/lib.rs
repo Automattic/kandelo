@@ -963,6 +963,50 @@ mod tests {
         Ok(())
     }
 
+    /// The companion to `smoke_pthread_slot_reuse_across_join`: there one
+    /// thread is live at a time, and the question is whether a joined
+    /// thread's resources come back. Here every thread stays live until the
+    /// last one has started, so the question is how many threads may exist at
+    /// once.
+    ///
+    /// The answer must be the program's own concurrency declaration on every
+    /// host. It was not. This host placed each pthread's control slot in a
+    /// fixed 16-slot arena carved below `brk_base` when the process launched,
+    /// and reported that arena size to the kernel as the process's ceiling --
+    /// so a seventeenth concurrent thread got EAGAIN here while the identical
+    /// program ran under Node and in the browser, which reserve each slot from
+    /// the kernel's address-space allocator. Placement now lives in the kernel
+    /// (`sys_clone` -> `kernel_thread_slot_addr`), so this host honours
+    /// `__wasm_posix_thread_slots` -- and a fixture that declares none, as
+    /// this one does, gets the 1024 host default rather than 16.
+    ///
+    /// This is the native half of a deliberate cross-host pair; the Node half
+    /// is `host/test/pthread.test.ts`'s "runs more threads at once than the
+    /// old native slot arena held", running the same C source.
+    #[test]
+    fn smoke_pthread_concurrent_slots() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_thread_concurrency.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"PTHREAD_CONCURRENT_SLOTS_PASS\n",
+            "every thread must be live at the same moment; the concurrent \
+             ceiling is the program's declaration, not this host's capacity"
+        );
+        Ok(())
+    }
+
     /// N1-I1a: the native host defaults to a **sandboxed in-memory VFS** — the
     /// in-kernel rootfs overlay owns `/` and tmpfs owns `/tmp`, both empty and
     /// writable, with no manifest loaded and no blob provider installed. A

@@ -1213,61 +1213,41 @@ condition the host can read through an existing export — so the loss is
 queryable after the fact rather than only greppable in a console that may not
 be attached. That also makes it testable, which a console log is not.
 
-### The native host's pthread ceiling is its arena, not the program's declaration
+### Closed: pthread control slots are placed by the kernel on every host
 
-Fixed on 2026-09-10: a joined thread's control slot now returns to the pool on
-every host, and `pthread_create` past a process's ceiling returns POSIX EAGAIN
-from the kernel before a tid is allocated
-(`crates/runtime-core/src/syscalls.rs`, `kernel_set_thread_slot_quota`). Two
-related things are still open.
+Closed on 2026-09-10. Both entries that stood here — host-native reporting its
+own 16-slot arena as a process's concurrent-thread ceiling instead of the
+program's `__wasm_posix_thread_slots` declaration, and the slot placement
+arithmetic existing once per host — had the same fix, and it is the one the
+second entry proposed: `sys_clone` reserves the slot from
+`MemoryManager::reserve_host_region` and records the address, and each host
+reads it back through `kernel_thread_slot_addr`.
 
-**host-native does not read `__wasm_posix_thread_slots`.** The JavaScript hosts
-resolve a program's declared pthread count and hand it to the kernel as that
-process's ceiling; host-native hands over `RESERVED_THREAD_SLOTS` instead. That
-is truthful — 16 really is all it can place, because its thread-slot arena is
-carved below `brk_base` at launch and never grows — and it is currently
-unobservable for any program the SDK builds, since the default declaration
-(1024) is far above 16 and `min(declared, 16)` is 16. It becomes observable for
-a program that deliberately declares *fewer* than 16 slots, or declares
-`THREAD_SLOTS_NONE`: those should be refused at the declared number and are
-not.
+The division of labour is the one the open question could not settle from the
+outside. Only a host can grow a `WebAssembly.Memory`, so the kernel decides
+*where* a slot goes — it is the only party that can see every mapping,
+reservation and heap boundary in the address space — and the host makes that
+range addressable, zeroes it, and launches the thread. That is the same split
+`CLONE_PARENT_SETTID` and the child-tid clear already used: the kernel names an
+address, the host performs the store.
 
-**The concurrent ceilings differ between hosts: 16 native, the declaration
-(default 1024) on Node and in the browser.** A program running 17 threads at
-once succeeds on the JavaScript hosts and gets EAGAIN natively. EAGAIN is the
-correct POSIX answer for a host that genuinely cannot place the thread, so this
-is a documented host limit rather than a conformance bug — but it is a real
-parity difference and it is the arena, not the policy, that causes it.
+Releasing a slot stayed a host act, and deliberately so. The kernel does not
+free the range at thread exit, because a worker terminated without publishing a
+quiescence fence can still write into its slot; the host calls
+`kernel_release_host_region` when it knows that has settled. That preserved the
+JavaScript hosts' existing `terminationProvesQuiescence || quiescent` rule
+without restating it in the kernel.
 
-Closing both needs the same thing: dynamic slot placement on host-native, the
-way the JavaScript hosts already work. They reserve each slot from the kernel's
-own address-space allocator (`kernel_reserve_host_region`) rather than from a
-fixed region, so they honour any declaration. host-native calls neither
-`kernel_reserve_host_region` nor `kernel_reserve_host_region_at` today; giving
-it that path would let `RESERVED_THREAD_SLOTS` and the arena below `brk_base`
-go away entirely, and would let the declared quota be the ceiling on every
-host.
+Two costs, both accepted before the work started and both realized:
+host-native's `brk_base` moved down by the 16-slot arena that no longer exists
+(its layout is now byte-identical to `computeProcessMemoryLayout`'s), and the
+change had to be right across fork and exec. Neither needed new code: a fork
+child inherits no host reservations, and both exec paths replace
+`Process::memory` with a fresh `MemoryManager` before `clear_threads()`.
 
-### The pthread slot arena's page arithmetic still has two implementations
+`examples/pthread-concurrent-slots.c` is the evidence, run on both hosts: 20
+threads live at once, where the native arena stopped at 16.
 
-`host/src/thread-allocator.ts` and `crates/host-native/src/guest.rs` both
-compute slot start pages, hold a free list, and zero the slot. The POSIX
-decision they used to disagree about — how many threads may exist and what
-failure a program sees — moved into the kernel on 2026-09-10, so they can no
-longer diverge on behaviour. The arithmetic itself did not move, because only a
-host can grow a `WebAssembly.Memory`, and `growMemoryToCover` is genuinely a
-JavaScript act.
-
-Whether the placement should move too is a design question worth asking
-deliberately rather than in passing. If the kernel allocated slots from
-`MemoryManager::reserve_host_region` inside `sys_clone` and returned the
-address, both hosts would shrink to "grow to cover, zero, launch" and the
-duplication would be gone. That is attractive, and it is also the change that
-would alter host-native's process memory layout (`brk_base` currently sits
-above a fixed 16-slot arena that would no longer exist) and would have to be
-correct across fork and exec, where a child's arena state must reset alongside
-`clear_threads()`. It should be scoped and reviewed on its own, not folded into
-a bug fix.
 ### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
 
 Measured 2026-09-10 while a machine filled its disk: with the flag set, the

@@ -938,6 +938,7 @@ dependencies = [
  "fork-codec",
  "libc",
  "rustix",
+ "wasm-artifact",
  "wasm-posix-shared",
  "wasmtime",
  "wat",

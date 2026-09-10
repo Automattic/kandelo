@@ -11,6 +11,11 @@ const threadExitGroupBinary = join(__dirname, "../../examples/thread-exit-group.
 const hasThreadExitGroupBinary = existsSync(threadExitGroupBinary);
 const slotChurnBinary = join(__dirname, "../../examples/pthread-slot-churn.wasm");
 const hasSlotChurnBinary = existsSync(slotChurnBinary);
+const concurrentSlotsBinary = join(
+  __dirname,
+  "../../examples/pthread-concurrent-slots.wasm",
+);
+const hasConcurrentSlotsBinary = existsSync(concurrentSlotsBinary);
 
 describe.skipIf(!hasBinary)("pthread", () => {
   it("creates a thread that modifies shared state and returns a value", async () => {
@@ -63,6 +68,34 @@ describe.skipIf(!hasSlotChurnBinary)("pthread slot reuse", () => {
     });
 
     expect(stdout).toContain("PTHREAD_SLOT_CHURN_PASS");
+    expect(exitCode).toBe(0);
+  }, 30_000);
+});
+
+describe.skipIf(!hasConcurrentSlotsBinary)("concurrent pthread ceiling", () => {
+  // The companion to the churn test above: there, one thread is live at a
+  // time and the question is whether a joined thread's resources come back.
+  // Here every thread stays live until the last one has started, so the
+  // question is how many threads may exist at once.
+  //
+  // The answer must be the program's own `__wasm_posix_thread_slots`
+  // declaration -- 1024 by default -- on every host. It was not: the native
+  // Wasmtime host placed control slots in a fixed 16-slot arena carved below
+  // `brk_base` at launch, so it refused a seventeenth concurrent thread with
+  // EAGAIN while this identical program passed here and in the browser. The
+  // fixture runs 20 concurrent threads to clear that old arena with margin.
+  //
+  // This is the Node half of a deliberate cross-host pair; the native half is
+  // `smoke_pthread_concurrent_slots` in `crates/host-native/src/lib.rs`. The
+  // point of the pair is that both hosts must agree, so neither may be
+  // changed without the other.
+  it("runs more threads at once than the old native slot arena held", async () => {
+    const { exitCode, stdout } = await runCentralizedProgram({
+      programPath: concurrentSlotsBinary,
+      timeout: 30_000,
+    });
+
+    expect(stdout).toContain("PTHREAD_CONCURRENT_SLOTS_PASS");
     expect(exitCode).toBe(0);
   }, 30_000);
 });
