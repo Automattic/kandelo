@@ -1657,6 +1657,8 @@ pub fn run_guest(
     // the thread's clear-child-tid pointer for the pump to clear + notify.
     let thread_exit =
         kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_exit")?;
+    let thread_parent_tid_target = kernel
+        .get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_parent_tid_target")?;
     // The sandboxed in-memory VFS toggles (crates/kernel/src/wasm_api.rs). No
     // manifest is loaded and no blob/archive provider is installed here — see
     // the call site below.
@@ -1989,6 +1991,7 @@ pub fn run_guest(
         &blocking_retry_token,
         &blocking_retry_release,
         &thread_exit,
+        &thread_parent_tid_target,
         &alloc_scratch,
         &set_brk_base,
         &set_mmap_base,
@@ -10738,6 +10741,7 @@ fn run_pump(
     blocking_retry_token: &wasmtime::TypedFunc<(u32, u32, u32), i64>,
     blocking_retry_release: &wasmtime::TypedFunc<(u32, u32, i64), i32>,
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
+    thread_parent_tid_target: &wasmtime::TypedFunc<(u32, u32), i64>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -10969,6 +10973,23 @@ fn run_pump(
                         ci += 1;
                         continue;
                     }
+                    // CLONE_PARENT_SETTID: the kernel names the address, the
+                    // host performs the write -- the same division of labour
+                    // as the ctid clear on thread exit below. Asking the
+                    // kernel rather than testing the flag here is what keeps
+                    // this host and the JavaScript hosts agreeing; when each
+                    // tested the flag itself, only the JavaScript hosts
+                    // honoured it, so a worker thread here ran with
+                    // `struct pthread.tid == 0` and deadlocked musl's
+                    // thread-list lock on the second `pthread_create`.
+                    let ptid = thread_parent_tid_target
+                        .call(&mut *kernel_store, (pid, tid as u32))?;
+                    if ptid > 0 {
+                        unsafe {
+                            write_bytes(&guest_mem, ptid as u32 as usize, &tid.to_le_bytes());
+                        }
+                    }
+
                     let next_thread_slot = processes[pi].next_thread_slot;
                     if next_thread_slot >= RESERVED_THREAD_SLOTS {
                         anyhow::bail!("out of reserved thread slots ({RESERVED_THREAD_SLOTS})");

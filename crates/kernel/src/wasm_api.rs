@@ -13693,6 +13693,31 @@ pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
     }
 }
 
+/// The `CLONE_PARENT_SETTID` target for `tid`, or 0 when the flag was not
+/// requested; negative errno if the thread is unknown or owned by another
+/// process.
+///
+/// The mirror of [`kernel_thread_exit`]'s `ctid_ptr` return: the kernel cannot
+/// store into a process address space, so it names the address and the host
+/// performs the single write of `tid` there. Both hosts ask the same question
+/// and get the same answer, which is the point -- while each host tested
+/// `CLONE_PARENT_SETTID` for itself, the JavaScript hosts honoured it and the
+/// native host did not, leaving every worker thread with `struct pthread.tid`
+/// zero and deadlocking musl's thread-list lock on the second
+/// `pthread_create`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_thread_parent_tid_target(pid: u32, tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match pt
+        .get_mut(pid)
+        .and_then(|proc| proc.get_thread_mut(tid))
+    {
+        Some(state) => state.parent_settid_ptr as i64,
+        None => -(Errno::ESRCH as i64),
+    }
+}
+
 fn kernel_thread_exit_in_table(
     pt: &mut crate::process_table::ProcessTable,
     pid: u32,

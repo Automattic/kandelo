@@ -648,6 +648,20 @@ impl Deref for ThreadIdentity {
 #[derive(Debug, Clone)]
 pub struct ThreadState {
     pub ctid_ptr: usize, // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    /// `CLONE_PARENT_SETTID` address: where the *creating* thread expects this
+    /// thread's tid to appear in process memory, or 0 when the flag was not
+    /// requested.
+    ///
+    /// The kernel cannot store into a process address space itself, so it
+    /// records the target and the host performs the one write -- the same
+    /// division of labour as [`Self::ctid_ptr`], which the host clears on
+    /// thread exit from the address `kernel_thread_exit` returns. Keeping the
+    /// decision here rather than in each host's clone path is what stops the
+    /// two hosts disagreeing about whether a flag is honoured: a host that
+    /// tested the flag itself made the kernel *look* like it implemented
+    /// `CLONE_PARENT_SETTID` while the other host silently did not, which left
+    /// `struct pthread.tid` zero and deadlocked musl's thread-list lock.
+    pub parent_settid_ptr: usize,
     pub stack_ptr: usize,
     pub tls_ptr: usize,
     pub tidptr: usize, // set_tid_address pointer
@@ -686,6 +700,7 @@ impl ThreadInfo {
                 tid,
                 state: ThreadState {
                     ctid_ptr,
+                    parent_settid_ptr: 0,
                     stack_ptr,
                     tls_ptr,
                     tidptr: 0,

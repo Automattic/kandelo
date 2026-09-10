@@ -16190,7 +16190,7 @@ pub fn sys_clone(
     stack_ptr: usize,
     flags: u32,
     _arg: usize,
-    _ptid_ptr: usize,
+    ptid_ptr: usize,
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
@@ -16227,7 +16227,28 @@ pub fn sys_clone(
     }
     let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
-    let _ = flags & CLONE_PARENT_SETTID;
+    // CLONE_PARENT_SETTID: the creating thread expects the new tid to appear
+    // at `ptid_ptr` in process memory. musl's `pthread_create` passes
+    // `&new->tid`, and `__tl_lock` compares `__pthread_self()->tid` against
+    // `__thread_list_lock` -- treating equal values as a *recursive*
+    // acquisition. If this flag is dropped, every worker thread runs with
+    // `tid == 0`, matches an unheld (zero) lock, and inflates musl's
+    // process-global `tl_lock_count` without ever holding the lock; the next
+    // `__tl_unlock` on any thread then spends that phantom count instead of
+    // releasing, and the thread list lock is never freed again.
+    //
+    // The kernel has no store into a process address space, so it records the
+    // target and the host performs the write -- exactly how `ctid_ptr` is
+    // handled at thread exit. Recording it here, rather than letting each host
+    // test the flag for itself, is what makes the two hosts agree.
+    if flags & CLONE_PARENT_SETTID != 0 {
+        if let Some(state) = table
+            .get_mut(pid)
+            .and_then(|proc| proc.get_thread_mut(tid))
+        {
+            state.parent_settid_ptr = ptid_ptr;
+        }
+    }
     Ok(tid as i32)
 }
 

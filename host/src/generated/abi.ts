@@ -818,6 +818,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
+  "kernel_thread_parent_tid_target",
 ] as const;
 
 export const PCM_TRANSPORT_MAGIC = 827147088 as const;

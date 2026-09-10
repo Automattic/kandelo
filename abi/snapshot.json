@@ -1162,7 +1162,8 @@
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
-      "kernel_set_mmap_base"
+      "kernel_set_mmap_base",
+      "kernel_thread_parent_tid_target"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
@@ -2854,6 +2855,11 @@
       "kind": "func",
       "name": "kernel_thread_has_deliverable",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_thread_parent_tid_target",
+      "signature": "(i32,i32) -> (i64)"
     },
     {
       "kind": "func",
