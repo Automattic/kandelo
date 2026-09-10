@@ -824,8 +824,19 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     // import-type mismatch. A freshness gate that passes over the artifact a
     // consumer actually loads is worse than no gate: it converts "never
     // checked" into "checked and fine".
+    //
+    // An unbuilt tree short-circuits: nothing can be stale before
+    // `./run.sh setup`/`bootstrap` has produced this tier, and the machine-wide
+    // checks below would otherwise fail on a checkout that simply has no
+    // artifacts yet. `any_present` preserves that early-out, which an earlier
+    // revision of this loop lost by returning Ok() from the per-artifact helper
+    // and then running the machine-wide checks regardless.
+    let mut any_present = false;
     for relative in ["source-only-v1/kernel.wasm", "kernel.wasm"] {
-        verify_fresh_kernel_artifact(repo, relative)?;
+        any_present |= verify_fresh_kernel_artifact(repo, relative)?;
+    }
+    if !any_present {
+        return Ok(());
     }
     snapshot_drift_check(repo, false)?;
     verify_fresh_coresident_fork_module(repo)?;
@@ -836,14 +847,15 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
 /// match. A missing artifact is not staleness — nothing can be stale before
 /// `./run.sh setup`/`bootstrap` has produced that tier, and the resolver's own
 /// "binary not found" error already reports absence plainly.
-fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<(), String> {
+/// Returns whether the artifact was present (absent is not staleness).
+fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<bool, String> {
     let mut kernel_path = repo.join("local-binaries");
     for segment in relative.split('/') {
         kernel_path.push(segment);
     }
     let bytes = match fs::read(&kernel_path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(format!("read {}: {error}", kernel_path.display()));
         }
@@ -900,7 +912,7 @@ fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<(), Strin
     // B3 and L5 (the committed abi/snapshot.json, and the projected
     // co-resident fork-module) are machine-wide rather than per-artifact, so
     // they run once in `verify_fresh_report` instead of per kernel copy.
-    Ok(())
+    Ok(true)
 }
 
 /// L5 freshness gate for the PROJECTED co-resident fork-module.

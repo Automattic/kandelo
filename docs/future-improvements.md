@@ -340,6 +340,25 @@ cold cache could not fetch `bc`.
 
 ## Build freshness
 
+### `scripts/build-musl.sh` exits 0 when its overlay copy fails
+
+Reported 2026-09-09 by an agent provisioning a fresh worktree. With
+`libc/musl` uninitialized, the overlay `cp` inside `scripts/build-musl.sh`
+failed, but the script **exited 0**, leaving a partial `libc/musl/arch` tree and
+no sysroot. The caller had no way to distinguish that from a successful build,
+and the failure only surfaced much later as a confusing missing-sysroot error.
+
+This is the same family as the stale-rebuild entry below and the two
+skip-instead-of-fail test gates fixed on the same day: a step that cannot do its
+job reports success anyway. The platform's own rule is truthful failure over
+convenient illusion, and a build script is exactly where that has to hold —
+everything downstream trusts its exit status.
+
+Fix: fail the script when the overlay copy fails (and check the submodule is
+initialized before attempting it), so a caller sees the real boundary.
+
+**Files:** `scripts/build-musl.sh`.
+
 ### `./run.sh rebuild kernel` leaves the consumed artifact stale
 
 `./run.sh rebuild kernel` compiles the kernel and installs it into the
