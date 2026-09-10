@@ -20347,7 +20347,11 @@ export class CentralizedKernelWorker {
               syscallNr,
               origArgs,
               entry,
-              vectorRequestForbidsEagainRetry(syscallNr, origArgs),
+              // Only scalar `write`/`read`/`pwrite`/`pread` reach this path
+              // now, and none of them carries a request flag that forbids the
+              // EAGAIN park; the vector family's RWF_NOWAIT is answered on the
+              // generic planner path.
+              false,
             )
           : undefined
       );
