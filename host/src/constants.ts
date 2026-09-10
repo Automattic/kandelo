@@ -784,7 +784,7 @@ function readLimits(
 }
 
 /**
- * Parse the portions of a final Wasm module that jointly define the ABI 43
+ * Parse the portions of a final Wasm module that jointly define the current
  * fork-artifact contract.
  *
  * WHY: names alone can look complete while the host and guest disagree about
@@ -1852,11 +1852,11 @@ function validateForkTableImports(facts: WasmForkArtifactFacts): string[] {
     const identity = `${requirement.module}.${requirement.name}`;
     const imports = facts.tableImports.get(identity);
     if (!imports) {
-      failures.push(`missing required ABI 43 fork-runtime table import ${identity}`);
+      failures.push(`missing required ABI ${ABI_VERSION} fork-runtime table import ${identity}`);
       continue;
     }
     if (imports.length !== 1) {
-      failures.push(`duplicate ABI 43 fork-runtime table import ${identity}`);
+      failures.push(`duplicate ABI ${ABI_VERSION} fork-runtime table import ${identity}`);
       continue;
     }
     const actual = imports[0]!;
@@ -1868,7 +1868,7 @@ function validateForkTableImports(facts: WasmForkArtifactFacts): string[] {
       || actual.maximum !== requirement.maximum
     ) {
       failures.push(
-        `ABI 43 fork-runtime table import ${identity} has the wrong type or limits`,
+        `ABI ${ABI_VERSION} fork-runtime table import ${identity} has the wrong type or limits`,
       );
     }
   }
@@ -1955,7 +1955,7 @@ function describeForkArtifactContractFailures(
     // active. The transform must defer the source start function to the
     // explicit bootstrap so guest Wasm cannot reenter that import.
     failures.push(
-      `ABI 43 fork artifact retains ${facts.nativeStartCount} native Wasm start ` +
+      `ABI ${ABI_VERSION} fork artifact retains ${facts.nativeStartCount} native Wasm start ` +
         `section${facts.nativeStartCount === 1 ? "" : "s"}; rebuild and ` +
         "reinstrument it so initialization is owned by " +
         "wpk_fork_module_bootstrap",
@@ -1963,12 +1963,12 @@ function describeForkArtifactContractFailures(
   }
   if (facts.functionImports.has("env.__wasm_dlopen")) {
     // WHY: this host import can synchronously enter side-module Wasm before
-    // returning. ABI 43 instrumentation lowers every valid occurrence to the
+    // returning. The fork instrumentation lowers every valid occurrence to the
     // staged prepare/next/commit protocol, so retaining it proves that the
     // activation-state capability was copied or emitted by an incomplete
     // transform.
     failures.push(
-      "ABI 43 fork artifact retains reentrant env.__wasm_dlopen; " +
+      `ABI ${ABI_VERSION} fork artifact retains reentrant env.__wasm_dlopen; ` +
         "rebuild and reinstrument it with the staged loader lowering",
     );
   }
@@ -1985,7 +1985,7 @@ function describeForkArtifactContractFailures(
     const signatures = facts.functionExports.get(requirement.name);
     if (!signatures) continue;
     if (signatures.length !== 1) {
-      failures.push(`duplicate ABI 43 wasm-fork-instrument export ${requirement.name}`);
+      failures.push(`duplicate ABI ${ABI_VERSION} wasm-fork-instrument export ${requirement.name}`);
     }
   }
   const missingExports = WPK_FORK_REQUIRED_EXPORTS
@@ -2002,7 +2002,7 @@ function describeForkArtifactContractFailures(
       `${WPK_FORK_PROCESS_IMPORT.module}.${WPK_FORK_PROCESS_IMPORT.name}`;
     const signatures = facts.functionImports.get(identity);
     if (signatures?.length !== 1) {
-      failures.push(`duplicate ABI 43 process-fork import ${identity}`);
+      failures.push(`duplicate ABI ${ABI_VERSION} process-fork import ${identity}`);
     } else if (
       !signatureMatches(
         signatures[0],
@@ -2012,7 +2012,7 @@ function describeForkArtifactContractFailures(
       )
     ) {
       failures.push(
-        `ABI 43 process-fork import ${identity} has the wrong signature; expected ${
+        `ABI ${ABI_VERSION} process-fork import ${identity} has the wrong signature; expected ${
           signatureText(
             WPK_FORK_PROCESS_IMPORT.params,
             WPK_FORK_PROCESS_IMPORT.results,
@@ -2063,14 +2063,14 @@ function describeForkArtifactContractFailures(
       .map(({ module, name }) => `${module}.${name}`);
     if (missingImports.length > 0) {
       failures.push(
-        `incomplete ABI 43 fork-runtime imports; missing ${missingImports.join(", ")}`,
+        `incomplete ABI ${ABI_VERSION} fork-runtime imports; missing ${missingImports.join(", ")}`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_IMPORTS) {
       const identity = `${requirement.module}.${requirement.name}`;
       const signatures = facts.functionImports.get(identity);
       if (signatures && signatures.length !== 1) {
-        failures.push(`duplicate ABI 43 fork-runtime import ${identity}`);
+        failures.push(`duplicate ABI ${ABI_VERSION} fork-runtime import ${identity}`);
       }
     }
   }
@@ -2078,12 +2078,12 @@ function describeForkArtifactContractFailures(
   if (pointerWidth !== null) {
     if (facts.memoryPointerWidths.length !== 1) {
       failures.push(
-        `ABI 43 fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
+        `ABI ${ABI_VERSION} fork instrumentation requires exactly one module memory, found ${facts.memoryPointerWidths.length}`,
       );
     } else if (facts.memoryPointerWidths[0] !== pointerWidth) {
       const article = pointerWidth === 8 ? "an" : "a";
       failures.push(
-        `ABI 43 linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
+        `ABI ${ABI_VERSION} linked-frame descriptor declares ${article} ${pointerWidth}-byte pointer but the module memory uses ${facts.memoryPointerWidths[0]}-byte addresses`,
       );
     }
     for (const requirement of WPK_FORK_REQUIRED_EXPORTS) {
@@ -2098,7 +2098,7 @@ function describeForkArtifactContractFailures(
         )
       ) {
         failures.push(
-          `ABI 43 wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
+          `ABI ${ABI_VERSION} wasm-fork-instrument export ${requirement.name} has the wrong signature; expected ${
             signatureText(requirement.params, requirement.results, pointerWidth)
           }`,
         );
@@ -2118,7 +2118,7 @@ function describeForkArtifactContractFailures(
           )
         ) {
           failures.push(
-            `ABI 43 fork-runtime import ${identity} has the wrong signature; expected ${
+            `ABI ${ABI_VERSION} fork-runtime import ${identity} has the wrong signature; expected ${
               signatureText(requirement.params, requirement.results, pointerWidth)
             }`,
           );
@@ -2144,7 +2144,7 @@ export function describeWasmForkArtifactContractFailures(
     );
   } catch (error) {
     return [
-      `cannot validate ABI 43 fork-artifact contract: ${
+      `cannot validate ABI ${ABI_VERSION} fork-artifact contract: ${
         error instanceof Error ? error.message : String(error)
       }`,
     ];
@@ -2247,7 +2247,7 @@ function decodedExternalKind(
  * `WebAssembly.Module.imports()`: release/resolver guards can inspect binaries
  * built with newer Wasm features than the current JS engine can reflect, and
  * WebKit cannot currently produce descriptors for some valid exception-
- * reference imports. The same parser already validates the richer ABI 43
+ * reference imports. The same parser already validates the richer current
  * function/global/table contract above.
  */
 export function readWasmImportDescriptors(
@@ -2587,8 +2587,8 @@ export function describeWasmArtifactPolicyFailures(
     declaredAbi === null
   ) {
     // WHY: the safety bit names an ABI-epoch contract. Without the program's
-    // ABI marker, copied capability metadata could make an ABI 42 transform
-    // look safe to an ABI 43 host.
+    // ABI marker, copied capability metadata could make a transform from one
+    // epoch look safe to a host from the next.
     failures.push(
       `ABI ${options.expectedAbi} fork artifact is missing __abi_version; ` +
         "the activation-state capability epoch cannot be verified",
@@ -2618,7 +2618,7 @@ export function describeWasmArtifactPolicyFailures(
       );
     } catch (error) {
       failures.push(
-        `cannot validate ABI 43 fork-artifact contract: ${
+        `cannot validate ABI ${ABI_VERSION} fork-artifact contract: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

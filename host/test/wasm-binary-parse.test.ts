@@ -1031,7 +1031,7 @@ describe("wasm artifact policy helpers", () => {
       `missing required ${WPK_FORK_LINKED_FRAME_FORMAT_SECTION} descriptor`,
     );
     expect(failures.some((failure) =>
-      failure.startsWith("incomplete ABI 43 fork-runtime imports; missing ")
+      failure.startsWith(`incomplete ABI ${ABI_VERSION} fork-runtime imports; missing `)
       && failure.includes("env.__wpk_fork_frame_commit")
       && failure.includes("env.__wpk_fork_ref_exn_define")
     )).toBe(true);
@@ -1051,7 +1051,7 @@ describe("wasm artifact policy helpers", () => {
     expect(describeWasmArtifactPolicyFailures(wasm, {
       expectedAbi: ABI_VERSION,
     })).toContain(
-      "ABI 43 process-fork import kernel.kernel_fork has the wrong "
+      `ABI ${ABI_VERSION} process-fork import kernel.kernel_fork has the wrong `
         + "signature; expected (i32) -> (i32)",
     );
   });
@@ -1214,7 +1214,7 @@ describe("wasm artifact policy helpers", () => {
 
     const missingResumeTable = completeForkWasm({ includeResumeTable: false });
     expect(describeWasmArtifactPolicyFailures(missingResumeTable).join("\n"))
-      .toContain("missing required ABI 43 fork-runtime table import");
+      .toContain(`missing required ABI ${ABI_VERSION} fork-runtime table import`);
   });
 
   it("binds duplicate and table64 import recipes one declaration at a time", () => {
@@ -1585,7 +1585,7 @@ describe("wasm artifact policy helpers", () => {
     const wasm = completeForkWasm({ includeLegacyDlopenImport: true });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 43 fork artifact retains reentrant env.__wasm_dlopen; " +
+      `ABI ${ABI_VERSION} fork artifact retains reentrant env.__wasm_dlopen; ` +
         "rebuild and reinstrument it with the staged loader lowering",
     );
   });
@@ -1594,7 +1594,7 @@ describe("wasm artifact policy helpers", () => {
     const wasm = completeForkWasm({ includeNativeStart: true });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 43 fork artifact retains 1 native Wasm start section; rebuild and " +
+      `ABI ${ABI_VERSION} fork artifact retains 1 native Wasm start section; rebuild and ` +
         "reinstrument it so initialization is owned by wpk_fork_module_bootstrap",
     );
   });
@@ -1613,7 +1613,7 @@ describe("wasm artifact policy helpers", () => {
     const wasm = completeForkWasm({ pointerWidth: 8, memoryPointerWidth: 4 });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 43 linked-frame descriptor declares an 8-byte pointer but the module memory uses 4-byte addresses",
+      `ABI ${ABI_VERSION} linked-frame descriptor declares an 8-byte pointer but the module memory uses 4-byte addresses`,
     );
   });
 
@@ -1621,7 +1621,7 @@ describe("wasm artifact policy helpers", () => {
     const wasm = completeForkWasm({ pointerWidth: 8, exportPointerWidth: 4 });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
     expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      "ABI 43 wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()",
+      `ABI ${ABI_VERSION} wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()`,
     );
   });
 
