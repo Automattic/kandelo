@@ -480,6 +480,22 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(0, Out, fixed!(390), required)]
     ),
     entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8), required)]),
+    // --- Scatter/gather I/O -------------------------------------------------
+    //
+    // `struct iovec` is caller-native and each entry holds a further guest
+    // pointer whose length lives in the same entry, so no static size rule can
+    // describe the argument. The kernel walks the table itself through the
+    // cross-memory primitives, gathers or scatters in one operation to keep
+    // PIPE_BUF and datagram boundaries intact, and bounds the transfer by
+    // SSIZE_MAX rather than by any host staging capacity.
+    entry!(
+        Syscall::Writev as u32,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        Syscall::Readv as u32,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
     entry!(
         Syscall::Getrlimit as u32,
         [desc!(1, Out, fixed!(RLIMIT_SIZE), required)]
@@ -956,6 +972,30 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(2, InOut, fixed!(8), nullable)]
     ),
     entry!(
+        extra_syscalls::SYS_PREADV,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_PWRITEV,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    // preadv2/pwritev2 are Linux extensions, not POSIX interfaces. Their sixth
+    // guest argument is `flags`, which is the slot the host overwrites with the
+    // caller's pointer width, so RWF_* never reaches the kernel. It never did:
+    // the host discarded it too. The host still reads the guest's own copy for
+    // the one flag that changes host behaviour (RWF_NOWAIT suppresses the
+    // EAGAIN park), and no RWF_* flag is implemented in the kernel. Giving
+    // preadv2 real flag semantics requires freeing this slot first — see
+    // `docs/abi-versioning.md`.
+    entry!(
+        extra_syscalls::SYS_PREADV2,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_PWRITEV2,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
         extra_syscalls::SYS_LCHOWN,
         [desc!(0, In, cstring!(), required)]
     ),
@@ -1353,6 +1393,12 @@ mod tests {
             (extra_syscalls::SYS_SHMCTL, 2),
             (Syscall::Sendmsg as u32, 1),
             (Syscall::Recvmsg as u32, 1),
+            (Syscall::Writev as u32, 1),
+            (Syscall::Readv as u32, 1),
+            (extra_syscalls::SYS_PREADV, 1),
+            (extra_syscalls::SYS_PWRITEV, 1),
+            (extra_syscalls::SYS_PREADV2, 1),
+            (extra_syscalls::SYS_PWRITEV2, 1),
         ];
         actual_nullable.sort_unstable();
         expected_nullable.sort_unstable();
@@ -1867,16 +1913,14 @@ mod tests {
             extra_syscalls::SYS_MSGSND,
         ] {
             // An argument holding further guest pointers can never be
-            // described by a static size rule. Each of these is either absent
-            // from the table entirely — the host handler still owns it — or
-            // present only as `KernelDereferenced`, which copies nothing and
-            // hands the kernel the raw guest address. What must never appear
-            // is a CString / Arg / Deref / Fixed / ProcessLayout rule, which
-            // would stage the outer record and silently drop everything it
-            // points at.
-            let Some(entry) = maybe_find(syscall) else {
-                continue;
-            };
+            // described by a static size rule. Every one of these is present
+            // only as `KernelDereferenced`, which copies nothing and hands the
+            // kernel the raw guest address. What must never appear is a
+            // CString / Arg / Deref / Fixed / ProcessLayout rule, which would
+            // stage the outer record and silently drop everything it points
+            // at — nor may one drop out of the table, which would hand the
+            // argument back to a host-side marshaller.
+            let entry = find(syscall);
             for arg in entry.args {
                 assert_eq!(
                     arg.size,
@@ -1886,6 +1930,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn kernel_dereferenced_syscalls_are_reviewed_for_sixth_argument_collisions() {
+        // A `KernelDereferenced` (or `ProcessLayout`) argument makes the host
+        // overwrite channel slot `PROCESS_POINTER_WIDTH_ARG_INDEX` with the
+        // caller's pointer width. Whatever the guest put in its sixth argument
+        // is then GONE before the kernel sees it. For every syscall below that
+        // is harmless, because none of them carries a sixth argument — except
+        // preadv2/pwritev2, whose sixth argument is `flags`.
+        //
+        // That is recorded rather than hidden: no RWF_* flag is implemented in
+        // the kernel, the host discarded `flags` before this change too, and
+        // the one flag with host-visible meaning (RWF_NOWAIT, which suppresses
+        // the EAGAIN park) is read from the guest's own argument view before
+        // the overwrite. Implementing real RWF_* semantics requires freeing
+        // this slot first — see `docs/abi-versioning.md`.
+        //
+        // Adding a syscall here means answering the same question for it.
+        let mut actual: Vec<u32> = SYSCALL_ARG_DESCRIPTORS
+            .iter()
+            .filter(|entry| {
+                entry
+                    .args
+                    .iter()
+                    .any(|arg| arg.size == SyscallArgSize::KernelDereferenced)
+            })
+            .map(|entry| entry.syscall_number)
+            .collect();
+        let mut expected = self::std::vec![
+            Syscall::Writev as u32,
+            Syscall::Readv as u32,
+            Syscall::Sendmsg as u32,
+            Syscall::Recvmsg as u32,
+            extra_syscalls::SYS_PREADV,
+            extra_syscalls::SYS_PWRITEV,
+            // Sixth argument is `flags`; see above.
+            extra_syscalls::SYS_PREADV2,
+            extra_syscalls::SYS_PWRITEV2,
+            extra_syscalls::SYS_MQ_TIMEDSEND,
+            extra_syscalls::SYS_MQ_TIMEDRECEIVE,
+            extra_syscalls::SYS_MSGRCV,
+            extra_syscalls::SYS_MSGSND,
+            extra_syscalls::SYS_MSGCTL,
+            extra_syscalls::SYS_SEMCTL,
+            extra_syscalls::SYS_SHMCTL,
+        ];
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "review the sixth-argument collision before adding or removing a \
+             kernel-dereferenced syscall"
+        );
     }
 
     #[test]

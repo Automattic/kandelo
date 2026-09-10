@@ -264,6 +264,10 @@ const READAHEAD_ARGUMENTS: &[ChannelScalarArgument] = &[
 ];
 const POSITIONED_VECTOR_ARGUMENTS: &[ChannelScalarArgument] = &[
     ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
         index: 3,
         kind: ChannelScalarKind::SplitI64LowU32,
     },
@@ -475,6 +479,18 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: Syscall::Ftruncate as u32,
         musl_name: "ftruncate",
         arguments: FTRUNCATE_ARGUMENTS,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: Syscall::Writev as u32,
+        musl_name: "writev",
+        arguments: PROCESS_ADDRESS_ARGUMENT_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: Syscall::Readv as u32,
+        musl_name: "readv",
+        arguments: PROCESS_ADDRESS_ARGUMENT_1,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
