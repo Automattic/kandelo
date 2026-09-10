@@ -8,7 +8,7 @@ Update it as work lands. The reasoning lives in
 `brandonpayton/epoll-kernel-route` (PR #1350). **Push forward-only. Never
 amend, never force-push. The maintainer is the sole merger.**
 
-**Last pushed:** `d72190d0e` (2026-09-10)
+**Last pushed:** `b5db3ca38` (2026-09-10)
 
 ## Ledger — the number that judges this campaign
 
@@ -81,7 +81,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K10 | **COMPLETE** | I6 deleted `wasi-shim.ts` (−1,055); fixtures gate disproved; I4/I5 done |
 | K14 | **DONE** | |
 | K5 | **I6a DONE 2026-09-10; I6b owed** | Module built, projected, served on both hosts via the one side-module table; I6b = rewire + delete 6,340 lines |
-| K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
+| K8 | **incr 1 done; incr 2 REBASING** | Boot flip done in agent worktree; collided with K9 in `rootfs.rs` |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
 | K7 | **piece 1 (SysV) CUT OVER; pieces 2/3 open** | SysV TypeScript deleted, TS −332. See "K7 cutover" below |
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
@@ -160,7 +160,10 @@ The three Vitest cases that touched mqueue only ever exercised the host
 preflight this item deleted. Worth an `examples/` program.
 | K4 | **K4a COMPLETE (21 of 38 pairs); NDD-K4-2 open** | 16 pairs left as one inseparable fork/exec/clone/init family; K4b probe PASS |
 | K6 | **COMPLETE** | All four families cut over; TS −1,978; no new host import |
-| K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
+| K13b | **RUNNING** | ~116 of ~320 exports removable; ABI-stability win, not host-surface |
+| `pathconf`/`trap-signals` | **COMPLETE** | Census row disproved 3 ways; `_PC_PIPE_BUF` fixed on POSIX (both copies wrong); host-native gained trap→signal mapping |
+| `constants.ts` | **SPLIT; NDD dissolved** | `crates/wasm-artifact` (2,258 lines); exec path cut over; needs a module, not an export |
+| iovec / msghdr wire | **RUNNING** | `writev`/`readv`/`preadv`/`pwritev` + retiring the dead msghdr wire |
 
 ### K6 validation — what was run, and what it proves
 
