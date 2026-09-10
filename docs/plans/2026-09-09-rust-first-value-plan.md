@@ -1214,6 +1214,156 @@ claims nothing** about the O(n)→O(1) table scan.
 production, 2,353 test). Deleting `dylink.ts` + `dylink-fork-archive.ts`
 (**6,340 lines**) is debt owed by **K5 I7** — recorded below.
 
+## 2q. K11 — PARTIAL (piece 1's rules landed; pieces 2-4 blocked) 2026-09-09
+
+**The line this item holds:** decoding and state are computation; issuing a
+call to a canvas, a WebGL context, an audio device, or a socket is not.
+Applied to each of the four pieces below, with the exact split named so the
+next round does not re-derive it.
+
+### Piece 1 — `networking/virtual-network.ts` (527) — rules LANDED
+
+**Found: the third instance of the duplicated-authority pattern, and this one
+was live and wrong**, unlike the epoll interest list (a mirror) and the TCP
+listener round-robin (already delegated).
+
+`LocalVirtualNetwork.listenTcp` / `.bindUdp` each walked their own endpoint
+registry with their own wildcard-conflict predicate and returned their own
+`EADDRINUSE`. But `syscalls::udp_bind_socket` calls `socket::udp_register`
+**first** — that is where `EADDRINUSE` is decided — and notifies the host
+only afterwards; when the host disagreed the kernel rolled its own
+registration back and returned the host's answer to the caller. **The second
+opinion won.** The rules disagreed on two generic POSIX cases:
+
+- **`SO_REUSEADDR`** — `socket::udp_can_bind` permits a shared address when
+  both sockets set the option; the host copy had no notion of it, so
+  `SO_REUSEADDR` did not work on a virtual-network machine at all.
+- **Fork-inherited bindings** — `socket.rs` keeps one logical binding alive
+  while any `fork`/`spawn` peer still owns the socket; the host copy keyed by
+  `pid:handle` and read an inherited copy as an unrelated conflict.
+
+Neither is reached by the in-repo network demo, and **the host-side rule had
+no test at all**. Removed rather than reconciled, per §1 generic-first: a
+bind-conflict case no demo triggers is still a case. `socket.rs` gains a
+module doc naming itself the single authority and telling adapters not to
+re-derive it. Regression test added, and verified to fail (errno 98) against
+the pre-change file.
+
+**Line drawn:** deciding whether a bind may happen is kernel computation;
+carrying bytes between paired peers, and knowing which machine owns which
+virtual address, is the wire.
+
+**Still duplicated, and blocked.** The fabric also *selects* the receiving
+socket for a routed datagram (`addrMatches` + `.find`), which is
+`socket::udp_lookup`'s rule. It cannot move this round: `NetworkIO.bindUdp`'s
+`receive` callback is constructed per-`pid:handle` in `kernel-worker.ts`, so
+the fabric picks the pid. Fixing it needs a **machine-level ingress callback**
+— one per machine, kernel picks the socket — which is a `NetworkIO` shape
+change in `kernel-worker.ts`. Two consequences to fix with it, both generic
+and both currently real:
+
+1. A fork-inherited UDP socket is never registered with the fabric, so the
+   child receives nothing from the virtual network.
+2. `onUdpUnbind` drops the whole fabric entry when one owner closes, although
+   `socket.rs` keeps the binding live for the remaining owners.
+
+**Unrelated finding, reported not fixed** (`syscalls.rs` is sibling-owned):
+`is_virtual_network_addr` (`syscalls.rs:10945`) hardcodes `10.88/16` as *the*
+virtual network prefix, so "is this a bindable address" is answered from a
+demo-shaped constant. `netif.rs` already establishes the generic alternative —
+ask the host via `host_network_local_address`. Generic-first says this should
+not be a hardcoded prefix.
+
+### Piece 2 — `framebuffer/browser-controls.ts` (732) — BLOCKED
+
+**Line:** the Linux VT wire format is kernel semantics; reading a DOM
+`KeyboardEvent` and owning a pointer lock is the device.
+
+- *Computation, ≈300 lines:* `LINUX_KEYCODE_BY_DOM_CODE`,
+  `LINUX_KEYCODE_BY_KEY_VALUE`, `linuxKeyCodeFromKeyboardEvent`,
+  `encodeLinuxMediumRawKeyCode`, `encodeKeyboardEventAsLinuxMediumRaw`,
+  `scalePointerLockMouseDelta`, `injectChunkedMouseMotion` (PS/2 ±127 delta
+  chunking), `clamp`, `finiteTrunc`.
+- *Device, ≈430 lines:* `attachLinuxMediumRawKeyboard`,
+  `attachPointerLockMouse`, `createPcmAudioScheduler` — DOM listener
+  lifecycle, pointer-lock requests, held-key bookkeeping keyed on event
+  identity, AudioWorklet scheduling.
+
+**Blocker: this module runs on the browser main thread**
+(`apps/browser-demos/pages/kandelo/panes/Framebuffer.tsx:135`,
+`TouchControls.tsx:41`). The main thread has no kernel instance *by contract*
+— `CentralizedKernelWorker` must never be instantiated there — so there is no
+Rust to call. Migrating the encoding means migrating the **input path**: the
+main thread posts a raw key/mouse event to the kernel worker and the kernel
+produces the MEDIUMRAW / PS-2 bytes. That is an input-path change with real
+latency consequences, not a port.
+
+**Scope note preserved:** `docs/future-improvements.md` separately questions
+whether the Linux-VT MEDIUMRAW model and the three VT ioctls are the right
+long-term contract. That is a different question and must not be folded in.
+
+### Piece 3 — `webgl/bridge.ts` (700) — BLOCKED
+
+**Line:** framing and payload validation are computation; every `gl.*` call is
+the device.
+
+- *Computation, ≈180 lines:* `walkCommandBuffer` (span safety, per-command
+  header framing, the `p += len` walk), `isSafeSpan`, `exact`,
+  `u32ArrayPayload`, `tailBytesPayload`, `countedFloatPayload`, `validPayload`
+  (the per-opcode payload-shape table), `validateCommandBuffer`.
+- *Device, ≈490 lines:* `dispatch` — the opcode→`WebGLRenderingContext` method
+  switch and the GL object handle maps.
+
+**The destination is not a new export.** The kernel already bounds-checks
+`offset`/`length` against the cmdbuf binding at `syscalls.rs:1441-1450`,
+immediately before `host.gl_submit`. Structural validation of the buffer
+belongs on those same lines, reading the command bytes through
+`HostIO::proc_read_bytes` (which K2 generalized). `validateCommandBuffer` then
+deletes outright and `dispatch` keeps only the walk it needs to issue calls.
+
+**Blocker:** `crates/runtime-core/src/syscalls.rs` is sibling-owned this
+round. The edit there is roughly three lines, but it is the only seam.
+
+### Piece 4 — `networking/tls-network-backend.ts` (871) — BLOCKED
+
+**First, a correction to this plan's own description.** The item calls this a
+"TLS state machine". **There is no TLS state machine in the file.** The
+handshake is delegated to an injected `TlsMitmConnection` backed by WebCrypto.
+What the file actually owns is an **HTTP/1.1 parser and a MITM proxy**.
+
+**Line:** HTTP/1.1 message framing is computation; the TLS handshake,
+WebCrypto, and `fetch()` are the device.
+
+- *Computation, ≈220 lines (83-300):* `findHeaderEnd`, `parseContentLength`,
+  `parseHttpRequest`, `indexOfCRLF`, `parseChunkedBody`, `concatChunks`,
+  `requestKeepsConnectionAlive`, `lastHeaderValue`,
+  `browserRepresentableHeaders`, `headersFromOccurrences`,
+  `HOP_BY_HOP_HEADERS`, `formatHttpResponse`.
+- *Device, ≈650 lines:* handshake driving, CA key/cert generation via
+  WebCrypto, `BrowserCorsProxy` / `fetch`, the connection maps.
+
+**Blocker:** a `NetworkIO` backend holds no kernel handle, same as piece 1.
+And the honest end state is larger than a port: the kernel should own the HTTP
+proxy and call the host only for `fetch()`.
+
+### The shared blocker, stated once
+
+Three of the four pieces need the same thing and none of them can have it this
+round. Host TypeScript reaches Rust by exactly one route — a `kernel_*` export
+called through the kernel instance — and **all 308 of those live in
+`crates/kernel/src/wasm_api.rs`**, which is sibling-owned, as are
+`syscalls.rs` and `kernel-worker.ts`. New `env.host_*` imports were ruled out
+by direction, and correctly.
+
+Porting the four to Rust *without* wiring them was rejected: §2j names that
+exact outcome as a **pattern** in this repo, not an accident
+(`fork-codec/src/dylink_archive.rs`, 1,318 lines, zero callers), and it would
+have produced a positive TS delta with nothing removed.
+
+**Owner for the remainder: K11 second pass**, once `wasm_api.rs`,
+`syscalls.rs` and `kernel-worker.ts` are free. Sequence it after K3/K7 land.
+
+**Ledger** — see the running ledger in §2i.
 ## 2q. K3 — increments 0a/1/2 LANDED, 0b BLOCKED ON OWNERSHIP (2026-09-09)
 
 Worktree `.claude/worktrees/agent-a80522f9a40f00a13`, base `4cc15a99b`, tip
