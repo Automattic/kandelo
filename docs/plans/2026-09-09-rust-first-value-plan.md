@@ -231,6 +231,315 @@ So the no_std JSON parser problem is **deleted, not solved.**
 scoped to files those two do not touch; the `ByteReq` wiring lands after they
 merge.
 
+## 2d. Execution policy: commit small, validate in batches (2026-09-09)
+
+Maintainer directive: *"Let's try to batch testing as much as possible, even
+combining different work items... I often find agents spending a lot of time
+testing small steps, and I'd much prefer to be taking large strides."*
+Consistent with the standing `work-in-larger-strides` preference.
+
+**Commit frequency and validation frequency are separate decisions.**
+
+- **Commit early and often.** Cheap, and it is the only protection against a
+  mid-flight failure. Two implementation agents were killed by transient API
+  500s on 2026-09-09 with an hour of uncommitted work between them; one had to
+  be rescued by the coordinator committing on its behalf (`9687b775b`).
+- **Validate in batches, at meaningful checkpoints — not per increment.**
+
+**Per-agent validation keeps only what is load-bearing for that item:**
+
+| item | keeps | because |
+|---|---|---|
+| K13a | affected `cargo test`; `check-abi-version.sh update` + verify; musl rebuild if `libc/glue` touched; the retirement test | the snapshot IS the item |
+| K2 | `cargo test` runtime-core + kernel; `cargo test -p host-native --target aarch64-apple-darwin` | native impl is the item and is irreplaceable |
+| K1 | `cargo test -p runtime-core`; nine-image `KLZY`-vs-JSON equivalence; the SD-B3 ordering test | equivalence IS the gate |
+| K10 | new-crate tests; the differential harness; host-native for I7 | the harness IS the gate |
+
+**Deferred to ONE coordinator-run group pass on the integration branch:**
+`cargo xtask verify-fresh`, full Vitest, the conformance suites
+(posix/libc/sortix), and browser validation. Running these per agent is four
+expensive duplicates of a check that is redone at merge anyway — and
+`check-abi-version.sh` rebuilds the kernel wasm on every invocation.
+
+**What batching must NOT erode.** Each item's own gate is not a "small step" to
+economize on: K1's nine-image equivalence, K10's `.wat` fixture breadth, K2's
+host-native tests. Batching means fewer validation *passes*, not thinner
+evidence. An agent that batches its testing AND thins its gate has produced an
+unvalidated change, and the report must distinguish "left to the group run"
+from "not tested".
+
+## 2e. K13a — COMPLETE (2026-09-09)
+
+Worktree `.claude/worktrees/agent-a8af1a632d70ed416`, branch
+`worktree-agent-a8af1a632d70ed416`, base `9638a2023`. Commits `da51e4c99`,
+`5b47e478c`, `ba80be1be`, `dac344704`. 7 files, +87/−650. **Not pushed; merge,
+do not fast-forward** — the campaign tip has since gained the docs commit
+`899261824`.
+
+**Result.** 24 of 24 deleted; none turned out live. `pub extern "C" fn` 336 →
+312. `kernel_time`/`kernel_brk` correctly left alone; the two test-only exports
+untouched. `libc/glue` cleaned surgically (14 `KERNEL_IMPORT` decls removed, 10
+`syscall_glue.c` sites now return `ENOSYS` with a reason) and **musl was
+rebuilt** for both wasm32posix and wasm64posix.
+
+**Evidence.** `check-abi-version.sh update` produced a diff of *exactly* 24
+removed `kernel_exports` entries and nothing else, with `abi_version` still 44
+and every generated header plus `host/src/generated/abi.ts` regenerated
+byte-identical — an independent proof that none of the 24 sat in a
+required-export list. `cargo test -p kandelo` 7/7. The retirement-contract test
+passes **and was shown non-vacuous** by injecting a live `kernel_time` and
+watching it fail. Strongest single artifact: a scan of **all 143 built `.wasm`
+artifacts** found 16 distinct `kernel.*` imports with **zero intersection** with
+the 24 — guest-level proof no shipped binary linked them.
+
+**A fragile pattern this exposed, worth remembering.**
+`wasm_api_channel_pointer_contract.rs` delimited `kernel_utimensat` by the
+literal string `"\n/// Remap memory."` — i.e. by the *doc comment* of the
+adjacent `kernel_mremap`. Deleting that export silently broke the contract test's
+range. Now sliced by the next `pub extern "C" fn` signature instead. Tests that
+parse source by prose are landmines; expect more.
+
+**D2 — DECIDED: open the ABI 44 section.** Done: `docs/abi-versioning.md` now
+carries `### ABI 44 opaque transport, kernel-owned exec targets, and export
+reduction`, recording the amendment rule and what 44 contains so far. Later K
+items append rather than leaving the epoch's contract scattered across
+`docs/plans/`.
+
+**D4 — already handled.** The 26→24 and 117→119 corrections landed in this file
+and the census before K13a reported; the agent based its work earlier and could
+not see them.
+
+**Follow-on for K13b (recorded, not acted on):**
+`Process::note_legacy_posix_timer_interval_fire`
+(`crates/runtime-core/src/process.rs:1945`) now has only three test callers.
+
+### Two PRE-EXISTING failures on the branch — do NOT misattribute at group validation
+
+Both were proven pre-existing by restoring base files and re-running:
+
+1. `host/test/kernel-scratch-contract.test.ts` — 3 of 8 fail
+   (`kernel_spawn_blob_decode` pointer role, 27 audit rows,
+   `SPAWN_MAX_ARGV_COUNT`). Identical failures with the 5 base files restored.
+2. `runtime-core zip::tests::real_man_zip_cross_checks_members` — 1421680 vs
+   1397299. Baseline recorded 2026-08-30 in `a1d3e98a1`; `channel_syscall.c` and
+   `kandelo_syscall_marshal.h` both changed on the branch afterwards.
+
+Neither is caused by K13a. The group validation run must expect them, and they
+are their own follow-up.
+
+## 2f. K1 — COMPLETE (2026-09-09)
+
+Worktree `.claude/worktrees/agent-acf13642165369fc6`, base `9638a2023`.
+Commits `9687b775b` (coordinator WIP rescue), `b5ecebe3d`, `5c3a73aea`,
+`f76020ed0`, `2052a5dfd`, `297af0cc9`, `9f88438ef`. 15 files, +2,352/−195.
+VERIFIED merge-safe: neither `wasm_api.rs` nor `syscalls.rs` is in the diff, and
+the agent's `local-binaries`/`host/wasm` symlinks are NOT committed.
+
+**KLZY landed** in the `KFIG` idiom, constants in `crates/shared/src/lib.rs`:
+20 B header; 24 B group record (`archive_id` nonzero and strictly increasing);
+24 B file record (`ino` nonzero and unique, `archive_id` 0 = URL-backed, path
+length zero **iff** archive_id 0). Paths explicit as directed; a group flag is
+*reserved* for a future proven derived-path writer. Records are 24 B rather than
+the sketch's 20 B (u32 lengths + reserved), so measured sizes run ~6% above the
+469 KiB estimate — disclosed rather than quietly absorbed.
+
+**Equivalence: all nine images green**, KLZY vs the RTFS v3 manifest the kernel
+actually consumes.
+
+| image | KLZY | lazy JSON |
+|---|---|---|
+| rootfs.vfs | 1,580 | 10,720 |
+| shell / wordpress / lamp / nginx-php / nginx | 510,295 | 2,792,104–2,792,246 |
+| node-vfs | 327,569 | 1,845,890 |
+| kandelo-sdk, mariadb-test | 20 (empty) | 0 |
+
+≈5.5× smaller on the images that matter.
+
+**SD-B3 resolved better than asked.** I required proof that the three host
+mutations precede `init`. The agent instead proved the concern *does not apply*:
+`fromImage` copies into a fresh SAB and all three mutations
+(`normalizeLegacyRootfs`, `ensureMountParentDirectories`, the browser TLS-cert
+write) operate on that copy, so the source image is never mutated at all. The
+test drives the real functions, asserts each mutation fired, asserts the image is
+byte-identical afterwards, and demonstrates non-vacuity. A third test pins D-B5 —
+a raw-image reader sees none of the three — as a *tested fact* rather than an
+inherited assumption. **No `Atomics` discipline needed.** Buffer identity beat
+call-ordering.
+
+**Cursor:** `Sffs<S: BlockSource>`, 18 sites across 6 functions, with
+`impl BlockSource` for `[u8]`/`Vec<u8>`/`&T`. No cache added — explicitly
+unmeasured, so no performance claim; the inode was hoisted out of `read_at`'s
+loop instead.
+
+**Ran:** `cargo test -p runtime-core` 1782 pass / 1 fail; `cargo check` wasm32
+clean; Vitest 25 files, 552 pass / 1 fail; mkrootfs 183 pass. Explicitly left to
+the group run and explicitly marked **unproven rather than clean**:
+`check-abi-version.sh`, `verify-fresh`, full Vitest, conformance.
+
+**DECIDED (a) — the equivalence gate must HARD-FAIL, not skip.** It currently
+skips when the VFS images are absent. A gate that silently passes without its
+fixtures certifies nothing, and CLAUDE.md is explicit that a missing artifact is
+a provisioning step, not a boundary. Same pathology as the `zip` test below,
+whose verdict flips on artifact presence. **Integration task:** make it fail with
+an actionable message naming how to produce the images. Not worth respinning the
+agent; folded into the merge.
+
+### Pre-existing failures — now THREE, none caused by this work
+
+1. `runtime-core zip::real_man_zip_cross_checks_members` — **found independently
+   by both K13a and K1**, which is good corroboration. `man.zip` is 1,421,680 B
+   against a hardcoded 1,397,299 baseline recorded 2026-08-30 in `a1d3e98a1`;
+   `channel_syscall.c` and `kandelo_syscall_marshal.h` changed afterwards. Note it
+   *passes* when `local-binaries` is absent — the same skip-vs-fail pathology.
+2. `host/test/kernel-scratch-contract.test.ts` — 3 of 8 fail; K13a proved
+   pre-existing by restoring base files.
+3. `vfs-image-wasm-policy` — `host/src/constants.ts:2580` still says **"ABI 43"**
+   while `ABI_VERSION` is 44. A genuine stale-artifact claim that the platform's
+   own fail-loudly-on-stale contract should have caught. Deserves its own item.
+
+All three need owners; none blocks the merge, but the group run must expect them.
+
+## 2g. K2 — COMPLETE (2026-09-09)
+
+Worktree `.claude/worktrees/agent-a55b06b94200352e9`, base `9638a2023`.
+Commits `7d3b69f1c` (I0 truthful defaults) · `7e6aa80e4` (I0b false comments) ·
+`c7c76bc59` (I1 host-native) · `625753908` (I2 widen to u64) · `eb36f4be3`
+(I3 SIOCGIFCONF). All five increments landed. Not pushed.
+
+**ACCEPTED deviation — no pid→SharedMemory registry in host-native.** The
+grounding sized one at ~150-200 lines; the agent instead checks `pid` against
+the `current_pid` the pump binds before every `kernel_handle_channel` call,
+in ~90 lines. Its argument is better than the plan: that check *is* the contract
+term — the only sound target is the dispatching process, which is live by
+construction — and it has **no stale state to miss**. A registry would have to
+track 4 creation sites, `handle_exec_common`'s whole-image `mem::replace`
+(which the agent upgraded from INFERRED to VERIFIED), and every teardown; one
+missed update is a silent write into the wrong process's memory. A
+non-dispatching target now returns `-ESRCH`. **Native is consequently stricter
+than the JS host** — see D2 below.
+
+**Proof that the mechanism works end to end:** `vitest run test/ifhwaddr.test.ts`
+→ 2 passed, **wasm32 and wasm64**, with the TypeScript `handleIoctlIfconf`
+intercept deleted. That is the kernel reading guest memory directly through the
+widened primitive, on both pointer widths.
+
+**Snapshot behaviour, correctly characterised.** I2 (the u64 widening) produced
+**no snapshot diff** — and the agent flagged that as *the finding, not a clean
+bill*: `check-abi-version.sh` cannot see import signatures at all. I3 does move
+the snapshot (+`ioctl_request_contracts`, −3 `kernel_exports`); no version bump,
+per the ABI-44 amendment decision.
+
+**Ran:** runtime-core + kandelo 1768/3/4/6 passed, 0 failed; host-native 52
+passed, 0 failed, 4 ignored (pre-existing); `check-abi-version.sh` verify
+consistent; the three kernel-scratch suites 348 passed / 4 failed with **all
+four verified pre-existing** by re-running the same files on `9638a2023` and
+getting an identical failure set.
+
+**Explicitly NOT proven, in the agent's own words:** *"I3 deletes an intercept
+from `kernel-worker.ts`, a shared cross-host file — browser behaviour is
+genuinely part of its surface and nothing above proves it."* Correct application
+of the host-runtime contract. **The group validation run MUST include browser
+for K2.**
+
+### Decisions on K2's deferrals
+
+**D1 — `xtask dump-abi` does not record `env.host_*` import signatures.
+DECIDED: fix it, as its own item (K14), BEFORE K9.** I2 changed a kernel↔host
+pointer interpretation completely invisibly to the ABI check. The whole 84-import
+host contract — the very thing V4 is measured on — is structurally unchecked
+today, and K9 removes 25 imports and would land equally unchecked. Cost is
+~50-100 lines plus one large additive snapshot diff, which is why it belongs on
+its own rather than mixed into this group merge.
+
+**D2 — TS `getProcessMemory(pid)` has no liveness check.** Native returns
+`-ESRCH` for a non-dispatching target; the JS host silently writes to it. Invisible
+for every legal call today, but it is both a safety gap and a Node/browser-vs-native
+parity divergence. Tracked follow-up; needs a `currentHandlePid` callback.
+
+**D3 — `catch { return -14 }` in `kernel.ts`** collapses "kernel not
+initialized" and a consumed destination token into `EFAULT`. Truthful-failure
+violation, small, tracked.
+
+**D4 — dev shell lacks `wasm-tools`. DECIDED: add it to `flake.nix`.** A GC-array
+`.wat` fixture in the repo **cannot be regenerated in a fresh worktree** because
+WABT's `wat2wasm` predates the GC text format; the agent had to copy a prebuilt
+artifact. The build environment is part of the platform contract, and a
+checked-in fixture no declared tool can rebuild violates it. (Distinct from the
+wasi-sdk refusal: `wasm-tools` is tiny, and existing fixtures already need it —
+the K0 probes required a Homebrew install for the same reason.) Deferred to
+integration only to avoid disturbing the running K10 agent.
+
+**D5 — parallel worktrees CONTEND ON `~/.cache/kandelo`.** `./run.sh setup` hit
+a race with a sibling agent (`vim@9.1.0900`, "concurrent cache winner differs
+from staged build"). Unrelated to K2's change, but a real hazard of the
+parallel-agent strategy and a likely source of confusing future failures.
+Recorded; needs either a per-worktree cache or locking.
+
+## 2h. K10 — PARTIAL (I1/I2/I3/I7 landed; I4/I5 deferred; I6 held) 2026-09-09
+
+Worktree `.claude/worktrees/agent-a4b251627d1ef4068`, based on `899261824`,
+tip `6e92f9f3d`, tree clean. 15 commits, +16,364 lines, 50 files.
+
+- **I1 `crates/wasi-abi`** — 107 WASI constants as typed enums, the 79-entry
+  errno table, the pure functions. POSIX constants imported from
+  `wasm-posix-shared` rather than redeclared. `Errno` extended with the 17 Linux
+  values, each verified against `libc/musl/arch/generic/bits/errno.h`.
+- **I2 differential harness** — `cargo xtask dump-wasi-translation` plus
+  `host/test/wasi-translation-equivalence.test.ts` over **1,358 exhaustively
+  enumerated inputs**, TS vs Rust. The per-defect exceptions are implemented
+  exactly as intended: four tables carry documented `divergence` blocks, and the
+  test asserts agreement *outside* each defect's input list and **disagreement
+  inside it** — so a regression to the old wrong behaviour fails rather than
+  silently passes.
+- **I3 `crates/wasi-module`** — 46 entry points, generic over memory and
+  channel, built as a real PIC side module (24,528 bytes, `dylink.0` present).
+- **I7 `crates/host-native`** runs a WASI guest under wasmtime from that same
+  artifact. `guest.rs` untouched; `lib.rs` gained a 3-line path helper.
+  **This is K10's actual V1 payoff: native WASI, which host-native never had.**
+
+**No ABI motion, no new host import — verified on the COMPILED ARTIFACT**, not
+merely the source: the module's entire import list is `env.memory` plus
+`__indirect_function_table` / `__stack_pointer` / `__memory_base` /
+`__table_base`, and the host-native test re-asserts it.
+
+**Validation:** `wasi-abi` 30 · `wasi-module` 11+59 · `host-native --test
+wasi_module` 1 · `wasm-posix-shared` 63 · real-module Node integration 12/12 ·
+differential harness 13. Per the batching policy it did not run `verify-fresh`,
+`check-abi-version.sh`, full Vitest, or conformance.
+
+**Defect 4 was worse than the grounding recorded.** `translateStat` reads offset
+80 with `getBigInt64`, so a non-zero `_pad` at 84 drives `ctim` **negative**
+(−7.0e17 against a true 1700000002123456789). Three further honesty fixes
+surfaced while porting: `init()` now reports a failed root open instead of
+leaving the guest apparently filesystem-less; `random_get` fails `EIO` rather
+than spinning forever on zero progress; an oversized result is `EOVERFLOW`
+rather than a truncated byte count.
+
+**DEFERRAL 1 — I4/I5 not landed. ACCEPTED.** The cutover needs `resolveBinary`,
+a Vite `?url` alias, and `worker-main.ts` wiring — i.e. **new browser surface** —
+and CLAUDE.md forbids calling browser-facing work complete from code reasoning
+alone. Correct call: it respected both the batching policy and the browser
+contract rather than trading one against the other. Land I4/I5 in a session that
+can run `./run.sh browser` + Playwright. It also deliberately did **not** hook
+`crates/wasi-module/build-wasm.sh` into `local_build.rs`, to avoid slowing every
+sibling's build for an artifact nothing yet reads — do that as part of I4/I5.
+
+**DEFERRAL 2 — the sixth, unchartered defect. DECIDED: fix it.**
+`wasiClockToPosix` silently defaults an unknown clock id to `CLOCK_REALTIME`.
+A guest asking for a clock we do not implement and silently receiving a
+*different* one is a truthful-failure violation of the same kind as the other
+five. Adopt the strict behaviour (`EINVAL` for an unknown clock) as the default,
+keep the `_lenient` variant available for the TS-parity path, and add defect #6
+to the divergence blocks so the harness pins it like the rest. Risk is nil —
+there is no in-repo WASI consumer.
+
+**NOT GREEN, and correctly not claimed:** the two new `.wat` fixtures assemble
+and are committed but have never been *run* — they need `rootfs.vfs`, which was
+still building. The three pre-existing WASI fixtures fail identically without it,
+so this is provisioning rather than a defect, but the agent explicitly refused to
+claim a pass it had not seen. **The group validation run must actually execute
+them.**
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
