@@ -348,12 +348,15 @@ pub fn read_control(
         return Ok(records);
     }
     let layout = cmsg_layout(pointer_width)?;
+    // The guest never sizes a kernel allocation on its own: `msg_controllen`
+    // is a caller-chosen u32, so it is bounded by the operation's own limit
+    // rather than by whichever allocation happens to fail first.
     let bytes = guest_ptr::read_guest_bytes(
         host,
         pid,
         addr,
         control_len,
-        platform_limits::MAX_REPORTABLE_TRANSFER_BYTES,
+        platform_limits::SOCKET_CONTROL_MAX_BYTES,
     )?;
 
     let mut offset = 0usize;
@@ -695,6 +698,27 @@ mod tests {
             assert_eq!(records[1].cmsg_type, 42);
             assert_eq!(records[1].data, vec![1, 2, 3]);
         }
+    }
+
+    #[test]
+    fn a_control_length_above_the_operations_limit_is_rejected() {
+        // `msg_controllen` is a caller-chosen u32. Without an explicit ceiling
+        // the only thing standing between a 4 GiB claim and a 4 GiB kernel
+        // allocation is whether that allocation happens to fail — which makes
+        // the errno depend on unrelated memory pressure. Bound it by the
+        // operation.
+        let mut guest = GuestMemoryHost::new(BASE, 4096);
+        assert_eq!(
+            read_control(
+                &mut guest,
+                1,
+                BASE,
+                platform_limits::SOCKET_CONTROL_MAX_BYTES as u32 + 1,
+                4,
+            )
+            .unwrap_err(),
+            Errno::EINVAL
+        );
     }
 
     #[test]

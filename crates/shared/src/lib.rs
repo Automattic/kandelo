@@ -164,6 +164,18 @@ pub mod platform_limits {
     /// u32 byte-length wire used by tokenized scratch reservations.
     pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
     pub const IOV_MAX: usize = 1024;
+    /// Largest `msg_controllen` a caller may present to `sendmsg`/`recvmsg`.
+    ///
+    /// Ancillary data is kernel-allocated on the caller's word, so it needs a
+    /// ceiling that is a property of the operation rather than of whatever
+    /// allocation happens to fail first. Linux bounds the same buffer with
+    /// `net.core.optmem_max`, whose default is on this order; the value is
+    /// generous next to the only ancillary payload Kandelo carries — one
+    /// `SCM_RIGHTS` array, which `IOV_MAX`-scale descriptor counts do not
+    /// approach — and a request above it is EINVAL rather than an allocation
+    /// that might or might not succeed depending on unrelated memory
+    /// pressure.
+    pub const SOCKET_CONTROL_MAX_BYTES: usize = 64 * 1024;
 }
 
 /// Host/kernel selectors for one atomic argv/environment replacement.
