@@ -113,6 +113,14 @@ nix_develop=(
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
     --keep KANDELO_NIX_BIN \
+    # WHY this one is kept: `./run.sh` re-enters this script to run xtask
+    # (e.g. `rebuild`), so an override set OUTSIDE the dev shell is stripped by
+    # --ignore-environment before xtask ever sees it, and the build silently
+    # falls back to the shared $HOME/.cache/kandelo/source-only. That is worse
+    # than not offering the flag: a cache entry records the absolute source
+    # path of whichever worktree populated it first, so concurrent worktrees
+    # can run each other's build scripts and fail in ways that name neither.
+    --keep KANDELO_SOURCE_CACHE_ROOT \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \
