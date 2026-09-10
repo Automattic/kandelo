@@ -61,7 +61,6 @@ import {
   extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
-import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -76,8 +75,6 @@ import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
   type WorkerQuiescence,
-  waitForExecRetirement as waitForExecRetirementFence,
-  waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
@@ -140,6 +137,8 @@ import {
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
+  delay,
+  type ThreadWorkerRecord,
   formatError,
   handleThreadExit,
   signalFromExitStatus,
@@ -294,9 +293,6 @@ const reportedExits = new Set<number>();
 const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
-// Includes standalone thread-worker teardown promises that may outlive the
-// process map entry they came from.
-const workerTeardowns = new Set<Promise<void>>();
 let nextProcessGeneration = 1;
 let nextFramebufferReleaseRequestId = 1;
 const pendingFramebufferReleaseAcks = new Map<
@@ -306,8 +302,6 @@ const pendingFramebufferReleaseAcks = new Map<
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
-const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
-const EXEC_WORKER_RETIREMENT_WAIT_MS = 5000;
 const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] On destroy we wake every Atomics.wait-blocked
 // worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
@@ -317,55 +311,13 @@ const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
-/**
- * Workers we deliberately terminated — exec, exit, top-level destroy. The
- * synthesized "exit" event from {@link BrowserWorkerHandle} fires on
- * `worker.terminate()` indistinguishably from an unexpected death; this
- * WeakSet lets the crash detector skip the deliberate cases. Mirrors the
- * `intentionallyTerminated` set on the Node host (PR #410).
- */
-const intentionallyTerminated = new WeakSet<object>();
 
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
 // all threads of the same process. Keyed by PID of the process that spawned threads.
 const threadModuleCache = new Map<number, WebAssembly.Module>();
-interface ThreadWorkerInfo {
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
-  channelOffset: number;
-  tid: number;
-  basePage: number;
-  quiescent: boolean;
-  workerQuiescence: WorkerQuiescence;
-  execRetirement: WorkerQuiescence;
-  termination?: Promise<void>;
-}
-const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
-const threadExits = new ThreadExitCoordinator();
 
-async function waitForWorkerQuiescence(
-  quiescence: WorkerQuiescence,
-): Promise<boolean> {
-  const quiescent = await waitForWorkerQuiescenceFence(
-    quiescence,
-    PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-  );
-  // The timeout is not evidence that terminate completed. It only bounds
-  // teardown latency; a missing explicit terminal message uses the forced
-  // retirement path.
-  return quiescent;
-}
 
-async function waitForExecRetirement(
-  retirement: WorkerQuiescence,
-  quiescence: WorkerQuiescence,
-): Promise<boolean> {
-  return waitForExecRetirementFence(
-    retirement,
-    quiescence,
-    EXEC_WORKER_RETIREMENT_WAIT_MS,
-  );
-}
 
 /** Report a process exit to main exactly once. See `reportedExits`. */
 function reportProcessExit(
@@ -378,9 +330,6 @@ function reportProcessExit(
   post({ type: "exit", pid, generation, status });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function basename(path: string): string {
   const idx = path.lastIndexOf("/");
@@ -443,50 +392,7 @@ async function awaitFinalizedProcessTeardown(
   await processTeardowns.get(expectedWorker);
 }
 
-async function terminateTrackedWorker(
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
-  settleMs = 0,
-): Promise<void> {
-  intentionallyTerminated.add(worker as object);
-  forkHostImportsByWorker.get(worker as object)?.close();
-  const teardown = (async () => {
-    await worker.terminate().catch(() => {});
-    if (settleMs > 0) await delay(settleMs);
-  })();
-  workerTeardowns.add(teardown);
-  void teardown.finally(() => workerTeardowns.delete(teardown));
-  await teardown;
-}
 
-async function terminateThreadWorkers(
-  pid: number,
-  requireExecRetirement = false,
-): Promise<boolean> {
-  const threads = threadWorkers.get(pid);
-  if (!threads) return true;
-  threadWorkers.delete(pid);
-  const quiescence = await Promise.all(
-    threads.map((thread) =>
-      requireExecRetirement
-        ? waitForExecRetirement(
-            thread.execRetirement,
-            thread.workerQuiescence,
-          )
-        : waitForWorkerQuiescence(thread.workerQuiescence)),
-  );
-  const allQuiescent = quiescence.every(Boolean);
-  for (const thread of threads) {
-    intentionallyTerminated.add(thread.worker as object);
-  }
-  for (const t of threads) {
-    await (
-      t.termination ??
-      terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
-    );
-    threadExits.release(pid, t.channelOffset);
-  }
-  return allQuiescent;
-}
 const ptyByPid = new Map<number, number>();
 
 const processGenerationDetaches =
@@ -537,6 +443,14 @@ const {
   dispatchForkHostImport,
   handlePosixSpawnResolve,
   handlePtyResize,
+  intentionallyTerminated,
+  terminateThreadWorkers,
+  terminateTrackedWorker,
+  threadExits,
+  threadWorkers,
+  waitForExecRetirement,
+  waitForWorkerQuiescence,
+  workerTeardowns,
   handlePtyWrite,
   handleVmInterruptTimer,
   postForkModuleProof,
@@ -2741,7 +2655,7 @@ async function handleExec(
               initiatingInfo.workerQuiescence,
             )
           : Promise.resolve(false),
-        terminateThreadWorkers(pid, true),
+        terminateThreadWorkers(pid, true, THREADED_WORKER_TERMINATION_SETTLE_MS),
       ]);
       if (initiatingInfo.worker) {
         intentionallyTerminated.add(initiatingInfo.worker as object);
@@ -3387,7 +3301,7 @@ async function handleClone(
   }
 
   let threadWorker: DeferredWorkerHandle;
-  let threadEntry: ThreadWorkerInfo;
+  let threadEntry: ThreadWorkerRecord<ProcessInfo["worker"]>;
   const forkHostImports = forkHostImportOwnerRuntime.createWorker({
     pid,
     generationId: processInfo.externrefGeneration.id,
@@ -3652,7 +3566,11 @@ async function finishProcessExit(
     const workerQuiescent = await waitForWorkerQuiescence(
       info.workerQuiescence,
     );
-    const threadsQuiescent = await terminateThreadWorkers(pid);
+    const threadsQuiescent = await terminateThreadWorkers(
+      pid,
+      false,
+      THREADED_WORKER_TERMINATION_SETTLE_MS,
+    );
     await terminateTrackedWorker(expectedWorker, settleMs);
 
     // Check if this is a "top-level" process or a fork child. For now,
@@ -4080,7 +3998,11 @@ async function performDestroy() {
       // host/src/node-kernel-worker-entry.ts.
       vmInterruptTimers.clear(pid, info);
       if (info.worker) {
-        await terminateThreadWorkers(pid);
+        await terminateThreadWorkers(
+          pid,
+          false,
+          THREADED_WORKER_TERMINATION_SETTLE_MS,
+        );
         await terminateTrackedWorker(info.worker);
       }
       externrefProcessOwner.releaseGeneration(info.externrefGeneration);

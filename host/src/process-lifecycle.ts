@@ -65,6 +65,12 @@ import type {
 } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
 import { ThreadPageAllocator } from "./thread-allocator";
+import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import {
+  waitForExecRetirement as waitForExecRetirementFence,
+  waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
+  type WorkerQuiescence,
+} from "./worker-quiescence";
 import type {
   VforkExactCompletionReason,
   VforkLifetimeCoordinator,
@@ -98,6 +104,37 @@ export interface VforkWorkspaceOwnership {
 export interface ProcessLifecycleInfo extends ProcessGenerationOwnership {
   channelOffset: number;
   vforkWorkspace?: VforkWorkspaceOwnership;
+  worker: LifecycleWorker;
+}
+
+/**
+ * The part of a host's worker handle this module uses.
+ *
+ * Both `worker-adapter.ts` handles satisfy it; what a terminated worker
+ * *proves* is the host difference, and that is declared separately as
+ * `terminationProvesQuiescence`.
+ */
+export interface LifecycleWorker {
+  terminate(): Promise<unknown>;
+}
+
+/**
+ * One thread worker of a multi-threaded process.
+ *
+ * `quiescent` records that the worker published a `memory_quiescent` fence.
+ * It is optional because a host whose `terminate()` is itself an ownership
+ * fence has no need to observe the message — see `terminationProvesQuiescence`
+ * — not because the concept is host-specific.
+ */
+export interface ThreadWorkerRecord<W extends LifecycleWorker> {
+  worker: W;
+  channelOffset: number;
+  tid: number;
+  basePage: number;
+  quiescent?: boolean;
+  workerQuiescence: WorkerQuiescence;
+  execRetirement: WorkerQuiescence;
+  termination?: Promise<void>;
 }
 
 /** The narrow slice of a host's outbound message union this module posts. */
@@ -237,6 +274,28 @@ export function formatError(err: unknown): string {
   }
   return String(err);
 }
+
+/** Resolve after `ms` milliseconds of real time (a macrotask, not a tick). */
+export function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * How long to wait for a process worker's `memory_quiescent` fence.
+ *
+ * Short: the timeout is not evidence that termination completed, it only
+ * bounds teardown latency. A worker that does not report in time is retired
+ * through the forced path instead of the exact one.
+ */
+export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
+
+/**
+ * How long to wait for an exec'd generation to publish its retirement.
+ *
+ * Long: unlike plain quiescence this is a handoff the replacement image is
+ * waiting on, so giving up early would hand out a backing that is still live.
+ */
+export const EXEC_WORKER_RETIREMENT_WAIT_MS = 5_000;
 
 /**
  * Acknowledge a kernel-completed thread exit.
@@ -482,6 +541,107 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     host.kernel().ptySetWinsize(ptyIdx, rows, cols);
   }
 
+  /**
+   * Workers we deliberately terminated — exec, exit, top-level destroy.
+   *
+   * A browser worker's synthesized "exit" event fires on `terminate()`
+   * indistinguishably from an unexpected death, so the crash detector consults
+   * this set to skip the deliberate cases.
+   */
+  const intentionallyTerminated = new WeakSet<object>();
+
+  /**
+   * Termination promises still in flight, including standalone thread-worker
+   * teardowns that outlive the process-map entry they came from.
+   *
+   * Anything that needs the realm to be quiescent — the rootfs export, above
+   * all — has to see these. Only the browser entry tracked them; on Node the
+   * teardown is usually awaited by its caller, but "usually" is not a
+   * guarantee an observer can rely on, so both hosts track them now.
+   */
+  const workerTeardowns = new Set<Promise<void>>();
+
+  /** Thread workers per PID, for cleanup. */
+  const threadWorkers = new Map<
+    number,
+    ThreadWorkerRecord<Info["worker"]>[]
+  >();
+
+  const threadExits = new ThreadExitCoordinator();
+
+  /**
+   * Terminate a worker we own, recording the teardown so observers can wait.
+   *
+   * `settleMs` buys time for a host whose `terminate()` proves nothing to let
+   * the worker actually stop; it is 0 where termination is itself a fence.
+   */
+  async function terminateTrackedWorker(
+    worker: Info["worker"],
+    settleMs = 0,
+  ): Promise<void> {
+    intentionallyTerminated.add(worker as object);
+    host.forkHostImportsByWorker.get(worker as object)?.close();
+    const teardown = (async () => {
+      await worker.terminate().catch(() => {});
+      if (settleMs > 0) await delay(settleMs);
+    })();
+    workerTeardowns.add(teardown);
+    void teardown.finally(() => workerTeardowns.delete(teardown));
+    await teardown;
+  }
+
+  function waitForWorkerQuiescence(
+    quiescence: WorkerQuiescence,
+  ): Promise<boolean> {
+    return waitForWorkerQuiescenceFence(
+      quiescence,
+      PROCESS_WORKER_QUIESCENCE_WAIT_MS,
+    );
+  }
+
+  function waitForExecRetirement(
+    retirement: WorkerQuiescence,
+    quiescence: WorkerQuiescence,
+  ): Promise<boolean> {
+    return waitForExecRetirementFence(
+      retirement,
+      quiescence,
+      EXEC_WORKER_RETIREMENT_WAIT_MS,
+    );
+  }
+
+  /**
+   * Tear down every thread worker of `pid`.
+   *
+   * Returns whether every thread published a real quiescence fence. A false
+   * result is not a failure — it says the caller must force-retire the address
+   * space rather than release it exactly.
+   */
+  async function terminateThreadWorkers(
+    pid: number,
+    requireExecRetirement = false,
+    settleMs = 0,
+  ): Promise<boolean> {
+    const threads = threadWorkers.get(pid);
+    if (!threads) return true;
+    threadWorkers.delete(pid);
+    const quiescence = await Promise.all(
+      threads.map((thread) =>
+        requireExecRetirement
+          ? waitForExecRetirement(thread.execRetirement, thread.workerQuiescence)
+          : waitForWorkerQuiescence(thread.workerQuiescence)),
+    );
+    const allQuiescent = quiescence.every(Boolean);
+    for (const thread of threads) {
+      intentionallyTerminated.add(thread.worker as object);
+    }
+    for (const t of threads) {
+      await (t.termination ?? terminateTrackedWorker(t.worker, settleMs));
+      threadExits.release(pid, t.channelOffset);
+    }
+    return allQuiescent;
+  }
+
   function respondTransferredBytes(requestId: number, result: Uint8Array): void {
     host.post(
       { type: "response", requestId, result },
@@ -649,6 +809,14 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     dispatchForkHostImport,
     handlePosixSpawnResolve,
     handlePtyResize,
+    intentionallyTerminated,
+    terminateThreadWorkers,
+    terminateTrackedWorker,
+    threadExits,
+    threadWorkers,
+    waitForExecRetirement,
+    waitForWorkerQuiescence,
+    workerTeardowns,
     handlePtyWrite,
     handleVmInterruptTimer,
     postForkModuleProof,

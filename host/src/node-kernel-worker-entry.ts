@@ -70,7 +70,6 @@ import type {
 } from "./exec-target";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
-import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   describeWasmArtifactPolicyFailures,
   detectPtrWidth,
@@ -98,8 +97,6 @@ import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
   type WorkerQuiescence,
-  waitForExecRetirement,
-  waitForWorkerQuiescence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
@@ -158,6 +155,7 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   bufferToArrayBuffer,
   createProcessLifecycle,
+  type ThreadWorkerRecord,
   formatError,
   handleThreadExit,
   signalFromExitStatus,
@@ -315,8 +313,6 @@ let sessionDir: string | null = null;
 // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
-const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
-const EXEC_WORKER_RETIREMENT_WAIT_MS = 5_000;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 // Process tracking
@@ -368,11 +364,6 @@ const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
-
-// Workers terminated by the kernel-worker entry itself (handleExit /
-// handleExec / handleTerminate). The crash safety-net listener checks
-// this set so it doesn't fire for our own teardown calls.
-const intentionallyTerminated = new WeakSet<object>();
 
 /**
  * Install a safety-net 'exit' listener on a process worker. If the wasm
@@ -514,56 +505,8 @@ function installProcessWorkerListeners(
 // Per-PID thread module cache: lazily compiled on first clone()
 const threadModuleCache = new Map<number, WebAssembly.Module>();
 
-// Thread workers per-PID for cleanup
-interface ThreadWorkerInfo {
-  worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-  channelOffset: number;
-  tid: number;
-  basePage: number;
-  workerQuiescence: WorkerQuiescence;
-  execRetirement: WorkerQuiescence;
-  termination?: Promise<void>;
-}
-const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
-const threadExits = new ThreadExitCoordinator();
 
-async function terminateTrackedWorker(
-  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
-): Promise<void> {
-  intentionallyTerminated.add(worker as object);
-  forkHostImportsByWorker.get(worker as object)?.close();
-  await worker.terminate().catch(() => {});
-}
 
-async function terminateThreadWorkers(
-  pid: number,
-  requireExecRetirement = false,
-): Promise<boolean> {
-  const threads = threadWorkers.get(pid);
-  if (!threads) return true;
-  threadWorkers.delete(pid);
-  const quiescence = await Promise.all(
-    threads.map((thread) =>
-      requireExecRetirement
-        ? waitForExecRetirement(
-            thread.execRetirement,
-            thread.workerQuiescence,
-            EXEC_WORKER_RETIREMENT_WAIT_MS,
-          )
-        : waitForWorkerQuiescence(
-            thread.workerQuiescence,
-            PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-          )),
-  );
-  for (const thread of threads) {
-    intentionallyTerminated.add(thread.worker as object);
-  }
-  for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadExits.release(pid, t.channelOffset);
-  }
-  return quiescence.every(Boolean);
-}
 
 function reportProcessExit(pid: number, status: number): void {
   if (reportedExits.has(pid)) return;
@@ -618,6 +561,14 @@ const {
   dispatchForkHostImport,
   handlePosixSpawnResolve,
   handlePtyResize,
+  intentionallyTerminated,
+  terminateThreadWorkers,
+  terminateTrackedWorker,
+  threadExits,
+  threadWorkers,
+  waitForExecRetirement,
+  waitForWorkerQuiescence,
+  workerTeardowns,
   readExecFromVfs,
   reportWorkerProtocolError,
   resolveExecutableForLaunch,
@@ -2423,7 +2374,6 @@ async function handleExec(
           ? waitForExecRetirement(
               initiatingInfo.execRetirement,
               initiatingInfo.workerQuiescence,
-              EXEC_WORKER_RETIREMENT_WAIT_MS,
             )
           : Promise.resolve(false),
         terminateThreadWorkers(pid, true),
@@ -3024,7 +2974,7 @@ async function handleClone(
   }
 
   let threadWorker: DeferredWorkerHandle;
-  let threadEntry: ThreadWorkerInfo;
+  let threadEntry: ThreadWorkerRecord<ProcessInfo["worker"]>;
   const forkHostImports = forkHostImportOwnerRuntime.createWorker({
     pid,
     generationId: processInfo.externrefGeneration.id,
@@ -3262,10 +3212,7 @@ async function finishProcessExit(
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
     const [workerQuiescent, threadsQuiescent] = await Promise.all([
-      waitForWorkerQuiescence(
-        info.workerQuiescence,
-        PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-      ),
+      waitForWorkerQuiescence(info.workerQuiescence),
       terminateThreadWorkers(pid),
     ]);
     const exactMemoryTeardown = workerQuiescent && threadsQuiescent;
@@ -3456,10 +3403,7 @@ async function performDestroy() {
     for (const [pid, info] of [...processes.entries()]) {
       vmInterruptTimers.clear(pid, info);
       const [workerQuiescent, threadsQuiescent] = await Promise.all([
-        waitForWorkerQuiescence(
-          info.workerQuiescence,
-          PROCESS_WORKER_QUIESCENCE_WAIT_MS,
-        ),
+        waitForWorkerQuiescence(info.workerQuiescence),
         terminateThreadWorkers(pid),
       ]);
       await terminateTrackedWorker(info.worker);
