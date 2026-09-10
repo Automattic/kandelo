@@ -1486,6 +1486,75 @@ the owner of the difference without being asked: the removal was to come from
 enum plus one shared body outweigh three deleted call bodies. **That is the
 correct trade and the ledger should show it as one.**
 
+## 2u. The phantom-mechanism audit — five instances, and it is a pattern (2026-09-10)
+
+Two doc comments describing blocking mechanisms the kernel does not use were
+found **by accident** on 2026-09-09, hours apart, in unrelated work. Two
+instances of one shape is a pattern, so the tree was swept deliberately. Three
+more turned up.
+
+**The shape:** a comment names a **host** authority — an import, an export, a
+"park" — that either does not exist or is never called, on a **blocking** path,
+where the **kernel** in fact owns the decision. The danger is not the wrong
+sentence. It is that someone modifying the code inherits a wrong model of who
+decides, and the wrong model always points the same way: *toward* the host.
+That is the exact direction this campaign is trying to travel away from.
+
+| # | Where | Claimed | Actual |
+|---|---|---|---|
+| 1 | `runtime-core/src/pshared.rs` *(fixed)* | kernel calls `kernel_wake_blocked_retries()` "rather than pure timer polling" | **No such export has ever existed.** pshared blocking *is* pure timer polling |
+| 2 | `shared/src/host_raw_syscalls.rs` *(fixed)* | `sigsuspend`/`pause` park via `host_sigsuspend_wait` | `sys_sigsuspend` registers a signal-mask wait and returns `EAGAIN`; its host parameter is named `_host` |
+| 3 | `kernel/src/wasm_api.rs:3382` | NULL mq timeout checked "via `host_is_mq_nonblock`" | **No such import exists** — one grep hit in the whole tree, the comment itself. `nonblock` is computed in-kernel from the mqueue table (`wasm_api.rs:6057`, `6065`, `6111`) |
+| 4 | `runtime-core/src/socket.rs:10-11` | `host_net_handle` is a host handle "returned by `host_net_connect`/`host_net_accept`" | **`host_net_accept` does not exist**, and `host_net_connect` returns `Result<(), Errno>` — no handle. The stored value is the kernel's own socket index (`syscalls.rs:13833`, `13839`) |
+| 5 | `kernel/src/wasm_api.rs:6247` | "See `crates/kernel/src/pshared.rs`" | That file does not exist; the module is `runtime-core/src/pshared.rs` — so the pointer also hides #1's GAP note |
+
+#3 and #4 are the harmful ones, and both are the pure pattern: an invented host
+authority over a decision the kernel already owns. #4 is worse than a wrong
+name — the field's entire refcount rationale rests on the false provenance,
+reading as "this is the host's handle, mind its lifetime" when the kernel minted
+the integer itself.
+
+**Routed to their owners** rather than fixed centrally: #3 and #5 to K9 (which
+owns `wasm_api.rs` this round and is auditing exactly this axis), #4 to K11
+(which owns `socket.rs` and is about to move the virtual-network registry into
+it). Both instructed to correct in place, not delete — the next reader should
+learn the real mechanism, not merely lose the wrong one.
+
+### What the audit verified as TRUE — which is the other half of its value
+
+- `wakeup.rs:1-6` drain-after-syscall and targeted/broad-retry routing:
+  `kernel_drain_wakeup_events` is a real export (`wasm_api.rs:14108`), called
+  from ~15 sites, and all five wake types are consumed
+  (`kernel-worker.ts:16139-16194`).
+- `wait_queue.rs` "Status: DORMANT" and `wait_shadow.rs` "host-side wiring not
+  in this commit" — **true**, and independently confirmed: one internal
+  reference, zero TS references. K3 described its own work accurately.
+- `wait_shadow.rs:29`'s "three safety timers (10 ms, 50 ms, 500 ms)" — all
+  three literals present.
+- `shared/lib.rs:83` "no longer require the `host_fcntl_lock` import" — a
+  correct **negative** claim, the hardest kind to keep true.
+- `host-native/src/lib.rs` `EXPECTED_HOST_IMPORT_COUNT = 83` — matches the built
+  binary exactly.
+
+### Imprecise but not wrong
+
+`wait_queue.rs:32` cites `kernel-worker.ts:3086-3090` for `ChannelInfo`-identity
+keying; the claim holds at line **3091**, stale line numbers only.
+`wait_queue.rs` says "seven independent parking mechanisms" at line 7 and "eight
+containers" at line 59 — internally inconsistent, worth reconciling when K3
+resumes.
+
+### The residue pattern, named
+
+`wasm_api.rs` declares **84** `host_*` imports in its `extern` block; the linked
+kernel has **83**. `host_debug_log` is declared there with no caller in that
+crate — its only call site is `runtime-core/src/lib.rs:79`, which declares its
+own — so the linker drops it. Not a doc bug, but **this is exactly the residue
+that let `host_futex_wait` survive for months as a documented floor**: a
+declaration with no caller looks like a live contract to every reader and to
+every grep that searches for names rather than call forms. Any future import
+census must count the **linked** surface, not the declared one.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
