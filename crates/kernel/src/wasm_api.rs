@@ -4443,9 +4443,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             0
         } // SYS_EXIT (thread exit)
         387 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT_GROUP (process exit)
+            kernel_exit_group(a1);
+        } // SYS_EXIT_GROUP (process exit, every thread)
         35 => kernel_kill(a1, a2 as u32), // SYS_KILL
         38 => kernel_raise(a1 as u32),    // SYS_RAISE
 
@@ -9962,11 +9961,30 @@ fn current_task_is_thread_worker(proc: &Process) -> bool {
 /// arbitrary recoverable WebAssembly exception. Both exported entry points
 /// share this exact transition so their cleanup and task-binding lifetime
 /// cannot drift.
-fn commit_current_task_exit(status: i32) -> i32 {
+/// Which POSIX exit was asked for.
+///
+/// WHY this is a parameter rather than something inferred from the caller:
+/// `exit_group(2)` terminates **every** thread in the process no matter which
+/// thread invokes it, while `exit(2)` terminates only the calling thread. That
+/// is a property of the *syscall*, not of the task. Deciding it from
+/// `current_task_is_thread_worker` instead silently downgrades an
+/// `exit_group` issued by a non-main thread into a thread exit, leaving the
+/// process `Running` with an exit status recorded and no thread to publish it.
+/// libc's `exit()` and `_exit()` both route to `exit_group`, so that is the
+/// ordinary path for any threaded program, not a corner case.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExitScope {
+    /// `SYS_EXIT` — retire the calling task only, unless it is the leader.
+    Task,
+    /// `SYS_EXIT_GROUP` — retire the whole process, whoever is calling.
+    ProcessGroup,
+}
+
+fn commit_current_task_exit(status: i32, scope: ExitScope) -> i32 {
     let committed_status;
     {
         let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        if current_task_is_thread_worker(proc) {
+        if scope == ExitScope::Task && current_task_is_thread_worker(proc) {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the guest import traps after
             // the host completes its exit-channel handshake.
@@ -9993,14 +10011,29 @@ fn commit_current_task_exit(status: i32) -> i32 {
 /// publishing lifecycle effects.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_commit_process_exit(status: i32) -> i32 {
-    commit_current_task_exit(status)
+    commit_current_task_exit(status, ExitScope::Task)
+}
+
+/// Host-adapter boundary for `exit_group(2)`, which retires the whole process
+/// no matter which thread called it.
+///
+/// The host cannot express this through [`kernel_commit_process_exit`],
+/// because that one asks whether the *calling task* is a thread worker. When a
+/// non-main thread calls `exit()` — libc routes that to `exit_group` — the
+/// task-scoped answer records an exit status but leaves the process `Running`,
+/// and the host's own `kernel_get_process_state` check then correctly refuses
+/// to publish the exit. The host knows which syscall it intercepted, so it
+/// states the scope rather than letting the kernel infer it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_commit_process_group_exit(status: i32) -> i32 {
+    commit_current_task_exit(status, ExitScope::ProcessGroup)
 }
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 /// For thread workers, just sets exit_status without destroying shared state.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) -> ! {
-    let _ = commit_current_task_exit(status);
+    let _ = commit_current_task_exit(status, ExitScope::Task);
     // Halt execution — musl's _exit loops forever if we just return.
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     unsafe {
@@ -10008,6 +10041,25 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
     }
     #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
     unreachable!("kernel_exit should not return");
+}
+
+/// `exit_group(2)`: terminate the whole process, whichever thread calls it.
+///
+/// Distinct from [`kernel_exit`] only in scope, and that distinction is the
+/// whole point: routing `SYS_EXIT_GROUP` through the task-scoped path leaves a
+/// process `Running` after a non-main thread calls `exit()`, which is what
+/// `host/test/pthread.test.ts`'s "preserves exit(0) from a non-main thread
+/// while the main thread is blocked" observes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exit_group(status: i32) -> ! {
+    let _ = commit_current_task_exit(status, ExitScope::ProcessGroup);
+    // Halt execution — musl's _exit loops forever if we just return.
+    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+    unsafe {
+        core::hint::unreachable_unchecked();
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+    unreachable!("kernel_exit_group should not return");
 }
 
 // ---------------------------------------------------------------------------

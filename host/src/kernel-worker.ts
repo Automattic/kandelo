@@ -24807,11 +24807,21 @@ export class CentralizedKernelWorker {
     // mutated kernel. Rust clears the exact task binding before this returns.
     this.#bindKernelTidForChannel(channel, entry);
     const exitExports = this.#kernelInstanceForEntry(entry).exports;
-    const commitProcessExit = exitExports.kernel_commit_process_exit as
+    // POSIX: `exit_group(2)` retires every thread whoever calls it, while
+    // `exit(2)` retires only the calling task. That is a property of the
+    // syscall, not of the caller, and the host is the side that knows which
+    // one arrived — so it names the scope instead of letting the kernel guess
+    // from whether the calling task happens to be a thread worker. Guessing
+    // left a process `Running` whenever a non-main thread called `exit()`,
+    // which libc routes to `exit_group`.
+    const commitExportName = syscallNr === SYS_EXIT_GROUP
+      ? "kernel_commit_process_group_exit"
+      : "kernel_commit_process_exit";
+    const commitProcessExit = exitExports[commitExportName] as
       ((status: number) => number) | undefined;
     if (!commitProcessExit) {
       throw new KernelExitCommitProtocolError(
-        "Kernel missing required kernel_commit_process_exit export",
+        `Kernel missing required ${commitExportName} export`,
       );
     }
     let committedStatus: number;
