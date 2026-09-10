@@ -93,6 +93,20 @@ pub trait GuestMemory {
     }
 }
 
+/// So a shim can borrow its memory rather than own it, which is what the
+/// tests need in order to inspect the buffer while the shim is alive.
+impl<T: GuestMemory + ?Sized> GuestMemory for &T {
+    fn size(&self) -> u64 {
+        (**self).size()
+    }
+    fn read(&self, addr: u64, out: &mut [u8]) -> MemResult<()> {
+        (**self).read(addr, out)
+    }
+    fn write(&self, addr: u64, src: &[u8]) -> MemResult<()> {
+        (**self).write(addr, src)
+    }
+}
+
 /// A wasm32 iovec / ciovec: `{ buf: u32, buf_len: u32 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoVec {
