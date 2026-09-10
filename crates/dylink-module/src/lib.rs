@@ -414,6 +414,21 @@ pub extern "C" fn dl_discard(token: u32) {
     }
 }
 
+/// Has `token`'s drive loop reached `Finished`?
+///
+/// A transaction whose staged initializer is still outstanding is not a FAILED
+/// transaction — it is one the guest has not finished driving. Committing it
+/// early is a misuse the caller must be able to distinguish from a load that
+/// cannot complete, because rolling back on that mistake would destroy a
+/// `dlopen` that was going to succeed.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_finished(token: u32) -> i32 {
+    match session().as_ref() {
+        Some(state) => i32::from(state.is_finished(token)),
+        None => 0,
+    }
+}
+
 /// Is `token` a live transaction?
 ///
 /// The driver's own `Map` of pending tokens is gone: this is the authority, and

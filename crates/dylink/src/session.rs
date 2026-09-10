@@ -233,6 +233,27 @@ impl Session {
         self.transactions.contains_key(&token)
     }
 
+    /// Has `token`'s drive loop reached `Finished`?
+    ///
+    /// A transaction whose staged initializer is still outstanding is not a
+    /// FAILED transaction — it is one the guest has not finished driving, and
+    /// committing it early is a misuse the caller must be able to distinguish
+    /// from a load that cannot complete. Rolling it back on that mistake would
+    /// destroy a `dlopen` that was going to succeed.
+    pub fn is_finished(&self, token: u32) -> bool {
+        match self.transactions.get(&token) {
+            Some(transaction) => match &transaction.flow {
+                Flow::Load(load) => load.finished,
+                Flow::Sym(sym) => sym.finished,
+                Flow::Close(close) => close.finished,
+                Flow::Sync(sync) => sync.finished,
+                Flow::Read(read) => read.finished,
+                Flow::RollingBack(queue) => queue.is_empty(),
+            },
+            None => false,
+        }
+    }
+
     /// Live transaction tokens, oldest first.
     pub fn tokens(&self) -> Vec<u32> {
         self.transactions.keys().copied().collect()

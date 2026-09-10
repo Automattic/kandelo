@@ -325,8 +325,21 @@ export class DylinkLoader {
     return handle > 0 ? { entry: 0, handle } : { entry: -1, handle: 0 };
   }
 
-  /** Commit a fully initialized closure and return its stable handle. */
+  /**
+   * Commit a fully initialized closure and return its stable handle.
+   *
+   * Zero means one of two different things, and they must not be conflated.
+   * A transaction whose staged initializer is still outstanding is NOT a failed
+   * load: the guest has not finished driving it, and rolling it back on that
+   * mistake would destroy a `dlopen` that was going to succeed. So the misuse
+   * returns zero and leaves the transaction — and the process loader lease —
+   * exactly where they were. Only a load that cannot complete is rolled back.
+   */
   commit(token: number): number {
+    if (!this.#session.finished(token)) {
+      this.#error = "staged dlopen committed before initialization completed";
+      return 0;
+    }
     try {
       const handle = this.#session.openFinish(token);
       this.#releaseStagedSlot(token);

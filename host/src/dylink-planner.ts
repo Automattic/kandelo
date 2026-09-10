@@ -99,6 +99,7 @@ interface PlannerExports {
   readonly dl_abort: (token: number) => number;
   readonly dl_discard: (token: number) => void;
   readonly dl_pending: (token: number) => number;
+  readonly dl_finished: (token: number) => number;
   readonly dl_note_staged_slot: (token: number, tableIndex: bigint) => number;
   readonly dl_plan_instance: (token: number) => bigint;
   readonly dl_plan_memory_base: (token: number) => bigint;
@@ -285,6 +286,18 @@ export class PlannerSession {
   /** Is `token` a live transaction? */
   pending(token: number): boolean {
     return this.#exports.dl_pending(token) === 1;
+  }
+
+  /**
+   * Has `token`'s drive loop reached `finished`?
+   *
+   * A transaction whose staged initializer is still outstanding is not a FAILED
+   * transaction — it is one the guest has not finished driving. Committing it
+   * early is a misuse, and rolling back on that mistake would destroy a
+   * `dlopen` that was going to succeed.
+   */
+  finished(token: number): boolean {
+    return this.#exports.dl_finished(token) === 1;
   }
 
   /**

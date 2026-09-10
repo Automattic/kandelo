@@ -9,6 +9,29 @@ import {
   CH_SYSCALL,
 } from "../src/generated/abi";
 import { buildDlopenImports } from "../src/worker-main";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * The dynamic-linking planner module these imports drive.
+ *
+ * `buildDlopenImports` refuses to create a loader without it, deliberately: a
+ * process that silently loaded nothing would fail much later, inside a side
+ * module's own code. So this suite compiles the same artifact a process worker
+ * is handed.
+ */
+const PLANNER_WASM = [
+  join(REPO_ROOT, "local-binaries", "dylink_module32.wasm"),
+  join(REPO_ROOT, "host", "wasm", "dylink_module32.wasm"),
+  join(REPO_ROOT, "binaries", "dylink_module32.wasm"),
+].find(existsSync);
+
+const plannerModule = PLANNER_WASM
+  ? new WebAssembly.Module(readFileSync(PLANNER_WASM))
+  : undefined;
 
 type WasmPointer = number | bigint;
 
@@ -73,7 +96,14 @@ function createImports(ptrWidth: 4 | 8): {
     ptrWidth,
     undefined,
     undefined,
-    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    1,
+    "copied",
+    plannerModule,
   );
   const pointer = (value: number): WasmPointer => ptrWidth === 8 ? BigInt(value) : value;
 
@@ -116,6 +146,7 @@ describe("dlopen host import pointer widths", () => {
       undefined,
       2,
       "borrowed",
+      plannerModule,
     );
     const controlBefore = new Uint8Array(
       new Uint8Array(memory.buffer, archiveControlAddr - 32, 32),
@@ -235,7 +266,14 @@ describe("dlopen host import pointer widths", () => {
       4,
       undefined,
       undefined,
-      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1,
+      "copied",
+      plannerModule,
     );
     const prepare = support.imports
       .__wasm_dlopen_prepare as DlopenPrepareImport;
