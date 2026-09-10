@@ -4266,6 +4266,14 @@ async function performDestroy() {
   // rebuilds (e.g. iframe reload) and leak.
   const retireCurrentGenerations = async (): Promise<void> => {
     for (const [pid, info] of [...processes.entries()]) {
+      // Disarm before the backing is released. `fire()` guards only on
+      // generation identity, which still matches until the detach below
+      // unregisters this pid, so a timer left armed across termination and
+      // `releaseAfterForcedTermination()` can `Atomics.store` into memory the
+      // host has already handed back. The trailing `clearAll()` is too late
+      // for that window. Mirrors `retireCurrentGenerations` in
+      // host/src/node-kernel-worker-entry.ts.
+      vmInterruptTimers.clear(pid, info);
       if (info.worker) {
         await terminateThreadWorkers(pid);
         await terminateTrackedWorker(info.worker);

@@ -2981,8 +2981,15 @@ async function handleExec(
           pid,
           generation: replacementGeneration,
           operation: replacementRegistered ? "deactivate" : "none",
-          // A non-transferred DeferredWorker was never started, so this
-          // replacement still has exact single-realm ownership.
+          // Exact release is correct here because `terminateTrackedWorker()`
+          // above has already awaited `Worker.terminate()`, which on Node is a
+          // genuine ownership fence: a thread parked in `Atomics.wait` does
+          // not resume once it resolves. It is NOT correct because the
+          // replacement "was never started" — `preparedTransferred` is set
+          // after `DeferredWorkerHandle.start()`, so a start may well have
+          // happened. The browser entry must keep force-retiring on this path:
+          // its `Worker.terminate()` returns no completion signal and proves
+          // nothing.
           retire: (commit) => {
             prepared.memoryLease.release();
             commit();
