@@ -40,6 +40,13 @@
 //! guest fixture cannot easily reach.
 
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
+// The channel handshake blocks on `memory_atomic_wait32` and wakes the kernel
+// worker with `memory_atomic_notify`. Both intrinsics are still behind this
+// gate (rust-lang/rust#77839); the host build compiles them out entirely.
+#![cfg_attr(
+    any(target_arch = "wasm32", target_arch = "wasm64"),
+    feature(stdarch_wasm_atomic_wait)
+)]
 
 pub mod channel;
 pub mod mem;
