@@ -50,7 +50,6 @@ pub mod scratch_alloc;
 pub mod sffs;
 pub mod signal;
 pub mod socket;
-pub mod socket_wire;
 pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
