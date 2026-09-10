@@ -976,6 +976,103 @@ not — so the probe is the thing that decides whether K4b is affordable at all.
 - Still needing detail: whether the three incomplete kernel seams get their own
   K-number, and the browser conformance runners that are wired into nothing.
 
+### K4b entry gate — the async/one-import probe RAN, and it PASSES (2026-09-09)
+
+§2l made K4b's affordability a **named gate, not a someday**: the probe runs
+before K4a is called done. It has now run. Both halves of NDD-2 are answered.
+
+#### Result: the control inversion works
+
+A 220-line `#![no_std]` Rust `cdylib` compiled to `wasm32-unknown-unknown` —
+**2,017 bytes, `env.memory` as its only import, zero function imports, 8
+exports** — drove a two-`await` `CREATE_WORKER → AWAIT_FENCE →
+RELEASE_LEASE` transaction from a Node harness using real `worker_threads`
+Workers and a real `memory_quiescent` message fence. The harness also
+simulated the reentrancy gate by **refusing the first delivery of every step
+result**, forcing the pump to retry on a later turn.
+
+```
+A/commit  : CREATE_WORKER -> AWAIT_FENCE -> RELEASE_LEASE_EXACT -> DONE
+            RUST OUTCOME: COMMITTED   HOST LEASE: exact
+B/rollback: CREATE_WORKER -> AWAIT_FENCE -> TERMINATE_WORKER -> RELEASE_LEASE_FORCED -> DONE
+            RUST OUTCOME: ROLLED_BACK HOST LEASE: forced
+PROBE RESULT: PASS
+```
+
+Rust chose the compensating steps; the host never decided sequence. Two
+enablers made it work, and both are already how the TS hosts behave: driver
+state lives in a `static` so nothing is borrowed across an await, and step-id
+matching rejects a stale continuation (returning −1) — which is exactly what
+host-side `generation` staleness checking does today.
+
+**So asynchrony is not the blocker §4.2 feared.** The `fork-module`
+precedent transfers further than the grounding was willing to claim.
+
+#### The archaeology corrects the grounding, and clears K4b
+
+§4.2's warning — *"this seam was already cut once and abandoned"* — rests on
+a misreading, and re-testing it was worthwhile. `kernel_is_fork_child` /
+`kernel_get_fork_exec_path` are **guest→host imports declared by musl's CRT**
+(`libc/musl-overlay/src/env/__libc_start_main.c:112-179`), and
+`worker-main.ts:495-506` is the *process worker's import table for the
+guest*. It is not a host consumer of a kernel export, so **it is not the K4b
+seam at all.**
+
+Its death is also not evidence against K4b. `345f55de7` introduced it;
+`90d5de3b2` moved the choreography out of the guest into the host;
+`13fecc4d7`/`9ed1ac268` made the guest's `kernel` imports stubs once the
+kernel moved to another worker; `7d6c71f3b` (#167) states it outright — the
+actions were *"silently no-op'd by centralized mode's catch-all kernel import
+stub"*; and `8939ca1c9` (#81) made the question obsolete when continuation
+fork stopped re-running `_start`. **Killed by a worker-boundary refactor and
+then superseded — never by asynchrony.**
+
+Residual: the six getters plus `fork_child_exec()` are still called by
+`__libc_start_main.c` and permanently stubbed to `0` on both hosts. Dead
+ABI-declared guest imports; worth their own cleanup.
+
+#### The honest V4 price
+
+Measured, not asserted. `handleExec` (browser, 2768–3259) has **14 `await`
+points and 3 rollback regions; all 14 classify as host-pumped** — none needs
+Rust-side borrowed state, and none is unencodable, because the JS objects
+(Worker, Memory, Module, lease) stay behind opaque `u32` handles.
+
+A command list needs **≈12 host concepts**: compile-module, alloc-lease,
+release-exact, release-forced, create-worker, start-worker, terminate-worker,
+await-fence, post-to-main, release-framebuffer-generation, externref
+generation replace/release, fork-host-imports create/close. **None is new** —
+each exists today as an internal TS API. The real cost is that ~12 become
+**ABI-frozen opcodes**.
+
+Against that, what K4b actually deletes (VERIFIED at `4cc15a99b`, where
+`generation` has grown to **319** browser / **271** node occurrences, up from
+the grounding's 251/221):
+
+| concept | verdict |
+|---|---|
+| generation-as-staleness-token (~33 of 93 identifier uses) | **DELETABLE** — kernel-owned step ids subsume it; the probe demonstrated it |
+| `externrefGeneration` (37 uses) | **SURVIVES** — externref identity is the campaign's proven engine floor |
+| exact-vs-forced lease retirement | **SURVIVES** as two opcodes; `process-memory.ts` (1,357 lines) is untouched — Rust cannot hold a `WebAssembly.Memory` |
+| `memory_quiescent` fence | **SURVIVES intact** — published by the *process* worker (`worker-entry{,-browser}.ts`); the kernel worker only consumes it |
+
+**So K4b deletes duplication and the staleness token — not the
+Worker-ownership model.** §6.3's central finding survives the probe: the
+fence requirement is intrinsic to the asynchronous Worker model, not to
+TypeScript. On concept count K4b is roughly a **wash**; its win is V1 and V2.
+
+#### Decision
+
+- **K4b is affordable. The STRONG DOUBT is relaxed, not lifted.**
+- **K4a-then-K4b staging still stands.** The probe does not make it
+  unnecessary: it removes the fear that K4b is impossible, while K4a's
+  "one algorithm to port instead of two that disagree" is unaffected.
+- **K4b gets a second gate, and it is browser-shaped.** Unproven: the pump
+  running inside `browser-kernel-worker-entry.ts`, and reentrancy under real
+  concurrent syscall dispatch rather than a simulated refusal. Settling it
+  means running the same two scenarios against a live kernel with a real
+  `handleExec` in flight — about a day. **K4b must not start before that.**
+
 ### K4 drift adjudication — the four bug-shaped drifts (2026-09-09, VERIFIED)
 
 The four drifts were adjudicated on POSIX and on measured host behaviour, not
