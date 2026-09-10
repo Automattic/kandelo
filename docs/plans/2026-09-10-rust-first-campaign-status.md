@@ -2635,7 +2635,7 @@ keep their row so they are not re-opened.
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
-| B5 | **DONE 2026-09-10** | Piece 3 cut over (TS -100 / Rust +626). Pieces 2 and 4 are immovable and the grounding named the wrong blocker for both. Delivered anyway: a 3,556-line dead TLS backend deleted, and a live duplicate-`Content-Length` defect fixed by framing HTTP once. Four NDDs raised. See "B5 — K11 device pieces 2, 3 and 4" |
+| B5 | **DONE 2026-09-10** | Piece 3 cut over (TS -100 / Rust +626). Pieces 2 and 4 are immovable and the grounding named the wrong blocker for both. Delivered anyway: a 3,556-line dead TLS backend deleted, a live duplicate-`Content-Length` defect fixed by framing HTTP once, and a legal-but-refused unaligned float payload accepted. Measured total TS/JS **-3,584**. Four NDDs raised. See "B5 — K11 device pieces 2, 3 and 4" |
 | B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll host mirror. **No longer gated — B7 is done.** See "B7 — epoll OFD ownership" for what the mirror now contradicts. Highest-value unblocked delete on this list |
 | B7 | **epoll fork inheritance + OFD keying** | **CLOSED 2026-09-10.** Verified, not assumed. Caveat recorded: unit-tested, not conformance-validated |
 | B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
@@ -3431,6 +3431,17 @@ change (the cmdbuf is shared memory, validated in place); what differs is that
 a torn record surfaces as `EIO` from a throwing typed-array construction
 rather than `EINVAL` from a host-side re-check. Not a memory-safety boundary.
 
+**And deliberately not moved: the alignment check.** The deleted table also
+refused any float payload whose byte offset was not 4-aligned, because
+`new Float32Array(buffer, byteOffset, n)` throws on one. That is a property of
+one host language, not of the wire contract — the guest encoder packs records
+with no padding (`OP_SHADER_SOURCE` is `8 + strlen(src)`), so misaligned float
+tails are *legal output*. The kernel therefore does not check alignment, and
+`cda085292` makes the host read such a payload by copying instead of viewing.
+Before that pair, a program that uploaded a shader source of non-multiple-of-4
+length and set a matrix uniform in the same command buffer lost the whole
+submission to `EINVAL`.
+
 ### Piece 2 — framebuffer input: NOT MOVABLE, and the grounding's line list is stale
 
 Two corrections to `docs/plans/2026-09-09-rust-first-value-plan.md` §2q.
@@ -3564,14 +3575,26 @@ next. **NDD-K11-4.**
 
 ### Ledger
 
-| | TS | Rust |
-|---|---|---|
-| Piece 3 cutover | **−100** (−105 production) | +626 |
-| Dead Node TLS backend | **−3,556** | — |
-| HTTP framing dedup | **−58** | — |
-| **Total** | **−3,714** | **+626** |
+Measured with `git diff --numstat`, not estimated. `.ts`/`.tsx`/`.js` on the
+left, `.rs` on the right; documentation commits excluded.
 
-Host import count verified at **75**, unchanged.
+| Commit | TS/JS | Rust |
+|---|---|---|
+| `c69a133a3` piece 3 cutover | **−100** (+39 / −139) | +626 |
+| `ae5f5b867` dead Node TLS backend | **−3,556** (+0 / −3,556) | — |
+| `5d45bd160` HTTP framing deduped | **+8** (+205 / −197) | — |
+| `cda085292` unaligned float payloads | **+64** (+74 / −10) | — |
+| **Total** | **−3,584** | **+626** |
+
+Two rows are honestly positive and should not be dressed down. The framing
+dedup removes 197 lines of duplicated implementation and puts back a 141-line
+shared module — most of that a doc comment explaining why the code is host code
+and what the drift cost — plus a regression test. The alignment fix is a bug
+fix with a test, not a migration. Both were found *while* doing B5 and belong
+to it; neither is ledger progress.
+
+Host import count verified at **75**, unchanged. `abi/snapshot.json` unchanged;
+`scripts/check-abi-version.sh` reports the snapshot in sync with sources.
 
 ### What was run, and what was not
 
