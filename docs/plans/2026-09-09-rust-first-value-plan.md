@@ -639,6 +639,7 @@ Rust **206,833**.
 | K1 KLZY | 526 | 36 | **+490** | +777 | dual-write writer; **deletion owed by K1 step 5** |
 | K10 WASI | 24 | 0 | **+24** | +5,702 | Rust module added; **deletion owed by K10 I6** (`wasi-shim.ts`, 1,625) |
 | **Tier 1 total** | **579** | **217** | **+362** | **+6,677** | aggregate: TS 150,623 · Rust 213,510 |
+| K5 I1 `crates/dylink` | 0 | 0 | **+0** | +7,271 | pure planner, wired to nothing; 4,918 production + 2,353 test; **deletion owed by K5 I7** |
 
 ### Outstanding deletion debt
 
@@ -648,7 +649,7 @@ Rust **206,833**.
 | **K10 I6** | `host/src/wasi-shim.ts`, 1,625 | fixtures cannot exercise a real wasi-libc guest (§2h) |
 | **K5 I7** | `host/src/dylink.ts` + `dylink-fork-archive.ts`, **6,340** | the Rust planner landed first; executors and native `dlopen` follow (§2p) |
 
-Both deferrals were correct. Neither is done until the owner item lands.
+All three deferrals were correct. None is done until the owner item lands.
 
 ## 2j. K5 grounding — outcomes and decisions (2026-09-09)
 
@@ -744,6 +745,77 @@ the opposite risk too: `intl.so`'s 2,469 Global constructions could regress.
 **Native `dlopen` ≈ 650-900 lines** over the pure core, no wasmtime wall, no ABI
 bump, no new host capability — so the V1 prize (host-native gains `dlopen`,
 which it has never had) is real and affordable.
+
+### K5 I1 — LANDED (2026-09-09)
+
+`crates/dylink`, 4,918 production lines plus 2,353 of tests (72 passing),
+`no_std` on wasm and native, wired to nothing. `host/src/dylink.ts` still drives
+every load on every host. TS net **+0**; the deletion is owed by I7 and recorded
+in §2i.
+
+**Shape as decided in D3.** `LinkAct` is the eight act kinds as data, with
+`LinkAct::Instantiate` carrying `Vec<ImportBinding>` — exactly one entry per
+import declaration, in declaration order, duplicates preserved and the
+second-and-later occurrence flagged. `ImportPlan::bind` enforces the invariant
+by construction (a declaration pushed out of position is an error) and
+`ImportPlan::validate_against` re-checks a finished list against the module's
+import section. One `PlanStep::Host` variant carries the work that is NOT a
+JS-API act — `SYS_MMAP` allocation, mapping adoption, activation
+prepare/register/unregister, and the table-mutation journal — so the executor
+contract stays honest about what belongs to the engine and what belongs to the
+process.
+
+**`dylink_archive.rs` is WIRED, not duplicated.** `ReplayInputs::from_archive`
+consumes `DylinkModule` and `PendingTransaction::from_archive` consumes
+`DylinkTransaction`. The 1,318-line decoder has callers for the first time.
+
+**D4 RESOLVED: strong + unresolved fails the load; weak + unresolved is zero.**
+Decided on ELF, as required. Four points, in `crates/dylink/src/got.rs`'s module
+docs: `RTLD_LAZY` defers only PLT relocations, never data ones; lazy binding
+never produces NULL even for functions, because the PLT slot points at the
+resolver, which raises `symbol lookup error`; a wasm `GOT.func` cell is not a
+PLT slot but an address-take, i.e. a `GLOB_DAT` data relocation resolved eagerly
+under every mode, and the wasm ABI has no PLT and no resolver stub, so wasm
+dynamic linking is `RTLD_NOW` by construction; and the single ELF case in which
+zero is correct is `STB_WEAK` + `SHN_UNDEF`. Per K10's defect shape,
+`UnresolvedPolicy::LegacyZero` pins the old behaviour for I2's differential
+harness to name what changed. No product path selects it.
+
+> **Why the current loader could not make that distinction, and it is a
+> one-line answer.** `dylink.ts` parses `WASM_DYLINK_FLAG_WEAK` into
+> `metadata.weakImports` and then **never reads it**. The only three occurrences
+> in the whole repository are the field declaration (`:131`), its initialization
+> (`:293`) and its one `add` (`:337`). Having discarded strong-vs-weak, the
+> loader had no choice but to apply weak semantics to everything. This is the
+> same failure mode §2k names — a contract fact asserted without checking the
+> artifact — one level down: a flag parsed without checking that anything
+> consumes it.
+
+**Two further defects fixed in the port**, both found by writing the fixtures
+rather than by reading:
+
+1. `dylink.0`'s import-info record encodes `(module, field, flags)`.
+   `dylink.ts:334-340` reads the module into `_module` and discards it, keying
+   the weak set on `field` alone — so `env.foo`, `GOT.mem.foo` and `GOT.func.foo`
+   share one entry and a weak declaration on any of them marks all three weak.
+   The port keys on the pair the section encodes.
+2. An element-segment offset encoded as a negative `i32.const` was
+   reinterpreted by wrapping. A table index is unsigned, so `-1` became
+   4294967295. It is now rejected.
+
+**D5 unchanged and unclaimed.** The function→table-index map is keyed on
+`(instance, export name)` — the identity wasm itself assigns — populated from
+the main image's element segments, each side module's published exports, and any
+slot the loader appends. No scan and no identity comparison, because the planner
+holds no engine objects. **No performance claim is made and none may be made
+before I6's before/after measurement on Node and browser.**
+
+**What I1 does NOT include**, so the next agent does not have to re-derive it:
+the three executors, native `dlopen` (I4), the KFLA encoder (I3), the
+differential harness (I2), the dlopen reader/writer lock's offsets (I5), and
+`dlsym`/`dlclose`'s transitive unload walk, which needs the executor to null
+table slots. `HandleTable` has the two counts and their lifetime rules; the walk
+that consumes them is I6's.
 
 ## 2k. K14 + K9 grounding — outcomes and decisions (2026-09-09)
 
