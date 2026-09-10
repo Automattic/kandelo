@@ -1797,6 +1797,7 @@ impl LinkPlan {
         }
         let library = LoadedLibrary {
             name: self.request.name.clone(),
+            module_bytes: self.request.module_bytes.clone(),
             instance: self.instance,
             metadata: self.metadata.clone(),
             memory_base: self.memory_base,

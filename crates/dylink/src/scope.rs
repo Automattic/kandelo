@@ -134,6 +134,15 @@ pub struct ResolvedSymbol {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedLibrary {
     pub name: String,
+    /// The immutable `.so` image this object was linked from.
+    ///
+    /// Retained because a fork child has to RE-LINK every live object from the
+    /// same bytes: the archive record carries the image, and a child that had
+    /// only the parent's layout could not reconstruct the module. The loader
+    /// already keeps this alive for the object's lifetime (`dylink.ts` stores
+    /// it on `LoadedSharedLibrary.moduleBytes` for the same reason), so this
+    /// moves an existing lifetime rather than adding one.
+    pub module_bytes: Vec<u8>,
     pub instance: InstanceId,
     pub metadata: DylinkMetadata,
     pub memory_base: u64,
