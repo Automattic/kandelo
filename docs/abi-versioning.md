@@ -895,6 +895,121 @@ host or guest may link against. It is recorded here so that a later reader can
 tell which names ceased to exist in this epoch rather than inferring it from a
 snapshot diff.
 
+- **The handle-only host filesystem contract.** The kernel stopped asking the
+  host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
+  removed and ten directory-relative `*at` replacements added, taking the built
+  artifact's host import surface from **83 to 75**. Details below.
+
+#### The handle-only host filesystem contract (ABI 44 epoch)
+
+This is an incompatible change to the host adapter surface, folded into 44
+because 44 is unreleased, and recorded here because a snapshot diff shows
+*which names moved* but not *what the contract now means*.
+
+**Removed (18):** `host_access`, `host_open`, `host_stat`, `host_lstat`,
+`host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`, `host_unlink`,
+`host_rename`, `host_link`, `host_symlink`, `host_readlink`, `host_chmod`,
+`host_chown`, `host_lchown`, `host_opendir`, `host_closedir`.
+
+**Added (10):** `host_openat`, `host_fstatat`, `host_mkdirat`,
+`host_unlinkat`, `host_renameat`, `host_linkat`, `host_symlinkat`,
+`host_readlinkat`, `host_fchmodat`, `host_fchownat`.
+
+**Reshaped in place (1):** `host_utimensat` now takes a directory handle, one
+path component, and `AT_*` flags.
+
+**Unchanged, but re-filed under a different concept (6):** `host_fstat`,
+`host_fstatfs`, `host_fpathconf`, `host_fchmod`, `host_fchown`,
+`host_readdir`. These were already handle-shaped. `host_fstatfs` and
+`host_fpathconf` absorb the path-taking `host_statfs` and `host_pathconf`,
+because both answer a property of the *filesystem*, which the kernel now
+reaches through a directory handle on that filesystem.
+
+**The invariant a host must now satisfy:** *resolve at most one path
+component, relative to a directory handle you previously issued.* A host never
+receives a guest path, a mount prefix, a `..`, or a symlink chain. It also
+never receives two kinds of handle: `host_openat(..., O_DIRECTORY)` issues a
+directory handle that `host_readdir` iterates and `host_close` releases, which
+is why `host_opendir`/`host_closedir` are gone rather than renamed.
+
+**Why the count did not reach zero.** `mkdir`, `unlink`, `rename`, `link`, and
+`symlink` name an entry that does not yet exist or is about to stop existing;
+there is no handle for it. `lstat`, `lchown`, and an `AT_SYMLINK_NOFOLLOW`
+`utimensat` name an entry the host must *not* open, because opening a symlink
+follows it. No host API escapes this, and POSIX concedes the same point — the
+`*at` family exists precisely because the final component is irreducible. The
+honest description of the change is not "no names" but **no name resolution**.
+
+**The count is the wrong unit for what changed.** 83 → 75 understates it. The
+whole family is now an **optional capability** — "expose a real host
+directory" — reachable only under a mount the host published a root handle
+for. A host that exposes no host-backed directory implements *none* of the
+eleven, and the kernel calls none of them, because no guest path can reach a
+mount that does not exist. Before this change, every host had to implement a
+POSIX filesystem namespace in its own language — mount routing, symlink
+resolution, `..`, permission semantics — and keep it consistent with the
+kernel's. That was mandatory, and it was the largest single concept in the
+host contract.
+
+#### `kernel_rootfs_set_foreign_mount_roots` (ABI 44 epoch)
+
+A NEW export beside `kernel_rootfs_set_foreign_prefixes`. It attaches a host
+directory handle to each host-backed mount, giving the kernel the anchor its
+per-component walks start from. Every existing export keeps its kind,
+signature, and semantics, so under the additive rule above this needs no
+`ABI_VERSION` bump.
+
+Its payload is a sequence of self-describing records: an 8-byte little-endian
+`i64` handle, the mount's canonical guest path, and a NUL. A record naming `/`
+means the host serves the root itself rather than sibling mounts beneath an
+overlay-owned `/`; it anchors every path no longer-prefixed record claims.
+
+Two decisions are worth recording because both had a plausible alternative:
+
+1. **Records carry their prefix rather than relying on position.** A parallel
+   array of handles, ordered to match the prefix list, was the obvious cheaper
+   payload. It is unsound here: `VirtualPlatformIO` sorts its mounts by prefix
+   length, so the host's own mount table and the prefix list published through
+   `kernel_rootfs_set_foreign_prefixes` are provably *not* the same ordering. A
+   positional payload would have bound two orderings that differ.
+2. **A new export rather than an extension of the existing one.** Extending
+   `kernel_rootfs_set_foreign_prefixes`'s payload under its existing signature
+   would be exactly the class of change the snapshot cannot catch — a semantic
+   reinterpretation with an unchanged signature. A new export with a new
+   signature is visible to the ABI gate. It also puts the publication in the
+   host component that owns the directory-handle table.
+
+The anchor registry is independent of the foreign-prefix registry. The two
+answer different questions — *which paths are host-owned* versus *which host
+directory anchors a path* — so coupling them would impose a publication order
+on the host for no gain.
+
+**A kernel built before this export gets no anchors**, and therefore has no
+host directory capability at all. That is a truthful boundary, not something to
+paper over: kernel and hosts ship together from this repository and
+`verify-fresh` catches a stale pairing.
+
+#### The snapshot cannot see the import change (as of this epoch)
+
+Worth stating plainly, because a reader diffing `abi/snapshot.json` across this
+change will see **only** the new export and could reasonably conclude nothing
+else moved.
+
+`abi/snapshot.json` records the kernel's *exports*; it has no section for its
+*imports*. So eighteen removed and ten added `env.host_*` names — the whole
+substance of the handle-only contract — produce no snapshot diff at all. The
+evidence for that half of the change is `EXPECTED_HOST_IMPORT_COUNT` in
+`crates/host-native/src/lib.rs`, which is asserted against the freshly built
+artifact by `smoke_loads_real_kernel_and_reads_abi`, plus the changelog comment
+that constant carries.
+
+That is a real gap in the gate, not a property of this change. Import polarity
+is the reverse of export polarity: *adding* an import is breaking, because an
+older host cannot satisfy it, while *removing* one is compatible. Recording the
+import section would therefore make any future host-import **addition** fail the
+ABI gate mechanically, instead of depending on a reviewer noticing. That work is
+tracked separately; until it lands, count the artifact.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the

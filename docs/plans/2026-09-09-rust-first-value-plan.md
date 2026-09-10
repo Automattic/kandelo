@@ -2013,6 +2013,98 @@ behind it.
    `cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh`.
    Recorded in `docs/future-improvements.md`.
 
+## 2t. K9 — LANDED: the host contract is 75, and the file-name family is optional (2026-09-10)
+
+**Measured, not asserted.** A freshly built kernel declares **75** `env.host_*`
+imports, down from **83**. Eighteen names removed, ten added, one reshaped in
+place, six kept and re-filed. Counted from `wasm-objdump` on the artifact
+before and after.
+
+### The grounding's arithmetic was wrong, in our favour and against it
+
+§2k said "25 imports in → **9** out … net **84 → 68**". Both halves are off:
+
+- The nine names are the *newly added* ones. The 25 also leave behind
+  `host_utimensat` (reshaped, not removed) and six already-handle-shaped
+  imports (`host_fstat`, `host_fstatfs`, `host_fpathconf`, `host_fchmod`,
+  `host_fchown`, `host_readdir`). So the family is 16, not 9, and the net is
+  −9, not −16. "84 → 68" conflated "9 new names" with "9 total".
+- The baseline was 83 by the time K9 started (K3 increment 0b had removed two).
+
+Corrected and measured: **83 − 18 + 10 = 75.**
+
+### A tenth `*at` was added deliberately, correcting the grounding
+
+§2.2 gave `chown` an `fchownat` (because `lchown` forces one) but gave `chmod`
+an "open, then `fchmod`". That asymmetry had no stated reason, and open-then-
+`fchmod` is not equivalent to `chmod`: `open(O_RDONLY)` fails `EACCES` on a
+file the caller owns but cannot read — which `chmod(2)` must still permit — and
+blocks indefinitely on a FIFO with no writer. `host_fchmodat` costs one import
+and preserves both. **Generic-first: a path no shipped package exercises is
+still a path.**
+
+### A gap in the protocol as specified
+
+§3.1 established that host filesystem reach is only ever a *foreign mount*
+beneath an overlay-owned `/`. True of `VirtualPlatformIO` — but not of
+`NodePlatformIO`, which serves `/` itself when no rootfs image is supplied.
+With no foreign mount there would have been no anchor, and every path would
+have answered `ENOSYS`: a whole host mode silently broken. An anchor for `/` is
+therefore part of the protocol.
+
+### Where the mount roots ride (NEEDS-DEFER-DECISION #6, decided)
+
+Not on `kernel_rootfs_set_foreign_prefixes`. Two reasons, one of them a hard
+constraint:
+
+1. **Position is unsound.** `VirtualPlatformIO` sorts its mounts by prefix
+   length (`vfs.ts`), so the host's mount table and the prefix list published
+   by `kernel-worker.ts` are provably *not* the same ordering. Any parallel-
+   array or index-band scheme would bind two orderings that differ. Records
+   carry their prefix instead.
+2. **The one-seam route required editing `host/src/kernel-worker.ts`**, which
+   K7 owns this round. §7 #6 explicitly declined to decide and argued only from
+   seam count; a cross-agent conflict in the campaign's largest file outweighs
+   that. A *new* export also has a new signature, so the ABI gate sees it —
+   which is what §7 #6 worried a payload reinterpretation would not.
+
+The anchor registry is independent of the foreign-prefix registry: they answer
+different questions, and coupling them imposed a publication order for no gain.
+
+### What actually changed, stated honestly
+
+The count understates it. The file-name family went from **mandatory for every
+host** to an **optional capability** — "expose a real host directory" —
+reachable only under a mount whose root handle the host published. A browser
+host implements zero of the eleven after K8. What a host used to have to
+implement was: *reimplement a POSIX filesystem namespace in your own language,
+including symlink resolution, `..`, mount routing, and permission semantics,
+and keep it consistent with the kernel's.* That was the largest single concept
+in the contract.
+
+**It cannot be zero imports.** `mkdir`, `unlink`, `rename`, `link`, `symlink`
+name an entry that does not exist yet or is about to stop existing; `lstat`,
+`lchown`, and a `NOFOLLOW` `utimensat` name an entry the host must not open.
+POSIX concedes the same point — the `*at` family exists because the final
+component is irreducible. The honest framing is **no name resolution**, not
+"no names".
+
+### Cost this introduces, stated rather than hidden
+
+Resolving a foreign path now walks its components with `host_openat`, opening
+and closing intermediate directory handles. The host was already re-walking the
+whole path on every call (longest-prefix routing, then a backend that re-splits
+the string), so the work is not new — but it is now several host calls where it
+was one, and that has **not been benchmarked**. It is unreachable in the
+browser (no host-backed mount) and reachable on Node only under `--mount`.
+
+### Two latent handle collisions this exposed
+
+Both pre-existing, both made live by one `host_close` serving directories too:
+`VirtualPlatformIO` numbered files from 100 and directories from 1, and
+`NodePlatformIO` returns real OS descriptors as file handles while numbering
+directories from 1 — so a directory handle could already be confused with
+*stdout*.
 ## 2t. K12 — the twelfth disproved claim, and this one was mine, today (2026-09-09)
 
 Worktree `.claude/worktrees/agent-a4b7423970fe02e78`, base `4874238a8`, tip
@@ -2586,9 +2678,13 @@ gated on measurement.** K7's cutover must benchmark before adding it.
 
 The unit is *concepts a host author must implement*, not import count.
 
+*(Updated 2026-09-10 when K9 landed. The "now" column was measured against
+the built artifact at the time of writing; K9's row is measured against the
+artifact today.)*
+
 | concept | now | target | why the target is right |
 |---|---|---|---|
-| file **names** + metadata | **25** | **0** | the host must open a file; it must never resolve a name. Rust already resolves namespace paths (`syscalls.rs:2075`) |
+| file **names** + metadata | **DONE: 0 mandatory + 11 optional** (was 25) | 0 mandatory | the host must open a file; it must never resolve a name. Rust resolves namespace paths and steps the host one component at a time (`crates/runtime-core/src/hostdir.rs`). See §2t |
 | graphics / audio devices | 23 | ~8 | real device surface; GL already has a command buffer (`gl_submit`), KMS/GBM/framebuffer can converge on attach + submit + query |
 | sockets | 12 | ~6 | byte ops on a host socket; `getaddrinfo` can become a Rust resolver over a host UDP socket |
 | file **bytes** on a handle | 10 | ~6 | genuine floor; `host_append`/`host_append_position` are an O_APPEND shim that disappears when the kernel owns the file |
@@ -2600,7 +2696,7 @@ The unit is *concepts a host author must implement*, not import count.
 | guest invocation | 1 | 1 | calling a guest export is host-side |
 | host process wait | 1 | 0–1 | native only; meaningless in a browser |
 | diagnostics | 1 | 1 | raw byte sink |
-| **total** | **85** | **≈31** | ~8 of which are device surface |
+| **total** | **75** *(83 before K9; 85 was the declared count, never the linked one)* | **≈30 mandatory + ~11 optional** | ~8 of which are device surface |
 
 ## 5. Work items ranked by value
 
@@ -2624,7 +2720,7 @@ census. "Serves" lists the values each item advances.
 | **K5** *(COMPLETE, §2p)* | **Dynamic linker → Rust** (`dylink*.ts` 6,340 + `worker-main.ts` pieces) | **V1**, **V2**, V4 | A full `ld.so` in TS. Host-native has no linker at all, so this *gains* native `dlopen` rather than relocating it. Also removes hand-maintained wasm32/wasm64 offset pairs and TS wasm binary rewriting |
 | **K3** *(0a/1/2 landed, §2q)* | **Blocking scheduler → Rust** (~4,500 lines, 21 state containers) | V1, **V2**, V4 | Keystone: signals, IPC blocking, and process-wait all collapse into it. Removes the epoll mirror. Highest risk in the campaign — every historical hang lives here |
 | **K8** *(incr 1 landed, §2r)* | **VFS runtime authority → Rust** (~12,000 lines) | **V3**, V1, V2 | Retires `memory-fs.ts`/`sharedfs-vendor.ts` as readers; in-kernel shmfs for `/dev/shm`; drops the image ABI stamp. Completes V3 |
-| **K9** | **Handle-only host contract** — remove all 25 name-taking imports | **V4** | The largest single V4 movement, in both count and concept |
+| **K9** *(COMPLETE, §2t)* | **Handle-only host contract** — the 25 name-taking imports become 0 mandatory + 11 optional | **V4** | The largest single V4 movement, in both count and concept |
 
 ### Tier 3 — mechanical once their enablers land
 

@@ -2873,6 +2873,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_set_foreign_mount_roots",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_set_foreign_prefixes",
       "signature": "(i32,i32) -> (i32)"
     },
