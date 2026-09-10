@@ -2169,9 +2169,9 @@ are gone. Every `dlopen`, `dlsym`, `dlclose` and fork replay in a Kandelo
 process is planned by `crates/dylink` and performed by a driver that makes no
 linker decision.
 
-**In-scope TypeScript for this item: −4,314**, measured
-`5ba896788..e1722458d`. The campaign figure moves from −693 to roughly
-−5,007.
+**In-scope TypeScript for this item: −4,229**, measured
+`5ba896788..f95a404ca` (Rust +5,191, of which +1,823 is test). The campaign
+figure moves from −693 to roughly −4,922.
 
 ### The six contracts, and how each is exercised
 
@@ -2184,10 +2184,10 @@ linker decision.
 | fork reconcile | `fork_reconcile_begin`/`_finish` | a child rebuilds a parent's closure at the parent's addresses with the parent's handles |
 | `dlclose` unload | `dl_close_begin`/`dl_close_result` | slots nulled, mapping released, global scope rebuilt; a dependency outlives its consumer only until the consumer is gone |
 
-### Six MORE contracts the six did not name
+### Eight MORE contracts the six did not name
 
 The previous agent's finding was right in kind and short in count. Closing
-the six exposed six more, each verified against a call site:
+the six exposed eight more, each verified against a call site:
 
 7. **The archive's record chain could not be read by the module at all.** It
    imports nothing, so guest memory is unreachable from inside it.
@@ -2214,6 +2214,21 @@ the six exposed six more, each verified against a call site:
     rebuilds the interrupted object under the PARENT's token, stopping at
     the call the parent was suspended in and acknowledging every earlier
     staged call WITHOUT invoking it.
+13. **A process that links nothing still publishes the archive.** Funcref
+    table patches are captured from a live `WebAssembly.Table` before they
+    are published, so a capture carries no generation — the fence value
+    belongs to the publication, and the format requires patch generations
+    strictly increasing and no greater than the header's. Left at zero, the
+    whole publication was unencodable, and a process with no
+    `__indirect_function_table` was additionally refused for having no main
+    image. Both are fixed; the session numbers each unassigned patch.
+14. **Linear memory is observed, not configured.** The bound an allocation is
+    checked against changes under the loader: guest code grows memory between
+    loads, and the process allocator grows it to satisfy the very mapping
+    being checked. The driver now reports what memory measures after every
+    step it performs, immediately before the answer reaches the planner —
+    an observation, not a decision. Without it the legacy two-argument
+    loader's late load was refused as "allocation escapes linear memory".
 
 ### One defect that was blocking the whole branch
 
@@ -2228,46 +2243,34 @@ applying the rule `crates/wasm-artifact` already applies — an artifact is
 Asyncify-instrumented when it EXPORTS `asyncify_*` — which also retires the
 duplicated authority.
 
-### NEEDS-DEFER-DECISION — NDD-K5-2
+### NDD-K5-2 — closed
 
-**What:** the ABI-43 legacy two-argument `__wasm_dlopen`, lowered by the SDK
-to the staged protocol, when a constructor forks.
+The deferral raised against the ABI-43 legacy two-argument `env.__wasm_dlopen`
+is withdrawn: the path is green.
 
-**Status of the rest of contract 12.** Restoring an in-flight staged
-transaction in a fork child IS done: `fork_reconcile_begin` rebuilds the
-interrupted object under the PARENT's token with `resume_at` naming the call
-to stop at, and every earlier staged call is acknowledged without being
-invoked — the rule `advanceWithoutGuestCalls` (`dylink.ts:2981-3013`)
-encodes, which settles the question the planner's own `runs_stage` comment
-poses. "replays a fork issued while dlopen runs a side-module constructor"
-passes on that.
+The `(null)` `dlerror()` was a red herring — the SDK-lowered stub is not
+libc's `dlopen`, so it never populates `dl_error_buf`, and the guest-visible
+diagnostic could not say what failed. The real failure was contract 14 above:
+`dl_resume: dlopen:<ptr>:<len>: allocation escapes linear memory`. This path
+loads its side module late, from bytes the program itself read into a heap
+that had already grown, so it was the first caller to sit past the memory
+size the loader had captured at construction.
 
-**What is still red:** "lowers the original two-argument loader before a
-constructor can fork". `__wasm_dlopen_prepare` succeeds and returns a token;
-the guest's `legacy_open` then reports handle 0 and its `dlerror()` is
-`(null)`. The null is explained: the rewritten stub is not libc's `dlopen`,
-so it never populates `dl_error_buf` — which also means the guest-visible
-diagnostic cannot say what failed. Worker stderr from that path is lost when
-the worker is torn down, so the next step is a diagnostic that survives the
-teardown rather than more `console.error`.
+Contract 12 (restoring an in-flight staged transaction in a fork child) is
+also done: `fork_reconcile_begin` rebuilds the interrupted object under the
+PARENT's token with `resume_at` naming the call to stop at, and every earlier
+staged call is acknowledged without being invoked — the rule
+`advanceWithoutGuestCalls` (`dylink.ts:2981-3013`) encodes.
 
-**Cost now:** unknown, and deliberately not guessed at — this is the ONE
-path whose failure mode is not yet understood, and every other one in this
-item was fixed only after it was.
-
-**Cost later:** one test, on the ABI-43 compatibility path.
-
-**Recommendation:** treat as a bug against the cutover, not a design gap.
-The two-argument import is a documented compatibility boundary and the
-staged path it lowers to is otherwise green, including the same
-fork-during-constructor case reached through the ABI-43 import.
+There is no NEEDS-DEFER-DECISION open against this item.
 
 ### What was measured
 
 The `dlopen` suite, in the dev shell against a freshness-verified kernel and
-a rebuilt planner module: **33 passed / 3 failed / 1 skipped of 37.** Two of
-the three are the tracked pre-existing pthread `__wpk_fork_frame_reserve`
-gap (73fd6763f); one is NDD-K5-2.
+a rebuilt planner module: **34 passed / 2 failed / 1 skipped of 37.** Both
+failures are the tracked pre-existing pthread `__wpk_fork_frame_reserve` gap
+(73fd6763f) — "replays pthread-hosted dlopen table state into a fresh fork
+child" and "blocks a foreign pthread until the staged loader owner commits".
 
 **On the recorded `118 executed` baseline.** That count included
 `host/test/dylink.test.ts` (77 cases) and `host/test/dylink-fork-archive.test.ts`
@@ -2276,8 +2279,19 @@ suite's composition changed; quoting 37 against 118 without saying so would
 be comparing two different things.
 
 `cargo test -p dylink -p dylink-module -p fork-codec -p runtime-core
---target aarch64-apple-darwin`: **2,501 passed, 0 failed.**
+--target aarch64-apple-darwin`: **2,503 passed, 0 failed.**
 `cargo check` clean on wasm32 and on wasm64 (`-Z build-std=core,alloc`).
+`scripts/xtask.sh verify-fresh`: clean, including the co-resident
+`dylink-module` projection gate.
+
+**What could not be run, and why.** `./run.sh setup` fails at `php/wasm32`
+(configure cannot find ICU through `pkg-config`), which blocks the four
+products downstream of it and, with them, the aggregate projection
+finalizer. That failure predates this item and is unrelated to it; the
+projection was re-finalized through `xtask bootstrap browser-main-shell`,
+which the engine merges into the aggregate rather than truncating it. The
+browser demo's fourth-registration check needs an app boot that fails on
+php (ICU) and wget (TLS) for the same reason.
 
 **Coverage this traded.** `host/test/dylink.test.ts` (3,265) and
 `host/test/dylink-fork-archive.test.ts` (492) tested the deleted
