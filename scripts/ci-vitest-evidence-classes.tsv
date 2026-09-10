@@ -302,7 +302,7 @@ host/test/virtual-network-e2e.test.ts	prepared-product
 host/test/virtual-network.test.ts	source-only
 host/test/vm-interrupt-timer.test.ts	source-only
 host/test/wait-lifecycle-guest.test.ts	prepared-product
-host/test/wasi-shim.test.ts	prepared-product
+host/test/wasi-module.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product

@@ -1,5 +1,15 @@
 //! The co-resident WASI Preview 1 side module.
 //!
+//! ## Note on the `wasi-shim.ts` references throughout this crate
+//!
+//! Doc comments here cite `host/src/wasi-shim.ts` with line numbers. That file
+//! was the TypeScript WASI implementation this crate replaced, and it was
+//! DELETED when the cutover landed (K10 I6). The citations are historical
+//! provenance for a ported decision, not live pointers: read the file at
+//! commit `c45e73d3d`. They are kept rather than stripped because "this
+//! mirrors what the old code did here, and here is exactly where" is the only
+//! record of why several of these choices are shaped the way they are.
+//!
 //! `WasiShim` is **guest-side**: it runs in the process worker, on the guest's
 //! own linear memory, and is wired as the guest's `wasi_snapshot_preview1`
 //! import namespace (`host/src/worker-main.ts:3291-3341`). So its Rust home is
