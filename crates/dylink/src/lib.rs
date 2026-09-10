@@ -80,6 +80,7 @@
 extern crate alloc;
 
 pub mod act;
+pub mod archive;
 pub mod error;
 pub mod got;
 pub mod handles;

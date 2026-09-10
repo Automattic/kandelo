@@ -42,12 +42,15 @@ use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use fork_codec::dylink_archive::{
-    DylinkArchive, DylinkInitialization, DylinkInitializationStage, DylinkModule, DylinkTransaction,
-};
 use fork_codec::dylink_archive::encode::dylink_module_template_digest;
+use fork_codec::dylink_archive::walk::ArchiveWalk;
+use fork_codec::dylink_archive::{
+    DylinkArchive, DylinkInitialization, DylinkInitializationStage, DylinkModule, DylinkTablePatch,
+    DylinkTransaction,
+};
 
 use crate::act::{ActResult, InstanceId, LinkAct, TableValue};
+use crate::archive::{next_generation, ArchiveState, SyncFlow};
 use crate::error::{DylinkError, DylinkResult};
 use crate::got::refresh_shared_cells;
 use crate::handles::{CloseOutcome, HandleTable, MAIN_PROGRAM_HANDLE};
@@ -91,6 +94,10 @@ enum Awaiting {
     SessionDone,
     /// A `GrowTable` the session emitted for `dlsym`.
     SessionIndex,
+    /// An `AllocateArchive` the archive planner emitted.
+    SessionAllocate,
+    /// A `ReadArchive` range the archive walker asked for.
+    SessionBytes,
 }
 
 /// One object being resolved and linked inside a transaction.
@@ -149,10 +156,20 @@ struct CloseFlow {
     finished: bool,
 }
 
+/// Walking the process archive's record chain, one fetched range at a time.
+struct ReadFlow {
+    walk: ArchiveWalk,
+    finished: bool,
+}
+
 enum Flow {
     Load(LoadFlow),
     Sym(SymFlow),
     Close(CloseFlow),
+    /// Publishing the loader's state into the process archive.
+    Sync(SyncFlow),
+    /// Reading the process archive back out of guest memory.
+    Read(ReadFlow),
     /// A transaction that failed and is draining its rollback through the same
     /// drive loop.
     RollingBack(VecDeque<PlanStep>),
@@ -175,6 +192,15 @@ pub struct Session {
     resolved_paths: BTreeMap<String, String>,
     /// Replay inputs for a fork reconcile in progress.
     replay_modules: BTreeMap<String, ReplayModule>,
+    /// What this process has published into guest memory, and where.
+    published: ArchiveState,
+    /// The archive the last [`Session::archive_read_begin`] decoded.
+    archive: Option<DylinkArchive>,
+    /// Funcref table patches the activation coordinator has handed over, which
+    /// ride in the same record chain and are published with it.
+    table_patches: Vec<DylinkTablePatch>,
+    table_state_root: u64,
+    table_checkpoint_generation: u64,
 }
 
 impl Session {
@@ -186,6 +212,11 @@ impl Session {
             next_token: 1,
             resolved_paths: BTreeMap::new(),
             replay_modules: BTreeMap::new(),
+            published: ArchiveState::default(),
+            archive: None,
+            table_patches: Vec::new(),
+            table_state_root: 0,
+            table_checkpoint_generation: 0,
         }
     }
 
@@ -349,7 +380,10 @@ impl Session {
                     self.plan_release(name, &mut steps)?;
                 }
             }
-            Flow::Sym(_) | Flow::Close(_) => {}
+            // A query or an unload has taken nothing it can give back, and an
+            // archive transaction abandoned before its generation was published
+            // left the previous image reachable and complete.
+            Flow::Sym(_) | Flow::Close(_) | Flow::Read(_) | Flow::Sync(_) => {}
             Flow::RollingBack(queue) => steps = queue,
         }
         let transaction = self.transaction(token)?;
@@ -677,6 +711,23 @@ impl Session {
                 close.finished = true;
                 Ok(Advance::Finished)
             }
+            Flow::Sync(sync) => Ok(match sync.step()? {
+                Some((step, allocating)) => Advance::Emit(
+                    step,
+                    if allocating { Awaiting::SessionAllocate } else { Awaiting::SessionDone },
+                ),
+                None => Advance::Finished,
+            }),
+            Flow::Read(read) => Ok(match read.walk.next_range() {
+                Some((address, length)) => Advance::Emit(
+                    PlanStep::Host(HostRequest::ReadArchive { address, length }),
+                    Awaiting::SessionBytes,
+                ),
+                None => {
+                    read.finished = true;
+                    Advance::Finished
+                }
+            }),
             Flow::Load(load) => self.advance_load(load),
         }
     }
@@ -795,6 +846,27 @@ impl Session {
     fn accept(&mut self, awaiting: Awaiting, flow: &mut Flow, result: ActResult) -> DylinkResult<()> {
         match awaiting {
             Awaiting::SessionDone => result.expect_done(),
+            Awaiting::SessionAllocate => {
+                let address = result.expect_index()?;
+                let Flow::Sync(sync) = flow else {
+                    return Err(DylinkError::UnexpectedActSequence);
+                };
+                sync.accept_allocation(address)
+            }
+            Awaiting::SessionBytes => {
+                let bytes = result
+                    .expect_bytes()?
+                    // A range the walker asked for is one the archive's own
+                    // pointers named. "Not there" is a corrupt archive, not a
+                    // miss to try somewhere else.
+                    .ok_or(DylinkError::MalformedModule("archive range is unreadable"))?;
+                let Flow::Read(read) = flow else {
+                    return Err(DylinkError::UnexpectedActSequence);
+                };
+                read.walk
+                    .supply(bytes)
+                    .map_err(|_| DylinkError::MalformedModule("malformed process archive"))
+            }
             Awaiting::SessionIndex => {
                 let index = result.expect_index()?;
                 let Flow::Sym(sym) = flow else {
@@ -1134,6 +1206,149 @@ impl Session {
         self.handles.rebuild_dependency_edges(edges)?;
         self.replay_modules.clear();
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // The archive in guest memory
+    // -----------------------------------------------------------------------
+
+    /// Read the process archive whose header is at `head`.
+    ///
+    /// `head` of zero is a process that has never published, which decodes to
+    /// nothing rather than to an error.
+    pub fn archive_read_begin(&mut self, head: u64) -> DylinkResult<u32> {
+        let token = self.allocate_token()?;
+        let pointer_width = u8::try_from(self.linker.config.pointer_width.bytes())
+            .map_err(|_| DylinkError::MalformedModule("invalid pointer width"))?;
+        let walk = ArchiveWalk::new(head, pointer_width, self.linker.config.memory_bytes);
+        self.transactions.insert(
+            token,
+            Transaction {
+                awaiting: None,
+                flow: Flow::Read(ReadFlow { walk, finished: false }),
+            },
+        );
+        Ok(token)
+    }
+
+    /// Decode what the read walked, and keep it as this session's view of the
+    /// process archive. Consumes the transaction.
+    pub fn archive_read_finish(&mut self, token: u32) -> DylinkResult<()> {
+        let transaction = self
+            .transactions
+            .remove(&token)
+            .ok_or(DylinkError::UnknownTransaction { token })?;
+        let Flow::Read(read) = transaction.flow else {
+            return Err(DylinkError::UnexpectedActSequence);
+        };
+        if !read.finished {
+            return Err(DylinkError::UnexpectedActSequence);
+        }
+        self.archive = read
+            .walk
+            .finish()
+            .map_err(|_| DylinkError::MalformedModule("malformed process archive"))?;
+        Ok(())
+    }
+
+    /// Publish the loader's current state into the process archive.
+    pub fn archive_sync_begin(&mut self) -> DylinkResult<u32> {
+        let token = self.allocate_token()?;
+        let mut desired = self.fork_state()?;
+        desired.generation = next_generation(self.published.generation)?;
+        desired.table_state_root = self.table_state_root;
+        desired.table_checkpoint_generation = self.table_checkpoint_generation;
+        desired.table_patches = self.table_patches.clone();
+        let flow = SyncFlow::plan(&self.published, desired)?;
+        self.transactions
+            .insert(token, Transaction { awaiting: None, flow: Flow::Sync(flow) });
+        Ok(token)
+    }
+
+    /// The head address and generation the driver must publish, once the sync's
+    /// drive loop has drained. Consumes the transaction and adopts its state as
+    /// the baseline the next publication diffs against.
+    pub fn archive_sync_finish(&mut self, token: u32) -> DylinkResult<(u64, u64)> {
+        let transaction = self
+            .transactions
+            .remove(&token)
+            .ok_or(DylinkError::UnknownTransaction { token })?;
+        let Flow::Sync(flow) = transaction.flow else {
+            return Err(DylinkError::UnexpectedActSequence);
+        };
+        let published = flow.published()?;
+        self.published = flow.committed()?;
+        Ok(published)
+    }
+
+    /// The archive the last [`Session::archive_read_begin`] decoded.
+    pub fn decoded_archive(&self) -> Option<&DylinkArchive> {
+        self.archive.as_ref()
+    }
+
+    /// Does the decoded archive describe a process that ever loaded anything?
+    pub fn archive_is_empty(&self) -> bool {
+        match &self.archive {
+            Some(archive) => archive.modules.is_empty() && archive.transactions.is_empty(),
+            None => true,
+        }
+    }
+
+    /// The generation of the decoded archive, or zero when there is none.
+    pub fn archive_generation(&self) -> u64 {
+        self.archive
+            .as_ref()
+            .map(|archive| archive.generation)
+            .unwrap_or(0)
+    }
+
+    /// Begin a reconcile against the decoded archive.
+    ///
+    /// The `&DylinkArchive` form is what a native host calls; this one is for a
+    /// driver that had the module read the archive out of guest memory in the
+    /// first place, and would otherwise have to carry a second copy of it.
+    pub fn reconcile_decoded_begin(&mut self, ownership: MemoryOwnership) -> DylinkResult<u32> {
+        let archive = self
+            .archive
+            .clone()
+            .ok_or(DylinkError::MalformedModule("no archive has been read"))?;
+        self.fork_reconcile_begin(&archive, ownership)
+    }
+
+    /// Adopt the decoded archive's handle table.
+    pub fn reconcile_decoded_finish(&mut self, token: u32) -> DylinkResult<()> {
+        let archive = self
+            .archive
+            .clone()
+            .ok_or(DylinkError::MalformedModule("no archive has been read"))?;
+        // A child adopting a parent's archive inherits its record addresses
+        // too: the next publication must diff against what is actually in
+        // memory, not start as though nothing had ever been written.
+        self.fork_reconcile_finish(token, &archive)
+    }
+
+    /// Hand the activation coordinator's funcref table patches to the archive.
+    ///
+    /// They are not loader state, but they ride in the same record chain and
+    /// under the same generation fence, so publishing them is publishing the
+    /// archive.
+    pub fn set_table_patches(&mut self, patches: Vec<DylinkTablePatch>) {
+        self.table_patches = patches;
+    }
+
+    /// Seal a typed table snapshot. Patches published before a checkpoint are
+    /// superseded by it, so they are dropped rather than carried forward.
+    pub fn set_table_state_root(&mut self, root: u64) -> DylinkResult<()> {
+        self.table_state_root = root;
+        self.table_checkpoint_generation = next_generation(self.published.generation)?;
+        self.table_patches.clear();
+        Ok(())
+    }
+
+    /// The archive state this process has published, for a child that adopted
+    /// the parent's records and must diff against them.
+    pub fn adopt_published(&mut self, state: ArchiveState) {
+        self.published = state;
     }
 
     /// A module a peer already rebuilt must agree with the archive record.

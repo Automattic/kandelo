@@ -724,10 +724,34 @@ fn put_host_request(w: &mut Writer, request: &HostRequest) -> DylinkResult<()> {
             w.str(library)?;
             w.str(path)?;
         }
-        HostRequest::WriteArchive { address, bytes } => {
+        HostRequest::ReadArchive { address, length } => {
             w.u8(8);
             w.u64(*address);
+            w.u64(*length);
+        }
+        HostRequest::AllocateArchive { size } => {
+            w.u8(9);
+            w.u64(*size);
+        }
+        HostRequest::WriteArchive { address, bytes } => {
+            w.u8(10);
+            w.u64(*address);
             w.blob(bytes)?;
+        }
+        HostRequest::PublishGeneration { address, generation } => {
+            w.u8(11);
+            w.u64(*address);
+            w.u64(*generation);
+        }
+        HostRequest::ReleaseArchive { address, size } => {
+            w.u8(12);
+            w.u64(*address);
+            w.u64(*size);
+        }
+        HostRequest::SavedGotFunc { library, symbol } => {
+            w.u8(13);
+            w.str(library)?;
+            w.str(symbol)?;
         }
     }
     Ok(())
@@ -773,9 +797,26 @@ fn get_host_request(r: &mut Reader<'_>) -> DylinkResult<HostRequest> {
             library: r.str()?,
             path: r.str()?,
         },
-        8 => HostRequest::WriteArchive {
+        8 => HostRequest::ReadArchive {
+            address: r.u64()?,
+            length: r.u64()?,
+        },
+        9 => HostRequest::AllocateArchive { size: r.u64()? },
+        10 => HostRequest::WriteArchive {
             address: r.u64()?,
             bytes: r.blob()?,
+        },
+        11 => HostRequest::PublishGeneration {
+            address: r.u64()?,
+            generation: r.u64()?,
+        },
+        12 => HostRequest::ReleaseArchive {
+            address: r.u64()?,
+            size: r.u64()?,
+        },
+        13 => HostRequest::SavedGotFunc {
+            library: r.str()?,
+            symbol: r.str()?,
         },
         _ => return Err(malformed("unknown wire host request")),
     })
@@ -1014,6 +1055,88 @@ fn get_unresolved_policy(r: &mut Reader<'_>) -> DylinkResult<UnresolvedPolicy> {
         1 => Ok(UnresolvedPolicy::LegacyZero),
         _ => Err(malformed("unknown wire unresolved policy")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Table patches
+// ---------------------------------------------------------------------------
+//
+// Funcref table patches are the activation coordinator's, not the linker's, but
+// they ride in the same archive record chain and under the same generation
+// fence. They cross this boundary because the coordinator is on the driver side
+// and the record layout is on this one.
+
+const MIN_TABLE_PATCH_BYTES: usize = 4 + 4 + 8 + 8 + 4;
+const MIN_TABLE_PATCH_RUN_BYTES: usize = 8 + 1;
+
+/// Encode the patch list an archive publication must carry.
+pub fn encode_table_patches(
+    patches: &[fork_codec::dylink_archive::DylinkTablePatch],
+) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    w.len_prefix(patches.len())?;
+    for patch in patches {
+        // The generation is assigned by the publication, not by the caller, so
+        // it is deliberately not carried: a caller-chosen fence value could
+        // claim to be newer than the archive it lands in.
+        w.u32(patch.activation_id);
+        w.u32(patch.owner_id);
+        w.u64(patch.start);
+        w.u64(patch.table_length);
+        w.len_prefix(patch.runs.len())?;
+        for run in &patch.runs {
+            w.u64(run.length);
+            match run.function {
+                Some(function) => {
+                    w.bool(true);
+                    w.u32(function.activation_id);
+                    w.u32(function.ordinal);
+                }
+                None => w.bool(false),
+            }
+        }
+    }
+    Ok(w.into_bytes())
+}
+
+/// Decode a patch list.
+pub fn decode_table_patches(
+    bytes: &[u8],
+) -> DylinkResult<Vec<fork_codec::dylink_archive::DylinkTablePatch>> {
+    use fork_codec::dylink_archive::{DylinkTableFunction, DylinkTablePatch, DylinkTablePatchRun};
+    let mut r = Reader::new(bytes);
+    let count = r.vec_len(MIN_TABLE_PATCH_BYTES)?;
+    let mut patches = Vec::with_capacity(count);
+    for _ in 0..count {
+        let activation_id = r.u32()?;
+        let owner_id = r.u32()?;
+        let start = r.u64()?;
+        let table_length = r.u64()?;
+        let run_count = r.vec_len(MIN_TABLE_PATCH_RUN_BYTES)?;
+        let mut runs = Vec::with_capacity(run_count);
+        for _ in 0..run_count {
+            let length = r.u64()?;
+            let function = if r.bool()? {
+                Some(DylinkTableFunction {
+                    activation_id: r.u32()?,
+                    ordinal: r.u32()?,
+                })
+            } else {
+                None
+            };
+            runs.push(DylinkTablePatchRun { length, function });
+        }
+        patches.push(DylinkTablePatch {
+            generation: 0,
+            activation_id,
+            owner_id,
+            start,
+            table_length,
+            runs,
+        });
+    }
+    r.finish()?;
+    Ok(patches)
 }
 
 // ---------------------------------------------------------------------------

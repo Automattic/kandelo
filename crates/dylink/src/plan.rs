@@ -150,14 +150,46 @@ pub enum HostRequest {
     /// the candidates would be making the loader's decisions again, in the file
     /// this crate exists to replace.
     ReadDependency { library: String, path: String },
-    /// Write archive record bytes into a process mapping the driver already
-    /// obtained through [`HostRequest::AllocateMemory`].
+    /// Read one byte range of the process archive. Answered with
+    /// [`ActResult::Bytes`].
     ///
-    /// Archive records live in guest linear memory, which neither this crate
-    /// nor the wasm planner module can address. Every layout, padding, digest,
-    /// cursor and `next`-pointer decision is still made here; the driver
-    /// performs one `Uint8Array.set`.
+    /// The archive's records live in guest linear memory, which neither this
+    /// crate nor the wasm planner module can address, so the record chain is
+    /// walked one fetched range at a time. Which range comes next is a decision
+    /// about the KFLA format and stays in `fork_codec`.
+    ReadArchive { address: u64, length: u64 },
+    /// Allocate one archive record block. Answered with [`ActResult::Index`]
+    /// carrying its address.
+    ///
+    /// Distinct from [`HostRequest::AllocateMemory`] because the two have
+    /// different owners and different lifetimes: a side module's mapping is
+    /// released when the object unloads, an archive block when the record it
+    /// holds stops being reachable.
+    AllocateArchive { size: u64 },
+    /// Write archive record bytes into a block the driver already obtained.
+    /// Every layout, padding, digest, cursor and `next`-pointer decision is
+    /// made in `crates/dylink`; the driver performs one `Uint8Array.set`.
     WriteArchive { address: u64, bytes: Vec<u8> },
+    /// Store the archive's generation as ONE aligned 8-byte write.
+    ///
+    /// It is the publication fence a pthread peer consumes, so it must land
+    /// after every reachable record and header field is complete, and it must
+    /// land atomically — which is why it is its own request rather than the
+    /// tail of a header copy.
+    PublishGeneration { address: u64, generation: u64 },
+    /// Release an archive block that is no longer reachable.
+    ReleaseArchive { address: u64, size: u64 },
+    /// The parent's saved `GOT.func` value for one symbol, during fork replay.
+    /// Answered with [`ActResult::Value`].
+    ///
+    /// A funcref's identity in a child must match the parent's exactly: the
+    /// guest holds table indexes in copied memory, so re-deriving one would
+    /// point a live function pointer at a different function. The value lives
+    /// in the parent's saved module state, which the activation coordinator
+    /// owns — the planner knows it must be used and the driver knows where it
+    /// is, which is why this crosses the boundary rather than being re-derived
+    /// on either side.
+    SavedGotFunc { library: String, symbol: String },
 }
 
 /// What the driver must do next.
@@ -412,6 +444,7 @@ enum Pending {
     BaseGlobal(BaseGlobal),
     Tag(TagSlot),
     GotGlobal(usize),
+    SavedGot(usize),
     PrepareActivation,
     Instantiate,
     RegisterActivation,
@@ -488,6 +521,9 @@ pub struct LinkPlan {
     /// GOT import declarations, in import-section order.
     got_imports: Vec<GotImportSite>,
     got_cursor: usize,
+    /// Parent `GOT.func` values fetched from the activation coordinator during
+    /// a replay, keyed by symbol.
+    fetched_got_func: BTreeMap<String, WasmValue>,
     /// The final ordered binding list, one entry per import declaration.
     bindings: Option<Vec<ImportBinding>>,
 
@@ -693,6 +729,7 @@ impl LinkPlan {
             needs_cpp_tag,
             got_imports,
             got_cursor: 0,
+            fetched_got_func: BTreeMap::new(),
             bindings: None,
             fork_instrumented,
             activation_id: None,
@@ -827,7 +864,7 @@ impl LinkPlan {
                             Pending::PrepareActivation,
                         );
                     } else {
-                        self.phase = Phase::Instantiate;
+                        self.phase = Phase::Got;
                     }
                 }
                 Phase::Instantiate => {
@@ -961,6 +998,13 @@ impl LinkPlan {
                     TagSlot::CppException => linker.cpp_exception_tag = self.cpp_exception_tag,
                 }
             }
+            Pending::SavedGot(index) => {
+                // The cursor does NOT advance: `plan_got` reconsiders the same
+                // declaration, now with the parent's value in hand.
+                let value = result.expect_value()?;
+                let symbol = self.got_imports[index].symbol.clone();
+                self.fetched_got_func.insert(symbol, value);
+            }
             Pending::GotGlobal(index) => {
                 result.expect_done()?;
                 let site = &self.got_imports[index];
@@ -995,7 +1039,7 @@ impl LinkPlan {
                     }
                 }
                 self.activation_id = Some(activation);
-                self.phase = Phase::Instantiate;
+                self.phase = Phase::Got;
             }
             Pending::Instantiate => {
                 result.expect_done()?;
@@ -1269,7 +1313,7 @@ impl LinkPlan {
             );
             return Ok(());
         }
-        self.phase = Phase::Got;
+        self.phase = Phase::Activation;
         Ok(())
     }
 
@@ -1307,12 +1351,32 @@ impl LinkPlan {
                     .is_some_and(|export| export.kind == ExternKind::Global),
                 GotKind::Func => self.shape.exports_function(&symbol),
             };
+            // A fork child must reproduce the parent's exact funcref index. The
+            // value may have been supplied with the request; otherwise it lives
+            // in the parent's saved module state and the driver is asked for it
+            // once, here, before the cell is made.
             let replay_value = self
                 .request
                 .replay
                 .as_ref()
                 .filter(|_| kind == GotKind::Func)
-                .and_then(|replay| replay.saved_got_func.get(&symbol).copied());
+                .and_then(|replay| {
+                    replay
+                        .saved_got_func
+                        .get(&symbol)
+                        .copied()
+                        .or_else(|| self.fetched_got_func.get(&symbol).copied())
+                });
+            if self.request.replay.is_some() && kind == GotKind::Func && replay_value.is_none() {
+                self.emit(
+                    PlanStep::Host(HostRequest::SavedGotFunc {
+                        library: self.request.name.clone(),
+                        symbol: symbol.clone(),
+                    }),
+                    Pending::SavedGot(index),
+                );
+                return Ok(());
+            }
 
             let decision = decide_got_cell(GotRequest {
                 library: &self.request.name,
@@ -1362,7 +1426,7 @@ impl LinkPlan {
             );
             return Ok(());
         }
-        self.phase = Phase::Activation;
+        self.phase = Phase::Instantiate;
         Ok(())
     }
 

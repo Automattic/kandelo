@@ -41,6 +41,9 @@ struct Executor {
     probed: Vec<String>,
     next_activation: u32,
     released: Vec<u64>,
+    /// The parent's saved `GOT.func` indexes, as the activation coordinator
+    /// would report them during a fork replay.
+    saved_got_func: BTreeMap<String, u32>,
 }
 
 impl Executor {
@@ -111,6 +114,9 @@ impl Executor {
                 self.released.push(allocation.address);
                 ActResult::Done
             }
+            HostRequest::SavedGotFunc { symbol, .. } => ActResult::Value(WasmValue::I32(
+                self.saved_got_func.get(&symbol).copied().unwrap_or(0),
+            )),
             _ => ActResult::Done,
         }
     }
@@ -787,6 +793,80 @@ fn an_empty_archive_reconciles_to_nothing() {
     executor.drive(&mut session, token).expect("drive");
     session.fork_reconcile_finish(token, &archive).expect("finish");
     assert!(executor.acts.is_empty(), "nothing to do means no engine work");
+}
+
+/// A replayed object's `GOT.func` cells take the PARENT's funcref index, and
+/// the planner asks the driver for it rather than re-deriving one.
+///
+/// The guest holds function pointers in copied memory. Re-deriving an index in
+/// the child would leave those pointers aimed at a different function, and the
+/// program would not find out until it called one. `dylink.ts:1651` reads the
+/// same value from the activation owner; the difference is that the request is
+/// now the planner's, so a driver cannot skip it.
+#[test]
+fn a_replay_asks_for_the_parents_saved_got_func_value() {
+    let mut session = process_session();
+    let mut executor = Executor::new(0, 0);
+    executor.exports.insert(1, vec![InstanceExport::func("entry")]);
+    // The parent's table index for `helper`, which the child must reproduce.
+    executor.saved_got_func.insert(String::from("helper"), 37);
+
+    let bytes = SideModule {
+        dylink: DylinkSection {
+            memory_size: 4096,
+            memory_align: 4,
+            table_size: 0,
+            table_align: 0,
+            ..Default::default()
+        },
+        imports: vec![
+            Import::Memory { module: "env".into(), field: "memory".into() },
+            Import::immutable_global("env", "__memory_base"),
+            Import::immutable_global("env", "__table_base"),
+            Import::got("GOT.func", "helper"),
+        ],
+        exports: vec![Export::func("entry", 0)],
+        ..Default::default()
+    }
+    .encode();
+
+    let mut request = LoadRequest::new("libreplay.so", bytes);
+    request.replay = Some(dylink::ReplayInputs {
+        memory_base: 0x9000,
+        table_base: 0,
+        global_visibility: true,
+        allocations: vec![fork_codec::dylink_archive::DylinkAllocation {
+            address: 0x9000,
+            size: 4096,
+            mapping_address: 0x9000,
+            mapping_size: 4096,
+        }],
+        ..Default::default()
+    });
+
+    let token = session.open_begin(request).expect("begin");
+    executor.drive(&mut session, token).expect("drive");
+    session.open_finish(token, None).expect("finish");
+
+    assert!(
+        executor.hosts.iter().any(|request| matches!(
+            request,
+            HostRequest::SavedGotFunc { library, symbol }
+                if library == "libreplay.so" && symbol == "helper"
+        )),
+        "the planner asked for the parent's value: {:?}",
+        executor.hosts,
+    );
+    let cell = session
+        .linker
+        .got
+        .shared_cell("helper")
+        .expect("a GOT cell for helper");
+    assert_eq!(
+        cell.value,
+        WasmValue::I32(37),
+        "the cell holds the PARENT's index, not one re-derived here",
+    );
 }
 
 // ---------------------------------------------------------------------------

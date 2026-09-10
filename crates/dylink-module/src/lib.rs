@@ -93,7 +93,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
-use dylink::session::Session;
+use dylink::session::{MemoryOwnership, Session};
 use dylink::{DylinkError, PlanStep};
 
 /// The call succeeded. Any payload is in the output buffer.
@@ -560,6 +560,124 @@ pub extern "C" fn dl_close_result(token: u32) -> i32 {
         buffers().output = dylink::wire::encode_close_outcome(&outcome)?;
         Ok(())
     })
+}
+
+// ---------------------------------------------------------------------------
+// The archive in guest memory
+// ---------------------------------------------------------------------------
+
+/// Read the process archive whose header is at `head` into the session.
+///
+/// The archive's records live in GUEST linear memory, which this module cannot
+/// address: it imports nothing at all. So the read is a transaction like every
+/// other one — the session walks the record chain by asking the driver for one
+/// byte range at a time and decodes what comes back. Drive the token, then call
+/// [`dl_archive_read_finish`].
+///
+/// A `head` of zero is a process that has never published, which decodes to
+/// nothing rather than to an error.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_read_begin(head: u64) -> i32 {
+    with_session_i64(|state| Ok(i64::from(state.archive_read_begin(head)?))) as i32
+}
+
+/// Keep what the read walked as this session's view of the archive.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_read_finish(token: u32) -> i32 {
+    with_session(|state| state.archive_read_finish(token))
+}
+
+/// Publish the loader's current state into the process archive.
+///
+/// The session decides the layout, which records may keep their addresses, and
+/// which must be replaced whole because a reachable record may never be resized
+/// beneath a pthread reader. The driver allocates, copies bytes, stores the
+/// generation, and releases — nothing else. Drive the token, then call
+/// [`dl_archive_sync_finish`].
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_sync_begin() -> i32 {
+    with_session_i64(|state| Ok(i64::from(state.archive_sync_begin()?))) as i32
+}
+
+/// The archive head address and generation the sync published, as
+/// `[u64 head][u64 generation]` in the output buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_sync_finish(token: u32) -> i32 {
+    with_session(|state| {
+        let (head, generation) = state.archive_sync_finish(token)?;
+        let output = &mut buffers().output;
+        output.extend_from_slice(&head.to_le_bytes());
+        output.extend_from_slice(&generation.to_le_bytes());
+        Ok(())
+    })
+}
+
+/// Does the decoded archive describe a process that ever loaded anything?
+///
+/// A child whose parent had no shared objects and no staged transaction has
+/// nothing to reconcile, and asking the module is one call rather than a second
+/// copy of the state in the driver.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_is_empty() -> i32 {
+    match session().as_ref() {
+        Some(state) => i32::from(state.archive_is_empty()),
+        None => 1,
+    }
+}
+
+/// The generation of the archive the last [`dl_archive_read_begin`] decoded, or
+/// -1 with no session.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_generation(token: u32) -> i64 {
+    let _ = token;
+    match session().as_ref() {
+        Some(state) => state.archive_generation() as i64,
+        None => -1,
+    }
+}
+
+/// Begin a fork reconcile against the archive the last read decoded.
+///
+/// `borrowed` is 1 for a `vfork` child sharing the suspended parent's live
+/// memory, where loader-controlled instantiation must be provably read-only.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_fork_reconcile_begin(borrowed: i32) -> i32 {
+    with_session_i64(|state| {
+        let ownership = if borrowed == 0 {
+            MemoryOwnership::Copied
+        } else {
+            MemoryOwnership::Borrowed
+        };
+        Ok(i64::from(state.reconcile_decoded_begin(ownership)?))
+    }) as i32
+}
+
+/// Adopt the parent's handle table once the reconcile's drive loop has
+/// finished.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_fork_reconcile_finish(token: u32) -> i32 {
+    with_session(|state| state.reconcile_decoded_finish(token))
+}
+
+/// Hand the activation coordinator's funcref table patches to the archive.
+///
+/// They are not loader state, but they ride in the same record chain and under
+/// the same generation fence, so publishing them is publishing the archive. The
+/// input buffer holds an encoded patch list.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_set_table_patches(len: u32) -> i32 {
+    with_session(|state| {
+        let patches = dylink::wire::decode_table_patches(request(len)?)?;
+        state.set_table_patches(patches);
+        Ok(())
+    })
+}
+
+/// Seal a typed table snapshot at `root`. Patches published before a checkpoint
+/// are superseded by it, so they are dropped rather than carried forward.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_set_table_state_root(root: u64) -> i32 {
+    with_session(|state| state.set_table_state_root(root))
 }
 
 // ---------------------------------------------------------------------------
