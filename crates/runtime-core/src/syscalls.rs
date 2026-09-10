@@ -39986,6 +39986,101 @@ impl HostIO for NetMock {
         assert!(proc.epolls[0].is_none());
     }
 
+    // ── epoll open-file-description ownership ─────────────────────────────
+    //
+    // On Linux an epoll fd names an open file description. A `fork()` child's
+    // duplicated descriptor refers to the *same* instance, so `epoll_ctl`
+    // through either descriptor is visible to both processes.
+
+    fn fork_child_of(parent: &Process, child_pid: u32) -> Process {
+        let mut buf = alloc::vec![0u8; 256 * 1024];
+        let written = crate::fork::serialize_fork_state(parent, &mut buf).unwrap();
+        let child = crate::fork::deserialize_fork_state(&buf[..written], child_pid).unwrap();
+        crate::process_table::bump_inherited_resource_refcounts(parent.pid, &child).unwrap();
+        child
+    }
+
+    #[test]
+    fn epoll_fork_child_uses_the_inherited_instance() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut parent = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, write_fd) = sys_pipe(&mut parent).unwrap();
+        let epfd = sys_epoll_create1(&mut parent, 0).unwrap();
+        sys_epoll_ctl(&mut parent, epfd, 1, read_fd, EPOLLIN_BIT, 99).unwrap();
+
+        let mut child = fork_child_of(&parent, 2);
+        sys_write(&mut parent, &mut host, write_fd, b"hi").unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut child, &mut host, epfd, 10, 0, None)
+            .expect("a fork child must be able to wait on an inherited epoll fd");
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 99, "the parent's registration must be visible");
+    }
+
+    #[test]
+    fn epoll_ctl_in_the_child_is_visible_to_the_parent() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut parent = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, write_fd) = sys_pipe(&mut parent).unwrap();
+        let epfd = sys_epoll_create1(&mut parent, 0).unwrap();
+
+        let mut child = fork_child_of(&parent, 2);
+        // The child registers; the parent must observe the same interest list.
+        sys_epoll_ctl(&mut child, epfd, 1, read_fd, EPOLLIN_BIT, 77).unwrap();
+        sys_write(&mut parent, &mut host, write_fd, b"hi").unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut parent, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1, "the child's epoll_ctl must be visible to the parent");
+        assert_eq!(events[0].1, 77);
+    }
+
+    #[test]
+    fn epoll_ctl_in_the_parent_is_visible_to_the_child() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut parent = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, write_fd) = sys_pipe(&mut parent).unwrap();
+        let epfd = sys_epoll_create1(&mut parent, 0).unwrap();
+
+        let mut child = fork_child_of(&parent, 2);
+        // Registration happens *after* the fork, in the parent.
+        sys_epoll_ctl(&mut parent, epfd, 1, read_fd, EPOLLIN_BIT, 55).unwrap();
+        sys_write(&mut parent, &mut host, write_fd, b"hi").unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut child, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1, "the parent's epoll_ctl must be visible to the child");
+        assert_eq!(events[0].1, 55);
+        // And EPOLL_CTL_DEL from the child removes the parent's registration.
+        sys_epoll_ctl(&mut child, epfd, 2, read_fd, 0, 0).unwrap();
+        let (count, _) = sys_epoll_pwait(&mut parent, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn epoll_instance_outlives_the_parent_descriptor() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut parent = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, write_fd) = sys_pipe(&mut parent).unwrap();
+        let epfd = sys_epoll_create1(&mut parent, 0).unwrap();
+        sys_epoll_ctl(&mut parent, epfd, 1, read_fd, EPOLLIN_BIT, 31).unwrap();
+
+        let mut child = fork_child_of(&parent, 2);
+        sys_close(&mut parent, &mut host, epfd).unwrap();
+        sys_write(&mut parent, &mut host, write_fd, b"hi").unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut child, &mut host, epfd, 10, 0, None)
+            .expect("closing one descriptor must not destroy a shared instance");
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 31);
+    }
+
     #[test]
     fn test_epoll_lseek_fails() {
         let mut proc = Process::new(1);
