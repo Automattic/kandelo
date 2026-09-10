@@ -125,13 +125,16 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * the path before returning. `kernel_exec_target_artifact_policy` only ever
  * WRITES its borrowed range — it judges the target's own kernel-owned bytes
  * and then serializes the verdict into scratch, so the lease is never read
- * from and no reference to it survives the call. The transfer execute export
+ * from and no reference to it survives the call.
+ * `kernel_classify_wasm_trap_signal` reads its borrowed bytes as a `&str` and
+ * returns a signal number, retaining nothing. The transfer execute export
  * names no raw pointer, but its token authorizes Rust to borrow the
  * allocation represented by this exact lease. Adding a name requires the same
  * lifetime review and a pointer-position update below.
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
+  "kernel_classify_wasm_trap_signal",
   "kernel_dequeue_signal",
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
@@ -234,6 +237,7 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_classify_wasm_trap_signal":
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
