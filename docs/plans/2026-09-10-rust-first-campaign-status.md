@@ -2344,6 +2344,54 @@ keep their row so they are not re-opened.
 | B21 | **`gzip` and `xz` fail to build** | Found alongside B19 on the same setup run; `nginx` and `php` block behind them. They are what stop the `shell` product and every image below it. Adjacent to B17 in shape, not chased |
 | B22 | **libc-test cannot be fetched in the dev shell** | Its submodule URL is `git@github.com:` and ssh is unavailable there. A second, independent reason no conformance suite has run in this campaign — B19 is not the only one |
 
+### B12 / D-K8-4 — `privileged-projection.ts` is superseded, not merely unused
+
+**The grounding asked the wrong question, and the answer changes the
+decision.** `docs/plans/2026-09-09-k8-vfs-authority-grounding.md` §5.3 and
+D-K8-4 framed this as "a capability with no user", and warned that deleting it
+loses the design "if it encodes a security boundary someone intends to use".
+That is the right caution for an *unwired* design. This is not one.
+
+**Measured 2026-09-10.** The module projects privileged programs into an
+immutable product image: `PRODUCT_DESTINATIONS` is exactly
+
+    /usr/bin/login   /usr/bin/sudo-lite   /usr/bin/sudo
+
+carrying `uid`, `gid`, `mode` and a sha256 validation. `images/rootfs/PACKAGES.toml`
+already declares **the same three destinations**, each with `mode = "4755"`,
+`uid = 0`, `gid = 0`, built through the normal package path
+(`packages/registry/sudo-lite/`, `scripts/build-programs.sh`). The enforcement
+half — what a setuid bit *means* at exec — is Rust:
+`crates/runtime-core/src/{credentials.rs,exec_target.rs,rootfs.rs}`.
+
+So the platform already ships privileged programs, by a different and live
+route. This is a **second implementation of a path the platform takes**, the
+same duplicated-authority shape as `device-fs.ts` — the eighth this campaign
+has found — not a design waiting for a consumer.
+
+That is what makes D-K8-4 decidable rather than a judgement call: nothing is
+lost that is not also present in `PACKAGES.toml` and the Rust credential path.
+
+**Still the maintainer's call**, because it is security-adjacent and D-K8-4 was
+raised as a decision. Recommendation: **delete**, 864 lines, with
+`host/test/privileged-projection.test.ts` and the two CI exclusion entries that
+keep it out of the default suite.
+
+### The guard that names two symbols which do not exist
+
+Found while verifying the above, and worth separating because it is a
+*measurement* defect rather than a code one. `host/test/kernel-authority-boundary.test.ts`
+lists `hiddenPackageSymbols` — names asserted to stay off production objects.
+Two of them, `attachReviewedPrivilegedProgramPolicy` and
+`reviewedPrivilegedProgramPolicyForPlan`, are defined **nowhere in the repo**;
+they exist only as strings in that list.
+
+The assertion is not vacuous — it still fails if someone later adds either name
+to a production object, which is a legitimate forward guard. But a reader
+counting this module's surface from that list will over-count it by two, and
+this campaign has repeatedly been wrong about scope by trusting a list instead
+of the symbols. Recorded so the next reader does not.
+
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
 A6 scoped it and stopped, correctly. Its only production caller runs on the
