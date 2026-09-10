@@ -1914,6 +1914,17 @@ describe("kernel scratch static contract", () => {
       expect(abiKernelExportNames.has(obsoleteRawExport)).toBe(false);
     }
 
+    // The four vector adapters used to parse a `KernelIovecWire` table out of
+    // kernel scratch, so the rule was that each must carry the allocation
+    // region alongside the table pointer -- a pointer alone proves only that
+    // it lands somewhere in kernel memory, not inside the live allocation.
+    //
+    // They parse nothing in kernel scratch now. Their `struct iovec *` is
+    // `SyscallArgSize::KernelDereferenced`: the host stages no table, and the
+    // kernel reads the CALLER's own table through the cross-memory primitives.
+    // Passing a `ChannelScratchRegion` would be meaningless, and the property
+    // that replaces it is stronger -- they must take a caller GUEST address
+    // and the caller's pointer width, and must never be handed kernel scratch.
     for (const helper of [
       "channel_readv",
       "channel_writev",
@@ -1923,16 +1934,25 @@ describe("kernel scratch static contract", () => {
       expect(kernelWasmApiSource).toMatch(
         new RegExp(
           `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
-            `region:\\s*ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
+            `iov_addr:\\s*u64[\\s\\S]*?pointer_width:\\s*u32[\\s\\S]*?\\)\\s*->\\s*i32`,
+        ),
+      );
+      expect(kernelWasmApiSource).not.toMatch(
+        new RegExp(
+          `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
+            `ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
         ),
       );
       expect(kernelWasmApiSource).toMatch(
-        new RegExp(`${helper}\\([\\s\\S]*?scratch_region[\\s\\S]*?\\)`),
+        new RegExp(
+          `${helper}\\([\\s\\S]*?guest_address!\\(1\\)[\\s\\S]*?` +
+            `caller_pointer_width!\\(\\)[\\s\\S]*?\\)`,
+        ),
       );
     }
-    expect(kernelWasmApiSource).toContain(
-      "checked_kernel_iovec_entries(iov_ptr, iovcnt, region)",
-    );
+    // The fixed kernel-scratch iovec wire is retired; nothing may parse one.
+    expect(kernelWasmApiSource).not.toContain("KernelIovecWire");
+    expect(kernelWasmApiSource).not.toContain("checked_kernel_iovec_entries");
     // Total linear-memory size can never stand in for allocation ownership.
     expect(kernelWasmApiSource).not.toContain("current_kernel_memory_bytes");
   });
