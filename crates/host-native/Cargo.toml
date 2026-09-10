@@ -65,6 +65,40 @@ fork-codec = { path = "../fork-codec" }
 # fallible kernel-export calls). Wasmtime already pulls anyhow into the tree.
 anyhow = "1"
 
+# The handle-only host filesystem contract (K9). The kernel resolves the POSIX
+# namespace itself and asks this host to resolve at most ONE path component,
+# relative to a directory handle it previously issued — see
+# `crates/runtime-core/src/hostdir.rs`.
+#
+# `cap-std` is here for a type-checking reason, not for convenience.
+# `std::fs` has no `openat`, so a handle-relative host would otherwise be
+# hand-rolled `unsafe libc::*at` calls; and `cap_std::fs::Dir` IS the
+# mount-root-handle abstraction the contract describes — a `Dir` cannot be
+# escaped through `..` or an absolute symlink, so "this operation stays inside
+# the mount it was issued for" is enforced by the type instead of by the
+# lexical `..`-popping guard host-native used to carry. That guard was also
+# weaker: it followed a symlink inside the tree that pointed out of it.
+#
+# `cap-fs-ext` supplies the three options cap-std deliberately keeps out of its
+# own surface but that POSIX needs: `follow` (`O_NOFOLLOW`), `maybe_dir`
+# (opening a directory at all), and `set_times`/`set_symlink_times`, which is
+# `utimensat(2)` in cap-std's symbolic vocabulary — including a `SymbolicNow`
+# that re-spells Linux's `UTIME_NOW` for whichever platform is running.
+#
+# `rustix` (same crate family, thinner) covers the two operations neither
+# crate models: `chownat` and `fstatvfs`. It takes a `BorrowedFd`, so it acts
+# on the `Dir`'s own descriptor and stays inside the same capability.
+cap-std = "4"
+cap-fs-ext = "4"
+rustix = { version = "1", features = ["fs"] }
+
+# `fpathconf(3)`, which neither cap-std nor rustix models, plus the platform's
+# own `E*` constants. The errno numbers this host reports to the guest are
+# LINUX's, and macOS numbers them differently past the oldest POSIX codes, so
+# `errno_from_io` translates BY NAME using these constants rather than passing
+# a raw platform errno through and forging a wrong one.
+libc = "0.2"
+
 [dev-dependencies]
 # `wat` compiles the tiny WAT wait/notify probe module in-test, keeping the
 # fixture readable alongside the assertions that consume it.

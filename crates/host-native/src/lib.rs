@@ -62,8 +62,8 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// **The count is of DECLARED imports, not implemented ones.** Implementing an
 /// import moves it from the trapped bucket to the implemented bucket without
 /// moving this number, so the coverage change has to be recorded in prose.
-/// The native host implements 21 of the 84 as of the cross-memory work below;
-/// it was 19 before `host_proc_read_bytes` / `host_proc_write_bytes` were
+/// The native host implements 33 of the 75 as of K9 below; it was 21 of 83
+/// before, and 19 before `host_proc_read_bytes` / `host_proc_write_bytes` were
 /// implemented in `guest.rs` (`define_kernel_host_imports`). Those two are the
 /// kernel's general mechanism for reading and writing a guest process's linear
 /// memory; trapping them meant the native host could not run any kernel path
@@ -110,7 +110,37 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// to drive. Removing them takes the count to 85 - 2 = **83**, and the
 /// post-cutover figure to 82. This is the campaign's first import removal that
 /// shrinks the host contract outright rather than relocating work behind it.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 83;
+///
+/// K9 then made the host filesystem contract **handle-only**. The kernel now
+/// resolves the POSIX namespace itself and asks the host to resolve at most one
+/// path component, relative to a directory handle the host previously issued —
+/// it never sends a guest path, a mount prefix, a `..`, or a symlink chain (see
+/// `crates/runtime-core/src/hostdir.rs`). That removed the 18 name-taking
+/// imports — `host_access`, `host_open`, `host_stat`, `host_lstat`,
+/// `host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`, `host_unlink`,
+/// `host_rename`, `host_link`, `host_symlink`, `host_readlink`, `host_chmod`,
+/// `host_chown`, `host_lchown`, `host_opendir`, `host_closedir` — and added 10
+/// handle-relative `*at` replacements: `host_openat`, `host_fstatat`,
+/// `host_mkdirat`, `host_unlinkat`, `host_renameat`, `host_linkat`,
+/// `host_symlinkat`, `host_readlinkat`, `host_fchmodat`, `host_fchownat`.
+/// (`host_utimensat` was reshaped in place rather than added, so it does not
+/// move the arithmetic.) Net: 83 - 18 + 10 = **75**.
+///
+/// The count is the smaller half of that change. The larger half is that the
+/// file-name family went from **mandatory for every host** to **an optional
+/// host-directory capability**. Every host used to have to reimplement a POSIX
+/// namespace in its own language — mount-prefix routing, `..` handling, symlink
+/// resolution — and keep that reimplementation consistent with the kernel's.
+/// Now a host either publishes a directory handle per mount through
+/// `kernel_rootfs_set_foreign_mount_roots` and answers `*at`-shaped questions
+/// about it, or publishes none and is never asked: `runtime_core::hostdir` is
+/// reachable only for a path under a foreign mount with a published root, so
+/// the kernel answers `ENOSYS` on its own otherwise. A browser host, once `/`
+/// is overlay-owned, implements **zero** of this family. host-native was
+/// already the only host treating the filesystem as optional (its imports are
+/// wired only when `GuestOptions::mounts` is non-empty); K9 makes that the
+/// contract rather than one host's local choice.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 75;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
@@ -607,11 +637,12 @@ mod tests {
     }
 
     // Increment 5's `smoke_runs_host_fs_open_read` (native_hostfs.c/.wasm)
-    // exercised host_lstat/host_open/host_read serving a fixed single-file
+    // exercised host_lstat/host_open/host_read (all three since removed by K9)
+    // serving a fixed single-file
     // fake host filesystem as the default `/`. N1-I1a retires that default:
     // the in-kernel rootfs overlay now owns `/` (see `smoke_runs_inmemory_vfs`
-    // above), so `host_open` is never reached on the default path and the fake
-    // HostFs no longer serves files. The same host_open/host_lstat/host_read
+    // above), so no host-FS import is reached on the default path and the fake
+    // HostFs no longer serves files. The same host-FS
     // capability plumbing is restored, correctly scoped to an explicit native
     // directory mount, by N1-I1b's `smoke_runs_native_dir_mount` below.
 
@@ -798,7 +829,7 @@ mod tests {
     /// `HostFs`. The guest opens/reads a real file under the mounted temp
     /// directory; a byte-exact round-trip proves the whole mechanism: the
     /// foreign-prefix registration, the mount-point-prefix strip, and the
-    /// real `host_open`/`host_pread`/`host_close` FS syscalls.
+    /// real `host_openat`/`host_pread`/`host_close` FS syscalls.
     #[test]
     fn smoke_runs_native_dir_mount() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
@@ -840,7 +871,7 @@ mod tests {
         assert_eq!(
             outcome.stdout,
             contents.as_slice(),
-            "expected the mounted file's real contents via host_open/host_pread"
+            "expected the mounted file's real contents via host_openat/host_pread"
         );
         Ok(())
     }
@@ -904,7 +935,7 @@ mod tests {
         assert_eq!(
             outcome.stdout,
             contents.as_slice(),
-            "expected the mounted file's real contents via host_open/host_pread"
+            "expected the mounted file's real contents via host_openat/host_pread"
         );
         Ok(())
     }

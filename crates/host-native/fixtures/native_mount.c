@@ -5,10 +5,11 @@
  * Reads `/host/greeting.txt` — a path under a top-level mount point that is
  * NOT owned by the in-kernel rootfs overlay (a registered foreign prefix) —
  * and echoes its contents to stdout. This proves the whole mount mechanism:
- * `kernel_rootfs_set_foreign_prefixes` makes the overlay disown `/host`, so
- * the kernel's path resolution falls through to `host_open`/`host_pread`/
- * `host_close` on the native host's mount-aware `HostFs`, which strips the
- * `/host` prefix and reads the real file from the mounted host directory.
+ * `kernel_rootfs_set_foreign_prefixes` makes the overlay disown `/host` and
+ * `kernel_rootfs_set_foreign_mount_roots` gives it a host directory handle, so
+ * the kernel walks the path itself and asks the native host only for one
+ * component at a time — `host_openat(root, "greeting.txt", ...)` — then reads
+ * the real file through `host_pread` and releases it with `host_close`.
  *
  * Built through the SDK like the other fixtures; see fixtures/README.md.
  */

@@ -5,7 +5,7 @@
  * This is the first fixture that exercises the platform's *default* native
  * filesystem: the in-kernel rootfs overlay (`/`) and tmpfs (`/tmp`), both
  * empty and writable, entirely in kernel memory — no host directory, no VFS
- * image manifest, no `host_open`. It proves:
+ * image manifest, no host directory capability at all. It proves:
  *
  *   - mkdir("/data")            — the overlay creates `/` lazily and accepts
  *                                 a new directory with no manifest loaded;
