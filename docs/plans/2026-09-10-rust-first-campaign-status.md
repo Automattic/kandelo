@@ -1267,6 +1267,40 @@ same ~3 new host hooks. Three together buy the hooks once; one alone saves
 almost nothing. Recommendation: take it as a single item, with the fork-path
 guest suites provisioned *first* — this pass proved those suites were dark.
 
+## K3 §11.2 `usePolling` — adjudicated on the platform contract, ready to execute
+
+**Verdict: delete it.** Not because nothing uses it — the disposition ledger's
+§3 says explicitly that "nothing uses this" is not a reason — but because it
+exists to serve a deployment the platform contract **forbids**.
+
+Its own documentation (`kernel-worker.ts:14915-14921`) says: *"This remains a
+legacy opt-in for browser embeddings that run the kernel **on the main
+thread**. The dedicated browser worker and Node.js both keep the default
+event-driven `Atomics.waitAsync` mode."*
+
+`CLAUDE.md`'s Host Runtime Contract says: *"The kernel must run in a dedicated
+worker on every host. `CentralizedKernelWorker` must not be instantiated on the
+main thread."*
+
+So the polling path is a fallback for a configuration that is not merely unused
+but **prohibited**. That is a contract-based justification rather than a
+usage-based one, which is the distinction §3 exists to enforce.
+
+**Measured surface:** the field defaults to `false`
+(`kernel-worker.ts:14922`); **nothing in production ever sets it `true`**; two
+sites set it to `false` **redundantly** (`browser-kernel-worker-entry.ts:993`,
+`network-demo-worker.ts:230`). Four `if (this.usePolling)` branches, plus
+`pollMC`/`pollScheduled`/`pollLastYield`, `startPolling`, `stopPolling`,
+`pollTick`, `schedulePoll`. Six test files set `usePolling: true` and exercise
+the poller — coverage of a path that cannot run in a conforming host.
+
+**Not executed yet, and the reason is scheduling rather than doubt:**
+`kernel-worker.ts` is being rewritten by several agents right now, and this
+deletion spans that file plus six test files. The adjudication above is the hard
+part; the edit is mechanical. **Owner: coordinator, with the tier-end
+reconciliation**, alongside the 16 memory-authority sites and the ~30 stale
+"ABI 43" strings.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
