@@ -724,6 +724,31 @@ real-looking failures from it.
 resolving through `std` on the host failed on wasm32/wasm64 twice this week,
 where `runtime-core` is `no_std` and must name it through `alloc`.
 
+## Every in-scope item is now done or in flight (2026-09-10)
+
+| In flight | What it is |
+|---|---|
+| K4a continuation | 39 remaining differing worker-entry pairs, ~3,430 lines |
+| K5 I6a | The dylink module + 14 pipeline points; unblocks a 6,340-line deletion |
+| `pathconf`/`statfs` + `trap-signals` | 4 host imports (75 → 71); host-native gains signal mapping |
+| K13b | ~116 of ~305 kernel exports |
+| `constants.ts` | 3,031 lines; the false-KEEP correction |
+
+Nothing in scope is unstarted. The remaining work after these land is the
+**deletion debt they unblock** (K5 I6b's 6,340 lines above all), the
+**tier-end browser pass**, and the **tier-end reconciliation** of two items
+deliberately held because their files were being rewritten: the 16 remaining
+unreviewed kernel-memory-authority sites in `host/src`, and ~30 stale "ABI 43"
+strings in error messages that need per-site judgment (some describe what ABI
+43 genuinely did and are still true; replacing those would introduce
+falsehoods while claiming to remove them).
+
+Then, per the maintainer's standing instruction, a **fresh census** over the
+same scope — not a wrap-up, a re-ask of what should be migrated, reduced or
+removed, followed by work on whatever it finds. The mid-campaign census run
+early found six uncovered items and a false KEEP in our own ledger, so the
+end-of-campaign one is not expected to come back empty.
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
