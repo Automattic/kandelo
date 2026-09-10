@@ -432,8 +432,22 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   allocateProcessGeneration,
   forkHostImportOwnerRuntime,
   createProcessWorker: (init) => workerAdapter.createWorker(init),
-  createDeferredProcessWorker: (init) =>
-    new DeferredWorkerHandle(() => workerAdapter.createWorker(init)),
+  createDeferredProcessWorker: (init, purpose) =>
+    new DeferredWorkerHandle(() => {
+      // The vfork rollback's test seam. Scoped to vfork on purpose: a
+      // constructor failure during an ordinary fork or spawn exercises a
+      // different rollback, and firing here for those would make this
+      // injection mean something it was never validated to mean.
+      if (
+        purpose === "vfork"
+        && injectVforkWorkerStartFailure
+        && !injectedVforkWorkerStartFailure
+      ) {
+        injectedVforkWorkerStartFailure = true;
+        throw new Error("injected vfork Worker constructor failure");
+      }
+      return workerAdapter.createWorker(init);
+    }),
   sideModuleInitFields,
   installProcessWorkerListeners,
   // Guest TLS verifies through the host's proxied egress, so a launch needs
