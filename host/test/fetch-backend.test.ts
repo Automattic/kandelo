@@ -278,6 +278,42 @@ describe("FetchNetworkBackend", () => {
     ]);
   });
 
+  // The plain-HTTP and TLS-MITM backends each carried their own
+  // `formatHttpResponse`, and only the TLS one suppressed the upstream
+  // `Content-Length` before appending the length it computes for the decoded
+  // body. `fetch()` has already undone `Content-Encoding`, so the two values
+  // disagree whenever the origin compressed the response, and RFC 9110 §8.6
+  // makes conflicting `Content-Length` field lines unrecoverable. Both
+  // backends now share `http1.ts`.
+  it("emits exactly one Content-Length when the origin sent its own", async () => {
+    const body = "compressed-then-decoded";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(body, {
+        headers: {
+          // The encoded length an origin would report for a gzipped body —
+          // deliberately not the decoded length this response actually carries.
+          "Content-Length": "11",
+          "Content-Type": "text/plain",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new FetchNetworkBackend();
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+    sendGet(backend, 1, "/gzipped");
+
+    const raw = decoder.decode(await recvWhenReady(backend, 1));
+    const contentLengths = raw
+      .split("\r\n")
+      .filter((line) => line.toLowerCase().startsWith("content-length:"));
+    expect(contentLengths).toEqual([`Content-Length: ${body.length}`]);
+    // The upstream headers ARE forwarded — `content-type` proves it — so under
+    // the old formatter the origin's `content-length: 11` would have been
+    // forwarded alongside the computed `Content-Length: 23`.
+    expect(raw.toLowerCase()).toContain("content-type: text/plain");
+  });
+
   it("projects only the fallback Fetch after a direct Fetch failure", async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError("CORS blocked"))
