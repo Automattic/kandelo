@@ -28,6 +28,7 @@ import type {
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
+import { installBrowserWasmArtifactModule } from "./browser-wasm-artifact-module-install";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {
   PreparedExecLaunchPlan,
@@ -720,6 +721,11 @@ async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<voi
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  // BEFORE anything reads an artifact. `kernel.ts` asks for the kernel's own
+  // pointer width in the middle of building its import object, which is
+  // synchronous and happens below, so the module has to be instantiated here
+  // rather than awaited at the point of use.
+  await installBrowserWasmArtifactModule();
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {

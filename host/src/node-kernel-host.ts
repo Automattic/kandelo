@@ -22,6 +22,10 @@ import {
   type Transferable,
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
+// The main thread validates `kernel.wasm` itself, before any kernel exists.
+import { useNodeWasmArtifactModule } from "./wasm-artifact-module-node";
+
+useNodeWasmArtifactModule();
 import type {
   HostDiagnostic,
   MainToKernelMessage,
