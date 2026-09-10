@@ -2548,6 +2548,40 @@ failed**. So the 39 failures were the tier defect, not the merged work. That
 hand-placement is local provisioning and is recorded here rather than left
 implicit; it is not a fix, and B23 is what fixes it.
 
+### Follow-up on my own fix: `wasm-artifact-guards.sh` now has four decoders
+
+Recorded against myself, because it is the pattern this campaign exists to
+remove. `scripts/wasm-artifact-guards.sh` now inspects wasm modules four
+different ways:
+
+1. `wasm_artifact_identity` — the wasmparser-backed fork-instrument tool,
+   emitting a fixed 12-field TSV. Authoritative, and tried first by the
+   fork-contract predicates.
+2. `wasm-objdump` text parsing — a truthful compatibility fallback when that
+   tool is absent.
+3. Byte scans (`grep -a -q 'kernel_fork'`, `'fork'`, `'dylink\.0'`) — last-resort
+   fallbacks. **These are not the asyncify defect.** They are documented,
+   deliberate, and fail *safe*: the comment at `wasm_imports_side_module_fork`
+   says a match is treated as present precisely because the scan cannot
+   distinguish an unrelated string. Erring toward "present" refuses a doubtful
+   artifact. The asyncify scan erred toward *rejecting a good* one, and had no
+   structural path at all.
+4. The export-section walk added 2026-09-10 for the asyncify check.
+
+Number 4 is correct and self-contained, and it needs no fallback because
+walking the section table cannot fail on features it does not understand. But
+adding a fourth mechanism to a file that already had a structural decoder is
+duplicated authority, and this campaign has now found nine instances of that
+shape.
+
+**The right long-term home** is the wasmparser-backed tool: give its record an
+asyncify field, or a general export query, and let every predicate in this file
+ask one decoder. That was not done here because its output is a *positional*
+12-field TSV parsed by several callers, so widening it is a contract change in
+`crates/fork-instrument` with ripple, not a guard fix — and the guard fix was
+blocking the install path. Logged rather than done, and it belongs to whoever
+next touches that tool.
+
 ### The asyncify byte-scan, third copy
 
 `scripts/install-local-binary.sh` refuses a freshly built kernel:
