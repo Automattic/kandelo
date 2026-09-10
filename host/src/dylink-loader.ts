@@ -39,6 +39,9 @@ import {
   DylinkActExecutor,
   DylinkPlannerError,
   PlannerSession,
+  growTable,
+  setTableEntry,
+  tableLength,
   type AllocationRecord,
   type DylinkEngineEnvironment,
   type DylinkProcessHost,
@@ -164,14 +167,17 @@ export class DylinkLoader {
   /** Per-library function-import declarations, for host-import routing. */
   readonly #functionImports = new Map<string, Map<string, WasmFunctionImportType[]>>();
   #error: string | null = null;
+  #mainImagePublished = false;
+  /** How to describe the main image when its scope is first needed. */
+  #describeMainImage: (() => MainImage) | null = null;
 
   constructor(options: DylinkLoaderOptions, config: Omit<LinkerConfig, "librarySearchPaths">) {
     this.#options = options;
     this.#session = PlannerSession.instantiate(options.module);
     const environment: DylinkEngineEnvironment = {
       memory: options.memory,
-      table: options.table(),
-      stackPointer: options.stackPointer(),
+      table: options.table,
+      stackPointer: options.stackPointer,
       mainInstance: options.mainInstance,
       activationEnv: (name) => {
         const prepared = this.#preparing;
@@ -215,9 +221,32 @@ export class DylinkLoader {
     });
   }
 
-  /** Publish the main image's scope. Must precede any `dlopen`. */
-  publishMainImage(image: MainImage): void {
-    this.#session.publishMainImage(image);
+  /**
+   * Publish the main image's scope, once, before the first thing that needs it.
+   *
+   * Deferred rather than done at construction because a loader exists before
+   * the main image does: a fork child reads the archive it inherited before it
+   * has instantiated anything, and that read needs no scope at all. The
+   * describing callback is invoked at most once.
+   */
+  publishMainImage(describe: () => MainImage): void {
+    if (this.#mainImagePublished) return;
+    this.#mainImagePublished = true;
+    this.#session.publishMainImage(describe());
+  }
+
+  /**
+   * Record how to describe the main image, for the first operation that needs
+   * its scope.
+   */
+  setMainImage(describe: () => MainImage): void {
+    this.#describeMainImage = describe;
+  }
+
+  /** Publish the main image if it has not been published yet. */
+  #requireMainImage(): void {
+    if (this.#mainImagePublished || !this.#describeMainImage) return;
+    this.publishMainImage(this.#describeMainImage);
   }
 
   /**
@@ -260,6 +289,7 @@ export class DylinkLoader {
    */
   begin(name: string, wasmBytes: Uint8Array, globalVisibility = true): number {
     try {
+      this.#requireMainImage();
       const owned = wasmBytes.slice();
       this.#recordImage(name, owned);
       return this.#session.openBegin({
@@ -407,6 +437,7 @@ export class DylinkLoader {
   dlsym(handle: number, symbolName: string): number | null {
     let token = 0;
     try {
+      this.#requireMainImage();
       token = this.#session.symBegin(handle, symbolName);
       this.#drive(token);
       const address = this.#session.symAddress(token);
@@ -427,6 +458,7 @@ export class DylinkLoader {
   dlclose(handle: number): number {
     let token = 0;
     try {
+      this.#requireMainImage();
       token = this.#session.closeBegin(handle);
       this.#drive(token);
       const outcome = this.#session.closeResult(token);
@@ -471,6 +503,7 @@ export class DylinkLoader {
 
   /** Publish the loader's state, and the head and fence that make it visible. */
   syncArchive(): { readonly head: number; readonly generation: number } {
+    this.#requireMainImage();
     const token = this.#session.archiveSyncBegin();
     this.#drive(token);
     const published = this.#session.archiveSyncFinish(token);
@@ -485,7 +518,13 @@ export class DylinkLoader {
 
   /** Decode the process archive into the module. */
   readArchive(): void {
-    const token = this.#session.archiveReadBegin(BigInt(this.#options.readArchiveHead()));
+    // The CURRENT memory size, not the configured one: memory grows, and a
+    // record allocated past the configured bound would be refused as out of
+    // bounds.
+    const token = this.#session.archiveReadBegin(
+      BigInt(this.#options.readArchiveHead()),
+      BigInt(this.#options.memory.buffer.byteLength),
+    );
     this.#drive(token);
     this.#session.archiveReadFinish(token);
   }
@@ -500,6 +539,13 @@ export class DylinkLoader {
    * then adopt the parent's handle table.
    */
   reconcile(memoryOwnership: "copied" | "borrowed" = "copied"): void {
+    this.#requireMainImage();
+    // A replay's images come from the ARCHIVE, not from a search: the planner
+    // will ask to compile each object by name, and this is the only point at
+    // which the driver can see the bytes the parent recorded.
+    for (const module of this.archivedModules()) {
+      this.#recordImage(module.name, module.moduleBytes);
+    }
     const token = this.#session.forkReconcileBegin(memoryOwnership === "borrowed");
     this.#drive(token, (call) => {
       const target = this.#executor.instance(call.instance)?.exports[call.exportName];
@@ -615,15 +661,17 @@ export class DylinkLoader {
     }
     let index = this.#stagedSlot.get(token);
     if (index === undefined) {
-      index = table.length;
+      index = tableLength(table);
       if (index === 0) {
-        table.grow(1);
+        // Slot zero is the null function pointer. A staged entry published
+        // there would be indistinguishable from "no entry" to the guest.
+        growTable(table, 1);
         index = 1;
       }
-      table.grow(1);
+      growTable(table, 1);
       this.#stagedSlot.set(token, index);
     }
-    table.set(index, target as unknown as Function);
+    setTableEntry(table, index, target as unknown as Function);
     this.#options.onTableMutation?.(table, index, 1);
     return index;
   }
@@ -632,16 +680,17 @@ export class DylinkLoader {
     const index = this.#stagedSlot.get(token);
     if (index === undefined) return;
     const table = this.#options.table();
-    table.set(index, null);
+    setTableEntry(table, index, null);
     this.#options.onTableMutation?.(table, index, 1);
     this.#stagedSlot.delete(token);
   }
 
   #nullTableRange(firstIndex: number, length: number): void {
     const table = this.#options.table();
+    const current = tableLength(table);
     for (let offset = 0; offset < length; offset++) {
       const index = firstIndex + offset;
-      if (index < table.length) table.set(index, null);
+      if (index < current) setTableEntry(table, index, null);
     }
     if (length > 0) this.#options.onTableMutation?.(table, firstIndex, length);
   }

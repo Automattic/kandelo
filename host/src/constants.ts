@@ -2424,6 +2424,21 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * Was this artifact produced by the legacy Asyncify transform?
+ *
+ * The transform is identified by its EXPORTS — `asyncify_start_unwind` and its
+ * four siblings — which is the same rule
+ * `crates/wasm-artifact`'s `ArtifactFacts::contains_legacy_asyncify` applies,
+ * and now literally the only rule: the two used to disagree.
+ *
+ * This used to scan the whole artifact for the ASCII bytes `asyncify_`, and
+ * that is a false positive on any artifact that merely MENTIONS the marker.
+ * `crates/kernel` links `crates/wasm-artifact`, so the kernel's data section
+ * carries that checker's own diagnostic string — and the byte scan therefore
+ * refused the kernel whose own policy authority would have admitted it. Every
+ * real-`dlopen` end-to-end test on this branch was gated behind that refusal.
+ */
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
   // WHY export names rather than a byte scan: this was
   // `containsAscii(bytes, "asyncify_")`, which flags any artifact that merely
@@ -2433,9 +2448,16 @@ export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
   // so the host's own resolver refused to load the kernel. A module is
   // Asyncify-instrumented when it exports the transform's entry points; that
   // is the property, and a mention of it is not.
-  return readWasmExportNames(programBytes).some((name) =>
-    name.startsWith("asyncify_")
-  );
+  try {
+    return readWasmExportNames(programBytes).some((name) =>
+      name.startsWith("asyncify_")
+    );
+  } catch {
+    // An unreadable container is a policy failure in its own right, reported by
+    // the caller. Claiming it is Asyncify-instrumented would name the wrong
+    // reason.
+    return false;
+  }
 }
 
 export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {

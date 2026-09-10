@@ -44,6 +44,52 @@ struct Executor {
     /// The parent's saved `GOT.func` indexes, as the activation coordinator
     /// would report them during a fork replay.
     saved_got_func: BTreeMap<String, u32>,
+    /// The process's linear memory, as far as the archive is concerned: a flat
+    /// image the archive planner allocates blocks in and writes records into.
+    guest: GuestMemory,
+}
+
+/// A stand-in for guest linear memory, with the process allocator's behaviour
+/// the archive depends on: 8-aligned blocks that are never reused while live.
+#[derive(Clone, Default)]
+struct GuestMemory {
+    bytes: Vec<u8>,
+    next: u64,
+}
+
+impl GuestMemory {
+    fn new() -> Self {
+        // Archive records are addressed absolutely, address zero means "no
+        // record", and the archive arena must not collide with the side-module
+        // mappings the same memory holds — the decoder checks that no two
+        // records overlap, and a collision reads as a corrupt archive rather
+        // than as the fixture bug it is.
+        GuestMemory { bytes: alloc_zeroed_image(1 << 20), next: 0x40_000 }
+    }
+
+    fn allocate(&mut self, size: u64) -> u64 {
+        let address = self.next;
+        self.next += size.next_multiple_of(8);
+        assert!(
+            self.next as usize <= self.bytes.len(),
+            "the archive fixture's memory is too small",
+        );
+        address
+    }
+
+    fn write(&mut self, address: u64, bytes: &[u8]) {
+        let start = address as usize;
+        self.bytes[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+
+    fn read(&self, address: u64, length: u64) -> Vec<u8> {
+        let start = address as usize;
+        self.bytes[start..start + length as usize].to_vec()
+    }
+}
+
+fn alloc_zeroed_image(size: usize) -> Vec<u8> {
+    vec![0u8; size]
 }
 
 impl Executor {
@@ -52,6 +98,7 @@ impl Executor {
             table_length,
             memory_cursor,
             next_activation: 1,
+            guest: GuestMemory::new(),
             ..Default::default()
         }
     }
@@ -117,6 +164,20 @@ impl Executor {
             HostRequest::SavedGotFunc { symbol, .. } => ActResult::Value(WasmValue::I32(
                 self.saved_got_func.get(&symbol).copied().unwrap_or(0),
             )),
+            HostRequest::AllocateArchive { size } => {
+                ActResult::Index(self.guest.allocate(size))
+            }
+            HostRequest::WriteArchive { address, bytes } => {
+                self.guest.write(address, &bytes);
+                ActResult::Done
+            }
+            HostRequest::ReadArchive { address, length } => {
+                ActResult::Bytes(Some(self.guest.read(address, length)))
+            }
+            HostRequest::PublishGeneration { address, generation } => {
+                self.guest.write(address, &generation.to_le_bytes());
+                ActResult::Done
+            }
             _ => ActResult::Done,
         }
     }
@@ -866,6 +927,302 @@ fn a_replay_asks_for_the_parents_saved_got_func_value() {
         cell.value,
         WasmValue::I32(37),
         "the cell holds the PARENT's index, not one re-derived here",
+    );
+}
+
+/// The archive a parent publishes is the archive a child reads.
+///
+/// The two halves are written and walked by different code — the sync planner
+/// lays records out and the walker follows their `next` pointers — so an
+/// agreement between them is not implied by either one's own tests. A child
+/// that cannot decode its parent's archive fails at `fork`, with nothing left
+/// to diagnose it from.
+#[test]
+fn a_published_archive_reads_back_as_what_was_published() {
+    let mut session = process_session();
+    let mut executor = Executor::new(4, 0x1000);
+    session.linker.scope.set_table_length(4);
+    executor.exports.insert(1, vec![InstanceExport::func("leaf_value")]);
+    executor.exports.insert(2, vec![InstanceExport::func("top")]);
+    executor
+        .files
+        .insert(String::from("/usr/lib/libleaf.so"), leaf("leaf_value"));
+
+    load(
+        &mut session,
+        &mut executor,
+        LoadRequest::new("libtop.so", consumer("top", &["libleaf.so"])),
+    )
+    .expect("load");
+
+    let published = session.fork_state().expect("capture");
+    let token = session.archive_sync_begin().expect("sync begins");
+    executor.drive(&mut session, token).expect("drive the publication");
+    let (head, generation) = session.archive_sync_finish(token).expect("finish");
+    assert!(head > 0, "the archive has a header");
+    assert_eq!(generation, 1, "the first publication is generation 1");
+
+    // Decoded from the flat image first. If this fails the WRITER is wrong; if
+    // only the walk below fails, the walker is. Keeping both keeps a future
+    // failure self-localizing.
+    let flat = fork_codec::dylink_archive::decode_dylink_archive(
+        executor.guest.bytes.as_slice(),
+        head,
+        4,
+    )
+    .expect("the published image decodes from flat memory");
+    assert_eq!(flat.generation, generation);
+
+    // A child starts from nothing and reads what the parent wrote.
+    let mut child = process_session();
+    let mut child_executor = Executor::new(4, 0x1000);
+    child_executor.guest = executor.guest.clone();
+    let token = child.archive_read_begin(head, 1 << 20).expect("read begins");
+    child_executor.drive(&mut child, token).expect("walk the record chain");
+    child.archive_read_finish(token).expect("decode");
+
+    let decoded = child.decoded_archive().expect("an archive was decoded");
+    assert_eq!(decoded.generation, generation);
+    assert_eq!(
+        decoded.modules.iter().map(|module| module.name.as_str()).collect::<Vec<_>>(),
+        published.modules.iter().map(|module| module.name.as_str()).collect::<Vec<_>>(),
+    );
+    for (read, wrote) in decoded.modules.iter().zip(&published.modules) {
+        assert_eq!(read.memory_base, wrote.memory_base, "{}", wrote.name);
+        assert_eq!(read.table_base, wrote.table_base, "{}", wrote.name);
+        assert_eq!(read.handle, wrote.handle, "{}", wrote.name);
+        assert_eq!(read.ref_count, wrote.ref_count, "{}", wrote.name);
+        assert_eq!(read.module_bytes, wrote.module_bytes, "{}", wrote.name);
+        assert_eq!(read.allocations, wrote.allocations, "{}", wrote.name);
+    }
+    assert_eq!(decoded.next_handle, published.next_handle);
+}
+
+/// A fork taken WHILE a staged `dlopen` is running publishes the transaction
+/// and the half-initialized object, and a child reads both back.
+///
+/// This is the shape the fork-after-dlopen suites take, and it is the one the
+/// simple round-trip above does not reach: an in-flight transaction record, and
+/// a module record carrying an initialization continuation.
+#[test]
+fn an_archive_published_mid_initialization_reads_back() {
+    let mut session = process_session();
+    let mut executor = Executor::new(4, 0x1000);
+    session.linker.scope.set_table_length(4);
+    executor.exports.insert(
+        1,
+        vec![InstanceExport::func("a"), InstanceExport::func("__wasm_call_ctors")],
+    );
+
+    let bytes = SideModule {
+        dylink: DylinkSection {
+            memory_size: 64,
+            memory_align: 4,
+            table_size: 1,
+            table_align: 0,
+            ..Default::default()
+        },
+        imports: vec![
+            Import::Memory { module: "env".into(), field: "memory".into() },
+            Import::immutable_global("env", "__memory_base"),
+            Import::immutable_global("env", "__table_base"),
+        ],
+        exports: vec![Export::func("a", 0), Export::func("__wasm_call_ctors", 1)],
+        ..Default::default()
+    }
+    .encode();
+
+    let token = session
+        .open_begin(LoadRequest::new("libctor.so", bytes))
+        .expect("begin");
+    // Drive to the constructors stage and stop there, as a `fork` from inside a
+    // constructor does.
+    loop {
+        let step = session.step(token).expect("step");
+        if let PlanStep::Call(call) = &step {
+            if call.stage == dylink::plan::InitializationStage::Constructors {
+                session.note_staged_slot(token, 7).expect("the driver published a slot");
+                break;
+            }
+        }
+        let result = match step {
+            PlanStep::Finished => panic!("the load finished without running constructors"),
+            PlanStep::Act(act) => executor.perform(act),
+            PlanStep::Host(request) => executor.perform_host(request),
+            PlanStep::Call(call) => {
+                executor.calls.push(call);
+                ActResult::Done
+            }
+        };
+        session.resume(token, result).expect("resume");
+    }
+
+    let captured = session.fork_state().expect("capture");
+    assert_eq!(captured.transactions.len(), 1, "the staged load is archived");
+    assert!(
+        captured.modules.iter().any(|module| module.initialization.is_some()),
+        "the half-initialized object carries its continuation",
+    );
+
+    let sync = session.archive_sync_begin().expect("sync begins");
+    executor.drive(&mut session, sync).expect("publish");
+    let (head, _) = session.archive_sync_finish(sync).expect("finish");
+
+    let mut child = process_session();
+    let mut child_executor = Executor::new(4, 0x1000);
+    child_executor.guest = executor.guest.clone();
+    let read = child.archive_read_begin(head, 1 << 20).expect("read begins");
+    child_executor.drive(&mut child, read).expect("walk");
+    child.archive_read_finish(read).expect("decode");
+
+    let decoded = child.decoded_archive().expect("an archive");
+    assert_eq!(decoded.transactions.len(), 1);
+    assert_eq!(decoded.transactions[0].name, "libctor.so");
+    let module = decoded
+        .modules
+        .iter()
+        .find(|module| module.name == "libctor.so")
+        .expect("the object is archived");
+    let initialization = module.initialization.expect("its continuation is archived");
+    assert_eq!(initialization.table_index, 7);
+}
+
+/// A fork taken at `wpk_fork_module_bootstrap` — before the object is committed
+/// to scope — still publishes a readable archive.
+///
+/// This is the case the format's referential rule bites on: a transaction must
+/// be claimed by exactly one module initialization, and at the bootstrap stage
+/// the planner has no committed record to carry the claim. The provisional
+/// record is what makes the publication legal, and a child needs it anyway to
+/// rebuild the object it is about to resume.
+///
+/// Bootstrap is the ONLY staged call that runs before the commit phase, and it
+/// exists only for a fork-instrumented object — which is why this is also the
+/// first fork-instrumented fixture in this file.
+#[test]
+fn an_archive_published_at_bootstrap_reads_back() {
+    let mut session = Session::new(LinkerConfig {
+        memory_bytes: 1 << 20,
+        fork_activation_available: true,
+        library_search_paths: vec![],
+        ..LinkerConfig::default()
+    });
+    let mut executor = Executor::new(4, 0x1000);
+    session.linker.scope.set_table_length(4);
+
+    let mut exports = vec![Export::func("a", 0)];
+    let mut reported = vec![InstanceExport::func("a")];
+    for (index, required) in wasm_posix_shared::abi::WPK_FORK_REQUIRED_EXPORTS.iter().enumerate() {
+        exports.push(Export::func(required.name, index as u32 + 1));
+        reported.push(InstanceExport::func(required.name));
+    }
+    executor.exports.insert(1, reported);
+
+    let bytes = SideModule {
+        dylink: DylinkSection {
+            memory_size: 64,
+            memory_align: 4,
+            table_size: 1,
+            table_align: 0,
+            ..Default::default()
+        },
+        imports: vec![
+            Import::Memory { module: "env".into(), field: "memory".into() },
+            Import::immutable_global("env", "__memory_base"),
+            Import::immutable_global("env", "__table_base"),
+        ],
+        exports,
+        ..Default::default()
+    }
+    .encode();
+
+    let token = session
+        .open_begin(LoadRequest::new("libearly.so", bytes))
+        .expect("begin");
+    loop {
+        let step = session.step(token).expect("step");
+        if let PlanStep::Call(call) = &step {
+            assert_eq!(
+                call.stage,
+                dylink::plan::InitializationStage::Bootstrap,
+                "bootstrap is the first staged call of an instrumented object",
+            );
+            session.note_staged_slot(token, 9).expect("the driver published a slot");
+            break;
+        }
+        let result = match step {
+            PlanStep::Finished => panic!("the load finished without a staged call"),
+            PlanStep::Act(act) => executor.perform(act),
+            PlanStep::Host(request) => executor.perform_host(request),
+            PlanStep::Call(_) => unreachable!("handled above"),
+        };
+        session.resume(token, result).expect("resume");
+    }
+
+    assert!(
+        !session.linker.scope.contains("libearly.so"),
+        "the object has not reached the planner's commit phase",
+    );
+    let captured = session.fork_state().expect("capture");
+    assert_eq!(captured.transactions.len(), 1);
+    assert_eq!(captured.modules.len(), 1, "the provisional record is published");
+    let provisional = &captured.modules[0];
+    assert_eq!(provisional.handle, None, "an initializing object has no handle");
+    assert_eq!(provisional.activation_id, Some(1), "its activation is reserved");
+    assert_eq!(
+        provisional.initialization.expect("a continuation").table_index,
+        9,
+    );
+
+    let sync = session.archive_sync_begin().expect("sync begins");
+    executor.drive(&mut session, sync).expect("publish");
+    let (head, _) = session.archive_sync_finish(sync).expect("finish");
+
+    let mut child = process_session();
+    let mut child_executor = Executor::new(4, 0x1000);
+    child_executor.guest = executor.guest.clone();
+    let read = child.archive_read_begin(head, 1 << 20).expect("read begins");
+    child_executor.drive(&mut child, read).expect("walk");
+    child.archive_read_finish(read).expect("decode");
+    let decoded = child.decoded_archive().expect("an archive");
+    assert_eq!(decoded.transactions.len(), 1);
+    assert_eq!(decoded.modules.len(), 1);
+    assert_eq!(decoded.modules[0].name, "libearly.so");
+    assert!(decoded.modules[0].initialization.is_some());
+}
+
+/// A second publication reuses the records whose bytes did not change, and the
+/// child still reads the whole image.
+#[test]
+fn a_republished_archive_still_reads_back() {
+    let mut session = process_session();
+    let mut executor = Executor::new(4, 0x1000);
+    session.linker.scope.set_table_length(4);
+    executor.exports.insert(1, vec![InstanceExport::func("a")]);
+    executor.exports.insert(2, vec![InstanceExport::func("b")]);
+
+    load(&mut session, &mut executor, LoadRequest::new("liba.so", leaf("a"))).expect("first");
+    let token = session.archive_sync_begin().expect("sync");
+    executor.drive(&mut session, token).expect("drive");
+    let (first_head, _) = session.archive_sync_finish(token).expect("finish");
+
+    load(&mut session, &mut executor, LoadRequest::new("libb.so", leaf("b"))).expect("second");
+    let token = session.archive_sync_begin().expect("sync");
+    executor.drive(&mut session, token).expect("drive");
+    let (head, generation) = session.archive_sync_finish(token).expect("finish");
+    assert_eq!(head, first_head, "the header keeps its address for the process's life");
+    assert_eq!(generation, 2);
+
+    let mut child = process_session();
+    let mut child_executor = Executor::new(4, 0x1000);
+    child_executor.guest = executor.guest.clone();
+    let token = child.archive_read_begin(head, 1 << 20).expect("read begins");
+    child_executor.drive(&mut child, token).expect("walk");
+    child.archive_read_finish(token).expect("decode");
+    let decoded = child.decoded_archive().expect("an archive");
+    assert_eq!(
+        decoded.modules.iter().map(|module| module.name.as_str()).collect::<Vec<_>>(),
+        vec!["liba.so", "libb.so"],
     );
 }
 

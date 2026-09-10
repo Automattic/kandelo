@@ -28,6 +28,7 @@ import {
   type LoaderTableState,
 } from "./dylink-loader";
 import { DylinkForkTableReplica } from "./dylink-table-replica";
+import { getTableEntry, tableLength } from "./dylink-planner";
 import type { MainImage, SymbolValue } from "./dylink-planner-wire";
 import {
   describeWasmArtifactPolicyFailures,
@@ -680,8 +681,9 @@ function describeMainImage(
 ): MainImage {
   const exports: [string, SymbolValue][] = [];
   const elementSlots: [bigint, number, string][] = [];
+  const length = tableLength(table);
   if (!instance) {
-    return { tableLength: BigInt(table.length), exports, elementSlots };
+    return { tableLength: BigInt(length), exports, elementSlots };
   }
   const byFunction = new Map<Function, string>();
   for (const [name, exported] of Object.entries(instance.exports)) {
@@ -707,10 +709,10 @@ function describeMainImage(
       ]);
     }
   }
-  for (let slot = 0; slot < table.length; slot++) {
+  for (let slot = 0; slot < length; slot++) {
     let entry: unknown;
     try {
-      entry = table.get(slot);
+      entry = getTableEntry(table, slot);
     } catch {
       // A table whose element type this embedding cannot read back is not a
       // funcref table the loader can index; leave it out rather than guess.
@@ -720,7 +722,7 @@ function describeMainImage(
     const name = byFunction.get(entry as Function);
     if (name !== undefined) elementSlots.push([BigInt(slot), 0, name]);
   }
-  return { tableLength: BigInt(table.length), exports, elementSlots };
+  return { tableLength: BigInt(length), exports, elementSlots };
 }
 
 export interface DlopenSupport {
@@ -743,6 +745,15 @@ export interface DlopenSupport {
   resetForkChildLock: () => void;
   /** The process's loader, which owns the archive. */
   readonly loader: () => DylinkLoader;
+  /**
+   * The publication fence, read straight from process memory.
+   *
+   * Separate from {@link DlopenSupport.loader} because a caller can need the
+   * generation before a loader can exist: the loader requires the main image's
+   * table and stack pointer, and a table replica is built while the worker is
+   * still assembling itself.
+   */
+  readonly archiveGeneration: () => number;
   /** Acquire one reentrant process-archive writer depth, blocking if needed. */
   acquireArchiveWriter(): void;
   /** Release exactly one writer depth acquired by this Worker. */
@@ -1948,10 +1959,6 @@ export function buildDlopenImports(
 
   const getLinker = (): DylinkLoader => {
     if (linker) return linker;
-    const table = getTable();
-    const sp = getStackPointer();
-    if (!table || !sp)
-      throw new Error("dlopen: program has no table or stack pointer");
     if (!plannerModule) {
       // The planner is the loader. Without it there is no `dlopen` at all, and
       // saying so here is the truthful failure: a process that silently loaded
@@ -2035,7 +2042,14 @@ export function buildDlopenImports(
       },
     );
     created.adoptProcessTags(canonicalLongjmpTag, canonicalCppExceptionTag);
-    created.publishMainImage(describeMainImage(inst, table));
+    // Deferred: a fork child builds a loader to READ the archive it inherited,
+    // before it has instantiated anything. That read needs no scope, and
+    // demanding a table and stack pointer for it named the wrong thing.
+    created.setMainImage(() => {
+      const current = getTable();
+      if (!current) throw new Error("dlopen: program has no table");
+      return describeMainImage(getInstance(), current);
+    });
     linker = created;
     return linker;
   };
@@ -2441,6 +2455,8 @@ export function buildDlopenImports(
     replayDlopens,
     resetForkChildLock,
     loader: getLinker,
+    archiveGeneration: () =>
+      readArchiveHead() === 0 ? 0 : readGenerationFence(),
     acquireArchiveWriter,
     releaseArchiveWriter: releaseMainDlopenLock,
     acquireArchiveReader,
@@ -3039,7 +3055,8 @@ function createProcessTableReplicationOwner(options: {
     arena.release();
   };
   const replica = new DylinkForkTableReplica(
-    options.dlopen.loader(),
+    options.dlopen.archiveGeneration,
+    options.dlopen.loader,
     (snapshot, previousGeneration) => {
       options.materializeModules();
       if (suppressInitialSnapshotRestore) {
@@ -3074,7 +3091,7 @@ function createProcessTableReplicationOwner(options: {
     // syscall returns. Adopt the exact immutable generation the child has
     // already materialized so side-module guards report truthful state
     // without attempting to mutate either archive lock word.
-    replica.adoptPublishedGeneration(options.dlopen.loader().generation());
+    replica.adoptPublishedGeneration(options.dlopen.archiveGeneration());
   }
 
   const reconcileLocked = (): number => {
@@ -3227,7 +3244,7 @@ function createProcessTableReplicationOwner(options: {
     },
     reconcileNow,
     isCurrentUnderLock: () =>
-      replica.generation() === options.dlopen.loader().generation(),
+      replica.generation() === options.dlopen.archiveGeneration(),
     abortActiveMutations,
   };
 }
@@ -7251,7 +7268,7 @@ export async function centralizedThreadWorkerMain(
       WebAssembly.Global | undefined;
     if (
       (!threadTable || !threadStackPointer) &&
-      threadDlopenSupport.loader().generation() !== 0
+      threadDlopenSupport.archiveGeneration() !== 0
     ) {
       throw new Error(
         `pid=${pid} tid=${tid}: process has dlopen table recipes but ` +

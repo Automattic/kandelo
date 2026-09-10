@@ -129,8 +129,11 @@ struct LoadFlow {
     completed: Vec<String>,
     /// Work decided together and emitted one at a time.
     queue: VecDeque<PlanStep>,
-    /// Which library's constructors are running, for provider-edge recording.
-    constructing: Option<String>,
+    /// The staged call currently issued to the guest: which object, and which
+    /// stage. A fork taken here must archive BOTH the transaction and a
+    /// provisional record for the object, because the archive format requires
+    /// every staged transaction to be claimed by exactly one initialization.
+    current_stage: Option<(String, InitializationStage)>,
     /// The table slot the driver published the last staged `() -> ()` entry
     /// into, so a fork capture can record where the child must resume.
     staged_slot: Option<u64>,
@@ -195,6 +198,21 @@ pub struct Session {
     resolved_paths: BTreeMap<String, String>,
     /// Replay inputs for a fork reconcile in progress.
     replay_modules: BTreeMap<String, ReplayModule>,
+    /// Objects whose link is IN FLIGHT: a plan has begun for them and has not
+    /// committed.
+    ///
+    /// They are as present as a committed object for the purpose of deciding
+    /// what still needs loading. A staged initializer runs GUEST code, and that
+    /// guest code can re-enter the loader — a pthread peer reconciling, or the
+    /// archive writer lock's acquire hook — so a second look at the same object
+    /// must see it as already being built. Without this the second look starts
+    /// a second plan, and the process coordinator refuses the duplicate
+    /// activation with "side-module activation id N was claimed twice".
+    ///
+    /// This is what `LoadState::Initializing` is for, and what `dylink.ts` got
+    /// by keeping a provisional entry in `loadedLibraries` from the moment the
+    /// object had a layout.
+    in_flight: BTreeSet<String>,
     /// What this process has published into guest memory, and where.
     published: ArchiveState,
     /// The archive the last [`Session::archive_read_begin`] decoded.
@@ -215,6 +233,7 @@ impl Session {
             next_token: 1,
             resolved_paths: BTreeMap::new(),
             replay_modules: BTreeMap::new(),
+            in_flight: BTreeSet::new(),
             published: ArchiveState::default(),
             archive: None,
             table_patches: Vec::new(),
@@ -231,6 +250,15 @@ impl Session {
 
     pub fn contains(&self, token: u32) -> bool {
         self.transactions.contains_key(&token)
+    }
+
+    /// Is this object loaded, or being loaded right now?
+    ///
+    /// The two are the same answer to "does this still need loading", and
+    /// conflating them is what keeps a re-entrant reconcile from starting a
+    /// second plan for an object already under construction.
+    fn is_present(&self, library: &str) -> bool {
+        self.linker.scope.contains(library) || self.in_flight.contains(library)
     }
 
     /// Has `token`'s drive loop reached `Finished`?
@@ -320,7 +348,7 @@ impl Session {
     pub fn open_begin(&mut self, request: LoadRequest) -> DylinkResult<u32> {
         let token = self.allocate_token()?;
         let table_growth_start = self.linker.scope.table_length();
-        let already_loaded = self.linker.scope.contains(&request.name);
+        let already_loaded = self.is_present(&request.name);
         if already_loaded && request.replay.is_some() {
             // A parent archive lists each object once. Two records for one name
             // would mean the child had already reconstructed it, and replaying
@@ -345,7 +373,7 @@ impl Session {
             pending_roots: VecDeque::new(),
             completed: Vec::new(),
             queue: VecDeque::new(),
-            constructing: None,
+            current_stage: None,
             staged_slot: None,
             commit_planned: false,
             finished: false,
@@ -414,6 +442,7 @@ impl Session {
                 // when it began, which already includes the dependencies below
                 // it in the stack.
                 while let Some(frame) = flow.frames.pop() {
+                    self.in_flight.remove(&frame.request.name);
                     if let Some(plan) = frame.plan {
                         for request in plan.rollback(&mut self.linker) {
                             steps.push_back(PlanStep::Host(request));
@@ -544,7 +573,10 @@ impl Session {
         let Some(owner) = owner else { return };
         let consumer = self.transactions.values().rev().find_map(|transaction| {
             match &transaction.flow {
-                Flow::Load(flow) => flow.constructing.clone(),
+                Flow::Load(flow) => match &flow.current_stage {
+                    Some((library, InitializationStage::Constructors)) => Some(library.clone()),
+                    _ => None,
+                },
                 _ => None,
             }
         });
@@ -785,7 +817,7 @@ impl Session {
         }
         if load.frames.is_empty() {
             if let Some(request) = load.pending_roots.pop_front() {
-                if self.linker.scope.contains(&request.name) {
+                if self.is_present(&request.name) {
                     // Already rebuilt, by this reconcile or by a peer worker
                     // that got there first. Its identity was verified when the
                     // reconcile was admitted.
@@ -829,7 +861,7 @@ impl Session {
                 ));
             }
             while let Some(dependency) = load.frames[last].needed.pop_front() {
-                if self.linker.scope.contains(&dependency) {
+                if self.is_present(&dependency) {
                     continue;
                 }
                 if let Some(replay) = self.replay_modules.get(&dependency) {
@@ -847,7 +879,9 @@ impl Session {
                 return Ok(Advance::Again);
             }
             let request = load.frames[last].request.clone();
+            let name = request.name.clone();
             let plan = LinkPlan::begin(&mut self.linker, request)?;
+            self.in_flight.insert(name);
             load.frames[last].plan = Some(plan);
         }
 
@@ -856,16 +890,15 @@ impl Session {
             PlanStep::Finished => {
                 let plan = load.frames[last].plan.take().expect("plan installed above");
                 let library = plan.finish(&self.linker)?;
+                self.in_flight.remove(&library.name);
                 load.completed.push(library.name.clone());
-                load.constructing = None;
+                load.current_stage = None;
                 load.frames.pop();
                 Ok(Advance::Again)
             }
             step @ PlanStep::Call(_) => {
                 if let PlanStep::Call(call) = &step {
-                    if call.stage == InitializationStage::Constructors {
-                        load.constructing = Some(call.library.clone());
-                    }
+                    load.current_stage = Some((call.library.clone(), call.stage));
                 }
                 Ok(Advance::Emit(step, Awaiting::Plan))
             }
@@ -1091,6 +1124,12 @@ impl Session {
             let Some(frame) = load.frames.first() else {
                 continue;
             };
+            // The transaction and the claim on it are published together: an
+            // archive naming a transaction nothing initializes is refused by
+            // the format, and a child would have nothing to resume.
+            if let Some(provisional) = self.provisional_module(*token, load)? {
+                modules.push(provisional);
+            }
             transactions.push(DylinkTransaction {
                 token: *token,
                 name: load.root.clone(),
@@ -1115,28 +1154,95 @@ impl Session {
     /// The continuation record for an object whose initialization is suspended
     /// inside a live transaction.
     fn initialization_for(&self, library: &str) -> Option<DylinkInitialization> {
+        self.suspended_initialization(library)
+            .map(|(token, stage, table_index)| DylinkInitialization {
+                transaction_token: token,
+                stage: archive_stage(stage),
+                table_index,
+            })
+    }
+
+    /// Which transaction, stage and table slot `library`'s suspended
+    /// initialization belongs to.
+    fn suspended_initialization(
+        &self,
+        library: &str,
+    ) -> Option<(u32, InitializationStage, u64)> {
         for (token, transaction) in &self.transactions {
             let Flow::Load(load) = &transaction.flow else {
                 continue;
             };
-            let (Some(constructing), Some(table_index)) =
-                (load.constructing.as_deref(), load.staged_slot)
+            let (Some((staged, stage)), Some(table_index)) =
+                (load.current_stage.as_ref(), load.staged_slot)
             else {
                 continue;
             };
-            if constructing != library {
+            if staged != library {
                 continue;
             }
-            return Some(DylinkInitialization {
-                transaction_token: *token,
-                // `constructing` is only ever set for the constructors stage;
-                // the earlier stages run before the object is in scope, so
-                // there is nothing to attach a record to.
-                stage: DylinkInitializationStage::Constructors,
-                table_index,
-            });
+            return Some((*token, *stage, table_index));
         }
         None
+    }
+
+    /// The provisional record an in-flight load owes the archive.
+    ///
+    /// The format requires every staged transaction to be claimed by exactly
+    /// ONE module initialization. A load suspended in `wpk_fork_module_bootstrap`
+    /// or `__wasm_apply_data_relocs` has not reached the planner's commit phase,
+    /// so its object is not in scope yet and no committed record can carry that
+    /// claim — but the transaction is real, its layout is decided, and a child
+    /// has to rebuild the object to resume it. So the record is synthesized from
+    /// the plan, exactly as `dylink.ts` kept a provisional entry in
+    /// `loadedLibraries` marked `initializing` from the moment the object had a
+    /// layout.
+    ///
+    /// It carries no handle: an initializing object has not been opened, and the
+    /// decoder refuses a record that claims both.
+    fn provisional_module(
+        &self,
+        token: u32,
+        load: &LoadFlow,
+    ) -> DylinkResult<Option<DylinkModule>> {
+        let (Some((library, stage)), Some(table_index)) =
+            (load.current_stage.as_ref(), load.staged_slot)
+        else {
+            return Ok(None);
+        };
+        if self.linker.scope.contains(library) {
+            // Already committed: the real record carries the claim.
+            return Ok(None);
+        }
+        let Some(frame) = load.frames.last() else {
+            return Ok(None);
+        };
+        let Some(plan) = frame.plan.as_ref() else {
+            return Ok(None);
+        };
+        if plan.library_name() != library {
+            return Ok(None);
+        }
+        let module_bytes = frame.request.module_bytes.clone();
+        Ok(Some(DylinkModule {
+            name: library.clone(),
+            digest: dylink_module_template_digest(&module_bytes),
+            module_bytes,
+            memory_base: plan.memory_base(),
+            table_base: plan.table_base(),
+            tls_base: plan.tls_base(),
+            activation_id: plan.activation_id(),
+            handle: None,
+            ref_count: None,
+            global_visibility: frame.request.global_visibility,
+            committed_global_root: false,
+            provider_dependencies: Vec::new(),
+            allocations: plan.allocations().to_vec(),
+            initialization: Some(DylinkInitialization {
+                transaction_token: token,
+                stage: archive_stage(*stage),
+                table_index,
+            }),
+        }))
     }
 
     /// Adopt a parent's archive: rebuild every object it names that this
@@ -1167,7 +1273,10 @@ impl Session {
         }
         let mut pending_roots = VecDeque::new();
         for module in &archive.modules {
-            if self.linker.scope.contains(&module.name) {
+            if self.is_present(&module.name) {
+                // An object already rebuilt — by a peer, or by a reconcile this
+                // guest code re-entered — is VERIFIED against the record rather
+                // than rebuilt a second time.
                 self.require_matching_identity(module)?;
                 continue;
             }
@@ -1198,7 +1307,7 @@ impl Session {
                     pending_roots,
                     completed: Vec::new(),
                     queue: VecDeque::new(),
-                    constructing: None,
+                    current_stage: None,
                     staged_slot: None,
                     commit_planned: false,
                     finished: false,
@@ -1263,11 +1372,17 @@ impl Session {
     ///
     /// `head` of zero is a process that has never published, which decodes to
     /// nothing rather than to an error.
-    pub fn archive_read_begin(&mut self, head: u64) -> DylinkResult<u32> {
+    ///
+    /// `memory_len` is the CURRENT size of guest linear memory, not the size
+    /// this session was configured with. Memory grows, and a record allocated
+    /// past the configured size would be refused as out of bounds — a stale
+    /// bound reads as a corrupt archive, which is the least diagnosable failure
+    /// this format has.
+    pub fn archive_read_begin(&mut self, head: u64, memory_len: u64) -> DylinkResult<u32> {
         let token = self.allocate_token()?;
         let pointer_width = u8::try_from(self.linker.config.pointer_width.bytes())
             .map_err(|_| DylinkError::MalformedModule("invalid pointer width"))?;
-        let walk = ArchiveWalk::new(head, pointer_width, self.linker.config.memory_bytes);
+        let walk = ArchiveWalk::new(head, pointer_width, memory_len);
         self.transactions.insert(
             token,
             Transaction {
@@ -1515,6 +1630,15 @@ fn replay_request(name: &str, replay: &ReplayModule, borrowed: bool) -> LoadRequ
         global_visibility: replay.inputs.global_visibility,
         replay: Some(replay.inputs.clone()),
         borrowed_memory: borrowed,
+    }
+}
+
+/// The archive's spelling of an initialization stage.
+fn archive_stage(stage: InitializationStage) -> DylinkInitializationStage {
+    match stage {
+        InitializationStage::Bootstrap => DylinkInitializationStage::Bootstrap,
+        InitializationStage::Relocations => DylinkInitializationStage::Relocations,
+        InitializationStage::Constructors => DylinkInitializationStage::Constructors,
     }
 }
 

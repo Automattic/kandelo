@@ -34,8 +34,17 @@ export type DylinkTableStateApply = (
 export class DylinkForkTableReplica {
   #appliedGeneration = 0;
 
+  /**
+   * `publishedGeneration` reads the process's fence directly and constructs
+   * nothing. `loader` is deliberately a thunk: a replica is created while the
+   * process worker is still assembling itself, and the loader cannot exist
+   * until the main instance has a table and a stack pointer. Forcing it here
+   * would fail every process that has a table replica — which is every
+   * fork-instrumented one.
+   */
   constructor(
-    private readonly loader: DylinkLoader,
+    private readonly publishedGeneration: () => number,
+    private readonly loader: () => DylinkLoader,
     private readonly apply: DylinkTableStateApply,
     private readonly label: string,
   ) {}
@@ -76,10 +85,11 @@ export class DylinkForkTableReplica {
    * archive another Worker is still writing.
    */
   reconcile(): boolean {
-    const published = this.loader.generation();
+    const published = this.publishedGeneration();
     if (published === this.#appliedGeneration) return false;
-    this.loader.readArchive();
-    const state = this.loader.tableState();
+    const loader = this.loader();
+    loader.readArchive();
+    const state = loader.tableState();
     const previous = this.#appliedGeneration;
     this.apply(state, previous);
     this.#appliedGeneration = Math.max(published, state.generation);

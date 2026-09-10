@@ -289,9 +289,35 @@ const forkModuleModuleByWidth = new Map<4 | 8, WebAssembly.Module>();
 let injectedForkModuleBytesByWidth: Partial<
   Record<4 | 8, ArrayBuffer | Uint8Array>
 > = {};
+/**
+ * The dynamic-linking planner. Width-independent — a wasm64 process can
+ * `dlopen` too — so it is attached for both widths, exactly as
+ * `node-kernel-worker-entry.ts` does.
+ */
+let dylinkModuleModuleCache: WebAssembly.Module | null = null;
+function centralizedDylinkModuleField():
+  | { dylinkModuleModule: WebAssembly.Module }
+  | Record<string, never> {
+  if (!dylinkModuleModuleCache) {
+    try {
+      dylinkModuleModuleCache = new WebAssembly.Module(
+        readFileSync(resolveBinary("dylink_module32.wasm")),
+      );
+    } catch {
+      // A worker without it fails loudly the first time a guest calls
+      // `dlopen`, which is where the missing capability actually matters.
+      return {};
+    }
+  }
+  return { dylinkModuleModule: dylinkModuleModuleCache };
+}
+
 function centralizedForkModuleFields(
   ptrWidth: 4 | 8,
-): { forkModuleModule: WebAssembly.Module } {
+): {
+  forkModuleModule: WebAssembly.Module;
+  dylinkModuleModule?: WebAssembly.Module;
+} {
   let mod = forkModuleModuleByWidth.get(ptrWidth);
   if (!mod) {
     const injected = injectedForkModuleBytesByWidth[ptrWidth];
@@ -306,7 +332,7 @@ function centralizedForkModuleFields(
     }
     forkModuleModuleByWidth.set(ptrWidth, mod);
   }
-  return { forkModuleModule: mod };
+  return { forkModuleModule: mod, ...centralizedDylinkModuleField() };
 }
 
 /**

@@ -91,6 +91,7 @@ function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
     replayDlopens: () => {},
     resetForkChildLock: () => {},
     loader: () => archive.loader,
+    archiveGeneration: () => archive.generation(),
     acquireArchiveWriter: () => {
       if (writerDepth++ === 0) writerObserver();
     },

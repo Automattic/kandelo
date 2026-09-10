@@ -789,6 +789,16 @@ impl LinkPlan {
         self.activation_id
     }
 
+    /// The process mappings this plan has taken so far.
+    ///
+    /// A fork during a staged load has to archive them: the child adopts the
+    /// same mappings rather than allocating its own, and an object rebuilt at
+    /// different addresses would invalidate every relocation the parent had
+    /// already written into copied memory.
+    pub fn allocations(&self) -> &[DylinkAllocation] {
+        &self.allocations
+    }
+
     /// The ordered import bindings, available once the plan has emitted
     /// [`LinkAct::Instantiate`]. Exposed for the differential harness.
     pub fn bindings(&self) -> Option<&[ImportBinding]> {

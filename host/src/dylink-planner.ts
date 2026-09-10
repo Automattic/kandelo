@@ -110,7 +110,7 @@ interface PlannerExports {
   readonly dl_sym_address: (token: number) => bigint;
   readonly dl_close_begin: (handle: number) => number;
   readonly dl_close_result: (token: number) => number;
-  readonly dl_archive_read_begin: (head: bigint) => number;
+  readonly dl_archive_read_begin: (head: bigint, memoryLen: bigint) => number;
   readonly dl_archive_read_finish: (token: number) => number;
   readonly dl_archive_sync_begin: () => number;
   readonly dl_archive_sync_finish: (token: number) => number;
@@ -124,6 +124,64 @@ interface PlannerExports {
   readonly dl_archive_modules: () => number;
   readonly dl_fork_reconcile_begin: (borrowed: number) => number;
   readonly dl_fork_reconcile_finish: (token: number) => number;
+}
+
+/**
+ * A `WebAssembly.Table` addressed at its own index width.
+ *
+ * A `table64` — which a `wasm64posix` process has — takes and returns `BigInt`
+ * indices, and passing it a `number` throws "Cannot convert 1 to a BigInt". The
+ * width is discovered from the table itself rather than assumed from the
+ * process pointer width, because the two are separate declarations and an
+ * artifact is free to disagree with its host's expectation. The planner speaks
+ * in `u64` throughout; this is the one place the JS API's width shows.
+ */
+interface AddressedTable {
+  readonly length: number | bigint;
+  grow(delta: number | bigint): number | bigint;
+  get(index: number | bigint): unknown;
+  set(index: number | bigint, value: Function | null): void;
+}
+
+function tableIndex(table: WebAssembly.Table, value: number): number | bigint {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`dylink: table index ${value} is not an exact non-negative integer`);
+  }
+  return typeof (table as unknown as AddressedTable).length === "bigint"
+    ? BigInt(value)
+    : value;
+}
+
+/** The table's current length, as an exact JavaScript integer. */
+export function tableLength(table: WebAssembly.Table): number {
+  const raw = (table as unknown as AddressedTable).length;
+  const length = Number(raw);
+  if (!Number.isSafeInteger(length)) {
+    throw new RangeError("dylink: table length exceeds JavaScript's exact integer range");
+  }
+  return length;
+}
+
+/** Grow the table, returning the length BEFORE the growth. */
+export function growTable(table: WebAssembly.Table, delta: number): number {
+  const before = (table as unknown as AddressedTable).grow(tableIndex(table, delta));
+  const length = Number(before);
+  if (!Number.isSafeInteger(length)) {
+    throw new RangeError("dylink: table length exceeds JavaScript's exact integer range");
+  }
+  return length;
+}
+
+export function setTableEntry(
+  table: WebAssembly.Table,
+  index: number,
+  value: Function | null,
+): void {
+  (table as unknown as AddressedTable).set(tableIndex(table, index), value);
+}
+
+export function getTableEntry(table: WebAssembly.Table, index: number): unknown {
+  return (table as unknown as AddressedTable).get(tableIndex(table, index));
 }
 
 /** A planner call that failed, carrying the module's own `dlerror` text. */
@@ -379,8 +437,11 @@ export class PlannerSession {
    * `head` of zero is a process that has never published, which decodes to
    * nothing rather than to an error.
    */
-  archiveReadBegin(head: bigint): number {
-    return this.#token(this.#exports.dl_archive_read_begin(head), "dl_archive_read_begin");
+  archiveReadBegin(head: bigint, memoryLen: bigint): number {
+    return this.#token(
+      this.#exports.dl_archive_read_begin(head, memoryLen),
+      "dl_archive_read_begin",
+    );
   }
 
   archiveReadFinish(token: number): void {
@@ -501,8 +562,16 @@ export class PlannerSession {
  */
 export interface DylinkEngineEnvironment {
   readonly memory: WebAssembly.Memory;
-  readonly table: WebAssembly.Table;
-  readonly stackPointer: WebAssembly.Global;
+  /**
+   * The process's indirect function table and stack pointer, resolved lazily.
+   *
+   * A loader exists before the main image does: a fork child reads the archive
+   * it inherited before it has instantiated anything. Taking these eagerly made
+   * that read fail with "program has no table or stack pointer", which named
+   * the wrong thing entirely — the read needs neither.
+   */
+  readonly table: () => WebAssembly.Table;
+  readonly stackPointer: () => WebAssembly.Global;
   /** The main image, bound at `InstanceId` 0. */
   readonly mainInstance: () => WebAssembly.Instance | undefined;
   /**
@@ -852,7 +921,7 @@ export class DylinkActExecutor {
         // `Table.prototype.grow` returns the PREVIOUS length, which is what the
         // planner asked for. Reading `table.length` separately would be a
         // second observation of a value the call already reported.
-        const before = this.#environment.table.grow(Number(act.delta));
+        const before = growTable(this.#environment.table(), Number(act.delta));
         return { result: "index", index: BigInt(before) };
       }
       case "writeTable": {
@@ -860,7 +929,7 @@ export class DylinkActExecutor {
           act.value.kind === "null"
             ? null
             : (this.#requireExport(act.value.instance, act.value.name) as Function);
-        this.#environment.table.set(Number(act.index), value);
+        setTableEntry(this.#environment.table(), Number(act.index), value);
         return { result: "done" };
       }
       case "growMemory": {
@@ -1006,9 +1075,9 @@ export class DylinkActExecutor {
       case "processMemory":
         return this.#environment.memory;
       case "processTable":
-        return this.#environment.table;
+        return this.#environment.table();
       case "processStackPointer":
-        return this.#environment.stackPointer;
+        return this.#environment.stackPointer();
       case "global":
         return this.#requireGlobal(binding.value.global);
       case "tag": {

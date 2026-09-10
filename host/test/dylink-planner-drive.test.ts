@@ -127,8 +127,8 @@ describe("the Rust planner drives a real side module", () => {
 
     const environment: DylinkEngineEnvironment = {
       memory,
-      table,
-      stackPointer,
+      table: () => table,
+      stackPointer: () => stackPointer,
       mainInstance: () => undefined,
       activationEnv: (name) => {
         throw new Error(`unexpected activation import ${name}`);
@@ -270,8 +270,8 @@ describe("the Rust planner drives a real side module", () => {
     const executor = new DylinkActExecutor(
       {
         memory,
-        table,
-        stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
+        table: () => table,
+        stackPointer: () => new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
         mainInstance: () => undefined,
         activationEnv: (name) => {
           throw new Error(`unexpected activation import ${name}`);
@@ -406,8 +406,8 @@ describe("the contracts the dlopen cutover needed, now closed", () => {
     return new DylinkActExecutor(
       {
         memory,
-        table,
-        stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
+        table: () => table,
+        stackPointer: () => new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
         mainInstance: () => undefined,
         activationEnv: (name) => {
           throw new Error(`unexpected activation import ${name}`);

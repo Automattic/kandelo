@@ -616,9 +616,14 @@ pub extern "C" fn dl_close_result(token: u32) -> i32 {
 ///
 /// A `head` of zero is a process that has never published, which decodes to
 /// nothing rather than to an error.
+///
+/// `memory_len` is the CURRENT size of guest linear memory. Memory grows, and a
+/// record allocated past the size this session was configured with would be
+/// refused as out of bounds — a stale bound reads as a corrupt archive, which
+/// is the least diagnosable failure this format has.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_archive_read_begin(head: u64) -> i32 {
-    with_session_i64(|state| Ok(i64::from(state.archive_read_begin(head)?))) as i32
+pub extern "C" fn dl_archive_read_begin(head: u64, memory_len: u64) -> i32 {
+    with_session_i64(|state| Ok(i64::from(state.archive_read_begin(head, memory_len)?))) as i32
 }
 
 /// Keep what the read walked as this session's view of the archive.
