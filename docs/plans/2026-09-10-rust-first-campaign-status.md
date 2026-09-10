@@ -1604,6 +1604,103 @@ whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 - **A base reproduction shows authorship, not innocence** — a defect may have
   entered hours earlier. One of the coordinator's own was caught this way.
 - **Never `git add -A docs/plans/`** — it sweeps other agents' in-progress files.
+- **Twelve inherited "floors" have been disproved, six of them the
+  coordinator's.** Measure rather than inherit.
+
+## K5 I6b — the cutover contract, measured (2026-09-10)
+
+I6b was scoped as "the KFLA encoder, the TypeScript driver/executor, the
+`worker-main.ts` rewire, and the deletion". Two of those four are now done and
+**exercised**, not dormant. The rewire is not, and the reason is a gap the scope
+did not name: **`crates/dylink-module`'s 21 exports cover the LOAD path and the
+simple query path, and nothing else.** Six of the thirteen `DynamicLinker`
+methods `worker-main.ts` calls have no host↔module contract at all.
+
+This is the I6a lesson again, one level up. **Silence in a work contract reads
+as completeness**: the brief enumerated what was left to WRITE and was silent
+about what the module could not yet be ASKED, so the item looked like a rewire
+and is a second increment of comparable size to I6a.
+
+### Landed and exercised
+
+| what | evidence |
+|---|---|
+| KFLA archive **writer** (`fork_codec::dylink_archive::encode`) | re-encodes the committed TypeScript-written fixture **byte for byte** at its own record addresses, 6/6 |
+| TS wire codec + eight-act executor (`host/src/dylink-planner*.ts`) | drives a real `wasm32posix-cc -shared` `.so` to a live instance, calls into it, mutates its data segment, `dl_sym`s it, `dl_close`s it — 6/6 |
+
+The byte-for-byte fixture match also settled two open questions: the KFLM/KFLT
+template digest is plain SHA-256 over the module bytes, and the KFLT header's
+72..80 tail is reserved zero.
+
+Two findings the drive test produced rather than assumed: an SDK-built side
+module imports **shared** memory with a declared maximum (a non-shared test
+memory fails instantiation with a shared-state mismatch), and an object whose
+only static is never written is constant-folded and needs no `__memory_base` at
+all — the first version of that test passed while proving less than it looked
+like it did.
+
+### The six missing contracts, each verified against a call site
+
+1. **Dependency resolution.** `loadSharedLibrary` resolves `DT_NEEDED`
+   recursively through `resolveLibrarySync` (`dylink.ts:2486-2491`).
+   `LinkPlan::begin` requires every dependency already in scope, there is no
+   `HostRequest::ResolveDependency`, and no entry point reports an image's
+   NEEDED list. A driver would have to parse `dylink.0` in TypeScript — linker
+   policy in TypeScript, which is the thing this item exists to remove.
+2. **`dlsym` address materialization.** `__wasm_dlsym` must return a guest
+   scalar. `dylink.ts:4037-4067` scans the table for JS `Function` identity and
+   appends a slot when absent; `dl_sym` returns a `ResolvedSymbol` naming
+   `(instance, export)`. The Rust replacement for that scan already exists —
+   `LinkerScope::function_table_index` / `record_function_slot`, the D5 design —
+   but is not exported, so the driver cannot answer without either a new entry
+   point that drives `GrowTable`/`WriteTable`, or re-implementing the scan in
+   TypeScript.
+3. **Multi-transaction sessions.** `worker-main.ts` keeps a `Map` of pending
+   tokens (`ownedDlopenTransactions`) and `dylink.ts` a `pendingDlopens` map;
+   `dl_open_begin` refuses a second concurrent load outright, and its own docs
+   say so. A constructor that calls `dlopen` is legal POSIX, and
+   `LoadState::Initializing` exists precisely for it.
+4. **Fork-state capture.** `forkArchive.sync(linker.forkState())` runs after
+   every staged step, every commit and every `dlclose`. There is no
+   `dl_fork_state`, and `LoadedLibrary` gained `module_bytes` here as the first
+   half of making one possible.
+5. **Fork reconcile.** `reconcileForkModules` + `reconcileForkHandleState` are
+   peer-publication reconciliation across pthread workers: incremental identity
+   verification, visibility and provider-edge drift adoption, consumer-before-
+   provider removal. No Rust counterpart.
+6. **`dlclose` unload details.** Releasing an object must clear its owned table
+   slots and release its allocations; `owned_table_entries` and `allocations`
+   live on `LoadedLibrary` and are not reachable from the module surface.
+
+Two smaller ones in the same family: `recordConstructorProvider` records a
+provider edge from a constructor-time `dlsym` onto whichever object is in its
+`constructors` stage, which crosses `dl_sym` and the in-flight plan; and
+`dl_open_finish` has no way to report the layout the archive must record for a
+library that finished, only for one still in flight.
+
+### NEEDS-DEFER-DECISION — NDD-K5-1
+
+**What:** the `worker-main.ts` rewire and the deletion of `host/src/dylink.ts`
+(4,188) and `host/src/dylink-fork-archive.ts` (2,152).
+
+**Why not now:** the six contracts above. Each is a decision that must live in
+`crates/dylink` under the item's own generic-first rule; implementing any of
+them in the TypeScript driver would pass the deletion while re-creating the
+linker in the file that replaced it.
+
+**Cost now:** an increment roughly the size of I6a — six entry points, their
+wire records, the multi-transaction session change, and a fork-state capture
+that has to agree with the archive writer that now exists.
+
+**Cost later:** none that grows. The two pieces landed here are the halves that
+had no callers and are now proven; nothing about them decays. The 6,340 lines
+stay owed.
+
+**Recommendation:** run I6c as "the six contracts + the rewire", with the list
+above as its scope rather than a line count. The KFLA writer means the archive
+half is no longer the harder one: a driver that can capture fork state in Rust
+gets `dylink-fork-archive.ts` for a few hundred lines of allocate-and-copy,
+which is why 4 and 5 should land together with the rewire rather than after it.
 - **Fourteen inherited claims have now been disproved, eight of them the
   coordinator's.** The newest is this census's own row 2 — see value plan §2y.
   Measure rather than inherit, *including* what was measured yesterday.
