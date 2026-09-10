@@ -1672,6 +1672,174 @@ same ~3 new host hooks. Three together buy the hooks once; one alone saves
 almost nothing. Recommendation: take it as a single item, with the fork-path
 guest suites provisioned *first* — this pass proved those suites were dark.
 
+## NDD-K4-2 executed — the launch family is one implementation
+
+**Ledger −919 TS.** The two entries went from 2,748 and 3,371 lines to 2,173
+and 2,579.
+
+### The census: neither 16 nor 21, and the difference is what was counted
+
+Measured with an extractor over both entries rather than adopting a figure:
+**at the campaign base, 46 declarations were common to the two files — 20
+byte-identical, 26 differing.** At this commit it is **36 common, 16
+identical, 20 differing.**
+
+Both earlier counts — the brief's 16 and the later correction's 21 — counted
+only *functions*. A third of the shared surface is `const`/`let`/`type`
+declarations the two files also write twice: `processes`, `vforkLifetimes`,
+`externrefProcessOwner`, `processTeardowns`, `processMemoryCreators`,
+`maxPages`, `defaultThreadSlots`, `nextProcessGeneration` and more, most of
+them byte-identical one-liners. They are not free — each is state the shared
+module receives through the host record, so moving them means constructing
+them inside `createProcessLifecycle` and handing them back. That is a real
+reduction still on the table, and a different shape of work from the family
+below.
+
+The correction's other claim was right and worth keeping: **"cannot be split"
+was never true of the whole set.** The trap trio (`classifyWasmTrap`,
+`classifiedSignalOrFallback`, `classifiedTrapExitStatus`) construct no process
+generation and needed no hook at all.
+
+### Nine declarations shared
+
+`ProcessInfo` and `ForkReplayContext` (the two entries' records were
+field-for-field identical apart from the worker handle), `handleSpawn`,
+`handlePosixSpawn`, `handleOrdinaryFork`, `handleVfork`, `handleClone`,
+`handleExit`, `handleFork`, and the trap trio.
+
+`ProcessLifecycleInfo` is now generic in the **worker handle**, not in the
+record. That is what lets shared code *build* a generation instead of asking
+each host to. Four fields that had looked browser-only are host-independent
+concepts Node simply never had to falsify: `generation`, `memoryRetirementSafe`,
+the alias-exposure pair (renamed off `framebuffer*` — the shared record has no
+business knowing the browser's alias is a framebuffer), and `argv`.
+
+### Three POSIX drifts closed, each toward the correct half
+
+- **A dead `posix_spawn` child was never reaped on Node.** When the kernel
+  reports the child already dead — killed between `kernel_spawn_process` and
+  the worker start — the browser passed the finalized signal into
+  `awaitFinalizedProcessTeardown` so `finishProcessExit` synthesized the
+  signal-style reap. Node passed none, and its `defaultExitCrashSignum` is
+  deliberately undefined, so **no reap was synthesized at all**: a parent
+  already inside `waitpid` had nothing to observe until destroy. Same gap in
+  `handleOrdinaryFork` and in both of `handleVfork`'s dead-child paths.
+  `notifyHostProcessCrashed` is guarded by `hostReaped`, so taking the correct
+  half costs nothing where the kernel had already marked the zombie.
+- **`maxPages` was ignored on Node** — the entry always used the kernel
+  default, a POSIX-visible difference in what a spawn request may ask for. The
+  shared `createFreshProcessMemory` already accepted it; only the call site
+  did not pass it.
+- **`cwd` never reached the Node worker.** The browser put it in the init
+  message; a Node guest reading its working directory before its first `chdir`
+  saw the kernel default rather than the directory the launch had named.
+
+A fourth is a protocol refusal rather than POSIX: Node rejected a spawn naming
+both `programBytes` and `programPath`; the browser silently preferred the bytes
+and dropped the path, so a caller that got the pair wrong was told it had
+succeeded.
+
+### `terminationProvesQuiescence` is now consumed, not just declared
+
+The previous pass declared it with an explicit note that nothing branched on
+it. `handleClone` now derives both of its host asymmetries from it — thread-slot
+reclaim, and the `memoryRetirementSafe` fallback when a worker was terminated
+without publishing `memory_quiescent`. Node remains the host whose predicate
+always holds, not the host with a shortcut.
+
+`exitRetirementFences` is gone, replaced by the narrower
+`releaseGenerationAliases`. It had folded the host's alias release together
+with `memoryRetirementSafe`; with that flag on the shared record, the exit
+predicate — and the identical one in every construction rollback — is written
+once.
+
+### Boundaries declared rather than collapsed
+
+Seven, each a real platform difference: the worker constructor
+(`createProcessWorker`, `createDeferredProcessWorker`, `createThreadWorker`),
+`sideModuleInitFields` (Node compiles side modules off disk, the browser
+receives them compiled), `decorateLaunchEnv` (the browser injects its TLS-MITM
+CA path because guest TLS verifies through proxied egress),
+`onProcessPtyReady` (Node registers the PTY output callback at spawn; the
+browser's main thread asks separately with `register_pty_output`), and
+`awaitProcessConstructionBarrier` — vacuous on Node because `terminate()` is an
+ownership fence, load-bearing in the browser because it is not.
+
+`defaultExitCrashSignum` stays declared, as adjudicated. The dead-child fix
+above is not a collapse of it: that caller *knows* the exact signal the kernel
+finalized, which is better than either host's default, so there was nothing to
+adjudicate.
+
+`LifecycleWorker` was too narrow to keep. Watching a fork child reach its
+copied activation needs the worker's message surface, not just `terminate()`,
+so the module's parameter is constrained to `WorkerHandle` — exactly what both
+adapters already return. It constrains nothing new; it stops the module
+claiming it touches less than it does.
+
+### A test seam that sharing would have silently disarmed
+
+Moving the deferred-worker construction behind a hook left the browser's
+`KANDELO_TEST_VFORK_WORKER_START_FAILURE` switch set by nothing that read it —
+a fault injection that would have reported success while injecting nothing.
+That is the eleventh silent-success shape in this campaign, and it was
+introduced *by* the refactor rather than found in it. It now lives in the hook,
+gated on `purpose === "vfork"` so it stays scoped to the rollback it exercises.
+
+### Structural assertions: 17 repointed, each still checking its subject
+
+Across seven suites. Checking the shared copy is **stronger** than checking
+two — a ledger route, a diagnostic, an ownership fence or a generation identity
+can no longer hold on one host's path and be missing from the other's — so each
+repointed assertion is paired with a binding check on both entries. Sharing a
+function must not read as deleting it.
+
+Two slicing helpers stopped naming a neighbouring function to bound a slice.
+Both files already carried a comment explaining why that is wrong — moving the
+neighbour turns the slice into `-1` and fails a test whose subject has not
+changed — and both then did it anyway. They now bound at the next declaration
+at the start marker's own indent, which serves a top-level entry function and a
+function inside `createProcessLifecycle` alike.
+
+One assertion legitimately changed scope: "browser posix_spawn rollback owns
+the allocated newMemory identity" was browser-only because only the browser's
+copy had named its allocation `newMemory` and awaited the alias release. With
+one implementation it covers both hosts.
+
+### Two environment findings that change how a baseline should be read
+
+**`KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache.** With it
+set to a private root for a whole provisioning run, that root held **1.2 MB**
+while `~/.cache/kandelo` — shared by every worktree and every concurrent agent
+— held **237 GB**, and the package build logs named it throughout. The
+directive is worth keeping, but it does not deliver the isolation the campaign
+notes claim for it, and an agent told to set it should not conclude it is now
+insulated from a sibling's cache.
+
+**The host filesystem reached 100% (238 MiB free) during this pass**, and sat
+under 1 GiB for much of it. The plan already says the full suite needs an
+otherwise-idle tree; it needs a tree with disk headroom too. Two consequences
+matter for reading any number measured under that pressure: a `nix develop`
+invocation failed with a shell syntax error caused purely by a failed cache
+write, and absolute pass counts are not comparable across the boundary. A
+before/after comparison measured minutes apart under the *same* pressure is
+still sound, which is why the base-versus-tip comparison below is the claim
+being made rather than an absolute figure.
+
+### `build-programs.sh` fixtures do not carry the ABI markers
+
+`ordinary-process-exit` fails because the worker prints two warnings to
+stderr for `local-binaries/programs/wasm32/exec-child.wasm` — "lacks
+`__abi_version` export" and "lacks a `kandelo.abi.contract` stamp" — and the
+test asserts stderr is empty. The fixture is **not stale**: it was written by
+`scripts/build-programs.sh` minutes earlier. The stamp comes from the
+local-build engine, which that script does not run, so every worktree
+provisioned by the campaign's own documented steps produces fixtures the
+worker's ABI checks warn about.
+
+This is **not** a reason to weaken the check. It is a gap between two build
+paths for the same class of artifact, and it should be closed by teaching
+`build-programs.sh` to stamp, not by teaching the worker to stay quiet.
+
 ## K3 §11.2 `usePolling` — adjudicated on the platform contract, ready to execute
 
 **Verdict: delete it.** Not because nothing uses it — the disposition ledger's
