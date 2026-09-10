@@ -1160,3 +1160,19 @@ engine — would settle it, in the way the K0/K0c probes settled their questions
 Out of the rust-first campaign's scope (`packages/**`), and
 `tls-network-backend.ts` belongs to K11's outstanding second pass, so this is
 recorded rather than fixed.
+
+### `install-local-artifact` refreshes the copy the tests do not read
+
+The binary resolver tries `local-binaries/source-only-v1/` **before** ambient
+`local-binaries/` (`host/src/binary-resolver.ts:291`). `./run.sh rebuild kernel`
+refreshes the first; `build-deps … install-local-artifact` refreshes the second.
+
+So running only the install refreshes the copy guest tests do not read: they go
+on executing the previous kernel while the command reports success. That cost
+one agent two hours, and `verify-fresh` had named both build keys the whole
+time.
+
+The workaround is to run both, in that order, and it is now written into the
+provisioning list. The real fix is for one command to leave every tier
+consistent, or for the install to fail loudly when it leaves a higher-priority
+tier stale — the current behaviour is a partial update that looks complete.

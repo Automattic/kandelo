@@ -1562,8 +1562,22 @@ a broken feature rather than a missing artifact.
    **cascade-blocks every browser product**
 4. `crates/fork-module/build-wasm.sh` — missing `fork_module32.wasm` fails
    `coreutils-docs`, which blocks **six of nine images**
-5. a kernel build installed via `build-deps … install-local-artifact`
-   (`./run.sh rebuild kernel` alone does **not** repoint the ambient artifact)
+5. a kernel build — and this needs **both** halves, for a reason that has now
+   cost two agent-hours:
+   - `./run.sh rebuild kernel` refreshes **`local-binaries/source-only-v1/kernel.wasm`**
+   - `build-deps … install-local-artifact` refreshes **ambient `local-binaries/kernel.wasm`**
+
+   **The resolver tries `source-only-v1` FIRST** (`binary-resolver.ts:291`,
+   ordered `source-only-v1` → `local-binaries` → `binaries` → installed
+   package). So `install-local-artifact` alone refreshes the copy the guest
+   tests do **not** read, and the tests keep running yesterday's kernel while
+   the command reports success. Run both, in that order.
+
+   **`verify-fresh` says this exactly, naming both keys.** Two agents —
+   including the coordinator — have discounted that message rather than read
+   it. It is the ninth and tenth instance in this campaign of a gate being
+   right and ignored, which is a different failure from the eight gates that
+   were wrong.
 6. `./run.sh rebuild rootfs`
 7. `scripts/build-programs.sh` — without it `spawn-pid-authority` and
    `vfork-lifecycle-guest` fail at **collection**, contributing zero executed
