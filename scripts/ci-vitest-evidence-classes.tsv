@@ -38,7 +38,6 @@ host/test/demo-login-image.test.ts	source-only
 host/test/derived-vfs-symlink.test.ts	prepared-product
 host/test/dev-cors-proxy.test.ts	source-only
 host/test/dev-fd-stat.test.ts	prepared-product
-host/test/device-fs.test.ts	source-only
 host/test/dinit-image-helpers.test.ts	prepared-product
 host/test/dlopen-e2e.test.ts	prepared-product
 host/test/dlopen-host-imports.test.ts	source-only
