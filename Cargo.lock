@@ -2048,6 +2048,7 @@ name = "wasi-module"
 version = "0.1.0"
 dependencies = [
  "wasi-abi",
+ "wasi-module",
  "wasm-posix-shared",
 ]
 
