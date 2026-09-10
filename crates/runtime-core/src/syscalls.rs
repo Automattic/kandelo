@@ -16563,6 +16563,24 @@ pub fn epoll_resolved_interests(
         .collect())
 }
 
+/// Whether an `epoll_ctl` operation reads the caller's `struct epoll_event`.
+///
+/// `EPOLL_CTL_DEL` names an interest by descriptor alone and ignores the
+/// event, which is why the argument is declared nullable in
+/// `SYSCALL_ARG_DESCRIPTORS`. `EPOLL_CTL_ADD` and `EPOLL_CTL_MOD` read the
+/// requested events and data out of it, so for those a null pointer is
+/// `EFAULT` rather than an omitted argument.
+///
+/// An unknown operation is reported as reading the event so that a null
+/// pointer faults before `sys_epoll_ctl` reaches its `EINVAL`. Linux checks
+/// the pointer first for the same reason: a caller that passed neither a valid
+/// operation nor a valid pointer has two errors, and the memory fault is the
+/// one it must not be allowed to ignore.
+pub fn epoll_ctl_reads_event(op: i32) -> bool {
+    const EPOLL_CTL_DEL: i32 = 2;
+    op != EPOLL_CTL_DEL
+}
+
 /// epoll_ctl — modify an epoll interest list.
 ///
 /// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
@@ -40352,6 +40370,97 @@ impl HostIO for NetMock {
             crate::descriptor_backing::with_epolls(|table| table.get(ep_idx).is_none()),
             "the last descriptor for an epoll OFD must free the instance"
         );
+    }
+
+    #[test]
+    fn epoll_ctl_del_is_the_only_operation_that_ignores_the_event() {
+        const EPOLL_CTL_ADD: i32 = 1;
+        const EPOLL_CTL_DEL: i32 = 2;
+        const EPOLL_CTL_MOD: i32 = 3;
+        assert!(!epoll_ctl_reads_event(EPOLL_CTL_DEL));
+        assert!(epoll_ctl_reads_event(EPOLL_CTL_ADD));
+        assert!(epoll_ctl_reads_event(EPOLL_CTL_MOD));
+        // An unknown operation faults on a null pointer before it reaches
+        // EINVAL, so it must be reported as reading the event.
+        assert!(epoll_ctl_reads_event(99));
+    }
+
+    // ── epoll interest resolution (shared by epoll_pwait and the host's
+    //    wake-token lookup, `kernel_epoll_wake_indices`) ──────────────────
+
+    #[test]
+    fn epoll_resolved_interests_follows_a_dup_to_its_new_number() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, EPOLLIN_BIT, 7).unwrap();
+
+        // A registration names the DESCRIPTION. Reaching it at a different
+        // number must still resolve, or a wait would park on no tokens at
+        // all after the caller duplicated and closed the original.
+        let alias = sys_dup(&mut proc, read_fd).unwrap();
+        assert_ne!(alias, read_fd);
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+
+        let resolved = epoll_resolved_interests(&proc, epfd).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, alias, "must resolve to the surviving fd");
+        assert_eq!(resolved[0].1.data, 7);
+    }
+
+    #[test]
+    fn epoll_resolved_interests_drops_an_unreachable_description() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, EPOLLIN_BIT, 7).unwrap();
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+
+        assert!(
+            epoll_resolved_interests(&proc, epfd).unwrap().is_empty(),
+            "an interest this process can no longer reach contributes nothing"
+        );
+    }
+
+    #[test]
+    fn epoll_resolved_interests_rejects_a_non_epoll_and_an_unopen_fd() {
+        let proc = Process::new(1);
+        // fd 0 is stdin: open, but not an epoll instance.
+        assert_eq!(
+            epoll_resolved_interests(&proc, 0).err(),
+            Some(Errno::EINVAL)
+        );
+        assert_eq!(
+            epoll_resolved_interests(&proc, 4242).err(),
+            Some(Errno::EBADF)
+        );
+    }
+
+    #[test]
+    fn epoll_resolved_interests_sees_a_siblings_later_registration() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut parent = Process::new(1);
+
+        let (read_fd, _write_fd) = sys_pipe(&mut parent).unwrap();
+        let epfd = sys_epoll_create1(&mut parent, 0).unwrap();
+
+        let mut child = fork_child_of(&parent, 2);
+        // Registered by the CHILD, afterwards. The instance is shared through
+        // the description, so the parent's own resolution must see it — this
+        // is exactly what the deleted per-process host mirror could not
+        // express.
+        sys_epoll_ctl(&mut child, epfd, 1, read_fd, EPOLLIN_BIT, 5).unwrap();
+
+        let resolved = epoll_resolved_interests(&parent, epfd).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, read_fd);
+        assert_eq!(resolved[0].1.data, 5);
     }
 
     // ── epoll open-file-description ownership ─────────────────────────────

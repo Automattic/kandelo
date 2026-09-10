@@ -1388,6 +1388,13 @@ mod tests {
             (extra_syscalls::SYS_MQ_GETSETATTR, 2),
             (extra_syscalls::SYS_ACCEPT4, 1),
             (extra_syscalls::SYS_ACCEPT4, 2),
+            // EPOLL_CTL_DEL ignores the event argument entirely, and musl
+            // passes the caller's pointer through unexamined, so a null there
+            // is an ordinary request to omit it rather than a fault. ADD and
+            // MOD do read it, and `kernel_epoll_ctl` returns EFAULT for a null
+            // under those two operations -- the per-command null policy the
+            // host must not decide.
+            (extra_syscalls::SYS_EPOLL_CTL, 3),
             // Kernel-dereferenced arguments are nullable by construction: the
             // correct errno for a null pointer is per-syscall and, for the
             // IPC control calls, per-command, so the kernel decides it.

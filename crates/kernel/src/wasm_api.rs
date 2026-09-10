@@ -8177,8 +8177,19 @@ pub fn kernel_epoll_create1(flags: u32) -> i32 {
 /// Modify an epoll interest list.
 /// Returns 0 on success, or negative errno on error.
 pub fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // The event pointer is declared nullable because `EPOLL_CTL_DEL` ignores
+    // it. The operations that DO read it treat a null as `EFAULT`, matching
+    // Linux; accepting it as `events = 0, data = 0` would silently register an
+    // interest that can never report anything. Which operations read it is a
+    // syscall semantic, so `runtime-core` owns and tests that predicate.
+    //
+    // Checked before taking the process lock, as `kernel_setgroups` does: an
+    // argument fault is decidable from the arguments alone.
+    if event_ptr.is_null() && syscalls::epoll_ctl_reads_event(op) {
+        return -(Errno::EFAULT as i32);
+    }
 
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let (events, data) = if !event_ptr.is_null() {
         // The shared record is compiler-checked against both Kandelo musl
         // targets: 16-byte stride, with data at offset 8.
