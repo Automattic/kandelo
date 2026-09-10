@@ -1158,7 +1158,15 @@ passed, wasm32 + wasm64) and, in the browser, only indirectly. The Chromium
 pointer widths**, which is the riskier half — but an ifconf browser test does
 not exist and should.
 
-## 2p. K5 — COMPLETE (2026-09-09)
+## 2p. K5 — Rust COMPLETE, but see the 2026-09-10 correction below (2026-09-09)
+
+> **CORRECTION (2026-09-10):** this section claimed K5 was COMPLETE. The Rust
+> was complete *in the agent's worktree* and had **never been merged onto the
+> branch** — only the docs commit was cherry-picked, so `crates/dylink` did not
+> exist here at all. Found when the K5-I7 agent could not cut over to a missing
+> crate. Merged the same day (`f622651b1`…`ababb6eee`). Recording an outcome is
+> not landing it; verify the artifact, not the record. See
+> `docs/plans/2026-09-10-rust-first-campaign-status.md`.
 
 Worktree `.claude/worktrees/agent-aa0323de6a37d7c51`, base `210384516`, tip
 `4d6edebc4`, 7 commits. No ABI bump, no new `env.host_*`, **no
