@@ -1555,6 +1555,92 @@ declaration with no caller looks like a live contract to every reader and to
 every grep that searches for names rather than call forms. Any future import
 census must count the **linked** surface, not the declared one.
 
+## 2v. K7 — shared-mapping page cache in Rust, dormant and honestly labelled (2026-09-10)
+
+Worktree `.claude/worktrees/agent-a9ab0d6e628098e62`, base `4cc15a99b`, tip
+`ea7c4791a`, 7 commits, cherry-picked as `4aa70002f`…`88877f586`. No ABI bump,
+no new `env.host_*`.
+
+**Eleven TypeScript containers collapse into one `SharedMappingTable`** in
+`crates/runtime-core/src/memory.rs` (~2,100 production Rust, ~920 test).
+`FileBacking` carries pages, the dirty set, a version, dev/ino revalidation,
+EOF-clamped writeback and dirty-preserving invalidation. The publish/refresh
+protocol keeps **both** phases whole-set — an alias advancing the backing
+mid-boundary, and all-or-nothing refresh. Also moved: the fd-writeback bridge
+with its **truthful refusal** on a closed or `dup2`-repointed guest-visible dup,
+munmap head/tail/middle split with backing and dup refcounting, mremap re-seed,
+mprotect upgrade validation, transactional fork inheritance with rollback, the
+SysV byte-coherence mirror, and teardown that continues past a failed backing.
+
+`SharedMappingIo` is the seam. **Five of its operations cross to the host, all
+through existing imports** — `host_proc_read_bytes`, `host_proc_write_bytes`,
+`host_pread`, `host_pwrite`, `host_fstat`. Nothing new was asked of the host.
+
+### Blocked on the export surface, and it names the right reason
+
+The subsystem is **host-driven**, so cutover needs host-callable `kernel_*`
+entry points. `crates/kernel/src/wasm_api.rs` is the **only** export surface in
+the repo — 309 exports, zero elsewhere — and the in-kernel alternative is
+`syscalls.rs`. Both were sibling-owned. The agent did not touch them.
+
+**Coordinator correction to the agent's report:** it named K8 as the owner.
+K8 has since landed; **`wasm_api.rs` and `syscalls.rs` now belong to K9**, so
+the K7 cutover queues behind K9 rather than K8. The blocker is unchanged in
+substance.
+
+**It did the one thing that keeps this from becoming a fourth unwired module:**
+the cutover contract — import map, TS→Rust method map, and perf position — is
+documented **on `SharedMappingTable` itself**, beside the code. The campaign has
+already found three ported-but-unwired Rust modules (`sffs.rs`, `klzy.rs`,
+`dylink_archive.rs`), all now closed. A fourth would have been a pattern.
+
+### STRONG DOUBT — the boundary read cost, unresolved and correctly flagged
+
+TypeScript diffs a **zero-copy view** of guest memory. Rust must **copy**. The
+agent bounded the cost by design — one `host_proc_read_bytes` per mapping per
+boundary rather than per page, plus an early-out in `synchronize_for_boundary`
+when a process owns no shared state — and then said plainly that **a design
+choice to bound a cost is not evidence the cost is bounded.** A process holding
+a large writable `MAP_SHARED` with a peer could pay a full-range copy at every
+boundary.
+
+**Performance was not measured on either host, and the agent said so.** Per
+`docs/agent-guidance/performance.md` this cannot be called neutral. It is a
+second, independent reason the cutover could not land here: the perf contract
+requires Node **and** browser before/after evidence.
+
+### NEEDS-DEFER-DECISION — the K7 cutover, for the maintainer
+
+*What:* wiring the Rust table into production.
+*Why blocked:* both possible sites are sibling-owned (now K9).
+*Cost now:* editing them risks a `wasm_api.rs`/`syscalls.rs` merge conflict and
+two authorities over VFS-adjacent state.
+*Cost later:* Rust and TS drift; K7's V1/V2 value stays unbanked.
+*Recommendation:* sequence after K9 as its own item, gated on the Node+browser
+benchmark evidence.
+
+**Validation:** `cargo test -p runtime-core --lib` — 1823/1 in the worktree,
+**1869/1 after merge** (36 new shared-mapping tests). The single failure is
+`zip::real_man_zip_cross_checks_members`, and the agent did the right check:
+reproduced it **with base `memory.rs` restored** in its own tree (1421680 vs
+1397299), which tests its own change rather than merely reproducing on base.
+`cargo check` clean on wasm32, wasm64 (`-Z build-std`) and native. Seven mmap
+Vitest files: 95 passed, 1 skipped — after provisioning both sysroots,
+`local-binaries/kernel.wasm`, and `fork_module{32,64}.wasm`.
+
+**Merge conflict, resolved in K3's favour.** K7 branched from `4cc15a99b`, before
+K3 corrected the `epollInterests` comment, so its move of that field carried the
+**disproved** V8-crash text back with it. Resolution takes K7's move and K3's
+corrected comment. Worth recording as a parallel-work hazard: a field *move* by
+one agent silently reverts a *comment fix* by another, and git reports it as a
+routine conflict.
+
+**Ledger** `2bbd64ddc..88877f586`: in-scope TS **+12**, Rust **+3,097**. The +12
+is `hasSharedMmapBackings()` and the `epollInterests` move — both K3 freeze-list
+obligations (§10.1 items 2 and 5), owed by K7 precisely so K3 could proceed
+without conflict. Removed by **K7's own cutover**, which deletes the whole
+region; K3 also consumes the predicate.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
