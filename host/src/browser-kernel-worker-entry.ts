@@ -163,8 +163,6 @@ import {
 } from "./process-lifecycle";
 
 const PAGE_SIZE = 65536;
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
 // Phase 6 D5 / Path B flip: the co-resident wasm32 fork-module, compiled ONCE
