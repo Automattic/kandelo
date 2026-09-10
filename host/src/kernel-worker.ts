@@ -2626,7 +2626,9 @@ export class CentralizedKernelWorker {
    * JSON I cannot read". That failure is loud and the fix is to rebuild the
    * image; there is no host-walked fallback to absorb it.
    *
-   * Null when the entry supplied no image, which is the no-`/` boot.
+   * Null when the entry supplied no image, which is the no-`/` boot — and null
+   * again once the load succeeds, because nothing reads the image after that
+   * and holding it would pin the whole container for the session.
    */
   #rootfsImage: Uint8Array | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
@@ -5058,6 +5060,22 @@ export class CentralizedKernelWorker {
       setNosuid(this.#rootfsNosuid ? 1 : 0);
     }
     enable(1);
+
+    // Release the image. `ByteReq::Image` is issued from exactly one place in
+    // the kernel — the cursor `rootfs::load_image` builds and drops inside that
+    // call — so once the tree is loaded, nothing reads these bytes again: a base
+    // file's contents come from `#rootfsBlobProvider`, a lazy archive's from
+    // `#rootfsArchiveProvider`. Holding them would pin 16-256 MiB for the life
+    // of the session, on top of the restored `MemoryFileSystem` that is the
+    // actual byte store, and image-switch memory is already the tightest
+    // constraint the browser host has.
+    //
+    // The replacement provider answers `ENOSYS` rather than silently returning
+    // zero bytes. If a future change does make the kernel want image bytes after
+    // boot, it must arrange to keep them deliberately, and it will find out at
+    // once instead of reading a tree of empty files.
+    this.#rootfsImage = null;
+    this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
   }
 
   /**
