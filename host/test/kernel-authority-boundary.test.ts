@@ -27,7 +27,6 @@ const hiddenKernelNames = [
   "writeKernelBytes",
   "hostFstat",
   "hostReaddir",
-  "hostClosedir",
   "hostClose",
   "testAuthority",
 ] as const;
@@ -156,16 +155,17 @@ describe("kernel authority boundary", () => {
     ).toThrow(/subclass|exact CentralizedKernelWorker/i);
   });
 
-  it("limits kernel test authority to one frozen seven-method companion", () => {
+  it("limits kernel test authority to one frozen six-method companion", () => {
     const production = new WasmPosixKernel({}, {});
     const harness = createWasmPosixKernelTestHarness({});
     const authority = harness.testAuthority;
+    // Six, not seven: `hostOpendir`/`hostClosedir` retired when a directory
+    // became an ordinary handle, and `hostOpenat` replaced the pair.
     const expectedNames = [
       "buildImportObject",
       "hostClose",
-      "hostClosedir",
       "hostFstat",
-      "hostOpendir",
+      "hostOpenat",
       "hostReaddir",
       "writeKernelBytes",
     ];

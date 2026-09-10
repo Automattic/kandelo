@@ -522,11 +522,16 @@ export class VirtualPlatformIO implements PlatformIO {
    * is still needed: once the kernel holds a root handle per mount, every
    * subsequent operation arrives already routed, because the handle names the
    * backend.
+   *
+   * A `/` mount is published like any other. Whether the kernel uses it is the
+   * kernel's decision, not this host's: when the in-kernel rootfs overlay owns
+   * `/`, no path reaches the host root and the anchor simply goes unused;
+   * when the overlay is off, a host that mounts `/` must be able to serve it.
+   * Withholding the anchor here would make that second case unreachable.
    */
   foreignMountRoots(): { prefix: string; handle: number }[] {
     const roots: { prefix: string; handle: number }[] = [];
     for (const m of this.mounts) {
-      if (m.prefix === "/") continue;
       const handle = this.nextHandle++;
       this.dirHandles.set(handle, {
         backend: m.backend,
