@@ -4139,10 +4139,10 @@ fn release_ofd_reference_impl(
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::Epoll => {
-                let ep_idx = (-(host_handle + 1)) as usize;
-                if let Some(slot) = proc.epolls.get_mut(ep_idx) {
-                    *slot = None;
-                }
+                // The instance dies with the last descriptor for its open
+                // file description anywhere on the machine, not with this
+                // process's copy.
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::TimerFd => {
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
@@ -16377,29 +16377,10 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
         return Err(Errno::EINVAL);
     }
 
-    let instance = EpollInstance::new();
-
-    // Allocate epoll slot
-    let ep_idx = {
-        let mut found = None;
-        for (i, slot) in proc.epolls.iter().enumerate() {
-            if slot.is_none() {
-                found = Some(i);
-                break;
-            }
-        }
-        match found {
-            Some(i) => {
-                proc.epolls[i] = Some(instance);
-                i
-            }
-            None => {
-                let i = proc.epolls.len();
-                proc.epolls.push(Some(instance));
-                i
-            }
-        }
-    };
+    // The instance belongs to the open file description this descriptor
+    // names, not to the process: `fork`, `dup`, and a non-CLOEXEC `exec` all
+    // reach the same instance through their inherited OFD.
+    let ep_idx = crate::descriptor_backing::with_epolls(|table| table.alloc(EpollInstance::new()));
 
     let ep_handle = -((ep_idx as i64) + 1);
     let ofd_idx = proc
@@ -16411,10 +16392,40 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
         Ok(fd) => Ok(fd),
         Err(e) => {
             proc.ofd_table.dec_ref(ofd_idx);
-            proc.epolls[ep_idx] = None;
+            crate::descriptor_backing::with_epolls(|table| table.release(ep_idx));
             Err(e)
         }
     }
+}
+
+/// Find a descriptor in `proc` that currently names the open file description
+/// `ofd_id`, preferring `preferred_fd` (the number used at registration).
+///
+/// An epoll interest names a *description*, so the descriptor that reaches it
+/// can differ from the registration number after `dup`, and can exist in a
+/// `fork` child that never called `epoll_ctl` itself. `None` means this
+/// process holds no descriptor for the description — either it was released
+/// (Linux removes such an interest) or only another process still holds it
+/// (see the `epoll_pwait()` row of `docs/posix-status.md`).
+fn fd_naming_ofd_id(
+    proc: &Process,
+    ofd_id: crate::lock::OfdId,
+    preferred_fd: i32,
+) -> Option<i32> {
+    let names = |fd: i32| -> bool {
+        proc.fd_table
+            .get(fd)
+            .ok()
+            .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+            .is_some_and(|ofd| ofd.ofd_id == ofd_id)
+    };
+    if names(preferred_fd) {
+        return Some(preferred_fd);
+    }
+    proc.fd_table
+        .iter()
+        .find(|(fd, _)| names(*fd))
+        .map(|(fd, _)| fd)
 }
 
 /// epoll_ctl — modify an epoll interest list.
@@ -16440,46 +16451,60 @@ pub fn sys_epoll_ctl(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Verify the target fd exists
-    let _ = proc.fd_table.get(fd)?;
+    // Verify the target fd exists, and take the identity of the open file
+    // description it names. Linux keys an interest on `(struct file *, fd)`,
+    // so a descriptor number reused by a later `open` is a *different*
+    // registration and a `dup` at another number is a second one.
+    let target_ofd_id = {
+        let entry = proc.fd_table.get(fd)?;
+        proc.ofd_table
+            .get(entry.ofd_ref.0)
+            .ok_or(Errno::EBADF)?
+            .ofd_id
+    };
 
-    let ep = proc
-        .epolls
-        .get_mut(ep_idx)
-        .and_then(|s| s.as_mut())
-        .ok_or(Errno::EBADF)?;
+    crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
+        let existing = ep
+            .interests
+            .iter()
+            .position(|e| e.fd == fd && e.ofd_id == target_ofd_id);
 
-    match op {
-        EPOLL_CTL_ADD => {
-            // Check if fd already exists in interest list
-            if ep.interests.iter().any(|e| e.fd == fd) {
-                return Err(Errno::EEXIST);
+        match op {
+            EPOLL_CTL_ADD => {
+                if existing.is_some() {
+                    return Err(Errno::EEXIST);
+                }
+                // An interest carrying this descriptor number but a different
+                // description survives on Linux only while that description
+                // does. One this process can no longer reach is dead here, so
+                // drop it instead of letting a close/reopen loop grow the
+                // interest list without bound.
+                ep.interests
+                    .retain(|e| e.fd != fd || fd_naming_ofd_id(proc, e.ofd_id, e.fd).is_some());
+                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                ep.interests.push(crate::process::EpollInterest {
+                    fd,
+                    ofd_id: target_ofd_id,
+                    events,
+                    data,
+                });
+                Ok(())
             }
-            ep.interests
-                .push(crate::process::EpollInterest { fd, events, data });
-            Ok(())
+            EPOLL_CTL_DEL => {
+                let pos = existing.ok_or(Errno::ENOENT)?;
+                ep.interests.swap_remove(pos);
+                Ok(())
+            }
+            EPOLL_CTL_MOD => {
+                let pos = existing.ok_or(Errno::ENOENT)?;
+                ep.interests[pos].events = events;
+                ep.interests[pos].data = data;
+                Ok(())
+            }
+            _ => Err(Errno::EINVAL),
         }
-        EPOLL_CTL_DEL => {
-            let pos = ep
-                .interests
-                .iter()
-                .position(|e| e.fd == fd)
-                .ok_or(Errno::ENOENT)?;
-            ep.interests.swap_remove(pos);
-            Ok(())
-        }
-        EPOLL_CTL_MOD => {
-            let interest = ep
-                .interests
-                .iter_mut()
-                .find(|e| e.fd == fd)
-                .ok_or(Errno::ENOENT)?;
-            interest.events = events;
-            interest.data = data;
-            Ok(())
-        }
-        _ => Err(Errno::EINVAL),
-    }
+    })
 }
 
 /// epoll_pwait — wait for events on an epoll instance.
@@ -16508,15 +16533,24 @@ pub fn sys_epoll_pwait(
     }
     let ep_idx = (-(ofd.host_handle + 1)) as usize;
 
-    // Copy interest list (need to release borrow on proc)
-    let interests = {
-        let ep = proc
-            .epolls
-            .get(ep_idx)
-            .and_then(|s| s.as_ref())
-            .ok_or(Errno::EBADF)?;
-        ep.interests.clone()
-    };
+    // Copy the shared interest list, then resolve each registered open file
+    // description to a descriptor this process currently holds. The
+    // registration number is only a hint: after `dup` the description may be
+    // reachable at another number, and after close/reopen the same number may
+    // name something else entirely.
+    let interests: Vec<crate::process::EpollInterest> =
+        crate::descriptor_backing::with_epolls(|table| {
+            table
+                .get(ep_idx)
+                .map(|ep| ep.interests.clone())
+                .ok_or(Errno::EBADF)
+        })?;
+    let interests: Vec<(i32, crate::process::EpollInterest)> = interests
+        .into_iter()
+        .filter_map(|interest| {
+            fd_naming_ofd_id(proc, interest.ofd_id, interest.fd).map(|fd| (fd, interest))
+        })
+        .collect();
 
     if interests.is_empty() {
         // No interests — just handle timeout/sigmask
@@ -16541,7 +16575,7 @@ pub fn sys_epoll_pwait(
     // Build pollfds from interests
     let mut pollfds: Vec<WasmPollFd> = interests
         .iter()
-        .map(|interest| {
+        .map(|(fd, interest)| {
             let mut poll_events: i16 = 0;
             if interest.events & EPOLLIN != 0 {
                 poll_events |= POLLIN;
@@ -16550,7 +16584,7 @@ pub fn sys_epoll_pwait(
                 poll_events |= POLLOUT;
             }
             WasmPollFd {
-                fd: interest.fd,
+                fd: *fd,
                 events: poll_events,
                 revents: 0,
             }
@@ -16592,7 +16626,7 @@ pub fn sys_epoll_pwait(
             if pollfd.revents & POLLHUP != 0 {
                 ep_events |= EPOLLHUP;
             }
-            events_out.push((ep_events, interests[i].data));
+            events_out.push((ep_events, interests[i].1.data));
         }
     }
 
@@ -39831,6 +39865,13 @@ impl HostIO for NetMock {
 
     // ── epoll tests ───────────────────────────────────────────────────────
 
+    /// Snapshot the shared interest list of the epoll instance at `ep_idx`.
+    fn epoll_interests(ep_idx: usize) -> Vec<crate::process::EpollInterest> {
+        crate::descriptor_backing::with_epolls(|table| {
+            table.get(ep_idx).expect("live epoll instance").interests.clone()
+        })
+    }
+
     #[test]
     fn test_epoll_create1_basic() {
         let mut proc = Process::new(1);
@@ -39870,15 +39911,14 @@ impl HostIO for NetMock {
         let entry = proc.fd_table.get(epfd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         let ep_idx = (-(ofd.host_handle + 1)) as usize;
-        let ep = proc.epolls[ep_idx].as_ref().unwrap();
-        assert_eq!(ep.interests.len(), 1);
-        assert_eq!(ep.interests[0].fd, 0);
-        assert_eq!(ep.interests[0].data, 42);
+        let interests = epoll_interests(ep_idx);
+        assert_eq!(interests.len(), 1);
+        assert_eq!(interests[0].fd, 0);
+        assert_eq!(interests[0].data, 42);
 
         // Delete
         sys_epoll_ctl(&mut proc, epfd, 2, 0, 0, 0).unwrap();
-        let ep = proc.epolls[ep_idx].as_ref().unwrap();
-        assert_eq!(ep.interests.len(), 0);
+        assert_eq!(epoll_interests(ep_idx).len(), 0);
     }
 
     #[test]
@@ -39913,9 +39953,9 @@ impl HostIO for NetMock {
         let entry = proc.fd_table.get(epfd).unwrap();
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         let ep_idx = (-(ofd.host_handle + 1)) as usize;
-        let ep = proc.epolls[ep_idx].as_ref().unwrap();
-        assert_eq!(ep.interests[0].events, epollout);
-        assert_eq!(ep.interests[0].data, 20);
+        let interests = epoll_interests(ep_idx);
+        assert_eq!(interests[0].events, epollout);
+        assert_eq!(interests[0].data, 20);
     }
 
     #[test]
@@ -39982,8 +40022,14 @@ impl HostIO for NetMock {
         let mut host = MockHostIO::new();
         let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
 
+        let entry = proc.fd_table.get(epfd).unwrap();
+        let ep_idx =
+            (-(proc.ofd_table.get(entry.ofd_ref.0).unwrap().host_handle + 1)) as usize;
         sys_close(&mut proc, &mut host, epfd).unwrap();
-        assert!(proc.epolls[0].is_none());
+        assert!(
+            crate::descriptor_backing::with_epolls(|table| table.get(ep_idx).is_none()),
+            "the last descriptor for an epoll OFD must free the instance"
+        );
     }
 
     // ── epoll open-file-description ownership ─────────────────────────────

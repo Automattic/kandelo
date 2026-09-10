@@ -1628,7 +1628,11 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fork_fd_actions = fork_fd_actions;
     child.next_ephemeral_port = 49152;
     child.clear_threads(); // POSIX: child has one task, the process leader.
-    child.epolls.clear();
+    // Epoll instances are NOT cleared here: an epoll fd names an open file
+    // description, and the child's inherited descriptor refers to the same
+    // instance the parent holds. Ownership lives in
+    // `descriptor_backing::with_epolls`, keyed by the OFD's handle, and
+    // `bump_inherited_resource_refcounts` takes the child's reference.
     child.posix_timers.clear();
     child.alt_stack_sp = 0;
     child.alt_stack_flags = 2; // SS_DISABLE
@@ -2090,7 +2094,10 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.fork_fd_actions.clear();
     process.next_ephemeral_port = 49152;
     process.clear_threads(); // exec resets to the process leader only.
-    process.epolls.clear();
+    // An epoll fd without FD_CLOEXEC survives exec on Linux, interest list
+    // included, because the open file description survives. Ownership is
+    // OFD-keyed in `descriptor_backing`, and CLOEXEC-dropped descriptors
+    // release their reference through `removed_backings_for_exec`.
     process.posix_timers.clear();
     process.alt_stack_sp = 0;
     process.alt_stack_flags = 2; // SS_DISABLE

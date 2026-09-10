@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{EventFdState, Process, SignalFdState, TimerFdState};
+use crate::process::{EpollInstance, EventFdState, Process, SignalFdState, TimerFdState};
 
 #[derive(Debug)]
 struct SharedBacking<T> {
@@ -219,6 +219,7 @@ static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new(
 static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> =
     GlobalBackingTable::new();
 static PCM_STREAMS: GlobalBackingTable<crate::audio::PcmStream> = GlobalBackingTable::new();
+static EPOLLS: GlobalBackingTable<EpollInstance> = GlobalBackingTable::new();
 
 // Keep synthetic backing handles disjoint from the small negative sentinels
 // used by pipes, devices, and procfs.
@@ -282,6 +283,13 @@ fn synthetic_regular_idx(host_handle: i64) -> Result<usize, Errno> {
         .ok_or(Errno::EBADF)
 }
 
+/// Epoll instances, one per open file description that `epoll_create1`
+/// created. Sharing them here is what lets a `fork` child use an inherited
+/// epoll descriptor and see the parent's registrations, and vice versa.
+pub fn with_epolls<R>(f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EpollInstance>) -> R) -> R {
+    EPOLLS.with(f)
+}
+
 pub fn with_pcm_streams<R>(
     f: impl for<'a> FnOnce(&'a mut SharedBackingTable<crate::audio::PcmStream>) -> R,
 ) -> R {
@@ -311,6 +319,7 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
             | FileType::SignalFd
             | FileType::MemFd
             | FileType::PcmPlayback
+            | FileType::Epoll
     ) || (file_type == FileType::Regular
         && (crate::procfs::is_procfs_buf_handle(host_handle)
             || is_synthetic_regular_handle(host_handle)
@@ -335,6 +344,8 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
             .is_ok_and(|idx| with_memfds(|table| table.get(idx).is_some())),
         FileType::PcmPlayback => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_pcm_streams(|table| table.get(idx).is_some())),
+        FileType::Epoll => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_epolls(|table| table.get(idx).is_some())),
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| {
                 table
@@ -502,6 +513,7 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
         FileType::PcmPlayback => {
             with_pcm_streams(|table| table.add_ref(negative_handle_idx(host_handle)?))?
         }
+        FileType::Epoll => with_epolls(|table| table.add_ref(negative_handle_idx(host_handle)?))?,
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.add_ref(crate::procfs::procfs_buf_idx(host_handle)))?
         }
@@ -544,6 +556,9 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
                 }
                 freed
             })
+        }
+        FileType::Epoll => {
+            negative_handle_idx(host_handle).is_ok_and(|idx| with_epolls(|table| table.release(idx)))
         }
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.release(crate::procfs::procfs_buf_idx(host_handle)))
