@@ -434,6 +434,10 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    kernel_release_host_region: {
+      parameters: [i32, pointer, pointer],
+      result: i32,
+    },
     kernel_reserve_host_region: {
       parameters: [i32, pointer],
       result: pointer,
@@ -543,6 +547,10 @@ function signatures(
     kernel_thread_has_deliverable: {
       parameters: [i32, i32],
       result: i32,
+    },
+    kernel_thread_slot_addr: {
+      parameters: [i32, i32],
+      result: i64,
     },
     kernel_pick_tcp_listener_target: {
       parameters: [i32, i32, pointer, i32],

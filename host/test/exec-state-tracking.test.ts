@@ -2115,6 +2115,9 @@ function createWorker(overrides: Record<string, unknown>): any {
       kernelExports: exports,
       kernelExportNames: [
         "kernel_take_process_timer_cleanup",
+        // `sys_clone` places a pthread's control slot; the harness's default
+        // export answers with a page-aligned address.
+        "kernel_thread_slot_addr",
         ...Object.entries(exports)
           .filter(([, value]) => typeof value === "function")
           .map(([name]) => name),

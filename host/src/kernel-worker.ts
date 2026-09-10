@@ -28913,10 +28913,14 @@ export class CentralizedKernelWorker {
    * publishing a quiescence fence can still write into its slot, and this host
    * is the only party that knows when that is settled. Until it calls, the
    * kernel keeps the range out of circulation.
+   *
+   * A release carries no result, so it may be deferred like any other void
+   * ingress rather than refused when the gate is busy; the queued entry runs
+   * in order.
    */
   releaseHostRegion(pid: number, addr: number, len: number): void {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runOrDeferKernelEntry(
       `dynamic host-region release pid=${pid}`,
       (entry) => {
         const releaseHostRegionFn = this.#kernelInstanceForEntry(entry).exports
@@ -28933,10 +28937,13 @@ export class CentralizedKernelWorker {
           this.toKernelPtr(addr),
           this.toKernelPtr(len),
         );
-        if (result < 0) {
-          // A refused release means this host is describing an address space
-          // the kernel does not have. Say so rather than leaving the range
-          // silently unusable for the life of the process.
+        // ESRCH is not a failure here: the process is gone, and its whole
+        // address space went with it, so there is no range left to return.
+        // A release can be queued behind the exit that removed the process.
+        // Any other refusal means this host is describing an address space the
+        // kernel does not have -- say so rather than leaving the range
+        // silently unusable for the life of the process.
+        if (result < 0 && result !== -ESRCH) {
           throw new Error(
             `kernel refused release of host region ${addr}+${len} for pid=${pid} (errno ${-result})`,
           );
@@ -28944,9 +28951,6 @@ export class CentralizedKernelWorker {
         return undefined;
       },
     );
-    if (deferred) {
-      throw new KernelReentrantEntryError("dynamic host-region release");
-    }
   }
 
   reserveHostRegionAt(pid: number, addr: number, len: number): number {

@@ -2926,7 +2926,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           memory,
           alloc.channelOffset,
         );
-        releaseThreadSlot(pid, slotAddr);
+        // Only the generation that owns this address space may hand the range
+        // back. A pid survives exec, but its `MemoryManager` does not: a
+        // release aimed at a replacement image could free a range that image
+        // has already reserved at the same address. A process that has exited
+        // has no address space left to return anything to.
+        if (belongsToCurrentProcessImage()) {
+          releaseThreadSlot(pid, slotAddr);
+        }
       } else {
         // A hard termination is not a quiescence barrier. Keep the slot out of
         // circulation, and refuse exact retirement of the process backing.

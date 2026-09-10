@@ -161,6 +161,8 @@ function createGatedLifecycleHarness(options: {
     kernel_set_max_addr: vi.fn(() => 0),
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
+    // `sys_clone` places the control slot; the host reads the address back.
+    kernel_thread_slot_addr: vi.fn(() => BigInt(8 * 65536)),
     kernel_validate_task: vi.fn(() => 0),
     ...(options.kernelExports ?? {}),
   };
@@ -1603,6 +1605,14 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_set_current_tid: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
           kernel_set_mmap_base: vi.fn(() => 0),
+          // `sys_clone` places the control slot at an address this test picks:
+          // the channel it then attaches sits inside that slot.
+          kernel_thread_slot_addr: vi.fn(() =>
+            BigInt(
+              highThreadChannelOffset
+                - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE,
+            )
+          ),
           kernel_validate_task: vi.fn(() => 0),
         },
         kernelExportNames: [
@@ -1614,6 +1624,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           "kernel_set_current_tid",
           "kernel_set_max_addr",
           "kernel_set_mmap_base",
+          "kernel_thread_slot_addr",
           "kernel_validate_task",
         ],
       },
