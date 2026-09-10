@@ -662,6 +662,49 @@ Notes that matter for planning:
   six-module dependency closure. Like K10's `.wat` fixtures, **fixture breadth is
   the gate, not polish.**
 
+### 7.0 The deletion gate SKIPS SILENTLY on a fresh worktree (measured 2026-09-10)
+
+Every `dlopen` suite that proves a real load — `dlopen-e2e`,
+`fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e`, **18 tests, the
+entire Node half of I7's deletion gate** — is guarded by
+`describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())`
+(`host/test/dlopen-e2e.test.ts:74`, `:23-26`). `hasKernel` tests for
+`binaries/kernel.wasm` **or** `local-binaries/kernel.wasm`.
+
+`./run.sh setup` on a fresh worktree does **not** produce either path. It
+leaves the kernel at `local-binaries/source-only-v1/kernel.wasm` — the
+projection — and the ambient symlink the tests look for is absent (the stale-
+projection defect recorded in `docs/future-improvements.md`, in its
+never-created form rather than its stale form). It also stages no
+`fork_module32.wasm`.
+
+So the first run reports **`3 passed | 3 skipped`, exit 0 on the suites that
+matter, and 100 green unit tests**. An agent who runs "the dlopen Vitest
+suites", sees green, and concludes the linker still works after a cutover will
+have proven **nothing about `dlopen` at all** — only that the pure-unit parsers
+still parse. This is the exact shape of the "narrow check supporting a broad
+claim" the validation contract forbids, and it is pre-armed: the skip is
+silent and the exit code is zero.
+
+**Provision all three before believing a dlopen result:**
+
+```
+scripts/dev-shell.sh npm --prefix host install     # vitest is a host/ devDep;
+                                                   # root has no workspaces
+scripts/dev-shell.sh bash crates/fork-module/build-wasm.sh
+WASM_POSIX_LOCAL_INSTALL_SOURCE=$PWD/local-binaries/source-only-v1/kernel.wasm \
+WASM_POSIX_LOCAL_INSTALL_SESSION=<session> \
+  scripts/dev-shell.sh scripts/xtask.sh build-deps --arch wasm32 \
+    --binaries-dir local-binaries install-local-artifact kernel kandelo-kernel.wasm
+```
+
+**Baseline once provisioned (base `8a89c2f4a`, Node, this worktree):
+`Test Files 1 failed | 5 passed`, `Tests 116 passed | 2 failed` of 118.** The
+two failures are the tracked pthread-hosted `__wpk_fork_frame_reserve` import
+gap (`docs/future-improvements.md`, and §7.1 below) — pre-existing, not K5's,
+and the number I7 must still show after the cutover. Anything other than
+exactly those two is a regression the cutover introduced.
+
 ### 7.1 The two pthread-hosted failures are NOT K5's
 
 VERIFIED tracked at `docs/future-improvements.md:758-786`:
