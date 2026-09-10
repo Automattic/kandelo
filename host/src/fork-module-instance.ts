@@ -21,6 +21,11 @@
 // closures. Wiring the import flip is a later D5 step.
 
 import { WASM_PAGE_SIZE } from "./constants";
+import {
+  alignUp,
+  placeSideModule,
+  readSideModuleMemInfo,
+} from "./pic-side-module";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 
 /** Exports the guest-facing continuation ABI plus the module lifecycle hooks. */
@@ -488,73 +493,11 @@ const FORK_MODULE_SHADOW_STACK_BYTES = 1 << 20;
  */
 const FORK_MODULE_STAGING_BYTES = 1 << 18;
 
-const WASM_DYLINK_MEM_INFO = 1;
-
-interface ForkModuleMemInfo {
-  memorySize: number;
-  memoryAlignBytes: number;
-}
-
-function readVarUint(data: Uint8Array, cursor: { value: number }): number {
-  let result = 0;
-  let shift = 0;
-  let byte: number;
-  do {
-    byte = data[cursor.value++]!;
-    result |= (byte & 0x7f) << shift;
-    shift += 7;
-  } while (byte & 0x80);
-  return result >>> 0;
-}
-
-/**
- * Read the `dylink.0` `mem_info` subsection from the compiled module. The
- * WebAssembly JS API hands back the section payload (the subsections) directly,
- * so no whole-file scan is needed.
- */
-function readForkModuleMemInfo(
-  module: WebAssembly.Module,
-  label: string,
-): ForkModuleMemInfo {
-  const sections = WebAssembly.Module.customSections(module, "dylink.0");
-  if (sections.length === 0) {
-    throw new Error(
-      `${label}: fork-module is not a PIC side module (no dylink.0 section)`,
-    );
-  }
-  const payload = new Uint8Array(sections[0]!);
-  const cursor = { value: 0 };
-  while (cursor.value < payload.length) {
-    const subType = readVarUint(payload, cursor);
-    const subSize = readVarUint(payload, cursor);
-    const subEnd = cursor.value + subSize;
-    if (subType === WASM_DYLINK_MEM_INFO) {
-      const memorySize = readVarUint(payload, cursor);
-      const memoryAlignLog2 = readVarUint(payload, cursor);
-      return { memorySize, memoryAlignBytes: 1 << memoryAlignLog2 };
-    }
-    cursor.value = subEnd;
-  }
-  throw new Error(`${label}: fork-module dylink.0 has no mem_info subsection`);
-}
-
-function alignUp(value: number, alignBytes: number): number {
-  return Math.ceil(value / alignBytes) * alignBytes;
-}
-
-function alignDown(value: number, alignBytes: number): number {
-  return value - (value % alignBytes);
-}
-
-function wasmAddress(value: number, ptrWidth: 4 | 8): number | bigint {
-  return ptrWidth === 8 ? BigInt(value) : value;
-}
-
 export function instantiateForkModule(
   options: InstantiateForkModuleOptions,
 ): ForkModuleInstance {
   const { module, memory, ptrWidth, reserve, label } = options;
-  const memInfo = readForkModuleMemInfo(module, label);
+  const memInfo = readSideModuleMemInfo(module, `${label}: fork-module`);
 
   const staticBytes = alignUp(memInfo.memorySize, memInfo.memoryAlignBytes);
   // Layout of the reserved region (low -> high):
@@ -573,41 +516,19 @@ export function instantiateForkModule(
     stagingBytes +
     FORK_MODULE_SHADOW_STACK_BYTES;
 
-  const memoryBase = reserve(regionBytes);
-  if (!Number.isSafeInteger(memoryBase) || memoryBase < 0) {
-    throw new Error(
-      `${label}: fork-module reserve returned an invalid base ${memoryBase}`,
-    );
-  }
-  if (memoryBase % memInfo.memoryAlignBytes !== 0) {
-    throw new Error(
-      `${label}: fork-module base 0x${memoryBase.toString(16)} is not aligned ` +
-        `to ${memInfo.memoryAlignBytes}`,
-    );
-  }
-  if (memoryBase + regionBytes > memory.buffer.byteLength) {
-    throw new Error(
-      `${label}: fork-module region [0x${memoryBase.toString(16)}, +${regionBytes}) ` +
-        `exceeds shared memory of ${memory.buffer.byteLength} bytes`,
-    );
-  }
-
-  // Shadow stack lives above the staging slab and grows down from the top.
-  const stackTop = alignDown(memoryBase + regionBytes, 16);
-  const pointerType = ptrWidth === 8 ? "i64" : "i32";
-
-  const memoryBaseGlobal = new WebAssembly.Global(
-    { value: pointerType, mutable: false },
-    wasmAddress(memoryBase, ptrWidth),
-  );
-  const tableBaseGlobal = new WebAssembly.Global(
-    { value: pointerType, mutable: false },
-    wasmAddress(0, ptrWidth),
-  );
-  const stackPointerGlobal = new WebAssembly.Global(
-    { value: pointerType, mutable: true },
-    wasmAddress(stackTop, ptrWidth),
-  );
+  // Validates the reserved region and mints the three placement globals. The
+  // shadow stack lives above the staging slab and grows DOWN from the top of
+  // the region, which is what `placeSideModule` seeds `__stack_pointer` to.
+  const placement = placeSideModule({
+    memInfo,
+    memory,
+    ptrWidth,
+    memoryBase: reserve(regionBytes),
+    regionBytes,
+    label: `${label}: fork-module`,
+  });
+  const memoryBase = placement.memoryBase;
+  const { memoryBaseGlobal, tableBaseGlobal, stackPointerGlobal } = placement;
   // The module declares table_size = 0, so it never adds entries. Give it its
   // own empty table rather than coupling to any guest table this step.
   const table = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
