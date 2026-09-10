@@ -662,6 +662,24 @@ pub struct ThreadState {
     /// `CLONE_PARENT_SETTID` while the other host silently did not, which left
     /// `struct pthread.tid` zero and deadlocked musl's thread-list lock.
     pub parent_settid_ptr: usize,
+    /// Byte address of this thread's per-thread control slot -- the
+    /// `PAGES_PER_THREAD_SLOT` pages holding its TLS/control page, its
+    /// fork-save page, and its syscall channel.
+    ///
+    /// The kernel *places* the slot, in `sys_clone`, out of the same
+    /// address-space allocator that answers `mmap` and
+    /// `kernel_reserve_host_region`. It is the only allocator that knows what
+    /// else lives in the address space, so a slot it hands out cannot collide
+    /// with a mapping, with the brk heap, or with another thread's slot -- and
+    /// there is one such decision rather than one per host.
+    ///
+    /// The host is told the address (`kernel_thread_slot_addr`) and makes the
+    /// range addressable: only a host can grow a `WebAssembly.Memory`, so
+    /// growing to cover the slot, zeroing it, and launching the thread stay
+    /// host acts. The same division as [`Self::parent_settid_ptr`] and
+    /// [`Self::ctid_ptr`]: the kernel names the address, the host performs the
+    /// store.
+    pub slot_addr: usize,
     pub stack_ptr: usize,
     pub tls_ptr: usize,
     pub tidptr: usize, // set_tid_address pointer
@@ -701,6 +719,7 @@ impl ThreadInfo {
                 state: ThreadState {
                     ctid_ptr,
                     parent_settid_ptr: 0,
+                    slot_addr: 0,
                     stack_ptr,
                     tls_ptr,
                     tidptr: 0,

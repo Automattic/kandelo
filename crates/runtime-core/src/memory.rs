@@ -503,6 +503,42 @@ impl MemoryManager {
         addr
     }
 
+    /// Release a reservation previously made by [`Self::reserve_host_region`]
+    /// or [`Self::reserve_host_region_at`], returning the range to the free
+    /// address space this manager hands out.
+    ///
+    /// `addr` and `len` must name the reservation exactly as it was made (the
+    /// length is page-rounded the same way, so a caller may pass either the
+    /// requested or the rounded length). Returns `false` when no such
+    /// reservation exists, which is a caller error rather than a resource
+    /// condition: releasing a range twice, or releasing one this manager never
+    /// issued, would otherwise silently hand out address space that is still
+    /// in use.
+    ///
+    /// Nothing is unmapped by this call. A reservation is address-space
+    /// bookkeeping, not a mapping; the bytes stay exactly as the host left
+    /// them, and the next reservation or `mmap` that lands here is responsible
+    /// for its own initialization.
+    pub fn release_host_region(&mut self, addr: usize, len: usize) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let Some(aligned_len) = len.checked_add(0xFFFF).map(|v| v & !0xFFFF) else {
+            return false;
+        };
+        let pos = self
+            .reserved_regions
+            .iter()
+            .position(|r| r.addr == addr && r.len == aligned_len);
+        match pos {
+            Some(index) => {
+                self.reserved_regions.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn reserve_host_region_at(&mut self, addr: usize, len: usize) -> usize {
         if len == 0 || addr & 0xFFFF != 0 {
             return wasm_posix_shared::mmap::MAP_FAILED;

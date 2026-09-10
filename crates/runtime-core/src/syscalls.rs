@@ -16295,7 +16295,53 @@ pub fn sys_clone(
         }
     }
 
-    let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
+    // Place the new thread's control slot -- its TLS/control page, fork-save
+    // page, and syscall channel -- before anything else exists. The kernel
+    // decides *where* because it owns the address space: `reserve_host_region`
+    // is the same first-fit allocator that answers `mmap`, so a slot cannot
+    // land on a mapping, on the brk heap, or on a sibling thread's slot. Each
+    // host previously carried its own copy of this arithmetic, and the two
+    // copies placed slots differently (a fixed arena natively, dynamic
+    // reservations in JavaScript), which is what made the native host's real
+    // concurrent-thread ceiling its arena size rather than the program's
+    // declaration.
+    //
+    // Only a host can grow a `WebAssembly.Memory`, so the host still makes the
+    // range addressable, zeroes it, and launches the thread. It learns the
+    // address from `kernel_thread_slot_addr`.
+    //
+    // A refusal here is EAGAIN for the same POSIX reason the quota check above
+    // is: an address space with no room for another control slot genuinely
+    // lacks the resources for another thread, and `pthread_create` must have
+    // created nothing when it fails -- so this runs before `create_thread`.
+    let slot_len = (wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT
+        * wasm_posix_shared::process_memory::WASM_PAGE_SIZE) as usize;
+    let slot_addr = match table.get_mut(pid) {
+        Some(proc) => proc.memory.reserve_host_region(slot_len),
+        None => return Err(Errno::ESRCH),
+    };
+    if slot_addr == wasm_posix_shared::mmap::MAP_FAILED {
+        return Err(Errno::EAGAIN);
+    }
+
+    let tid = match table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid) {
+        Ok(tid) => tid,
+        Err(err) => {
+            // Nothing was created, so nothing may be held: hand the slot back
+            // rather than leaking address space on a failed `pthread_create`.
+            if let Some(proc) = table.get_mut(pid) {
+                proc.memory.release_host_region(slot_addr, slot_len);
+            }
+            return Err(err);
+        }
+    };
+
+    if let Some(state) = table
+        .get_mut(pid)
+        .and_then(|proc| proc.get_thread_mut(tid))
+    {
+        state.slot_addr = slot_addr;
+    }
 
     // CLONE_PARENT_SETTID: the creating thread expects the new tid to appear
     // at `ptid_ptr` in process memory. musl's `pthread_create` passes
@@ -40117,6 +40163,95 @@ impl HostIO for NetMock {
             Err(Errno::EAGAIN),
         );
         assert!(table.get(pid).unwrap().threads.is_empty());
+    }
+
+    #[test]
+    fn test_clone_places_each_thread_slot_in_the_process_address_space() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        const FLAGS: u32 = 0x00000100 | 0x00010000;
+        let slot_len = (wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT
+            * wasm_posix_shared::process_memory::WASM_PAGE_SIZE) as usize;
+
+        let first = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("first thread");
+        let second = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("second thread");
+
+        let first_addr = table.get_mut(pid).unwrap().get_thread_mut(first as u32).unwrap().slot_addr;
+        let second_addr =
+            table.get_mut(pid).unwrap().get_thread_mut(second as u32).unwrap().slot_addr;
+
+        // Every slot is a real, page-aligned, whole-slot range, and two live
+        // threads never share one. This is the property each host used to
+        // guarantee for itself out of its own copy of the arithmetic.
+        assert_ne!(first_addr, 0);
+        assert_ne!(second_addr, 0);
+        assert_eq!(first_addr % wasm_posix_shared::process_memory::WASM_PAGE_SIZE as usize, 0);
+        assert!(
+            first_addr + slot_len <= second_addr || second_addr + slot_len <= first_addr,
+            "thread slots overlap: {first_addr:#x} and {second_addr:#x}",
+        );
+
+        // The slots are held in the same address space `mmap` allocates from,
+        // so a guest mapping cannot land on a live thread's channel.
+        let proc = table.get_mut(pid).unwrap();
+        assert!(!proc.memory.can_grow_at(first_addr, slot_len));
+        assert!(!proc.memory.can_grow_at(second_addr, slot_len));
+        assert_eq!(proc.memory.reserved_regions().len(), 2);
+    }
+
+    #[test]
+    fn test_clone_slot_is_reusable_only_after_the_host_releases_it() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        const FLAGS: u32 = 0x00000100 | 0x00010000;
+        let slot_len = (wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT
+            * wasm_posix_shared::process_memory::WASM_PAGE_SIZE) as usize;
+
+        let tid = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("thread");
+        let addr = table.get_mut(pid).unwrap().get_thread_mut(tid as u32).unwrap().slot_addr;
+
+        // Thread exit alone must NOT free the address. A worker that was
+        // terminated without publishing a quiescence fence can still write
+        // into its slot, so the host -- the only party that knows -- decides
+        // when the range may be handed out again.
+        table.get_mut(pid).unwrap().remove_thread(tid as u32);
+        let next = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("next thread");
+        let next_addr = table.get_mut(pid).unwrap().get_thread_mut(next as u32).unwrap().slot_addr;
+        assert_ne!(next_addr, addr);
+
+        // Once released, the range is ordinary free address space again, so a
+        // create/join loop reuses slots instead of walking up the address
+        // space forever.
+        assert!(table.get_mut(pid).unwrap().memory.release_host_region(addr, slot_len));
+        assert!(!table.get_mut(pid).unwrap().memory.release_host_region(addr, slot_len));
+        table.get_mut(pid).unwrap().remove_thread(next as u32);
+        assert!(table.get_mut(pid).unwrap().memory.release_host_region(next_addr, slot_len));
+        let reused = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("reusing thread");
+        assert_eq!(
+            table.get_mut(pid).unwrap().get_thread_mut(reused as u32).unwrap().slot_addr,
+            addr,
+        );
+    }
+
+    #[test]
+    fn test_clone_refuses_with_eagain_when_no_slot_can_be_placed() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        const FLAGS: u32 = 0x00000100 | 0x00010000;
+
+        // An address space with no room left for a control slot genuinely
+        // lacks the resources for another thread. POSIX's answer to that is
+        // EAGAIN, and it must have created nothing.
+        table.get_mut(pid).unwrap().memory.set_max_addr(0x1000);
+        assert_eq!(
+            sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0),
+            Err(Errno::EAGAIN),
+        );
+        assert!(table.get(pid).unwrap().threads.is_empty());
+        assert!(table.get_mut(pid).unwrap().memory.reserved_regions().is_empty());
     }
 
     #[test]

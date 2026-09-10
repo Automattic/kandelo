@@ -2073,6 +2073,33 @@ pub extern "C" fn kernel_reserve_host_region_at(pid: u32, addr: usize, len: usiz
     }
 }
 
+/// Release a host-owned dynamic control range previously reserved for `pid`.
+///
+/// The mirror of [`kernel_reserve_host_region`]. A host calls this once the
+/// range is provably out of use -- for a pthread control slot, once the
+/// thread's worker is quiescent -- and the address space becomes available
+/// again. Nothing is unmapped: a reservation is bookkeeping, and the bytes are
+/// the next owner's problem, exactly as they are for a fresh reservation.
+///
+/// Returns 0 on success, -ESRCH if the pid is missing, and -EINVAL if no
+/// reservation with this exact address and length exists. A double release is
+/// a host defect, not a resource condition, so it is refused loudly rather
+/// than handing out address space that is still in use.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_release_host_region(pid: u32, addr: usize, len: usize) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            if proc.memory.release_host_region(addr, len) {
+                0
+            } else {
+                -(Errno::EINVAL as i32)
+            }
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Set the working directory for a process.
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success or a negative errno if the process/path is invalid.
@@ -13750,6 +13777,33 @@ pub extern "C" fn kernel_thread_parent_tid_target(pid: u32, tid: u32) -> i64 {
         .and_then(|proc| proc.get_thread_mut(tid))
     {
         Some(state) => state.parent_settid_ptr as i64,
+        None => -(Errno::ESRCH as i64),
+    }
+}
+
+/// The byte address of `tid`'s per-thread control slot, as placed by
+/// `sys_clone`; negative errno if the thread is unknown or owned by another
+/// process.
+///
+/// The kernel decides where a pthread's TLS/control page, fork-save page, and
+/// syscall channel live, because it owns the address space and can see every
+/// mapping, reservation and heap boundary in it. The host asks here and then
+/// does the parts only a host can do: grow the process `WebAssembly.Memory` to
+/// cover the slot, zero it, and launch the thread.
+///
+/// The address stays reserved until the host releases it through
+/// [`kernel_release_host_region`], which it does when the slot is provably out
+/// of use -- not at thread exit, because a terminated worker that never
+/// published a quiescence fence may still write into its slot.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_thread_slot_addr(pid: u32, tid: u32) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match pt
+        .get_mut(pid)
+        .and_then(|proc| proc.get_thread_mut(tid))
+    {
+        Some(state) => state.slot_addr as i64,
         None => -(Errno::ESRCH as i64),
     }
 }
