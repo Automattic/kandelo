@@ -1190,6 +1190,281 @@ describe("binary resolver unified tier", () => {
   });
 });
 
+/**
+ * Materialize a package into a `local-binaries/source-only-v1` tier the way
+ * the local-build engine does: byte-verbatim REGULAR FILES plus the
+ * `.kandelo/source-only-program-projection-v1.json` authority that carries
+ * their identity. The browser cannot follow a host symlink, so this tier
+ * never uses the `.kandelo-local-generations` symlink shape the other local
+ * tiers use — the authority is how it proves one generation instead.
+ */
+function materializeSourceOnlyPackage(
+  root: string,
+  packageName: string,
+  members: readonly FixtureProjectionMember[],
+  arch = "wasm32",
+): void {
+  const manifestPath = join(fixturePackageDirectory(packageName), "package.toml");
+  const manifestSha256 = createHash("sha256")
+    .update(readFileSync(manifestPath))
+    .digest("hex");
+  const cacheKey = fixtureCacheKey(packageName, arch);
+
+  const nodeMembers = [...members]
+    .map((member) => {
+      const mirrorPath = `programs/${arch}/${member.mirrorPath}`;
+      const bytes = mirrorPath.endsWith(".wasm")
+        ? Buffer.from(executableWasmWithAbi(ABI_VERSION))
+        : Buffer.from(`source-only:${mirrorPath}`);
+      const absolute = join(root, ...mirrorPath.split("/"));
+      mkdirSync(dirname(absolute), { recursive: true });
+      writeFileSync(absolute, bytes, { mode: 0o644 });
+      chmodSync(absolute, 0o644);
+      return {
+        sourceArtifact: member.sourceArtifact,
+        mirrorPath,
+        mode: 0o644,
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    })
+    .sort((left, right) =>
+      left.mirrorPath < right.mirrorPath
+        ? -1
+        : left.mirrorPath > right.mirrorPath
+        ? 1
+        : 0
+    );
+
+  const metadataDir = join(root, ".kandelo");
+  mkdirSync(metadataDir, { recursive: true, mode: 0o755 });
+  const authorityPath = join(
+    metadataDir,
+    "source-only-program-projection-v1.json",
+  );
+  writeFileSync(
+    authorityPath,
+    `${JSON.stringify({
+      format: "kandelo-source-only-program-projection-v1",
+      graphAuthoritySha256: "e".repeat(64),
+      nodes: [
+        {
+          node: { kind: "package", name: packageName, targetArch: arch },
+          manifestSha256,
+          cacheKeySha256: cacheKey,
+          cacheReceiptSha256: "c".repeat(64),
+          members: nodeMembers,
+        },
+      ],
+      projection: {
+        format: "kandelo-program-packages-v2",
+        identities: {
+          [packageName]: {
+            manifestSha256,
+            cacheKeys: {
+              wasm32: fixtureCacheKey(packageName, "wasm32"),
+              wasm64: fixtureCacheKey(packageName, "wasm64"),
+            },
+          },
+        },
+        packages: {
+          [packageName]: {
+            manifestSha256,
+            arches: [arch],
+            cacheKeys: { [arch]: cacheKey },
+            dependencyClosures: { [arch]: [] },
+            members,
+          },
+        },
+      },
+    }, null, 2)}\n`,
+    { mode: 0o644 },
+  );
+  chmodSync(authorityPath, 0o644);
+}
+
+/**
+ * B19: a locally built `source-only-v1` tier holds regular files, and it is
+ * the FIRST tier the resolver consults. Before this suite, the tier was
+ * constructed with `allowRegularFileClosure: false` and had no
+ * `source-only-generation` arm in either `pinPackageClosureIdentity` or
+ * `mutableGenerationIdentityFailure`, so it could not satisfy ANY package
+ * closure — not even a single-output package such as `dash`. The resolver
+ * therefore refused the artifacts a completed `./run.sh setup` had just
+ * written and fell through to the legacy `local-binaries/` symlink mirror,
+ * which either served an older build or reported "(missing)" about a file
+ * that was plainly on disk. That blocked every kernel-booting conformance
+ * suite in a locally built worktree.
+ */
+describe("binary resolver source-only tier package closures", () => {
+  it("resolves a single-output package materialized as a regular file", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const fixture = createScalarOutputFixture();
+    const outputName = basename(fixture.relPath);
+    materializeSourceOnlyPackage(
+      join(repo, "local-binaries/source-only-v1"),
+      fixture.name,
+      [{
+        kind: "output",
+        sourceArtifact: fixture.sourceArtifact,
+        mirrorPath: outputName,
+        outputName: outputName.replace(/\.wasm$/, ""),
+        forkInstrumentation: "auto",
+      }],
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    expect(resolveBinary(fixture.relPath)).toBe(
+      join(repo, "local-binaries/source-only-v1", fixture.relPath),
+    );
+  });
+
+  it("resolves every member of a multi-member package from one generation", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const fixture = createMultiOutputFixture();
+    materializeSourceOnlyPackage(
+      join(repo, "local-binaries/source-only-v1"),
+      fixture.name,
+      [
+        {
+          kind: "output",
+          sourceArtifact: "artifacts/image.zip",
+          mirrorPath: `${fixture.name}/image.zip`,
+          outputName: "image",
+          forkInstrumentation: "auto",
+        },
+        {
+          kind: "output",
+          sourceArtifact: "support/bootstrap.zip",
+          mirrorPath: `${fixture.name}/bootstrap.zip`,
+          outputName: "bootstrap",
+          forkInstrumentation: "auto",
+        },
+        {
+          kind: "runtime-file",
+          sourceArtifact: "share/runtime.dat",
+          mirrorPath: `${fixture.name}/share/runtime.dat`,
+          guestPath: "/usr/share/runtime.dat",
+          mode: 0o644,
+        },
+      ],
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    const relPaths = fixture.members.map((member) => member.relPath);
+    expect(tryResolveBinarySet(relPaths)).toEqual(
+      relPaths.map((relPath) =>
+        join(repo, "local-binaries/source-only-v1", relPath)
+      ),
+    );
+    for (const relPath of relPaths) {
+      expect(resolveBinary(relPath)).toBe(
+        join(repo, "local-binaries/source-only-v1", relPath),
+      );
+    }
+  });
+
+  it("refuses a member whose bytes drifted from the projection authority", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const root = join(repo, "local-binaries/source-only-v1");
+    const fixture = createMultiOutputFixture();
+    materializeSourceOnlyPackage(root, fixture.name, [
+      {
+        kind: "output",
+        sourceArtifact: "artifacts/image.zip",
+        mirrorPath: `${fixture.name}/image.zip`,
+        outputName: "image",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "support/bootstrap.zip",
+        mirrorPath: `${fixture.name}/bootstrap.zip`,
+        outputName: "bootstrap",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${fixture.name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    writeFileSync(
+      join(root, fixture.members[0]!.relPath),
+      "tampered but the same length!!!!!!!!!!!",
+      { mode: 0o644 },
+    );
+
+    expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
+      /is invalid: member (sha256|size)/,
+    );
+  });
+
+  it("names a rejected tier as rejected, never as a missing artifact", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const root = join(repo, "local-binaries/source-only-v1");
+    const fixture = createMultiOutputFixture();
+    // Materialize the bytes, then remove the authority: the artifacts are
+    // present, so a truthful resolver must say the tier was REJECTED and why,
+    // not that the file it can see is "(missing)".
+    materializeSourceOnlyPackage(root, fixture.name, [
+      {
+        kind: "output",
+        sourceArtifact: "artifacts/image.zip",
+        mirrorPath: `${fixture.name}/image.zip`,
+        outputName: "image",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "support/bootstrap.zip",
+        mirrorPath: `${fixture.name}/bootstrap.zip`,
+        outputName: "bootstrap",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${fixture.name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
+    rmSync(join(root, ".kandelo"), { recursive: true, force: true });
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    let message = "";
+    try {
+      resolveBinary(fixture.members[0]!.relPath);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("REJECTED");
+    expect(message).toContain("projection authority");
+    expect(message).toContain("Re-running the build does not clear a rejection");
+    // The whole point: the resolver must not describe a file it can see as
+    // absent. Every present member belongs under REJECTED, never as
+    // "(missing)" in the tier that holds it.
+    const rejectedSection = message.slice(
+      message.indexOf("REJECTED"),
+      message.indexOf("ABSENT") === -1
+        ? undefined
+        : message.indexOf("ABSENT"),
+    );
+    expect(rejectedSection).toContain("source-only-v1");
+    for (const member of fixture.members) {
+      expect(rejectedSection).not.toContain(`also absent here: ${member.relPath}`);
+    }
+  });
+});
+
 describe("binary resolver artifact policy", () => {
   it("does not mistake an installed package consumer workspace for Kandelo", () => {
     const consumer = mkdtempSync(join(tmpdir(), "kandelo-consumer-root-"));
@@ -3076,10 +3351,10 @@ wasm = "${fixture.sourceArtifact}"
     );
 
     expect(() => resolveBinary(fixture.relPath)).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
     expect(() => tryResolveBinarySet([fixture.relPath])).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
   });
 
@@ -3164,7 +3439,7 @@ wasm = "bin/${renamedOutput}.zip"
     }
 
     expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
   });
 
@@ -3269,7 +3544,7 @@ wasm = "bin/${renamedOutput}.zip"
     }
 
     expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
-      /shared package identity rejected: member symlinks target different canonical package generations/,
+      /whole tier refused: member symlinks target different canonical package generations/,
     );
   });
 

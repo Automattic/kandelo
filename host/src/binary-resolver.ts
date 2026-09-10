@@ -1461,6 +1461,22 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
   if (root === null) {
     throw new Error("Source-only projection requested outside source-only-v1");
   }
+  return readSourceOnlyProjectionAtRoot(root);
+}
+
+/**
+ * Read and fully validate the projection authority materialized at `root`.
+ *
+ * `root` must already be a canonical real directory. Under the
+ * `source-only-v1` resolution policy that is `sourceOnlyBinaryRoot()`; under
+ * the default policy it is the canonical path of the resolver's
+ * `local-binaries/source-only-v1` tier, which resolves the same bytes through
+ * the same authority so Node and the browser cannot disagree about one
+ * directory's contents.
+ */
+function readSourceOnlyProjectionAtRoot(
+  root: string,
+): LoadedSourceOnlyProjection {
   const metadataRoot = join(root, ".kandelo");
   try {
     const metadata = lstatSync(metadataRoot);
@@ -3113,6 +3129,13 @@ function mutableGenerationIdentityFailure(
       ? null
       : "local mirror targets are not one direct immutable local generation";
   }
+  if (tier.identity === "source-only-generation") {
+    // The hermetic tier is a byte-verbatim mirror of regular files, because
+    // the browser loads it and cannot follow a host symlink. A symlink here
+    // means something other than the local-build engine wrote this tier.
+    return "source-only tier members must be regular files materialized by its"
+      + " projection authority, not symlinks";
+  }
   if (tier.identity === "program-cache") {
     const expectedParentPath = binaryProgramCacheRoot();
     if (!pathEntryExists(expectedParentPath)) {
@@ -3135,6 +3158,131 @@ interface PinnedPackageClosure {
 
 interface RejectedPackageClosure {
   failure: string;
+}
+
+/**
+ * Verify a regular-file package closure in `local-binaries/source-only-v1/`
+ * against that tier's own projection authority.
+ *
+ * WHY THIS TIER IS DIFFERENT. Every other local tier proves "these members
+ * came from one build" positionally: its members are symlinks into an
+ * immutable, content-addressed generation directory, and
+ * `mutableGenerationIdentityFailure` checks that they all point into the same
+ * one. The source-only tier deliberately holds REGULAR FILES — it is the one
+ * hermetic artifact root shipped to both hosts, and a browser cannot follow a
+ * host symlink. It carries its identity in
+ * `.kandelo/source-only-program-projection-v1.json` instead: per-node
+ * `manifestSha256` / `cacheKeySha256` / `cacheReceiptSha256`, and per-member
+ * `mode`, `size` and `sha256`. `validateSourceOnlyMember` checks each member
+ * with a stable read (O_NOFOLLOW open, fstat before and after, lstat the name,
+ * realpath equality, then the digest), which is a strictly stronger identity
+ * proof than a shared symlink parent, and it is exactly what the browser
+ * already runs under `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`.
+ *
+ * Before this, the tier was constructed with `allowRegularFileClosure: false`
+ * and no `source-only-generation` arm anywhere, so it could never satisfy a
+ * package closure — not even a one-member package such as `dash`. Since it is
+ * the FIRST tier, and since a completed local build writes only here, the
+ * resolver would refuse the freshly built artifacts and fall through to the
+ * legacy `local-binaries/` symlink mirror, silently preferring an older build
+ * when one happened to be there and reporting "(missing)" when none was. One
+ * directory's bytes must not resolve under one policy and be refused under the
+ * other.
+ */
+function pinSourceOnlyTierClosure(
+  tier: BinaryCandidateTier,
+  members: readonly ProgramPackageClosureMember[],
+): PinnedPackageClosure | RejectedPackageClosure {
+  let loaded: LoadedSourceOnlyProjection;
+  try {
+    const metadata = lstatSync(tier.root);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      return { failure: "the source-only tier root is not a real directory" };
+    }
+    loaded = readSourceOnlyProjectionAtRoot(realpathSync(tier.root));
+  } catch (error) {
+    return {
+      failure: `the source-only tier has no usable projection authority: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const owners = new Set<SourceOnlyProjectionNode>();
+  for (const member of members) {
+    const owner = loaded.ownerByMirrorPath.get(member.relPath);
+    if (owner === undefined) {
+      return {
+        failure:
+          `${member.relPath} is not declared by the source-only projection `
+          + "authority (the tier was materialized by a different build than "
+          + "the one this projection describes)",
+      };
+    }
+    owners.add(owner);
+  }
+  if (owners.size !== 1) {
+    return {
+      failure:
+        "declared package members span more than one source-only generation",
+    };
+  }
+  const owner = [...owners][0]!;
+  if (owner.packageName !== members[0]!.packageName) {
+    return {
+      failure:
+        `source-only generation ${JSON.stringify(owner.packageName)} does not `
+        + `own the declared ${JSON.stringify(members[0]!.packageName)} closure`,
+    };
+  }
+  if (owner.members.length !== members.length) {
+    return {
+      failure:
+        `source-only generation ${JSON.stringify(owner.packageName)} `
+        + `materializes ${owner.members.length} member(s), but the selected `
+        + `package projection declares ${members.length}`,
+    };
+  }
+  // Bind the materialized generation to the package identity the CURRENT
+  // source projection selects. This is the source-only analogue of the
+  // `.kandelo-local-generations/<arch>/<package>/<cacheKey>/` parent check:
+  // without it a tier left over from an earlier source state would resolve as
+  // if it were fresh. `verify-fresh` only inspects `kernel.wasm`, so nothing
+  // else was catching a stale program here.
+  const projected = loaded.projection.packages.get(owner.packageName);
+  if (
+    !projected
+    || programPackageProjectionIdentity(projected)
+      !== members[0]!.projectionIdentity
+  ) {
+    return {
+      failure:
+        `the materialized source-only generation for `
+        + `${JSON.stringify(owner.packageName)} was built from a different `
+        + "package identity than the source tree now selects; rebuild it with "
+        + "./run.sh setup",
+    };
+  }
+
+  let validated: Map<string, string>;
+  try {
+    validated = validateSourceOnlyNode(loaded, owner);
+  } catch (error) {
+    return {
+      failure: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const paths: string[] = [];
+  for (const member of members) {
+    const path = validated.get(member.relPath);
+    if (path === undefined) {
+      return {
+        failure: `the source-only generation omitted ${member.relPath}`,
+      };
+    }
+    paths.push(path);
+  }
+  return { paths };
 }
 
 /**
@@ -3174,6 +3322,9 @@ function pinPackageClosureIdentity(
     }
 
     if (allFiles) {
+      if (tier.identity === "source-only-generation") {
+        return pinSourceOnlyTierClosure(tier, members);
+      }
       if (!tier.allowRegularFileClosure) {
         return {
           failure: "a mutable source-checkout wasm tree is not an installed package identity",
@@ -3543,10 +3694,18 @@ function tryResolveBinarySetFromTiers(
   if (relPaths.length === 0) return [];
 
   let anyExisting = false;
-  const incomplete: string[] = [];
+  const outcomes: TierResolutionOutcome[] = [];
   for (const tier of binaryCandidateTiers()) {
     const selected: string[] = [];
-    const unavailable: string[] = [];
+    const outcome: TierResolutionOutcome = {
+      label: tier.label,
+      root: tier.root,
+      present: [],
+      missing: [],
+      rejected: [],
+      tierRejection: null,
+    };
+    outcomes.push(outcome);
     if (closureMembers) {
       const [programs, arch, packageName] = closureMembers[0]!.relPath.split("/");
       if (programs === "programs" && arch && packageName) {
@@ -3564,20 +3723,24 @@ function tryResolveBinarySetFromTiers(
       );
       if (candidate) {
         selected.push(candidate);
+        outcome.present.push(relPath);
       } else if (existing.length > 0) {
-        unavailable.push(`${relPath} (rejected by artifact policy)`);
+        outcome.present.push(relPath);
+        outcome.rejected.push(relPath);
       } else {
-        unavailable.push(`${relPath} (missing)`);
+        outcome.missing.push(relPath);
       }
     }
-    if (unavailable.length === 0 && closureMembers) {
+    const tierIsComplete = outcome.missing.length === 0
+      && outcome.rejected.length === 0;
+    if (tierIsComplete && closureMembers) {
       const identity = pinPackageClosureIdentity(
         tier,
         selected,
         closureMembers,
       );
       if ("failure" in identity) {
-        unavailable.push(`shared package identity rejected: ${identity.failure}`);
+        outcome.tierRejection = identity.failure;
       } else {
         const rejectedPinnedMembers = identity.paths.flatMap((path, index) =>
           hasBinaryArtifactPolicyFailures(
@@ -3589,15 +3752,14 @@ function tryResolveBinarySetFromTiers(
             : []
         );
         if (rejectedPinnedMembers.length > 0) {
-          unavailable.push(
-            `pinned package generation rejected by artifact policy: ${rejectedPinnedMembers.join(", ")}`,
-          );
+          outcome.tierRejection =
+            "the pinned package generation is rejected by artifact policy: "
+            + rejectedPinnedMembers.join(", ");
         } else {
           return identity.paths;
         }
       }
-    }
-    if (unavailable.length === 0) {
+    } else if (tierIsComplete) {
       return selected.map((path, index) =>
         pinScalarCandidate(
           path,
@@ -3606,17 +3768,89 @@ function tryResolveBinarySetFromTiers(
         )
       );
     }
-    incomplete.push(
-      `  ${tier.label} (${tier.root}): ${unavailable.join(", ")}`,
-    );
   }
 
   if (!anyExisting) return null;
-  throw new Error(
-    "Package artifact closure is incomplete: no single provenance tier " +
-      "contains every accepted artifact, and tiers will not be mixed.\n" +
-      incomplete.join("\n"),
+  throw new Error(describeIncompleteClosure(relPaths, outcomes));
+}
+
+interface TierResolutionOutcome {
+  label: string;
+  root: string;
+  /** Requested paths that exist on disk in this tier, accepted or not. */
+  present: string[];
+  /** Requested paths with no entry at all in this tier. */
+  missing: string[];
+  /** Present paths this tier's own artifact policy refused. */
+  rejected: string[];
+  /** Why the tier was refused as a whole, even though every member existed. */
+  tierRejection: string | null;
+}
+
+/**
+ * Explain a failed closure resolution in terms a reader can act on.
+ *
+ * WHY THIS IS NOT COSMETIC. The previous message listed every tier flatly, so
+ * a tier that HELD the artifacts and was refused for an identity reason
+ * appeared alongside tiers that simply did not have them, and the eye landed
+ * on `programs/wasm32/dash.wasm (missing)` — about a file that was right there
+ * in `local-binaries/source-only-v1/`. Readers reasonably concluded the build
+ * had not produced it and re-ran `./run.sh setup`, which cannot fix a
+ * rejection. A rejected tier must say it was rejected and why; "(missing)" is
+ * reserved for an artifact that is genuinely absent.
+ */
+function describeIncompleteClosure(
+  relPaths: readonly string[],
+  outcomes: readonly TierResolutionOutcome[],
+): string {
+  const refused = outcomes.filter(
+    (outcome) =>
+      outcome.tierRejection !== null || outcome.rejected.length > 0,
   );
+  const lines = [
+    "Package artifact closure is incomplete: no single provenance tier "
+    + "contains every accepted artifact, and tiers will not be mixed.",
+    `  requested: ${relPaths.join(", ")}`,
+  ];
+  if (refused.length > 0) {
+    lines.push(
+      "",
+      "  REJECTED (the artifacts are present here; resolution refused them):",
+    );
+    for (const outcome of refused) {
+      lines.push(`    ${outcome.label} (${outcome.root})`);
+      if (outcome.tierRejection !== null) {
+        lines.push(`      whole tier refused: ${outcome.tierRejection}`);
+      }
+      if (outcome.rejected.length > 0) {
+        lines.push(
+          `      refused by artifact policy: ${outcome.rejected.join(", ")}`,
+        );
+      }
+      if (outcome.missing.length > 0) {
+        lines.push(`      also absent here: ${outcome.missing.join(", ")}`);
+      }
+    }
+    lines.push(
+      "",
+      "  Re-running the build does not clear a rejection. Read the reason "
+      + "above.",
+    );
+  }
+  const absent = outcomes.filter((outcome) => !refused.includes(outcome));
+  if (absent.length > 0) {
+    lines.push("", "  ABSENT (nothing to resolve here):");
+    for (const outcome of absent) {
+      lines.push(
+        `    ${outcome.label} (${outcome.root}): ${
+          outcome.missing.length === relPaths.length
+            ? "none of the requested artifacts"
+            : `missing ${outcome.missing.join(", ")}`
+        }`,
+      );
+    }
+  }
+  return lines.join("\n");
 }
 
 /** Returns the absolute path of binaries/ whether or not it exists. */
