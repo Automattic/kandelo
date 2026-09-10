@@ -17407,6 +17407,7 @@ fn cmd_install_local_artifact(
         binaries_dir,
         arch,
     )?;
+    let staged = matches!(outcome, LocalArtifactInstall::Staged { .. });
     match outcome {
         LocalArtifactInstall::Staged {
             generation,
@@ -17429,7 +17430,122 @@ fn cmd_install_local_artifact(
             println!("installed {}", mirror.display());
         }
     }
-    Ok(())
+    if staged {
+        // Nothing is published yet, so nothing can be shadowed yet. The
+        // completing member of the same session runs the check below.
+        return Ok(());
+    }
+    report_higher_priority_tier_shadow(manifest, artifact, source, binaries_dir, arch)
+}
+
+/// The higher-priority resolver tier that lives inside a `--binaries-dir`
+/// root. `host/src/binary-resolver.ts`'s `binaryCandidateTiers` orders
+/// `local-binaries/source-only-v1` **before** ambient `local-binaries`, so a
+/// file staged here shadows the same relative path installed by
+/// `install-local-artifact`.
+const SOURCE_ONLY_TIER_DIR: &str = "source-only-v1";
+
+/// Where `install-local-artifact` publishes `declared`, relative to the
+/// `--binaries-dir` root. Pure, so the tier-shadow check and the publisher
+/// cannot drift: it reproduces exactly the `binaries_dir` vs `arch_root`
+/// choice `install_local_artifact` makes from `uses_root_binary_mirror`.
+fn local_artifact_mirror_rel(
+    manifest: &DepsManifest,
+    mirror_relative: &Path,
+    arch: TargetArch,
+) -> PathBuf {
+    if manifest.uses_root_binary_mirror() {
+        mirror_relative.to_path_buf()
+    } else {
+        Path::new("programs").join(arch.as_str()).join(mirror_relative)
+    }
+}
+
+/// Fail loudly when a successful install leaves a HIGHER-priority resolver
+/// tier holding different bytes for the same path.
+///
+/// WHY: the resolver tries `local-binaries/source-only-v1/` before ambient
+/// `local-binaries/` (`binaryCandidateTiers` in `host/src/binary-resolver.ts`).
+/// `./run.sh rebuild kernel` refreshes the first; this command refreshes the
+/// second. Running only this one therefore refreshes the copy the guest tests
+/// do NOT read, and they keep executing the previous kernel while the command
+/// prints `installed ...` and exits 0. That cost one agent two hours, and it is
+/// the same shape as every other silent-success defect this project has found:
+/// a step that did half its job reported success anyway.
+///
+/// WHY A FAILURE RATHER THAN ALSO REFRESHING THE OTHER TIER: the SourceOnlyV1
+/// root is a content-addressed projection with its own manifest of per-member
+/// sizes and digests (`.kandelo/source-only-program-projection-v1.json`, which
+/// the browser resolver validates fetched bytes against). Only the local-build
+/// engine can write it consistently. Copying bytes into it from here would
+/// leave the manifest describing the old member — trading a loud stale tier for
+/// a silent inconsistent one. So this reports the real boundary and names the
+/// command that owns the other tier.
+///
+/// SCOPE: skipped when `WASM_POSIX_DEP_OUT_DIR` is set. That marks a
+/// resolver-driven package build, where the engine is mid-run and will publish
+/// its own projection when the build completes — the two tiers are *expected*
+/// to disagree in that window, and failing there would break every ordinary
+/// `./run.sh setup`. Also skipped when the root carries no SourceOnlyV1 tier at
+/// all (nothing can shadow), and when the higher tier has no entry for this
+/// path (the ambient copy is the only one, so it is the one that resolves).
+fn report_higher_priority_tier_shadow(
+    manifest: &DepsManifest,
+    artifact: &str,
+    source: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+) -> Result<(), String> {
+    if std::env::var_os("WASM_POSIX_DEP_OUT_DIR").is_some() {
+        return Ok(());
+    }
+    let higher_root = binaries_dir.join(SOURCE_ONLY_TIER_DIR);
+    if !higher_root.is_dir() {
+        return Ok(());
+    }
+    let declared = declared_local_artifact(manifest, artifact)?;
+    let mirror_rel = local_artifact_mirror_rel(manifest, &declared.mirror_relative, arch);
+    let shadowing = higher_root.join(&mirror_rel);
+    let shadowing_bytes = match std::fs::read(&shadowing) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "{}: read higher-priority resolver tier entry {}: {error}",
+                manifest.spec(),
+                shadowing.display()
+            ));
+        }
+    };
+    let installed_bytes = std::fs::read(source).map_err(|error| {
+        format!(
+            "{}: re-read installed artifact {} to compare tiers: {error}",
+            manifest.spec(),
+            source.display()
+        )
+    })?;
+    if shadowing_bytes == installed_bytes {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: this install refreshed a LOWER-priority resolver tier and left a \
+         higher-priority one stale, so nothing will actually load the bytes just \
+         installed.\n  \
+         installed (lower priority):  {}\n  \
+         still shadows it (higher):   {}\n\
+         The resolver tries `{}` before ambient `local-binaries` \
+         (`binaryCandidateTiers` in host/src/binary-resolver.ts), so every consumer \
+         keeps resolving the older artifact.\n\
+         Refresh the higher tier through the build engine that owns it -- \
+         `./run.sh rebuild {}` (or `cargo xtask bootstrap {}`) -- then run \
+         `cargo xtask verify-fresh`.",
+        manifest.spec(),
+        binaries_dir.join(&mirror_rel).display(),
+        shadowing.display(),
+        SOURCE_ONLY_TIER_DIR,
+        manifest.name,
+        manifest.name,
+    ))
 }
 
 fn install_local_artifact(
@@ -25990,6 +26106,73 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         assert_ne!(first_path, second_path);
         assert!(first_path.to_string_lossy().ends_with(&hex(&first)));
         assert!(second_path.to_string_lossy().ends_with(&hex(&second)));
+    }
+
+    /// The tier-shadow check compares the file it just published against the
+    /// same relative path in `source-only-v1`. If this placement ever drifts
+    /// from `install_local_artifact`'s own `uses_root_binary_mirror` branch,
+    /// the check would compare the wrong file and go quiet again -- which is
+    /// the exact failure mode it exists to end.
+    #[test]
+    fn local_artifact_mirror_rel_matches_the_publishers_root_vs_programs_choice() {
+        let dir = Path::new("/registry/kernel");
+        let kernel = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "kernel"
+version = "0.1.0"
+depends_on = []
+
+[source]
+url = "https://example.test/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+
+[[outputs]]
+name = "kernel"
+wasm = "kandelo-kernel.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(kernel.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&kernel, Path::new("kernel.wasm"), TEST_ARCH),
+            PathBuf::from("kernel.wasm"),
+            "the kernel publishes at the binary root, so its higher-tier twin \
+             is `source-only-v1/kernel.wasm`, not one under programs/<arch>/"
+        );
+
+        let ordinary = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "tar"
+version = "1.35"
+depends_on = []
+
+[source]
+url = "https://example.test/tar.tar.xz"
+sha256 = "4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+
+[[outputs]]
+name = "tar"
+wasm = "tar.wasm"
+"#,
+            dir.to_path_buf(),
+        )
+        .unwrap();
+        assert!(!ordinary.uses_root_binary_mirror());
+        assert_eq!(
+            local_artifact_mirror_rel(&ordinary, Path::new("tar.wasm"), TEST_ARCH),
+            Path::new("programs").join(TEST_ARCH.as_str()).join("tar.wasm")
+        );
     }
 
     fn parse_source_manifest(dir: &Path) -> DepsManifest {
