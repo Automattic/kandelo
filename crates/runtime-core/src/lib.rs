@@ -23,6 +23,7 @@ pub mod exec_target;
 pub mod fd;
 pub mod fifo;
 pub mod fork;
+pub mod hostdir;
 pub mod ipc;
 pub mod ipc_wire;
 pub mod klzy;

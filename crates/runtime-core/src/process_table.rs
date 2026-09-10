@@ -1279,7 +1279,7 @@ impl ProcessTable {
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
             if let Some(removed) = self.remove_process(child_pid) {
                 for dir_handle in removed.host_dir_closes {
-                    let _ = host.host_closedir(dir_handle);
+                    let _ = host.host_close(dir_handle);
                 }
                 for handle in removed.host_closes {
                     let _ = host.host_close(handle);

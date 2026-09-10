@@ -474,7 +474,22 @@ static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 /// check independently disqualifies the path).
 struct ForeignMounts {
     locked: AtomicBool,
-    prefixes: UnsafeCell<Vec<Vec<u8>>>,
+    prefixes: UnsafeCell<Vec<ForeignMount>>,
+}
+
+/// One registered foreign mount: its canonical prefix, plus the host directory
+/// handle naming that mount's root, if the host published one.
+///
+/// `root` is the anchor for the handle-only host contract. Every host file
+/// operation under this prefix starts from `root` and steps one path component
+/// at a time through `host_openat`, so the host never receives a guest path, a
+/// mount prefix, a `..`, or a symlink chain. A prefix registered without a root
+/// handle is a mount the host declared but exposed no directory capability for;
+/// operations under it fail with `ENOSYS` rather than silently falling back to
+/// name resolution.
+pub(crate) struct ForeignMount {
+    pub(crate) prefix: Vec<u8>,
+    pub(crate) root: Option<i64>,
 }
 
 impl ForeignMounts {
@@ -485,7 +500,7 @@ impl ForeignMounts {
         }
     }
 
-    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<Vec<u8>>) -> R) -> R {
+    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<ForeignMount>) -> R) -> R {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -513,7 +528,7 @@ static FOREIGN_MOUNTS: ForeignMounts = ForeignMounts::new();
 /// overlay's own root, never foreign); trailing slashes are trimmed and
 /// duplicates dropped. Returns the number of prefixes registered.
 pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
-    let mut prefixes: Vec<Vec<u8>> = Vec::new();
+    let mut prefixes: Vec<ForeignMount> = Vec::new();
     for part in buf.split(|&b| b == 0) {
         if part.first() != Some(&b'/') {
             continue;
@@ -525,13 +540,94 @@ pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
         if p == b"/" {
             continue;
         }
-        if !prefixes.iter().any(|e| e == &p) {
-            prefixes.push(p);
+        if !prefixes.iter().any(|e| e.prefix == p) {
+            prefixes.push(ForeignMount {
+                prefix: p,
+                root: None,
+            });
         }
     }
     let count = prefixes.len();
     FOREIGN_MOUNTS.with(|slot| *slot = prefixes);
     count
+}
+
+/// Attach host directory handles to registered foreign mounts.
+///
+/// `buf` is a sequence of self-describing records, each an 8-byte
+/// little-endian `i64` root handle followed by the mount's canonical prefix
+/// bytes and a NUL terminator. Records are matched to registered prefixes by
+/// name, not by position, because the host's mount table and the prefix list it
+/// published are not guaranteed to share an ordering — `VirtualPlatformIO`
+/// sorts its mounts by prefix length, so a positional scheme would bind two
+/// orderings that are provably different.
+///
+/// A record naming a prefix that is not registered is ignored: the kernel's
+/// notion of which paths are foreign comes from `set_foreign_prefixes` alone,
+/// and a root handle can only qualify a mount that already exists. Returns the
+/// number of records that attached to a registered mount.
+///
+/// Replaces any previously attached handles: every registered mount is first
+/// cleared, so a host republishing a shorter list does not leave a stale handle
+/// behind.
+pub fn set_foreign_mount_roots(buf: &[u8]) -> usize {
+    FOREIGN_MOUNTS.with(|slot| {
+        for mount in slot.iter_mut() {
+            mount.root = None;
+        }
+        let mut attached = 0usize;
+        let mut rest = buf;
+        while rest.len() > 8 {
+            let mut handle_bytes = [0u8; 8];
+            handle_bytes.copy_from_slice(&rest[..8]);
+            let handle = i64::from_le_bytes(handle_bytes);
+            let body = &rest[8..];
+            let Some(nul) = body.iter().position(|&b| b == 0) else {
+                // An unterminated final record is a malformed payload, not a
+                // shorter list. Stop rather than guess at its extent.
+                break;
+            };
+            let mut prefix = body[..nul].to_vec();
+            while prefix.len() > 1 && prefix.last() == Some(&b'/') {
+                prefix.pop();
+            }
+            if let Some(mount) = slot.iter_mut().find(|m| m.prefix == prefix) {
+                mount.root = Some(handle);
+                attached += 1;
+            }
+            rest = &body[nul + 1..];
+        }
+        attached
+    })
+}
+
+/// The host directory handle for the foreign mount owning `path`, together with
+/// the byte length of that mount's prefix, so a caller can split `path` into
+/// (mount, components-below-the-mount) without re-deriving the match.
+///
+/// `Some((root, prefix_len))` means the path lies under a foreign mount the host
+/// exposed a directory capability for. `None` means either the path is not
+/// foreign at all, or it is foreign but the host published no root handle —
+/// callers distinguish those with `path_under_foreign`.
+pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
+    FOREIGN_MOUNTS.with(|prefixes| {
+        // Longest prefix wins, so a mount nested inside another resolves to the
+        // inner mount's root rather than the outer one's.
+        let mut best: Option<(i64, usize)> = None;
+        for m in prefixes.iter() {
+            let p = m.prefix.as_slice();
+            let matches = path == p
+                || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/');
+            if !matches {
+                continue;
+            }
+            let Some(root) = m.root else { continue };
+            if best.is_none_or(|(_, len)| p.len() > len) {
+                best = Some((root, p.len()));
+            }
+        }
+        best
+    })
 }
 
 /// Whether `path` lies at or under a registered foreign mount prefix. The match
@@ -540,8 +636,9 @@ pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
 /// `/run/kandelo-runner` or a sibling `/run/other`.
 fn path_under_foreign(path: &[u8]) -> bool {
     FOREIGN_MOUNTS.with(|prefixes| {
-        prefixes.iter().any(|p| {
-            path == p.as_slice()
+        prefixes.iter().any(|m| {
+            let p = m.prefix.as_slice();
+            path == p
                 || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/')
         })
     })

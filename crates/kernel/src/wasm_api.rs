@@ -53,7 +53,17 @@ use crate::syscalls;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn host_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i64;
+    // The handle-only filesystem contract. Every one of these resolves exactly
+    // one path component relative to a directory handle the host previously
+    // issued; the kernel owns namespace resolution, mount routing, `..`, and
+    // symlink chains. See `crates/runtime-core/src/hostdir.rs`.
+    fn host_openat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        flags: u32,
+        mode: u32,
+    ) -> i64;
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_write(handle: i64, buf_ptr: *const u8, buf_len: u32) -> i32;
@@ -111,30 +121,58 @@ unsafe extern "C" {
     ) -> i32;
     fn host_seek(handle: i64, offset_lo: u32, offset_hi: i32, whence: u32) -> i64;
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
-    fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
-    fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
-    fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
-    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
-    fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
-    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
-    fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
-    fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
-    fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
-    fn host_rename(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
-    fn host_link(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
-    fn host_symlink(
+    fn host_fstatat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        flags: u32,
+        stat_ptr: *mut u8,
+    ) -> i32;
+    fn host_mkdirat(dir: i64, name_ptr: *const u8, name_len: u32, mode: u32) -> i32;
+    fn host_unlinkat(dir: i64, name_ptr: *const u8, name_len: u32, flags: u32) -> i32;
+    fn host_renameat(
+        old_dir: i64,
+        old_ptr: *const u8,
+        old_len: u32,
+        new_dir: i64,
+        new_ptr: *const u8,
+        new_len: u32,
+    ) -> i32;
+    fn host_linkat(
+        old_dir: i64,
+        old_ptr: *const u8,
+        old_len: u32,
+        new_dir: i64,
+        new_ptr: *const u8,
+        new_len: u32,
+        flags: u32,
+    ) -> i32;
+    fn host_symlinkat(
         target_ptr: *const u8,
         target_len: u32,
-        link_ptr: *const u8,
-        link_len: u32,
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
     ) -> i32;
-    fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
-    fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
-    fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
-    fn host_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
-    fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
+    fn host_readlinkat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+    ) -> i32;
+    fn host_fchmodat(dir: i64, name_ptr: *const u8, name_len: u32, mode: u32) -> i32;
+    fn host_fchownat(
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
+        uid: u32,
+        gid: u32,
+        flags: u32,
+    ) -> i32;
+    fn host_fstatfs(handle: i64, statfs_ptr: *mut u8) -> i32;
+    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
-    fn host_closedir(dir_handle: i64) -> i32;
     fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
     fn host_nanosleep(sec: i64, nsec: i64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
@@ -153,12 +191,14 @@ unsafe extern "C" {
     fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(
-        path_ptr: *const u8,
-        path_len: u32,
+        dir: i64,
+        name_ptr: *const u8,
+        name_len: u32,
         atime_sec: i64,
         atime_nsec: i64,
         mtime_sec: i64,
         mtime_nsec: i64,
+        flags: u32,
     ) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
@@ -320,12 +360,28 @@ fn split_i64_words(value: i64) -> (u32, i32) {
     (value as u32, (value >> 32) as i32)
 }
 
-impl HostIO for WasmHostIO {
-    fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
-        let result = unsafe { host_open(path.as_ptr(), path.len() as u32, flags, mode) };
-        checked_host_i64_result(result)
+/// A `WasmStat` with every field cleared, for the host stat calls that fill it
+/// in place.
+fn zeroed_wasm_stat() -> WasmStat {
+    WasmStat {
+        st_dev: 0,
+        st_ino: 0,
+        st_mode: 0,
+        st_nlink: 0,
+        st_uid: 0,
+        st_gid: 0,
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
     }
+}
 
+impl HostIO for WasmHostIO {
     fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
         let result = unsafe { host_close(handle) };
         i32_to_result(result)
@@ -434,94 +490,164 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        };
+        let mut stat = zeroed_wasm_stat();
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
         i32_to_result(result)?;
         Ok(stat)
     }
 
-    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        };
+    fn host_openat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        flags: u32,
+        mode: u32,
+    ) -> Result<i64, Errno> {
+        let result =
+            unsafe { host_openat(dir, name.as_ptr(), name.len() as u32, flags, mode) };
+        checked_host_i64_result(result)
+    }
+
+    fn host_fstatat(&mut self, dir: i64, name: &[u8], flags: u32) -> Result<WasmStat, Errno> {
+        let mut stat = zeroed_wasm_stat();
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
-        let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
+        let result = unsafe {
+            host_fstatat(dir, name.as_ptr(), name.len() as u32, flags, stat_ptr)
+        };
         i32_to_result(result)?;
         Ok(stat)
     }
 
-    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-        let mut stat = WasmStat {
-            st_dev: 0,
-            st_ino: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_uid: 0,
-            st_gid: 0,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        };
-        let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
-        let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
-        i32_to_result(result)?;
-        Ok(stat)
+    fn host_mkdirat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_mkdirat(dir, name.as_ptr(), name.len() as u32, mode) };
+        i32_to_result(result)
     }
 
-    fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
-        let mut statfs = WasmStatfs {
-            f_type: 0,
-            f_bsize: 0,
-            f_blocks: 0,
-            f_bfree: 0,
-            f_bavail: 0,
-            f_files: 0,
-            f_ffree: 0,
-            f_fsid: 0,
-            f_namelen: 0,
-            f_frsize: 0,
-            f_flags: 0,
-            _pad: 0,
-        };
-        let statfs_ptr = &mut statfs as *mut WasmStatfs as *mut u8;
-        let result = unsafe { host_statfs(path.as_ptr(), path.len() as u32, statfs_ptr) };
-        i32_to_result(result)?;
-        Ok(statfs)
+    fn host_unlinkat(&mut self, dir: i64, name: &[u8], flags: u32) -> Result<(), Errno> {
+        let result = unsafe { host_unlinkat(dir, name.as_ptr(), name.len() as u32, flags) };
+        i32_to_result(result)
     }
+
+    fn host_renameat(
+        &mut self,
+        old_dir: i64,
+        old_name: &[u8],
+        new_dir: i64,
+        new_name: &[u8],
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_renameat(
+                old_dir,
+                old_name.as_ptr(),
+                old_name.len() as u32,
+                new_dir,
+                new_name.as_ptr(),
+                new_name.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_linkat(
+        &mut self,
+        old_dir: i64,
+        old_name: &[u8],
+        new_dir: i64,
+        new_name: &[u8],
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_linkat(
+                old_dir,
+                old_name.as_ptr(),
+                old_name.len() as u32,
+                new_dir,
+                new_name.as_ptr(),
+                new_name.len() as u32,
+                flags,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_symlinkat(&mut self, target: &[u8], dir: i64, name: &[u8]) -> Result<(), Errno> {
+        let result = unsafe {
+            host_symlinkat(
+                target.as_ptr(),
+                target.len() as u32,
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_readlinkat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        buf: &mut [u8],
+    ) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_readlinkat(
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+                buf.as_mut_ptr(),
+                capacity,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn host_fchmodat(&mut self, dir: i64, name: &[u8], mode: u32) -> Result<(), Errno> {
+        let result = unsafe { host_fchmodat(dir, name.as_ptr(), name.len() as u32, mode) };
+        i32_to_result(result)
+    }
+
+    fn host_fchownat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        uid: u32,
+        gid: u32,
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_fchownat(dir, name.as_ptr(), name.len() as u32, uid, gid, flags)
+        };
+        i32_to_result(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn host_utimensat(
+        &mut self,
+        dir: i64,
+        name: &[u8],
+        atime_sec: i64,
+        atime_nsec: i64,
+        mtime_sec: i64,
+        mtime_nsec: i64,
+        flags: u32,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_utimensat(
+                dir,
+                name.as_ptr(),
+                name.len() as u32,
+                atime_sec,
+                atime_nsec,
+                mtime_sec,
+                mtime_nsec,
+                flags,
+            )
+        };
+        i32_to_result(result)
+    }
+
 
     fn host_fstatfs(&mut self, handle: i64) -> Result<WasmStatfs, Errno> {
         let mut statfs = WasmStatfs {
@@ -544,122 +670,11 @@ impl HostIO for WasmHostIO {
         Ok(statfs)
     }
 
-    fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
-        let mut value = -1i64;
-        let result = unsafe {
-            host_pathconf(
-                path.as_ptr(),
-                path.len() as u32,
-                name,
-                &mut value as *mut i64,
-            )
-        };
-        i32_to_result(result)?;
-        Ok((value != -1).then_some(value))
-    }
-
     fn host_fpathconf(&mut self, handle: i64, name: i32) -> Result<Option<i64>, Errno> {
         let mut value = -1i64;
         let result = unsafe { host_fpathconf(handle, name, &mut value as *mut i64) };
         i32_to_result(result)?;
         Ok((value != -1).then_some(value))
-    }
-
-    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_mkdir(path.as_ptr(), path.len() as u32, mode) };
-        i32_to_result(result)
-    }
-
-    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let result = unsafe { host_rmdir(path.as_ptr(), path.len() as u32) };
-        i32_to_result(result)
-    }
-
-    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
-        let result = unsafe { host_unlink(path.as_ptr(), path.len() as u32) };
-        i32_to_result(result)
-    }
-
-    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_rename(
-                oldpath.as_ptr(),
-                oldpath.len() as u32,
-                newpath.as_ptr(),
-                newpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_link(
-                oldpath.as_ptr(),
-                oldpath.len() as u32,
-                newpath.as_ptr(),
-                newpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
-        let result = unsafe {
-            host_symlink(
-                target.as_ptr(),
-                target.len() as u32,
-                linkpath.as_ptr(),
-                linkpath.len() as u32,
-            )
-        };
-        i32_to_result(result)
-    }
-
-    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
-        let result = unsafe {
-            host_readlink(
-                path.as_ptr(),
-                path.len() as u32,
-                buf.as_mut_ptr(),
-                buf.len() as u32,
-            )
-        };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result as usize)
-        }
-    }
-
-    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_chmod(path.as_ptr(), path.len() as u32, mode) };
-        i32_to_result(result)
-    }
-
-    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-        let result = unsafe { host_chown(path.as_ptr(), path.len() as u32, uid, gid) };
-        i32_to_result(result)
-    }
-
-    fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-        let result = unsafe { host_lchown(path.as_ptr(), path.len() as u32, uid, gid) };
-        i32_to_result(result)
-    }
-
-    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno> {
-        let result = unsafe { host_opendir(path.as_ptr(), path.len() as u32) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
     }
 
     fn host_readdir(
@@ -695,11 +710,6 @@ impl HostIO for WasmHostIO {
                 dirent.d_namlen as usize,
             )))
         }
-    }
-
-    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
-        let result = unsafe { host_closedir(handle) };
-        i32_to_result(result)
     }
 
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
@@ -785,26 +795,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_utimensat(
-        &mut self,
-        path: &[u8],
-        atime_sec: i64,
-        atime_nsec: i64,
-        mtime_sec: i64,
-        mtime_nsec: i64,
-    ) -> Result<(), Errno> {
-        let result = unsafe {
-            host_utimensat(
-                path.as_ptr(),
-                path.len() as u32,
-                atime_sec,
-                atime_nsec,
-                mtime_sec,
-                mtime_nsec,
-            )
-        };
-        i32_to_result(result)
-    }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno> {
         let mut status: i32 = 0;
         gkl_release();
@@ -1747,6 +1737,44 @@ pub extern "C" fn kernel_rootfs_set_foreign_prefixes(ptr: *const u8, len: u32) -
         unsafe { core::slice::from_raw_parts(ptr, len as usize) }
     };
     i32::try_from(crate::rootfs::set_foreign_prefixes(buf)).unwrap_or(i32::MAX)
+}
+
+/// Attach a host directory handle to each registered foreign mount, naming that
+/// mount's root directory.
+///
+/// This is the anchor of the handle-only host filesystem contract. Every host
+/// file operation under a foreign mount starts from that mount's root handle and
+/// steps one path component at a time through `host_openat`, so the host resolves
+/// at most a single component and never receives a guest path, a mount prefix, a
+/// `..`, or a symlink chain.
+///
+/// `ptr..len` is a sequence of self-describing records in kernel Wasm memory,
+/// each an 8-byte little-endian `i64` root handle followed by the mount's
+/// canonical prefix bytes and a NUL terminator. Records bind by prefix name
+/// rather than by position: the host's own mount table and the prefix list it
+/// published through `kernel_rootfs_set_foreign_prefixes` are not guaranteed to
+/// share an ordering, so a positional payload would bind two orderings that can
+/// differ.
+///
+/// This is a separate export rather than an extension of
+/// `kernel_rootfs_set_foreign_prefixes` so that the host component which owns
+/// the directory-handle table is also the component that publishes the handles,
+/// and so that the change is visible to the ABI snapshot as a new signature
+/// rather than as a silent reinterpretation of an existing export's payload.
+///
+/// The host calls this after registering prefixes and before enabling rootfs
+/// authority. Returns the number of records that attached to a registered mount
+/// (>=0). A foreign mount left without a root handle has no host directory
+/// capability; operations under it fail with `ENOSYS` rather than falling back
+/// to name resolution. See `rootfs::set_foreign_mount_roots`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(ptr: *const u8, len: u32) -> i32 {
+    let buf: &[u8] = if len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+    };
+    i32::try_from(crate::rootfs::set_foreign_mount_roots(buf)).unwrap_or(i32::MAX)
 }
 
 /// Publish the wall-clock time the rootfs overlay stamps onto metadata

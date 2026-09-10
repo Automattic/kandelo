@@ -930,7 +930,7 @@ fn commit_exec_state_impl(
         };
     }
     for stream in proc.dir_streams.iter_mut().filter_map(Option::take) {
-        let _ = host.host_closedir(stream.host_handle);
+        let _ = host.host_close(stream.host_handle);
     }
 
     release_exec_image_state(proc, host);
@@ -2194,7 +2194,7 @@ fn namespace_readlink_raw(
     } else if crate::rootfs::claims_path(path) {
         crate::rootfs::readlink(path, &mut target)?
     } else {
-        host.host_readlink(path, &mut target)?
+        crate::hostdir::readlink(host, path, &mut target)?
     };
     if len >= NAMESPACE_PATH_MAX {
         return Err(Errno::ENAMETOOLONG);
@@ -2648,7 +2648,7 @@ pub fn open_prepared_exec_target(
         } else {
             0
         };
-    let host_handle = host.host_open(&resolved, open_flags, 0)?;
+    let host_handle = crate::hostdir::open(host, &resolved, open_flags, 0)?;
     let stat = match host.host_fstat(host_handle) {
         Ok(stat) => stat,
         Err(error) => {
@@ -3356,9 +3356,9 @@ pub fn sys_open(
 
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
-    let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
+    let host_handle = crate::hostdir::open(host, &resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
+        crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Cache lock identity from fstat on the live handle. Path-based stat is
@@ -3461,7 +3461,7 @@ fn fs_stat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     if crate::rootfs::claims_path(path) {
         return crate::rootfs::lstat(path);
     }
-    host.host_stat(path)
+    crate::hostdir::stat(host, path)
 }
 
 /// Path `lstat(2)` routed through the in-kernel tmpfs for scratch mounts and the
@@ -3473,7 +3473,7 @@ fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     if crate::rootfs::claims_path(path) {
         return crate::rootfs::lstat(path);
     }
-    host.host_lstat(path)
+    crate::hostdir::lstat(host, path)
 }
 
 /// Publish the current wall-clock time to the in-kernel tmpfs and rootfs overlay
@@ -4180,7 +4180,7 @@ fn release_ofd_reference_impl(
             _ => {
                 // Close any lazily-opened directory iteration handle
                 if dir_host_handle >= 0 {
-                    let _ = host.host_closedir(dir_host_handle);
+                    let _ = host.host_close(dir_host_handle);
                 }
                 // Kernel regular-file backings own the cross-process OFD
                 // lifetime used by procfs and read-only synthetic files.
@@ -5569,7 +5569,7 @@ pub fn sys_lseek(
             ofd.dir_pending_entry = None;
             ofd.set_directory_offset(offset);
             if old_dir_handle >= 0 && old_dir_handle != sentinel {
-                let _ = host.host_closedir(old_dir_handle);
+                let _ = host.host_close(old_dir_handle);
             }
             return Ok(offset);
         }
@@ -5577,7 +5577,7 @@ pub fn sys_lseek(
         let (new_dir_handle, new_synth_state) = if offset <= 2 {
             (-1, offset as u8)
         } else {
-            let candidate = host.host_opendir(&path)?;
+            let candidate = crate::hostdir::opendir(host, &path)?;
             let target_host_entries = offset - 2;
             let mut skipped = 0i64;
             let mut exhausted = false;
@@ -5586,7 +5586,7 @@ pub fn sys_lseek(
                 match host.host_readdir(candidate, &mut name_buf) {
                     Ok(Some((_, _, name_len))) => {
                         if name_len > name_buf.len() {
-                            let _ = host.host_closedir(candidate);
+                            let _ = host.host_close(candidate);
                             return Err(Errno::EIO);
                         }
                         let name = &name_buf[..name_len];
@@ -5600,7 +5600,7 @@ pub fn sys_lseek(
                         break;
                     }
                     Err(err) => {
-                        let _ = host.host_closedir(candidate);
+                        let _ = host.host_close(candidate);
                         return Err(err);
                     }
                 }
@@ -5615,7 +5615,7 @@ pub fn sys_lseek(
                 } else {
                     (-2, 2)
                 };
-                let _ = host.host_closedir(candidate);
+                let _ = host.host_close(candidate);
                 result
             } else {
                 (candidate, 2)
@@ -5629,7 +5629,7 @@ pub fn sys_lseek(
         ofd.dir_pending_entry = None;
         ofd.set_directory_offset(offset);
         if old_dir_handle >= 0 && old_dir_handle != new_dir_handle {
-            let _ = host.host_closedir(old_dir_handle);
+            let _ = host.host_close(old_dir_handle);
         }
         return Ok(offset);
     }
@@ -7802,8 +7802,8 @@ pub fn sys_mkdir(
     ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
-    host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
+    crate::hostdir::mkdir(host, &resolved, effective_mode)?;
+    crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
@@ -7817,7 +7817,7 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
-    host.host_rmdir(&resolved)
+    crate::hostdir::rmdir(host, &resolved)
 }
 
 /// Create a named FIFO (`mkfifo` / `mknod(S_IFIFO)`). A FIFO is a named kernel
@@ -7911,25 +7911,25 @@ fn make_fifo(
 
     let effective_mode = mode & !proc.umask;
     let flags = O_CREAT | O_EXCL | O_WRONLY;
-    let handle = host.host_open(&resolved.path, flags, effective_mode)?;
-    if let Err(error) = host.host_chown(
+    let handle = crate::hostdir::open(host, &resolved.path, flags, effective_mode)?;
+    if let Err(error) = crate::hostdir::chown(host, 
         &resolved.path,
         proc.effective_uid(),
         proc.effective_gid(),
     ) {
         let _ = host.host_close(handle);
-        let _ = host.host_unlink(&resolved.path);
+        let _ = crate::hostdir::unlink(host, &resolved.path);
         return Err(error);
     }
     if let Err(error) = host.host_close(handle) {
-        let _ = host.host_unlink(&resolved.path);
+        let _ = crate::hostdir::unlink(host, &resolved.path);
         return Err(error);
     }
 
     let mut metadata = match fs_stat(host, &resolved.path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            let _ = host.host_unlink(&resolved.path);
+            let _ = crate::hostdir::unlink(host, &resolved.path);
             return Err(error);
         }
     };
@@ -7939,14 +7939,14 @@ fn make_fifo(
     let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
     if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
         unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
-        let _ = host.host_unlink(&resolved.path);
+        let _ = crate::hostdir::unlink(host, &resolved.path);
         return Err(Errno::EEXIST);
     }
     Ok(())
 }
 
 fn unlink_host_entry(host: &mut dyn HostIO, resolved: &[u8]) -> Result<(), Errno> {
-    match host.host_unlink(resolved) {
+    match crate::hostdir::unlink(host, resolved) {
         Err(Errno::EPERM) => {
             // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
             // musl's remove() depends on EISDIR to fall through to rmdir().
@@ -8037,12 +8037,12 @@ fn register_fifo_hardlink(
         return Ok(());
     };
     if !unsafe { crate::fifo::global_fifo_table() }.register(newpath.to_vec(), pipe_idx) {
-        let _ = host.host_unlink(newpath);
+        let _ = crate::hostdir::unlink(host, newpath);
         return Err(Errno::EIO);
     }
     let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or_else(|| {
         unsafe { crate::fifo::global_fifo_table() }.remove(newpath);
-        let _ = host.host_unlink(newpath);
+        let _ = crate::hostdir::unlink(host, newpath);
         Errno::EIO
     })?;
     pipe.add_fifo_name();
@@ -8094,7 +8094,7 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
             // Once the name is removed, retry it so it observes the now-stale
             // destination instead of sleeping until an unrelated timeout.
             crate::wakeup::push_datagram_writable();
-            match host.host_unlink(&resolved) {
+            match crate::hostdir::unlink(host, &resolved) {
                 Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                 Err(e) => return Err(e),
             }
@@ -8165,7 +8165,7 @@ pub fn sys_rename(
         check_sticky_child(proc, host, &new)?;
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
-    host.host_rename(&old, &new)?;
+    crate::hostdir::rename(host, &old, &new)?;
     rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old, &new) {
@@ -8206,7 +8206,7 @@ pub fn sys_link(
     ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
-    host.host_link(&old, &new)?;
+    crate::hostdir::link(host, &old, &new)?;
     register_fifo_hardlink(host, &old, &new)
 }
 
@@ -8228,7 +8228,7 @@ pub fn sys_symlink(
     }
     ensure_host_mutable_namespace_path(&link)?;
     check_parent_writable(proc, host, &link)?;
-    host.host_symlink(target, &link)
+    crate::hostdir::symlink(host, target, &link)
 }
 
 pub fn sys_readlink(
@@ -8264,7 +8264,7 @@ pub fn sys_readlink(
     }
 
     check_search_path(proc, host, &resolved)?;
-    host.host_readlink(&resolved, buf)
+    crate::hostdir::readlink(host, &resolved, buf)
 }
 
 pub fn sys_chmod(
@@ -8289,7 +8289,7 @@ pub fn sys_chmod(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::chmod(&resolved, mode);
     }
-    host.host_chmod(&resolved, mode)
+    crate::hostdir::chmod(host, &resolved, mode)
 }
 
 fn chmod_pty_path(
@@ -8383,7 +8383,7 @@ pub fn sys_chown(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::chown(&resolved, uid, gid, true);
     }
-    host.host_chown(&resolved, uid, gid)
+    crate::hostdir::chown(host, &resolved, uid, gid)
 }
 
 pub fn sys_lchown(
@@ -8409,7 +8409,7 @@ pub fn sys_lchown(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::chown(&resolved.path, uid, gid, true);
     }
-    host.host_lchown(&resolved.path, uid, gid)
+    crate::hostdir::lchown(host, &resolved.path, uid, gid)
 }
 
 pub fn sys_access(
@@ -8508,7 +8508,7 @@ pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Re
         // the name into a hidden host directory.
         return Err(Errno::EOPNOTSUPP);
     }
-    let host_handle = host.host_opendir(&resolved.path)?;
+    let host_handle = crate::hostdir::opendir(host, &resolved.path)?;
     let stream = DirStream {
         host_handle,
         path: resolved.path,
@@ -8644,7 +8644,7 @@ pub fn sys_closedir(
         return Err(Errno::EBADF);
     }
     let stream = proc.dir_streams[idx].take().ok_or(Errno::EBADF)?;
-    host.host_closedir(stream.host_handle)
+    host.host_close(stream.host_handle)
 }
 
 /// Rewind a directory stream to the beginning.
@@ -8665,12 +8665,12 @@ pub fn sys_rewinddir(
     // Construct the replacement before retiring the current iterator. A
     // transient reopen failure must not leave the live DirStream pointing at
     // a handle that we already closed.
-    let new_handle = host.host_opendir(&path)?;
+    let new_handle = crate::hostdir::opendir(host, &path)?;
 
-    if let Err(err) = host.host_closedir(old_handle) {
+    if let Err(err) = host.host_close(old_handle) {
         // The old iterator remains authoritative when its close fails. Do not
         // leak the replacement that never became visible to the stream.
-        let _ = host.host_closedir(new_handle);
+        let _ = host.host_close(new_handle);
         return Err(err);
     }
 
@@ -8776,7 +8776,7 @@ pub fn sys_getdents64(
             .ok_or(Errno::EBADF)?
             .reset_directory_iterator_for_reopen();
         if old_handle >= 0 {
-            let _ = host.host_closedir(old_handle);
+            let _ = host.host_close(old_handle);
         }
     }
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -8984,7 +8984,7 @@ pub fn sys_getdents64(
 
     let dir_handle = if dir_handle == -1 {
         // Open the directory for iteration
-        let h = host.host_opendir(&path)?;
+        let h = crate::hostdir::opendir(host, &path)?;
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_host_handle = h;
         }
@@ -9130,7 +9130,7 @@ pub fn sys_getdents64(
             }
             None => {
                 // Close the host dir handle
-                let _ = host.host_closedir(dir_handle);
+                let _ = host.host_close(dir_handle);
 
                 // Inject synthetic entries for virtual filesystems when listing "/"
                 if path == b"/" {
@@ -9705,7 +9705,7 @@ fn cleanup_process_for_exit(
     for i in 0..num_streams {
         if proc.dir_streams[i].is_some() {
             let stream = proc.dir_streams[i].take().unwrap();
-            let _ = host.host_closedir(stream.host_handle);
+            let _ = host.host_close(stream.host_handle);
         }
     }
 
@@ -10003,7 +10003,9 @@ pub fn sys_utimensat(
                         &live_path, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
                     );
                 }
-                host.host_utimensat(&live_path, atime_sec, atime_nsec, mtime_sec, mtime_nsec)?;
+                crate::hostdir::utimensat(
+                    host, &live_path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, 0,
+                )?;
                 let refreshed = fs_stat(host, &live_path)?;
                 return update_fifo_metadata(pipe_idx, |metadata| {
                     metadata.st_atime_sec = refreshed.st_atime_sec;
@@ -10118,7 +10120,7 @@ pub fn sys_utimensat(
             &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
         );
     }
-    host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
+    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, 0)
 }
 
 /// Memory advice hint. No-op in Wasm — there's no virtual memory paging.
@@ -13194,13 +13196,13 @@ pub fn sys_bind(
                         Err(e) => return Err(e),
                     }
                 } else {
-                    let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, socket_mode)
+                    let h = match crate::hostdir::open(host, &resolved, O_CREAT | O_EXCL | O_WRONLY, socket_mode)
                     {
                         Ok(h) => h,
                         Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                         Err(e) => return Err(e),
                     };
-                    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
+                    crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())?;
                     let _ = host.host_close(h);
                 }
             }
@@ -13216,7 +13218,7 @@ pub fn sys_bind(
                     } else if crate::rootfs::claims_path(&resolved) {
                         let _ = crate::rootfs::unlink(&resolved);
                     } else {
-                        let _ = host.host_unlink(&resolved);
+                        let _ = crate::hostdir::unlink(host, &resolved);
                     }
                 }
                 return Err(Errno::EADDRINUSE);
@@ -15019,9 +15021,9 @@ pub fn sys_openat(
 
     let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
-    let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
+    let host_handle = crate::hostdir::open(host, &resolved, oflags, effective_mode)?;
     if created {
-        host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())?;
+        crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())?;
     }
 
     // Keep openat(2) on the same live-handle identity contract as open(2).
@@ -15161,7 +15163,7 @@ pub fn sys_unlinkat(
     check_parent_writable(proc, host, &resolved)?;
     if flags & AT_REMOVEDIR != 0 {
         check_sticky_child(proc, host, &resolved)?;
-        host.host_rmdir(&resolved)
+        crate::hostdir::rmdir(host, &resolved)
     } else {
         check_sticky_child(proc, host, &resolved)?;
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
@@ -15173,7 +15175,7 @@ pub fn sys_unlinkat(
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if registry.unregister(&resolved) {
                 crate::wakeup::push_datagram_writable();
-                match host.host_unlink(&resolved) {
+                match crate::hostdir::unlink(host, &resolved) {
                     Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                     Err(e) => return Err(e),
                 }
@@ -15222,8 +15224,8 @@ pub fn sys_mkdirat(
     ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
-    host.host_mkdir(&resolved, effective_mode)?;
-    host.host_chown(&resolved, proc.effective_uid(), proc.effective_gid())
+    crate::hostdir::mkdir(host, &resolved, effective_mode)?;
+    crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())
 }
 
 /// renameat -- rename relative to directory fds.
@@ -15290,7 +15292,7 @@ pub fn sys_renameat(
         check_sticky_child(proc, host, &new_resolved)?;
     }
     let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
-    host.host_rename(&old_resolved, &new_resolved)?;
+    crate::hostdir::rename(host, &old_resolved, &new_resolved)?;
     rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old_resolved, &new_resolved) {
@@ -17031,11 +17033,23 @@ pub fn sys_pathconf(
     {
         return virtual_filesystem_pathconf_value(name);
     }
-    if synthetic_file_content(&resolved).is_some() {
-        return host.host_pathconf(b"/", name);
+    // Synthetic dynamic files, the in-kernel tmpfs scratch mounts, and the
+    // rootfs overlay that owns `/` are all kernel-owned filesystems. Their
+    // limits are the kernel's own, and asking a host that no longer owns `/`
+    // would be asking the wrong authority.
+    if synthetic_file_content(&resolved).is_some()
+        || crate::tmpfs::claims_path(&resolved)
+        || crate::rootfs::claims_path(&resolved)
+    {
+        return filesystem_pathconf_value(name, true, None);
     }
 
-    host.host_pathconf(&resolved, name)
+    // A foreign host mount. `pathconf` asks about the filesystem, not the named
+    // file, so the containing directory handle answers it — no second host path
+    // walk, and no opening of a file that might block or have side effects.
+    crate::hostdir::with_containing_dir(host, &resolved, |host, dir| {
+        host.host_fpathconf(dir, name)
+    })
 }
 
 /// `fpathconf` uses the live OFD/backend identity. It never re-resolves the
@@ -17065,9 +17079,10 @@ pub fn sys_fpathconf(
 
     if synthetic_file_content(&path).is_some() {
         // Synthetic dynamic files live in the root mount's namespace even
-        // though they have no host handle of their own. Match pathconf and
-        // the existing statfs/fstatfs policy by querying the root backend.
-        return host.host_pathconf(b"/", name);
+        // though they have no host handle of their own. `/` is owned by the
+        // in-kernel rootfs overlay, so its limits are the kernel's own — the
+        // same answer `sys_pathconf` gives for a rootfs path.
+        return filesystem_pathconf_value(name, true, None);
     }
 
     match file_type {
@@ -17311,7 +17326,7 @@ pub fn sys_fchmod(
         let ctime = if let Some(live_path) =
             unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
         {
-            host.host_chmod(&live_path, mode)?;
+            crate::hostdir::chmod(host, &live_path, mode)?;
             None
         } else {
             Some(realtime_timestamp(host)?)
@@ -17399,7 +17414,7 @@ pub fn sys_fchown(
         let ctime = if let Some(live_path) =
             unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
         {
-            host.host_chown(&live_path, uid, gid)?;
+            crate::hostdir::chown(host, &live_path, uid, gid)?;
             None
         } else {
             Some(realtime_timestamp(host)?)
@@ -17608,7 +17623,7 @@ pub fn sys_fchmodat(
         tmpfs_stamp_now(host)?;
         return crate::rootfs::chmod(&resolved, mode);
     }
-    host.host_chmod(&resolved, mode)
+    crate::hostdir::chmod(host, &resolved, mode)
 }
 
 /// fchownat -- change file owner/group relative to directory fd.
@@ -17649,9 +17664,9 @@ pub fn sys_fchownat(
         return crate::rootfs::chown(&resolved.path, uid, gid, true);
     }
     if nofollow {
-        host.host_lchown(&resolved.path, uid, gid)
+        crate::hostdir::lchown(host, &resolved.path, uid, gid)
     } else {
-        host.host_chown(&resolved.path, uid, gid)
+        crate::hostdir::chown(host, &resolved.path, uid, gid)
     }
 }
 
@@ -17703,7 +17718,7 @@ pub fn sys_linkat(
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
-    host.host_link(&old_resolved, &new_resolved)?;
+    crate::hostdir::link(host, &old_resolved, &new_resolved)?;
     register_fifo_hardlink(host, &old_resolved, &new_resolved)
 }
 
@@ -17746,7 +17761,7 @@ pub fn sys_symlinkat(
     }
     ensure_host_mutable_namespace_path(&resolved_link)?;
     check_parent_writable(proc, host, &resolved_link)?;
-    host.host_symlink(target, &resolved_link)
+    crate::hostdir::symlink(host, target, &resolved_link)
 }
 
 /// readlinkat -- read symbolic link relative to directory fd.
@@ -17783,7 +17798,7 @@ pub fn sys_readlinkat(
     }
 
     check_search_path(proc, host, &resolved)?;
-    host.host_readlink(&resolved, buf)
+    crate::hostdir::readlink(host, &resolved, buf)
 }
 
 /// select -- synchronous I/O multiplexing.
@@ -18126,8 +18141,19 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
     None
 }
 
+/// `statfs` for a path on a foreign host mount.
+///
+/// The answer is a property of the filesystem, not of the named file, so it
+/// comes from the deepest directory handle on the way to `path` — the same
+/// filesystem by construction — through the handle-form `host_fstatfs`. That
+/// avoids opening the named file, which could block on a FIFO or disturb a
+/// device, and it removes the second full host path walk the old path-taking
+/// `host_statfs` performed.
 fn host_statfs_or_default(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStatfs, Errno> {
-    match host.host_statfs(path) {
+    let result = crate::hostdir::with_containing_dir(host, path, |host, dir| {
+        host.host_fstatfs(dir)
+    });
+    match result {
         Ok(statfs) => Ok(statfs),
         Err(Errno::ENOSYS) => Ok(default_statfs()),
         Err(err) => Err(err),
@@ -18157,7 +18183,8 @@ pub fn sys_statfs(
         return Ok(statfs);
     }
     if synthetic_file_content(&resolved).is_some() {
-        return host_statfs_or_default(host, b"/");
+        // `/` is overlay-owned; a synthetic file's filesystem is the kernel's.
+        return crate::rootfs::statfs(b"/");
     }
     if crate::tmpfs::claims_path(&resolved) {
         return crate::tmpfs::statfs(&resolved);
@@ -18182,7 +18209,8 @@ pub fn sys_fstatfs(
         return Ok(statfs);
     }
     if synthetic_file_content(&ofd.path).is_some() {
-        return host_statfs_or_default(host, b"/");
+        // `/` is overlay-owned; a synthetic file's filesystem is the kernel's.
+        return crate::rootfs::statfs(b"/");
     }
     if crate::tmpfs::claims_path(&ofd.path) {
         return crate::tmpfs::statfs(&ofd.path);
@@ -18193,7 +18221,16 @@ pub fn sys_fstatfs(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory | FileType::CharDevice => {
-            host_statfs_or_default(host, &ofd.path)
+            // Answer from the descriptor the caller already holds, not from the
+            // pathname it was opened under. The trait's own contract says so —
+            // "pathname lookup is not an acceptable fallback for retained
+            // authority" — and a remembered path stops naming this file after a
+            // rename or unlink, while the handle keeps naming it.
+            if ofd.host_handle >= 0 {
+                host_fstatfs_or_default(host, ofd.host_handle)
+            } else {
+                Ok(default_statfs())
+            }
         }
         _ => Ok(default_statfs()),
     }
@@ -20364,7 +20401,7 @@ mod tests {
         .unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
 
-        let st = host.host_stat(b"/home/user/new-file").unwrap();
+        let st = crate::hostdir::stat(host, b"/home/user/new-file").unwrap();
         assert_eq!(st.st_uid, 1000);
         assert_eq!(st.st_gid, 1000);
         assert_eq!(st.st_mode & 0o777, 0o644);
@@ -46144,8 +46181,8 @@ mod tests {
         host.freeze_exec_handles = true;
         let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/original");
 
-        host.host_rename(b"/bin/original", b"/bin/moved").unwrap();
-        host.host_unlink(b"/bin/moved").unwrap();
+        crate::hostdir::rename(host, b"/bin/original", b"/bin/moved").unwrap();
+        crate::hostdir::unlink(host, b"/bin/moved").unwrap();
         host.set_file_with_owner(b"/bin/original", 0, 0, S_IFREG | 0o755, b"world");
         host.prepared_exec_bytes = Some(b"world".to_vec());
 

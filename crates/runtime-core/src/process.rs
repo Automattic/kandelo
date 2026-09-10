@@ -38,7 +38,31 @@ pub struct HostAppendOutcome {
 
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
-    fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno>;
+    /// Open `name` — exactly one path component — relative to a directory
+    /// handle this host previously issued, and return a new handle.
+    ///
+    /// This is the anchor of the handle-only filesystem contract. A host never
+    /// receives a guest path, a mount prefix, a `..`, or a symlink chain; the
+    /// kernel resolves the namespace itself and steps the host one component at
+    /// a time from the mount root it published through
+    /// `kernel_rootfs_set_foreign_mount_roots`. `name` may be `.`, naming the
+    /// directory itself, which is how a mount root is addressed.
+    ///
+    /// `O_DIRECTORY` yields a handle that `host_readdir` iterates. There is no
+    /// separate directory-handle namespace: a directory is closed with
+    /// `host_close` like any other handle.
+    ///
+    /// Defaults to unsupported so a host with no directory capability — every
+    /// browser host once `/` is overlay-owned — implements none of this family.
+    fn host_openat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _flags: u32,
+        _mode: u32,
+    ) -> Result<i64, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_close(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
@@ -98,9 +122,17 @@ pub trait HostIO {
     }
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
-    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
-    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
-    fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
+    /// Metadata for `name` — one path component — relative to a directory
+    /// handle. `flags` carries `AT_SYMLINK_NOFOLLOW` to describe a symlink
+    /// itself rather than its target; a symlink cannot be opened without
+    /// following it, which is why this cannot reduce to `host_fstat` on an
+    /// opened handle.
+    fn host_fstatat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _flags: u32,
+    ) -> Result<WasmStat, Errno> {
         Err(Errno::ENOSYS)
     }
     /// Query filesystem policy through an already-open exact host object.
@@ -108,25 +140,84 @@ pub trait HostIO {
     fn host_fstatfs(&mut self, _handle: i64) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
-        Err(Errno::ENOSYS)
-    }
     fn host_fpathconf(&mut self, _handle: i64, _name: i32) -> Result<Option<i64>, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
-    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
-    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;
-    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
-    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
-    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno>;
-    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno>;
-    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
-    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
-    fn host_lchown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
+    /// Create a directory named by one component of a directory handle.
+    fn host_mkdirat(&mut self, _dir: i64, _name: &[u8], _mode: u32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
+    /// Remove an entry named by one component of a directory handle.
+    /// `AT_REMOVEDIR` in `flags` selects `rmdir(2)` semantics; POSIX defines
+    /// the same host operation for both, distinguished by that flag.
+    fn host_unlinkat(&mut self, _dir: i64, _name: &[u8], _flags: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Rename one component of one directory handle to one component of
+    /// another. Both entries are named in a single call so the host
+    /// filesystem's atomicity survives; performing it as two operations would
+    /// not be a rename.
+    fn host_renameat(
+        &mut self,
+        _old_dir: i64,
+        _old_name: &[u8],
+        _new_dir: i64,
+        _new_name: &[u8],
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_linkat(
+        &mut self,
+        _old_dir: i64,
+        _old_name: &[u8],
+        _new_dir: i64,
+        _new_name: &[u8],
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Create a symlink. `target` is opaque data the host stores verbatim and
+    /// must never resolve; only `name` names an entry to create.
+    fn host_symlinkat(
+        &mut self,
+        _target: &[u8],
+        _dir: i64,
+        _name: &[u8],
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_readlinkat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _buf: &mut [u8],
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Change the mode of an entry named by one component of a directory
+    /// handle.
+    ///
+    /// This is not reducible to `host_openat` followed by `host_fchmod`:
+    /// opening a file to change its mode fails with `EACCES` on a file the
+    /// caller owns but cannot read — which `chmod(2)` must still permit — and
+    /// blocks indefinitely on a FIFO with no writer.
+    fn host_fchmodat(&mut self, _dir: i64, _name: &[u8], _mode: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Change ownership of an entry named by one component of a directory
+    /// handle. `AT_SYMLINK_NOFOLLOW` in `flags` gives `lchown(2)`, which is
+    /// why `host_fchown` on an opened handle does not cover the family: a
+    /// symlink cannot be opened without following it.
+    fn host_fchownat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _uid: u32,
+        _gid: u32,
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     /// Read and consume the next directory entry.
     ///
     /// An error must leave the iterator at the same entry. The kernel may
@@ -137,7 +228,6 @@ pub trait HostIO {
         handle: i64,
         name_buf: &mut [u8],
     ) -> Result<Option<(u64, u32, usize)>, Errno>;
-    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
     fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
@@ -170,14 +260,21 @@ pub trait HostIO {
         sa_flags: u32,
     ) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
+    /// Set timestamps on an entry named by one component of a directory handle.
+    /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
+    /// target.
     fn host_utimensat(
         &mut self,
-        path: &[u8],
-        atime_sec: i64,
-        atime_nsec: i64,
-        mtime_sec: i64,
-        mtime_nsec: i64,
-    ) -> Result<(), Errno>;
+        _dir: i64,
+        _name: &[u8],
+        _atime_sec: i64,
+        _atime_nsec: i64,
+        _mtime_sec: i64,
+        _mtime_nsec: i64,
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
     /// Query the status of a host-delegated connect that was previously
