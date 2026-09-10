@@ -14369,33 +14369,38 @@ pub extern "C" fn kernel_epoll_wake_indices(
 ) -> i32 {
     use wasm_posix_shared::epoll::EPOLLIN;
 
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let Some(proc) = table.get(pid) else {
-        return -(Errno::ESRCH as i32);
-    };
-    let interests = match syscalls::epoll_resolved_interests(proc, epfd) {
-        Ok(interests) => interests,
-        Err(e) => return -(e as i32),
+    const KIND_PIPE: u32 = 0;
+    const KIND_ACCEPT: u32 = 1;
+    // Validated before any work, so an unknown `kind` is EINVAL even when the
+    // interest list is empty and the loop below would never see it.
+    if kind != KIND_PIPE && kind != KIND_ACCEPT {
+        return -(Errno::EINVAL as i32);
+    }
+
+    // The borrow ends with this block: the resolved interests are owned, and
+    // the per-fd lookups below re-derive their own process reference.
+    let interests = {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let Some(proc) = table.get(pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        match syscalls::epoll_resolved_interests(proc, epfd) {
+            Ok(interests) => interests,
+            Err(e) => return -(e as i32),
+        }
     };
 
     let mut values: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
     for (fd, interest) in &interests {
-        match kind {
-            0 => {
-                let idx = kernel_get_socket_recv_pipe(pid, *fd);
-                if idx >= 0 {
-                    values.push(idx);
-                }
-            }
-            1 => {
-                if interest.events & EPOLLIN != 0 {
-                    let idx = kernel_get_fd_accept_wake_idx(pid, *fd);
-                    if idx >= 0 {
-                        values.push(idx);
-                    }
-                }
-            }
-            _ => return -(Errno::EINVAL as i32),
+        let idx = if kind == KIND_PIPE {
+            kernel_get_socket_recv_pipe(pid, *fd)
+        } else if interest.events & EPOLLIN != 0 {
+            kernel_get_fd_accept_wake_idx(pid, *fd)
+        } else {
+            -1
+        };
+        if idx >= 0 {
+            values.push(idx);
         }
     }
 
