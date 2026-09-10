@@ -540,48 +540,56 @@ so this is provisioning rather than a defect, but the agent explicitly refused t
 claim a pass it had not seen. **The group validation run must actually execute
 them.**
 
-## 2i. The TS-removal ledger — measured, not asserted (2026-09-09)
+## 2i. The TS-removal ledger — measured per step, not asserted (2026-09-09)
 
 Prompted by the maintainer asking whether anything actually *checks* that
-TypeScript is being removed. Nothing did. Measured with
-`scripts/migration-ledger.sh`:
+TypeScript is being removed. Nothing did. Now it is checked **per step**, with
+`scripts/migration-ledger.sh --step <base> <tip>`.
 
-| point | in-scope TS | Rust | fork TS |
-|---|---|---|---|
-| campaign base `c326c5e72` | 150,261 | 206,833 | 28,350 |
-| after Tier 1 `bd3364c95` | **150,623** | 213,510 | 28,350 |
-| **delta** | **+362** | +6,677 | 0 |
+A line count is a poor measure but a useful hint. It rewards deleting comments,
+punishes adding tests, and cannot tell a real migration from code relocated
+outside the measured scope. Treat it as a **watchdog on a promise** — exactly
+the status of `EXPECTED_HOST_IMPORT_COUNT`, which has itself risen twice. The
+campaign is still judged on §8's structural criteria; this catches drift
+between them, and it catches a deferred deletion that is quietly becoming a
+permanent addition.
 
-**Tier 1 removed no TypeScript. It added 362 lines.** That is explicable and
-was deliberate — K1 added the `KLZY` writer (+437) as the dual-write half of a
-prove-then-cut-over sequence, K2 removed ~98 lines with `handleIoctlIfconf`,
-and both deletions that would move this number were consciously deferred:
+### Procedure (binding from here on)
 
-- **K1 step 5** — remove the JSON `entries[]` and drop the image ABI stamp.
-  Deferred with its own ABI ruling (§2c item 3). **This is what completes V3.**
-- **K10 I6** — delete `host/src/wasi-shim.ts` (1,625). Held because the
-  fixtures cannot exercise a real wasi-libc guest (§2h).
+1. **Every implementation agent** runs `scripts/migration-ledger.sh --step
+   <its base> <its tip>` and reports added / removed / net for in-scope TS and
+   Rust in its final report.
+2. **The coordinator re-runs it at merge** — the agent's number is a claim, the
+   merge number is the fact — and appends a row to the running ledger below.
+3. **The maintainer is told per step**: that step's additions, subtractions and
+   net effect, plus the running aggregate.
+4. **An item with a positive TS net must name the item that removes the
+   difference**, and that owner item must already exist in this plan before the
+   increasing item is called done. Deferred deletions are debt with an owner,
+   never intentions.
 
-Both were the right calls. But "delete it later" with no ratchet is how a
-migration quietly becomes an addition, and this campaign has already found
-four claims that outlived their evidence. So:
+### Running ledger
 
-**RULE, from here on.** Every K item reports its in-scope TS delta in its
-final report, using `scripts/migration-ledger.sh`. An item that *increases*
-the number must name the item that will remove the difference, and that item
-goes in this plan before the increasing item is called done. Deferred
-deletions are debt with an owner, not intentions.
+Scope: `host/src` + `web-libs/kandelo-session/src` (`.ts`, excluding `.d.ts`)
+for TS; `crates/**/*.rs` for Rust. Baseline `c326c5e72`: TS **150,261**,
+Rust **206,833**.
 
-**Caveat, so the metric is not mistaken for the goal.** A line count is a
-crude proxy: it rewards deleting comments, punishes adding tests, and cannot
-distinguish a real migration from code relocated outside the measured scope.
-It is a *watchdog on a promise*, nothing more — the same status as
-`EXPECTED_HOST_IMPORT_COUNT`, which has itself gone up twice. Judge the
-campaign on §8's structural criteria; use this to catch drift between them.
+| step | TS added | TS removed | TS net | Rust net | note |
+|---|---|---|---|---|---|
+| K13a dead exports | 0 | 0 | **+0** | −374 | win is in Rust: dead exports and glue deleted |
+| K2 cross-memory | 29 | 181 | **−152** | +572 | the only Tier-1 item with a real TS reduction (`handleIoctlIfconf`) |
+| K1 KLZY | 526 | 36 | **+490** | +777 | dual-write writer; **deletion owed by K1 step 5** |
+| K10 WASI | 24 | 0 | **+24** | +5,702 | Rust module added; **deletion owed by K10 I6** (`wasi-shim.ts`, 1,625) |
+| **Tier 1 total** | **579** | **217** | **+362** | **+6,677** | aggregate: TS 150,623 · Rust 213,510 |
 
-**Currently outstanding deletion debt: 2,062+ lines** (K1 step 5's JSON path
-plus `wasi-shim.ts`), against a projected total reduction of 60–77% of
-~153,000. Essentially the entire reduction remains ahead, in Tiers 2 and 3.
+### Outstanding deletion debt
+
+| owed by | removes | why deferred |
+|---|---|---|
+| **K1 step 5** | the JSON `entries[]` path (~2,000+ across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes) | needs its own ABI ruling (§2c item 3); **completes V3** |
+| **K10 I6** | `host/src/wasi-shim.ts`, 1,625 | fixtures cannot exercise a real wasi-libc guest (§2h) |
+
+Both deferrals were correct. Neither is done until the owner item lands.
 
 ## 3. Decisions already taken — do not relitigate
 
