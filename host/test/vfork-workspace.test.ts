@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BorrowedVforkWorkspace } from "../src/vfork-workspace";
-import { ThreadPageAllocator } from "../src/thread-allocator";
+import { materializeThreadSlot } from "../src/thread-allocator";
 
 const PAGE = 65_536;
 
@@ -20,12 +20,12 @@ describe("borrowed vfork workspace", () => {
       shared: true,
     });
     const parentChannelOffset = 2 * PAGE;
-    const allocator = new ThreadPageAllocator({
-      firstSlotStartPage: 6,
-      maxPageExclusive: 10,
-      reservedSlots: 0,
-    });
-    const childControl = allocator.allocateHostControl(shared);
+    // A borrowing vfork child's control slot is placed by the kernel, out of
+    // the parent's address space, exactly like a pthread slot -- but through
+    // `kernel_reserve_host_region` rather than `clone`, so it neither needs
+    // nor consumes capacity promised to `pthread_create`. This stands in for
+    // that placement.
+    const childControl = materializeThreadSlot(shared, 6 * PAGE);
     const workspace = new BorrowedVforkWorkspace(
       shared,
       4,

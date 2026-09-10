@@ -82,8 +82,8 @@ export type {
   LoaderTableState,
 } from "./dylink-loader";
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
-export { ThreadPageAllocator } from "./thread-allocator";
-export type { ThreadAllocation, ThreadPageAllocatorOptions } from "./thread-allocator";
+export { materializeThreadSlot, threadSlotOffsets, THREAD_SLOT_BYTES } from "./thread-allocator";
+export type { ThreadAllocation } from "./thread-allocator";
 export {
   computeProcessMemoryLayout,
   createProcessMemory,

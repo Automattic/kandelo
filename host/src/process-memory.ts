@@ -12,8 +12,6 @@ import {
   PROCESS_MEMORY_FORK_SAVE_CONTROL_PREFIX_SIZE,
   PROCESS_MEMORY_LEGACY_MMAP_BASE,
   PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE,
-  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
-  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
 } from "./generated/abi";
 
@@ -56,12 +54,6 @@ export interface ProcessMemoryLayout {
   brkLimit: number;
   /** Highest mmap address permitted by the process memory maximum. */
   maxAddr: number;
-  /** First page after the main control area; dynamic pthread slots may start here. */
-  firstThreadSlotPage: number;
-  /** @deprecated Use firstThreadSlotPage or per-slot channel offsets. */
-  firstThreadBasePage: number;
-  /** Exclusive page limit for preallocated thread allocations. */
-  threadArenaEndPage: number;
   /** Maximum concurrent pthread slots for this process. */
   threadSlotCount: number;
 }
@@ -76,8 +68,6 @@ export interface ProcessMemoryLayoutOptions {
   defaultThreadSlots?: number;
   /** Explicit exact pthread slot count; bypasses the process-wasm declaration. */
   threadSlots?: number;
-  /** Preallocate the full pthread control slab. Defaults to dynamic slots. */
-  preallocateThreadSlots?: boolean;
   /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
 }
@@ -252,24 +242,17 @@ export function computeProcessMemoryLayout(
   //   channelPage       - main syscall channel primary page
   //   channelPage+1     - main syscall channel spill page
   //
-  // Pthread slots are addressed with positive offsets from slot start:
-  //   slot+0            - TLS/control page
-  //   slot+1            - per-thread fork-save/scratch page
-  //   slot+2            - syscall channel primary page
-  //   slot+3            - syscall channel spill page
+  // Nothing follows the main control area. A pthread's control slot is placed
+  // by the kernel, out of the same address-space allocator that answers mmap
+  // (`sys_clone` -> `kernel_thread_slot_addr`), so this layout no longer
+  // carries an arena for them and brk starts directly above the main channel.
   const channelPage = controlBasePage + PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE;
   const channelOffset = channelPage * WASM_PAGE_SIZE;
-  const firstThreadSlotPage = channelPage + CHANNEL_PAGES;
-  const firstThreadBasePage =
-    firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
-  const threadArenaEndPage =
-    firstThreadSlotPage + (
-      options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
-    );
+  const controlEndPage = channelPage + CHANNEL_PAGES;
 
   const initialPages = Math.max(
     minPages,
-    threadArenaEndPage,
+    controlEndPage,
   );
 
   if (initialPages > maximumPages) {
@@ -278,7 +261,7 @@ export function computeProcessMemoryLayout(
     );
   }
 
-  const brkBase = threadArenaEndPage * WASM_PAGE_SIZE;
+  const brkBase = controlEndPage * WASM_PAGE_SIZE;
   const maxAddr = maximumPages * WASM_PAGE_SIZE;
 
   return {
@@ -292,9 +275,6 @@ export function computeProcessMemoryLayout(
     mmapBase: brkBase,
     brkLimit: maxAddr,
     maxAddr,
-    firstThreadSlotPage,
-    firstThreadBasePage,
-    threadArenaEndPage,
     threadSlotCount,
   };
 }

@@ -9,7 +9,7 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
 } from "../src/process-memory";
-import { WASM_PAGE_SIZE, DEFAULT_MAX_PAGES, CH_TOTAL_SIZE, PAGES_PER_THREAD } from "../src/constants";
+import { WASM_PAGE_SIZE, DEFAULT_MAX_PAGES, CH_TOTAL_SIZE } from "../src/constants";
 
 function uleb128(n: number): number[] {
   const bytes: number[] = [];
@@ -98,41 +98,40 @@ describe("process memory layout", () => {
     expect(layout.channelOffset - FORK_SAVE_BUFFER_SIZE).toBe(
       layout.controlBase + FORK_SAVE_CONTROL_PREFIX_SIZE,
     );
-    expect(layout.firstThreadSlotPage).toBe(layout.channelPage + CHANNEL_PAGES);
-    expect(layout.firstThreadBasePage).toBe(layout.firstThreadSlotPage + 2);
     expect(layout.threadSlotCount).toBe(DEFAULT_PROCESS_THREAD_SLOTS);
-    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
-    expect(layout.controlEnd).toBe(layout.threadArenaEndPage * WASM_PAGE_SIZE);
+    // Nothing follows the main control area. A pthread's control slot is
+    // placed by the kernel out of the process address space, so the layout
+    // carries no arena for them and brk starts right above the main channel.
+    expect(layout.controlEnd).toBe((layout.channelPage + CHANNEL_PAGES) * WASM_PAGE_SIZE);
     expect(layout.brkBase).toBe(layout.controlEnd);
     expect(layout.mmapBase).toBe(layout.brkBase);
     expect(layout.brkLimit).toBe(layout.maxAddr);
   });
 
-  it("fails fast when maxPages cannot fit an explicitly preallocated thread slab", () => {
-    expect(() => computeProcessMemoryLayout({
+  it("does not move brk for a large pthread declaration", () => {
+    // The declared slot count is a POSIX concurrency ceiling, not an address
+    // range this host has to set aside: the kernel places each slot when
+    // `clone` asks for one. So the initial image is the same however many
+    // threads a program declares.
+    const declared = computeProcessMemoryLayout({
       ptrWidth: 4,
       heapBase: 0x00120000,
       minPages: 18,
       maxPages: 84,
-      preallocateThreadSlots: true,
-    })).toThrow(/initial pages/);
-  });
-
-  it("can shrink the preallocated thread slab with an explicit slot count", () => {
-    const layout = computeProcessMemoryLayout({
+      threadSlots: 1024,
+    });
+    const single = computeProcessMemoryLayout({
       ptrWidth: 4,
       heapBase: 0x00120000,
       minPages: 18,
-      maxPages: 256,
-      threadSlots: 2,
-      preallocateThreadSlots: true,
+      maxPages: 84,
+      threadSlots: 1,
     });
 
-    expect(layout.initialPages).toBeLessThanOrEqual(256);
-    expect(layout.threadSlotCount).toBe(2);
-    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage + 2 * PAGES_PER_THREAD);
-    expect(layout.initialPages).toBe(layout.threadArenaEndPage);
-    expect(layout.maxAddr).toBe(256 * WASM_PAGE_SIZE);
+    expect(declared.threadSlotCount).toBe(1024);
+    expect(declared.initialPages).toBe(single.initialPages);
+    expect(declared.brkBase).toBe(single.brkBase);
+    expect(declared.maxAddr).toBe(84 * WASM_PAGE_SIZE);
   });
 
   it("can allow no pthread slots for single-threaded declarations", () => {
@@ -145,7 +144,6 @@ describe("process memory layout", () => {
     });
 
     expect(layout.threadSlotCount).toBe(0);
-    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
     expect(layout.controlEnd).toBe((layout.channelPage + CHANNEL_PAGES) * WASM_PAGE_SIZE);
   });
 
@@ -165,7 +163,9 @@ describe("process memory layout", () => {
       });
 
       expect(layout.threadSlotCount).toBe(expected);
-      expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
+      expect(layout.controlEnd).toBe(
+        (layout.channelPage + CHANNEL_PAGES) * WASM_PAGE_SIZE,
+      );
     }
   });
 });

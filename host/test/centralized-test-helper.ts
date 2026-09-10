@@ -12,7 +12,7 @@ import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
-import { ThreadPageAllocator } from "../src/thread-allocator";
+import { materializeThreadSlot, THREAD_SLOT_BYTES } from "../src/thread-allocator";
 import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
 import {
   computeProcessMemoryLayout,
@@ -87,29 +87,13 @@ function createSharedProcessMemory(
   });
 }
 
-function threadAllocatorForLayout(
-  layout: ProcessMemoryLayout,
-  ptrWidth: 4 | 8,
-  reserveSlotStartPage?: () => number,
-): ThreadPageAllocator {
-  return new ThreadPageAllocator({
-    firstBasePage: layout.firstThreadBasePage,
-    maxPageExclusive: layout.threadArenaEndPage,
-    ptrWidth,
-    reservedSlots: layout.threadSlotCount,
-    reserveSlotStartPage,
-  });
-}
-
 function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
-  reserveSlotStartPage?: () => number,
   maximumPages: number = MAX_PAGES,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
-  threadAllocator: ThreadPageAllocator;
 } {
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
@@ -120,11 +104,7 @@ function createFreshProcessMemory(
   });
   const memory = createProcessMemory(ptrWidth, layout);
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
-  return {
-    memory,
-    layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, reserveSlotStartPage),
-  };
+  return { memory, layout };
 }
 
 function loadKernelWasm(): ArrayBuffer {
@@ -598,7 +578,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const processProgramBytes = new Map<number, ArrayBuffer>();
   const processMemories = new Map<number, WebAssembly.Memory>();
   const processLayouts = new Map<number, ProcessMemoryLayout>();
-  const threadAllocators = new Map<number, ThreadPageAllocator>();
   const processPtrWidths = new Map<number, 4 | 8>();
   const forkReplayContexts = new Map<number, ForkReplayContext>();
   const externrefProcessOwner = new ForkExternrefProcessOwner();
@@ -731,14 +710,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const {
           memory: childMemory,
           layout: childLayout,
-          threadAllocator: childThreadAllocator,
         } = createFreshProcessMemory(
           program.programBytes,
           childPtrWidth,
-          () => kernelWorker.reserveHostRegion(
-            childPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
-          ) / WASM_PAGE_SIZE,
           options.maxPages,
         );
         if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
@@ -797,7 +771,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         processProgramBytes.set(childPid, program.programBytes);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
-        threadAllocators.set(childPid, childThreadAllocator);
         processPtrWidths.set(childPid, childPtrWidth);
 
         const finalizeSpawnWorkerError = (reason: unknown): void => {
@@ -810,7 +783,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processProgramBytes.delete(childPid);
           processMemories.delete(childPid);
           processLayouts.delete(childPid);
-          threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
           releaseProcessReferenceOwner(childPid);
           childWorker.terminate().catch(() => {});
@@ -940,14 +912,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         processProgramBytes.set(childPid, parentProgram);
         processMemories.set(childPid, childMemory);
         processLayouts.set(childPid, childLayout);
-        threadAllocators.set(childPid, threadAllocatorForLayout(
-          childLayout,
-          parentPtrWidth,
-          () => kernelWorker.reserveHostRegion(
-            childPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
-          ) / WASM_PAGE_SIZE,
-        ));
         processPtrWidths.set(childPid, parentPtrWidth);
         if (forkReplayContext) forkReplayContexts.set(childPid, forkReplayContext);
         const finalizeChildWorkerError = (reason: unknown): void => {
@@ -965,7 +929,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processProgramBytes.delete(childPid);
           processMemories.delete(childPid);
           processLayouts.delete(childPid);
-          threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
           forkReplayContexts.delete(childPid);
           releaseProcessReferenceOwner(childPid);
@@ -1025,7 +988,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             processProgramBytes.delete(childPid);
             processMemories.delete(childPid);
             processLayouts.delete(childPid);
-            threadAllocators.delete(childPid);
             processPtrWidths.delete(childPid);
             forkReplayContexts.delete(childPid);
             releaseProcessReferenceOwner(childPid);
@@ -1050,14 +1012,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const {
           memory: newMemory,
           layout: newLayout,
-          threadAllocator: newThreadAllocator,
         } = createFreshProcessMemory(
           newProgramBytes,
           newPtrWidth,
-          () => kernelWorker.reserveHostRegion(
-            execPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
-          ) / WASM_PAGE_SIZE,
           options.maxPages,
         );
         const newChannelOffset = newLayout.channelOffset;
@@ -1132,7 +1089,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processProgramBytes.set(execPid, newProgramBytes);
               processMemories.set(execPid, newMemory);
               processLayouts.set(execPid, newLayout);
-              threadAllocators.set(execPid, newThreadAllocator);
               processPtrWidths.set(execPid, newPtrWidth);
               forkReplayContexts.delete(execPid);
 
@@ -1202,7 +1158,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processProgramBytes.delete(execPid);
               processMemories.delete(execPid);
               processLayouts.delete(execPid);
-              threadAllocators.delete(execPid);
               processPtrWidths.delete(execPid);
               forkReplayContexts.delete(execPid);
               releaseProcessReferenceOwner(execPid);
@@ -1223,25 +1178,26 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           stackPtr,
           tlsPtr,
           ctidPtr,
+          slotAddr,
           memory,
         } = attachment;
-        const threadAllocator = threadAllocators.get(clonePid);
-        if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
         const processChannelOffset = processLayouts.get(clonePid)?.channelOffset;
         if (processChannelOffset === undefined) {
           throw new Error(`Unknown process channel for pid ${clonePid}`);
         }
-        const alloc = threadAllocator.allocate(memory);
+        const alloc = materializeThreadSlot(memory, slotAddr, clonePtrWidth);
+        const releaseSlot = () =>
+          kernelWorker.releaseHostRegion(clonePid, slotAddr, THREAD_SLOT_BYTES);
         try {
           kernelWorker.attachThreadChannel(attachment, alloc.channelOffset);
         } catch (err) {
-          threadAllocator.free(alloc.basePage);
+          releaseSlot();
           throw err;
         }
         const processGeneration = externrefGenerations.get(clonePid);
         if (!processGeneration) {
-          threadAllocator.free(alloc.basePage);
+          releaseSlot();
           throw new Error(
             `Unknown externref generation for pthread pid ${clonePid}`,
           );
@@ -1294,7 +1250,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } catch (error) {
           threadWorkerLive = false;
           threadForkHostImports.close();
-          threadAllocator.free(alloc.basePage);
+          releaseSlot();
           throw error;
         }
         threadWorker.on("message", (msg: unknown) => {
@@ -1302,7 +1258,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           if (m.type === "thread_exit") {
             threadWorkerLive = false;
             threadForkHostImports.close();
-            threadAllocator.free(alloc.basePage);
+            releaseSlot();
             threadWorker.terminate().catch(() => {});
           } else if (m.type === "fork_host_import") {
             threadForkHostImports.dispatch(m.wake);
@@ -1313,7 +1269,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           threadForkHostImports.close();
           kernelWorker.notifyThreadExit(clonePid, tid);
           kernelWorker.removeChannel(clonePid, alloc.channelOffset);
-          threadAllocator.free(alloc.basePage);
+          releaseSlot();
         });
 
       },
@@ -1322,7 +1278,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processProgramBytes.delete(exitPid);
           processMemories.delete(exitPid);
           processLayouts.delete(exitPid);
-          threadAllocators.delete(exitPid);
           processPtrWidths.delete(exitPid);
           forkReplayContexts.delete(exitPid);
           releaseProcessReferenceOwner(exitPid);
@@ -1345,7 +1300,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
               processProgramBytes.delete(exitPid);
               processMemories.delete(exitPid);
               processLayouts.delete(exitPid);
-              threadAllocators.delete(exitPid);
               processPtrWidths.delete(exitPid);
               forkReplayContexts.delete(exitPid);
               releaseProcessReferenceOwner(exitPid);
@@ -1379,17 +1333,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   await kernelWorker.init(kernelWasmBytes);
   pid = kernelWorker.createProcess(CAPTURED_STDIO);
 
-  const {
-    memory,
-    layout,
-    threadAllocator,
-  } = createFreshProcessMemory(
+  const { memory, layout } = createFreshProcessMemory(
     programBytes,
     ptrWidth,
-    () => kernelWorker.reserveHostRegion(
-      pid,
-      PAGES_PER_THREAD * WASM_PAGE_SIZE,
-    ) / WASM_PAGE_SIZE,
     options.maxPages,
   );
   const channelOffset = layout.channelOffset;
@@ -1404,7 +1350,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   processProgramBytes.set(pid, programBytes);
   processMemories.set(pid, memory);
   processLayouts.set(pid, layout);
-  threadAllocators.set(pid, threadAllocator);
   processPtrWidths.set(pid, ptrWidth);
 
   if (options.stdinBytes != null) {

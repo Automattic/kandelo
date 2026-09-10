@@ -553,7 +553,7 @@ const ownershipSeeds: OwnershipSeed[] = [
   },
   {
     declaration:
-      "host/src/thread-allocator.ts::ThreadPageAllocator.allocate.$param:memory",
+      "host/src/thread-allocator.ts::materializeThreadSlot.$param:memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
@@ -744,6 +744,15 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#reserveHostRegionWithinKernelEntry::kernel-export-direct-use::reserveHostRegionFn(pid, this.toKernelPtr(checkedLength))",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#setThreadSlotQuotaWithinKernelEntry::kernel-export-direct-use::setQuotaFn(pid, quota)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#threadSlotAddrWithinKernelEntry::kernel-export-direct-use::threadSlotAddrFn(pid, tid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseHostRegion::kernel-export-direct-use::releaseHostRegionFn( pid, this.toKernelPtr(addr), this.toKernelPtr(len), )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#resolveExecListenerFdWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, oldFd)",
@@ -1131,12 +1140,6 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The memory32 branch creates one allocator-owned process generation and immediately records its exact ownership and byte charge.",
-  },
-  {
-    key: "host/src/dylink-planner.ts::PlannerSession.instantiate::wasm-instance-authority::new WebAssembly.Instance(module, {})",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "The dynamic-linking planner module imports nothing at all — not even a memory — so this instance can reach no process state; it answers questions in its own linear memory.",
   },
   {
     key: "host/src/dylink-planner.ts::DylinkActExecutor.perform::wasm-instance-authority::new WebAssembly.Instance( module, this.#environment.wrapImports?.(imports) ?? imports, )",

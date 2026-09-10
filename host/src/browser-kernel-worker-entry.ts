@@ -90,7 +90,6 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
   OPEN_FLAGS,
@@ -496,7 +495,6 @@ const {
   respond,
   respondError,
   terminatePoisonedKernelWorker,
-  threadAllocatorForLayout,
   traceVforkMechanism,
 } = lifecycle;
 
@@ -1600,7 +1598,6 @@ async function handleExec(
         memory: newMemory,
         memoryLease: newMemoryLease,
         layout: newLayout,
-        threadAllocator: newThreadAllocator,
       } = prepared;
       const newChannelOffset = newLayout.channelOffset;
       replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
@@ -1699,7 +1696,6 @@ async function handleExec(
         ptrWidth,
         secureExec,
         layout: newLayout,
-        threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
       });
       preparedTransferred = true;

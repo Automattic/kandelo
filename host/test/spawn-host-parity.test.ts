@@ -303,11 +303,20 @@ describe("spawn host parity", () => {
     }
 
     const clone = cloneHandlerSource();
+    // Placement is no longer a host decision: `sys_clone` reserved the slot and
+    // the attachment carries the address, so this host materializes what the
+    // kernel placed rather than choosing a page itself.
     expect(
       clone,
-      "clone allocation and thread attachment must both be guarded",
+      "the clone must materialize the kernel-placed slot",
     ).toMatch(
-      /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
+      /materializeThreadSlot\(memory, slotAddr, processInfo\.ptrWidth\)/,
+    );
+    expect(
+      clone,
+      "thread attachment must stay guarded against a generation change",
+    ).toMatch(
+      /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
     );
   });
 

@@ -70,7 +70,6 @@ import type {
   PreparedExecLaunchPlan,
   PreparedExecLaunchRequest,
 } from "./exec-target";
-import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -676,7 +675,6 @@ const {
   respond,
   respondError,
   terminatePoisonedKernelWorker,
-  threadAllocatorForLayout,
   traceVforkMechanism,
 } = lifecycle;
 
@@ -1409,7 +1407,6 @@ async function handleExec(
         memory: newMemory,
         memoryLease: newMemoryLease,
         layout: newLayout,
-        threadAllocator: newThreadAllocator,
       } = prepared;
       const newChannelOffset = newLayout.channelOffset;
       replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
@@ -1496,7 +1493,6 @@ async function handleExec(
         ptrWidth: newPtrWidth,
         secureExec,
         layout: newLayout,
-        threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
       });
       preparedTransferred = true;

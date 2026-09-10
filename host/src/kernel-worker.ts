@@ -1868,6 +1868,17 @@ export interface ThreadChannelAttachment {
   readonly stackPtr: number;
   readonly tlsPtr: number;
   readonly ctidPtr: number;
+  /**
+   * Byte address of the per-thread control slot the kernel placed for this
+   * thread -- its TLS/control page, fork-save page and syscall channel.
+   *
+   * `sys_clone` reserves it from the process address space before the thread
+   * exists, because the kernel is the only party that can see every mapping,
+   * reservation and heap boundary in that space. The host's remaining job is
+   * the part only a host can do: grow the `WebAssembly.Memory` to cover the
+   * range, zero it, and launch the worker.
+   */
+  readonly slotAddr: number;
   readonly memory: WebAssembly.Memory;
 }
 
@@ -1901,6 +1912,7 @@ function createThreadChannelAttachment(
   stackPtr: number,
   tlsPtr: number,
   ctidPtr: number,
+  slotAddr: number,
   memory: WebAssembly.Memory,
 ): {
   attachment: ThreadChannelAttachment;
@@ -1915,6 +1927,7 @@ function createThreadChannelAttachment(
     stackPtr,
     tlsPtr,
     ctidPtr,
+    slotAddr,
     memory,
   }) as ThreadChannelAttachment;
   const pending: PendingThreadChannelAttachment = {
@@ -22679,6 +22692,17 @@ export class CentralizedKernelWorker {
       const stackPtr = origArgs[1];
       const tlsPtr = origArgs[3];
 
+      // Where this thread's control slot lives is the kernel's decision, made
+      // inside the `clone` it just serviced. Read it in the SAME kernel entry
+      // rather than opening a second one: the placement is already committed,
+      // and a separate entry would be a reentrancy hazard on a path that is
+      // otherwise a single transaction.
+      const slotAddr = this.#threadSlotAddrWithinKernelEntry(
+        channel.pid,
+        tid,
+        entry,
+      );
+
       const createdAttachment = createThreadChannelAttachment(
         this,
         channel.pid,
@@ -22688,6 +22712,7 @@ export class CentralizedKernelWorker {
         stackPtr,
         tlsPtr,
         ctidPtr,
+        slotAddr,
         channel.memory,
       );
       cloneState.cloneAttachment = createdAttachment.attachment;
@@ -28842,6 +28867,86 @@ export class CentralizedKernelWorker {
       );
     }
     return n;
+  }
+
+  /**
+   * Where the kernel placed `tid`'s pthread control slot.
+   *
+   * Read inside the caller's kernel entry: `sys_clone` reserved the range
+   * before the thread existed, so this is a read of committed state, not a
+   * second allocation.
+   */
+  #threadSlotAddrWithinKernelEntry(
+    pid: number,
+    tid: number,
+    entry: KernelWorkerEntryContext,
+  ): number {
+    const threadSlotAddrFn = this.#kernelInstanceForEntry(entry).exports
+      .kernel_thread_slot_addr as
+      ((pid: number, tid: number) => bigint | number) | undefined;
+    if (!threadSlotAddrFn) {
+      throw new Error(
+        "Kernel export kernel_thread_slot_addr is required to place pthread control slots",
+      );
+    }
+    const slotAddr = Number(threadSlotAddrFn(pid, tid));
+    if (!Number.isSafeInteger(slotAddr) || slotAddr <= 0) {
+      throw new Error(
+        `kernel placed no control slot for pid=${pid} tid=${tid} (got ${slotAddr})`,
+      );
+    }
+    checkedWasmAddressRange(
+      slotAddr,
+      PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE,
+      this.getPtrWidth(pid),
+      "pthread control slot",
+    );
+    return slotAddr;
+  }
+
+  /**
+   * Hand a host-owned reservation back to the kernel's address-space
+   * allocator.
+   *
+   * The mirror of {@link reserveHostRegion}. For a pthread control slot this
+   * is deliberately NOT called at thread exit: a worker terminated without
+   * publishing a quiescence fence can still write into its slot, and this host
+   * is the only party that knows when that is settled. Until it calls, the
+   * kernel keeps the range out of circulation.
+   */
+  releaseHostRegion(pid: number, addr: number, len: number): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const deferred = this.#runOrDeferKernelEntry(
+      `dynamic host-region release pid=${pid}`,
+      (entry) => {
+        const releaseHostRegionFn = this.#kernelInstanceForEntry(entry).exports
+          .kernel_release_host_region as
+          ((pid: number, addr: KernelPointer, len: KernelPointer) => number)
+          | undefined;
+        if (!releaseHostRegionFn) {
+          throw new Error(
+            "Kernel export kernel_release_host_region is required to reuse pthread control slots",
+          );
+        }
+        const result = releaseHostRegionFn(
+          pid,
+          this.toKernelPtr(addr),
+          this.toKernelPtr(len),
+        );
+        if (result < 0) {
+          // A refused release means this host is describing an address space
+          // the kernel does not have. Say so rather than leaving the range
+          // silently unusable for the life of the process.
+          throw new Error(
+            `kernel refused release of host region ${addr}+${len} for pid=${pid} (errno ${-result})`,
+          );
+        }
+        return undefined;
+      },
+    );
+    if (deferred) {
+      throw new KernelReentrantEntryError("dynamic host-region release");
+    }
   }
 
   reserveHostRegionAt(pid: number, addr: number, len: number): number {

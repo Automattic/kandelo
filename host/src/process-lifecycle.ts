@@ -87,7 +87,11 @@ import type {
 } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
 import type { ProcessMemoryAllocator } from "./process-memory";
-import { ThreadPageAllocator } from "./thread-allocator";
+import {
+  materializeThreadSlot,
+  THREAD_SLOT_BYTES,
+  type ThreadAllocation,
+} from "./thread-allocator";
 import type { WorkerHandle } from "./worker-adapter";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
@@ -145,8 +149,13 @@ export interface ProcessGenerationOwnership {
 
 /** A parent's control slot, borrowed until exact vfork exec/exit teardown. */
 export interface VforkWorkspaceOwnership {
-  readonly allocator: ThreadPageAllocator;
-  readonly slotStartPage: number;
+  /**
+   * The process whose address space the slot was reserved from. A vfork child
+   * borrows its parent's memory, so the release goes back to the parent's pid,
+   * not the child's.
+   */
+  readonly ownerPid: number;
+  readonly slotAddr: number;
   released: boolean;
 }
 
@@ -242,7 +251,6 @@ export interface ProcessLifecycleInfo<
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   externrefGeneration: ForkExternrefGeneration;
-  threadAllocator: ThreadPageAllocator;
   secureExec: boolean;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
@@ -774,7 +782,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     const workspace = info.vforkWorkspace;
     if (!workspace || workspace.released) return;
     workspace.released = true;
-    workspace.allocator.free(workspace.slotStartPage);
+    releaseThreadSlot(workspace.ownerPid, workspace.slotAddr);
   }
 
   /**
@@ -814,22 +822,34 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
   }
 
-  function threadAllocatorForLayout(
-    layout: ProcessMemoryLayout,
-    ptrWidth: 4 | 8,
+  /**
+   * Return a control slot to the kernel's address-space allocator.
+   *
+   * Called only once the slot is provably out of use. The kernel deliberately
+   * does not free it at thread exit, because a worker terminated without a
+   * quiescence fence can still write into its slot and only this host knows
+   * when that has settled.
+   */
+  function releaseThreadSlot(pid: number, slotAddr: number): void {
+    host.kernel().releaseHostRegion(pid, slotAddr, THREAD_SLOT_BYTES);
+  }
+
+  /**
+   * Reserve a host-owned control slot outside the guest pthread quota.
+   *
+   * WHY: a single-threaded executable can truthfully declare zero pthread
+   * slots and still call vfork. Its borrowing child needs an independent
+   * syscall channel, replay prefix, and scratch page, but that platform state
+   * must neither require nor consume capacity promised to pthread_create --
+   * so it comes from `kernel_reserve_host_region` rather than through `clone`.
+   */
+  function placeHostControlSlot(
     pid: number,
-  ): ThreadPageAllocator {
-    return new ThreadPageAllocator({
-      firstSlotStartPage: layout.firstThreadSlotPage,
-      maxPageExclusive: layout.threadArenaEndPage,
-      ptrWidth,
-      reservedSlots: layout.threadSlotCount,
-      reserveSlotStartPage: () =>
-        host.kernel().reserveHostRegion(
-          pid,
-          PAGES_PER_THREAD * WASM_PAGE_SIZE,
-        ) / WASM_PAGE_SIZE,
-    });
+    memory: WebAssembly.Memory,
+    ptrWidth: 4 | 8,
+  ): ThreadAllocation {
+    const slotAddr = host.kernel().reserveHostRegion(pid, THREAD_SLOT_BYTES);
+    return materializeThreadSlot(memory, slotAddr, ptrWidth);
   }
 
   function bindForkHostImports(
@@ -1179,7 +1199,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         mmapBase: layout.mmapBase,
         maxAddr: layout.maxAddr,
         threadSlotCount: layout.threadSlotCount,
-        threadArenaEndPage: layout.threadArenaEndPage,
       },
       liveProcessCount: host.processes.size,
       pendingProcessTeardowns: host.processTeardowns.size,
@@ -1207,7 +1226,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     memory: WebAssembly.Memory;
     memoryLease: ProcessMemoryLease;
     layout: ProcessMemoryLayout;
-    threadAllocator: ThreadPageAllocator;
   }> {
     const heapBase = extractHeapBase(programBytes);
     const layout = computeProcessMemoryLayout({
@@ -1246,7 +1264,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory,
         memoryLease,
         layout,
-        threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
       };
     } catch (error) {
       // No Worker or kernel registration can exist yet, so the lease still has
@@ -1955,7 +1972,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         memory,
         memoryLease,
         layout,
-        threadAllocator,
       } = await createFreshProcessMemory(
         pid,
         programBytes,
@@ -2067,7 +2083,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec,
         layout,
-        threadAllocator,
         externrefGeneration,
       };
       host.processes.set(pid, createdGeneration);
@@ -2192,7 +2207,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       if (error instanceof ProcessMemoryCapacityError) return -12; // ENOMEM
       throw error;
     }
-    const { memory, memoryLease, layout, threadAllocator } = fresh;
+    const { memory, memoryLease, layout } = fresh;
     // Allocation admission yielded. Never attach a worker to a child that
     // became a zombie while the short retirement admission gate drained.
     if (!await retryKernelEntryResult(
@@ -2281,7 +2296,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec,
         layout,
-        threadAllocator,
         externrefGeneration: processExternrefGeneration,
       };
       host.processes.set(childPid, childGeneration);
@@ -2565,11 +2579,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec: childInitData.secureExec,
         layout: childLayout,
-        threadAllocator: threadAllocatorForLayout(
-          childLayout,
-          ptrWidth,
-          childPid,
-        ),
         forkReplayContext,
         externrefGeneration: externrefGrant.generation,
         // The child reuses the parent's fork-module region; seed its
@@ -2759,8 +2768,9 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   async function handleClone(
     attachment: ThreadChannelAttachment,
   ): Promise<void> {
-    const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
-      attachment;
+    const {
+      pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, slotAddr, memory,
+    } = attachment;
     const kernelWorker = host.kernel();
     const processInfo = host.processes.get(pid);
     if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
@@ -2798,16 +2808,13 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     }
     if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
 
-    let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
+    // The kernel already chose where this thread's control slot goes, inside
+    // the `clone` that produced this attachment, and reserved the range in the
+    // process address space. What is left is the part only a host can do:
+    // grow the Memory until the range is addressable, and zero it.
+    let alloc: ThreadAllocation;
     try {
-      const allocationState = await retryKernelEntryResultForGeneration(
-        belongsToCompiledProcessImage,
-        () => processInfo.threadAllocator.allocate(memory),
-      );
-      if (allocationState.status === "stale") {
-        throw new Error(`Process ${pid} changed generation during clone allocation`);
-      }
-      alloc = allocationState.value;
+      alloc = materializeThreadSlot(memory, slotAddr, processInfo.ptrWidth);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       reportHostDiagnostic({
@@ -2829,7 +2836,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         throw new Error(`Process ${pid} changed generation during clone attachment`);
       }
     } catch (err) {
-      processInfo.threadAllocator.free(alloc.basePage);
+      releaseThreadSlot(pid, slotAddr);
       throw err;
     }
 
@@ -2919,7 +2926,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           memory,
           alloc.channelOffset,
         );
-        processInfo.threadAllocator.free(alloc.basePage);
+        releaseThreadSlot(pid, slotAddr);
       } else {
         // A hard termination is not a quiescence barrier. Keep the slot out of
         // circulation, and refuse exact retirement of the process backing.
@@ -3170,10 +3177,13 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       host.processMemoryAllocator(),
     );
     let childMemoryLeaseConsumed = false;
-    let workspaceAllocation: ReturnType<ThreadPageAllocator["allocate"]>;
+    let workspaceAllocation: ThreadAllocation;
     try {
-      workspaceAllocation =
-        parentInfo.threadAllocator.allocateHostControl(parentMemory);
+      workspaceAllocation = placeHostControlSlot(
+        parentPid,
+        parentMemory,
+        parentInfo.ptrWidth,
+      );
     } catch (error) {
       childMemoryLease.release();
       throw new VforkAddressSpaceBusyError(
@@ -3183,8 +3193,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       );
     }
     const workspaceOwnership: VforkWorkspaceOwnership = {
-      allocator: parentInfo.threadAllocator,
-      slotStartPage: workspaceAllocation.slotStartPage,
+      ownerPid: parentPid,
+      slotAddr: workspaceAllocation.slotStartPage * WASM_PAGE_SIZE,
       released: false,
     };
     const childChannelOffset = workspaceAllocation.channelOffset;
@@ -3322,7 +3332,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         ptrWidth,
         secureExec: childInitData.secureExec,
         layout: childLayout,
-        threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
         forkReplayContext,
         externrefGeneration: externrefGrant.generation,
         vforkWorkspace: workspaceOwnership,
@@ -3522,7 +3531,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       if (!childMemoryLeaseConsumed) childMemoryLease.release();
       if (!workspaceOwnership.released) {
         workspaceOwnership.released = true;
-        workspaceOwnership.allocator.free(workspaceOwnership.slotStartPage);
+        releaseThreadSlot(workspaceOwnership.ownerPid, workspaceOwnership.slotAddr);
       }
       if (childGeneration && lifetimeStarted) {
         host.vforkLifetimes.abortBeforeChildStart(childGeneration, 11);
@@ -3586,7 +3595,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     respondError,
     respondTransferredBytes,
     terminatePoisonedKernelWorker,
-    threadAllocatorForLayout,
     traceVforkMechanism,
   };
 }
