@@ -1301,6 +1301,72 @@ part; the edit is mechanical. **Owner: coordinator, with the tier-end
 reconciliation**, alongside the 16 memory-authority sites and the ~30 stale
 "ABI 43" strings.
 
+## `constants.ts` — my pre-/post-kernel framing was wrong, and the correction is the finding
+
+The brief told the agent to split the file on "runs before a kernel exists"
+versus "runs when a kernel is up", and to prove the line with call sites. It
+did, and **found a third category the framing lacked — the largest one: no
+kernel is reachable at all.**
+
+- **Post-kernel (proven):** `exec-target.ts:461` calls
+  `kernel.execTargetShebang` on the same token fifteen lines above;
+  `node-kernel-worker-entry.ts:1017` passes `getKernelAbiVersion()` *as the
+  argument*; `:1478` sits between `createProcess()` and `registerProcess()`.
+- **Pre-kernel (genuine floor):** `kernel.ts:1588` `detectPtrWidth` inside
+  `#compileKernelModule` — needed to build the import object *before* compile.
+- **No kernel reachable:** `worker-main.ts:3219`, `dylink.ts:{1199,1306,1320}`,
+  `fork-host-import-runtime.ts:447`, `wasm-module-reflection.ts` all run in the
+  **process worker**, which has no kernel instance at all;
+  `binary-resolver.ts:2888` runs on the main thread validating `kernel.wasm`
+  before any kernel exists.
+
+**Consequence: a kernel export cannot delete this file.**
+`describeWasmArtifactPolicyFailures` transitively needs ~2,900 of the 3,031
+lines, and a single pre-kernel caller keeps that whole graph alive. The
+destination has to be a **standalone zero-import Rust module** — the shape K5's
+`crates/dylink` already proved — which dissolves the bootstrap paradox instead
+of working around it.
+
+### What landed
+
+`crates/wasm-artifact` (2,258 lines, `no_std + alloc`): the container walk on
+`wasmparser`, and **no second decoder for any descriptor** — linked-frames,
+module-state, exception-codec, imported-globals, imported-tables and static-root
+all route to the `fork-codec` module that owns them.
+
+**The duplication was three-way, not two:** `tools/xtask/src/build_deps.rs:14661`
+is a third implementation. The census had found two.
+
+`kernel_exec_target_artifact_policy` now judges the exec target in the kernel,
+at **zero extra cost**: `PreparedExecTarget::new` already reserves the whole
+artifact and the host fills it *through* the kernel — the old path read those
+bytes back out and re-parsed them in JavaScript.
+
+**Two real defects fixed rather than faithfully ported:** `readULEB128`
+accumulated with a 32-bit `|=`, so a section length ≥ 2³¹ read negative; and
+byte reads ran past the buffer end.
+
+### The finding worth acting on separately
+
+**`handleSpawn` has no kernel-side artifact-policy check on either host.** Both
+the embedder API and the boot path reach it, and `worker-main.ts:3219` is
+**the only check anywhere** that verifies the ABI-contract digest. That is not a
+migration item — it is a gap the migration exposed.
+
+### NDD-CONST-1 — largely dissolved by K5 I6a
+
+The agent filed this because a second module pipeline would mean 14 integration
+points, and K5 was mid-flight on exactly that machinery. **That is no longer the
+cost.** K10 built `CORESIDENT_SIDE_MODULES`, K5 I6a adopted it after arguing it
+was the better design, and adding a module is now **one table row plus the four
+browser registration points** — which is precisely the reuse the table exists
+for.
+
+**Coordinator's read: fold `crates/wasm-artifact` in as a fourth row after
+I6b lands.** It is no longer a 14-point decision, so it does not need to be the
+maintainer's. Flagging rather than deciding only the part that is theirs: the
+`handleSpawn` gap above.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
