@@ -16571,11 +16571,12 @@ pub fn epoll_resolved_interests(
 /// requested events and data out of it, so for those a null pointer is
 /// `EFAULT` rather than an omitted argument.
 ///
-/// An unknown operation is reported as reading the event so that a null
-/// pointer faults before `sys_epoll_ctl` reaches its `EINVAL`. Linux checks
-/// the pointer first for the same reason: a caller that passed neither a valid
-/// operation nor a valid pointer has two errors, and the memory fault is the
-/// one it must not be allowed to ignore.
+/// An unknown operation is reported as reading the event, so a caller that
+/// passes both a bad operation and a null pointer sees `EFAULT` rather than
+/// `EINVAL`. That ordering is Linux's: `do_epoll_ctl` copies the event in
+/// whenever `ep_op_has_event(op)` — which is exactly `op != EPOLL_CTL_DEL` —
+/// and returns `EFAULT` on a failed copy, before it reaches the operation
+/// switch that would answer `EINVAL`.
 pub fn epoll_ctl_reads_event(op: i32) -> bool {
     const EPOLL_CTL_DEL: i32 = 2;
     op != EPOLL_CTL_DEL
