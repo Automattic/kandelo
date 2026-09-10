@@ -513,6 +513,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dylink"
+version = "0.1.0"
+dependencies = [
+ "fork-codec",
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
