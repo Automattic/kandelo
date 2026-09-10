@@ -2245,10 +2245,88 @@ foundation file.
 | B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
 | B15 | **TLS `SharedArrayBuffer` hazard** | All three engines throw on SAB-backed views; reachability unproven. Fix when the file is next touched: copy at the boundary, tighten `ArrayBufferLike` → `ArrayBuffer` |
 | B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15 |
+| B17 | **CLOSED — and it was never a `tar` or overlay defect** | See "B17/B18/B19 closed" below. `tar/wasm32` builds green on this base; the error was a broken sysroot wearing a package's clothes |
+| B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
+| B19 | **CLOSED** | The install now fails loudly rather than leaving the tier consumers read stale |
 | B17 | *(moved to A8 — dispatched)* | |
 | B18 | *(moved to A8 — dispatched)* | |
 | B19 | *(moved to A8 — dispatched)* | |
 | B20 | **Tier-end browser pass** | Now split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed this way |
+
+### B17/B18/B19 closed — three build-environment defects, one shape
+
+Each produced a failure that named something other than its cause.
+
+**B17 was not a `tar` bug, an overlay bug, or an include-order bug.** On
+`3011a5854` with a freshly built musl sysroot, `tar/wasm32` builds green
+through both `build-deps --force-source-build resolve tar` and the SourceOnlyV1
+engine (`xtask bootstrap tar`); `config.h` reports `HAVE_READDIR 1` and no
+`gnu/readdir.o` is produced at all. The reported error is reachable only by
+compiling `gnu/readdir.c`, which is gnulib's *replacement* `readdir` -- gnulib
+compiles it only when its configure probe concluded the C library has no
+`readdir`, and it dereferences `dirp->real_dirp`, a member of gnulib's own
+`DIR` (`dirent-private.h`, under `GNULIB_defined_DIR`). Compiling that file
+directly reproduces the reported text exactly:
+
+```
+gnu/readdir.c:38:23: error: incomplete definition of type 'DIR'
+                            (aka 'struct __dirstream')
+```
+
+`DIR` is the POSIX-correct opaque `struct __dirstream`, declared identically by
+upstream musl and by `libc/musl-overlay/include/dirent.h`. **The owning layer
+is the sysroot build step**, and the cause is the silent-success
+`scripts/build-musl.sh` recorded as validation trap 3: it exited 0 leaving a
+partial tree and no sysroot, so a configure probe could not link and concluded
+`readdir` was missing. That was fixed in `e93167651`, which is on this base and
+was *not* on `1b9d806e1`, the commit B17 was reproduced against. What remained
+was the postcondition half: the script's tail was
+`ls -la "$SYSROOT/lib/libc.a" || echo "WARNING: libc.a not found!"`, which
+warned and exited 0. It now fails.
+
+**B18: `xtask bootstrap` gained a `root-npm` step**, first in
+`bootstrap_step_plan()` and also a prerequisite of single-target selections.
+The sealed exclusion was checked and is narrower than it looked:
+`build-rootfs.sh` refuses to install under `ROOTFS_SEALED_BUILD=1` because
+*resolver-owned package builds* must be read-only with respect to the checkout.
+`bootstrap` is the step whose job is to provision the checkout, so both guards
+stay as they are. It runs CI's exact command
+(`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund`), keys on the
+same `node_modules/tsx/dist/cli.mjs` the build scripts guard on, and re-checks
+afterwards so an `npm ci` that exits 0 without producing it still fails.
+
+**B19 took the truthful-failure option, not the kinder one.** After a
+successful publication, `install-local-artifact` compares what it installed
+against the same relative path in `local-binaries/source-only-v1` and fails if
+they differ. Making one command leave every tier consistent was rejected for a
+reason, not for size: the SourceOnlyV1 root is a content-addressed projection
+whose manifest records each member's size and sha, and the browser resolver
+validates fetched bytes against it. Copying bytes in from the installer would
+leave the manifest describing the old member -- a silent inconsistent tier in
+place of a loud stale one. The check is skipped when `WASM_POSIX_DEP_OUT_DIR`
+is set, because that is the resolver-build window in which the two tiers are
+*expected* to disagree.
+
+**`verify-fresh` was right the whole time** and this adds no new source of
+truth; it makes the command that *creates* the inconsistency report it at the
+moment it creates it.
+
+### Two findings from this work, neither in scope
+
+- **`cargo test -p xtask` has one pre-existing red test on base.**
+  `program_output_validation_rejects_legacy_asyncify_wasm` fails with
+  `parse wasm: unexpected end-of-file (at offset 0xa)`. Confirmed pre-existing
+  by running it against `3011a5854`'s own `build_deps.rs`. It is a fixture
+  artifact of `e93167651`: that commit correctly changed
+  `wasmContainsLegacyAsyncify` from a byte scan to an export-name test, and the
+  fixture is a truncated file carrying the ASCII string, which the new check
+  cannot parse. **Baseline is 606 passed / 1 failed, not 605 passed.** With the
+  two tests added here: **608 passed / 1 failed**.
+- **The machine ran out of disk mid-run.** One full `cargo test -p xtask`
+  reported 16 failures, 15 of them `Os { code: 28, kind: StorageFull }`; `df`
+  showed 1.1 GiB free of 1.8 TiB. Discarded and re-run after space freed.
+  Worth knowing while six worktrees share one disk: a contaminated run of this
+  suite looks like a scatter of unrelated `build_deps` failures.
 
 ### C. Closed by measurement, kept only so they are not re-opened
 
