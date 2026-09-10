@@ -1199,8 +1199,10 @@ the class a conformance suite catches and unit tests do not.
 ### `report_writeback_loss` deserves a better home than a console log
 
 Kept for now (maintainer's call, 2026-09-10), and it is the reason the host
-import count stands at 76 rather than 75 — `host_debug_log` is live because
-this is its only caller.
+import count stands at 75 rather than 74 — `host_debug_log` is live because
+this is its only caller. (The arithmetic shifted by one on 2026-09-10 when the
+dead `host_call_signal_handler` import was removed; the decision it describes
+is unchanged.)
 
 A console log is a weak home for **unrecoverable data loss**. The event says a
 shared file mapping's dirty pages could not be written back; a developer who
@@ -1211,6 +1213,61 @@ condition the host can read through an existing export — so the loss is
 queryable after the fact rather than only greppable in a console that may not
 be attached. That also makes it testable, which a console log is not.
 
+### The native host's pthread ceiling is its arena, not the program's declaration
+
+Fixed on 2026-09-10: a joined thread's control slot now returns to the pool on
+every host, and `pthread_create` past a process's ceiling returns POSIX EAGAIN
+from the kernel before a tid is allocated
+(`crates/runtime-core/src/syscalls.rs`, `kernel_set_thread_slot_quota`). Two
+related things are still open.
+
+**host-native does not read `__wasm_posix_thread_slots`.** The JavaScript hosts
+resolve a program's declared pthread count and hand it to the kernel as that
+process's ceiling; host-native hands over `RESERVED_THREAD_SLOTS` instead. That
+is truthful — 16 really is all it can place, because its thread-slot arena is
+carved below `brk_base` at launch and never grows — and it is currently
+unobservable for any program the SDK builds, since the default declaration
+(1024) is far above 16 and `min(declared, 16)` is 16. It becomes observable for
+a program that deliberately declares *fewer* than 16 slots, or declares
+`THREAD_SLOTS_NONE`: those should be refused at the declared number and are
+not.
+
+**The concurrent ceilings differ between hosts: 16 native, the declaration
+(default 1024) on Node and in the browser.** A program running 17 threads at
+once succeeds on the JavaScript hosts and gets EAGAIN natively. EAGAIN is the
+correct POSIX answer for a host that genuinely cannot place the thread, so this
+is a documented host limit rather than a conformance bug — but it is a real
+parity difference and it is the arena, not the policy, that causes it.
+
+Closing both needs the same thing: dynamic slot placement on host-native, the
+way the JavaScript hosts already work. They reserve each slot from the kernel's
+own address-space allocator (`kernel_reserve_host_region`) rather than from a
+fixed region, so they honour any declaration. host-native calls neither
+`kernel_reserve_host_region` nor `kernel_reserve_host_region_at` today; giving
+it that path would let `RESERVED_THREAD_SLOTS` and the arena below `brk_base`
+go away entirely, and would let the declared quota be the ceiling on every
+host.
+
+### The pthread slot arena's page arithmetic still has two implementations
+
+`host/src/thread-allocator.ts` and `crates/host-native/src/guest.rs` both
+compute slot start pages, hold a free list, and zero the slot. The POSIX
+decision they used to disagree about — how many threads may exist and what
+failure a program sees — moved into the kernel on 2026-09-10, so they can no
+longer diverge on behaviour. The arithmetic itself did not move, because only a
+host can grow a `WebAssembly.Memory`, and `growMemoryToCover` is genuinely a
+JavaScript act.
+
+Whether the placement should move too is a design question worth asking
+deliberately rather than in passing. If the kernel allocated slots from
+`MemoryManager::reserve_host_region` inside `sys_clone` and returned the
+address, both hosts would shrink to "grow to cover, zero, launch" and the
+duplication would be gone. That is attractive, and it is also the change that
+would alter host-native's process memory layout (`brk_base` currently sits
+above a fixed 16-slot arena that would no longer exist) and would have to be
+correct across fork and exec, where a child's arena state must reset alongside
+`clear_threads()`. It should be scoped and reviewed on its own, not folded into
+a bug fix.
 ### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
 
 Measured 2026-09-10 while a machine filled its disk: with the flag set, the
