@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { findRepoRoot } from "./binary-resolver";
+import { resolverRepoRoot } from "./binary-resolver";
 import { setWasmArtifactModuleLoader } from "./wasm-artifact-driver";
 
 /**
@@ -23,8 +23,17 @@ import { setWasmArtifactModuleLoader } from "./wasm-artifact-driver";
  * the thing that judges artifacts cannot be the thing that admits itself.
  *
  * So the reader is resolved by path, over the same three tiers `resolveBinary`
- * searches and in the same order. What it gives up is exactly one check, and
- * that check is covered better elsewhere:
+ * searches, in the same order, and from the same repo root — `resolverRepoRoot`,
+ * not a bare `findRepoRoot`. The root matters because a Node process worker does
+ * not always run from inside the checkout: with no `host/dist` built,
+ * `worker-adapter.ts` esbuild-bundles the worker entry into the OS temp
+ * directory, and walking up from THAT module's directory finds no repo at all.
+ * `resolverRepoRoot` honours `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT`, which the
+ * local-build engine sets on every package-build child, so a build-time kernel
+ * boot can read artifacts instead of failing with "Could not find repo root".
+ *
+ * What this path gives up is exactly one check, and that check is covered
+ * better elsewhere:
  *
  *   * the build verifies the module imports NOTHING and stamps a
  *     closure-derived build key, so a stale module fails `verify-fresh`;
@@ -67,7 +76,7 @@ const MODULE_FILE = "wasm_artifact_module32.wasm";
 
 export function useNodeWasmArtifactModule(): void {
   setWasmArtifactModuleLoader(() => {
-    const repoRoot = findRepoRoot();
+    const repoRoot = resolverRepoRoot();
     const searched: string[] = [];
     for (const tier of MODULE_TIERS) {
       const candidate = join(repoRoot, ...tier.split("/"), MODULE_FILE);

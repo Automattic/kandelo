@@ -103,7 +103,19 @@ export function findRepoRoot(startFrom?: string): string {
   );
 }
 
-function resolverRepoRoot(): string {
+/**
+ * The repo root every tier in this file is measured from.
+ *
+ * Exported because the artifact reader's own bytes are resolved by path rather
+ * than through `resolveBinary` (see `wasm-artifact-module-node.ts`), and a
+ * "same tiers, same order" claim is only true if it starts from the same root.
+ * The `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` override is what makes that root
+ * knowable to a realm whose own module path is not inside the checkout — a Node
+ * process worker running as an esbuild bundle under the OS temp directory, for
+ * one, which is what `worker-adapter.ts` produces whenever `host/dist` has not
+ * been built yet.
+ */
+export function resolverRepoRoot(): string {
   const explicitStart = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
   return explicitStart ? findRepoRoot(explicitStart) : findRepoRoot();
 }
