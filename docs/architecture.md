@@ -1844,7 +1844,7 @@ have not migrated.
 
 ### Browser host
 
-`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
+`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. The kernel then parses the same image bytes itself (`kernel_rootfs_load_image`) to build the authoritative `/` tree; the restored `MemoryFileSystem` stays only as the byte store a base file's contents are read from. Once the kernel exists, browser networking writes its generated per-session MITM root to `/etc/ssl/certs/ca-certificates.crt` through the kernel (`kernel_rootfs_mkdir_parents` + `kernel_rootfs_write_file`), before any guest process launches; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
 
 The browser test runner and Git test assemble small kernel-owned VFS images with
 `createBuildFsWithEtc` in `apps/browser-demos/lib/kernel-owned-boot.ts`, then
