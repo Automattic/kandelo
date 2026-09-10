@@ -106,6 +106,41 @@ function isSafeSpan(offset: number, length: number, limit: number): boolean {
     && length <= limit - offset;
 }
 
+/**
+ * Read `count` little-endian f32s at `byteOffset` inside `v`.
+ *
+ * The wire format packs records back to back with no padding — the guest
+ * encoder in `libc/glue/libglesv2_stub.c` emits `OP_SHADER_SOURCE` as
+ * `8 + strlen(src)` bytes and `OP_BUFFER_DATA` as `12 + dataLen` — so a float
+ * payload lands wherever the preceding records left the cursor, which is
+ * frequently not a multiple of four. `new Float32Array(buffer, byteOffset, n)`
+ * throws on a byteOffset that is not 4-aligned, and the host used to refuse
+ * the whole submission with EINVAL when that happened. That made a legal
+ * command stream fail because of a JavaScript typed-array constraint the wire
+ * format does not have: any program that uploaded a shader source whose length
+ * was not a multiple of four and then set a matrix uniform in the same buffer
+ * lost the submission.
+ *
+ * So view the payload when it is aligned and copy it when it is not. WebGL
+ * copies out of the array either way; the only cost is one small allocation on
+ * the misaligned path.
+ */
+function readFloat32Payload(
+  v: DataView,
+  byteOffset: number,
+  count: number,
+): Float32Array {
+  const absolute = v.byteOffset + byteOffset;
+  if (absolute % 4 === 0) {
+    return new Float32Array(v.buffer, absolute, count);
+  }
+  const out = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    out[i] = v.getFloat32(byteOffset + i * 4, true);
+  }
+  return out;
+}
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
@@ -445,11 +480,7 @@ function dispatch(
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
       const transpose = v.getUint32(p + 8, true) !== 0;
-      const mat = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 12,
-        count * 16,
-      );
+      const mat = readFloat32Payload(v, p + 12, count * 16);
       gl.uniformMatrix4fv(loc, transpose, mat);
       return;
     }
@@ -457,11 +488,7 @@ function dispatch(
     case O.OP_UNIFORM4FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
-      const arr = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 8,
-        count * 4,
-      );
+      const arr = readFloat32Payload(v, p + 8, count * 4);
       gl.uniform4fv(loc, arr);
       return;
     }
