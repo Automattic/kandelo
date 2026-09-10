@@ -1641,6 +1641,117 @@ obligations (§10.1 items 2 and 5), owed by K7 precisely so K3 could proceed
 without conflict. Removed by **K7's own cutover**, which deletes the whole
 region; K3 also consumes the predicate.
 
+## 2w. Maintainer rulings, 2026-09-10 — these override earlier guidance
+
+Twelve open questions were put to the maintainer. The answers change how the
+rest of the campaign runs.
+
+### 1. Cutover is part of the item — the campaign's biggest correction so far
+
+**Ruling:** "I want you to do cutovers as you go. Can't you work on worktrees
+and then merge `wasm_api.rs` changes when you complete a standalone task?"
+
+**Yes — and the coordinator's file-ownership rule was over-cautious.** Every
+agent works in its own git worktree, so two agents editing
+`crates/kernel/src/wasm_api.rs` is a *merge* problem, not a *correctness*
+problem, and this session had already resolved several such merges cleanly. By
+treating that single file as a serialized lane, the campaign accumulated
+**+476 net TypeScript lines and ~6,600 lines of dormant Rust** sitting beside
+the TypeScript it was written to replace.
+
+**New standing rule: an item is not done until the Rust runs and the superseded
+TypeScript is deleted.** Landing more dormant Rust is a failed item, not a
+partial success. Agents are explicitly told not to contort a change to avoid
+touching a contested file.
+
+**Why this matters beyond tidiness:** if the campaign stopped at any point
+under the old rule, the repo would be *strictly worse* than at the start — the
+same TypeScript plus a parallel Rust implementation. Value was entirely
+backloaded behind a single-lane road.
+
+### 2. The K8 boot flip — do it, and let tests find the problems
+
+**Ruling:** "No, I want you to just use the kernel version and depend upon tests
+to reveal issues. And I'll also insist on my manually testing the kandelo web
+app before merging."
+
+The three host mutations (`normalizeLegacyRootfs`, `ensureMountParentDirectories`,
+the browser MITM CA write) still move into Rust — that part was never in
+question. What is withdrawn is holding the flip back for review.
+
+### 3. Cross-memory copy — the root cause, and the sanctioned remedy
+
+**The question:** why must Rust copy where TypeScript had a zero-copy view?
+
+**Answer, confirmed rather than assumed:** the kernel is itself a wasm module,
+and a wasm load instruction can address only its own module's memory. Each
+process has its own `WebAssembly.Memory` (`host/src/process-memory.ts:307`).
+The host is JavaScript holding every `SharedArrayBuffer` at once, so its view
+is free. **No Rust technique fixes this.** It is the address-space isolation
+that makes processes processes.
+
+**The same fact makes `host_futex_wake` a genuine floor** — and this answers
+K3's §11.1 probe without needing one. It has five real call sites
+(`syscalls.rs:16140-16163`), unlike its dead twin `host_futex_wait`. Guests park
+via `__builtin_wasm_memory_atomic_wait32` on an address in **their own** memory
+(`libc/glue/channel_syscall.c:1872`); the kernel cannot execute
+`memory.atomic.notify` against it.
+
+**This unifies several apparent floors into one:** *cross-memory access* is the
+capability the host genuinely cannot give up. That sharpens what "smallest host
+surface" can mean — the target is not zero, it is the closure of what only a
+party holding two address spaces can do.
+
+**Maintainer's ruling:** "This sounds like it might be best solved with a host
+API member. Is there a way to do this while protecting the general abstraction?"
+
+**Yes.** The host already exposes `host_proc_read_bytes` and
+`host_proc_write_bytes`. The missing member of that family is cross-memory
+**compare** — `host_proc_compare_bytes(pid, guest_addr, kernel_buf, len,
+granularity) -> dirty bitmap` — so only changed pages cross.
+
+It protects the abstraction because:
+- It is a **pure function over bytes, not an authority.** The kernel keeps the
+  mapping table, dirty-set semantics, publish/refresh and writeback policy. The
+  host answers "which bytes differ", never "what should happen".
+- It serves any future dirty-tracking need — checkpointing, COW detection,
+  `MAP_SHARED` writeback — not one caller.
+- It must be a **distinct named member**, never a mode flag on an existing
+  import: §6.3 of the K14/K9 grounding lists opcode collapse as a cheating
+  criterion that shrinks the count while worsening the contract.
+
+**This is the one sanctioned new `env.host_*` import in the campaign, and it is
+gated on measurement.** K7's cutover must benchmark before adding it.
+
+### 4-12, briefly
+
+4. **Epoll POSIX gaps** (interest-list inheritance across `fork`, OFD keying):
+   fix if straightforward; otherwise log to `docs/future-improvements.md`
+   explicitly and defer. Not a silent drop either way.
+5. **The futex floor: answered above** by the cross-memory finding — no probe
+   needed. `usePolling` deletion still owed.
+6. **K12's struct seed path — coordinator's judgment, exercised: DO NOT DO IT.**
+   The `fm_*` exports are module exports, free under the smallest-host-surface
+   goal. Removing the struct seed path is a *semantics* change in fork replay —
+   the highest-risk subsystem in the repo — buying no host-surface reduction and
+   no TypeScript deletion. It fails the Bar. Logged as a possible future
+   simplification with this reasoning.
+7. **`cap-std` for host-native: approved**, not merely in principle.
+8. **Browser validation runs as one consolidated pass per tier** (end of Tier 2,
+   again after Tier 3), plus the maintainer's own manual check of the web app
+   before merge. Agents are told to stop fighting browser provisioning and
+   instead state precisely what is unproven.
+9. **No further `ABI_VERSION` bumps. Everything stays under ABI 44.** Snapshot
+   regeneration only; a gate complaining that the snapshot moved without a bump
+   is expected within the epoch and must be reported, not silenced.
+10. **The three long-standing failures are IN SCOPE** —
+    `zip::real_man_zip_cross_checks_members`, `kernel-scratch-contract` 3/8,
+    `vfs-image-wasm-policy`. Coordinator owns them.
+11. **Fix the xtask target properly** — done: `scripts/xtask.sh`. `forced-target`
+    re-tested on the pinned toolchain and still panics the cargo resolver.
+12. **Hold the curation.** The maintainer wants to cross-examine the work and
+    the repo state before agreeing to a curated commit set. Do not squash.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
