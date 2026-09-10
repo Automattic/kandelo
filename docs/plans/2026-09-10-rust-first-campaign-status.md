@@ -199,7 +199,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K7 | **piece 1 (SysV) CUT OVER; pieces 2/3 open** | SysV TypeScript deleted, TS −332. See "K7 cutover" below |
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
-| K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
+| K11 | **CLOSED** | Piece 3 cut over; 2 and 4 immovable with structural reasons. See "B5 — K11 device pieces 2, 3 and 4" |
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
 | K4 | **K4a: 21 more pairs shared; K4b probe PASS** | 16 pairs left, all one fork/exec/init family — NDD-K4-2 |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
@@ -968,7 +968,8 @@ unproven. This is that list.
 | K4 **D2 change** | Browser once-only process-exit now uses explicit `reportedExits` instead of relying on statement adjacency. |
 | K4 lifecycle paths | Every browser path through the new `process-lifecycle.ts`. |
 | K8 **MITM CA write** | Browser-only; ordering changes if the boot flip lands. |
-| K11 pieces 2/3/4 | Not attempted — blocked at the time on file ownership. |
+| K11 piece 3 | Kernel-side cmdbuf validation and the trimmed `webgl/bridge.ts` walk — Node-tested only; no real `WebGLRenderingContext` anywhere in Vitest. |
+| K11 pieces 2/4 | Ruled immovable; the `http1.ts` framing dedup and the duplicate-`Content-Length` fix are browser-only paths, proven under Node only. |
 | K10 I4/I5 | WASI browser cutover, if I6 needs it. |
 | K5 | Entirely unproven — that agent changed zero TypeScript. |
 
@@ -2623,7 +2624,7 @@ keep their row so they are not re-opened.
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
-| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines; the file-ownership block has cleared |
+| B5 | **DONE 2026-09-10** | Piece 3 cut over (TS -100 / Rust +626). Pieces 2 and 4 are immovable and the grounding named the wrong blocker for both. Delivered anyway: a 3,556-line dead TLS backend deleted, and a live duplicate-`Content-Length` defect fixed by framing HTTP once. Four NDDs raised. See "B5 — K11 device pieces 2, 3 and 4" |
 | B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll host mirror. **No longer gated — B7 is done.** See "B7 — epoll OFD ownership" for what the mirror now contradicts. Highest-value unblocked delete on this list |
 | B7 | **epoll fork inheritance + OFD keying** | **CLOSED 2026-09-10.** Verified, not assumed. Caveat recorded: unit-tested, not conformance-validated |
 | B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
@@ -3371,3 +3372,206 @@ actually produced, and the real-`dlopen` e2e suite, which is unchanged and
 remains the behavioural gate. `crates/fork-codec/testdata/dylink-archive-wasm32.bin`
 is now FROZEN and its generator deleted: regenerating it from the surviving
 writer would turn the reference into a self-portrait.
+
+## B5 — K11 device pieces 2, 3 and 4, second pass (2026-09-10)
+
+The brief sized these at ~2,300 lines and said the file-ownership block had
+cleared. **Ownership was the blocker for exactly one of the three.** For the
+other two the blocker was structural, the grounding had named it imprecisely,
+and re-deriving it precisely is most of this item's value.
+
+Worktree `.claude/worktrees/agent-abc60c6fa9897b848`, base `d34e9ed01`.
+
+### Piece 3 — WebGL command decode: CUT OVER
+
+**TS −105 production (−100 net including tests), Rust +626.**
+
+`crates/runtime-core/src/dri/cmdbuf.rs` now decides whether a `GLIO_SUBMIT`
+span is a well-formed command stream — framing plus every opcode's payload
+shape — before `HostIO::gl_submit` is called. `validateCommandBuffer`, the
+per-opcode payload-shape table and its four helpers are deleted from
+`host/src/webgl/bridge.ts`; `host/src/kernel.ts` no longer calls it.
+
+**No new host import, no new kernel export, no ABI delta.**
+`host_proc_read_bytes` already existed and `abi/snapshot.json` is unchanged.
+
+Two things the move fixed rather than merely relocated:
+
+- **Only the browser had the rule.** Node and host-native forwarded whatever
+  the guest wrote. The same malformed buffer was a clean `EINVAL` on one host
+  and undefined behaviour on the others.
+- **`GLIO_SUBMIT` is now all-or-nothing.** The host bridge validated each
+  record immediately before dispatching it, so `[valid, malformed]` issued the
+  valid command into the live WebGL context and *then* returned `EINVAL` —
+  user space told the submission failed while the context had advanced.
+
+**The validator does not copy the command buffer**, which matters because the
+cmdbuf is 1 MiB and this is a per-frame path. Shape checking reads a record's
+4-byte header and at most 36 payload bytes (the deepest field any rule
+inspects is `OP_TEX_IMAGE_2D`'s `dataLen` at offset 32), so the walk uses a
+4 KiB sliding window and *steps over* payload bodies. Two unit tests assert
+that accounting, not just the answer, using new read counters on the shared
+`GuestMemoryHost` double.
+
+One behaviour narrows, documented in both files: bytes the kernel would have
+refused can still reach the bridge if a process rewrites its own cmdbuf from
+another thread while blocked in its own `GLIO_SUBMIT`. That race predates the
+change (the cmdbuf is shared memory, validated in place); what differs is that
+a torn record surfaces as `EIO` from a throwing typed-array construction
+rather than `EINVAL` from a host-side re-check. Not a memory-safety boundary.
+
+### Piece 2 — framebuffer input: NOT MOVABLE, and the grounding's line list is stale
+
+Two corrections to `docs/plans/2026-09-09-rust-first-value-plan.md` §2q.
+
+**The list is out of date.** `injectChunkedMouseMotion` and `clamp` are already
+gone — piece 1's partial win moved PS/2 delta splitting into `mouse.rs`. What
+is left of the "≈300 lines of computation" is two keycode tables (~270 lines),
+three encode functions (~35), and `scalePointerLockMouseDelta` (~22).
+
+**The main-thread blocker is not the real one, and the real one is worse.**
+The grounding said migrating the encoding means migrating the input path, with
+"real latency consequences". It does not: the main thread already posts to the
+kernel worker (`sendInput(bytes)`), so posting `{code, key, pressed}` instead
+and encoding in the worker is the *same number of hops*. No round trip.
+
+The actual blocker is that there is nothing in the kernel to inject into.
+`kernel_inject_mouse_event` exists because the kernel owns a mouse device —
+`/dev/input/mice`, `mouse.rs`. **There is no keyboard device**: `devfs.rs:194`
+says so in as many words ("No `/dev/input/eventN` evdev nodes yet"), and the
+MEDIUMRAW bytes are delivered as ordinary stdin or PTY writes whose target is
+chosen by main-thread routing state (`kernel-host.ts:2271`, PTY vs
+`appendStdinData`). Creating that device is the VT-model question
+`docs/future-improvements.md` explicitly defers.
+
+And the bulk is not kernel computation anyway. `LINUX_KEYCODE_BY_DOM_CODE` and
+`LINUX_KEYCODE_BY_KEY_VALUE` translate a **W3C UI Events** namespace —
+`"KeyA"`, `"ArrowUp"` — into Linux keycodes. That is what a scancode-set
+driver does with its own hardware namespace. No other host would ever read
+those tables; a host-native keyboard would deliver evdev keycodes directly.
+Putting them in the kernel makes them dead weight on two of three hosts.
+
+Checked and clean: the two tables do not contradict each other. Every keycode
+reachable through the key-value table is also reachable through the code
+table, and no keycode has two names in the code table.
+
+**Two findings, neither fixed:**
+
+1. **`KDGKBMODE` reports a mode the byte stream is never in.** `syscalls.rs`
+   answers `K_XLATE` (1) unconditionally and `KDSKBMODE` accepts any mode as a
+   no-op, while the host encodes MEDIUMRAW unconditionally. A guest that sets
+   `K_MEDIUMRAW` and reads the mode back is told `K_XLATE`. Storing the mode
+   would move the lie rather than remove it — the honest fix is for the kernel
+   to own the encoding, which needs the keyboard device above. **NDD-K11-1.**
+2. **The PS/2 Y-axis convention lives in two host call sites.** "Browser Y is
+   down, PS/2 Y is up" is applied in `scalePointerLockMouseDelta` and again,
+   independently, at `Modeset.tsx:139`. `mouse.rs` owns the packet layout and
+   sign bits and is the natural single home — but moving it changes the
+   meaning of `kernel_inject_mouse_event`'s `dy` argument, which is an
+   ABI-semantic change under a frozen ABI 44. **NDD-K11-2.**
+
+### Piece 4 — TLS/HTTP framing: NOT MOVABLE as scoped, but it paid twice
+
+**The structural reason is not "a `NetworkIO` backend holds no kernel
+handle".** `TlsNetworkBackend` is constructed in
+`browser-kernel-worker-entry.ts:720`, inside the kernel worker, which has a
+kernel instance. The reason is that **the bytes never live in guest memory.**
+The request text is produced by the MITM's Web Crypto decryption; the response
+arrives inside a `fetch()` `Response`. Both are host-owned.
+
+Verified exhaustively: the kernel has **no route to receive host-owned bytes
+for computation.** Every `kernel_*` export taking a pointer takes an offset
+into *kernel* linear memory — a wasm function cannot receive a pointer into
+another `WebAssembly.Memory` — and `host/src/kernel-scratch.ts` enforces that
+with an explicit allowlist of every export permitted to borrow a scratch
+lease, plus the argument index of each pointer. The only cross-address-space
+byte channel is `host_proc_read_bytes` / `host_proc_write_bytes`, anchored at
+a *process* address. Inventing a general "host asks the kernel to compute on
+host bytes" channel is the host contract growing, which is the direction V4
+forbids.
+
+The coherent end state is therefore larger than a port and is a design
+decision, not a migration: guest `send()` → kernel socket → `host_tls_*` →
+kernel-owned HTTP proxy → `host_fetch`. That replaces the whole 873-line MITM
+backend with imports. **NDD-K11-3.**
+
+Two things were delivered from this piece anyway.
+
+**A fourth dead-floor instance, and the largest single deletion available:**
+`packages/registry/openssl/src/tls-fetch-backend.ts` (389) plus
+`tls-worker.ts` (529), the checked-in `tls-worker-bundle.js` (2,638) and
+`scripts/bundle-tls-worker.sh`. **3,556 lines, zero importers anywhere.** The
+only surviving mentions are two 2026-03-14 plan documents naming a class
+(`TlsFetchNetworkBackend`) the file does not define. It carried a fourth copy
+of the host readiness rule and a third `formatHttpResponse`, so anyone
+auditing "how does Kandelo decide a socket is writable" had to read it and
+then discover it does not run.
+
+**A live HTTP framing defect, from two copies of one decision.** Both browser
+backends carried their own eight framing helpers; six were byte-identical and
+two had drifted. Only the TLS copy dropped the origin's `Content-Length`
+before appending the one it computes for the `fetch()`-decoded body. So a
+guest fetching any gzip-serving origin **over plain HTTP** received two
+`Content-Length` field lines with different values — unrecoverable under
+RFC 9110 section 8.6. Fixed by extracting `host/src/networking/http1.ts` and
+letting the correct copy win; regression test added and observed to produce
+exactly one. `parseHttpRequest` had also lost the request-line version in the
+plain-HTTP copy, so that backend could not have honoured keep-alive.
+
+### The census finding worth more than any of the line counts
+
+**The socket readiness rule exists five times and the copies disagree.**
+
+| Copy | Location |
+|---|---|
+| kernel | `syscalls.rs:14604-14757` |
+| TLS MITM | `tls-network-backend.ts:822-858` (two rules in one) |
+| plain fetch | `fetch-backend.ts:202-224` |
+| Node TCP | `tcp-backend.ts:164-187` |
+| virtual net | `virtual-network.ts:124-145` |
+
+They are not equivalent. `fetch-backend` reports `POLLOUT` unconditionally;
+the TLS arm gates it on `!closed`; `tcp-backend` gates it on five socket
+facts; `virtual-network` gates it on the peer. `tcp-backend` sets `POLLHUP`
+regardless of the requested `events`, `virtual-network` only inside the
+`POLLIN` guard. The `POLLIN/POLLOUT/POLLERR/POLLHUP/MSG_PEEK` constants are
+redeclared in all four host files.
+
+The kernel has a complete rule *and* abdicates to the host for exactly these
+sockets — `syscalls.rs:14701-14717` calls `host_net_poll` and ORs the answer
+in. `MSG_PEEK` is the same shape: implemented correctly in the kernel over its
+pipes (`syscalls.rs:12530`, `:14288`, `:18752`) and again in each host backend
+over its own buffer. And `host/src/kernel.ts` silently reclassifies errnos the
+backends raise — a bare `Error("ENOTCONN")` becomes `-104` (ECONNRESET) at
+`:4750` and a send failure `-32` (EPIPE) at `:4713`, neither of which any
+backend chose.
+
+**This, not HTTP parsing, is the migratable part of the networking host
+surface** — readiness is a POSIX decision the kernel already knows how to
+make. It is a larger item than B5 and belongs to whoever opens `socket.rs`
+next. **NDD-K11-4.**
+
+### Ledger
+
+| | TS | Rust |
+|---|---|---|
+| Piece 3 cutover | **−100** (−105 production) | +626 |
+| Dead Node TLS backend | **−3,556** | — |
+| HTTP framing dedup | **−58** | — |
+| **Total** | **−3,714** | **+626** |
+
+Host import count verified at **75**, unchanged.
+
+### What was run, and what was not
+
+`cargo test -p runtime-core --target aarch64-apple-darwin`: 1944 passed, 0
+failed. `cargo check -p kandelo` (wasm32) and `cargo check --workspace
+--target aarch64-apple-darwin`: clean. `scripts/check-abi-version.sh`: snapshot
+in sync, no drift, no bump. `npm --prefix host run typecheck`: 0 errors.
+Vitest `webgl-bridge` / `webgl-shadow` / `dri-multiplex`: 36 passed. Vitest
+`fetch-backend` / `tls-network-backend-real-client`: 39 passed.
+
+**Not run: any browser.** Both networking backends and the framebuffer
+controls are browser-only; they belong to the tier-end consolidated pass.
+Piece 3's GL path likewise has no guest-level suite — the webgl tests drive a
+hand-rolled `WebGL2RenderingContext` stand-in, not a real context.
