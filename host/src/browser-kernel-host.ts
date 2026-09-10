@@ -210,9 +210,13 @@ async function fetchDefaultBrowserKernelArtifact(
 }
 
 /**
- * Phase 6 D5: fetch the wasm32 fork-module bytes from its optional bundler URL.
- * Kept behind its own dynamic import so a default boot never requires the
- * fork-module artifact (see `browser-fork-module-artifact`).
+ * Phase 6 D5: fetch the wasm32 fork-module bytes from its bundler URL.
+ *
+ * Kept behind its own dynamic import so the artifact is one nameable
+ * dependency edge (see `browser-fork-module-artifact`), not because the boot
+ * can do without it: `bootWorker` awaits this unconditionally, and a build
+ * that cannot supply the module fails here rather than booting a kernel that
+ * cannot fork.
  */
 async function fetchDefaultBrowserForkModule32(): Promise<ArrayBuffer> {
   const { browserForkModule32ArtifactUrl } = await import(
