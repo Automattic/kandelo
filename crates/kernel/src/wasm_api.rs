@@ -9793,14 +9793,6 @@ pub fn kernel_setgroups(size: u32, list_ptr: *const u32) -> i32 {
     result
 }
 
-fn read_wire_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(
-        bytes[offset..offset + size_of::<u32>()]
-            .try_into()
-            .expect("fixed wire u32 range"),
-    )
-}
-
 fn finish_direct_blocking_retry_dispatch(
     proc: &mut Process,
     owns_active: bool,
