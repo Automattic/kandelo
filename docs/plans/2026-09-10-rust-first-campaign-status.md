@@ -24,6 +24,9 @@ cutover round and moved 2,947 lines in one merge sequence: K6 marshalling
 census deletions (−86). The campaign no longer leaves the repo worse than it
 found it if it stops here.
 
+**Host imports: 83 → 75** (K9). Kernel exports **320 → 199** (K6 removed 5;
+K13b withdrew 121), measured on the built `kandelo_kernel.wasm` rather than on
+the source.
 **Host imports: 83 → 76.** **Kernel exports: 309 → 320.** Both measured on a
 freshly built artifact after every merge, not carried over from an agent report.
 
@@ -109,7 +112,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K9 | **COMPLETE** | Imports 83 → **75**; 18 path-taking removed, 10 `*at` added |
 | K4 | **RUNNING** | Worker entry unification |
 | K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
-| K13b | **NOT STARTED** | |
+| K13b | **DONE** | 121 dispatch-only exports withdrawn; artifact 320 → 199. See below |
 
 ## K6 — marshalling into Rust (2026-09-10)
 
@@ -175,6 +178,7 @@ The three Vitest cases that touched mqueue only ever exercised the host
 preflight this item deleted. Worth an `examples/` program.
 | K4 | **K4a COMPLETE (21 of 38 pairs); NDD-K4-2 open** | 16 pairs left as one inseparable fork/exec/clone/init family; K4b probe PASS |
 | K6 | **COMPLETE** | All four families cut over; TS −1,978; no new host import |
+| K13b | **COMPLETE** | 121 withdrawn, measured on the artifact: 320 → 199. See below |
 | K13b | **RUNNING** | ~116 of ~320 exports removable; ABI-stability win, not host-surface |
 | `pathconf`/`trap-signals` | **COMPLETE** | Census row disproved 3 ways; `_PC_PIPE_BUF` fixed on POSIX (both copies wrong); host-native gained trap→signal mapping |
 | `constants.ts` | **SPLIT; NDD dissolved** | `crates/wasm-artifact` (2,258 lines); exec path cut over; needs a module, not an export |
@@ -957,6 +961,76 @@ one epoch.
 **Held, not blocked.** Seven agents already contend on the shared build cache
 and one lost four provisioning attempts to it; an eighth costs more than it
 gains. Dispatch when a slot frees — the analysis above is the item.
+
+### K13b done — 121 exports withdrawn; the analysis had the shape right
+
+Base `aab5314c0`, worktree `.claude/worktrees/agent-a74c8d3aa3a9a9910`.
+Ledger: **in-scope TS +0, Rust production −121** (test +21, the locator fix
+below). No `ABI_VERSION` bump; no new `env.host_*` import.
+
+**Measured on the built artifact, not the source.** `kernel_*` exports in
+`kandelo_kernel.wasm`: **320 → 199**. Snapshot `kernel_exports` entries:
+322 → 201. The snapshot regeneration diff is **0 lines added, 605 removed**,
+of which exactly 121 are `"name": "kernel_..."` — so the change is
+export-surface-only, with no signature, constant, or struct layout moving, and
+the generated libc headers plus `host/src/generated/abi.ts` regenerated
+byte-identically.
+
+**Re-measured, as instructed, and the figures had moved.** Three items merged
+after the analysis was written: 320 declared exports rather than 309, and
+**122** with zero references in `host/src`/`host/test` rather than 118.
+
+**Two corrections to the analysis, both in the same direction.**
+
+1. **`kernel_wait4` was not a keeper — 121 removable, not 120.** The analysis
+   named two functions that `crates/host-native` references and kept both.
+   Only one is a consumer. `kernel_exec_target_resolve_shebang` is read with
+   `kernel.get_typed_func(...)`: host-native runs the kernel under wasmtime, so
+   that is a genuine export-table read, and it keeps its export.
+   `kernel_wait4` appears only in
+   `linker.func_wrap("kernel", "kernel_wait4", ...)` — host-native SUPPLYING
+   that import to a GUEST. Its own comment says it is registered defensively
+   for a guest that happens to import the name, and that the current
+   `channel_syscall.c` glue does not. Supplying an import and consuming an
+   export share a name and nothing else.
+2. **The scariest-looking consumer is a dead file.** 107 of the 122 appear in
+   `libc/glue/syscall_imports.h` as `__attribute__((import_module("kernel")))`
+   declarations — which reads as a live guest/kernel contract and would
+   make this item impossible. It is not: those declarations belong to
+   `syscall_glue.c`, which `channel_syscall.c` replaced (that file's own header
+   says so) and which **no build script compiles** —
+   `sdk/test/cc.test.ts` even asserts the SDK never passes it. Guests cannot
+   reach these exports by any route: a guest's `kernel.*` import namespace is
+   `buildKernelImports` in `host/src/worker-main.ts`, a closed set of
+   hand-written JavaScript, and `assertSupportedKernelFunctionImports` rejects
+   any module importing a name outside it.
+
+**Verified against every consumer of the export table**, not the hosts alone:
+`host/src` and `host/test` (zero); `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS` and
+its OPTIONAL sibling in `crates/shared/src/lib.rs` (zero overlap);
+`wasm_require_exports` in `packages/registry/kernel/build-kernel.sh` and
+`KERNEL_REQUIRED_EXPORTS` in `run.sh` (zero overlap); and every
+`get_typed_func`/`get_func`/`get_export` name literal in
+`crates/host-native/src` — 40 exports are read, none of them removed.
+
+**One test broke, and it was not asserting on the ABI surface.**
+`wasm_api_channel_pointer_contract` slices five `kernel_*` bodies out of
+`wasm_api.rs` with `include_str!` and asserts on guest-pointer safety inside
+them. It located those bodies by the literal `pub extern "C" fn <name>`, so
+five became unfindable and two of four tests failed with "export start". The
+test crate never instantiates the kernel; the export attribute was only the
+text delimiter. Fixed by teaching the locator both declaration forms — not by
+restoring the exports — and verified the slices are still tight rather than
+vacuously passing: each body runs from its own signature to its own closing
+brace. The helper now also trims the next item's doc comments, and the two
+hand-written `"\n/// recvmsg"`-style end markers the file's own comment warned
+about are gone.
+
+**What it is worth, unchanged from the analysis.** Kernel exports are free
+under the smallest-host-surface goal, which counts host *imports*; those stay
+at 76. The value is V3 ABI-contract size — 121 fewer symbols a VFS image can
+bind to — and V2, 121 fewer `extern "C"` boundaries where a signature can
+drift from the Rust caller that is actually reached.
 
 ## Mid-campaign census — six uncovered items, and a 13th disproved claim in our own ledger
 
