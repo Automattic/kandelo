@@ -3075,97 +3075,115 @@ The browser still has foreign mounts after K8 (`/dev/shm` over a
 implements *zero* of the family is not yet true — it becomes true when the
 in-kernel shmfs lands and `/dev/shm` stops being a host mount.
 
-## 2y. K8 increment 2 — two transfers landed, the third is one export short (2026-09-10)
+## 2y. K8 increment 2 — the boot cutover, and the host stops walking `/` (2026-09-10)
 
 Worktree `.claude/worktrees/agent-a35ef672d8e0f688b`, base `c27cf9657`.
-Commits `379c244f4`, `65bdf6377`, `b563e290d`, `7cd363a8d`.
+Commits `379c244f4`, `65bdf6377`, `b563e290d`, `7cd363a8d`, `a7bd2bb2a`,
+`0954917a1`.
 
-The boot cutover was blocked on three host mutations that `fromImage`'s copy
-receives and the on-disk image does not carry. Handing the kernel the raw image
-without moving them would drop all three silently. Increment 2 was scoped to the
-three transfers and explicitly NOT to the flip, whose call sites K4 owns.
+Scoped first to the three host mutations that blocked the cutover, then extended
+mid-flight by the maintainer to include the flip itself: *"cutover is part of the
+item, not a follow-up."* Both worker entries now hand the kernel the raw `/`
+image, `rootfs::load_image` is the only path, and the host-walked manifest is
+gone from `host/src`.
 
 **4.1 — deleted, and it was already a no-op.** `normalizeLegacyRootfs` patched
 `nobody:x:65534:` into `/etc/group` for already-published demo images. Moving it
 into the kernel would have put demo-image-specific `/etc/group` editing in the
 boot path. Measured before deleting: `images/rootfs/etc/group` carries the line,
-and `installAccountDatabases` writes an `/etc/group` containing it into every
-dinit image — so nothing this repository produces needed the patch. The images it
-did serve are unreachable anyway, since `load_image` refuses any image predating
-`KLZY`.
+and `installAccountDatabases` in `images/vfs/scripts/dinit-image-helpers.ts`
+writes an `/etc/group` containing it into every dinit image — so the patch was
+already a no-op for anything this repository produces. The images it did serve
+are unreachable anyway, since `load_image` refuses any image predating `KLZY`.
 
 **4.2 — moved into `rootfs.rs`, and generalised on the way.** Registering a
-foreign mount prefix now synthesises the directories leading down to it.
-No new host surface: all three hosts — Node, browser, native wasmtime — already
-call `kernel_rootfs_set_foreign_prefixes` after the tree loads and before
-authority is enabled, so all three inherit it at once (V1). It is deliberately
-broader than the TypeScript it replaces, which ran only over the host's "extra"
-mounts: reachability is a property of the mount, not of which host list a mount
-arrived on. It follows a symlinked component as the host's `stat` did, and stops
-rather than inventing a directory over a regular file, so an image/mount-table
-conflict stays visible.
+foreign mount prefix now synthesises the directories leading down to it, so a
+mount point the overlay refuses to claim can still be walked to. No new host
+surface: Node, browser and native wasmtime all already call
+`kernel_rootfs_set_foreign_prefixes` after the tree loads and before authority is
+enabled, so all three inherit it at once (V1). It is deliberately broader than
+the TypeScript it replaces, which ran only over the host's "extra" mounts:
+reachability is a property of the mount, not of which host list a mount arrived
+on. It follows a symlinked component as the host's `stat` did, and stops rather
+than inventing a directory over a regular file.
 
-**4.3 — half landed, because the grounding's verdict was wrong.**
+**4.3 — moved, after the grounding's verdict turned out to be wrong.**
 §4.3 said the CA-certificate write could move because "the mechanism already
-exists — no new host surface". The write half exists. The **directory** half does
-not, and there is no host-facing mkdir on the kernel-owned rootfs at all — the
-seven `kernel_rootfs_*` exports are `load_manifest`, `load_image`,
-`set_foreign_prefixes`, `read_file`, `write_file`, `stat_mode`, `export_tree`.
-`write_file_at` opens with `O_CREAT`, which is `ENOENT` on a missing parent
-exactly as POSIX requires, while the browser entry creates `/etc`, `/etc/ssl` and
-`/etc/ssl/certs` first because a demo image need not carry them. Moving only the
-write would have dropped the directory creation silently — the very failure mode
-§4 was written to prevent, one sentence from where it was named.
+exists — no new host surface". The write half existed. The **directory** half did
+not: `rootfs::write_file_at` opens with `O_CREAT`, which is `ENOENT` on a missing
+parent exactly as POSIX requires, and there was no host-facing mkdir on the
+kernel-owned rootfs at all. Moving only the write would have dropped the `/etc`,
+`/etc/ssl`, `/etc/ssl/certs` creation silently — the very failure mode §4 was
+written to prevent, one sentence from where it was named. A test asserts the
+`ENOENT` and then closes it, so the gap is a fact in the suite rather than a
+paragraph here.
+
+`rootfs::mkdir_parents` is the missing half, factored out of 4.2's walk so both
+callers share one implementation, and `kernel_rootfs_mkdir_parents` is its
+export. Two alternatives that needed no new export were rejected and are recorded
+in the grounding: implicit `mkdir -p` on `write_file_at` silently changes the live
+`write_vfs_file` contract for every caller, and re-serialising the restored memfs
+with `saveImage()` replaces "the host walks the image" with "the host rebuilds
+the image" on every browser boot.
 
 **This is a sixth instance of §2u's phantom-mechanism pattern**, and the first
-found in a *plan* rather than a code comment. Same shape: a mechanism asserted to
-already exist, never exercised, in a direction that made the work look cheaper
-than it is. Worth noting that §2u's sweep covered code comments only.
+found in a *plan* rather than a code comment — §2u's sweep covered code comments
+only. Same shape: a mechanism asserted to already exist, never exercised, in a
+direction that made the work look cheaper than it is.
 
-`rootfs::mkdir_parents` is the missing half and is landed and tested, factored out
-of 4.2's walk so there is one implementation and both callers share its rules. A
-test asserts the `ENOENT` and then closes it, so the gap is a fact in the suite
-rather than a paragraph here.
+### The cutover
 
-### NEEDS-DEFER-DECISION — how the mkdir export lands
+`configureRootfsOverlay` takes image bytes instead of a manifest.
+`#maybeLoadKernelRootfs` installs the byte window and calls
+`kernel_rootfs_load_image`, and **there is no host-walked fallback**. A fallback
+would let a boot silently disagree with the image — including the case that
+matters, a pre-`KLZY` image, where a best-effort read yields a tree whose every
+deferred file reports size 0. It now throws and names the fix.
 
-**What.** `mkdir_parents` has no `kernel_rootfs_*` export, so no host can call
-it, so the CA write cannot move and the flip cannot land.
+`host/src/vfs/rootfs-manifest.ts` (354 lines) is deleted. Two pieces survive, and
+the report distinguishes them honestly rather than counting both as deletions:
 
-**Why it was not just done.** `kernel_rootfs_*` exports live in
-`crates/kernel/src/wasm_api.rs`, which K9 owns this round. The agent was
-instructed not to touch it.
+- **`rootfs-blob-store.ts` (production, ~150 lines).** `createRootfsBlobProvider`
+  plus a much smaller metadata-only walk. The host is still the byte store for a
+  base file, addressed by the inode number the kernel read out of the image, and
+  materialization of a lazy leaf is keyed by path — so one inode→path map
+  survives. **Named residual, with an owner:** the honest way to remove it is for
+  the kernel to serve image-backed bytes through the SFFS reader `load_image`
+  already mounts, which also retires the `host_blob_read` import (the 83 → 82
+  §2r predicted — not collected yet).
+- **`host/test/support/rootfs-manifest-oracle.ts` (test-only, ~200 lines).** The
+  RTFS encoder is the other half of two differential gates: the nine-image `KLZY`
+  equivalence check and the byte-identical tree-parity oracle. A differential test
+  needs the other implementation to survive. **Counted as relocation out of
+  production, not as deletion** — moving code out of the measured scope is exactly
+  what §2i warns a line count cannot distinguish, so it is stated instead of
+  hidden.
 
-**Options, with the alternatives measured rather than asserted:**
+`kernel_rootfs_load_manifest` stays, and correctly: `crates/host-native` has no
+VFS image to parse and builds its own RTFS tree from a host directory in Rust.
+That is a different scenario, not a host that failed to flip.
 
-1. **New export `kernel_rootfs_mkdir_parents`** (~20 lines in `wasm_api.rs`) plus
-   a `rootfsMkdirAll` wrapper in `kernel-worker.ts` mirroring `rootfsWriteFile`.
-   Honest and additive; costs +1 host concept against V4, and a snapshot
-   regeneration (additive, no `ABI_VERSION` change — the campaign is one epoch at
-   ABI 44).
-2. **Give `write_file_at` implicit `mkdir -p`.** No new export, and arguably the
-   right shape for a "place this file" host contract that is already not
-   `open(2)`. But it silently changes the live `write_vfs_file` contract for
-   every existing caller (`browser-kernel-host.ts:1233`,
-   `node-kernel-host.ts:922`), which today fails `ENOENT` on a missing parent.
-   That is a deliberate decision, not a side effect of moving a certificate.
-3. **Require the image to carry `/etc/ssl/certs`.** No new export and it fails
-   loudly, but it removes the ability to boot an arbitrary minimal image with
-   working browser TLS — a capability reduction chosen to fit a file-ownership
-   constraint, which generic-first forbids.
-4. **Re-serialise the restored memfs with `saveImage()` after the cert write.**
-   No new export, but it replaces "the host walks the image" with "the host
-   rebuilds the image" on every browser boot — worse than what step 4 removes.
+**ABI:** one additive export, `kernel_rootfs_mkdir_parents`; snapshot
+regenerated, `ABI_VERSION` unchanged at 44 per the one-epoch rule.
 
-**Cost now:** one export, one wrapper, one snapshot regeneration.
-**Cost later:** the boot cutover stays blocked, `load_image` stays test-only in
-real boots, and the V3 win stays built but uncollected.
-**Agent's recommendation:** option 1, landed by whoever holds `wasm_api.rs`
-next. Option 2 is defensible and cheaper on V4, but it is a semantics change to a
-shipped contract and belongs to the maintainer, not to this item.
+### File-ownership overlaps, declared
+
+`crates/kernel/src/wasm_api.rs` (K9) — one additive export appended.
+`host/src/{browser,node}-kernel-worker-entry.ts` (K4) — released to this item
+mid-flight by the coordinator; overlap resolved at merge.
+`host/src/kernel-worker.ts` (K3/K7 later) — `configureRootfsOverlay`,
+`#maybeLoadKernelRootfs`, the removed `#rootfsManifest` field, and the new
+`rootfsMkdirParents` wrapper.
 
 ### What is NOT proven
 
+The MITM CA write is browser-only and its ordering changed: it now runs after
+`init` rather than before the kernel worker is constructed. That is a real
+browser boot-ordering change and **no browser run has exercised it here**. Per
+the maintainer's 2026-09-10 direction it goes to the consolidated tier-end
+browser pass, plus the maintainer's own manual check. The specific claim needing
+a browser is: *a fresh browser session's first HTTPS-using guest process trusts
+the MITM CA* — `git clone https://…` or `curl https://…` in the shell demo.
 The MITM CA write is browser-only and did not move, so its boot-ordering change
 is untested by construction. Per the maintainer's 2026-09-10 direction, browser
 validation runs as one consolidated pass over merged trunk at tier end; this item
