@@ -447,6 +447,83 @@ one epoch.
 and one lost four provisioning attempts to it; an eighth costs more than it
 gains. Dispatch when a slot frees — the analysis above is the item.
 
+## Mid-campaign census — six uncovered items, and a 13th disproved claim in our own ledger
+
+Run read-only on 2026-09-10 while seven agents held the build cache. The
+maintainer asked for this at campaign end; running it early means the answer is
+ready rather than started cold.
+
+### The finding that matters most is a false KEEP I wrote
+
+**`host/src/constants.ts` (3,031 lines) is classified KEEP in
+`2026-09-09-runtime-ts-disposition-ledger.md` on the premise that it is
+"a re-export shim … only 7 own declarations". That is false.** Verified
+directly: **one** `export {` line, **26 exported declarations**, ~55 private
+ones, across 3,031 lines. It is a complete **WebAssembly binary reader** —
+LEB128, type/subtype/composite decode, instruction-immediate skipping,
+import/export/custom-section descriptors — plus the fork-artifact validators,
+`extractHeapBase`, `extractAbiVersion`, `detectPtrWidth`, and
+`describeWasmArtifactPolicyFailures`.
+
+It fails the KEEP test's first part outright: **it touches no host object**; its
+input is an `ArrayBuffer`. And the ledger contradicts itself — its own entries
+for `worker-main.ts` ("custom-section parsing is deterministic computation over
+bytes → MIGRATE") and `binary-resolver.ts` ("required/forbidden-export checks
+belong with the ABI in Rust") say the opposite about the same kind of code.
+
+**Thirteenth disproved claim in this campaign, seventh authored by the
+coordinator.** Reclassify: **MIGRATE**.
+
+### Ranked uncovered candidates
+
+| # | Path | Lines | Goal served, concretely |
+|---|---|---|---|
+| 1 | `host/src/constants.ts` | 3,031 | **V2/V3** — the code deciding whether an artifact matches the ABI epoch, parsing bytes in the language with no types over them. **V1** — `worker-main.ts` and `binary-resolver.ts` already carry their own partial copies |
+| 2 | `pathconf.ts` + `statfs.ts` | 115 + 23 | **V4, directly** — four host imports (`host_pathconf`, `host_fpathconf`, `host_statfs`, `host_fstatfs`) exist only to ask the host for constants the kernel already computes. ~5% of the 83-import surface, and **K9 cannot take them** (two are handle-taking) |
+| 3 | `trap-signals.ts` | 139 | **V1** — `crates/host-native` has **no** trap→signal mapping (verified: zero hits for SIGSEGV/SIGILL/SIGFPE in `host-native/src`). A guest divide-by-zero yields SIGFPE on Node and browser and **nothing** native |
+| 4 | `thread-allocator.ts` | 186 | **V2/V4** — pthread slot arena, growth direction, and the `pthread_create` EAGAIN quota: address-space allocation and a POSIX resource limit, in TS, over ABI constants Rust already owns |
+| 5 | `vfs/device-fs.ts` | 339 | **V4** — ELIMINATE; see duplicated authority #2 below |
+| 6 | `shell-runtime-layout.ts` | 60 | **None — it is toolchain**, mis-located. Its only callers are `images/vfs/scripts/*`, explicitly out of scope, but it sits in `host/src` so `migration-ledger.sh` counts it as in-scope runtime TS. **Moving it corrects the headline metric.** |
+
+`file-offset.ts` (179) and `append-contract.ts` (33) judged **KEEP**: they
+validate values returned *by a host callback* that could substitute a mutable
+global or a `Symbol.hasInstance` hook — the same boundary hazard as §2.1's
+capacity-carrying views. Their errno *choice* should still be stated by Rust.
+
+### Dead — no production caller
+
+- **`host/src/fork-reference-unsupported.ts` (26 lines).** Six hits total: three
+  in the file, three in its own test. Exactly §3's "tests depend on it" case.
+- **`constants.ts:2435 wasmHasCompleteForkInstrumentation`** — a **stranded
+  second copy**; `worker-main.ts:3161` defines and uses its own
+  `hasCompleteForkInstrumentation`. Callers of the `constants.ts` one are 12
+  test references.
+- `readWasmExportNames`, `wasmIsRelocatableObject`,
+  `readWasmCustomSectionNames`, `wasmContainsLegacyAsyncify`,
+  `wasmImportsKernelFork` — not dead, but not API either: used only internally
+  and by tests, and should not be exported.
+
+### Duplicated authority — three more, bringing the campaign total to SEVEN
+
+1. **The `pathconf` limit table.** `pathconf.ts:54 filesystemPathconf` vs
+   `syscalls.rs:16925 filesystem_pathconf_value` — both verified present, same
+   ~20 names. **They already disagree:** `_PC_PIPE_BUF` on a FIFO or directory
+   returns `null` (success, indeterminate) in TS and `Err(EINVAL)` in Rust.
+   Which one a guest sees depends only on whether the path routed through
+   `host_pathconf`. That is a live POSIX divergence, not a latent one.
+2. **The `/dev` node table.** `vfs/device-fs.ts` vs `syscalls.rs:218
+   match_virtual_device` + `devfs.rs`. Rust has `/dev/full` and TS does not; TS
+   maps `/dev/console` to a device that throws `ENXIO` while Rust aliases it to
+   `Null` with a comment explaining why probes must succeed. **The TS copy is
+   unreachable** — `is_host_backed_devfs_path` is `/dev/shm` only — yet it *is*
+   mounted on both hosts, so it reads as a live floor.
+3. **Fork-artifact contract validation.** `constants.ts`'s
+   `describeWasmForkArtifactContractFailures` and the descriptor validators vs
+   `crates/fork-instrument/src/contract_inventory.rs` (754 lines, wasmparser)
+   and `fork-codec/src/{imported_globals,imported_tables}.rs` (592 + 599). Two
+   decoders of one format, one hand-rolled — and the TS side runs on **every
+   exec**.
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
