@@ -11,7 +11,7 @@ import {
   hostFileOffsetToSafeNumber,
   hostFilePositionToSafeNumber,
 } from "../file-offset";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import {
   ACCESS_MODES,
@@ -7532,8 +7532,10 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
-    const stat = this.fstat(handle);
-    return filesystemPathconf(stat, name, {
+    // Validate the live descriptor, then answer only what this backend owns;
+    // every other name is the kernel's (see `backendPathconf`).
+    this.fstat(handle);
+    return backendPathconf(name, {
       supportsSymlinks: true,
       timestampResolutionNs: 1_000_000,
     });
@@ -7581,8 +7583,8 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const stat = this.stat(path);
-    return filesystemPathconf(stat, name, {
+    this.stat(path);
+    return backendPathconf(name, {
       supportsSymlinks: true,
       timestampResolutionNs: 1_000_000,
     });

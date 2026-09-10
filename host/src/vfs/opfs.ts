@@ -18,7 +18,7 @@ import {
   hostFilePositionToSafeNumber,
 } from "../file-offset";
 import { HostAppendContractError } from "../append-contract";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   OPFS_APPEND_CONTRACT_FAILURE,
@@ -218,8 +218,8 @@ export class OpfsFileSystem implements FileSystemBackend {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
-    const stat = this.fstat(handle);
-    return filesystemPathconf(stat, name, {
+    this.fstat(handle);
+    return backendPathconf(name, {
       supportsSymlinks: false,
       timestampResolutionNs: null,
     });
@@ -269,8 +269,8 @@ export class OpfsFileSystem implements FileSystemBackend {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const stat = this.stat(path);
-    return filesystemPathconf(stat, name, {
+    this.stat(path);
+    return backendPathconf(name, {
       supportsSymlinks: false,
       timestampResolutionNs: null,
     });

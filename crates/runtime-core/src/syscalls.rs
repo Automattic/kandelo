@@ -16963,13 +16963,47 @@ fn filesystem_pathconf_value(
         pc::POSIX2_SYMLINKS => Ok(supports_symlinks.then_some(1)),
         pc::TEXTDOMAIN_MAX => Ok(Some(NAMESPACE_NAME_MAX as i64)),
         pc::TIMESTAMP_RESOLUTION => Ok(timestamp_resolution_ns),
+        // POSIX (XSH `pathconf`): `{PIPE_BUF}` "shall be the maximum number of
+        // bytes that can be written atomically to the pipe or FIFO"; when the
+        // path refers to a FIFO the value applies to it, and when it refers to
+        // a **directory** the value applies to any FIFO that exists or can be
+        // created within that directory. Those two cases are mandatory, not
+        // optional, and `{PIPE_BUF}` is a `<limits.h>` pathname variable with a
+        // guaranteed minimum (`{_POSIX_PIPE_BUF}` = 512) — so it is never
+        // "no limit", and answering -1 (indeterminate) or EINVAL ("no such
+        // association") is wrong for both. For any other file type POSIX leaves
+        // the behaviour unspecified; glibc and musl both return `{PIPE_BUF}`
+        // unconditionally, and `docs/agent-guidance/debugging-and-posix.md`
+        // says to prefer Linux-observable behaviour where POSIX is neutral.
+        pc::PIPE_BUF => Ok(Some(crate::pipe::PIPE_BUF as i64)),
         pc::MAX_CANON
         | pc::MAX_INPUT
-        | pc::PIPE_BUF
         | pc::VDISABLE
         | pc::SOCK_MAXBUF
         | pc::ASYNC_IO => Err(Errno::EINVAL),
         _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `pathconf` for an object on a foreign host mount.
+///
+/// A host that can genuinely query its own filesystem answers every name —
+/// `host-native` calls `fpathconf(3)` on the real descriptor, so a host mount
+/// over ext4 or APFS reports that filesystem's real `{NAME_MAX}` and
+/// `{LINK_MAX}`. A host that has no such call says `ENOSYS`, and the kernel
+/// then answers from [`filesystem_pathconf_value`], its own single authority.
+///
+/// The alternative — a host restating limits the kernel already owns — is what
+/// this replaces: `host/src/pathconf.ts` carried a second copy of this table
+/// for the JavaScript hosts, and the two had drifted on `_PC_PIPE_BUF`.
+fn host_pathconf_or_default(
+    host: &mut dyn HostIO,
+    handle: i64,
+    name: i32,
+) -> Result<Option<i64>, Errno> {
+    match host.host_fpathconf(handle, name) {
+        Err(Errno::ENOSYS) => virtual_filesystem_pathconf_value(name),
+        other => other,
     }
 }
 
@@ -17059,7 +17093,7 @@ pub fn sys_pathconf(
     // file, so the containing directory handle answers it — no second host path
     // walk, and no opening of a file that might block or have side effects.
     crate::hostdir::with_containing_dir(host, &resolved, |host, dir| {
-        host.host_fpathconf(dir, name)
+        host_pathconf_or_default(host, dir, name)
     })
 }
 
@@ -17099,7 +17133,14 @@ pub fn sys_fpathconf(
     match file_type {
         FileType::Pipe => {
             if name == pc::PIPE_BUF {
-                return Ok((host_handle < 0).then_some(crate::pipe::PIPE_BUF as i64));
+                // POSIX: for a pipe or FIFO the value "applies to the
+                // referenced object", and `{PIPE_BUF}` has a guaranteed
+                // minimum, so -1 ("no limit") is not an answer a pipe can
+                // truthfully give. The atomicity Kandelo guarantees on this
+                // descriptor is `crate::pipe::PIPE_BUF` whichever side holds
+                // the bytes, because every write through it is served by the
+                // kernel's own pipe layer.
+                return Ok(Some(crate::pipe::PIPE_BUF as i64));
             }
             Err(Errno::EINVAL)
         }
@@ -17122,7 +17163,7 @@ pub fn sys_fpathconf(
             {
                 virtual_filesystem_pathconf_value(name)
             } else if host_handle >= 0 {
-                host.host_fpathconf(host_handle, name)
+                host_pathconf_or_default(host, host_handle, name)
             } else {
                 virtual_filesystem_pathconf_value(name)
             }
@@ -32260,6 +32301,69 @@ mod tests {
     }
 
     #[test]
+    fn pipe_buf_is_a_definite_limit_wherever_posix_makes_it_applicable() {
+        use wasm_posix_shared::pathconf as pc;
+
+        // POSIX makes `_PC_PIPE_BUF` mandatory for a FIFO and for a directory
+        // (where it describes FIFOs creatable inside it), and `{PIPE_BUF}` has
+        // a `<limits.h>` minimum of 512 — so neither `None` (-1, "no limit")
+        // nor EINVAL is conforming there. This is the divergence the host copy
+        // in `host/src/pathconf.ts` carried: it answered -1 while this table
+        // answered EINVAL, and which one a guest saw depended only on whether
+        // its path routed through `host_fpathconf`.
+        let value = filesystem_pathconf_value(pc::PIPE_BUF, true, None);
+        assert_eq!(value, Ok(Some(crate::pipe::PIPE_BUF as i64)));
+        assert!(crate::pipe::PIPE_BUF as i64 >= 512);
+        assert_eq!(
+            virtual_filesystem_pathconf_value(pc::PIPE_BUF),
+            Ok(Some(crate::pipe::PIPE_BUF as i64))
+        );
+        assert_eq!(
+            terminal_pathconf_value(pc::PIPE_BUF),
+            Ok(Some(crate::pipe::PIPE_BUF as i64))
+        );
+    }
+
+    #[test]
+    fn a_host_that_cannot_answer_pathconf_defers_to_the_kernels_own_table() {
+        use wasm_posix_shared::pathconf as pc;
+
+        // The JavaScript hosts have no `fpathconf(3)`; they answer only the two
+        // names that are facts about the backend itself and refuse the rest
+        // with ENOSYS. The kernel must then answer from its own table rather
+        // than propagate ENOSYS to the guest.
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Err(Errno::ENOSYS);
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::NAME_MAX),
+            Ok(Some(NAMESPACE_NAME_MAX as i64))
+        );
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::PATH_MAX),
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
+        );
+        // An indeterminate answer stays indeterminate rather than becoming a
+        // fabricated one.
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::POSIX2_SYMLINKS),
+            Ok(None)
+        );
+        // A name POSIX does not associate with a filesystem is still EINVAL.
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::VDISABLE),
+            Err(Errno::EINVAL)
+        );
+        // A real host error is NOT swallowed.
+        host.pathconf_result = Err(Errno::EACCES);
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::NAME_MAX),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
     fn test_pathconf_validates_name_before_path() {
         let proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -32428,13 +32532,20 @@ mod tests {
     }
 
     #[test]
-    fn test_fpathconf_host_pipe_leaves_pipe_buf_indeterminate() {
+    fn test_fpathconf_host_pipe_reports_the_kernels_atomic_write_limit() {
         use wasm_posix_shared::pathconf as pc;
 
+        // A pipe whose bytes are held on the host side still gets its
+        // atomicity from the kernel's own pipe layer, and POSIX gives
+        // `{PIPE_BUF}` a `<limits.h>` minimum — so -1 ("no limit") was never a
+        // truthful answer for a pipe. Answered without asking the host.
         let proc = Process::new(1);
         let mut host = MockHostIO::new();
 
-        assert_eq!(sys_fpathconf(&proc, &mut host, 0, pc::PIPE_BUF), Ok(None));
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 0, pc::PIPE_BUF),
+            Ok(Some(crate::pipe::PIPE_BUF as i64))
+        );
         assert!(host.fpathconf_calls.is_empty());
     }
 
@@ -32505,7 +32616,7 @@ mod tests {
         let mut captured_host = MockHostIO::new();
         assert_eq!(
             sys_pathconf(&captured, &mut captured_host, b"/dev/tty", pc::PIPE_BUF),
-            Ok(None)
+            Ok(Some(crate::pipe::PIPE_BUF as i64))
         );
         assert_eq!(
             sys_pathconf(&captured, &mut captured_host, b"/dev/tty", pc::VDISABLE),

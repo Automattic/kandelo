@@ -92,7 +92,7 @@ export type {
   DirEntry,
 } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
-export { filesystemPathconf } from "../pathconf";
+export { backendPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";
 export type { PathconfValue } from "../types";
 export {

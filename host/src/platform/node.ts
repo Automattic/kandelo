@@ -28,7 +28,7 @@ import {
   NativePositionedWriteHandles,
   openNativeBackingFile,
 } from "../native-positioned-write";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { zeroCapacityStatfs } from "../statfs";
 import { ST_NOSUID } from "../vfs/types";
@@ -308,16 +308,14 @@ export class NodePlatformIO implements PlatformIO {
 
   fpathconf(handle: number, name: number): PathconfValue {
     // Validate the live descriptor rather than re-resolving its original
-    // pathname. This keeps fpathconf valid after rename or unlink.
-    const stat = this.fstat(handle);
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    // pathname. This keeps fpathconf valid after rename or unlink. Node has no
+    // `fpathconf(3)` binding, so every name beyond this backend's own two
+    // capabilities is refused with ENOSYS and answered by the kernel.
+    this.fstat(handle);
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   fileIdentity(_path: string, dev: bigint, ino: bigint): string | null {
@@ -351,18 +349,11 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const nativePath = this.rewritePath(path);
-    const stat = this.metadata.toStatResult(
-      fs.statSync(nativePath, { bigint: true }),
-    );
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    fs.statSync(this.rewritePath(path), { bigint: true });
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   mkdir(path: string, mode: number): void {

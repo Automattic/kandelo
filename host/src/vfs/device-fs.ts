@@ -6,7 +6,7 @@ import type {
   StatfsResult,
 } from "../types";
 import { checkedHostFileOffset } from "../file-offset";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import { DIRENT_TYPES, FILE_MODES } from "../generated/abi";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
@@ -198,8 +198,8 @@ export class DeviceFileSystem implements FileSystemBackend {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
-    const stat = this.fstat(handle);
-    return filesystemPathconf(stat, name, {
+    this.fstat(handle);
+    return backendPathconf(name, {
       supportsSymlinks: false,
       timestampResolutionNs: null,
     });
@@ -248,8 +248,8 @@ export class DeviceFileSystem implements FileSystemBackend {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const stat = this.stat(path);
-    return filesystemPathconf(stat, name, {
+    this.stat(path);
+    return backendPathconf(name, {
       supportsSymlinks: false,
       timestampResolutionNs: null,
     });

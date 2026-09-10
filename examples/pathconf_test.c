@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -73,6 +75,56 @@ int main(void)
 		failed |= check(fpathconf(fd, _PC_ASYNC_IO) > 0,
 			"regular descriptor reports asynchronous I/O");
 		close(fd);
+	}
+
+	/*
+	 * POSIX (XSH pathconf): {PIPE_BUF} is the number of bytes that can be
+	 * written atomically to a pipe or FIFO. When the argument names a FIFO
+	 * the value applies to it; when it names a *directory* the value applies
+	 * to any FIFO that exists or can be created in that directory. Both are
+	 * mandatory cases, and {PIPE_BUF} is a <limits.h> pathname variable with
+	 * a guaranteed minimum of {_POSIX_PIPE_BUF} == 512 -- so neither -1
+	 * ("no limit") nor EINVAL ("no such association") is a conforming answer
+	 * for them.
+	 */
+	errno = E2BIG;
+	value = pathconf("/tmp", _PC_PIPE_BUF);
+	failed |= check(value >= _POSIX_PIPE_BUF && errno == E2BIG,
+		"directory reports the FIFO atomic-write limit");
+
+	const char *fifo_path = "/tmp/pathconf-test-fifo";
+	unlink(fifo_path);
+	if (check(mkfifo(fifo_path, 0600) == 0, "create test FIFO") == 0) {
+		errno = E2BIG;
+		value = pathconf(fifo_path, _PC_PIPE_BUF);
+		failed |= check(value >= _POSIX_PIPE_BUF && errno == E2BIG,
+			"FIFO pathname reports the atomic-write limit");
+		int fifo_fd = open(fifo_path, O_RDONLY | O_NONBLOCK);
+		if (check(fifo_fd >= 0, "open test FIFO") == 0) {
+			errno = E2BIG;
+			value = fpathconf(fifo_fd, _PC_PIPE_BUF);
+			failed |= check(
+				value >= _POSIX_PIPE_BUF && errno == E2BIG,
+				"FIFO descriptor reports the atomic-write limit");
+			close(fifo_fd);
+		} else {
+			failed = 1;
+		}
+		unlink(fifo_path);
+	} else {
+		failed = 1;
+	}
+
+	int pipe_fds[2];
+	if (check(pipe(pipe_fds) == 0, "create test pipe") == 0) {
+		errno = E2BIG;
+		value = fpathconf(pipe_fds[0], _PC_PIPE_BUF);
+		failed |= check(value >= _POSIX_PIPE_BUF && errno == E2BIG,
+			"pipe descriptor reports the atomic-write limit");
+		close(pipe_fds[0]);
+		close(pipe_fds[1]);
+	} else {
+		failed = 1;
 	}
 
 	unsigned char unaligned_storage[16] = {0};
