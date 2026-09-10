@@ -1799,11 +1799,11 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(ptr: *const u8, len: u32
 /// module's `WasmTrapKind::signal` directly rather than formatting a message to
 /// pass here.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_classify_wasm_trap_signal(ptr: *const u8, len: u32) -> i32 {
-    if ptr.is_null() || len == 0 {
+pub extern "C" fn kernel_classify_wasm_trap_signal(text_ptr: *const u8, text_len: u32) -> i32 {
+    if text_ptr.is_null() || text_len == 0 {
         return 0;
     }
-    let buf: &[u8] = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    let buf: &[u8] = unsafe { core::slice::from_raw_parts(text_ptr, text_len as usize) };
     let Ok(text) = core::str::from_utf8(buf) else {
         // A host that cannot hand over valid UTF-8 has not given us a message
         // to classify. Saying "not a trap" is truthful; guessing is not.
