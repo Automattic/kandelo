@@ -1176,3 +1176,37 @@ The workaround is to run both, in that order, and it is now written into the
 provisioning list. The real fix is for one command to leave every tier
 consistent, or for the install to fail loudly when it leaves a higher-priority
 tier stale — the current behaviour is a partial update that looks complete.
+
+### No SysV IPC conformance coverage exists
+
+Checked, not assumed, while migrating the SysV shared-memory mirror: nothing in
+`tests/posix`, `tests/libc` or `tests/sortix` exercises System V IPC. The
+kernel owns message queues, semaphores and shared memory, and its only
+end-to-end coverage is the repo's own `examples/sysv-ipc` case plus host unit
+tests.
+
+**Deferred deliberately** (maintainer's call, 2026-09-10). Neither upstream
+suite carries SysV cases, so this is writing new conformance tests rather than
+adopting existing ones — a different size of job from wiring up a suite that
+already exists.
+
+Worth doing because the migration moved real decisions into the kernel: the
+`semctl` GETALL/SETALL sizing defect found during K6 (the guest sized its array
+with a preliminary `IPC_STAT`, which needs READ permission where SETALL needs
+only WRITE, so a `0222` set failed `EACCES` on a call POSIX permits) is exactly
+the class a conformance suite catches and unit tests do not.
+
+### `report_writeback_loss` deserves a better home than a console log
+
+Kept for now (maintainer's call, 2026-09-10), and it is the reason the host
+import count stands at 76 rather than 75 — `host_debug_log` is live because
+this is its only caller.
+
+A console log is a weak home for **unrecoverable data loss**. The event says a
+shared file mapping's dirty pages could not be written back; a developer who
+was not watching a console at that moment has no way to learn it happened.
+
+Better wiring, costing no import: make it kernel-visible state — a counter or
+condition the host can read through an existing export — so the loss is
+queryable after the fact rather than only greppable in a console that may not
+be attached. That also makes it testable, which a console log is not.
