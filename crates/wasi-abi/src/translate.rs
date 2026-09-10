@@ -26,11 +26,17 @@ pub mod posix_clock {
 }
 
 /// POSIX `poll` event bits, as the kernel's `poll` expects them.
+///
+/// Taken from `wasm_posix_shared::poll` rather than redeclared; they are `u16`
+/// here because the WASI side treats them as an opaque bit set, while the
+/// kernel's `WasmPollFd` field is `i16`.
 pub mod poll_events {
-    pub const POLLIN: u16 = 1;
-    pub const POLLOUT: u16 = 4;
-    pub const POLLERR: u16 = 8;
-    pub const POLLHUP: u16 = 16;
+    use wasm_posix_shared::poll;
+
+    pub const POLLIN: u16 = poll::POLLIN as u16;
+    pub const POLLOUT: u16 = poll::POLLOUT as u16;
+    pub const POLLERR: u16 = poll::POLLERR as u16;
+    pub const POLLHUP: u16 = poll::POLLHUP as u16;
 }
 
 /// Map a POSIX `st_mode` onto a WASI `filetype`.

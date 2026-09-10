@@ -10,6 +10,7 @@ members = [
     "crates/fork-instrument",
     "crates/wasm-local-root-spill",
     "crates/wasi-abi",
+    "crates/wasi-module",
     "crates/host-native",
     "tools/xtask",
 ]

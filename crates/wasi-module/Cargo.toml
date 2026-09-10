@@ -1,0 +1,24 @@
+[package]
+name = "wasi-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Co-resident WASI Preview 1 side module for the process worker"
+
+# Built for wasm32 as a PIC side module (`cdylib`) that imports the guest's
+# shared linear memory and exports the `wasi_snapshot_preview1` functions, the
+# same shape as `crates/fork-module`. Also built as an `rlib` for the host so
+# `cargo test -p wasi-module` can exercise every entry point against an
+# in-memory fake memory and fake channel -- no wasm, no worker, no kernel.
+[lib]
+name = "wasi_module"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasi-abi = { path = "../wasi-abi" }
+wasm-posix-shared = { path = "../shared" }
+
+[features]
+# Enables the host-side FakeMemory/FakeChannel used by `cargo test`.
+# Never enabled for the wasm cdylib build.
+testing = []

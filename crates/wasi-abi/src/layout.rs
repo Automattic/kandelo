@@ -441,6 +441,18 @@ pub mod iovec {
     pub const BUF_LEN: usize = 4;
 }
 
+/// The kernel's `pollfd`, derived from the struct rather than hand-written --
+/// the same discipline as [`wasm_stat`], for the same reason.
+pub mod wasm_poll_fd {
+    use super::*;
+    use wasm_posix_shared::WasmPollFd;
+
+    pub const SIZE: usize = size_of::<WasmPollFd>();
+    pub const FD: usize = offset_of!(WasmPollFd, fd);
+    pub const EVENTS: usize = offset_of!(WasmPollFd, events);
+    pub const REVENTS: usize = offset_of!(WasmPollFd, revents);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
