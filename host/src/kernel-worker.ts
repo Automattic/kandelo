@@ -7008,7 +7008,8 @@ export class CentralizedKernelWorker {
     ) {
       // WHY: an aggregate setter or clear-then-push fallback either revives a
       // bare variable pointer or exposes a prefix after a later allocation
-      // failure. ABI 43 admits only the token-bound build-then-swap protocol.
+      // failure. The current ABI admits only the token-bound build-then-swap
+      // protocol.
       return new Error(
         "Kernel missing required atomic process metadata exports",
       );
@@ -21254,7 +21255,8 @@ export class CentralizedKernelWorker {
       || typeof capacity !== "function"
       || typeof cancel !== "function"
     ) {
-      // ABI 43 makes the transactional reservation contract mandatory. A
+      // The current ABI makes the transactional reservation contract
+      // mandatory. A
       // same-version kernel missing it is mismatched and must fail loudly.
       return { reservation: null, errno: EIO };
     }
@@ -23373,7 +23375,7 @@ export class CentralizedKernelWorker {
     }
 
     // The guest-facing kernel_exit export must trap to implement `_Noreturn`.
-    // The host adapter instead uses the ABI-43 returning boundary: treating an
+    // The host adapter instead uses the ABI's returning boundary: treating an
     // arbitrary trap as a successful exit would hide a potentially half-
     // mutated kernel. Rust clears the exact task binding before this returns.
     this.#bindKernelTidForChannel(channel, entry);
