@@ -1946,6 +1946,165 @@ obligations (§10.1 items 2 and 5), owed by K7 precisely so K3 could proceed
 without conflict. Removed by **K7's own cutover**, which deletes the whole
 region; K3 also consumes the predicate.
 
+## 2w. K7 cutover attempted — the item is mis-scoped, and the contract said so wrongly (2026-09-10)
+
+Worktree `.claude/worktrees/agent-a926fd00020cebc3b`, base `8a89c2f4a`, tip
+`a7c63731a`, 3 commits. **The cutover did not land.** No ABI bump, no new
+`env.host_*`.
+
+**Ledger `8a89c2f4a..a7c63731a`: in-scope TS +0, Rust +306.** This item was
+required to be strongly net-negative in TypeScript and it is not. That is the
+finding, not an excuse: the deletion it was scoped around cannot be performed,
+because a third of the subsystem has nothing to replace it.
+
+### What the survey established
+
+The TypeScript shared-memory subsystem in `host/src/kernel-worker.ts` is
+**~3,600 lines**, not the ~4,500 the item assumed, and it decomposes as:
+
+| bucket | lines | Rust counterpart |
+|---|---|---|
+| the 34 named functions in the contract's map | 1,359 | present |
+| collateral-dead helpers reachable only from them | 764 | present |
+| **file-syscall coherence / registration cluster** | **1,203** | **absent** |
+| the eleven container declarations | 14 | present |
+
+The absent cluster is `handleSharedMappingsAfterFileSyscall` and its
+per-syscall range policy, `flushSharedMappingsBeforeFileSyscall`,
+`findSharedMmapBackingForFd` and the `sharedMmapFdCache`, the path-keyed
+lookups (`resolveSharedMmapPath`, `findSharedMmapBackingForPath`,
+`flushSharedBackingForPath`), the `reloadSharedMmapBacking*` family, and the
+mmap-from-file registration path (`prepareSharedMmapFromFile`,
+`registerPreparedSharedMmap`, `registerFdWritebackSharedMmap`).
+
+**It reads the same containers.** `handleSharedMappingsAfterFileSyscall` opens
+with `if ((this.sharedMmapBackings?.size ?? 0) === 0) return;`. So the eleven
+containers cannot be deleted while it stands, which means the cutover cannot be
+completed by wiring entry points — the thing the item was scoped as.
+
+**And it cannot be dropped.** It is POSIX `MAP_SHARED` fd/mapping coherence: a
+`write` through one descriptor becoming visible through a mapping held via
+another, `O_TRUNC` reloading from zero, `ftruncate` clamping. Generic-first
+applies — a coherence case no shipped package triggers is still a case.
+
+### It is a dispatch gap, not a primitive gap
+
+Worth stating precisely, because it sizes the remaining work. Every primitive
+the missing cluster needs **already exists** in `memory.rs`:
+`FileBacking::invalidate_range`, `flush_range`, `revalidate`,
+`ensure_range_loaded`. What is absent is the layer that decides *which* backing
+and *which* byte range each file syscall touches. Estimate is a port of policy,
+not of mechanism.
+
+The path-keyed functions want a **design decision rather than a port**: the
+table keys backings on handle identity (`dev`/`ino`), never a pathname, and
+that already subsumes the case the TypeScript path lookups exist for — a second
+fd onto the same object resolves to the same key without consulting a name.
+
+### Why the contract misled, and what was fixed
+
+K7 was credited — correctly — for documenting the cutover contract on
+`SharedMappingTable` itself rather than leaving a fourth unwired module. The
+contract was accurate about what it *did* and silent about what it *did not*,
+and silence in a work contract reads as completeness. Its TS→Rust map named
+none of the 1,203 lines; its import map called five host imports sufficient.
+
+The contract has been corrected in place (`a7c63731a`) to carry the gap, its
+kind, the sequencing, and three smaller errors it contained:
+
+1. `process_memory_len` is a **sixth** host-sourced value. It is not an import
+   and should not become one: guest memory length belongs to a
+   `WebAssembly.Memory` the kernel has no handle to, and the host grows a
+   process's memory *after* the kernel returns from `mmap`. Entry points take
+   it as an argument the host already holds.
+2. `retain_handle` and the fd-writeback members were described as the existing
+   in-kernel refcount. They did not exist. They now refuse with `ENOSYS`
+   rather than hand a caller a handle the kernel may close underneath it.
+3. The performance note left the copy cost unbounded (see below).
+
+### The STRONG DOUBT is narrower than recorded — and general benchmarks cannot see it
+
+Two structural facts, both verified in the code, confine where the copy can be
+paid:
+
+1. `synchronize_for_boundary` returns immediately when a process owns no shared
+   state — the overwhelming majority of processes.
+2. `sync_anonymous_from_process` skips a mapping whose backing has
+   `ref_count <= 1` and is not stale, **exactly as the TypeScript does**
+   (`memory.rs` and `kernel-worker.ts:27080` agree). A mapping with no live
+   peer is never scanned, let alone copied.
+
+So the regression risk is confined to a process holding a large writable
+`MAP_SHARED` **with at least one live peer**, crossing boundaries often.
+
+This matters for how the item is validated. A general syscall benchmark
+exercises fact 1 and will report no change — a **true result about the
+early-out that says nothing about the copy**. Per the validation contract that
+is a narrow check supporting a broad claim, and it must not be used to close
+the doubt. Measuring this honestly needs a targeted case holding a genuinely
+shared mapping with a live peer.
+
+**Performance was not measured in this item.** The cutover it would have
+measured does not exist, and provisioning had not finished.
+
+### What did land
+
+Two pieces of the environment the cutover needs, both of which the next
+attempt would otherwise have to write first:
+
+- **`global_shared_mapping_table()`** (`b4b9b5151`) — the machine-wide
+  singleton, a peer of `global_ipc_table()` rather than a `ProcessTable` field,
+  because the `SharedMappingIo` fd-writeback path needs `&mut Process` and
+  owning the table outside the process table keeps that borrow disjoint.
+- **`WasmSharedMappingIo`** (`cd267acae`) — the production `SharedMappingIo`.
+  Before this the only implementation in the tree was `MockIo` in a test
+  module, so the table could not have run whatever called it. It answers the
+  trait from three sources: the host for the two cross-address-space byte
+  copies, the kernel's own `IpcTable` for SysV segment bytes, and the caller
+  for memory lengths.
+
+`cargo test -p runtime-core --lib`: **1869 passed, 1 failed** — the failure is
+`zip::real_man_zip_cross_checks_members`, pre-existing and assigned elsewhere.
+
+### NEEDS-DEFER-DECISION — how to re-cut this item, for the maintainer
+
+*What:* the K7 cutover cannot be one item. It needs splitting.
+
+*Why:* a third of the subsystem has no Rust counterpart and shares the
+containers with the two thirds that do.
+
+*Cost now:* writing the missing file-syscall coherence layer is new design
+work in the `MAP_SHARED` correctness core, not a port. Doing it in the same
+pass as a hot-path cutover, unmeasured, is the highest-risk shape available.
+
+*Cost later:* the TypeScript stays live and the campaign's net-TS number stays
+positive for another cycle.
+
+*Recommendation:* three items.
+
+1. **The SysV half, now.** `sysv` / `sysv_versions`,
+   `track_sysv_mapping`, `sync_sysv_from_process`,
+   `sync_sysv_segment_from_attached`, `release_all_sysv_for_process` cover
+   `shmMappings` / `shmSegmentVersions` completely, with no dependency on the
+   gap, and it is the one part with a clear performance **gain** — the mirror
+   stops pulling whole segments through `kernel_ipc_shm_*_chunk` round trips.
+   ~263 TypeScript lines and two of the eleven containers.
+   **Design this trap first:** `synchronizeSharedMemoryForBoundary` early-outs
+   on `sharedMappings.size === 0 && shmMappings.size === 0`. Moving only the
+   SysV half leaves the host unable to see half that predicate, and answering
+   it with a per-syscall kernel call puts a new call on the hot path. Driving
+   the sync from inside the kernel's own dispatch avoids the extra call but
+   moves where the sync happens relative to the syscall, which is load-bearing.
+2. **Write the file-syscall coherence layer in Rust**, as its own item, sized
+   as policy rather than mechanism, with the handle-identity design decision
+   taken deliberately.
+3. **Then the anon+file cutover**, gated on a targeted shared-mapping
+   benchmark, not a general syscall suite.
+
+*Also for decision:* whether the `host_proc_compare_bytes` member is wanted at
+all. It should not be added speculatively — if item 2's design keeps the
+mapping's dirty set authoritative in the kernel, the full-range read may never
+be on the hot path to begin with.
 ## 2w. Maintainer rulings, 2026-09-10 — these override earlier guidance
 
 Twelve open questions were put to the maintainer. The answers change how the
