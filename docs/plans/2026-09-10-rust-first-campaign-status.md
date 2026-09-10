@@ -1385,6 +1385,78 @@ traces such as `[100] writev(1, 9537856, 2) = 46`.
 **Browser: not run.** The consolidated tier-end pass and the maintainer's own
 manual check still owe this change.
 
+## Three unowned census findings, resolved 2026-09-10
+
+### `networking/hostname.ts` — MIGRATED, 99 lines → 33
+
+`sys_getaddrinfo` did no name interpretation at all: it handed the caller's
+bytes to `host_getaddrinfo` and trusted the answer, so a name's *meaning* was
+decided by whichever backend was attached. Four backends each carried a copy of
+`inet_aton(3)` and DNS syntax.
+
+`crates/runtime-core/src/hostname.rs` implements the grammar **from the
+specification**, and the specification disagrees with the TypeScript twice:
+`010.010.010.010` is `8.8.8.8`, not `10.10.10.10` (each part is a C integer
+constant, so a leading zero is octal — which is also what the musl `inet_aton`
+above this kernel answers, via `strtoul(s, &z, 0)`), and `0x7f.1` is
+`127.0.0.1` rather than a DNS name. **Both divergences are guest-observable
+through a direct `SYS_getaddrinfo`**; `getaddrinfo(3)` itself does not reach
+them, because `libc/musl-overlay/src/network/lookup_name.c:61` calls
+`__lookup_ipliteral` before the syscall.
+
+A failed numeric parse does not make a string a host name: RFC 1123 §2.1 says a
+valid host name never has the dotted-decimal form, because its top-level label
+is alphabetic. `validate_dns_hostname` applies that to the top-level label,
+which keeps `256.1` from reaching a resolver as it did not before, and
+generalises to `example.123`, which the TypeScript would have looked up.
+
+What stays host-side is the `.invalid` refusal (RFC 6761 §6.4) that a backend
+which *fabricates* a synthetic address and defers the lookup to `fetch()` must
+make up front, overridable by the host's own alias table — host configuration
+the kernel is never given.
+
+### `vfs/device-fs.ts` — the "unreachable" claim was FALSE. Sixteenth disproved floor, in the other direction
+
+The census recorded `DeviceFileSystem` as already-dead code kept mounted for
+appearance. **It was live.** The thirteen `is_devfs_namespace_path` guards are
+real and do cover open/stat/readdir/statfs/pathconf and every mutation, but
+**three syscalls were never on that list**, and `hostdir` anchors on the
+directory handle each mount publishes at boot — so each carried a resolved
+`/dev` path into the host's device table:
+
+- `readlink`/`readlinkat` → `hostdir::readlink`. The host answered EINVAL,
+  which is the right errno, which is why nobody noticed.
+- **`bind(AF_UNIX)` → a live defect.** The kernel asks the host to create the
+  socket inode with `O_CREAT | O_EXCL` *precisely* so a pre-existing path
+  becomes EADDRINUSE, and the host backend ignored its open flags. So
+  `bind(fd, "/dev/null")` **succeeded**, registering an endpoint at a path
+  `unlink` then refuses to remove because unlink under `/dev` is EROFS.
+- `execve` via `open_prepared_exec_target` → EACCES for the devices the host
+  table happened to carry, ENOENT for the ones it did not.
+
+Plus `foreignMountRoots` ran `DeviceFileSystem.statfs("/")` once per boot on
+both hosts. So the file executed on every session.
+
+Fixed in the kernel first (`d461cc70f`), then unmounted and deleted
+(`a259fd3de`). The divergences the census listed — `/dev/full`, `/dev/console`
+as ENXIO vs Null, `SUBDIRS` vs `DevfsEntry` — turned out **not** to be a
+behaviour question, because none of the three leaking syscalls consults a node
+table: they resolve first, and resolution was already kernel-only. `/dev/console`
+answered as the kernel's Null before the change and after it.
+
+One kernel change made the unmount safe: `rootfs::owns_path` now consults
+`devfs::owns_path` the way it already consults `tmpfs::owns_path`. The overlay
+previously left `/dev` alone only because the *hosts* declared their mount
+points as foreign prefixes, so dropping the mount would have let the overlay
+claim a kernel-owned namespace.
+
+### `boot-descriptor.ts` — NEEDS-DEFER-DECISION, not started
+
+Runs on the browser main thread with **no kernel instance in existence**, so it
+cannot be a kernel export. Full argument and call sites in the disposition
+ledger's 2026-09-10 correction. The `detectPtrWidth` precedent cited for it does
+not exist — `detectPtrWidth` is plain TypeScript.
+
 ## Validation traps this campaign has paid for — read before claiming a green
 
 **Seven silent-success defects, each found by someone about to cite it as evidence.**

@@ -168,9 +168,57 @@ rather than migrating.
 
 | part | verdict | reason |
 |---|---|---|
-| boot-descriptor validation, size caps, mount limits, path validation | **MIGRATE** | untrusted-input validation with a security contract — exactly what belongs in a typed language |
+| boot-descriptor validation, size caps, mount limits, path validation | **MIGRATE (blocked — scope, measured 2026-09-10)** | untrusted-input validation with a security contract — exactly what belongs in a typed language. **But it runs before any kernel exists**, so it cannot be a kernel export. See the correction below |
 | `KernelHost` transport, snapshot plumbing | **KEEP** | browser-side session and transport |
 | demo config / gallery / guides | **out of scope** | consumer, not platform |
+
+#### CORRECTION 2026-09-10: the boot-descriptor MIGRATE hides a new capability
+
+The verdict is right about the *code* — 507 lines of untrusted-input parsing
+with a security contract, no host object touched — and wrong about the *cost*,
+because it assumed a destination that does not exist.
+
+**Measured, with call sites.** `validateBootDescriptor` has exactly one
+production caller: `bootProfile()` in
+`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1076`, its second
+statement. `new BrowserKernel(...)` is at `:1286` of the same function, and
+`startBoot` has already nulled `currentKernel`, called `detachKernel()` and
+awaited `previousKernel.destroy()` before calling it (`:713-729`). **There is
+provably no kernel instance at validation time.** The other four exports
+(`decodeBootDescriptor`, `encodeBootDescriptor`, `buildShareUrl`,
+`classifyTier`) are called only from React components and from
+`web-libs/kandelo-session/src/snapshot.ts`, all on the browser main thread.
+**`host/src/**` does not reference `web-libs/kandelo-session` at all** (zero
+grep hits), and neither kernel-worker entry touches it.
+
+So a Rust migration cannot be a kernel export. It needs a **standalone Wasm
+module loadable on the page main thread**, and this repository has no such
+thing: the four `cdylib` crates are `kernel`, `fork-module`, `wasi-module` and
+`dylink-module`, and all three non-kernel modules are *fetched* on the main
+thread but *instantiated in the kernel worker*
+(`host/src/browser-kernel-host.ts:470-479` → `:552-586` →
+`browser-kernel-worker-entry.ts:1094-1105`). `WebAssembly.compile` /
+`instantiate` / `new WebAssembly.Module` appear **nowhere** under `web-libs/`
+or `apps/browser-demos/`.
+
+It would also change a synchronous contract: `validateBootDescriptor` is a TS
+`asserts` function called inline in a boot sequence, and a Wasm module load is
+async — so either the module is pre-warmed before `createLiveHost` or
+`bootProfile`'s signature changes.
+
+**The `detectPtrWidth` precedent cited for this item does not exist.**
+`detectPtrWidth` (`host/src/constants.ts:2994`) is **plain TypeScript**, not a
+Wasm module. Its callers span the kernel worker (`browser-kernel-worker-entry.ts:1268`,
+`node-kernel-worker-entry.ts:1260`, and four more) *and* main-thread code
+(`kernel.ts:1588`), which is the likely source of the confusion. Nothing in the
+repo demonstrates a main-thread Rust module.
+
+**Recorded as NEEDS-DEFER-DECISION, not started.** The work is 507 lines plus
+~63 lines of shared types currently declared inside the KEEP-marked
+`kernel-host.ts` (2,776 lines), plus a new module kind, a new build-graph
+output, Vite asset wiring, and an error-`code` discriminant that must survive
+the Wasm boundary because `snapshot.ts:72` branches on
+`err.code === "E_PAYLOAD_TOO_LARGE"`.
 
 ### `binary-resolver.ts` — 3,611 lines
 
