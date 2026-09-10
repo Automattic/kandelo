@@ -948,6 +948,68 @@ validation, not code reasoning.
 7 NEEDS-DEFER-DECISION and 7 STRONG DOUBT entries remain in the doc; none
 self-deferred.
 
+## 2n. K3 grounding — outcomes and decisions (2026-09-09)
+
+`docs/plans/2026-09-09-k3-blocking-scheduler-grounding.md` (1,441 lines).
+Completes Tier-2 grounding.
+
+### The reframe that matters
+
+`handleBlockingRetry` (746 lines, `:17734-18479`) is entered from **one** EAGAIN
+site. But it is **one of SEVEN independent parking mechanisms** — select, epoll,
+sleep, waitpid and advisory-lock each have their own. **That multiplicity, not
+the line count, is the cost.** K3 is really "collapse seven parking mechanisms
+into one", which is a better description of both the value and the risk.
+
+Size corrected: **5,794–7,793 lines, not 4,532.** Containers: the census's 21
+reproduce exactly, plus 5 more K3 touches (`alarmTimers`, `posixTimers`,
+`deferredProcessWorkerStarts`, `hostReaped`, `activeChannelRequests`). Most are
+keyed on `ChannelInfo` **object identity**, because exec reuses pid + mailbox
+offset — a subtlety any Rust design must reproduce. Signals: ~1,797 lines, of
+which **1,278 die with K3**.
+
+### Zero new host imports — and three come OUT
+
+VERIFIED independently: `host_futex_wait` **0** Rust call sites,
+`host_sigsuspend_wait` **0**, `host_nanosleep` 2, `host_futex_wake` 5. The
+ledger's "two wait primitives are the floor" was wrong; two of them are dead.
+**84 → 81 imports.** Guest ABI unaffected (`channel_syscall.c:1872`).
+
+### A live defect, not a migration item
+
+`#hostNanosleep` (`kernel.ts:1875`) is a **synchronous** sleep executed on the
+kernel worker — a single-threaded multiplexer that must never park. **A guest
+`usleep` stalls the whole machine.** Reachable via `SYS_USLEEP`. This is a
+present-tense bug, not something K3 introduces, and it deserves its own item
+rather than waiting for the scheduler rewrite.
+
+### Epoll mirror — smaller than feared, and hiding two POSIX gaps
+
+It **already dispatches through the kernel** (commit `d94c4652b`); four comments
+still assert the V8 claim K0c disproved. 12 of 14 touchpoints delete against
+existing exports; only `resolveEpollReadinessIndices` needs new Rust, and after
+the poll cutover it needs none. The real cost is the two gaps it conceals:
+`fork.rs:1631` **discards child epolls** — already broken *today*, with the
+mirror present — and interests carry **no OFD identity**. Both need owners.
+
+### Decisions
+
+- **K3 ∥ K7 can run in PARALLEL.** My census asserted they would collide in
+  `kernel-worker.ts`; measured, there is **zero block overlap**, 5 dual-touch
+  methods, ~45 lines, and the grounding supplies a freeze list (§10.1). Another
+  dependency I invented.
+- **Add a SHADOW-MODE increment** (grounding step 2) that `tmpfs.rs` did not
+  need. The dormant-flag pattern assumes wrong behaviour is *visible*; here the
+  failure mode is a **silent hang**, so the new path must run alongside the old
+  and be compared before it takes over.
+- **Order:** debt/dead-import cleanup → dormant wait queue → shadow mode →
+  timers → advisory locks → transfer → poll/select → epoll → futex →
+  process/signal wait → stopped parking → cancellation → delete scaffolding.
+  The poll/select step also kills the 50 ms `SIGNAL_SAFE_POLL_WAKE_DELAY_MS`
+  race hack.
+- **Run the futex-as-floor probe** (STRONG DOUBT: the kernel may be able to own
+  futex outright). If it can, that is the tenth disproved floor.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.

@@ -253,12 +253,31 @@ genuine host externref is not `ref.eq`-comparable once internalized, so its
 identity cannot be recovered in wasm. This is the only surviving member of
 what was once assumed to be a family of fork reference floors.
 
-### 2.6 The two wait primitives
+### 2.6 Wait primitives — mostly NOT a floor
 
-`host_futex_wait` / `host_futex_wake`. `Atomics.wait` performs the
-compare-and-park atomically, and a wasm kernel instance cannot call it on
-memory it does not own. `sigsuspend_wait` and `nanosleep` are futex-with-
-timeout and collapse into these.
+**CORRECTED 2026-09-09 by the K3 grounding.** This entry claimed
+`host_futex_wait` / `host_futex_wake` were the irreducible wait floor.
+Measured (VERIFIED independently):
+
+| import | Rust call sites |
+|---|---|
+| `host_futex_wait` | **0** |
+| `host_sigsuspend_wait` | **0** |
+| `host_nanosleep` | 2 |
+| `host_futex_wake` | 5 |
+
+`host_futex_wait` and `host_sigsuspend_wait` are **dead, not floors** — a KEEP
+entry for an import nothing calls. They go with K3 (84 → 81 imports).
+
+The real constraint is structural, not an import: **the kernel worker is a
+single-threaded multiplexer that must never park.** What is genuinely
+irreducible is only *notice a request*, *publish and notify a completion*, and
+*re-enter at a deadline* — and all three already exist. So K3 needs **zero new
+host imports**.
+
+`host_nanosleep` is worse than dead: `#hostNanosleep` (`kernel.ts:1875`) is a
+**synchronous** call on that multiplexer, so a guest `usleep` stalls the whole
+machine. Tracked as its own defect below.
 
 ### 2.7 Cross-memory copy
 

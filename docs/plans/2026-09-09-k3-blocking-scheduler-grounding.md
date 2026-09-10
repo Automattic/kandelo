@@ -29,14 +29,15 @@ retry target — but it has **no concept of a sleeping task at all**. There is n
 in the system is a JavaScript `Date.now()` comparison, and every parked task is
 a JavaScript `Map` entry holding a `setTimeout` handle.
 
-Five findings change what K3 *is*:
+Six findings change what K3 *is*:
 
 1. **The epoll mirror's stated justification is not merely disproved — the
    code already abandoned it.** `handleEpollPwait` dispatches `SYS_EPOLL_PWAIT`
-   through `kernel_handle_channel` today (`kernel-worker.ts:20013`). Three
-   comments still assert the V8 crash as fact (`:3246`, `:12237`, `:19616`).
-   The mirror now survives for exactly three uses, one of which is a genuine
-   platform gap it is hiding (§4).
+   through `kernel_handle_channel` today (`kernel-worker.ts:20013`); commit
+   `d94c4652b` removed the bypass. **Four** comments still assert the V8 crash
+   as fact (`:3246`, `:12237`, `:18029`, `:19616`). The mirror now survives for
+   exactly three uses, of which only one is functional — and the two POSIX gaps
+   it conceals are already broken *with it in place* (§4).
 
 2. **`blocked_retry.rs` is not K3's destination. Most of it is scaffolding for
    the thing K3 deletes.** The opaque token, `kernel_blocking_retry_token`,
@@ -157,7 +158,7 @@ object rather than a number, and it is stated at `kernel-worker.ts:3086-3090`.
 
 | # | container | decl | notes |
 |---|---|---|---|
-| 24 | `pendingCancels` | `:3185` | `Set<ChannelInfo>` — the pre-enqueue race guard for `SYS_THREAD_CANCEL`. Collapses into one kernel `cancel_task_wait(pid, tid)` (§6.3) |
+| 24 | `pendingCancels` | `:3185` | `Set<ChannelInfo>` — the pre-enqueue race guard for `SYS_THREAD_CANCEL`. Collapses into one kernel `cancel_task_wait(pid, tid)` (§6.4) |
 | 25 | `wakeScheduled` | `:3130` (bool) | coalesces the broad-wake microtask. Disappears with the broad wake. *(Counted as one of the census 21.)* |
 | 26* | `activeChannelRequests` | `:3029` | *(beyond the census 21)* frozen request identity; **partly transport** — it detaches the guest mailbox flag as it captures. SPLIT |
 | — | `channel.readinessDeadline` | `:1530` | per-channel deadline memo, set by `getReadinessDeadline` `:16437` |
@@ -546,10 +547,15 @@ repeat calls. No crash.
 region… (The interest mirror is retained only to resolve targeted wake indices
 for the retry loop.)"
 
-So the three comments assert a fact that is both untrue on today's engines and
-untrue of today's code. **They should be deleted on sight**, independently of
-K3 — an inline comment asserting a disproved browser boundary is precisely what
-the ledger's §3 forbids.
+The bypass was removed by commit **`d94c4652b`** ("Host: Route epoll_pwait
+through the kernel (remove the V8 bypass)"). The comments were not. There is a
+fourth stale one at `:18029` — "(epoll_pwait is now handled entirely on the host
+side by handleEpollPwait)".
+
+So four comments assert a fact that is both untrue on today's engines and untrue
+of today's code. **They should be deleted on sight**, independently of K3 — an
+inline comment asserting a disproved browser boundary is precisely what the
+ledger's §3 forbids.
 
 ### 4.2 The 14 touchpoints, mapped
 
@@ -585,49 +591,74 @@ Only three things survive `handleEpollPwait`'s cutover to the kernel:
    needs `(pid, fd)` for every interest to call `kernel_get_socket_recv_pipe`
    and `kernel_get_fd_accept_wake_idx`, so the host can key `pendingPollRetries`.
 
-### 4.4 The gap the mirror is hiding — the real cost
+### 4.4 The gaps the mirror is hiding — the real cost
 
-**VERIFIED: the Rust kernel discards all epoll state on fork and on exec.**
+**Gap 1 — fork does not inherit epoll instances. VERIFIED.** The live fork path
+is serialize/deserialize (`ProcessTable::fork_process_for_caller_with_mode`,
+`process_table.rs:1042` -> `fork::deserialize_allocated_fork_state`, `:1074`).
+`serialize_fork_state` writes no epoll bytes, and the deserializer executes
+**`child.epolls.clear();`** at `crates/runtime-core/src/fork.rs:1631`, beside
+`clear_threads()` and `posix_timers.clear()`. The child's fd table still holds
+the epfd with `host_handle = -(idx+1)`, so a lookup into an empty `Vec` yields
+**`EBADF`**. Linux shares the parent's epoll instance across fork.
 
-- `crates/runtime-core/src/fork.rs:1631` — `child.epolls.clear();`
-- `crates/runtime-core/src/fork.rs:2093` — `process.epolls.clear();` (exec)
+**But the mirror does not fix this, and the framing must be honest about that.**
+INFERRED (code reasoning, not runtime-tested): since `handleEpollPwait` now
+dispatches to the kernel (§4.1), a forked child with a *non-empty* inherited
+mirror passes the host gate and then gets `EBADF` from the kernel anyway. The
+only case the mirror actually masks is a child inheriting an **empty-interest**
+epfd, where the host answers `0` without ever asking the kernel. So deleting the
+mirror mostly makes an **already-broken** POSIX behavior *visible* rather than
+creating a new regression — which is precisely what the platform-values contract
+asks for. It should nonetheless land together with the Rust fix, not alone.
 
-POSIX and Linux both require the opposite: `fork` duplicates the epoll fd, and
-parent and child then refer to **the same** epoll instance through the same
-open file description; `exec` preserves any epoll fd without `FD_CLOEXEC`.
+The mirror's own call sites already concede the gap: `inheritHostFdMirrors` is
+invoked from `handleFork` (`:22140`) with `includeEpoll` defaulted true, and from
+`#handleSpawnAfterResolve` (`:23345`) with **`false`**, commented "Epoll backing
+tables are not yet cloned by `spawn_child`."
 
-So `inheritHostFdMirrors` (`:9329`) and `#prepareExecFdMirrorPrune*` (`:9385`)
-are not merely a shadow — they are **the only implementation of epoll
-fork/exec inheritance in the system**, and even they get it wrong: they *copy*
-the interest list into an independent per-child map instead of sharing one
-instance, so a post-fork `epoll_ctl` in the child is invisible to the parent.
+**Gap 2 — interests carry no OFD identity and are never pruned in Rust.
+VERIFIED.** `EpollInterest { fd: i32, events: u32, data: u64 }`
+(`process.rs:647-651`) holds a bare numeric fd. `interests` is mutated only by
+`sys_epoll_ctl` (`syscalls.rs:16444/16454/16461`). On exec,
+`commit_exec_state_impl` (`syscalls.rs:875`) closes CLOEXEC fds (`:921-932`) and
+the `FileType::Epoll` close arm nulls the slot (`:4136-4142`), but **`epolls` is
+absent from the reset block at `:954-982`** — so a non-CLOEXEC epoll survives
+exec still holding interests for now-closed fds. `poll_check` returns `POLLNVAL`
+for those (`:14360-14363`), which the epoll result mapper does not translate
+(`:16564-16583`), producing an event with `ep_events == 0`. **That latent bug is
+exactly what the TS prune at `:9394-9398` currently hides**, and its own comment
+admits the model: "The current epoll model stores numeric fds rather than OFD
+identity… duplicate-fd retention remains a documented gap."
 
-There is a second, self-documented gap at `:9392-9394`: "The current epoll model
-stores numeric fds rather than OFD identity. Dropping closed targets prevents
-later fd reuse from observing a stale registration; **duplicate-fd retention
-remains a documented gap**." Linux keys an epoll registration on
-`(fd, file description)`.
+*(Correction to an easy misreading: `fork.rs:2093`'s `process.epolls.clear()`
+sits in `deserialize_exec_state`, which has **no callers outside `fork.rs`** — a
+fixture path, not the live exec. The live exec problem is Gap 2, not a clear.)*
 
-**Deleting the mirror therefore requires, in order:**
+**Deleting the mirror therefore requires:**
 
-| step | work | where |
-|---|---|---|
-| D1 | Delete the three stale V8 comments | `:3246`, `:12237`, `:19616` |
-| D2 | Implement POSIX epoll fd inheritance in Rust: `fork` shares the instance via the fd/OFD table instead of `epolls.clear()`; `exec` preserves non-`CLOEXEC` epoll fds | `fork.rs:1631`, `:2093`, plus the fd table |
-| D3 | Re-key `EpollInterest` on OFD identity, not the numeric fd — the gap named at `:9392` | `process.rs:894`, `syscalls.rs:16409` |
-| D4 | Replace `resolveEpollReadinessIndices` — either an interim export `kernel_epoll_wake_sources(pid, epfd, out, cap)`, **or nothing**, once the kernel owns the wait and registers its own sleeper against the interests it already holds | `:15749` |
-| D5 | Delete touchpoints 3–8, 10–14 outright: the kernel's fd table already handles create, ctl, child rollback and teardown | 11 sites |
-| D6 | Fix `sys_epoll_pwait`'s empty-interest `host_nanosleep` stall | `syscalls.rs:16514` |
-| D7 | Handle `EPOLLRDHUP`, currently `#[allow(dead_code)]` and never mapped | `syscalls.rs:16522` |
-| D8 | Update tests: `exec-state-tracking.test.ts` (`:1716,1730,1733,1902,1920-1923`), `kernel-exec-entry.test.ts` (`:45,304,349,419,422`), `kernel-scratch-transfer-boundaries.test.ts` (`:445,4707,4721,4759`) | 3 files |
+| step | work | where | blocked? |
+|---|---|---|---|
+| D1 | Delete the three stale V8 comments, plus the stale one at `:18029` | `:3246`, `:12237`, `:19616`, `:18029` | no |
+| D2 | Serialize `epolls` across fork so the child inherits the instance (Linux shares it through the file description) | `fork.rs:1631` + the fork serializer | **the one genuine blocker** |
+| D3 | Re-key `EpollInterest` on OFD identity and prune on close/exec — Gap 2 | `process.rs:647`, `syscalls.rs:16409`, `:954-982` | separable |
+| D4 | Replace `resolveEpollReadinessIndices` (`:15760-15777`) — the **only** touchpoint needing new Rust. Interim: an export `kernel_epoll_wake_indices(pid, epfd, out, cap)`. Rust has the primitives (`Socket.accept_wake_idx` `socket.rs:655`, `alloc_accept_wake_idx` `wakeup.rs:63`, `PendingConnection.recv_pipe_idx` `socket.rs:940`) but **nothing today joins an `EpollInterest` to a wake index**. After K3-6 it is **nothing** — the kernel registers its own sleeper against interests it already holds | `:15742-15780` | new work |
+| D5 | Delete the other 12 touchpoints against exports the kernel already has: the EBADF gate (`sys_epoll_pwait` returns EBADF at `syscalls.rs:16500-16503`), the empty-interest path (kernel handles it at `:16507`), create seed, ctl replay, child rollback, exec prune + plan + publish, and the three teardown sites | 12 sites | no |
+| D6 | Fix `sys_epoll_pwait`'s empty-interest `host_nanosleep` stall | `syscalls.rs:16514` | no |
+| D7 | `EPOLLRDHUP` is `#[allow(dead_code)]` and never mapped; `EPOLLET`/`EPOLLONESHOT` are not modelled at all | `syscalls.rs:16524` | separate POSIX item |
+| D8 | Tests: ~110 lines rewritten or deleted (2 epoll-specific cases), ~30 lines of setup/assertions removed from 3 surviving mixed cases, across `kernel-scratch-transfer-boundaries.test.ts`, `kernel-exec-entry.test.ts`, `exec-state-tracking.test.ts`. No non-test source depends on `epollInterests` | 3 files | no |
 
 **D2 and D3 are POSIX work, not migration work.** They are the honest cost of
 the deletion, and they are exactly the "treat the failure as platform feedback"
-the values contract asks for: the mirror has been concealing missing epoll
-inheritance for five months. They should be tracked as their own POSIX item
-inside K3-7 rather than absorbed silently. **NEEDS-DEFER-DECISION (§11.3).**
+the values contract asks for. **NEEDS-DEFER-DECISION (§11.3).**
 
-D1 alone is a two-minute change with no risk and should not wait for K3.
+D1 alone is a comment deletion with no risk and should not wait for K3.
+
+*(Housekeeping found while grounding: the `handleChannel` mock in
+`kernel-scratch-transfer-boundaries.test.ts:4749-4800` still writes a `pollfd`
+at `CH_ARGS`+6 — i.e. it is already stale with respect to the post-`d94c4652b`
+`CH_DATA` `epoll_event` path, and passes only because `retVal=1` drives the
+copy-out. A test that no longer models the code it guards.)*
 
 ---
 
@@ -725,12 +756,13 @@ across 8 containers with one.
 
 | concept | census "now" | census target | K3 outcome |
 |---|---|---|---|
-| wait primitives | 4 | 2 | **0** — all four imports deleted |
+| wait primitives | 4 | 2 | **0–1** — three are deleted outright in 7.0 (`host_futex_wait`, `host_sigsuspend_wait`, `host_nanosleep`); the fourth, `host_futex_wake`, goes only if §11.1's probe says the kernel can own futex. If it cannot, the concept is 1, not 0 — still below the census target |
 | timers | 2 (`host_set_alarm`, `host_set_posix_timer`) | 1 | **0–1** — both are deadline arms that fold into F3's single timer; the registry is kernel state either way |
 
-That is **84 → 80 declared imports** and, more importantly, **two whole
-concepts removed** from the list a host author must understand. It beats the
-census target. **STRONG DOUBT is satisfied: K3 adds no host surface.**
+That is **84 → 81 declared imports** unconditionally, **→ 80** if §11.1 holds,
+and — more importantly — **one to two whole concepts removed** from the list a
+host author must understand. Both beat the census target.
+**STRONG DOUBT is satisfied: K3 adds no host surface.**
 
 ### 5.6 Things that are *not* floor, recorded so they are not re-argued
 
@@ -745,43 +777,123 @@ census target. **STRONG DOUBT is satisfied: K3 adds no host surface.**
 
 ## 6. Signals — how much collapses into K3
 
-*(This section is completed from the signal-surface inventory in §6.4; the
-routing analysis below is VERIFIED from the code cited.)*
-
 ### 6.1 The shape
 
-Signal delivery does not have its own wake mechanism. It **reaches into every
-one of the seven parking mechanisms**, because each holds a channel that must be
-completed with `EINTR` (or terminated). VERIFIED at
-`kernel-worker.ts:26560-26640`:
+`sendSignalToProcess` is at **`kernel-worker.ts:26463-26627`, 165 lines** (doc
+comment `:26458`). *(The brief's `:26635` is now
+`#generateHostSignalWithinKernelEntry`, `:26635-26665`, its immediate helper.)*
+
+The method is an ordered barrier inside one `KernelWorkerEntryContext`, and its
+proportions are the finding: **one line mutates the kernel; 106 lines interrupt
+TypeScript wait queues.**
+
+1. `:26469-26473` — test-hook bypass.
+2. `:26474-26489` — bail without a kernel instance; re-enter through
+   `#runOrDeferKernelEntry` if called without entry authority.
+3. `:26495-26501` — **the only kernel mutation**:
+   `kernel_generate_host_signal(pid, signum)` (`wasm_api.rs:2534`). `-ESRCH`
+   returns; any other nonzero calls `#failBlockingRetryProtocol`.
+4. `:26504-26627` — **pure TypeScript wait-queue interruption**, in a fixed
+   order that is itself load-bearing:
 
 ```
-sendSignalToProcess(pid, signo, …)
-  → kernel_kill / kernel_deliver_pending_signals   (Rust: queue + disposition)
-  → Array.from(this.pendingSleeps.entries()).find(…)          :26560
-  → Array.from(this.pendingPollRetries.entries()).filter(…)   :26584
-  → Array.from(this.pendingSelectRetries.entries()).filter(…) :26614
-  → wakePendingSignalWaits                                    :26316
-  → interruptPendingFutexForCaughtSignal                      :26420
-  → retryPendingWriterForCaughtSignal                         :16515
-  → wakeWaitingParent                                         :25590
+wakePendingSignalWaits            :26504  → pendingSignalWaits
+#drainAndProcessWakeupEvents…     :26509  → stoppedPids, parkedChannelCompletions,
+                                            deferredStoppedChannels,
+                                            deferredProcessWorkerStarts,
+                                            pendingPipeReaders/Writers,
+                                            pendingPollRetries, pendingSelectRetries,
+                                            pendingAdvisoryLockRetries
+reapKilledProcessesAfterSyscall   :26515  → cancelPendingSleepsForProcess, processes,
+                                            hostReaped
+hostReaped gate                   :26520  → return if routing already complete
+interruptWaitingChildForSignal    :26526  → waitingForChild  (splice out, EINTR,
+                                            re-splice on failure)
+kernel_pick_signal_target_tid     :26530  → Rust picks the target thread
+kernel_thread_has_deliverable     :26538  → Rust deliverability gate
+interruptPendingFutexForCaught…   :26545  → pendingFutexWaits  (dequeue-then-
+                                            interrupt; never a raw Atomics.notify,
+                                            which would complete the futex
+                                            *successfully* and strand the
+                                            handler record in Rust)
+retryPendingWriterForCaughtSignal :26557  → pendingPipeWriters
+pendingSleeps sweep               :26560  → cancel timer, EINTR
+pendingPollRetries sweep          :26584  → snapshot-filter-skip-if-replaced
+pendingAdvisoryLockRetries sweep  :26598  → same
+pendingSelectRetries sweep        :26614  → cancels BOTH timeout and immediate
 ```
 
-The **pending/blocked signal sets, per-thread masks, dispositions, RT queues and
-the `SignalMaskWaitKind` LIFO are already Rust-owned** (`PerThreadSignalState`,
-`process.rs:565`; `Process::signals`; `deliverable_for` / `should_restart_for`,
-used by `sys_poll` at `syscalls.rs:14330`). What TypeScript owns is **the
-routing**: finding which of its 24 maps holds the target and interrupting it.
+Three Rust queries steer the routing and mutate nothing:
+`kernel_pick_signal_target_tid` (`wasm_api.rs:2486`),
+`kernel_thread_has_deliverable` (`:2507`), `kernel_get_process_exit_signal`
+(`:2238`). Not touched directly: `socketTimeoutTimers`,
+`blockingRetrySnapshots`, `epollInterests`, `signalWaitDeadlines`.
 
-### 6.2 The classification
+### 6.2 Rust already owns every piece of signal *semantics* — VERIFIED
 
-| class | what it is | fate |
+There is no authoritative signal state in TypeScript at all.
+
+| state | Rust home |
+|---|---|
+| dispositions | `SignalState.actions: [SignalAction; 65]` (private), `signal.rs:565` |
+| process blocked mask / pending set / RT queue | `signal.rs:567`, `:570`, `:573`; attached at `process.rs:850` |
+| per-thread mask / pending / RT queue / mask-wait LIFO / handler depth | `PerThreadSignalState`, `signal.rs:344-357`; attached at `process.rs:565`, `:854` |
+| fusing accessors | `pending_for` `process.rs:1692`, `blocked_for` `:1663`, `deliverable_for` `:1766`, `pick_thread_for_shared_signal` `:1745`, `next_deliverable_signal` `:1775` |
+| default actions and delivery | `default_action` table `signal.rs:60`, `apply_default_signal_action_impl` `:137`, `deliver_pending_signals_impl` `:216`, `dequeue_signal_for` `:160` → `Process::consume_signal_for` `process.rs:1940` |
+| syscalls | `sys_kill` `syscalls.rs:9287`, `sys_raise` `:9306`, `sys_sigaction` `:9543`, `sys_signal` `:9593`, `sys_sigprocmask` `:9635`, `sys_sigsuspend` `:9526`, `sys_pause` `:9534`, `sys_sigtimedwait` `:9469`, `sys_alarm` `:9335`, `sys_signalfd4` `:16802`; `rt_sigpending`/`rt_sigreturn` inline at `wasm_api.rs:4328`/`:5461`; `tkill` at `wasm_api.rs:8615` |
+| exports | 18 signal-related `kernel_*` exports |
+
+Known gap found in passing: **`tgkill` is not wired** (`wasm_api.rs:5433-5434`).
+
+**So K3 is a wake-path migration, not a signal-semantics migration.**
+
+### 6.3 The measured classification
+
+**(a)** dies with the scheduler · **(b)** separate work · **(c)** host floor.
+
+| class | lines in `kernel-worker.ts` | share |
 |---|---|---|
-| **(a) dies with the scheduler** | the per-container interrupt arms — `wakePendingSignalWaits`, `interruptPendingFutexForCaughtSignal`, `retryPendingWriterForCaughtSignal`, the three `Array.from(...).filter(...)` sweeps in `sendSignalToProcess`, `interruptStoppedChannelWithPreparedSignal`, `completeSleepWithSignalCheck`, `completeSelectSignalOutcome`, `completeEpollSignalOutcome`, `postponeSignalSafe{Poll,Select}Retries`, `anyPendingRetryNeedsSignalSafeWake`, `scheduleWakeBlockedRetriesDeferred` | replaced by **one** kernel operation: "interrupt the sleeper for `(pid, tid)`", with an exhaustive `match WaitKind` |
-| **(b) separate work** | signal *semantics* still in TS: `#dequeueSignalForDelivery`, `#finishSignalTermination`, `#getProcessExitSignal`, sigaction/sigprocmask marshalling, `SIGCHLD` generation policy, `SA_NOCLDSTOP` handling (`:16197`) | belongs to a later item; K3 does not close it |
-| **(c) host floor** | `host_call_signal_handler` (`kernel.ts:1902`) — calling a guest export on the kernel's behalf; and the `Atomics.notify` that wakes a parked guest | stays (ledger §2.2) |
+| **(a) dies with K3** | **1,278** | 71% |
+| **(b) separate signal work** | **310** | 17% |
+| **(c) host floor** | **209** | 12% |
+| total | **1,797** | |
 
-### 6.3 The clearest single demonstration: `handleThreadCancel`
+**The brief's "~700 signal lines" is roughly half the real figure, and the
+single largest item is not `sendSignalToProcess`.** It is the inline
+`rt_sigtimedwait` host-owned wait/retry block at **`:18031-18218`, 188 lines** —
+which is pure scheduler, and which §2.2 already traced.
+
+Largest class-(a) items:
+
+| item | span | lines |
+|---|---|---|
+| inline `rt_sigtimedwait` wait + retry | `:18031-18218` | 188 |
+| `resumeStoppedProcess` — wake/preflight half | `:14643-14875` | ~180 |
+| `sendSignalToProcess` — waiter interruption half | `:26522-26627` | 106 |
+| `interruptStoppedChannelWithPreparedSignal` | `:14882-14952` | 71 |
+| `#killAllBlockedForTeardownWithinKernelEntry` | `:15213-15281` | 69 |
+| inline `kill`/`tkill`/`rt_sigqueueinfo` post-dispatch | `:14023-14081` | 59 |
+| inline `onPosixTimer` → `firePosixTimer` | `:3453-3505` | 53 |
+| `#completeSleepWithSignalCheckWithinKernelEntry` | `:18646-18689` | 44 |
+| `wakePendingSignalWaits` | `:26316-26354` | 39 |
+| `interruptPendingFutexForCaughtSignal` | `:26420-26456` | 37 |
+| `interruptWaitingChildForSignal` / `…ForDirectedSignal` / `…ForGenerated…` | `:25511-25587` | 73 |
+| `#pickKernelSignalTargetTid` + `#kernelThreadHasDeliverable` + `#validateKernelSignalTargetTid` | `:25445-25504` | 46 |
+| `postponeSignalSafe{Poll,Select}Retries` + `anyPendingRetryNeedsSignalSafeWake` | `:16224-16301` | 54 |
+| … 20 further methods of 4–31 lines each | | |
+
+Class **(c)** — the genuine floor, which survives everything:
+
+| item | where | lines | why it is floor |
+|---|---|---|---|
+| `host_call_signal_handler` | `kernel.ts:1901-1927` | 27 | `Table.get(index)` then **calls the guest function**. The one true "call a guest export" act |
+| `#dequeueSignalForDelivery` | `kernel-worker.ts:14260-14384` | 125 | writes the `CH_SIG` record into the *process's* `WebAssembly.Memory`. **Weaker than it looks:** K2's widened `host_proc_write_bytes` can now reach that memory from the kernel, so the *write* is migratable and only the notify is floor. Re-examine at K3-9 rather than inheriting it |
+| `wakeChannelForTeardownExit` | `:15394-15424` | 31 | writes `CH_SIG_SIGNUM = SIGKILL` into guest memory — same caveat |
+| `resumeStoppedProcess` — Worker launch + publication half | within `:14643-14875` | ~53 | constructing/starting a Worker (K4 boundary) |
+| `host_set_alarm` / `host_set_posix_timer` bodies | `kernel.ts:1890-1897`, `:3922-3934` | 20 | `setTimeout`/`setInterval` — collapse into the single deadline timer (§5.4 F3) |
+| `host_sigsuspend_wait` body | `kernel.ts:1898-1900`, `:3936-3970` | 38 | **not floor — dead.** Zero Rust callers; blocking `Atomics.wait`. Delete in 7.0 |
+
+### 6.4 The clearest single demonstration: `handleThreadCancel`
 
 `kernel-worker.ts:16574-16813`, **240 lines**. After completing the caller's
 syscall it arms `pendingCancels`, then walks **seven** container-specific
@@ -793,50 +905,21 @@ its record, publish `EINTR`".
 
 With one kernel wait queue this is `kernel_cancel_task_wait(pid, tid)` and one
 `match` the compiler checks for exhaustiveness. **That is the V2 payoff in one
-method**: today, adding an eighth wait kind and forgetting to add an eighth arm
-here produces a thread that cannot be cancelled, and nothing catches it.
+method:** today, adding an eighth wait kind and forgetting the eighth arm here
+produces a thread that cannot be cancelled, and nothing catches it.
 
-### 6.4 Quantified
+### 6.5 Answer to the brief's question
 
-Pending the completed method-level inventory (§9 note), the measured signal
-surface reachable from the scheduler is:
+Most of the signal surface named is **scheduler routing**, and it collapses:
+**~1,278 lines disappear with K3**, against ~310 lines of genuine remaining
+signal work (crash notification, `SIGCHLD` policy, exec-handoff termination,
+the public `signalProcess` API) and ~209+85 lines of floor, two of which
+(`#dequeueSignalForDelivery`, `wakeChannelForTeardownExit`) should be
+re-examined against K2's widened cross-memory primitive rather than inherited.
 
-| method | span | lines | class |
-|---|---|---|---|
-| `handleThreadCancel` | `:16574-16813` | 240 | (a) — collapses to ~10 |
-| `resumeStoppedProcess` | `:14643-14875` | 233 | (a)/(b) split |
-| `wakeWaitingParent` | `:25590-25683` | 94 | (a) |
-| `interruptStoppedChannelWithPreparedSignal` | `:14882-14952` | 71 | (a) |
-| `#killAllBlockedForTeardownWithinKernelEntry` | `:15213-15281` | 69 | (a) |
-| `#completeSleepWithSignalCheckWithinKernelEntry` | `:18646-18689` | 44 | (a) |
-| `wakePendingSignalWaits` | `:26316-26354` | 39 | (a) |
-| `interruptPendingFutexForCaughtSignal` | `:26420-26456` | 37 | (a) |
-| `completeSleepWithSignalCheck` | `:18619-18644` | 26 | (a) |
-| `interruptPendingCancellationBeforeRegistration` | `:15059-15084` | 26 | (a) |
-| `retryPendingWriterForCaughtSignal` | `:16515-16539` | 25 | (a) |
-| `completeSelectSignalOutcome` | `:18887-18911` | 25 | (a) |
-| `postponeSignalSafeSelectRetries` | `:16278-16301` | 24 | (a) |
-| `#retireBlockingRetryCaptureAfterExitedProcess` | `:17311-17333` | 23 | (a) |
-| `postponeSignalSafePollRetries` | `:16255-16275` | 21 | (a) |
-| `completeEpollSignalOutcome` | `:19846-19862` | 17 | (a) |
-| `wakeBlockedAdvisoryLockRetries` | `:16173-16188` | 16 | (a) |
-| `#cancelHostOwnedKernelWait` | `:14997-15009` | 13 | (a) |
-| `#cancelLiveTaskKernelWait` | `:15020-15048` | 29 | (a) |
-| `anyPendingRetryNeedsSignalSafeWake` | `:16224-16232` | 9 | (a) |
-| + the three sweeps inside `sendSignalToProcess` | `:26560`,`:26584`,`:26614` | ~80 | (a) |
-
-**≈900 lines classified (a)** — larger than the brief's "~700 signal lines",
-and it disappears with the scheduler. The genuine signal *semantics* (class b)
-— disposition, masks, queueing, `SIGCHLD` policy, handler invocation — are
-**already mostly in Rust**, and what remains in TS is marshalling that belongs
-to K6, not K3.
-
-**Answer to the brief's question:** most of the signal surface named is
-scheduler routing, and it collapses. Signals do not need a separate migration
-item to make K3 complete; they need one to make *signal marshalling* complete,
-which is a different, smaller item.
-
----
+Signals do **not** need a separate migration item to make K3 complete. They need
+one to finish *signal marshalling and `tgkill`*, which is a different, smaller
+item.
 
 ## 7. Sequencing — the increment order
 
@@ -850,13 +933,13 @@ answer.
 
 | step | work | risk |
 |---|---|---|
-| 0a | Delete the three stale V8 epoll comments (`:3246`, `:12237`, `:19616`) | none |
+| 0a | Delete the four stale V8 epoll comments (`:3246`, `:12237`, `:18029`, `:19616`) | none |
 | 0b | Delete the dead imports `host_futex_wait` and `host_sigsuspend_wait` (zero Rust call sites) + their `HostIO` methods, `WasmHostIO` impls and `kernel.ts` bodies. Snapshot regen, no ABI bump | none |
 | 0c | Remove `host_nanosleep`'s two call sites: make `sys_usleep` behave like `sys_nanosleep`; delete `sys_epoll_pwait`'s empty-interest sleep. Then delete `host_nanosleep` too | fixes a live whole-machine stall |
 | 0d | Mechanically split `crates/runtime-core/src/syscalls.rs` (47,203 lines) before adding a subsystem to it — census §11.6 already flags this | none, but large diff |
 
-Steps 0a–0c are **~84 → 81 imports and two concepts** for near-zero risk, and
-0c fixes a defect. They are worth landing even if K3 stalls.
+Steps 0a–0c are **84 → 81 imports** and remove the whole "blocking wait
+primitive" concept for near-zero risk, and 0c fixes a live defect. They are worth landing even if K3 stalls.
 
 ### 7.1 — Dormant kernel wait queue
 
@@ -900,10 +983,10 @@ schedulers and diff them under the conformance suites and a WordPress boot.
 | 4 | **advisory locks** — `fcntl(F_SETLKW)`, `flock` | `pendingAdvisoryLockRetries` | one broad wake source, lock state already Rust-owned, and the container's own doc says the host never inspects it |
 | 5 | **transfer** — read/write/pread/pwrite/recv/send/…/accept/connect | `pendingPipeReaders`, `pendingPipeWriters`, `socketTimeoutTimers`, `blockingRetryWakeTargets`, most of `blockingRetrySnapshots` | the pin machinery already exists; sub-split (a) read-like (b) write-like (c) accept/connect (d) sendmsg/recvmsg/sendfile/splice (e) mqueue + SysV |
 | 6 | **poll / ppoll / select / pselect6** | `pendingPollRetries`, `pendingSelectRetries`, `wakeScheduled`, `channel.readiness*`, `getReadinessDeadline`, `resolvePollReadinessIndices` | **this is where `SIGNAL_SAFE_POLL_WAKE_DELAY_MS` dies.** Ordering becomes structural |
-| 7 | **epoll** | `epollInterests` + 14 touchpoints | **gated on D2/D3** (epoll fork/exec inheritance + OFD keying) — see §4.4 |
+| 7 | **epoll** | `epollInterests` + 14 touchpoints | **gated on D2** (fork inheritance, `fork.rs:1631`); 12 of 14 touchpoints delete against existing exports, and only `resolveEpollReadinessIndices` needs new Rust — and after step 6 it needs none. D3 (OFD keying) splits out — see §4.4 |
 | 8 | **futex** | `pendingFutexWaits`, `handleFutex` | **gated on the probe in §11.1** |
 | 9 | **process wait + signal wait** | `waitingForChild`, `pendingSignalWaits`, `signalWaitDeadlines` | `kernel_wait_child_poll` already computes the answer |
-| 10 | **stopped-process parking** | `stoppedPids`, `parkedChannelCompletions`, `deferredStoppedChannels`, `pendingResumePids`, `resumePreparedSignals` | **not** `deferredProcessWorkerStarts` — see §10.2 |
+| 10 | **stopped-process parking** | `stoppedPids`, `parkedChannelCompletions`, `deferredStoppedChannels`, `pendingResumePids`, `resumePreparedSignals` | **not** `deferredProcessWorkerStarts` — see §10.3 |
 | 11 | **cancellation unification** | `pendingCancels` | `handleThreadCancel` 240 → ~10 lines |
 | 12 | **remove the flag and the scaffolding** | — | delete the token protocol (`kernel_blocking_retry_token`/`_release`), `kernel_set_current_tid`, `kernel_get_fd_pipe_idx`, `kernel_get_fd_send_pipe_idx`, `kernel_get_fd_accept_wake_idx`, and the TS test authority that drove them |
 
@@ -970,7 +1053,7 @@ must be reported as such.
 
 **8.4 — A missed `WaitKind` arm.** Seven parking mechanisms today means seven
 places a new signal-interrupt path must be added, and nothing enforces it — see
-`handleThreadCancel` (§6.3). The Rust design must make `WaitKind` an enum
+`handleThreadCancel` (§6.4). The Rust design must make `WaitKind` an enum
 matched exhaustively in exactly one interrupt function, so the compiler is the
 enforcement.
 
@@ -1032,58 +1115,142 @@ Files in `host/test` that reference a scheduler container, by size:
 | 129 | `datagram-wakeup.test.ts` | becomes a Rust test |
 | **29,663** | **20 files** | |
 
-Six of these set `usePolling: true` (§11.2). That test dependency is the only
+**Seven** test files set `usePolling: true` (`clone-tid-authority`,
+`kernel-ipc-shmat-entry`, `datagram-wakeup`, `kernel-large-transfer-protocol`,
+`kernel-worker-copyback`, `kernel-clone-exit-entry`,
+`kernel-network-cleanup-entry`) — see §11.2. That test dependency is the only
 thing keeping the `MessageChannel` poller alive.
+
+The epoll-mirror subset is smaller than the file list suggests: **~110 lines**
+must be rewritten or deleted (two epoll-specific cases) and **~30 lines** of
+setup and assertions come out of three surviving mixed cases (§4.4 D8).
 
 ---
 
-## 10. Challenging the brief's framing
+## 10. Interaction with K7, and challenging the brief's framing
 
-### 10.1 The line count is low
+### 10.1 K7 (shared-mapping page cache) — measured, and it does not collide
 
-The census's 4,532 is a floor. A name-based sweep of class methods matching the
-scheduler vocabulary, with brace-matched spans, returns **114 methods / 5,828
-lines** — over-inclusive by perhaps 15% (it catches `startPcmWakeObserver`,
-some TCP pipe helpers). A defensible band is **4,800–5,500 lines of
-`kernel-worker.ts`**, plus:
+Both items edit `kernel-worker.ts`. Measured mechanically over the class body
+(2732–34696, 647 members = 536 methods + 111 fields), classifying each member by
+whether its span references a scheduler container (**A**) or a mapping container
+(`sharedMappings`, `fdWritebackFdRefs`, `anonymousSharedBackings`,
+`nextAnonymousSharedBackingId`, `sharedMmapBackings`, `sharedMemoryReleasePids`,
+`sharedMappingInheritancePids`, `sharedMmapFdCache`, `shmMappings`,
+`shmSegmentVersions`, `#fdWritebackFlushLossReports` — **B**):
 
-- ~900 lines of signal routing that is really scheduler routing (§6.4);
-- ~29,700 lines of `host/test` (§9);
-- the ~200 lines of `blocked_retry.rs` token scaffolding that is deleted rather
-  than moved (§3.4).
+| region | direct-reference methods / lines | + family helpers |
+|---|---|---|
+| **A — blocking scheduler (K3)** | 82 / **5,794** | 128 methods / **7,793** |
+| **B — shared-mapping page cache (K7)** | 46 / **2,821** | 89 methods / **4,362** |
+| C — everything else | — | 317 methods / 15,579 |
+| the 2 cross-cutting giants | — | 2 methods / 3,688 |
 
-So K3 is **larger than billed**, and the largest single component of it is test
-migration, which is real work the plan already says must be sized rather than
-discovered (census §9).
+The census's K7 figure (3,027) sits between B's two tiers — consistent. The
+census's K3 figure (4,532) sits *below* even A's narrow tier; see §10.2.
 
-### 10.2 "Keystone" is right about signals and IPC, wrong about two pieces
+**Verdict: no rewrite collision. Either order works; parallel is feasible with a
+6-method contract freeze.** The evidence:
 
-**Right:** signals collapse into it (§6 — ~900 lines of class-(a) routing), and
-IPC blocking collapses into it (mqueue / SysV msg / SysV sem already have pinned
-targets in `blocked_retry.rs`).
+- **Zero line-range overlap** between A's 31 contiguous blocks and B's 6.
+- **83% of B is one block** (`26871–30574`, 3,704 lines, 80 members) and it
+  contains no scheduler reference at all.
+- A is scattered — its largest blocks are `17563–20111` (2,549), `15662–16853`
+  (1,192), `14504–15424` (921), `25506–26144` (639), `16938–17398` (461) — but
+  never *interleaved* with B.
+- Only **5 methods** touch both state sets, and only ~45 lines of genuinely
+  dual-touch text:
+
+| method | span | lines | the dual touch |
+|---|---|---|---|
+| `#handleSyscallInner` | `11873-14116` | 2,244 | 34 A lines + 33 B lines, **never coincident** — nearest approach is 6 lines apart (`12241-12249` vs `12255-12259`) |
+| `#createTestAuthority` | `3528-4971` | 1,444 | 4 A lines (`:3879`, `:4905`, `:4910`, `:4911`), 0 B |
+| `#replayGenericBlockingRetry` | `17400-17561` | 162 | **1 B line** (`:17523`) — a `(this.sharedMmapBackings?.size ?? 0) > 0` guard gating post-replay writeback |
+| `#unregisterProcessWithinKernelEntry` | `8254-8328` | 75 | 1 B line (`:8272`, `releaseAllSharedMemoryForProcess`) among ~14 A lines |
+| `#deactivateProcessWithinKernelEntry` | `8571-8608` | 38 | 1 B line (`:8585`) among ~10 A lines |
+
+Plus one A→B call: `materializePreparedChannelCompletion` (`14589-14614`) calls
+`synchronizeSharedMemoryForBoundary` at `:14602` inside a try/catch degrading to
+`-EIO`. And one declaration-level interleave: `epollInterests` (`:3243-3247`) is
+wedged between `sharedMmapFdCache` (`:3242`) and `shmMappings` (`:3249`) — the
+**only** place A and B field declarations are adjacent.
+
+**If K3 and K7 run in parallel, freeze these four contracts up front:**
+
+1. The **ordering** of the scheduler cleanup relative to
+   `releaseAllSharedMemoryForProcess` inside the two `*WithinKernelEntry`
+   teardown methods (`8254-8328`, `8571-8608`). That is a semantic contract, not
+   just text.
+2. K7 exposes the `:17523` guard as a predicate (e.g. `hasSharedMmapBackings()`)
+   so K3 can move `#replayGenericBlockingRetry` wholesale.
+3. `synchronizeSharedMemoryForBoundary` stays callable from the completion path
+   (`:14602`).
+4. Neither item **reflows** `#handleSyscallInner`. Its A and B clusters are ≥6
+   lines apart everywhere, so git merges pure case-arm edits; a structural
+   rewrite of the dispatcher by either item conflicts with the other.
+5. Move `epollInterests` out of the B field block before either splits fields.
+
+**Churn argues for K3 first.** Region B gained **+668 lines three days ago**
+(`5f455e156`, `13c96774a`, `e6e269960`, 2026-09-06 — MAP_SHARED writeback
+correctness in `27000–27800`, plus new B fields at `:3213`/`:3235` and the exec
+address-space satellite at `:9640`/`:9721`). Region A has had **no direct edit in
+the last 20 commits**; its only recent neighbour is today's `eb36f4be3`
+(SIOCGIFCONF removal, K2) at `20112–20246`, immediately past `handleEpollPwait`'s
+close at `:20111`. K7's target is a moving surface and should be re-measured
+against HEAD immediately before it starts.
+
+### 10.2 The line count is understated
+
+Measured, **the scheduler is 5,794 lines across 82 methods** counting only
+methods that directly reference one of the 21 containers, and **7,793 lines
+across 128 methods** including their family helpers (`runSelectKernelAttempt`,
+`captureSelectBlockingRetrySnapshot`, `#captureBlockingRetryDisposition`,
+`handleFcntlLock`, …).
+
+The census's 4,532 is reproducible as **4,333** — blocks `17563-20111` (2,549) +
+`15662-16853` (1,192) + `16938-17398` (461) + `15464-15594` (131) — i.e. the
+poll/select/epoll + blocking-retry + wake core **only**. It excludes
+stopped-process parking, waitpid/waitid deferral, futex and signal-wait, all of
+which the brief itself names as the scheduler.
+
+Add to that:
+
+- **~1,278 lines** of signal routing that is really scheduler routing (§6.3);
+- **~29,700 lines** of `host/test` (§9);
+- the ~200 lines of `blocked_retry.rs` token scaffolding that is *deleted*
+  rather than moved (§3.4).
+
+So K3 is **larger than billed by roughly 1,300–3,300 lines of production code**,
+and its largest single component is test migration — real work the plan already
+says must be sized rather than discovered (census §9).
+
+### 10.3 "Keystone" is right about signals and IPC, wrong about two pieces
+
+**Right:** signals collapse into it (§6 — ~1,278 lines of class-(a) routing, 71%
+of the signal surface), and IPC blocking collapses into it (mqueue / SysV msg /
+SysV sem already have pinned targets in `blocked_retry.rs`).
 
 **Wrong on two counts:**
 
 1. **`deferredProcessWorkerStarts` (`:3059`) is K4, not K3.** It holds JS
    `Worker` **constructors** withheld while the authoritative `Process` is
-   stopped. The *decision* is kernel state; the *held closure* is a host act
-   (ledger §2.2). K3 should move the gating predicate and leave the closure,
-   and K4 should absorb the rest. Not splitting this cleanly is how K3 and K4
-   collide.
-2. **Deleting the epoll mirror requires new POSIX work in Rust**, not
-   migration: epoll fd inheritance across fork and exec, which `fork.rs:1631`
-   and `:2093` currently discard (§4.4). That is neither K3 nor K7; it is a
-   platform gap that K3 exposes. It should be tracked as such.
+   stopped, and `resumeStoppedProcess` splits ~180 scheduler lines from ~53
+   Worker-launch lines. The *decision* is kernel state; the *held closure* is a
+   host act (ledger §2.2). K3 should move the gating predicate and leave the
+   closure. Not splitting this cleanly is how K3 and K4 collide.
+2. **Deleting the epoll mirror is gated on a pre-existing POSIX gap, not on
+   migration.** `fork.rs:1631` discards the child's epoll instances, and — the
+   sharper point — that is **already broken today with the mirror in place**
+   (§4.4). K3-7 must land the Rust fix; it is neither K3 nor K7 work in kind.
 
-### 10.3 "Highest risk" — agreed, and here is why it is different in kind
+### 10.4 "Highest risk" — agreed, and here is why it differs in kind
 
 K1, K2, K10 and K13a all fail *loudly*: a wrong byte, a missing export, a
-divergent translation. K3's failure mode is a **process that never wakes up**,
-in one browser, under one workload, after a delay. That is why §7.2's shadow
-mode is not optional overhead — it is the only mechanism that converts this
-item's failure mode into the loud kind the rest of the campaign relies on.
+divergent translation. K3's failure mode is a **process that never wakes up**, in
+one browser, under one workload, after a delay. That is why §7.2's shadow mode is
+not optional overhead — it is the only mechanism that converts this item's
+failure mode into the loud kind the rest of the campaign relies on.
 
----
 
 ## 11. NEEDS-DEFER-DECISION and STRONG DOUBT
 
@@ -1198,7 +1365,21 @@ at 7.12 — rather than per increment or once at the end. Anything else either
 burns days or produces a performance claim with no evidence. **Confirm the
 three-point plan before starting.**
 
-### 11.7 Recorded doubts that need no decision
+### 11.7 NEEDS-DEFER-DECISION — run K3 and K7 in parallel, or in sequence?
+
+**What.** §10.1 shows they do not collide: zero block overlap, 5 dual-touch
+methods, ~45 lines of genuinely shared text.
+**Cost now (parallel):** the four-contract freeze in §10.1 must be agreed before
+either starts, and neither may reflow `#handleSyscallInner`.
+**Cost later (sequential):** both are large; serializing them adds their
+durations. K7 also unblocks Workstream H5, which is waiting.
+**Recommendation:** run them in parallel with the freeze, and start **K3 first**
+on churn grounds — region B gained +668 lines three days ago and is still moving,
+while region A has had no direct edit in 20 commits. Re-measure K7's region
+against HEAD immediately before it begins. **Confirm the freeze list before
+launching both.**
+
+### 11.8 Recorded doubts that need no decision
 
 - **No ABI bump.** VERIFIED: the guest parks on `CH_STATUS` and has no view of
   who scheduled it (`libc/glue/channel_syscall.c:1872`). Export churn is a
@@ -1216,6 +1397,18 @@ three-point plan before starting.**
   the read path. INFERRED: a `poll()` on an unread armed timerfd may report
   not-ready. Needs its own check; not K3's to fix, but K3 will be blamed for it
   if it is not recorded now.
+- **`tgkill` is not wired** (`wasm_api.rs:5433-5434`). A missing POSIX/Linux
+  syscall found while grounding the signal surface. Not K3's, but it belongs in
+  the signal-marshalling item K3 hands off to (§6.5).
+- **Two class-(c) "floors" in the signal path deserve re-examination, not
+  inheritance.** `#dequeueSignalForDelivery` (`:14260`, 125 lines) and
+  `wakeChannelForTeardownExit` (`:15394`, 31 lines) are floor only because they
+  write into the *process's* `WebAssembly.Memory` — which K2's widened
+  `host_proc_write_bytes` now reaches from the kernel. Only the atomic notify is
+  genuinely floor. Re-check at K3-9 rather than carrying the classification
+  forward; this campaign has inherited five stale floors already.
+- **`epollInterests` sits between two mapping-cache field declarations**
+  (`:3242`/`:3249`). Move it before either K3 or K7 reorganises fields (§10.1).
 
 ---
 
@@ -1230,6 +1423,17 @@ read directly. The Rust seam (`blocked_retry.rs`, `wakeup.rs`, `sys_poll` /
 `sys_select` / `sys_epoll_*`, the `HostIO` wait methods, host-native's 21
 implemented imports) was grounded by a dedicated read-only pass and cross-checked
 against my own greps at every load-bearing claim.
+
+Three dedicated read-only passes contributed measurements that I cross-checked:
+the Rust blocking seam (§3, §5.2); the signal surface and epoll mirror (§4, §6);
+and the K3/K7 region accounting (§10.1). The region census partitions the class
+body mechanically (member starts at exactly two-space indent, doc comments
+attached to the following member, spans trimmed of trailing blanks) and was
+spot-checked exactly against `sed -n` for `handleBlockingRetry` (17734-18479),
+`handleSelect` (19192-19414) and `handleFutex` (25897-26144). The A/B
+classification is given at two tiers because the narrow tier (direct container
+reference) is VERIFIED and the wide tier (family helpers) is INFERRED from names,
+line locality and call edges.
 
 Not examined: `crates/runtime-core/src/pipe.rs` and `socket.rs` internals beyond
 their `wakeup::push` sites; the `#createTestAuthority` surface beyond noting that
