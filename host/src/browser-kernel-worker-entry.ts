@@ -262,6 +262,21 @@ const forkHostImportOwnerRuntime =
 const forkHostImportsByWorker =
   new WeakMap<object, ForkHostImportOwnerWorker>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
+/**
+ * PIDs whose exit has already been reported to main.
+ *
+ * The once-only guarantee used to be structural here: `finishProcessExit()`
+ * returns early when a teardown is already registered, which is lossless only
+ * because the primary entry's `processTeardowns.set()` and its `post()` are
+ * adjacent with no `await` between them. Inserting a single `await` there
+ * would silently drop a process exit. State the guarantee instead of relying
+ * on statement order. Mirrors `reportedExits` in
+ * host/src/node-kernel-worker-entry.ts.
+ *
+ * Keying on PID is sound because the kernel never reuses a task ID within a
+ * kernel instance (`crates/runtime-core/src/process_table.rs:1377-1380`).
+ */
+const reportedExits = new Set<number>();
 const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
@@ -388,6 +403,17 @@ async function waitForExecRetirement(
     quiescence,
     EXEC_WORKER_RETIREMENT_WAIT_MS,
   );
+}
+
+/** Report a process exit to main exactly once. See `reportedExits`. */
+function reportProcessExit(
+  pid: number,
+  generation: number,
+  status: number,
+): void {
+  if (reportedExits.has(pid)) return;
+  reportedExits.add(pid);
+  post({ type: "exit", pid, generation, status });
 }
 
 function handleVmInterruptTimer(msg: {
@@ -3915,12 +3941,7 @@ async function finishProcessExit(
   })();
   processTeardowns.set(expectedWorker, teardown);
 
-  post({
-    type: "exit",
-    pid,
-    generation: info.generation,
-    status: exitStatus,
-  });
+  reportProcessExit(pid, info.generation, exitStatus);
 
   try {
     await teardown;
@@ -4325,6 +4346,7 @@ async function performDestroy() {
   // state cannot be invalidated by a later spawn/exec/fork/clone continuation.
   let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
+  reportedExits.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
   threadedProcessPids.clear();
