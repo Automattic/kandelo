@@ -315,7 +315,7 @@ function requireExportTable(
 }
 
 /**
- * Resolve the uniform ABI 43 activation exports after instantiation.
+ * Resolve the uniform activation exports after instantiation.
  *
  * Keeping this reflection in one place makes main modules, pthread instances,
  * and dlopen activations obey the same state-ownership contract.

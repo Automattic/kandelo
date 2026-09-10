@@ -1,11 +1,14 @@
 /**
- * The ABI 43 transaction-local Wasm-GC routing table.
+ * The transaction-local Wasm-GC routing table.
  *
  * WebKit can import and export `(ref null any)` tables, but its JavaScript
  * `WebAssembly.Table` constructor does not accept `element: "anyref"`.
  * Creating the table in this fixed Wasm provider therefore gives Node and all
  * browser engines the same host-owned object without weakening its type.
  */
+
+import { ABI_VERSION } from "./generated/abi";
+
 export const FORK_ANYREF_TRANSIT_IMPORT = "__wpk_fork_ref_gc_transit";
 const FORK_ANYREF_TRANSIT_CLEAR_EXPORT =
   "__wpk_fork_ref_gc_transit_clear";
@@ -46,7 +49,7 @@ function compileProviderModule(): WebAssembly.Module {
     );
   } catch (cause) {
     throw new Error(
-      "this host cannot construct the ABI 43 Wasm-GC transit table",
+      `this host cannot construct the ABI ${ABI_VERSION} Wasm-GC transit table`,
       { cause },
     );
   }
@@ -80,7 +83,7 @@ export class ForkAnyrefTransitTable {
     const table = instance.exports[FORK_ANYREF_TRANSIT_IMPORT];
     const clearTable = instance.exports[FORK_ANYREF_TRANSIT_CLEAR_EXPORT];
     if (!(table instanceof WebAssembly.Table) || typeof clearTable !== "function") {
-      throw new Error("invalid ABI 43 Wasm-GC transit provider exports");
+      throw new Error(`invalid ABI ${ABI_VERSION} Wasm-GC transit provider exports`);
     }
     this.table = table;
     this.clearTable = clearTable as () => void;

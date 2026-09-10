@@ -6,6 +6,7 @@
  * CentralizedKernelWorker on the main thread.
  */
 import {
+  ABI_VERSION,
   EXEC_RETIRE_SIGNAL_CODE,
   type CentralizedWorkerInitMessage,
   type CentralizedThreadInitMessage,
@@ -2029,8 +2030,8 @@ export function buildDlopenImports(
     // TextDecoder views backed directly by SharedArrayBuffer.
     return {
       // The first Kandelo dlopen import carried only (bytes, length) and
-      // historically keyed the module as `dlopen:<buffer>:<length>`. ABI 43's
-      // lowering supplies an empty name range for that exact form.
+      // historically keyed the module as `dlopen:<buffer>:<length>`. The
+      // current lowering supplies an empty name range for that exact form.
       name: nameRange.length === 0 && bytesRange.length !== 0
         ? `dlopen:${bytesRange.offset}:${bytesRange.length}`
         : decoder.decode(new Uint8Array(nameBytes)),
@@ -2062,7 +2063,7 @@ export function buildDlopenImports(
       try {
         if (!Number.isInteger(flags)) {
           throw new Error(
-            "__wasm_dlopen_prepare requires ABI 43 dlopen flags; rebuild the process",
+            `__wasm_dlopen_prepare requires ABI ${ABI_VERSION} dlopen flags; rebuild the process`,
           );
         }
         if (ownedDlopenTransactions.size === 0) {
@@ -3198,7 +3199,7 @@ function hasCompleteForkInstrumentation(
     ) {
       throw new Error(
         `pid=${pid}: wasm-fork-instrument artifact lacks the required ` +
-          "activation-state-safe capability; rebuild it for ABI 43.",
+          `activation-state-safe capability; rebuild it for ABI ${ABI_VERSION}.`,
       );
     }
   }
@@ -3502,7 +3503,7 @@ export async function centralizedWorkerMain(
         initData.externrefGenerationId === undefined
       ) {
         throw new Error(
-          `pid=${pid}: ABI 43 fork artifact requires its process owner ` +
+          `pid=${pid}: ABI ${ABI_VERSION} fork artifact requires its process owner ` +
             "host-import mailbox and externref generation",
         );
       }
@@ -6485,7 +6486,7 @@ export async function centralizedThreadWorkerMain(
         initData.externrefGenerationId === undefined
       ) {
         throw new Error(
-          `pid=${pid} tid=${tid}: ABI 43 fork artifact requires its process ` +
+          `pid=${pid} tid=${tid}: ABI ${ABI_VERSION} fork artifact requires its process ` +
             "owner host-import mailbox and externref generation",
         );
       }
