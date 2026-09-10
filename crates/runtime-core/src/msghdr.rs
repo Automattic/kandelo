@@ -261,7 +261,10 @@ pub fn read_iovecs(
     }
     let (entry_size, base_offset, len_offset) = iovec_layout(pointer_width)?;
     let table_bytes = count.checked_mul(entry_size).ok_or(Errno::EINVAL)?;
-    let table = guest_ptr::read_guest_bytes(host, pid, addr, table_bytes, table_bytes)?;
+    // The table is a raw memory offset, not a C pointer: a wasm guest may
+    // legitimately place it at address 0. See `guest_ptr`'s rule 4.
+    let table =
+        guest_ptr::read_guest_bytes_at_any_address(host, pid, addr, table_bytes, table_bytes)?;
     entries.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)?;
     let mut total: usize = 0;
     for index in 0..count {
@@ -308,7 +311,9 @@ pub fn gather(
         if entry.len == 0 {
             continue;
         }
-        let chunk = guest_ptr::read_guest_bytes(host, pid, entry.base, entry.len, entry.len)?;
+        let chunk = guest_ptr::read_guest_bytes_at_any_address(
+            host, pid, entry.base, entry.len, entry.len,
+        )?;
         out[cursor..cursor + entry.len].copy_from_slice(&chunk);
         cursor += entry.len;
     }
@@ -335,7 +340,9 @@ pub fn scatter(
             continue;
         }
         let take = entry.len.min(data.len() - written);
-        guest_ptr::write_guest_bytes(host, pid, entry.base, &data[written..written + take])?;
+        guest_ptr::write_guest_bytes_at_any_address(
+            host, pid, entry.base, &data[written..written + take],
+        )?;
         written += take;
     }
     Ok(written)

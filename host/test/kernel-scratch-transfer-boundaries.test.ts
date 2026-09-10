@@ -2112,17 +2112,15 @@ describe("kernel scratch transfer capacity regressions", () => {
   // * That no vector syscall touches the reserved-transfer protocol --
   //   `test/kernel-large-transfer-protocol.test.ts`.
   //
-  // ONE PROPERTY DELIBERATELY CHANGED, and it is not a silent one. The
-  // marshaller accepted a caller table or buffer at guest address zero,
-  // arguing that byte 0 of a guest's linear memory is addressable and that the
-  // range proof, not a null-pointer convention, establishes ownership. The
-  // cross-memory primitives these arguments now travel through refuse it --
-  // see "rejects null positive-length process transfer ranges" in
-  // `test/kernel-public-scratch.test.ts`, which pins that deliberately. Linux
-  // agrees: `iov_base == NULL` with a positive `iov_len`, or a null `iov`
-  // itself, is EFAULT. So the vector family now reports EFAULT there, as every
-  // other kernel-dereferenced argument already did after K6. Recorded in
-  // `docs/abi-versioning.md`.
+  // The address-zero cases are the reason `guest_ptr` grew an
+  // `_at_any_address` pair. The marshaller accepted a caller table or buffer at
+  // guest address zero, arguing that byte 0 of a guest's linear memory is
+  // addressable and that the range proof, not a null-pointer convention,
+  // establishes ownership. It was right, and it is load-bearing:
+  // `host/test/fixtures/wasi-hello.wat` places its `ciovec` at offset 0 on
+  // purpose, and `test/wasi-module.test.ts` fails outright without it. The
+  // C null-pointer convention still applies to arguments that ARE C pointers,
+  // which is why `read_msghdr` and the IPC control paths keep it.
   // ---------------------------------------------------------------------
 
 

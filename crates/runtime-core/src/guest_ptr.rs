@@ -28,6 +28,19 @@
 //! 3. **A failed cross-memory access is `EFAULT`, not a kernel fault.** An
 //!    out-of-range guest address is an ordinary POSIX error the caller must
 //!    observe as one.
+//! 4. **Guest address zero is a policy, not a fact, and the syscall owns it.**
+//!    Byte 0 of a guest's linear memory is an ordinary addressable byte:
+//!    WebAssembly reserves nothing there, and `host/test/fixtures/
+//!    wasi-hello.wat` places its `ciovec` at offset 0 on purpose. What makes
+//!    zero special for a C caller is Kandelo's own SDK layout, which never
+//!    puts an object there -- so for a musl-linked guest a null structure
+//!    pointer really is a bug and `EFAULT` is right. Both are true at once, so
+//!    the default [`read_guest_bytes`]/[`write_guest_bytes`] keep the C
+//!    convention, and a syscall whose argument is a raw memory OFFSET rather
+//!    than a C pointer -- `writev`'s iovec table and the buffers it names --
+//!    uses the `_at_any_address` pair instead. This is what the
+//!    `SyscallArgSize::KernelDereferenced` contract means by "null-pointer
+//!    handling belongs to the kernel": the byte mover must not decide it.
 //!
 //! # Target liveness
 //!
@@ -66,6 +79,26 @@ pub fn read_guest_bytes(
     if addr == 0 {
         return Err(Errno::EFAULT);
     }
+    read_guest_bytes_at_any_address(host, pid, addr, len, limit)
+}
+
+/// [`read_guest_bytes`] without the null-pointer convention, for an argument
+/// that is a raw memory offset rather than a C pointer. See rule 4 above.
+pub fn read_guest_bytes_at_any_address(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    len: usize,
+    limit: usize,
+) -> Result<Vec<u8>, Errno> {
+    if len > limit {
+        return Err(Errno::EINVAL);
+    }
+    let mut buf = Vec::new();
+    if len == 0 {
+        return Ok(buf);
+    }
+    let _ = addr;
     // `try_reserve_exact` rather than `vec![0; len]`: `limit` bounds the
     // request semantically, but a kernel that cannot satisfy a legitimate
     // allocation must report ENOMEM rather than abort.
@@ -100,6 +133,20 @@ pub fn write_guest_bytes(
     }
     if addr == 0 {
         return Err(Errno::EFAULT);
+    }
+    write_guest_bytes_at_any_address(host, pid, addr, bytes)
+}
+
+/// [`write_guest_bytes`] without the null-pointer convention, for an argument
+/// that is a raw memory offset rather than a C pointer. See rule 4 above.
+pub fn write_guest_bytes_at_any_address(
+    host: &mut dyn HostIO,
+    pid: i32,
+    addr: u64,
+    bytes: &[u8],
+) -> Result<(), Errno> {
+    if bytes.is_empty() {
+        return Ok(());
     }
     if host.proc_write_bytes(pid, addr, bytes) < 0 {
         return Err(Errno::EFAULT);

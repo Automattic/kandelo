@@ -2538,12 +2538,23 @@ export class WasmPosixKernel {
           const procMem = this.callbacks.getProcessMemory?.(pid);
           if (!procMem) return -14;
           try {
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
               8,
               "host_proc_write_bytes process destination",
+              true,
             );
             const src = this.#readKernelBytes(src_ptr, len);
             // Reacquire the process buffer after copying the kernel source:
@@ -2554,6 +2565,7 @@ export class WasmPosixKernel {
               len,
               8,
               "host_proc_write_bytes process destination",
+              true,
             );
             intrinsicApply(
               intrinsicUint8ArraySet,
@@ -2583,12 +2595,23 @@ export class WasmPosixKernel {
             );
             const procMem = this.callbacks.getProcessMemory?.(pid);
             if (!procMem) return -14;
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             const source = checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
               8,
               "host_proc_read_bytes process source",
+              true,
             );
             const processView = new IntrinsicUint8Array(
               wasmMemoryBuffer(procMem),
