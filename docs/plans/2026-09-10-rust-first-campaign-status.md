@@ -57,6 +57,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K0 probes | **DONE** | Disproved the E1 GC blockers and the V8 `epoll_pwait` crash |
 | K13a | **DONE** | Dead export deletion |
 | K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
+| K10 | **DONE** | I1/I2/I3/I7 landed earlier; I4/I5/I6 landed 2026-09-10 — the Rust module runs and `wasi-shim.ts` is deleted. See §2x of the value plan |
 | K10 | **PARTIAL; I6 RUNNING** | I1/I2/I3/I7 landed; I6 re-examines its own fixtures gate |
 | K14 | **DONE** | |
 | K5 | **Rust landed; I6a RUNNING** | Placement adjudicated (standalone module, 14 pipeline points). I6b = rewire + delete 6,340 lines |
@@ -235,7 +236,7 @@ branch — not just that a docs commit describing it does.
 | Owner | Target | Lines |
 |---|---|---|
 | K5 I6a/I6b | `dylink.ts` + `dylink-fork-archive.ts` | 6,340 |
-| K10 I6 | `wasi-shim.ts` | 1,649 |
+| ~~K10 I6~~ | ~~`wasi-shim.ts`~~ | **PAID 2026-09-10** |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
 | K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
