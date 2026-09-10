@@ -5237,6 +5237,13 @@ export class CentralizedKernelWorker {
         return undefined;
       });
     } catch (error) {
+      // A branded export failure means the kernel instance is poisoned, not
+      // that this message could not be read. Swallowing it would publish
+      // "unclassified" from a kernel that can no longer answer anything, and
+      // the entry gate could never run its fatal handler — the same shape as
+      // the unguarded catches `kernel-export-failure-audit.test.ts` exists to
+      // find.
+      this.#rethrowKernelEntryFatal(error);
       this.#classifyWasmTrapSignalUnavailable(error);
       return 0;
     }
