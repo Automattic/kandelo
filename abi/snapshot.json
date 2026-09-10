@@ -2084,6 +2084,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_target_artifact_policy",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_target_cancel",
       "signature": "(i32,i32) -> (i32)"
     },
