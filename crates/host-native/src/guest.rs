@@ -78,6 +78,7 @@ use wasm_posix_shared::channel::{
     REQUEST_FLAGS_OFFSET, REQUEST_FLAG_OPAQUE_RECORD, RETURN_OFFSET, STATUS_OFFSET, SYSCALL_OFFSET,
 };
 use wasm_posix_shared::abi::extended_syscalls::{SYS_CLONE, SYS_EXIT_GROUP};
+use wasm_posix_shared::trap_signal::WasmTrapKind;
 use wasm_posix_shared::abi::host_intercepted::{SYS_EXECVE, SYS_EXECVEAT, SYS_FORK, SYS_SPAWN, SYS_VFORK};
 use wasm_posix_shared::channel_record::RECORD_MAGIC;
 use wasm_posix_shared::flags as open_flags;
@@ -9037,6 +9038,20 @@ fn run_fork_capable_entry(
         };
         match result {
             Ok(()) => return,
+            // `unreachable` is how this host's own exit path unwinds the guest
+            // after the kernel has already committed the exit status (see the
+            // pump's `Syscall::Exit` branch — "the kernel commits the status
+            // then traps via kernel_exit's `unreachable`"), so it cannot be
+            // treated as a fault: doing so would turn every clean exit into
+            // SIGILL.
+            //
+            // KNOWN CONFLATION, stated rather than hidden: a guest that
+            // genuinely executes `unreachable` produces the same wasmtime error
+            // and is therefore also swallowed here, where a JavaScript host
+            // reports SIGILL. Separating the two needs a committed-exit flag
+            // this OS thread can read; tracked in
+            // `docs/future-improvements.md`. Every other trap kind IS
+            // classified, in the fault arm below.
             Err(e) if is_unreachable_trap(&e) => return,
             Err(e) if is_thrown_exception_escape(&e) => {
                 // Only valid straight after the LEXICAL entry captured a
@@ -9078,7 +9093,23 @@ fn run_fork_capable_entry(
                 entry_is_lexical = false;
             }
             Err(e) => {
-                eprintln!("guest entry failed: {e:#}");
+                match wasmtime_trap_kind(&e) {
+                    Some(kind) => {
+                        // The guest faulted. Report it as the signal every
+                        // other Kandelo host reports for the same fault, and
+                        // end the process so the kernel — and any parent in
+                        // `wait(2)` — learns it is gone.
+                        let signum = kind.signal();
+                        let status =
+                            wasm_posix_shared::trap_signal::signal_exit_status(signum);
+                        eprintln!(
+                            "guest faulted: {} trap (signal {signum}, status {status}): {e:#}",
+                            kind.as_str()
+                        );
+                        post_guest_trap_exit(guest_mem, channel_offset, status);
+                    }
+                    None => eprintln!("guest entry failed: {e:#}"),
+                }
                 return;
             }
         }
@@ -9502,11 +9533,68 @@ fn drive_fork_capture_seal_and_launch_child(
 /// `spawn_guest_thread`'s `fork_child_pending_replay` branch for why this
 /// child never runs any of its copied program before this call.
 fn post_fork_child_pending_exit(guest_mem: &SharedMemory, channel_offset: usize) {
+    post_process_exit_group(guest_mem, channel_offset, 0);
+}
+
+/// The kind of fault a wasmtime error represents, or `None` when the error is
+/// not a Wasm trap at all.
+///
+/// Structural: wasmtime hands back a typed [`wasmtime::Trap`], so this host
+/// never has to recognise an engine's prose the way a JavaScript host must.
+/// Both routes end at the same policy —
+/// [`wasm_posix_shared::trap_signal::WasmTrapKind::signal`] — which is the
+/// point of putting that policy in `crates/shared`.
+///
+/// `wasmtime::Trap` is `#[non_exhaustive]`; an unrecognised variant returns
+/// `None` rather than being folded into a nearby signal, because guessing
+/// which fault a guest took is exactly the illusion this host should not
+/// create.
+fn wasmtime_trap_kind(error: &wasmtime::Error) -> Option<WasmTrapKind> {
+    use wasmtime::Trap;
+    Some(match error.downcast_ref::<Trap>()? {
+        Trap::MemoryOutOfBounds | Trap::HeapMisaligned => WasmTrapKind::Memory,
+        Trap::TableOutOfBounds | Trap::ArrayOutOfBounds => WasmTrapKind::Bounds,
+        Trap::StackOverflow => WasmTrapKind::Stack,
+        Trap::IntegerOverflow
+        | Trap::IntegerDivisionByZero
+        | Trap::BadConversionToInteger => WasmTrapKind::Arithmetic,
+        Trap::IndirectCallToNull
+        | Trap::BadSignature
+        | Trap::UnreachableCodeReached
+        | Trap::NullReference
+        | Trap::CastFailure => WasmTrapKind::IllegalInstruction,
+        _ => return None,
+    })
+}
+
+/// End a guest that faulted, with the exit status the fault produces.
+///
+/// A trap is not a return: the guest never reaches `exit(2)`, so without this
+/// its OS thread simply ends, the kernel never learns the process is gone, and
+/// a parent parked in `wait(2)` waits forever. This host previously did
+/// exactly that — it printed the wasmtime error and returned — while both
+/// JavaScript hosts recorded `128 + signum` for the same fault. That was the
+/// gap: a guest divide-by-zero was `SIGFPE` on Node and in the browser and
+/// nothing at all here.
+///
+/// KNOWN REMAINING GAP, recorded rather than papered over: the JavaScript
+/// hosts additionally call `kernel_mark_process_signaled(pid, signum)` so
+/// `WIFSIGNALED` is true and `WTERMSIG` names the signal. That export must be
+/// called on the kernel `Store`, which belongs to the pump thread, not to this
+/// guest OS thread — so this host reports the right status without the signal
+/// flag. Tracked in `docs/future-improvements.md`.
+fn post_guest_trap_exit(guest_mem: &SharedMemory, channel_offset: usize, status: i32) {
+    post_process_exit_group(guest_mem, channel_offset, status);
+}
+
+/// Post `exit_group(status)` on a channel and wait (bounded) for the pump.
+fn post_process_exit_group(guest_mem: &SharedMemory, channel_offset: usize, status: i32) {
     let ch = channel_offset;
     unsafe {
         write_bytes(guest_mem, ch + SYSCALL_OFFSET, &SYS_EXIT_GROUP.to_le_bytes());
         for i in 0..6 {
-            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &0i64.to_le_bytes());
+            let value = if i == 0 { status as i64 } else { 0i64 };
+            write_bytes(guest_mem, ch + ARGS_OFFSET + i * ARG_SIZE, &value.to_le_bytes());
         }
         write_bytes(guest_mem, ch + REQUEST_FLAGS_OFFSET, &0u32.to_le_bytes());
         atomic_u32(guest_mem, ch + STATUS_OFFSET).store(STATUS_PENDING, Ordering::SeqCst);

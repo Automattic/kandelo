@@ -3845,6 +3845,25 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    // The signals a Wasm trap can raise, and the base of the shell's signalled
+    // exit convention. Which trap raises which of these is decided in
+    // `wasm_posix_shared::trap_signal` and reached from TypeScript through the
+    // kernel's `kernel_classify_wasm_trap_signal` export — these constants
+    // exist so a host never spells a signal number itself.
+    out.push_str("export const TRAP_SIGNALS = {\n");
+    for (name, number) in [
+        ("SIGILL", shared::signal::SIGILL),
+        ("SIGFPE", shared::signal::SIGFPE),
+        ("SIGSEGV", shared::signal::SIGSEGV),
+    ] {
+        out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str(&format!(
+        "export const SIGNAL_EXIT_STATUS_BASE = {} as const;\n\n",
+        shared::trap_signal::signal_exit_status(0)
+    ));
+
     out.push_str("export const ABI_SYSCALL_NAMES: Record<number, string> = {\n");
     for (number, name) in all_syscall_log_names() {
         out.push_str(&format!("  {number}: {name:?},\n"));

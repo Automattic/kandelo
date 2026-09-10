@@ -1782,6 +1782,39 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(ptr: *const u8, len: u32
     i32::try_from(crate::rootfs::set_foreign_mount_roots(buf)).unwrap_or(i32::MAX)
 }
 
+/// Classify a JavaScript engine's Wasm trap message into the POSIX signal a
+/// faulting guest takes, so the JavaScript hosts and `crates/host-native` share
+/// one answer instead of each carrying their own.
+///
+/// `ptr`/`len` are UTF-8 bytes of the engine's `RuntimeError` message (plus its
+/// stack, if the host has one). Returns the signal number, or `0` for text that
+/// is not a trap at all — a `CompileError`, a `LinkError`, an ABI mismatch.
+/// That zero is load-bearing: those are launch failures, and reporting one as a
+/// fatal signal would tell the guest's parent that a program ran and faulted
+/// when it never started.
+///
+/// Pure: reads only the caller's buffer and touches no kernel state.
+/// `wasm_posix_shared::trap_signal` holds the table and the reasoning, and a
+/// host that learns the trap kind structurally (wasmtime does) should use that
+/// module's `WasmTrapKind::signal` directly rather than formatting a message to
+/// pass here.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_classify_wasm_trap_signal(ptr: *const u8, len: u32) -> i32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let buf: &[u8] = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    let Ok(text) = core::str::from_utf8(buf) else {
+        // A host that cannot hand over valid UTF-8 has not given us a message
+        // to classify. Saying "not a trap" is truthful; guessing is not.
+        return 0;
+    };
+    match wasm_posix_shared::trap_signal::classify_wasm_trap_text(text) {
+        Some(matched) => matched.signal() as i32,
+        None => 0,
+    }
+}
+
 /// Publish the wall-clock time the rootfs overlay stamps onto metadata
 /// mutations and onto base entries loaded from the manifest. The host calls this
 /// once at boot before loading the manifest (so base entries are not epoch-

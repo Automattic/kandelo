@@ -1376,6 +1376,14 @@ export const PATHCONF_NAMES = {
   TIMESTAMP_RESOLUTION: 23,
 } as const;
 
+export const TRAP_SIGNALS = {
+  SIGILL: 4,
+  SIGFPE: 8,
+  SIGSEGV: 11,
+} as const;
+
+export const SIGNAL_EXIT_STATUS_BASE = 128 as const;
+
 export const ABI_SYSCALL_NAMES: Record<number, string> = {
   1: "open",
   2: "close",

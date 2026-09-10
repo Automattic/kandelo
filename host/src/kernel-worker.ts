@@ -5185,6 +5185,74 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Ask the kernel which POSIX signal an engine trap message represents.
+   *
+   * The message itself can only be captured here — `WebAssembly` throws a
+   * `RuntimeError` whose `message` is engine-defined prose, and only a
+   * JavaScript host holds that object. Deciding what the prose *means* is not
+   * a host job: `wasm_posix_shared::trap_signal` owns the phrase table and the
+   * trap-to-signal policy so Node, the browser, and `crates/host-native` give
+   * one answer instead of three. Passing a string to Rust is passing bytes.
+   *
+   * Returns the signal number, or `0` when the text is not a trap at all (a
+   * `CompileError`, a `LinkError`, an ABI mismatch — launch failures, not
+   * faults) and equally when the kernel cannot be entered to ask. Callers must
+   * treat `0` as "unclassified" and apply their own default rather than
+   * inventing a signal; `#classifyWasmTrapSignalUnavailable` reports the second
+   * case loudly, because a silently unclassified fault would look exactly like
+   * a program that was never a trap.
+   */
+  classifyWasmTrapSignal(text: string): number {
+    if (this.#kernelFatalError !== null) return 0;
+    const encoded = new TextEncoder().encode(text);
+    if (encoded.byteLength === 0) return 0;
+    let signum = 0;
+    try {
+      this.#runImmediateKernelEntry("kernel classify wasm trap", (entry) => {
+        const classify = entry.instance.exports
+          .kernel_classify_wasm_trap_signal;
+        if (typeof classify !== "function") {
+          throw new Error(
+            "Kernel missing required kernel_classify_wasm_trap_signal export",
+          );
+        }
+        const region = this.#requireMainScratchRegion();
+        // A trap message longer than the scratch region is truncated rather
+        // than refused: every phrase the table recognises appears in the first
+        // line of an engine's message, and a truncated classification is a
+        // better answer than none. The truncation is at a byte boundary, which
+        // the kernel handles — it rejects invalid UTF-8 by answering 0.
+        const length = Math.min(encoded.byteLength, region.capacity);
+        signum = region.withLease((lease) => {
+          lease.copyFrom(encoded, 0, 0, length);
+          const textPtr = lease.exportPointer(0, length);
+          const result = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_classify_wasm_trap_signal",
+            [textPtr, length],
+          );
+          return Number.isSafeInteger(result) && result > 0 ? result : 0;
+        });
+        return undefined;
+      });
+    } catch (error) {
+      this.#classifyWasmTrapSignalUnavailable(error);
+      return 0;
+    }
+    return signum;
+  }
+
+  #classifyWasmTrapSignalUnavailable(error: unknown): void {
+    console.error(
+      "[kernel-worker] could not classify a Wasm trap: the kernel was not " +
+        "enterable, so this fault is reported as unclassified rather than " +
+        "guessed",
+      error,
+    );
+  }
+
+  /**
    * Serialize the entire overlay-owned `/` tree (Phase 5 cutover export) as an
    * RXPT metadata buffer through the in-kernel overlay. Runs in one kernel entry,
    * reading region-sized chunks; the kernel serializes once (the overlay is

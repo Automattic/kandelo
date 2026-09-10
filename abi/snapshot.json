@@ -1949,6 +1949,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_classify_wasm_trap_signal",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_clear_fork_child",
       "signature": "(i32) -> (i32)"
     },

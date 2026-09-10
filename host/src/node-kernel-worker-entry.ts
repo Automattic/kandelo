@@ -80,8 +80,8 @@ import {
   type ProcessForkMode,
 } from "./generated/abi";
 import {
-  classifiedSignalOrFallback,
-  classifiedTrapExitStatus,
+  classifiedSignalOrFallback as classifySignalOrFallback,
+  classifiedTrapExitStatus as classifyTrapExitStatus,
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
@@ -89,6 +89,26 @@ import {
   removeThreadWorkerRegistryEntry,
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
+
+/**
+ * Ask the kernel what a trap message means. The message can only be captured
+ * here, but the table that reads it lives in `wasm_posix_shared::trap_signal`
+ * so this host, the other one, and `crates/host-native` agree — see
+ * `CentralizedKernelWorker.classifyWasmTrapSignal`. Returns 0 before the
+ * kernel worker exists, which callers treat as "unclassified".
+ */
+const classifyWasmTrap = (text: string): number =>
+  typeof kernelWorker === "undefined"
+    ? 0
+    : kernelWorker.classifyWasmTrapSignal(text);
+
+const classifiedSignalOrFallback = (
+  reason: unknown,
+  fallback: number = SIGSEGV,
+): number => classifySignalOrFallback(classifyWasmTrap, reason, fallback);
+
+const classifiedTrapExitStatus = (reason: unknown): number | null =>
+  classifyTrapExitStatus(classifyWasmTrap, reason);
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
@@ -2970,7 +2990,7 @@ async function handleClone(
       void terminateThreadEntry();
       return;
     }
-    const disposition = threadWorkerFailureDisposition(reason);
+    const disposition = threadWorkerFailureDisposition(classifyWasmTrap, reason);
     reportHostDiagnostic({
       pid,
       status: disposition.kind === "guest-fatal-trap"

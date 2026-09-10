@@ -6,6 +6,7 @@ pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod process_layout;
+pub mod trap_signal;
 
 /// Kernel ABI version.
 ///
@@ -1548,6 +1549,9 @@ pub mod signal {
     pub const SIGFPE: u32 = 8;
     pub const SIGKILL: u32 = 9;
     pub const SIGUSR1: u32 = 10;
+    /// Invalid memory reference. A Wasm out-of-bounds access, table-index
+    /// fault, or stack exhaustion becomes this — see [`crate::trap_signal`].
+    pub const SIGSEGV: u32 = 11;
     pub const SIGUSR2: u32 = 12;
     pub const SIGPIPE: u32 = 13;
     pub const SIGALRM: u32 = 14;
