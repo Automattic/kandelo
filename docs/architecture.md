@@ -338,14 +338,22 @@ limit: pathname consumers still apply the generated `PATH_MAX`, while generic
 C-string consumers may validly use more than `PATH_MAX` when the complete
 string fits channel scratch.
 
-Vector-message syscalls add a width-translation boundary. Musl's native
-`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
-their sizes, offsets, and alignments are generated from the shared Rust ABI
-source into TypeScript and a musl contract header. The kernel scratch wire is
-deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
-`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
-separate contracts; copying a native wasm64 header and hoping the fixed parser
-interprets it is invalid even when the bytes fit in linear memory.
+Vector-message syscalls cross a width boundary. Musl's native `iovec`,
+`msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so their
+sizes, offsets, and alignments are generated from the shared Rust ABI source.
+`msg_iovlen` and `msg_controllen` are the traps worth naming: musl keeps both
+32-bit on wasm64 and pads after each, so reading either as a `size_t` folds
+unrelated padding into the high half of a count.
+
+**The kernel reads those structures in the caller's memory itself.**
+`sendmsg`/`recvmsg` declare their `msghdr` argument
+`SyscallArgSize::KernelDereferenced`, so the host copies nothing and passes
+the raw guest address with the caller's pointer width; `crates/runtime-core/`
+`src/msghdr.rs` walks the header, the `msg_iov` table and the CMSG chain
+through `host_proc_read_bytes` / `host_proc_write_bytes`. The
+`KernelIovecWire` / `KernelMsghdrWire` / `KernelCmsghdrWire` records still
+appear in `abi/snapshot.json` and still describe the opaque transport's
+msghdr region, but nothing in the kernel reads them.
 Socket-address sizing is likewise generated as two distinct contracts.
 The 128-byte `sockaddr_storage` bounds every generic input and output staging
 region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
@@ -359,29 +367,33 @@ An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
 report 111 bytes after accounting for its appended terminator, which still
 fits the generic 128-byte output region.
 
-For `sendmsg`, the host validates the complete native header and iovec table,
-every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
-It translates each ancillary record, flattens all caller iovecs in order into
-one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
-inside one synchronous lease. Rust validates the complete aligned ancillary
-stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
-description before retaining any reference or publishing carrier bytes. Socket
+For `sendmsg`, the kernel decodes the caller's header, enforces `IOV_MAX`
+before reading the table, and gathers every iovec in order into one
+contiguous kernel-owned buffer bounded by `SSIZE_MAX` — a datagram must go
+out in one piece, and the bound is the operation's own limit rather than a
+transport's capacity. It then validates the aligned ancillary stream and the
+receiver-reconstructibility of every requested `SCM_RIGHTS` description
+before retaining any reference or publishing carrier bytes. Socket
 descriptions are not reconstructible from a process-local socket snapshot, so
 an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
-does not pretend that a copied socket record is the original endpoint. The
-exact flattened-iovec count is generated from the shared protocol contract,
-and a Rust compile-time guard makes changing that count fail until the fixed
-parser changes with it.
+does not pretend that a copied socket record is the original endpoint.
+
 Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
-`sendto`; it cannot bypass that check by living inside `msghdr`. For
-`recvmsg`, the host proves and reserves at most 128 name bytes even when the
-caller advertises a larger buffer, derives fixed-wire control capacity from
-the caller-native data capacity,
-snapshots the result, validates the entire returned record, expands it with
-zeroed native padding, and scatters payload bytes across every caller iovec.
-A retry or malformed kernel result publishes none of those detached outputs.
-This flatten/scatter design preserves the public multi-iovec behavior while
-keeping the ordinary transport allocation fixed and cheap.
+`sendto`; it cannot bypass that check by living inside `msghdr`.
+
+For `recvmsg`, the kernel reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives `SCM_RIGHTS` capacity from the
+CALLER's `cmsghdr` size — 32 control bytes hold five descriptors for a wasm32
+receiver and four for a wasm64 one — receives into one contiguous buffer, and
+scatters the result across the caller's iovecs. It publishes `msg_namelen`,
+`msg_controllen` and `msg_flags` only for a delivered message, including a
+zero-length one: on EAGAIN the host parks a retry and calls again with the
+same header, so zeroing `msg_controllen` would leave that retry with no
+control capacity.
+
+Both retain what a retry must not re-read. A blocked `sendmsg` keeps its
+in-flight descriptors in `BlockingRetryTarget::Sendmsg` and a retry uses
+those, never a control buffer a peer thread may have changed meanwhile.
 
 Guest process memory is a separate owner, not another spelling for kernel
 scratch. `CentralizedKernelWorker.registerProcess` rejects the active kernel
