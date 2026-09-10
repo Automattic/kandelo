@@ -4,16 +4,62 @@
     "version": "151.0.7922.34",
     "crossOriginIsolated": true,
     "fetched": {
-      "byteLength": 233500,
-      "contentType": "application/wasm"
+      "dylinkModuleBytes": {
+        "byteLength": 233500,
+        "contentType": "application/wasm"
+      },
+      "wasiModuleBytes": {
+        "byteLength": 24653,
+        "contentType": "application/wasm"
+      },
+      "forkModuleBytes": {
+        "byteLength": 138304,
+        "contentType": "application/wasm"
+      }
     },
-    "mainThreadBufferDetachedAfterTransfer": true,
+    "detachedAfterTransfer": {
+      "dylinkModuleBytes": true,
+      "wasiModuleBytes": true,
+      "forkModuleBytes": true
+    },
     "worker": {
-      "received": true,
-      "byteLength": 233500,
-      "compiled": true,
-      "imports": 0,
-      "dlExports": 21
+      "dylinkModuleBytes": {
+        "received": true,
+        "byteLength": 233500,
+        "compiled": true,
+        "imports": [],
+        "exportCount": 24
+      },
+      "wasiModuleBytes": {
+        "received": true,
+        "byteLength": 24653,
+        "compiled": true,
+        "imports": [
+          "env.memory",
+          "env.__indirect_function_table",
+          "env.__stack_pointer",
+          "env.__memory_base",
+          "env.__table_base"
+        ],
+        "exportCount": 51
+      },
+      "forkModuleBytes": {
+        "received": true,
+        "byteLength": 138304,
+        "compiled": true,
+        "imports": [
+          "env.memory",
+          "env.__indirect_function_table",
+          "env.__stack_pointer",
+          "env.__memory_base",
+          "env.__table_base",
+          "env.__wpk_fork_function_catalog",
+          "env.resolve_externref",
+          "env.__wpk_fork_drive_table",
+          "env.__wpk_fork_static_root_catalog"
+        ],
+        "exportCount": 81
+      }
     }
   },
   {
@@ -21,16 +67,51 @@
     "version": "26.5",
     "crossOriginIsolated": true,
     "fetched": {
-      "byteLength": 233500,
-      "contentType": "application/wasm"
+      "dylinkModuleBytes": {
+        "byteLength": 233500,
+        "contentType": "application/wasm"
+      },
+      "wasiModuleBytes": {
+        "byteLength": 24653,
+        "contentType": "application/wasm"
+      },
+      "forkModuleBytes": {
+        "byteLength": 138304,
+        "contentType": "application/wasm"
+      }
     },
-    "mainThreadBufferDetachedAfterTransfer": true,
+    "detachedAfterTransfer": {
+      "dylinkModuleBytes": true,
+      "wasiModuleBytes": true,
+      "forkModuleBytes": true
+    },
     "worker": {
-      "received": true,
-      "byteLength": 233500,
-      "compiled": true,
-      "imports": 0,
-      "dlExports": 21
+      "dylinkModuleBytes": {
+        "received": true,
+        "byteLength": 233500,
+        "compiled": true,
+        "imports": [],
+        "exportCount": 24
+      },
+      "wasiModuleBytes": {
+        "received": true,
+        "byteLength": 24653,
+        "compiled": true,
+        "imports": [
+          "env.memory",
+          "env.__indirect_function_table",
+          "env.__stack_pointer",
+          "env.__memory_base",
+          "env.__table_base"
+        ],
+        "exportCount": 51
+      },
+      "forkModuleBytes": {
+        "received": true,
+        "byteLength": 138304,
+        "compiled": true,
+        "error": "TypeError: WebAssembly.Module.imports unable to produce import descriptors for the given module"
+      }
     }
   }
 ]

@@ -2,21 +2,30 @@
 <meta charset="utf-8">
 <title>side-module transfer + compile probe</title>
 <script type="module">
-  const res = await fetch('./dylink_module32.wasm');
-  const bytes = await res.arrayBuffer();
-  const fetched = { byteLength: bytes.byteLength, contentType: res.headers.get('content-type') };
-
+  const files = {
+    dylinkModuleBytes: './dylink_module32.wasm',
+    wasiModuleBytes: './wasi_module32.wasm',
+    forkModuleBytes: './fork_module32.wasm',
+  };
+  const payload = {};
+  const fetched = {};
+  for (const [key, url] of Object.entries(files)) {
+    const res = await fetch(url);
+    payload[key] = await res.arrayBuffer();
+    fetched[key] = { byteLength: payload[key].byteLength, contentType: res.headers.get('content-type') };
+  }
   const worker = new Worker('./worker.mjs', { type: 'module' });
   const reply = new Promise((r) => { worker.onmessage = (e) => r(e.data); });
-  // The real code transfers rather than clones; that is the half a static
-  // check cannot see, because a detached buffer only shows up at run time.
-  worker.postMessage({ dylinkModuleBytes: bytes }, [bytes]);
+  // Transfer, as the real host does — not clone. A detached source buffer is
+  // the only run-time evidence that the transfer list was honoured.
+  worker.postMessage(payload, Object.values(payload));
   const workerResult = await reply;
-
   window.__done = {
     crossOriginIsolated,
     fetched,
-    mainThreadBufferDetachedAfterTransfer: bytes.byteLength === 0,
+    detachedAfterTransfer: Object.fromEntries(
+      Object.entries(payload).map(([k, b]) => [k, b.byteLength === 0]),
+    ),
     worker: workerResult,
   };
   window.__ready = true;

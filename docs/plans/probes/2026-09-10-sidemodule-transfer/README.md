@@ -10,7 +10,43 @@ blocks twelve nodes and makes the resolver refuse the closure.
 **But this question does not need Kandelo.** It asks what a browser does with a
 transferred `ArrayBuffer` and a real 233 KB module. So it was run directly.
 
-## Result — both engines (`results.json`)
+## Extended to all three side modules
+
+The probe now carries `dylink_module32.wasm`, `wasi_module32.wasm` and
+`fork_module32.wasm`, mirroring the three sibling branches in
+`browser-kernel-worker-entry.ts`. **All three transfer and compile on both
+engines**, and all three source buffers are detached afterwards.
+
+| module | bytes | Chromium 151 | WebKit 26.5 |
+|---|---|---|---|
+| `dylink_module32` | 233,500 | compiled · 0 imports · 24 exports | compiled · 0 imports · 24 exports |
+| `wasi_module32` | 24,653 | compiled · 5 imports · 51 exports | compiled · 5 imports · 51 exports |
+| `fork_module32` | 138,304 | compiled · 9 imports · 81 exports | **compiled**, but reflection throws — see below |
+
+That closes the browser registration for the **WASI** side module as well as
+the dynamic-linking one.
+
+### The fork module reproduces a documented WebKit limitation, verbatim
+
+WebKit compiles `fork_module32.wasm` successfully, then
+`WebAssembly.Module.imports()` throws:
+
+```
+TypeError: WebAssembly.Module.imports unable to produce import descriptors for the given module
+```
+
+`host/src/wasm-module-reflection.ts` already documents exactly this — *"WebKit
+can compile fork artifacts containing exception-reference imports while
+`WebAssembly.Module.imports()` throws instead of returning their name/kind
+descriptors"* — and handles it by retaining the ordered reflection Kandelo
+parsed itself rather than depending on the engine's.
+
+**The compile succeeded, which is what the registration needs.** The reflection
+divergence is a separate, already-mitigated engine limitation, and this probe is
+the first independent reproduction of it in the repository — the note had been
+argued, not measured.
+
+## Result — dylink module, both engines (`results.json`)
 
 | | Chromium 151.0.7922.34 | WebKit 26.5 |
 |---|---|---|
