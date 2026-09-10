@@ -9695,6 +9695,7 @@ pub extern "C" fn kernel_recvmsg(
     // message can still carry descriptors and output flags.
     let mut published_control_len = 0u32;
     let mut published_name_len: Option<u32> = None;
+    let delivered_a_message = received.is_some();
     let mut output_msg_flags = received
         .as_ref()
         .map_or(0, |received| received.output_flags);
@@ -9781,19 +9782,28 @@ pub extern "C" fn kernel_recvmsg(
         }
     }
 
-    // `msg_controllen` and `msg_flags` are published unconditionally, even
-    // when nothing was received: a caller must be able to tell "no ancillary
-    // data" from a stale length it set before the call.
-    if let Err(error) = crate::msghdr::write_msghdr_results(
-        &mut host,
-        pid,
-        msg_addr as u64,
-        width,
-        published_name_len,
-        published_control_len,
-        output_msg_flags,
-    ) {
-        result = -(error as i32);
+    // Publish for a delivered message even when it carried zero bytes: a
+    // zero-length datagram still has descriptors and output flags, and the
+    // caller must be able to tell "no ancillary data" from a stale length it
+    // set before the call.
+    //
+    // But ONLY for a delivered message. On EAGAIN the host parks a retry and
+    // calls again with the same `msghdr`; zeroing `msg_controllen` here would
+    // leave that retry with no control capacity, so a descriptor that fitted
+    // the caller's buffer the first time would arrive truncated the second.
+    // Linux likewise leaves the header untouched on a failed `recvmsg`.
+    if delivered_a_message {
+        if let Err(error) = crate::msghdr::write_msghdr_results(
+            &mut host,
+            pid,
+            msg_addr as u64,
+            width,
+            published_name_len,
+            published_control_len,
+            output_msg_flags,
+        ) {
+            result = -(error as i32);
+        }
     }
 
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
