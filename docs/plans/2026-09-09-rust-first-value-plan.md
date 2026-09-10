@@ -3210,9 +3210,11 @@ item's own brief included — has quoted the constant rather than a measurement.
 The 76th is **`env.host_debug_log`**, declared in
 `crates/runtime-core/src/lib.rs:78` rather than in `wasm_api.rs`'s extern
 block, which is why a reader counting the block gets 75. K9 deleted the kernel
-crate's own copy after finding it callerless; K7's `report_writeback_loss`
-(`wasm_api.rs:1287`) then supplied a caller, and a live caller is what puts the
-import back in the module. So a diagnostic re-linked a host import into the
+crate's own copy after finding it callerless; the `runtime_core::debug_log`
+call in `report_writeback_loss` (`wasm_api.rs:1297`) then supplied a caller,
+and a live caller is what puts the import back in the module. It arrived
+**today**, in `13625a638` "Kernel: Reconcile K6, K7 and K9 where their
+contracts met" — searching the history for that call names the commit. So a diagnostic re-linked a host import into the
 production kernel, and nothing noticed.
 
 Nothing noticed because `host-native`'s `smoke_loads_real_kernel_and_reads_abi`
