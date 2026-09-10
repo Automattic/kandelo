@@ -978,11 +978,17 @@ impl<M: GuestMemory, C: Channel> WasiShim<M, C> {
         Ok(())
     }
 
+    /// **DEFECT FIX 6.** An undefined clock id is `EINVAL`, not a silent
+    /// substitution.
+    ///
+    /// `wasiClockToPosix` (`wasi-shim.ts:398`) defaults anything it does not
+    /// recognise to `CLOCK_REALTIME`, so a guest that asks for a clock Kandelo
+    /// does not implement is handed a *different* one with no way to detect
+    /// the swap -- the same class of violation as the other five, and the one
+    /// the debugging-and-POSIX contract names directly: an unsupported API
+    /// must not become silent success.
     pub fn clock_time_get(&self, clock_id: u32, _precision: u64, time_out: u32) -> WasiResult {
-        // Bug-compatible with the TypeScript: an undefined clock silently
-        // becomes CLOCK_REALTIME. See `wasi_clock_to_posix_lenient`; changing
-        // this is a maintainer decision, not this port's.
-        let posix = translate::wasi_clock_to_posix_lenient(clock_id);
+        let posix = translate::wasi_clock_to_posix(clock_id).ok_or(WasiErrno::Inval)?;
         self.call(
             Syscall::ClockGettime as u32,
             [posix as i64, self.data(scratch::PRIMARY) as i64, 0, 0, 0, 0],
@@ -991,8 +997,9 @@ impl<M: GuestMemory, C: Channel> WasiShim<M, C> {
         self.mem.write_u64(time_out as u64, nanos)
     }
 
+    /// **DEFECT FIX 6**, same as [`Self::clock_time_get`].
     pub fn clock_res_get(&self, clock_id: u32, res_out: u32) -> WasiResult {
-        let posix = translate::wasi_clock_to_posix_lenient(clock_id);
+        let posix = translate::wasi_clock_to_posix(clock_id).ok_or(WasiErrno::Inval)?;
         self.call(
             Syscall::ClockGetres as u32,
             [posix as i64, self.data(scratch::PRIMARY) as i64, 0, 0, 0, 0],

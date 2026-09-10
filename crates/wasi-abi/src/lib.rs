@@ -39,11 +39,14 @@
 //!    `getdents64` batch. The decoding half lives in
 //!    [`layout::decode_linux_dirent`]; the cursor itself is `wasi-module`'s.
 //!
-//! A sixth, `wasiClockToPosix` silently defaulting an undefined clock to
-//! `CLOCK_REALTIME`, is *not* in the chartered set. Both behaviors are
-//! available and named -- [`translate::wasi_clock_to_posix`] reports the
-//! truth, [`translate::wasi_clock_to_posix_lenient`] preserves today's -- so
-//! the choice is the maintainer's rather than this crate's.
+//! 6. `wasiClockToPosix` silently defaults an undefined clock to
+//!    `CLOCK_REALTIME`, so a guest asking for a clock Kandelo does not
+//!    implement is handed a different one with no way to detect the
+//!    substitution. Surfaced during the port and fixed by maintainer decision
+//!    (2026-09-09) as the same class of violation as the other five. See
+//!    [`translate::wasi_clock_to_posix`]; the TypeScript's behavior survives
+//!    only as [`translate::wasi_clock_to_posix_lenient`], which no entry
+//!    point calls and which exists purely for the differential harness.
 
 #![no_std]
 #![forbid(unsafe_code)]
