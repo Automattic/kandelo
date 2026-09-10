@@ -3187,12 +3187,14 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_release_host_region",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_max_addr",
         "kernel_set_mmap_base",
         "kernel_set_thread_slot_quota",
         "kernel_thread_parent_tid_target",
+        "kernel_thread_slot_addr",
     ];
 
     pub static HOST_ADAPTER_MANIFEST: HostAdapterManifest = HostAdapterManifest {

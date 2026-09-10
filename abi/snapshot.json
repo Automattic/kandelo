@@ -1159,12 +1159,14 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_release_host_region",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
       "kernel_set_mmap_base",
       "kernel_set_thread_slot_quota",
-      "kernel_thread_parent_tid_target"
+      "kernel_thread_parent_tid_target",
+      "kernel_thread_slot_addr"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
@@ -2559,6 +2561,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_release_host_region",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_remove_process",
       "signature": "(i32) -> (i32)"
     },
@@ -2870,6 +2877,11 @@
     {
       "kind": "func",
       "name": "kernel_thread_parent_tid_target",
+      "signature": "(i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_thread_slot_addr",
       "signature": "(i32,i32) -> (i64)"
     },
     {
