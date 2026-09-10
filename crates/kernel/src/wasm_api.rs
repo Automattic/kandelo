@@ -7295,15 +7295,37 @@ pub extern "C" fn kernel_shared_mapping_sysv_sync_segment(seg_id: i32) -> i32 {
     0
 }
 
-/// Publish one attachment and stop mirroring it, for `shmdt`.
+/// Check one attachment's mirror against the attachment record the caller
+/// resolved, without mutating anything.
 ///
-/// `expect_seg_id` and `expect_size` are the kernel attachment record the
-/// caller already resolved. They are checked against the mirror here rather
-/// than by the caller: a divergence means two in-kernel authorities disagree,
-/// and reporting that truthfully is better than detaching a mapping whose
-/// bytes cannot be published.
+/// `shmdt` resolves the record, publishes, detaches, and only then forgets the
+/// mirror, so that a failed detach leaves a mirrored attachment rather than an
+/// attachment nobody is reconciling. That order needs a publish step separate
+/// from the drop.
+///
+/// A divergence between the two in-kernel authorities is reported as `EIO`
+/// rather than papered over: it means the byte mirror cannot be published for
+/// an attachment the caller is about to release.
+fn sysv_mirror_matches(
+    table: &crate::memory::SharedMappingTable,
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> bool {
+    let Some(mapping) = table.sysv_mapping(pid, addr as u64) else {
+        return false;
+    };
+    expect_seg_id >= 0
+        && expect_size != 0
+        && mapping.seg_id == expect_seg_id
+        && mapping.size == expect_size as usize
+}
+
+/// Publish one attachment's writes into its segment and import the
+/// authoritative result, leaving the mirror in place.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_shared_mapping_sysv_publish_and_drop(
+pub extern "C" fn kernel_shared_mapping_sysv_publish_mapping(
     pid: u32,
     addr: usize,
     expect_seg_id: i32,
@@ -7311,24 +7333,39 @@ pub extern "C" fn kernel_shared_mapping_sysv_publish_and_drop(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    let Some(mapping) = table.sysv_mapping(pid, addr as u64) else {
-        return -(Errno::EIO as i32);
-    };
-    if expect_seg_id < 0
-        || expect_size == 0
-        || mapping.seg_id != expect_seg_id
-        || mapping.size != expect_size as usize
-    {
+    if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
     let mut io = WasmSharedMappingIo::new();
-    if !table.sync_sysv_mapping(pid, addr as u64, &mut io) {
+    if table.sync_sysv_mapping(pid, addr as u64, &mut io) {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Stop mirroring one attachment.
+///
+/// The kernel's own attachment record is a separate authority; this never
+/// detaches. Callers reach here after a successful `shmdt`, or while unwinding
+/// a `shmat` whose later steps failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_drop_mapping(
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
-    if !table.drop_sysv_mapping(pid, addr as u64) {
-        return -(Errno::EIO as i32);
+    if table.drop_sysv_mapping(pid, addr as u64) {
+        0
+    } else {
+        -(Errno::EIO as i32)
     }
-    0
 }
 
 /// Drop every SysV attachment of a process.
