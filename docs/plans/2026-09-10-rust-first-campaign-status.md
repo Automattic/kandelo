@@ -141,6 +141,8 @@ avoid a contested file. The coordinator resolves at merge.
 | K9 | **COMPLETE** | Imports 83 → **75**; 18 path-taking removed, 10 `*at` added |
 | K4 | **RUNNING** | Worker entry unification |
 | K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
+| K13b | **NOT STARTED** | |
+| K6 follow-ons | **DONE — cut over, TS −258 / Rust −240** | Scatter/gather in the kernel; the msghdr/iovec wires retired. See below |
 | K13b | **DONE** | 121 dispatch-only exports withdrawn; artifact 320 → 199. See below |
 
 ## K6 — marshalling into Rust (2026-09-10)
@@ -1140,6 +1142,124 @@ capacity-carrying views. Their errno *choice* should still be stated by Rust.
    decoders of one format, one hand-rolled — and the TS side runs on **every
    exec**.
 
+## K6's two follow-ons — scatter/gather cut over, the wires retired (2026-09-10)
+
+Worktree `.claude/worktrees/agent-afc1b42a208645bd5`, base `020d1dbfa`.
+**Ledger: in-scope TS −258, Rust −240.** Net-negative in both, because the
+work removed more than it added on each side: the TypeScript iovec marshaller,
+and — on the Rust side — a whole parallel implementation plus the fixed wire
+format nothing produced any more. No `ABI_VERSION` bump; no new `env.host_*`.
+
+### 1. `writev`/`readv`/`preadv`/`pwritev`/`preadv2`/`pwritev2` — cut over
+
+All six, not the four the item named: they share one TypeScript code path, so
+leaving two behind would have deleted nothing. They use K6's
+`SyscallArgSize::KernelDereferenced` — the host copies nothing, passes the
+caller's raw `struct iovec *` and stamps the pointer width — and the kernel
+walks the caller's table through `msghdr::read_iovecs`/`gather`/`scatter`. No
+new host import; no new kernel export.
+
+Deleted from `kernel-worker.ts`: `#handleWritev`, `#handleReadv`,
+`checkedProcessIovecs`, `processIovecLayout`, `checkedVectorCount`,
+`joinPositionedVectorOffset`, two interfaces, six `PROCESS_IOVEC_WASM*`
+constants, the hand-written process-address arm, and the vector cases of
+`#scalarTransferSyscall`.
+
+### The kernel already had a vector implementation. It had never run.
+
+`channel_writev`, `channel_readv`, `channel_preadv` and `channel_pwritev`
+parsed a `KernelIovecWire` table in kernel scratch — a table no host has ever
+staged, because the TypeScript host rewrote every vector syscall to its scalar
+twin before dispatch (`#scalarTransferSyscall`). Syscall numbers 81, 82 and
+295–298 never reached the kernel at all. **Fourth instance of the
+ported-but-unwired pattern** (§2u), and this one had four private adapters, a
+`validate_special_layout` arm, and a source-shape guard in `crates/kernel/
+src/lib.rs` asserting the adapters existed.
+
+`runtime-core` had a *second* implementation — `sys_writev`/`sys_readv`/
+`sys_preadv`/`sys_pwritev` over kernel-owned slices — which had all the tests
+and no production caller. The two halves are now one `syscalls::sys_vector_io`
+that takes the caller's guest address, and every vector test stages a real
+iovec table in the mock host's guest memory. PIPE_BUF atomicity, datagram
+boundaries, eventfd record atomicity, `RLIMIT_FSIZE`, `IOV_MAX`, ESPIPE, EBADF
+direction and zero-length validation are now proven against the code that runs.
+
+### A blocked `writev` retains its request. POSIX says why.
+
+POSIX defines `writev` as `write` over the concatenation of the buffers and
+bounds the return value by the sum of `iov_len` **as presented at the call**.
+Kandelo re-enters a blocked syscall from the top, so a retry that re-read the
+caller's table would let a peer thread change the request between attempts: a
+widened `iov_len` makes `writev` report more than the caller asked for; a
+narrowed one makes `readv` drop bytes already taken from a pipe.
+`BlockingRetryTarget::Vector` holds the decoded table and, for a write, the
+bytes gathered at entry. Replay is safe from double-writing because `sys_write`
+returns a short count whenever any byte moved, so EAGAIN always means zero
+progress.
+
+### A genuine collision the K6 mechanism does not cover
+
+`PROCESS_POINTER_WIDTH_ARG_INDEX` is channel slot 5, and for `preadv2`/
+`pwritev2` slot 5 is the guest's `flags`. **It is load-bearing**: the campaign
+status and the old code both said "pwritev2 flags remain ignored", but
+`vectorRequestForbidsEagainRetry` reads `RWF_NOWAIT` out of it and suppresses
+the EAGAIN park. Stamping the width over it would have silently turned a
+non-blocking read into a parking one.
+
+Resolved without new surface: the host reads `origArgs`, captured before the
+overwrite, and the decision stays where the host already owns it — parking is
+host policy. Recorded in `docs/abi-versioning.md`, and a new guard test pins
+the set of kernel-dereferenced syscalls so the next addition has to answer the
+same question. **Implementing real `RWF_*` semantics needs slot 5 freed
+first** — see the open decision below.
+
+### 2. The msghdr and iovec wires are retired
+
+`KernelIovecWire`, `KernelMsghdrWire`, `KernelCmsghdrWire` and
+`KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT` are gone, with
+`validate_iovec_layout`, `validate_message_layout`,
+`validate_message_wire_layout`, `lay_kernel_iovec_block`,
+`lay_msghdr_subbuffer`, `iovec_syscall_is_output`, `write_scratch_u32` and
+`KERNEL_WIRE_ALIGNMENT`.
+
+Deadness was proven by the **use form**, not the name. The msghdr validators
+were statically unreachable the moment K6 put `Sendmsg`/`Recvmsg` into
+`SYSCALL_ARG_DESCRIPTORS`: `validate_channel_scratch_arguments` returns from
+`validate_descriptor_layout` on a hit and only falls through to
+`validate_special_layout` on a miss. The iovec validator became unreachable the
+same way with this change. `KernelCmsghdrWire` had zero non-test consumers
+already. The generated TypeScript twins had none outside tests.
+
+The opaque transport still **decodes** IOVEC_ARRAY and MSGHDR spans — a format
+reader must keep proving it reads the guest encoder's bytes — but preparation
+refuses them with EINVAL rather than laying out a table, and the generated
+guest marshal header no longer describes a nested iovec span for the six
+syscalls, matching what K6 did for sendmsg/recvmsg.
+
+### The wasmtime host was failing at the marshaller, and now is not
+
+`crates/host-native`'s `marshal_in` bailed "unsupported arg size" on every
+`KernelDereferenced` argument, so under that host `sendmsg`, `recvmsg`, the
+SysV control calls and the mqueue transfers had been broken since K6 — and the
+six vector syscalls would have joined them. Nothing needed staging: leave the
+guest address alone and stamp width 4. Four lines.
+
+### The eighth silent-success defect: 20 tests that run on no target
+
+**Every `#[test]` in `crates/kernel/src/wasm_api.rs` is unreachable.** The
+module is `#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]`, and
+the kernel is only ever *built* for those targets, never tested. `cargo test -p
+kandelo` runs 3 source-shape guards from `lib.rs` and 4 from `tests/`; the 20
+`#[test]` functions inside `wasm_api.rs` are compiled by nothing. One of them
+was the iovec-count boundary test this item inherited. Coverage that needs to
+run belongs in `runtime-core`.
+
+### The ninth: `npx tsc` exits 0 without compiling
+
+In a worktree with no `node_modules`, `npx tsc --noEmit -p host` prints
+"This is not the tsc command you are looking for" and **exits 0**. Read as
+"0 errors" for about a minute. Use `host/node_modules/.bin/tsc`.
+
 ## Validation traps this campaign has paid for — read before claiming a green
 
 **Seven silent-success defects, each found by someone about to cite it as evidence.**
@@ -1606,6 +1726,19 @@ tasks.
 
 ## Open decisions for the maintainer
 
+0. **Free channel slot 5, or accept that `preadv2`/`pwritev2` can never carry
+   `RWF_*`.** The caller's pointer width is stamped into the private sixth
+   channel argument, which for those two Linux extensions is the guest's
+   `flags`. Nothing observable regressed — no `RWF_*` flag is implemented and
+   `RWF_NOWAIT` is still honoured from the host's pre-overwrite view — but the
+   slot is now spoken for. The alternative is giving the kernel a per-process
+   pointer width at process registration and dropping the per-dispatch stamp
+   entirely, which would free the slot for every kernel-dereferenced syscall
+   and is a V2/V4 win in its own right; it also has to survive `fork`
+   inheritance and an `exec` that changes the guest's data model. Cost now:
+   a process-table field, one registration path, and a fork/exec review. Cost
+   later: the same work, plus whatever has been built on slot 5 by then.
+   Recommendation: do it as its own item before anything else claims slot 5.
 1. K3 §11.2 `usePolling` deletion.
 2. K3 §11.3 two epoll POSIX gaps — interest-list inheritance across `fork`, OFD
    keying. Ruling: **fix if straightforward, else log explicitly and defer.**
@@ -1635,6 +1768,11 @@ whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 - **Never `git add -A docs/plans/`** — it sweeps other agents' in-progress files.
 - **Twelve inherited "floors" have been disproved, six of them the
   coordinator's.** Measure rather than inherit.
+- **`npx tsc` without `node_modules` prints a friendly message and exits 0.**
+  Use `host/node_modules/.bin/tsc`. Ninth silent success.
+- **Every `#[test]` in `crates/kernel/src/wasm_api.rs` runs on no target.** The
+  module is wasm-only and the kernel is never tested for a wasm target; twenty
+  test functions are compiled by nothing. Eighth silent success.
 
 ## K5 I6b — the cutover contract, measured (2026-09-10)
 
