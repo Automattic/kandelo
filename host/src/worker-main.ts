@@ -6,7 +6,6 @@
  * CentralizedKernelWorker on the main thread.
  */
 import {
-  ABI_VERSION,
   EXEC_RETIRE_SIGNAL_CODE,
   type CentralizedWorkerInitMessage,
   type CentralizedThreadInitMessage,
@@ -74,6 +73,7 @@ import {
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+  ABI_VERSION,
   type ProcessForkMode,
 } from "./generated/abi";
 import {

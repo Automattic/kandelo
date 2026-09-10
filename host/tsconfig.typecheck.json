@@ -1,0 +1,26 @@
+{
+  // Type-check only. Extends the build config but drops the emit settings,
+  // because `rootDir` and `declaration` constrain where output may be written
+  // and have nothing to do with whether the code type-checks.
+  //
+  // WHY this exists: `tsc --noEmit -p tsconfig.json` reports 35 TS6059
+  // "not under rootDir" errors, every one of them structural rather than a
+  // type error. They come from `host/src/networking/tls-network-backend.ts`
+  // importing TypeScript source directly out of
+  // `packages/registry/openssl/src/`. A gate whose baseline is 35 errors
+  // cannot detect the 36th, which is the same failure mode as a suite that
+  // skips: it reports a number that looks like information and is not.
+  //
+  // The package `typecheck` script is `tsup --dts-only`, which emits
+  // declarations rather than checking every file — it did not catch an import
+  // placed inside a leading doc comment. This config is what actually checks.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": null,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": null
+  },
+  "include": ["src"]
+}

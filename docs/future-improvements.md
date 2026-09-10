@@ -1097,3 +1097,39 @@ applied and is not.** The cache flag was stripped by
 scratchpad is described as session-isolated while being shared. Both produce
 cross-worktree side effects, and both produce failures that name neither
 worktree.
+
+### `npm run typecheck` did not type-check
+
+`host/package.json`'s `typecheck` script was `tsup --dts-only`, which emits
+declaration files rather than checking every source file. It passed with an
+`import` statement placed **inside a leading block comment** — so the imported
+symbol was never in scope, and every use of it should have been an error.
+
+Repointed at `tsc -p tsconfig.typecheck.json`; the old behaviour remains as
+`typecheck:dts`.
+
+**Why a separate tsconfig:** `tsc --noEmit -p tsconfig.json` reports 35
+`TS6059` "not under rootDir" errors, all structural. They come from
+`host/src/networking/tls-network-backend.ts` importing TypeScript source
+directly out of `packages/registry/openssl/src/`. `rootDir` and `declaration`
+constrain where output may be written and are irrelevant to type checking, so
+the check-only config drops them.
+
+**Baseline after the change: 19 errors, and they are real** — the previous
+gate reported none of them.
+
+- **7 × TS2307** on Vite virtual modules (`@kernel-wasm?url`,
+  `@fork-module32-wasm?url`, `./worker-entry-browser.ts?worker&url`, …) and
+  **2 × TS2339** on `ImportMeta.env`. These need Vite's ambient client types in
+  the program; they are a **typing gap, not defects**.
+- **~8 in `packages/registry/openssl`**, mostly `SharedArrayBuffer` not being
+  assignable to `BufferSource`. Out of campaign scope, but in host's program
+  because host imports that source directly.
+- **2 that look like genuine defects** and deserve their own look:
+  `fork-replay-gate.ts:208` reads `.status` off a union
+  (`Partial<WorkerExitMessage> | Partial<WorkerErrorMessage>`) where only one
+  arm has it, and `tls-network-backend.ts:213` passes a
+  `Uint8Array<ArrayBufferLike>` where a `BufferSource` is required.
+
+The Vite-typing gap should be closed first, so the remaining count is small
+enough that a new error is visible — the property this gate lacked.
