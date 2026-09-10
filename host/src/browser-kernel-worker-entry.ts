@@ -34,7 +34,6 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
-  readPreparedPlatformFile,
   VirtualPlatformIO,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
@@ -46,7 +45,6 @@ import {
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
-import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -76,7 +74,6 @@ import {
   createWorkerQuiescence,
   type WorkerQuiescence,
 } from "./worker-quiescence";
-import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -95,7 +92,6 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
-  FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
@@ -215,7 +211,6 @@ let initFailure: string | null = null;
 let kernelFatalReported = false;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
-const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 let vforkMechanismTraceEnabled = false;
 let injectVforkWorkerStartFailure = false;
@@ -275,21 +270,6 @@ const forkHostImportOwnerRuntime =
 const forkHostImportsByWorker =
   new WeakMap<object, ForkHostImportOwnerWorker>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
-/**
- * PIDs whose exit has already been reported to main.
- *
- * The once-only guarantee used to be structural here: `finishProcessExit()`
- * returns early when a teardown is already registered, which is lossless only
- * because the primary entry's `processTeardowns.set()` and its `post()` are
- * adjacent with no `await` between them. Inserting a single `await` there
- * would silently drop a process exit. State the guarantee instead of relying
- * on statement order. Mirrors `reportedExits` in
- * host/src/node-kernel-worker-entry.ts.
- *
- * Keying on PID is sound because the kernel never reuses a task ID within a
- * kernel instance (`crates/runtime-core/src/process_table.rs:1377-1380`).
- */
-const reportedExits = new Set<number>();
 const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
@@ -432,6 +412,10 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processGenerationDetaches,
   ptyByPid,
   execMountIO: () => io,
+  processes,
+  processTeardowns,
+  isInitReady: () => initReady,
+  rootfsBaseImage: () => memfs,
   // No `resolveExecFile`: the browser has no locally injected program buffers
   // and no main-thread `resolve_exec` fallback, so the filesystem is the only
   // source of exec bytes.
@@ -441,6 +425,14 @@ const {
   completeVforkGenerationTeardown,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  handleExportRootfsImage,
+  handleInjectConnection,
+  handlePipeRead,
+  handlePipeWrite,
+  handleReadVfsFile,
+  handleWriteVfsFile,
+  reportedExits,
+  rootfsSnapshotGate,
   handlePosixSpawnResolve,
   handlePtyResize,
   intentionallyTerminated,
@@ -3658,58 +3650,10 @@ async function finishProcessExit(
 // does not exist / is not readable). Used by demos that collect artifacts a
 // process wrote (e.g. sqlite-test's result DB/logs) without sharing the live
 // VFS SharedArrayBuffer with the main thread.
-async function handleReadVfsFile(
-  msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
-) {
-  // The kernel overlay owns `/` unconditionally; read authoritative bytes
-  // (incl. guest copy-on-writes) from it. The host `/` mount no longer exists.
-  try {
-    const data = kernelWorker.rootfsReadFile(msg.path);
-    if (msg.includeMode) {
-      const mode = kernelWorker.rootfsStatMode(msg.path);
-      respond(msg.requestId, {
-        data,
-        mode: mode & FILE_MODES.S_MODE_BITS,
-      });
-    } else {
-      respond(msg.requestId, data);
-    }
-  } catch (error) {
-    const errno = (error as { errno?: number }).errno;
-    // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
-    // file -> null, matching the host-served path's contract.
-    if (errno === 2 || errno === 20 || errno === 21) {
-      respond(msg.requestId, null);
-    } else {
-      respondError(msg.requestId, formatError(error));
-    }
-  }
-}
 
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
-function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
-  // The kernel overlay owns `/` unconditionally; write into it so the file is
-  // visible to live guests. The host `/` mount no longer exists. A kernel
-  // booted without a `/` image has no overlay to write into — reject clearly
-  // rather than surfacing a lower-level "rootfs write failed".
-  if (!memfs) { respondError(msg.requestId, "VFS is not initialized"); return; }
-  let releaseMutation: (() => void) | undefined;
-  try {
-    releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
-    kernelWorker.rootfsWriteFile(
-      msg.path,
-      msg.data,
-      msg.mode & FILE_MODES.S_MODE_BITS,
-    );
-    respond(msg.requestId, true);
-  } catch (err) {
-    respondError(msg.requestId, formatError(err));
-  } finally {
-    releaseMutation?.();
-  }
-}
 
 function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
   if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
@@ -3731,44 +3675,6 @@ function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_v
   }
 }
 
-async function handleExportRootfsImage(
-  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
-) {
-  if (!memfs) {
-    respondError(msg.requestId, "VFS is not initialized");
-    return;
-  }
-  if (!initReady) {
-    respondError(msg.requestId, "rootfs export requires an initialized kernel");
-    return;
-  }
-  try {
-    const image = await rootfsSnapshotGate.runSnapshot(async () => {
-      if (
-        processes.size !== 0 ||
-        processTeardowns.size !== 0 ||
-        workerTeardowns.size !== 0
-      ) {
-        throw new Error(
-          "rootfs export requires a quiescent kernel with no live or tearing-down processes",
-        );
-      }
-      // The kernel overlay owns `/`; `memfs` is only the frozen base image.
-      // Rebuild a faithful image by reconciling that base with the overlay's
-      // authoritative tree (copy-on-writes, runtime creates/deletes, metadata)
-      // rather than serializing the stale base directly.
-      const { image: overlayImage } = await exportRootfsImageFromOverlay({
-        baseImage: await memfs!.saveImage(),
-        overlayTree: kernelWorker.rootfsExportTree(),
-        readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
-      });
-      return overlayImage;
-    });
-    respondTransferredBytes(msg.requestId, image);
-  } catch (error) {
-    respondError(msg.requestId, formatError(error));
-  }
-}
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
@@ -3844,31 +3750,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 
 // ── Pipe operations ──
 
-function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
-  try {
-    respond(
-      msg.requestId,
-      kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx),
-    );
-  } catch (error) {
-    respondError(msg.requestId, formatError(error));
-  }
-}
 
-function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
-  try {
-    const written = kernelWorker.writePipeData(
-      msg.pid,
-      msg.pipeIdx,
-      msg.data,
-    );
-    // Wake readers and pollers only after the gated write has completed.
-    kernelWorker.notifyPipeReadable(msg.pipeIdx);
-    respond(msg.requestId, written);
-  } catch (error) {
-    respondError(msg.requestId, formatError(error));
-  }
-}
 
 function handlePipeCloseRead(
   msg: Extract<MainToKernelMessage, { type: "pipe_close_read" }>,
@@ -3893,21 +3775,6 @@ function handlePipeIsWriteOpen(msg: Extract<MainToKernelMessage, { type: "pipe_i
   }
 }
 
-function handleInjectConnection(
-  msg: Extract<MainToKernelMessage, { type: "inject_connection" }>,
-) {
-  try {
-    const pipeIdx = kernelWorker.injectConnection(
-      msg.pid,
-      msg.fd,
-      msg.peerAddr,
-      msg.peerPort,
-    );
-    respond(msg.requestId, pipeIdx);
-  } catch (error) {
-    respondError(msg.requestId, formatError(error));
-  }
-}
 
 function handleWakeBlockedReaders(
   msg: Extract<MainToKernelMessage, { type: "wake_blocked_readers" }>,

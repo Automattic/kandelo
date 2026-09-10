@@ -38,6 +38,27 @@ const browserEntry = join(repoRoot, "host", "src", "browser-kernel-worker-entry.
 const sharedWorker = join(repoRoot, "host", "src", "kernel-worker.ts");
 const sharedExecTarget = join(repoRoot, "host", "src", "exec-target.ts");
 
+/**
+ * Assert an entry has `name` in scope — either declared there, or bound from
+ * `host/src/process-lifecycle.ts`, the single implementation both entries
+ * call.
+ *
+ * The subject is that the symbol the spawn wiring references exists, not
+ * which file declares it. Sharing a function between the two hosts is the
+ * outcome this campaign wants; it must not read as a deletion.
+ */
+function expectEntryProvides(src: string, path: string, name: string): void {
+  const declared = new RegExp(
+    String.raw`\b(?:async\s+)?function\s+` + name + String.raw`\s*\(`,
+  ).test(src);
+  const bound = new RegExp(String.raw`^\s*` + name + String.raw`,\s*$`, "m")
+    .test(src) && src.includes("} = lifecycle;");
+  expect(
+    declared || bound,
+    path + " must define " + name + " or bind it from ./process-lifecycle",
+  ).toBe(true);
+}
+
 function posixSpawnHandlerSource(src: string): string {
   const start = src.indexOf("async function handlePosixSpawn(");
   const end = src.indexOf("\nasync function handleClone(", start);
@@ -297,9 +318,7 @@ describe("spawn host parity", () => {
     expect(src, `${nodeEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
     );
-    expect(src, `${nodeEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
-    );
+    expectEntryProvides(src, nodeEntry, "handlePosixSpawnResolve");
     // WHY: destroy must close this admission gate before its terminal sweep.
     // A direct handler reference can create a new process Memory while that
     // sweep is yielding, making the supposedly retired generation reachable.
@@ -324,9 +343,7 @@ describe("spawn host parity", () => {
     expect(src, `${browserEntry} must define handlePosixSpawn`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawn\s*\(/,
     );
-    expect(src, `${browserEntry} must define handlePosixSpawnResolve`).toMatch(
-      /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
-    );
+    expectEntryProvides(src, browserEntry, "handlePosixSpawnResolve");
     expectSpawnCallbacks(src, browserEntry);
     const spawnHandler = posixSpawnHandlerSource(src);
     expect(spawnHandler, `${browserEntry} must accept posix_spawn parentage`).toMatch(

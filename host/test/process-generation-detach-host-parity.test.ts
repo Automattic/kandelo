@@ -100,7 +100,10 @@ describe("process generation detach host parity", () => {
       // The outer kernel Worker can be a safe final containment boundary only
       // after it has explicitly terminated every process Worker and the
       // process-owned pthread Workers nested beneath it.
-      expect(destroy).toContain("terminateThreadWorkers(pid)");
+      // Arguments beyond the PID (the browser passes a post-termination
+      // settle delay) are not this assertion's subject; that every thread
+      // Worker is explicitly torn down is.
+      expect(destroy).toMatch(/terminateThreadWorkers\(\s*pid\b/);
       expect(destroy).toContain("terminateTrackedWorker(info.worker");
       expect(destroy).toContain(
         "kernelRealmDestroyResult(gracefulDetachComplete)",

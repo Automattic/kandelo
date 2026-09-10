@@ -81,6 +81,10 @@ import type {
   ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
+import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
+import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
+import type { MemoryFileSystem } from "./vfs";
 
 /** The backing a single execution image owns. A PID persists across exec. */
 export interface ProcessGenerationOwnership {
@@ -207,6 +211,27 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
 
   /** PTY index by PID. */
   readonly ptyByPid: Map<number, number>;
+
+  /** Live processes by PID. */
+  readonly processes: Map<number, Info>;
+
+  /** In-flight process teardowns, keyed by the worker being torn down. */
+  readonly processTeardowns: Map<Info["worker"], Promise<void>>;
+
+  /**
+   * Whether `handleInit` has completed.
+   *
+   * Before it has, the kernel exists but owns nothing, so requests that would
+   * reach it must be refused with a defined result rather than a thrown
+   * protocol error.
+   */
+  isInitReady(): boolean;
+
+  /**
+   * The frozen base rootfs image this kernel booted from, if it booted from
+   * one. Null means the kernel has no overlay to write into or export.
+   */
+  rootfsBaseImage(): MemoryFileSystem | null | undefined;
 
   /**
    * The guest mount table, when one exists.
@@ -642,6 +667,24 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     return allQuiescent;
   }
 
+  /**
+   * PIDs whose exit has already been reported to main.
+   *
+   * The once-only guarantee used to be structural: `finishProcessExit()`
+   * returns early when a teardown is already registered, which is lossless
+   * only because the entry's `processTeardowns.set()` and its `post()` are
+   * adjacent with no `await` between them. Inserting a single `await` there
+   * would silently drop a process exit. State the guarantee instead of relying
+   * on statement order.
+   *
+   * Keying on PID is sound because the kernel never reuses a task ID within a
+   * kernel instance (`crates/runtime-core/src/process_table.rs:1377-1380`).
+   */
+  const reportedExits = new Set<number>();
+
+  /** Serialises rootfs mutations against a rootfs image export. */
+  const rootfsSnapshotGate = new RootfsSnapshotGate();
+
   function respondTransferredBytes(requestId: number, result: Uint8Array): void {
     host.post(
       { type: "response", requestId, result },
@@ -802,11 +845,207 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     return resolveExecutableForLaunch(path, argv);
   }
 
+  /**
+   * Read a rootfs file for the main thread.
+   *
+   * The kernel overlay owns `/` unconditionally, so it is the authority for
+   * these bytes (including guest copy-on-writes); the host `/` mount no longer
+   * exists. ENOENT/ENOTDIR/EISDIR mean "missing or not a readable regular
+   * file" -> null, matching the host-served path's contract.
+   *
+   * `includeMode` was a browser-only protocol option and transferring the
+   * bytes was a Node-only optimisation; both are universal now. The bytes come
+   * from a fresh host-owned buffer the kernel concatenated, never a view into
+   * kernel memory, so the transfer is safe.
+   */
+  function handleReadVfsFile(msg: {
+    requestId: number;
+    path: string;
+    includeMode?: boolean;
+  }): void {
+    try {
+      const data = host.kernel().rootfsReadFile(msg.path);
+      if (msg.includeMode) {
+        const mode = host.kernel().rootfsStatMode(msg.path);
+        respond(msg.requestId, { data, mode: mode & FILE_MODES.S_MODE_BITS });
+      } else {
+        respondTransferredBytes(msg.requestId, data);
+      }
+    } catch (error) {
+      const errno = (error as { errno?: number }).errno;
+      if (errno === 2 || errno === 20 || errno === 21) {
+        respond(msg.requestId, null);
+      } else {
+        respondError(msg.requestId, formatError(error));
+      }
+    }
+  }
+
+  /**
+   * Write a rootfs file on behalf of the main thread.
+   *
+   * Writes go into the overlay so the file is visible to live guests. A kernel
+   * booted without a `/` image has no overlay to write into — reject clearly
+   * rather than surfacing a lower-level "rootfs write failed".
+   */
+  function handleWriteVfsFile(msg: {
+    requestId: number;
+    path: string;
+    data: Uint8Array;
+    mode: number;
+  }): void {
+    if (!host.rootfsBaseImage()) {
+      respondError(msg.requestId, "VFS is not initialized");
+      return;
+    }
+    let releaseMutation: (() => void) | undefined;
+    try {
+      releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
+      host.kernel().rootfsWriteFile(
+        msg.path,
+        msg.data,
+        msg.mode & FILE_MODES.S_MODE_BITS,
+      );
+      respond(msg.requestId, true);
+    } catch (error) {
+      respondError(msg.requestId, formatError(error));
+    } finally {
+      releaseMutation?.();
+    }
+  }
+
+  /**
+   * Serialise the live filesystem back into a rootfs image.
+   *
+   * The export must see a quiescent realm: a live process, a process teardown
+   * or a worker teardown still in flight can all mutate the tree underneath
+   * the snapshot. Only the browser entry counted worker teardowns; both hosts
+   * track them now, so the predicate is the same on both.
+   */
+  async function handleExportRootfsImage(msg: {
+    requestId: number;
+  }): Promise<void> {
+    const baseImage = host.rootfsBaseImage();
+    if (!baseImage) {
+      respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
+      return;
+    }
+    if (!host.isInitReady()) {
+      respondError(msg.requestId, "rootfs export requires an initialized kernel");
+      return;
+    }
+    try {
+      const image = await rootfsSnapshotGate.runSnapshot(async () => {
+        if (
+          host.processes.size !== 0 ||
+          host.processTeardowns.size !== 0 ||
+          workerTeardowns.size !== 0
+        ) {
+          throw new Error(
+            "rootfs export requires a quiescent kernel with no live or tearing-down processes",
+          );
+        }
+        // The kernel overlay owns `/`; the base image is only the frozen tree
+        // the kernel booted from. Rebuild a faithful image by reconciling that
+        // base with the overlay's authoritative tree (copy-on-writes, runtime
+        // creates and deletes, metadata) rather than serializing the stale
+        // base directly.
+        const { image: overlayImage } = await exportRootfsImageFromOverlay({
+          baseImage: await baseImage.saveImage(),
+          overlayTree: host.kernel().rootfsExportTree(),
+          readCowBytes: (path) => host.kernel().rootfsReadFile(path),
+        });
+        return overlayImage;
+      });
+      respondTransferredBytes(msg.requestId, image);
+    } catch (error) {
+      respondError(msg.requestId, formatError(error));
+    }
+  }
+
+  // The three pipe/socket entries below combine what the two hosts each had
+  // half of. Node refused pre-init requests with a defined
+  // `uninitializedKernelPipeResult`, which is the POSIX-shaped answer — the
+  // caller learns the pipe is not there, not that the worker protocol broke —
+  // but had no guard against a kernel throw. The browser had the throw guard
+  // and no pre-init guard, so the same pre-init request produced a protocol
+  // error on one host and a result on the other. Both guards are correct and
+  // both now apply everywhere.
+
+  function handlePipeRead(msg: {
+    requestId: number;
+    pid: number;
+    pipeIdx: number;
+  }): void {
+    if (!host.isInitReady()) {
+      respond(msg.requestId, uninitializedKernelPipeResult("read"));
+      return;
+    }
+    try {
+      respond(
+        msg.requestId,
+        host.kernel().readPipeAvailable(msg.pid, msg.pipeIdx),
+      );
+    } catch (error) {
+      respondError(msg.requestId, formatError(error));
+    }
+  }
+
+  function handlePipeWrite(msg: {
+    requestId: number;
+    pid: number;
+    pipeIdx: number;
+    data: Uint8Array;
+  }): void {
+    if (!host.isInitReady()) {
+      respond(msg.requestId, uninitializedKernelPipeResult("write"));
+      return;
+    }
+    try {
+      const written = host.kernel().writePipeData(msg.pid, msg.pipeIdx, msg.data);
+      // Wake readers and pollers only after the gated write has completed.
+      host.kernel().notifyPipeReadable(msg.pipeIdx);
+      respond(msg.requestId, written);
+    } catch (error) {
+      respondError(msg.requestId, formatError(error));
+    }
+  }
+
+  function handleInjectConnection(msg: {
+    requestId: number;
+    pid: number;
+    fd: number;
+    peerAddr: readonly [number, number, number, number];
+    peerPort: number;
+  }): void {
+    if (!host.isInitReady()) {
+      respond(msg.requestId, uninitializedKernelPipeResult("inject"));
+      return;
+    }
+    try {
+      respond(
+        msg.requestId,
+        host.kernel().injectConnection(
+          msg.pid,
+          msg.fd,
+          msg.peerAddr,
+          msg.peerPort,
+        ),
+      );
+    } catch (error) {
+      respondError(msg.requestId, formatError(error));
+    }
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
     detachExactProcessGeneration,
     dispatchForkHostImport,
+    handleExportRootfsImage,
+    handleInjectConnection,
+    handlePipeRead,
+    handlePipeWrite,
     handlePosixSpawnResolve,
     handlePtyResize,
     intentionallyTerminated,
@@ -820,13 +1059,17 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     handlePtyWrite,
     handleVmInterruptTimer,
     postForkModuleProof,
+    handleReadVfsFile,
+    handleWriteVfsFile,
     readExecFile,
     readExecFromOverlay,
     readExecFromVfs,
     releaseVforkWorkspace,
     reportHostDiagnostic,
+    reportedExits,
     reportRetainedProcessGeneration,
     reportWorkerProtocolError,
+    rootfsSnapshotGate,
     resolveExecutableForLaunch,
     respond,
     respondError,

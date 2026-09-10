@@ -22,6 +22,11 @@ const processWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main.ts"),
   "utf8",
 );
+/** The single implementation both entries call for shared lifecycle logic. */
+const sharedLifecycleSource = readFileSync(
+  join(repoRoot, "host/src/process-lifecycle.ts"),
+  "utf8",
+);
 
 describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   const source = readFileSync(path, "utf8");
@@ -33,8 +38,12 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("routes lifecycle, protocol, exec, clone, and thread failures as host diagnostics", () => {
+    // The subject is that each failure class reaches main as a host
+    // diagnostic, not which file raises it. `worker protocol` is now raised
+    // once in `host/src/process-lifecycle.ts` on behalf of both entries, so
+    // it is asserted there — and the entry must still bind the reporter, so
+    // deleting the wire keeps failing this test.
     for (const diagnosticSource of [
-      "worker protocol",
       "worker-main error message",
       "exec post-commit transition",
       "clone allocation",
@@ -42,7 +51,9 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     ]) {
       expect(source).toContain(`source: "${diagnosticSource}"`);
     }
-    expect(source).toContain("reportHostDiagnostic({");
+    expect(sharedLifecycleSource).toContain('source: "worker protocol"');
+    expect(source).toContain("reportWorkerProtocolError");
+    expect(source).toContain("reportHostDiagnostic");
   });
 
   it("does not classify an ordinary nonzero process exit as a host failure", () => {

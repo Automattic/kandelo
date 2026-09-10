@@ -44,7 +44,6 @@ import {
   ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
-  readPreparedPlatformFile,
 } from "./vfs";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
@@ -59,7 +58,6 @@ import {
   createRootfsBlobProvider,
 } from "./vfs/rootfs-manifest";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
-import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
@@ -79,7 +77,6 @@ import {
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
-  FILE_MODES,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
 } from "./generated/abi";
@@ -98,7 +95,6 @@ import {
   createWorkerQuiescence,
   type WorkerQuiescence,
 } from "./worker-quiescence";
-import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   ForkReplayGateCoordinator,
@@ -360,8 +356,6 @@ const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
 const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
   (pid) => processes.get(pid),
 );
-const reportedExits = new Set<number>();
-const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
 
@@ -550,6 +544,10 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processGenerationDetaches,
   ptyByPid,
   execMountIO: () => vfsExecIO,
+  processes,
+  processTeardowns,
+  isInitReady: () => initReady,
+  rootfsBaseImage: () => rootfsMemfs,
   // Node alone has locally injected program buffers and a main-thread
   // `resolve_exec` fallback beyond the filesystem.
   resolveExecFile: (path) => resolveExec(path),
@@ -559,6 +557,14 @@ const {
   completeVforkGenerationTeardown,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  handleExportRootfsImage,
+  handleInjectConnection,
+  handlePipeRead,
+  handlePipeWrite,
+  handleReadVfsFile,
+  handleWriteVfsFile,
+  reportedExits,
+  rootfsSnapshotGate,
   handlePosixSpawnResolve,
   handlePtyResize,
   intentionallyTerminated,
@@ -3515,45 +3521,8 @@ async function handleDestroy(msg: { requestId: number }) {
 
 // --- Generic host-owned kernel pipes ---
 
-function handlePipeRead(
-  msg: Extract<MainToKernelMessage, { type: "pipe_read" }>,
-) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("read"));
-    return;
-  }
-  respond(msg.requestId, kernelWorker.readPipeAvailable(msg.pid, msg.pipeIdx));
-}
 
-function handlePipeWrite(
-  msg: Extract<MainToKernelMessage, { type: "pipe_write" }>,
-) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("write"));
-    return;
-  }
-  const written = kernelWorker.writePipeData(msg.pid, msg.pipeIdx, msg.data);
-  kernelWorker.notifyPipeReadable(msg.pipeIdx);
-  respond(msg.requestId, written);
-}
 
-function handleInjectConnection(
-  msg: Extract<MainToKernelMessage, { type: "inject_connection" }>,
-) {
-  if (!initReady) {
-    respond(msg.requestId, uninitializedKernelPipeResult("inject"));
-    return;
-  }
-  respond(
-    msg.requestId,
-    kernelWorker.injectConnection(
-      msg.pid,
-      msg.fd,
-      msg.peerAddr,
-      msg.peerPort,
-    ),
-  );
-}
 
 // --- External HTTP request bridge ---
 
@@ -3573,96 +3542,8 @@ async function handleHttpRequest(msg: HttpRequestMessage) {
   }
 }
 
-async function handleExportRootfsImage(
-  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
-) {
-  if (!rootfsMemfs) {
-    respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
-    return;
-  }
-  if (!initReady) {
-    respondError(msg.requestId, "rootfs export requires an initialized kernel");
-    return;
-  }
-  try {
-    const image = await rootfsSnapshotGate.runSnapshot(async () => {
-      if (processes.size !== 0 || processTeardowns.size !== 0) {
-        throw new Error(
-          "rootfs export requires a quiescent kernel with no live or tearing-down processes",
-        );
-      }
-      // The kernel overlay owns `/`; `rootfsMemfs` is only the frozen base
-      // image. Rebuild a faithful image by reconciling that base with the
-      // overlay's authoritative tree (copy-on-writes, runtime creates/deletes,
-      // metadata) rather than serializing the stale base directly.
-      const { image: overlayImage } = await exportRootfsImageFromOverlay({
-        baseImage: await rootfsMemfs!.saveImage(),
-        overlayTree: kernelWorker.rootfsExportTree(),
-        readCowBytes: (path) => kernelWorker.rootfsReadFile(path),
-      });
-      return overlayImage;
-    });
-    respondTransferredBytes(msg.requestId, image);
-  } catch (error) {
-    respondError(
-      msg.requestId,
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-}
 
-async function handleReadVfsFile(
-  msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
-) {
-  // The kernel overlay owns `/` unconditionally; read authoritative bytes from
-  // it (including guest copy-on-writes). The host `/` mount no longer exists.
-  try {
-    const data = kernelWorker.rootfsReadFile(msg.path);
-    respondTransferredBytes(msg.requestId, data);
-  } catch (error) {
-    const errno = (error as { errno?: number }).errno;
-    // ENOENT (2), ENOTDIR (20), EISDIR (21): missing or not a readable regular
-    // file -> null, matching the host-served path's contract.
-    if (errno === 2 || errno === 20 || errno === 21) {
-      respond(msg.requestId, null);
-    } else {
-      respondError(
-        msg.requestId,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
-}
 
-function handleWriteVfsFile(
-  msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
-) {
-  // The kernel overlay owns `/` unconditionally; write into it so the file is
-  // visible to live guests. The host `/` mount no longer exists. A kernel
-  // booted without a `/` image has no overlay to write into — reject clearly
-  // rather than surfacing a lower-level "rootfs write failed".
-  if (!rootfsMemfs) {
-    respondError(msg.requestId, "VFS is not initialized");
-    return;
-  }
-  let releaseMutation: (() => void) | undefined;
-  try {
-    releaseMutation = rootfsSnapshotGate.beginMutation("write a rootfs file");
-    kernelWorker.rootfsWriteFile(
-      msg.path,
-      msg.data,
-      msg.mode & FILE_MODES.S_MODE_BITS,
-    );
-    respond(msg.requestId, true);
-  } catch (error) {
-    respondError(
-      msg.requestId,
-      error instanceof Error ? error.message : String(error),
-    );
-  } finally {
-    releaseMutation?.();
-  }
-}
 
 // --- Message dispatch ---
 

@@ -49,11 +49,11 @@ describe.each([
   const entry = source(relativePath);
 
   it("replaces PID-stable authority only in the committed exec transition", () => {
-    const exec = functionSource(
-      entry,
-      "async function handleExec(",
-      "async function handlePosixSpawnResolve(",
-    );
+    // Bounded structurally, not by naming whichever declaration follows:
+    // `handlePosixSpawnResolve` moved into `host/src/process-lifecycle.ts`,
+    // which would have turned this slice into `-1` and failed a test whose
+    // subject — the exec transition — did not change.
+    const exec = functionSource(entry, "async function handleExec(");
     const commit = exec.indexOf(
       "kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)",
     );
