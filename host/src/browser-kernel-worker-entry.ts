@@ -141,6 +141,7 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
   execOverlayRetryDelay,
+  formatError,
   handleThreadExit,
   isMissingPathError,
   signalFromExitStatus,
@@ -295,41 +296,6 @@ const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
-
-/**
- * The shared lifecycle implementation both host entries call.
- *
- * `terminationProvesQuiescence` is `false` here: `Worker.terminate()` returns
- * `void`, gives no completion signal, and cannot be observed to have stopped a
- * guest parked in `Atomics.wait`, so `BrowserWorkerHandle` has to synthesize
- * the `exit` event itself. Anything released after a browser termination must
- * be force-retired rather than exactly released. The Node entry declares
- * `true` for the same field, and that one difference is why its thread-slot
- * reclaim and exec-rollback paths look different from these.
- */
-const lifecycle = createProcessLifecycle<ProcessInfo>({
-  post: (message) => post(message),
-  terminationProvesQuiescence: false,
-  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
-  vforkLifetimes,
-  vmInterruptTimers,
-  reserveThreadSlotStartPage: (pid, bytes) =>
-    kernelWorker.reserveHostRegion(pid, bytes),
-  forkHostImportsByWorker,
-});
-const {
-  bindForkHostImports,
-  completeVforkGenerationTeardown,
-  dispatchForkHostImport,
-  handleVmInterruptTimer,
-  postForkModuleProof,
-  releaseVforkWorkspace,
-  reportHostDiagnostic,
-  respond,
-  respondError,
-  threadAllocatorForLayout,
-  traceVforkMechanism,
-} = lifecycle;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -569,75 +535,46 @@ const processGenerationDetaches =
     },
   );
 
-async function detachExactProcessGeneration(options: {
-  pid: number;
-  generation: ProcessGenerationOwnership;
-  operation: "deactivate" | "unregister" | "none";
-  retire: (commit: () => void) => void | Promise<void>;
-}): Promise<ExactProcessGenerationDetachResult> {
-  const { pid, generation, operation, retire } = options;
-  const result = await processGenerationDetaches.detach({
-    pid,
-    generation,
-    memory: generation.memory,
-    detach: () => {
-      if (operation === "none") return true;
-      if (operation === "deactivate") {
-        return kernelWorker.deactivateProcess(pid, generation.memory);
-      }
-      return kernelWorker.unregisterProcess(pid, generation.memory);
-    },
-    settle: () => {
-      if (operation === "none") return;
-      return kernelWorker.settleRetiredChannelListeners(
-        pid,
-        generation.memory,
-      );
-    },
-    retire,
-  });
-  if (result.status === "released" && "postCommitError" in result) {
-    try {
-      reportHostDiagnostic({
-        pid,
-        source: "process memory retirement",
-        message:
-          `[browser-kernel-worker] pid ${pid} retired its exact process ` +
-          `memory before a cleanup callback failed: ${
-            formatError(result.postCommitError)
-          }`,
-      });
-    } catch {
-      // Ownership is already committed; a closed diagnostic port cannot turn
-      // this into a retry that would consume the lease twice.
-    }
-  }
-  return result;
-}
-
-function reportRetainedProcessGeneration(
-  pid: number,
-  source: string,
-  result: Extract<
-    ExactProcessGenerationDetachResult,
-    { status: "retained-error" }
-  >,
-  status?: number,
-): void {
-  try {
-    reportHostDiagnostic({
-      pid,
-      source,
-      ...(status === undefined ? {} : { status }),
-      message:
-        `[browser-kernel-worker] retained pid ${pid}'s exact process memory: ` +
-        formatError(result.error),
-    });
-  } catch {
-    // WHY: the transaction remains in the retry ledger. A closed diagnostic
-    // port must not replace the lifecycle error or discard retry authority.
-  }
-}
+/**
+ * The shared lifecycle implementation both host entries call.
+ *
+ * `terminationProvesQuiescence` is `false` here: `Worker.terminate()` returns
+ * `void`, gives no completion signal, and cannot be observed to have stopped a
+ * guest parked in `Atomics.wait`, so `BrowserWorkerHandle` has to synthesize
+ * the `exit` event itself. Anything released after a browser termination must
+ * be force-retired rather than exactly released. The Node entry declares
+ * `true` for the same field, and that one difference is why its thread-slot
+ * reclaim and exec-rollback paths look different from these.
+ */
+const lifecycle = createProcessLifecycle<ProcessInfo>({
+  post: (message) => post(message),
+  terminationProvesQuiescence: false,
+  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
+  vforkLifetimes,
+  vmInterruptTimers,
+  kernel: () => kernelWorker,
+  diagnosticPrefix: "[browser-kernel-worker]",
+  forkHostImportsByWorker,
+  processGenerationDetaches,
+  ptyByPid,
+});
+const {
+  bindForkHostImports,
+  completeVforkGenerationTeardown,
+  detachExactProcessGeneration,
+  dispatchForkHostImport,
+  handlePtyResize,
+  handlePtyWrite,
+  handleVmInterruptTimer,
+  postForkModuleProof,
+  releaseVforkWorkspace,
+  reportHostDiagnostic,
+  reportRetainedProcessGeneration,
+  respond,
+  respondError,
+  threadAllocatorForLayout,
+  traceVforkMechanism,
+} = lifecycle;
 
 // HTTP bridge port (transferred from main thread → service worker comms)
 let bridgePort: MessagePort | null = null;
@@ -773,13 +710,6 @@ function resetBridgePendingRequests(): void {
   if (activeBridgeRequests.size === 0) return;
   activeBridgeRequests.clear();
   reportBridgePendingRequests();
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.stack ? `${err.message}\n${err.stack}` : err.message;
-  }
-  return String(err);
 }
 
 function respondTransferredBytes(requestId: number, result: Uint8Array) {
@@ -4291,18 +4221,6 @@ async function handleDestroy(
 
 // ── PTY ──
 
-function handlePtyWrite(msg: Extract<MainToKernelMessage, { type: "pty_write" }>) {
-  const ptyIdx = ptyByPid.get(msg.pid);
-  if (ptyIdx === undefined) return;
-  kernelWorker.ptyMasterWrite(ptyIdx, msg.data);
-}
-
-function handlePtyResize(msg: Extract<MainToKernelMessage, { type: "pty_resize" }>) {
-  const ptyIdx = ptyByPid.get(msg.pid);
-  if (ptyIdx === undefined) return;
-  kernelWorker.ptySetWinsize(ptyIdx, msg.rows, msg.cols);
-}
-
 function handleMouseInject(msg: Extract<MainToKernelMessage, { type: "mouse_inject" }>) {
   kernelWorker.injectMouseEvent(msg.dx, msg.dy, msg.buttons);
 }
@@ -4604,8 +4522,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
-    case "pty_write": handlePtyWrite(msg); break;
-    case "pty_resize": handlePtyResize(msg); break;
+    case "pty_write": handlePtyWrite(msg.pid, msg.data); break;
+    case "pty_resize": handlePtyResize(msg.pid, msg.rows, msg.cols); break;
     case "register_pty_output": handleRegisterPtyOutput(msg); break;
     case "inject_connection": handleInjectConnection(msg); break;
     case "pipe_read": handlePipeRead(msg); break;

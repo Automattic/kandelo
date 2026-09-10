@@ -42,6 +42,7 @@
  * missing.
  */
 
+import type { CentralizedKernelWorker } from "./kernel-worker";
 import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
 import type {
@@ -56,6 +57,10 @@ import type {
   VforkLifetimeCoordinator,
 } from "./vfork-lifetime";
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import type {
+  ExactProcessGenerationDetachLedger,
+  ExactProcessGenerationDetachResult,
+} from "./process-generation-detach";
 import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 
 /** The backing a single execution image owns. A PID persists across exec. */
@@ -114,11 +119,28 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
   readonly vforkLifetimes: VforkLifetimeCoordinator<Info>;
   readonly vmInterruptTimers: VmInterruptTimerManager<Info>;
 
-  /** Reserve a host-owned region for one thread slot, returning its page. */
-  reserveThreadSlotStartPage(pid: number, bytes: number): number;
+  /**
+   * The kernel this entry drives.
+   *
+   * A function rather than a field because both entries assign their
+   * `kernelWorker` during `handleInit`, after this record is built. It is the
+   * same class on every host, so it is not a host difference — it is here only
+   * so the shared code can reach it.
+   */
+  kernel(): CentralizedKernelWorker;
+
+  /** Prefix for this host's diagnostic messages, e.g. `[node-kernel-worker]`. */
+  readonly diagnosticPrefix: string;
 
   /** Owner registry for the fork host-import protocol, keyed by worker. */
   readonly forkHostImportsByWorker: WeakMap<object, ForkHostImportOwnerWorker>;
+
+  /** Retry ledger for exact process-generation detach transactions. */
+  readonly processGenerationDetaches:
+    ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>;
+
+  /** PTY index by PID. */
+  readonly ptyByPid: Map<number, number>;
 }
 
 // ── Host-independent helpers ────────────────────────────────────────────────
@@ -150,6 +172,21 @@ export function isMissingPathError(err: unknown): boolean {
   const message = (err as { message?: unknown }).message;
   return typeof message === "string" &&
     message.startsWith("ENOENT: no mount for path");
+}
+
+/**
+ * Render an error for a diagnostic message, keeping the stack when there is
+ * one.
+ *
+ * The Node entry previously used only `err.message` here, so a lifecycle
+ * failure reported on Node lost its stack while the same failure on the
+ * browser kept it. Diagnostics should not be less truthful on one host.
+ */
+export function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.stack ? `${err.message}\n${err.stack}` : err.message;
+  }
+  return String(err);
 }
 
 /**
@@ -277,7 +314,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
       ptrWidth,
       reservedSlots: layout.threadSlotCount,
       reserveSlotStartPage: () =>
-        host.reserveThreadSlotStartPage(
+        host.kernel().reserveHostRegion(
           pid,
           PAGES_PER_THREAD * WASM_PAGE_SIZE,
         ) / WASM_PAGE_SIZE,
@@ -307,14 +344,107 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     }
   }
 
+  /**
+   * Run one exact process-generation detach transaction through the ledger.
+   *
+   * `operation` selects what the kernel is told: deactivate the pid (it
+   * becomes a zombie), unregister it entirely, or nothing at all when the
+   * caller only needs the retirement half.
+   */
+  async function detachExactProcessGeneration(options: {
+    pid: number;
+    generation: ProcessGenerationOwnership;
+    operation: "deactivate" | "unregister" | "none";
+    retire: (commit: () => void) => void | Promise<void>;
+  }): Promise<ExactProcessGenerationDetachResult> {
+    const { pid, generation, operation, retire } = options;
+    const result = await host.processGenerationDetaches.detach({
+      pid,
+      generation,
+      memory: generation.memory,
+      detach: () => {
+        if (operation === "none") return true;
+        if (operation === "deactivate") {
+          return host.kernel().deactivateProcess(pid, generation.memory);
+        }
+        return host.kernel().unregisterProcess(pid, generation.memory);
+      },
+      settle: () => {
+        if (operation === "none") return;
+        return host.kernel().settleRetiredChannelListeners(
+          pid,
+          generation.memory,
+        );
+      },
+      retire,
+    });
+    if (result.status === "released" && "postCommitError" in result) {
+      try {
+        reportHostDiagnostic({
+          pid,
+          source: "process memory retirement",
+          message:
+            `${host.diagnosticPrefix} pid ${pid} retired its exact process ` +
+            `memory before a cleanup callback failed: ${
+              formatError(result.postCommitError)
+            }`,
+        });
+      } catch {
+        // Ownership is already committed; a closed diagnostic port cannot turn
+        // this into a retry that would consume the lease twice.
+      }
+    }
+    return result;
+  }
+
+  function reportRetainedProcessGeneration(
+    pid: number,
+    source: string,
+    result: Extract<
+      ExactProcessGenerationDetachResult,
+      { status: "retained-error" }
+    >,
+    status?: number,
+  ): void {
+    try {
+      reportHostDiagnostic({
+        pid,
+        source,
+        ...(status === undefined ? {} : { status }),
+        message:
+          `${host.diagnosticPrefix} retained pid ${pid}'s exact process ` +
+          `memory: ${formatError(result.error)}`,
+      });
+    } catch {
+      // WHY: the transaction remains in the retry ledger. A closed diagnostic
+      // port must not replace the lifecycle error or discard retry authority.
+    }
+  }
+
+  function handlePtyWrite(pid: number, data: Uint8Array): void {
+    const ptyIdx = host.ptyByPid.get(pid);
+    if (ptyIdx === undefined) return;
+    host.kernel().ptyMasterWrite(ptyIdx, data);
+  }
+
+  function handlePtyResize(pid: number, rows: number, cols: number): void {
+    const ptyIdx = host.ptyByPid.get(pid);
+    if (ptyIdx === undefined) return;
+    host.kernel().ptySetWinsize(ptyIdx, rows, cols);
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
+    detachExactProcessGeneration,
     dispatchForkHostImport,
+    handlePtyResize,
+    handlePtyWrite,
     handleVmInterruptTimer,
     postForkModuleProof,
     releaseVforkWorkspace,
     reportHostDiagnostic,
+    reportRetainedProcessGeneration,
     respond,
     respondError,
     threadAllocatorForLayout,

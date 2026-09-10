@@ -158,6 +158,7 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
   execOverlayRetryDelay,
+  formatError,
   handleThreadExit,
   isMissingPathError,
   signalFromExitStatus,
@@ -324,38 +325,6 @@ const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
-
-/**
- * The shared lifecycle implementation both host entries call.
- *
- * `terminationProvesQuiescence` is `true` here because Node's
- * `await worker.terminate()` genuinely joins the thread: a worker parked in
- * `Atomics.wait` on a SharedArrayBuffer does not resume once it resolves.
- * The browser entry declares `false` for the same field.
- */
-const lifecycle = createProcessLifecycle<ProcessInfo>({
-  post: (message) => post(message),
-  terminationProvesQuiescence: true,
-  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
-  vforkLifetimes,
-  vmInterruptTimers,
-  reserveThreadSlotStartPage: (pid, bytes) =>
-    kernelWorker.reserveHostRegion(pid, bytes),
-  forkHostImportsByWorker,
-});
-const {
-  bindForkHostImports,
-  completeVforkGenerationTeardown,
-  dispatchForkHostImport,
-  handleVmInterruptTimer,
-  postForkModuleProof,
-  releaseVforkWorkspace,
-  reportHostDiagnostic,
-  respond,
-  respondError,
-  threadAllocatorForLayout,
-  traceVforkMechanism,
-} = lifecycle;
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -575,80 +544,43 @@ const processGenerationDetaches =
     },
   );
 
-async function detachExactProcessGeneration(options: {
-  pid: number;
-  generation: ProcessGenerationOwnership;
-  operation: "deactivate" | "unregister" | "none";
-  retire: (commit: () => void) => void | Promise<void>;
-}): Promise<ExactProcessGenerationDetachResult> {
-  const { pid, generation, operation, retire } = options;
-  const result = await processGenerationDetaches.detach({
-    pid,
-    generation,
-    memory: generation.memory,
-    detach: () => {
-      if (operation === "none") return true;
-      if (operation === "deactivate") {
-        return kernelWorker.deactivateProcess(pid, generation.memory);
-      }
-      return kernelWorker.unregisterProcess(pid, generation.memory);
-    },
-    settle: () => {
-      if (operation === "none") return;
-      return kernelWorker.settleRetiredChannelListeners(
-        pid,
-        generation.memory,
-      );
-    },
-    retire,
-  });
-  if (result.status === "released" && "postCommitError" in result) {
-    try {
-      reportHostDiagnostic({
-        pid,
-        source: "process memory retirement",
-        message:
-          `[node-kernel-worker] pid ${pid} retired its exact process memory ` +
-          `before a cleanup callback failed: ${
-            result.postCommitError instanceof Error
-              ? result.postCommitError.message
-              : String(result.postCommitError)
-          }`,
-      });
-    } catch {
-      // Ownership is already committed; a closed diagnostic port cannot turn
-      // this into a retry that would consume the lease twice.
-    }
-  }
-  return result;
-}
-
-function reportRetainedProcessGeneration(
-  pid: number,
-  source: string,
-  result: Extract<
-    ExactProcessGenerationDetachResult,
-    { status: "retained-error" }
-  >,
-  status?: number,
-): void {
-  const reason = result.error instanceof Error
-    ? result.error.message
-    : String(result.error);
-  try {
-    reportHostDiagnostic({
-      pid,
-      source,
-      ...(status === undefined ? {} : { status }),
-      message:
-        `[node-kernel-worker] retained pid ${pid}'s exact process memory: ` +
-        reason,
-    });
-  } catch {
-    // WHY: the transaction remains in the retry ledger. A closed diagnostic
-    // port must not replace the lifecycle error or discard retry authority.
-  }
-}
+/**
+ * The shared lifecycle implementation both host entries call.
+ *
+ * `terminationProvesQuiescence` is `true` here because Node's
+ * `await worker.terminate()` genuinely joins the thread: a worker parked in
+ * `Atomics.wait` on a SharedArrayBuffer does not resume once it resolves.
+ * The browser entry declares `false` for the same field.
+ */
+const lifecycle = createProcessLifecycle<ProcessInfo>({
+  post: (message) => post(message),
+  terminationProvesQuiescence: true,
+  isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
+  vforkLifetimes,
+  vmInterruptTimers,
+  kernel: () => kernelWorker,
+  diagnosticPrefix: "[node-kernel-worker]",
+  forkHostImportsByWorker,
+  processGenerationDetaches,
+  ptyByPid,
+});
+const {
+  bindForkHostImports,
+  completeVforkGenerationTeardown,
+  detachExactProcessGeneration,
+  dispatchForkHostImport,
+  handlePtyResize,
+  handlePtyWrite,
+  handleVmInterruptTimer,
+  postForkModuleProof,
+  releaseVforkWorkspace,
+  reportHostDiagnostic,
+  reportRetainedProcessGeneration,
+  respond,
+  respondError,
+  threadAllocatorForLayout,
+  traceVforkMechanism,
+} = lifecycle;
 
 // Exec resolution: request ID → resolver
 let execResolveId = 0;
@@ -3766,18 +3698,6 @@ async function handleDestroy(msg: { requestId: number }) {
 }
 
 // --- PTY ---
-
-function handlePtyWrite(pid: number, data: Uint8Array) {
-  const ptyIdx = ptyByPid.get(pid);
-  if (ptyIdx === undefined) return;
-  kernelWorker.ptyMasterWrite(ptyIdx, data);
-}
-
-function handlePtyResize(pid: number, rows: number, cols: number) {
-  const ptyIdx = ptyByPid.get(pid);
-  if (ptyIdx === undefined) return;
-  kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
-}
 
 // --- Generic host-owned kernel pipes ---
 
