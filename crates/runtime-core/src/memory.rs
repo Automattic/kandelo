@@ -3530,3 +3530,921 @@ impl SharedMappingTable {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod shared_mapping_tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    /// In-memory stand-in for every capability the mapping table needs.
+    struct MockIo {
+        procs: BTreeMap<u32, Vec<u8>>,
+        /// Stable host handle -> file bytes.
+        files: BTreeMap<i64, Vec<u8>>,
+        /// Stable host handle -> (dev, ino, backend identity).
+        idents: BTreeMap<i64, (u64, u64, String)>,
+        retained: BTreeMap<i64, i32>,
+        /// (pid, guest fd) -> stable host handle.
+        fds: BTreeMap<(u32, i32), i64>,
+        shm: BTreeMap<i32, Vec<u8>>,
+        closed_fds: Vec<(u32, i32)>,
+        losses: Vec<(u32, u64, String)>,
+        fail_pwrite: bool,
+        fail_write_process_at: Option<u64>,
+    }
+
+    impl MockIo {
+        fn new() -> Self {
+            Self {
+                procs: BTreeMap::new(),
+                files: BTreeMap::new(),
+                idents: BTreeMap::new(),
+                retained: BTreeMap::new(),
+                fds: BTreeMap::new(),
+                shm: BTreeMap::new(),
+                closed_fds: Vec::new(),
+                losses: Vec::new(),
+                fail_pwrite: false,
+                fail_write_process_at: None,
+            }
+        }
+
+        fn with_process(mut self, pid: u32, len: usize) -> Self {
+            self.procs.insert(pid, vec![0u8; len]);
+            self
+        }
+
+        fn with_file(mut self, handle: i64, dev: u64, ino: u64, bytes: Vec<u8>) -> Self {
+            self.idents
+                .insert(handle, (dev, ino, alloc::format!("file:{dev}:{ino}")));
+            self.files.insert(handle, bytes);
+            self
+        }
+
+        fn with_fd(mut self, pid: u32, fd: i32, handle: i64) -> Self {
+            self.fds.insert((pid, fd), handle);
+            self
+        }
+
+        fn key_of(&self, handle: i64) -> String {
+            self.idents[&handle].2.clone()
+        }
+
+        fn stat_of(&self, handle: i64) -> SharedMappingStat {
+            let (dev, ino, _) = self.idents[&handle];
+            SharedMappingStat {
+                dev,
+                ino,
+                size: self.files[&handle].len() as u64,
+                mode: S_IFREG | 0o644,
+                host_handle: Some(handle),
+            }
+        }
+
+        fn poke(&mut self, pid: u32, addr: u64, bytes: &[u8]) {
+            let mem = self.procs.get_mut(&pid).expect("process");
+            let at = addr as usize;
+            mem[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+
+        fn peek(&self, pid: u32, addr: u64, len: usize) -> Vec<u8> {
+            let mem = &self.procs[&pid];
+            mem[addr as usize..addr as usize + len].to_vec()
+        }
+    }
+
+    impl SharedMappingIo for MockIo {
+        fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            let mem = self.procs.get(&pid).ok_or(Errno::ESRCH)?;
+            let at = addr as usize;
+            if at + dst.len() > mem.len() {
+                return Err(Errno::EFAULT);
+            }
+            dst.copy_from_slice(&mem[at..at + dst.len()]);
+            Ok(())
+        }
+
+        fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
+            if self.fail_write_process_at == Some(addr) {
+                return Err(Errno::EFAULT);
+            }
+            let mem = self.procs.get_mut(&pid).ok_or(Errno::ESRCH)?;
+            let at = addr as usize;
+            if at + src.len() > mem.len() {
+                return Err(Errno::EFAULT);
+            }
+            mem[at..at + src.len()].copy_from_slice(src);
+            Ok(())
+        }
+
+        fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
+            self.procs.get(&pid).map(|m| m.len() as u64)
+        }
+
+        fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+            let file = self.files.get(&handle).ok_or(Errno::EBADF)?;
+            let at = offset as usize;
+            if at >= file.len() {
+                return Ok(0);
+            }
+            let n = dst.len().min(file.len() - at);
+            dst[..n].copy_from_slice(&file[at..at + n]);
+            Ok(n)
+        }
+
+        fn pwrite(&mut self, handle: i64, offset: u64, src: &[u8]) -> Result<usize, Errno> {
+            if self.fail_pwrite {
+                return Err(Errno::EIO);
+            }
+            let file = self.files.get_mut(&handle).ok_or(Errno::EBADF)?;
+            let at = offset as usize;
+            if at + src.len() > file.len() {
+                file.resize(at + src.len(), 0);
+            }
+            file[at..at + src.len()].copy_from_slice(src);
+            Ok(src.len())
+        }
+
+        fn fstat_handle(&mut self, handle: i64) -> Result<SharedMappingStat, Errno> {
+            if !self.files.contains_key(&handle) {
+                return Err(Errno::EBADF);
+            }
+            Ok(self.stat_of(handle))
+        }
+
+        fn handle_identity(&mut self, handle: i64, _dev: u64, _ino: u64) -> Option<String> {
+            self.idents.get(&handle).map(|(_, _, k)| k.clone())
+        }
+
+        fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
+            *self.retained.entry(handle).or_insert(0) += 1;
+            Ok(())
+        }
+
+        fn release_handle(&mut self, handle: i64) {
+            *self.retained.entry(handle).or_insert(0) -= 1;
+        }
+
+        fn fd_stat(&mut self, pid: u32, fd: i32) -> Result<SharedMappingStat, Errno> {
+            let handle = *self.fds.get(&(pid, fd)).ok_or(Errno::EBADF)?;
+            let (dev, ino, _) = self.idents[&handle];
+            Ok(SharedMappingStat {
+                dev,
+                ino,
+                size: self.files[&handle].len() as u64,
+                mode: S_IFREG | 0o644,
+                host_handle: None,
+            })
+        }
+
+        fn fd_pwrite(&mut self, pid: u32, fd: i32, offset: u64, src: &[u8]) -> Result<usize, Errno> {
+            let handle = *self.fds.get(&(pid, fd)).ok_or(Errno::EBADF)?;
+            self.pwrite(handle, offset, src)
+        }
+
+        fn close_fd(&mut self, pid: u32, fd: i32) {
+            self.closed_fds.push((pid, fd));
+            self.fds.remove(&(pid, fd));
+        }
+
+        fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            let seg = self.shm.get(&seg_id).ok_or(Errno::EINVAL)?;
+            let at = offset as usize;
+            if at + dst.len() > seg.len() {
+                return Err(Errno::EINVAL);
+            }
+            dst.copy_from_slice(&seg[at..at + dst.len()]);
+            Ok(())
+        }
+
+        fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno> {
+            let seg = self.shm.get_mut(&seg_id).ok_or(Errno::EINVAL)?;
+            let at = offset as usize;
+            if at + src.len() > seg.len() {
+                return Err(Errno::EINVAL);
+            }
+            seg[at..at + src.len()].copy_from_slice(src);
+            Ok(())
+        }
+
+        fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+            self.losses.push((pid, map_addr, reason.to_string()));
+        }
+    }
+
+    // -- run-diff primitives ---------------------------------------------
+
+    #[test]
+    fn changed_runs_finds_only_differing_spans() {
+        assert_eq!(changed_runs(b"abcdef", b"abcdef"), Vec::new());
+        assert_eq!(changed_runs(b"aXcdYf", b"abcdef"), vec![(1, 2), (4, 5)]);
+        assert_eq!(changed_runs(b"XXcdef", b"abcdef"), vec![(0, 2)]);
+        assert_eq!(changed_runs(b"abcdXX", b"abcdef"), vec![(4, 6)]);
+    }
+
+    #[test]
+    fn a_short_snapshot_treats_every_trailing_byte_as_changed() {
+        // Publishing more than necessary is the safe direction; publishing less
+        // would silently drop a MAP_SHARED store.
+        assert_eq!(changed_runs(b"abcd", b"ab"), vec![(2, 4)]);
+    }
+
+    #[test]
+    fn merging_runs_preserves_a_peers_disjoint_write() {
+        // The whole point of run-merging: process A wrote the head, process B
+        // the tail; neither may clobber the other.
+        let mut backing = b"AAAABBBB".to_vec();
+        let snapshot = b"........".to_vec();
+        assert!(merge_changed_byte_runs(b"XXXX....", &snapshot, &mut backing, 0));
+        assert_eq!(&backing, b"XXXXBBBB");
+        assert!(merge_changed_byte_runs(b"....YYYY", &snapshot, &mut backing, 0));
+        assert_eq!(&backing, b"XXXXYYYY");
+    }
+
+    // -- anonymous MAP_SHARED --------------------------------------------
+
+    fn anon_table_with_two_observers(io: &mut MockIo) -> (SharedMappingTable, String) {
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, io).unwrap();
+        let key = table
+            .mapping(1, 0)
+            .unwrap()
+            .backing_key
+            .clone()
+            .expect("anon backing");
+        // A second process observes the same store.
+        let snapshot = table.mapping(1, 0).unwrap().snapshot.clone().unwrap();
+        table.anon_backings.get_mut(&key).unwrap().ref_count += 1;
+        table.insert_mapping(2, 0, SharedMapping::anonymous(8, true, key.clone(), snapshot));
+        (table, key)
+    }
+
+    #[test]
+    fn anonymous_peers_converge_on_disjoint_writes() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let (mut table, key) = anon_table_with_two_observers(&mut io);
+
+        io.poke(1, 0, b"AAAA\0\0\0\0");
+        io.poke(2, 0, b"\0\0\0\0BBBB");
+        table.sync_anonymous_from_process(1, false, &mut io).unwrap();
+        table.sync_anonymous_from_process(2, false, &mut io).unwrap();
+        // Process 1 must now import process 2's half.
+        table.sync_anonymous_from_process(1, false, &mut io).unwrap();
+
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"AAAABBBB".to_vec());
+        assert_eq!(table.anon_backing(&key).unwrap().bytes, b"AAAABBBB".to_vec());
+    }
+
+    #[test]
+    fn a_sole_current_observer_defers_scanning_its_memory() {
+        let mut io = MockIo::new().with_process(1, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+
+        io.poke(1, 0, b"AAAAAAAA");
+        table.sync_anonymous_from_process(1, false, &mut io).unwrap();
+        let key = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+        // Nothing published: with one observer and no staleness there is no
+        // peer that could observe the write.
+        assert_eq!(table.anon_backing(&key).unwrap().bytes, vec![0u8; 8]);
+
+        // A forced sync (msync / munmap / fork) publishes it.
+        table.sync_anonymous_from_process(1, true, &mut io).unwrap();
+        assert_eq!(table.anon_backing(&key).unwrap().bytes, b"AAAAAAAA".to_vec());
+    }
+
+    #[test]
+    fn a_sole_stale_observer_still_imports_a_departed_peers_publication() {
+        // The generic case a package set is unlikely to reach: a peer published
+        // and then detached, leaving one stale observer. Deferring here would
+        // strand the publication forever.
+        let mut io = MockIo::new().with_process(1, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        let key = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+
+        let backing = table.anon_backings.get_mut(&key).unwrap();
+        backing.bytes = b"PEERPEER".to_vec();
+        backing.version = 7;
+
+        table.sync_anonymous_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"PEERPEER".to_vec());
+        assert_eq!(table.mapping(1, 0).unwrap().seen_version, 7);
+    }
+
+    // -- file page cache --------------------------------------------------
+
+    #[test]
+    fn a_page_past_eof_is_zero_filled_but_writeback_never_grows_the_file() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"hello".to_vec());
+        let key = io.key_of(10);
+        let mut backing = FileBacking::new(key, 10, true, 5);
+
+        let page = backing.read_range(0, FILE_PAGE_SIZE, &mut io).unwrap();
+        assert_eq!(&page[..5], b"hello");
+        assert!(page[5..].iter().all(|b| *b == 0));
+
+        // Dirty a byte inside the file and a byte past EOF.
+        backing.write_range(4, b"O", true, &mut io).unwrap();
+        backing.write_range(4096, b"Z", true, &mut io).unwrap();
+        assert!(backing.flush_all(&mut io));
+
+        assert_eq!(io.files[&10], b"hellO".to_vec());
+    }
+
+    #[test]
+    fn dirty_bytes_entirely_past_eof_are_dropped_not_written() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"hello".to_vec());
+        let key = io.key_of(10);
+        let mut backing = FileBacking::new(key, 10, true, 5);
+        backing.write_range(8192, b"Z", true, &mut io).unwrap();
+        assert_eq!(backing.dirty_page_count(), 1);
+        assert!(backing.flush_all(&mut io));
+        assert_eq!(backing.dirty_page_count(), 0);
+        assert_eq!(io.files[&10], b"hello".to_vec());
+    }
+
+    #[test]
+    fn invalidation_never_discards_dirty_pages() {
+        // Dropping a dirty page would silently lose an acknowledged store.
+        let mut io = MockIo::new().with_file(10, 1, 2, vec![b'x'; 8192]);
+        let key = io.key_of(10);
+        let mut backing = FileBacking::new(key, 10, true, 8192);
+        backing.read_range(0, 8192, &mut io).unwrap();
+        backing.write_range(0, b"D", true, &mut io).unwrap();
+        assert_eq!(backing.cached_page_count(), 2);
+
+        backing.invalidate_range(0, 8192);
+        assert_eq!(backing.cached_page_count(), 1);
+        assert_eq!(backing.dirty_page_count(), 1);
+    }
+
+    #[test]
+    fn a_short_read_is_an_error_rather_than_a_zero_fill() {
+        // fstat declared these bytes readable; zero-filling would manufacture
+        // data the file never held.
+        let mut io = MockIo::new().with_file(10, 1, 2, b"ab".to_vec());
+        let key = io.key_of(10);
+        let mut backing = FileBacking::new(key, 10, true, 64);
+        assert_eq!(backing.read_range(0, 8, &mut io), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn revalidation_rejects_a_handle_whose_identity_changed() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"hello".to_vec());
+        let mut backing = FileBacking::new("file:9:9".to_string(), 10, true, 5);
+        assert_eq!(backing.revalidate(&mut io), Err(Errno::EIO));
+        assert!(!backing.size_valid);
+    }
+
+    #[test]
+    fn a_failed_final_writeback_keeps_the_handle_and_the_dirty_pages() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"hello".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        {
+            let stat = io.stat_of(10);
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            backing.ref_count = 1;
+        }
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .write_range(0, b"H", true, &mut io)
+            .unwrap();
+        io.fail_pwrite = true;
+        table.release_file_backing_reference(&key, &mut io);
+
+        // Closing here would irreversibly lose an acknowledged store.
+        assert!(table.file_backing(&key).is_some());
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
+        assert_eq!(io.retained[&10], 1);
+    }
+
+    // -- two-phase file coherence -----------------------------------------
+
+    fn file_table_with_two_observers(io: &mut MockIo, key: &str) -> SharedMappingTable {
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table.get_or_create_file_backing(key, &stat, true, io).unwrap();
+            backing.ref_count = 2;
+        }
+        let initial = table
+            .file_backing_mut(key)
+            .unwrap()
+            .read_range(0, 8, io)
+            .unwrap();
+        for pid in [1u32, 2u32] {
+            io.write_process(pid, 0, &initial).unwrap();
+            table.insert_mapping(
+                pid,
+                0,
+                SharedMapping::file(3, 0, 8, true, true, String::from(key), initial.clone(), 0),
+            );
+        }
+        table
+    }
+
+    #[test]
+    fn file_peers_converge_on_disjoint_writes_and_reach_the_file() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+
+        io.poke(1, 0, b"AAAA....");
+        io.poke(2, 0, b"....BBBB");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"AAAABBBB".to_vec());
+
+        assert!(table.flush_mappings(1, 0, 8, &mut io));
+        assert_eq!(io.files[&10], b"AAAABBBB".to_vec());
+    }
+
+    #[test]
+    fn a_read_only_mapping_never_publishes() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        table.mappings.get_mut(&1).unwrap().get_mut(&0).unwrap().writable = false;
+
+        io.poke(1, 0, b"AAAA....");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+    }
+
+    #[test]
+    fn publishing_observers_forces_a_deferred_sole_writer_to_flush() {
+        // Without this, a newcomer would map the file's persisted bytes and
+        // never see the sole existing observer's deferred writes.
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            backing.ref_count = 1;
+        }
+        let initial = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        io.write_process(1, 0, &initial).unwrap();
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), initial, 0),
+        );
+
+        io.poke(1, 0, b"AAAA....");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+
+        table.publish_file_backing_observers(&key, &mut io).unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
+    }
+
+    // -- mprotect ---------------------------------------------------------
+
+    #[test]
+    fn a_prot_write_upgrade_needs_a_writable_description() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+
+        assert_eq!(table.prepare_file_mappings_for_write(1, 0, 8), Ok(()));
+        table
+            .mappings
+            .get_mut(&1)
+            .unwrap()
+            .get_mut(&0)
+            .unwrap()
+            .write_allowed = false;
+        assert_eq!(
+            table.prepare_file_mappings_for_write(1, 0, 8),
+            Err(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn writeback_eligibility_is_monotonic() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        table.update_mapping_protection(1, 0, 8, true);
+        assert!(table.mapping(1, 0).unwrap().writable);
+        // A read-only downgrade must not clear it: bytes dirtied while writable
+        // still have to be flushed.
+        table.update_mapping_protection(1, 0, 8, false);
+        assert!(table.mapping(1, 0).unwrap().writable);
+    }
+
+    // -- fd-writeback bridge ----------------------------------------------
+
+    fn fd_writeback_table(io: &mut MockIo) -> SharedMappingTable {
+        let mut table = SharedMappingTable::new();
+        let snapshot = vec![b'.'; 8];
+        io.write_process(1, 0, &snapshot).unwrap();
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::fd_writeback(3, 0, 8, 4, 8, 1, 2, snapshot),
+        );
+        let mapping = table.mapping(1, 0).unwrap().clone();
+        table.retain_writeback_fd(1, &mapping);
+        table
+    }
+
+    #[test]
+    fn fd_writeback_publishes_only_the_runs_this_mapping_changed() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"..PEER..".to_vec())
+            .with_fd(1, 4, 10);
+        let mut table = fd_writeback_table(&mut io);
+
+        io.poke(1, 0, b"AA......");
+        assert!(table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io));
+        // The peer's bytes at 2..6 survive because they never differed from
+        // this mapping's snapshot.
+        assert_eq!(io.files[&10], b"AAPEER..".to_vec());
+    }
+
+    #[test]
+    fn fd_writeback_refuses_when_the_descriptor_was_repointed_by_dup2() {
+        // The dup is a guest-*visible* fd number. Writing here would corrupt an
+        // unrelated file, and today no shipped package exercises this path.
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec())
+            .with_file(11, 9, 9, b"UNRELATED".to_vec())
+            .with_fd(1, 4, 11);
+        let mut table = fd_writeback_table(&mut io);
+
+        io.poke(1, 0, b"AAAAAAAA");
+        assert!(!table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io));
+        assert_eq!(io.files[&11], b"UNRELATED".to_vec());
+        assert_eq!(io.losses.len(), 1);
+        assert!(io.losses[0].2.contains("repointed"));
+    }
+
+    #[test]
+    fn fd_writeback_refuses_and_reports_when_the_descriptor_was_closed() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let mut table = fd_writeback_table(&mut io);
+        io.poke(1, 0, b"AAAAAAAA");
+        assert!(!table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io));
+        assert_eq!(io.losses.len(), 1);
+        assert!(io.losses[0].2.contains("closed"));
+    }
+
+    #[test]
+    fn fd_writeback_is_clamped_to_the_live_file_size() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"....".to_vec())
+            .with_fd(1, 4, 10);
+        let mut table = fd_writeback_table(&mut io);
+        io.poke(1, 0, b"AAAAAAAA");
+        assert!(table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io));
+        // The whole-page mapping must not grow the file past its real EOF.
+        assert_eq!(io.files[&10], b"AAAA".to_vec());
+    }
+
+    #[test]
+    fn writeback_loss_reports_are_bounded_but_never_silent() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let mut table = fd_writeback_table(&mut io);
+        io.poke(1, 0, b"AAAAAAAA");
+        for _ in 0..(WRITEBACK_LOSS_REPORT_LIMIT + 10) {
+            table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io);
+        }
+        assert_eq!(io.losses.len() as u32, WRITEBACK_LOSS_REPORT_LIMIT);
+    }
+
+    // -- munmap split -----------------------------------------------------
+
+    #[test]
+    fn a_middle_split_keeps_the_shared_writeback_dup_alive_for_both_halves() {
+        let mut io = MockIo::new()
+            .with_process(1, 4096)
+            .with_file(10, 1, 2, vec![b'.'; 8])
+            .with_fd(1, 4, 10);
+        let mut table = fd_writeback_table(&mut io);
+
+        table.cleanup_mappings(1, 3, 2, &mut io);
+        assert!(table.mapping(1, 0).is_some());
+        assert!(table.mapping(1, 5).is_some());
+        assert_eq!(table.mapping(1, 0).unwrap().len, 3);
+        assert_eq!(table.mapping(1, 5).unwrap().len, 3);
+        assert_eq!(table.mapping(1, 5).unwrap().file_offset, 5);
+        // Neither half released yet: the dup must still be open.
+        assert!(io.closed_fds.is_empty());
+
+        table.cleanup_mappings(1, 0, 3, &mut io);
+        assert!(io.closed_fds.is_empty());
+        table.cleanup_mappings(1, 5, 3, &mut io);
+        assert_eq!(io.closed_fds, vec![(1u32, 4i32)]);
+    }
+
+    #[test]
+    fn a_head_unmap_slides_the_tail_and_its_snapshot() {
+        let mut io = MockIo::new()
+            .with_process(1, 4096)
+            .with_file(10, 1, 2, vec![b'.'; 8])
+            .with_fd(1, 4, 10);
+        let mut table = fd_writeback_table(&mut io);
+        io.poke(1, 0, b"01234567");
+        table.mappings.get_mut(&1).unwrap().get_mut(&0).unwrap().snapshot =
+            Some(b"01234567".to_vec());
+
+        table.cleanup_mappings(1, 0, 3, &mut io);
+        let mapping = table.mapping(1, 3).expect("tail survives");
+        assert_eq!(mapping.len, 5);
+        assert_eq!(mapping.file_offset, 3);
+        assert_eq!(mapping.snapshot.as_deref(), Some(&b"34567"[..]));
+    }
+
+    #[test]
+    fn a_split_refcounts_the_file_backing_so_neither_half_frees_it_early() {
+        let mut io = MockIo::new()
+            .with_process(1, 4096)
+            .with_file(10, 1, 2, vec![b'.'; 8]);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            backing.ref_count = 1;
+        }
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), vec![b'.'; 8], 0),
+        );
+
+        table.cleanup_mappings(1, 3, 2, &mut io);
+        assert_eq!(table.file_backing(&key).unwrap().ref_count, 2);
+        table.cleanup_mappings(1, 0, 3, &mut io);
+        assert!(table.file_backing(&key).is_some());
+        table.cleanup_mappings(1, 5, 3, &mut io);
+        assert!(table.file_backing(&key).is_none());
+        assert_eq!(io.retained[&10], 0);
+    }
+
+    // -- fork inheritance --------------------------------------------------
+
+    #[test]
+    fn a_child_inherits_the_latest_shared_bytes_and_a_backing_reference() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        let key = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+        table.anon_backings.get_mut(&key).unwrap().bytes = b"PARENTAL".to_vec();
+        table.anon_backings.get_mut(&key).unwrap().version = 3;
+
+        table.inherit_process_mappings(1, 2, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"PARENTAL".to_vec());
+        assert_eq!(table.anon_backing(&key).unwrap().ref_count, 2);
+        assert_eq!(table.mapping(2, 0).unwrap().seen_version, 3);
+    }
+
+    #[test]
+    fn a_failed_inheritance_leaves_the_child_address_space_untouched() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        let key = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+        table.anon_backings.get_mut(&key).unwrap().bytes = b"PARENTAL".to_vec();
+        io.poke(2, 0, b"ORIGINAL");
+
+        io.fail_write_process_at = Some(0);
+        assert_eq!(
+            table.inherit_process_mappings(1, 2, &mut io),
+            Err(Errno::EFAULT)
+        );
+        io.fail_write_process_at = None;
+        assert_eq!(io.peek(2, 0, 8), b"ORIGINAL".to_vec());
+        assert!(table.mapping(2, 0).is_none());
+        assert_eq!(table.anon_backing(&key).unwrap().ref_count, 1);
+    }
+
+    #[test]
+    fn inheriting_into_a_child_that_already_has_mappings_is_refused() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = SharedMappingTable::new();
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        table.track_anonymous_mapping(2, 0, 8, true, &mut io).unwrap();
+        assert_eq!(
+            table.inherit_process_mappings(1, 2, &mut io),
+            Err(Errno::EEXIST)
+        );
+    }
+
+    #[test]
+    fn an_fd_writeback_child_snapshots_the_fork_time_content() {
+        // No backing read is needed: the child's memory is already a full fork
+        // copy. It needs a mapping entry so its own later writes flush.
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, vec![b'.'; 8])
+            .with_fd(1, 4, 10)
+            .with_fd(2, 4, 10);
+        let mut table = fd_writeback_table(&mut io);
+        io.poke(2, 0, b"FORKTIME");
+
+        table.inherit_process_mappings(1, 2, &mut io).unwrap();
+        let child = table.mapping(2, 0).expect("child mapping");
+        assert!(child.fd_writeback);
+        assert_eq!(child.snapshot.as_deref(), Some(&b"FORKTIME"[..]));
+
+        io.poke(2, 0, b"CHILDWRT");
+        assert!(table.flush_fd_writeback_mapping(2, 0, 0, 8, &mut io));
+        assert_eq!(io.files[&10], b"CHILDWRT".to_vec());
+    }
+
+    // -- SysV shared-memory mirror ----------------------------------------
+
+    fn sysv_table(io: &mut MockIo) -> SharedMappingTable {
+        io.shm.insert(7, vec![b'.'; 8]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, io).unwrap();
+        table.track_sysv_mapping(2, 0, 7, 8, false, io).unwrap();
+        table
+    }
+
+    #[test]
+    fn sysv_attachments_converge_on_disjoint_writes() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = sysv_table(&mut io);
+
+        io.poke(1, 0, b"AAAA....");
+        io.poke(2, 0, b"....BBBB");
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        assert!(table.sync_sysv_from_process(2, false, &mut io));
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+
+        assert_eq!(io.shm[&7], b"AAAABBBB".to_vec());
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"AAAABBBB".to_vec());
+        assert!(table.sysv_segment_version(7) > 0);
+    }
+
+    #[test]
+    fn a_read_only_sysv_attachment_never_publishes() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, vec![b'.'; 8]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, true, &mut io).unwrap();
+        table.track_sysv_mapping(2, 0, 7, 8, false, &mut io).unwrap();
+
+        io.poke(1, 0, b"AAAAAAAA");
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        // Nothing reached the kernel-owned segment.
+        assert_eq!(io.shm[&7], vec![b'.'; 8]);
+
+        // And once a writer advances the segment, the read-only attachment is
+        // refreshed back to the authoritative bytes, discarding the local
+        // scribble rather than letting it linger as a private view.
+        io.poke(2, 0, b"BBBBBBBB");
+        assert!(table.sync_sysv_from_process(2, true, &mut io));
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        assert_eq!(io.peek(1, 0, 8), b"BBBBBBBB".to_vec());
+    }
+
+    #[test]
+    fn a_sole_sysv_attachment_defers_until_forced() {
+        let mut io = MockIo::new().with_process(1, 64);
+        io.shm.insert(7, vec![b'.'; 8]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+
+        io.poke(1, 0, b"AAAAAAAA");
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        assert_eq!(io.shm[&7], vec![b'.'; 8]);
+
+        assert!(table.sync_sysv_from_process(1, true, &mut io));
+        assert_eq!(io.shm[&7], b"AAAAAAAA".to_vec());
+    }
+
+    #[test]
+    fn a_child_inherits_sysv_attachments_with_the_segments_current_bytes() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEGMENTS".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+
+        table.inherit_process_mappings(1, 2, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"SEGMENTS".to_vec());
+        assert_eq!(table.sysv_mapping(2, 0).unwrap().seg_id, 7);
+    }
+
+    // -- teardown ----------------------------------------------------------
+
+    #[test]
+    fn teardown_publishes_then_drops_every_mapping() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec())
+            .with_fd(1, 4, 10);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            backing.ref_count = 1;
+        }
+        let initial = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        io.write_process(1, 0, &initial).unwrap();
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), initial, 0),
+        );
+
+        io.poke(1, 0, b"FINALLLL");
+        table.release_all_for_process(1, true, &mut io);
+
+        assert_eq!(io.files[&10], b"FINALLLL".to_vec());
+        assert!(table.mapping(1, 0).is_none());
+        assert!(table.file_backing(&key).is_none());
+        assert_eq!(io.retained[&10], 0);
+    }
+
+    #[test]
+    fn teardown_continues_past_a_backing_that_can_no_longer_be_written() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        io.shm.insert(7, vec![b'.'; 8]);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            backing.ref_count = 1;
+        }
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), vec![b'.'; 8], 0),
+        );
+        table.track_sysv_mapping(1, 8, 7, 8, false, &mut io).unwrap();
+
+        io.poke(1, 0, b"FILEDATA");
+        io.fail_pwrite = true;
+        table.release_all_for_process(1, true, &mut io);
+
+        // The file backing keeps its dirty pages, but SysV cleanup still ran.
+        assert!(table.sysv_mapping(1, 8).is_none());
+        assert!(table.mapping(1, 0).is_none());
+        assert!(table.file_backing(&key).is_some());
+    }
+
+    #[test]
+    fn a_boundary_sync_is_a_no_op_for_a_process_with_no_shared_state() {
+        let mut io = MockIo::new().with_process(1, 64);
+        let mut table = SharedMappingTable::new();
+        assert!(table.is_empty());
+        table.synchronize_for_boundary(1, &mut io).unwrap();
+    }
+}
