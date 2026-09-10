@@ -2072,6 +2072,81 @@ impl FileBacking {
 ///
 /// This is the kernel-owned replacement for the eleven `Map`/`Set` containers
 /// the TypeScript host used to model the same state.
+///
+/// # Cutover status
+///
+/// **This table is not yet wired into production.** `host/src/kernel-worker.ts`
+/// remains the live implementation; change it for behavior until the wiring
+/// below lands, and keep the two in step.
+///
+/// The subsystem is host-driven — the host calls into the kernel around mmap,
+/// munmap, msync, mremap, mprotect, fork, exec and process teardown — so making
+/// it live needs host-callable `kernel_*` entry points, and
+/// `crates/kernel/src/wasm_api.rs` is the only place those can be declared. The
+/// alternative, hooking the guest syscalls where they are already dispatched,
+/// lands in `crates/runtime-core/src/syscalls.rs`. Both files were owned by a
+/// concurrent workstream when this landed, so neither was touched.
+///
+/// # What the wiring needs
+///
+/// Five of `SharedMappingIo`'s operations cross to the host, and **all five are
+/// existing imports** — no ABI change and no new `env.host_*`:
+///
+/// | trait method | host import |
+/// |---|---|
+/// | `read_process` | `host_proc_read_bytes` |
+/// | `write_process` | `host_proc_write_bytes` |
+/// | `pread` | `host_pread` |
+/// | `pwrite` | `host_pwrite` |
+/// | `fstat_handle` | `host_fstat` |
+///
+/// The remaining operations are in-kernel: `fd_stat`/`fd_pwrite`/`close_fd` are
+/// the kernel's own fd table, `shm_read`/`shm_write` are `ipc::IpcTable`'s
+/// segment bytes (`shm_read_chunk`/`shm_write_chunk` without the channel-sized
+/// chunking the host mirror needs today), and `retain_handle`/`release_handle`
+/// are the existing host-file-handle refcount.
+///
+/// # TypeScript this replaces
+///
+/// | `kernel-worker.ts` | here |
+/// |---|---|
+/// | `trackAnonymousSharedMapping` | [`SharedMappingTable::track_anonymous_mapping`] |
+/// | `synchronizeSharedMemoryForBoundary` | [`SharedMappingTable::synchronize_for_boundary`] |
+/// | `syncAnonymousSharedMappingsFromProcess` | [`SharedMappingTable::sync_anonymous_from_process`] |
+/// | `syncFileSharedMappingsFromProcess` | [`SharedMappingTable::sync_file_from_process`] |
+/// | `publishSharedMmapBackingObservers` | [`SharedMappingTable::publish_file_backing_observers`] |
+/// | `getOrCreateSharedMmapBacking`, `revalidateSharedMmapBacking` | [`SharedMappingTable::get_or_create_file_backing`], [`FileBacking::revalidate`] |
+/// | `ensureSharedMmapBacking{Range,Page}Loaded`, `readSharedMmapBacking{Page,Range}` | [`FileBacking::ensure_range_loaded`], [`FileBacking::read_range`] |
+/// | `copyRangeToSharedMmapBacking`, `mergeChangedFileMappingRuns` | [`FileBacking::write_range`], [`FileBacking::merge_changed_runs`] |
+/// | `flushSharedMmapBackingRange`, `writeAllToSharedMmapBacking` | [`FileBacking::flush_range`] |
+/// | `invalidateSharedMmapBacking{Range,Pages}` | [`FileBacking::invalidate_range`], [`FileBacking::invalidate_clean_pages`] |
+/// | `mergeChangedByteRuns`, `rangeDiffersFromSnapshot` | [`merge_changed_byte_runs`], [`range_differs_from_snapshot`] |
+/// | `retain/releaseFdWritebackFd`, `flushFdWritebackMapping` | [`SharedMappingTable::flush_fd_writeback_mapping`] and the private refcount helpers |
+/// | `flushSharedMappings` | [`SharedMappingTable::flush_mappings`] |
+/// | `cleanupSharedMappings` | [`SharedMappingTable::cleanup_mappings`] |
+/// | `remapSharedMapping` | [`SharedMappingTable::remap_mapping`] |
+/// | `prepareFileSharedMappingsForWrite`, `updateSharedMappingProtection` | [`SharedMappingTable::prepare_file_mappings_for_write`], [`SharedMappingTable::update_mapping_protection`] |
+/// | `inheritProcessSharedMappings` and its prepare/validate/publish trio | [`SharedMappingTable::inherit_process_mappings`] |
+/// | `releaseAllSharedMemoryForProcess` | [`SharedMappingTable::release_all_for_process`] |
+/// | `syncSysvShmMappingsFromProcess`, `mergeAndRefreshSysvShmMapping`, `read/writeSysvShmRange` | [`SharedMappingTable::sync_sysv_from_process`] |
+///
+/// # Performance
+///
+/// This is the syscall hot path. The shape of the cost changes in both
+/// directions and **neither direction has been measured**: the TypeScript
+/// implementation diffs a zero-copy view of guest memory, so a Rust owner must
+/// copy each mapping's range across `host_proc_read_bytes` (one call per
+/// mapping per boundary, not one per page); against that, the SysV mirror stops
+/// pulling whole segments through channel-sized chunked round trips because the
+/// kernel reads its own segment bytes. `docs/agent-guidance/performance.md`
+/// requires before/after benchmarks on Node **and** browser before the cutover,
+/// and forbids calling the result neutral without them.
+///
+/// # What this does not fix
+///
+/// Coherence stays boundary-synchronous. Moving ownership here does not make a
+/// store in one process immediately visible in a peer, and does not make
+/// `futex` able to target a peer's memory. See the module comment above.
 #[derive(Debug, Default)]
 pub struct SharedMappingTable {
     /// pid → (mapping start address → mapping).
