@@ -25709,6 +25709,9 @@ mod tests {
             FileType::MemFd => {
                 crate::descriptor_backing::with_memfds(|table| table.generation(idx))
             }
+            FileType::Epoll => {
+                crate::descriptor_backing::with_epolls(|table| table.generation(idx))
+            }
             FileType::Regular => {
                 crate::descriptor_backing::with_procfs_bufs(|table| table.generation(idx))
             }
@@ -40125,6 +40128,111 @@ impl HostIO for NetMock {
             .expect("closing one descriptor must not destroy a shared instance");
         assert_eq!(count, 1);
         assert_eq!(events[0].1, 31);
+    }
+
+    #[test]
+    fn epoll_registration_follows_the_description_through_dup_and_close() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, EPOLLIN_BIT, 12).unwrap();
+
+        // The description outlives the descriptor number it was registered
+        // under, so the interest must still resolve through the dup.
+        let dup_fd = sys_dup(&mut proc, read_fd).unwrap();
+        assert_ne!(dup_fd, read_fd);
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+        sys_write(&mut proc, &mut host, write_fd, b"hi").unwrap();
+
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 12);
+    }
+
+    #[test]
+    fn epoll_never_polls_a_descriptor_number_a_later_open_reused() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, EPOLLIN_BIT, 64).unwrap();
+
+        // Free the number, then let a readable eventfd claim it.
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+        let reused = sys_eventfd2(&mut proc, 1, O_NONBLOCK).unwrap();
+        assert_eq!(reused, read_fd, "the test needs the number to be reused");
+
+        let (count, _) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(
+            count, 0,
+            "the registration named a description, not a number"
+        );
+
+        // Registering the new description at that number is a *different*
+        // interest, so it must not collide, and it must then be polled.
+        sys_epoll_ctl(&mut proc, epfd, 1, reused, EPOLLIN_BIT, 65).unwrap();
+        let (count, events) = sys_epoll_pwait(&mut proc, &mut host, epfd, 10, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 65);
+    }
+
+    #[test]
+    fn epoll_ctl_del_on_a_reused_number_does_not_remove_the_old_interest() {
+        const EPOLLIN_BIT: u32 = 0x001;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, EPOLLIN_BIT, 70).unwrap();
+
+        sys_close(&mut proc, &mut host, read_fd).unwrap();
+        let reused = sys_eventfd2(&mut proc, 1, O_NONBLOCK).unwrap();
+        assert_eq!(reused, read_fd);
+
+        // The number matches, the description does not.
+        assert_eq!(
+            sys_epoll_ctl(&mut proc, epfd, 2, reused, 0, 0),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    #[test]
+    fn exec_releases_a_cloexec_epoll_instance_and_keeps_a_retained_one() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let cloexec_epfd = sys_epoll_create1(&mut proc, O_CLOEXEC).unwrap();
+        let retained_epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        let backing_idx = |proc: &Process, fd: i32| -> usize {
+            let entry = proc.fd_table.get(fd).unwrap();
+            (-(proc.ofd_table.get(entry.ofd_ref.0).unwrap().host_handle + 1)) as usize
+        };
+        let cloexec_idx = backing_idx(&proc, cloexec_epfd);
+        let cloexec_generation =
+            descriptor_backing_generation(FileType::Epoll, cloexec_idx).unwrap();
+        let retained_idx = backing_idx(&proc, retained_epfd);
+
+        let eventfd = sys_eventfd2(&mut proc, 3, O_NONBLOCK).unwrap();
+        sys_epoll_ctl(&mut proc, retained_epfd, 1, eventfd, POLLIN as u32, 0xbead).unwrap();
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.fd_table.get(cloexec_epfd).is_err());
+        assert_descriptor_backing_released(FileType::Epoll, cloexec_idx, cloexec_generation);
+
+        // The retained instance keeps its interest list across exec.
+        let (count, events) =
+            sys_epoll_pwait(&mut proc, &mut host, retained_epfd, 4, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 0xbead);
+        assert_eq!(backing_idx(&proc, retained_epfd), retained_idx);
     }
 
     #[test]
