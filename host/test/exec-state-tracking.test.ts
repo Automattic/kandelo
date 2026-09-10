@@ -34,6 +34,7 @@ import {
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import { mockKernelSpawnBlobDecode } from "./support/spawn-blob-decode-mock";
+import { createSysvMirrorStub } from "./support/sysv-mirror-stub";
 
 const preparedExecFixture = new Uint8Array(
   readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
@@ -1640,54 +1641,47 @@ describe("exec host-state transition", () => {
     expect(worker.currentHandlePid).toBe(0);
   });
 
-  it("copies SysV mappings before commit and forgets mirrors after Rust detaches", () => {
+  it("publishes SysV attachments before commit and forgets the mirrors after", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const writeChunk = vi.fn(() => 4);
-    const readChunk = vi.fn((_id: number, _offset: number, outPtr: number, len: number) => {
-      new Uint8Array(kernelMemory.buffer, outPtr, len).fill(0);
-      return len;
-    });
     const detach = vi.fn(() => 0);
+    const sysv = createSysvMirrorStub();
+    sysv.seed(7, 0x1000, { segId: 3, size: 4, readOnly: false });
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
-      shmMappings: new Map([[7, new Map([
-        [0x1000, {
-          segId: 3,
-          size: 4,
-          readOnly: false,
-          snapshot: new Uint8Array(4),
-          seenVersion: 0,
-        }],
-      ])]]),
-      shmSegmentVersions: new Map([[3, 0]]),
+      sysvActivePidCount: 1,
       currentHandlePid: 0,
       kernelMemory,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
-          kernel_ipc_shm_read_chunk: readChunk,
-          kernel_ipc_shm_write_chunk: writeChunk,
           kernel_ipc_shmdt_for_process: detach,
+          ...sysv.exports,
         },
       },
     });
 
+    // The preflight must force a final publication while the old address
+    // space is still readable, but must not touch attachment identity: a
+    // failed exec has to be able to keep using it.
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(writeChunk).toHaveBeenCalledWith(
-      3,
-      0,
-      workerScratchPointer(worker) + CH_DATA,
-      4,
-    );
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_sync_process")).toEqual([
+      { name: "kernel_shared_mapping_sysv_sync_process", args: [7, 1] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(true);
+    expect(sysv.count(7)).toBe(1);
 
+    // The Rust exec commit already drained the attachment records, so
+    // finalization forgets the mirror WITHOUT detaching: repeating the detach
+    // would release a different same-segment attachment.
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_release_process")).toEqual([
+      { name: "kernel_shared_mapping_sysv_release_process", args: [7, 0, 0] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(false);
+    expect(sysv.count(7)).toBe(0);
   });
 
   it("commits the exact caller and target before pruning closed epoll mirrors", () => {

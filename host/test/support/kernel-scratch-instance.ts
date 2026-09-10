@@ -239,6 +239,44 @@ function signatures(
       parameters: [i32, i32, pointer],
       result: i64,
     },
+    // SysV shared-memory byte-coherence mirror. The mirror is Rust-owned;
+    // these are the host's entry points into it.
+    kernel_shared_mapping_sysv_active_pid_count: {
+      parameters: [],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_drop_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_inherit: {
+      parameters: [i32, i32, i64],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_process_count: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_publish_mapping: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_release_process: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_sync_process: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_sync_segment: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_shared_mapping_sysv_track: {
+      parameters: [i32, pointer, i32, i32, i32],
+      result: i32,
+    },
     kernel_ipc_shm_record_mapping_for_process: {
       parameters: [i32, pointer, i32, i32],
       result: i32,

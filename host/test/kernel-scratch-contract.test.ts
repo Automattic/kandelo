@@ -579,13 +579,6 @@ const ownershipSeeds: OwnershipSeed[] = [
     form: "view",
     why: "This host snapshot is separate from allocator-owned scratch.",
   },
-  {
-    declaration: "host/src/kernel-worker.ts::SysvShmMapping.snapshot",
-    target: "value",
-    owner: "shared-memory",
-    form: "view",
-    why: "This host snapshot tracks a System V shared-memory mapping.",
-  },
 ];
 
 const reviewedScalarKernelExportCall = (
@@ -725,9 +718,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#retireBlockingRetryCaptureAfterExitedProcess::kernel-export-direct-use::getState(channel.pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackInheritedSysvAttachmentsWithinKernelEntry::kernel-export-direct-use::kernelShmdtAddr( childPid, this.toKernelPtr(mapping.mapAddr), )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackIpcShmatWithinKernelEntry::kernel-export-direct-use::kernelShmdt(channel.pid, shmid)",
@@ -870,9 +860,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, interest.fd)",

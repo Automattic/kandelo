@@ -1316,7 +1316,12 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
-  it("uses intrinsic source spans for System V and pipe chunk staging", () => {
+  // This used to cover the System V segment path too, through
+  // `writeSysvShmRange`. The host no longer stages segment bytes at all: the
+  // SysV byte mirror is Rust-owned and the kernel reads and writes its own
+  // `IpcTable` segments directly, so there is no host scratch staging left on
+  // that path to defend. The pipe path keeps the identical defence.
+  it("uses intrinsic source spans for pipe chunk staging", () => {
     const harness = makeScratchHarness();
     const input = hostileBytes(1, 4);
     Uint8Array.prototype.set.call(input, [0x42]);
@@ -1325,13 +1330,6 @@ describe("kernel scratch transfer capacity regressions", () => {
       harness.scratchOffset,
       harness.scratchOffset + 8,
     );
-    const writeShm = vi.fn(
-      (_segment: number, _offset: number, pointer: number, length: number) => {
-        expect(length).toBe(1);
-        expect(harness.kernelBytes[pointer]).toBe(0x42);
-        return length;
-      },
-    );
     const writePipe = vi.fn(
       (_pid: number, _pipe: number, pointer: number, length: number) => {
         expect(length).toBe(1);
@@ -1339,13 +1337,10 @@ describe("kernel scratch transfer capacity regressions", () => {
         return length;
       },
     );
-    harness.kernelExports.kernel_ipc_shm_write_chunk = writeShm;
     harness.kernelExports.kernel_pipe_write = writePipe;
 
-    expect((harness.worker as any).writeSysvShmRange(7, 0, input)).toBe(true);
     expect((harness.worker as any).writePipeChunked(41, 9, input)).toBe(1);
 
-    expect(writeShm).toHaveBeenCalledOnce();
     expect(writePipe).toHaveBeenCalledOnce();
     expectScratchTailUntouched(harness);
   });

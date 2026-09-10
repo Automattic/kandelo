@@ -173,8 +173,6 @@ function createFileHarness() {
     anonymousSharedBackings: new Map(),
     sharedMmapBackings: new Map(),
     sharedMmapFdCache: new Map(),
-    shmMappings: new Map(),
-    shmSegmentVersions: new Map(),
   });
   kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   kw.testAuthority.configureScratchBoundaryHooksForTest({
