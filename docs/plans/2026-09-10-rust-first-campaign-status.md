@@ -24,7 +24,21 @@ cutover round and moved 2,947 lines in one merge sequence: K6 marshalling
 census deletions (−86). The campaign no longer leaves the repo worse than it
 found it if it stops here.
 
-**Host imports: 83 → 75** (K9). Kernel exports 310 → 305 (K6).
+**Host imports: 83 → 76.** **Kernel exports: 309 → 320.** Both measured on a
+freshly built artifact after every merge, not carried over from an agent report.
+
+**Why 76 and not K9's 75 — accounted for, not rounded away.** K9 reached 75
+partly by deleting a `host_debug_log` declaration it found callerless. K7's
+shared-mapping work then added `report_writeback_loss`, a genuine caller, and
+the merge integration routed it through `runtime-core::debug_log` rather than
+re-declaring the extern. So the import is now **live and linked** where before
+it was declared and dropped. That is +1 on the campaign's primary metric in
+exchange for making an unrecoverable writeback loss visible instead of silent.
+**It is a real decision, not an accounting artifact** — see the open decisions
+below.
+
+Exports rose because K7's SysV mirror and K9's mount-root publication both added
+entry points. **K13b is in flight to remove ~116 of them.**
 
 Measure with `scripts/migration-ledger.sh --step <base> <tip>`. It is a
 measurement, not a gate; line count is a poor metric but a useful hint.
