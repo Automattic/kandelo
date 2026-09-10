@@ -393,7 +393,6 @@ function makeScratchHarness(
   ]);
   worker.pendingSelectRetries = new Map();
   worker.pendingPollRetries = new Map();
-  worker.epollInterests = new Map();
 
   kernelBytes.fill(0xa5, scratchEnd, scratchEnd + 16_384);
   return {
@@ -2331,11 +2330,17 @@ describe("kernel scratch transfer capacity regressions", () => {
     ).not.toThrow();
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    // epoll_ctl is no longer hand-marshalled by the host: it declares a
+    // `SYSCALL_ARG_DESCRIPTORS` entry and is staged by the generic path, which
+    // faults through completeChannel (naming the syscall and its descriptors)
+    // rather than the raw completion the deleted handler used. The errno the
+    // caller observes is unchanged.
+    expect(harness.completeChannelRaw).not.toHaveBeenCalled();
+    expect(
+      harness.completeChannel.mock.calls.map(
+        (call: unknown[]) => [call[1], call[4], call[5]],
+      ),
+    ).toEqual([[ABI_SYSCALLS.EpollCtl, -1, EFAULT]]);
     expectScratchTailUntouched(harness);
   });
 
@@ -2394,13 +2399,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     ]);
 
     expect(harness.handleChannel).toHaveBeenCalledTimes(1);
-    expect(harness.worker.epollInterests.get("41:3")).toEqual([
-      {
-        fd: 7,
-        events: 0x1234,
-        data: expectedData,
-      },
-    ]);
     expectScratchTailUntouched(harness);
   });
 
@@ -2408,14 +2406,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     const harness = makeScratchHarness();
     const invalidEvents =
       harness.processBytes.byteLength - STRUCT_SIZE_WASM_EPOLL_EVENT + 1;
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: 9n,
-      },
-    ]);
-
     expect(() =>
       dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.EpollPwait, [
         3,
@@ -2446,22 +2436,28 @@ describe("kernel scratch transfer capacity regressions", () => {
       eventsPointer,
       eventsPointer + STRUCT_SIZE_WASM_EPOLL_EVENT,
     );
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: expectedData,
-      },
-    ]);
     harness.handleChannel.mockImplementation(() => {
       const channelView = new DataView(
         harness.kernelBytes.buffer,
         harness.scratchOffset,
       );
-      const pollfdsPointer = Number(channelView.getBigInt64(CH_ARGS, true));
-      new DataView(harness.kernelBytes.buffer).setInt16(
-        pollfdsPointer + 6,
+      // sys_epoll_pwait writes the ready epoll_events into the staged output
+      // array — arg 1, which the host addressed at CH_DATA — and returns how
+      // many it wrote. Reading the address back proves the host staged it
+      // rather than assuming the offset.
+      const eventsOut = Number(
+        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+      );
+      const kernelView = new DataView(harness.kernelBytes.buffer);
+      kernelView.setUint32(
+        eventsOut + WASM_EPOLL_EVENT_EVENTS_OFFSET,
         1,
+        true,
+      );
+      kernelView.setUint32(eventsOut + WASM_EPOLL_EVENT_PAD_OFFSET, 0, true);
+      kernelView.setBigUint64(
+        eventsOut + WASM_EPOLL_EVENT_DATA_OFFSET,
+        expectedData,
         true,
       );
       channelView.setBigInt64(CH_RETURN, 1n, true);
