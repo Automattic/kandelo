@@ -1348,10 +1348,21 @@ byte reads ran past the buffer end.
 
 ### The finding worth acting on separately
 
-**`handleSpawn` has no kernel-side artifact-policy check on either host.** Both
-the embedder API and the boot path reach it, and `worker-main.ts:3219` is
-**the only check anywhere** that verifies the ABI-contract digest. That is not a
-migration item — it is a gap the migration exposed.
+**`handleSpawn` has no *kernel-side* artifact-policy check on either host.**
+`worker-main.ts:3219` is the only place that verifies the ABI-contract digest.
+
+**Verified by the coordinator, and the wording matters:** `centralizedWorkerMain`
+is the process-worker entry on **both** hosts (`worker-entry.ts:43`,
+`worker-entry-browser.ts:34`), so every spawned process boots through it and the
+artifact **is** validated before execution on every spawn path. **This is not an
+unchecked path.** It is a check living host-side, in the process worker, rather
+than in the kernel that should own the policy.
+
+That makes it a **migration target aligned with the campaign's goal**, not a
+security hole — and the distinction is worth keeping, because "no kernel-side
+check" and "no check" are one word apart and describe very different
+situations. The exec path has now moved
+(`kernel_exec_target_artifact_policy`); spawn has not.
 
 ### NDD-CONST-1 — largely dissolved by K5 I6a
 
