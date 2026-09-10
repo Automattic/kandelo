@@ -7627,8 +7627,7 @@ pub extern "C" fn kernel_shared_mapping_sysv_inherit(
 /// width: one kernel may serve wasm32 and wasm64 processes. wasm32 uses its
 /// time64 ILP32 layout; wasm64 uses the LP64 layout. The host queries this
 /// before validating or allocating the IPC_STAT transfer.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_semid_ds_bytes(pointer_width: u32) -> i32 {
+pub fn kernel_semid_ds_bytes(pointer_width: u32) -> i32 {
     match crate::ipc_wire::semid_ds_size(pointer_width) {
         Ok(size) => size as i32,
         Err(error) => -(error as i32),
@@ -7636,8 +7635,7 @@ pub extern "C" fn kernel_semid_ds_bytes(pointer_width: u32) -> i32 {
 }
 
 /// Byte size of the target musl `struct msqid_ds`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_msqid_ds_bytes(pointer_width: u32) -> i32 {
+pub fn kernel_msqid_ds_bytes(pointer_width: u32) -> i32 {
     match crate::ipc_wire::msqid_ds_size(pointer_width) {
         Ok(size) => size as i32,
         Err(error) => -(error as i32),
@@ -7645,8 +7643,7 @@ pub extern "C" fn kernel_msqid_ds_bytes(pointer_width: u32) -> i32 {
 }
 
 /// Byte size of the target musl `struct shmid_ds`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_shmid_ds_bytes(pointer_width: u32) -> i32 {
+pub fn kernel_shmid_ds_bytes(pointer_width: u32) -> i32 {
     match crate::ipc_wire::shmid_ds_size(pointer_width) {
         Ok(size) => size as i32,
         Err(error) => -(error as i32),
@@ -7660,8 +7657,7 @@ pub extern "C" fn kernel_shmid_ds_bytes(pointer_width: u32) -> i32 {
 /// the sizing preflight cannot disclose metadata the command itself could not
 /// access. PID and TID are explicit because a sizing query must not install or
 /// consume the one-shot ambient binding reserved for `kernel_handle_channel`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd: i32) -> i32 {
+pub fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd: i32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     if let Err(error) = table.validate_task(pid, tid) {
         return -(error as i32);
@@ -7738,8 +7734,7 @@ pub extern "C" fn kernel_mq_drain_notification(out_ptr: *mut u8, out_capacity: u
 }
 
 /// Open a file. Returns fd (>= 0) on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i32 {
+pub fn kernel_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -7809,8 +7804,7 @@ fn kernel_mknodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> 
 }
 
 /// Close a file descriptor. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_close(fd: i32) -> i32 {
+pub fn kernel_close(fd: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_close_with_locks(proc, advisory_locks, &mut host, fd) {
@@ -7852,8 +7846,7 @@ fn channel_write(fd: i32, buf: &[u8]) -> i32 {
 /// Seek within a file. The 64-bit offset is passed as two 32-bit halves
 /// because some Wasm host bindings lack native i64 support.
 /// Returns the new offset (i64) or negative errno (i64).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_lseek(fd: i32, offset_lo: u32, offset_hi: i32, whence: u32) -> i64 {
+pub fn kernel_lseek(fd: i32, offset_lo: u32, offset_hi: i32, whence: u32) -> i64 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
@@ -8066,8 +8059,7 @@ pub extern "C" fn kernel_dup(fd: i32) -> i32 {
 
 /// Duplicate a file descriptor to a specific target fd.
 /// Returns newfd (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_dup2(oldfd: i32, newfd: i32) -> i32 {
+pub fn kernel_dup2(oldfd: i32, newfd: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_dup2_with_locks(proc, advisory_locks, &mut host, oldfd, newfd)
@@ -8145,8 +8137,7 @@ pub extern "C" fn kernel_pipe2(flags: u32, fd_ptr: *mut i32, fd_capacity: u32) -
 
 /// Create an eventfd file descriptor.
 /// Returns fd (>= 0) on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
+pub fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_eventfd2(proc, initval, flags) {
         Ok(fd) => fd,
@@ -8159,8 +8150,7 @@ pub extern "C" fn kernel_eventfd2(initval: u32, flags: u32) -> i32 {
 
 /// Create an epoll instance.
 /// Returns fd (>= 0) on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
+pub fn kernel_epoll_create1(flags: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_epoll_create1(proc, flags) {
         Ok(fd) => fd,
@@ -8173,8 +8163,7 @@ pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
 
 /// Modify an epoll interest list.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
+pub fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     let (events, data) = if !event_ptr.is_null() {
@@ -8199,8 +8188,7 @@ pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *cons
 
 /// Wait for events on an epoll instance.
 /// Returns number of ready events (>= 0), or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_epoll_pwait(
+pub fn kernel_epoll_pwait(
     epfd: i32,
     events_ptr: *mut u8,
     maxevents: i32,
@@ -8244,8 +8232,7 @@ pub extern "C" fn kernel_epoll_pwait(
 }
 
 /// Create a timerfd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
+pub fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_timerfd_create(proc, clock_id, flags) {
         Ok(fd) => fd,
@@ -8259,8 +8246,7 @@ pub extern "C" fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
 /// Set or disarm a timerfd timer.
 /// new_value_ptr points to itimerspec (32 bytes: interval_sec, interval_nsec, value_sec, value_nsec).
 /// old_value_ptr (if non-null) receives the old itimerspec.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timerfd_settime(
+pub fn kernel_timerfd_settime(
     fd: i32,
     flags: u32,
     new_ptr: *const u8,
@@ -8299,8 +8285,7 @@ pub extern "C" fn kernel_timerfd_settime(
 }
 
 /// Get the remaining time of a timerfd timer.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
+pub fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
@@ -8321,8 +8306,7 @@ pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
 }
 
 /// Create or update a signalfd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_signalfd4(
+pub fn kernel_signalfd4(
     fd: i32,
     mask_ptr: *const u8,
     sigsetsize: usize,
@@ -8365,8 +8349,7 @@ fn write_process_stat(stat_ptr: *mut u8, stat: &WasmStat) -> Result<(), Errno> {
 
 /// Get file status. Writes a complete native musl `struct kstat`.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fstat(fd: i32, stat_ptr: *mut u8) -> i32 {
+pub fn kernel_fstat(fd: i32, stat_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fstat(proc, &mut host, fd) {
@@ -8381,8 +8364,7 @@ pub extern "C" fn kernel_fstat(fd: i32, stat_ptr: *mut u8) -> i32 {
 }
 
 /// fcntl operations. Returns result (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
+pub fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_fcntl(proc, fd, cmd, arg) {
         Ok(val) => val,
@@ -8395,8 +8377,7 @@ pub extern "C" fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
 
 /// fcntl lock operations. The flock struct is read from/written to the pointer.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
+pub fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
     if flock_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -8413,8 +8394,7 @@ pub extern "C" fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i3
 
 /// BSD flock() — whole-file advisory locking.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
+pub fn kernel_flock(fd: i32, operation: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
@@ -8427,8 +8407,7 @@ pub extern "C" fn kernel_flock(fd: i32, operation: u32) -> i32 {
 
 /// Stat a file by path. Writes a complete native musl `struct kstat`.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
+pub fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8445,8 +8424,7 @@ pub extern "C" fn kernel_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut
 
 /// Lstat a file by path (does not follow symlinks). Writes native `kstat`.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
+pub fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8462,8 +8440,7 @@ pub extern "C" fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mu
 }
 
 /// Create a directory. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+pub fn kernel_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8476,8 +8453,7 @@ pub extern "C" fn kernel_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) ->
 }
 
 /// Remove a directory. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rmdir(path_ptr: *const u8, path_len: u32) -> i32 {
+pub fn kernel_rmdir(path_ptr: *const u8, path_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8490,8 +8466,7 @@ pub extern "C" fn kernel_rmdir(path_ptr: *const u8, path_len: u32) -> i32 {
 }
 
 /// Unlink (delete) a file. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_unlink(path_ptr: *const u8, path_len: u32) -> i32 {
+pub fn kernel_unlink(path_ptr: *const u8, path_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8504,8 +8479,7 @@ pub extern "C" fn kernel_unlink(path_ptr: *const u8, path_len: u32) -> i32 {
 }
 
 /// Rename a file. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rename(
+pub fn kernel_rename(
     old_ptr: *const u8,
     old_len: u32,
     new_ptr: *const u8,
@@ -8524,8 +8498,7 @@ pub extern "C" fn kernel_rename(
 }
 
 /// Create a hard link. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_link(
+pub fn kernel_link(
     old_ptr: *const u8,
     old_len: u32,
     new_ptr: *const u8,
@@ -8544,8 +8517,7 @@ pub extern "C" fn kernel_link(
 }
 
 /// Create a symbolic link. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_symlink(
+pub fn kernel_symlink(
     target_ptr: *const u8,
     target_len: u32,
     link_ptr: *const u8,
@@ -8564,8 +8536,7 @@ pub extern "C" fn kernel_symlink(
 }
 
 /// Read a symbolic link. Returns bytes read (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_readlink(
+pub fn kernel_readlink(
     path_ptr: *const u8,
     path_len: u32,
     buf_ptr: *mut u8,
@@ -8584,8 +8555,7 @@ pub extern "C" fn kernel_readlink(
 }
 
 /// Change file permissions. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+pub fn kernel_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8598,8 +8568,7 @@ pub extern "C" fn kernel_chmod(path_ptr: *const u8, path_len: u32, mode: u32) ->
 }
 
 /// Change file ownership. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32 {
+pub fn kernel_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8625,8 +8594,7 @@ fn kernel_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32 
 }
 
 /// Check file accessibility. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32 {
+pub fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8639,8 +8607,7 @@ pub extern "C" fn kernel_access(path_ptr: *const u8, path_len: u32, amode: u32) 
 }
 
 /// Change working directory. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
+pub fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8653,8 +8620,7 @@ pub extern "C" fn kernel_chdir(path_ptr: *const u8, path_len: u32) -> i32 {
 }
 
 /// Change directory by file descriptor. Returns 0 or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
+pub fn kernel_fchdir(fd: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fchdir(proc, fd) {
@@ -8666,8 +8632,7 @@ pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
 }
 
 /// Get current working directory. Returns length written (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
+pub fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
@@ -8680,8 +8645,7 @@ pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 }
 
 /// Open a directory for reading. Returns dir handle (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_opendir(path_ptr: *const u8, path_len: u32) -> i32 {
+pub fn kernel_opendir(path_ptr: *const u8, path_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -8694,8 +8658,7 @@ pub extern "C" fn kernel_opendir(path_ptr: *const u8, path_len: u32) -> i32 {
 }
 
 /// Read next directory entry. Returns 1 if entry read, 0 if end, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_readdir(
+pub fn kernel_readdir(
     dir_handle: i32,
     dirent_ptr: *mut u8,
     name_ptr: *mut u8,
@@ -8715,8 +8678,7 @@ pub extern "C" fn kernel_readdir(
 }
 
 /// Close a directory stream. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_closedir(dir_handle: i32) -> i32 {
+pub fn kernel_closedir(dir_handle: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_closedir(proc, &mut host, dir_handle) {
@@ -8728,8 +8690,7 @@ pub extern "C" fn kernel_closedir(dir_handle: i32) -> i32 {
 }
 
 /// Read directory entries in linux_dirent64 format. Returns bytes written or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getdents64(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+pub fn kernel_getdents64(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
@@ -8742,8 +8703,7 @@ pub extern "C" fn kernel_getdents64(fd: i32, buf_ptr: *mut u8, buf_len: u32) -> 
 }
 
 /// Get the process ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getpid() -> i32 {
+pub fn kernel_getpid() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getpid(proc);
     let mut host = WasmHostIO;
@@ -8752,8 +8712,7 @@ pub extern "C" fn kernel_getpid() -> i32 {
 }
 
 /// Get the parent process ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getppid() -> i32 {
+pub fn kernel_getppid() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getppid(proc);
     let mut host = WasmHostIO;
@@ -8762,8 +8721,7 @@ pub extern "C" fn kernel_getppid() -> i32 {
 }
 
 /// Get the real user ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getuid() -> u32 {
+pub fn kernel_getuid() -> u32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getuid(proc);
     let mut host = WasmHostIO;
@@ -8772,8 +8730,7 @@ pub extern "C" fn kernel_getuid() -> u32 {
 }
 
 /// Get the effective user ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_geteuid() -> u32 {
+pub fn kernel_geteuid() -> u32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_geteuid(proc);
     let mut host = WasmHostIO;
@@ -8782,8 +8739,7 @@ pub extern "C" fn kernel_geteuid() -> u32 {
 }
 
 /// Get the real group ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getgid() -> u32 {
+pub fn kernel_getgid() -> u32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getgid(proc);
     let mut host = WasmHostIO;
@@ -8792,8 +8748,7 @@ pub extern "C" fn kernel_getgid() -> u32 {
 }
 
 /// Get the effective group ID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getegid() -> u32 {
+pub fn kernel_getegid() -> u32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_getegid(proc);
     let mut host = WasmHostIO;
@@ -9068,8 +9023,7 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
 ///
 /// `ss_ptr` and `oss_ptr` name caller-native `stack_t` records in bounded
 /// kernel scratch. `process_pointer_width` selects the wasm32 or wasm64 layout.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sigaltstack(
+pub fn kernel_sigaltstack(
     ss_ptr: *const u8,
     oss_ptr: *mut u8,
     process_pointer_width: i64,
@@ -9233,8 +9187,7 @@ fn kernel_sched_getaffinity(pid: i32, cpusetsize: u32, mask_ptr: *mut u8) -> i32
 /// all 48 bytes is required: the host copies the descriptor's complete output
 /// capacity back to the caller, and a four-byte write would expose stale
 /// scratch bytes in the POSIX sporadic-server fields.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
+pub fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
     if param_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -9288,8 +9241,7 @@ fn kernel_sched_accept_param(pid: i32, param_ptr: *const u8) -> i32 {
 }
 
 /// Send a signal to the current process. Returns 0 on success, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_raise(sig: u32) -> i32 {
+pub fn kernel_raise(sig: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_raise(proc, sig) {
@@ -9311,8 +9263,7 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
 ///
 /// Cross-process `tkill` is not supported (returns `-ESRCH`); use `kill` or
 /// `tgkill` with the current process's `tgid` for current-process delivery.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_tkill(tid: u32, sig: u32) -> i32 {
+pub fn kernel_tkill(tid: u32, sig: u32) -> i32 {
     kernel_tkill_with_value(tid, sig, 0, 0)
 }
 
@@ -9375,8 +9326,7 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value_bits: u64, si_code: i32)
 ///   [0..4] handler (u32), [4..8] flags (u32), [8..16] mask (u64)
 /// If act_ptr is null (0), only reads the old action.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mut u8) -> i32 {
+pub fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
 
     // Parse new action from act_ptr (if non-null)
@@ -9439,8 +9389,7 @@ pub extern "C" fn kernel_signal(signum: u32, handler: u32) -> i32 {
 
 /// Manipulate the signal mask. The 64-bit set is passed as two 32-bit halves.
 /// Returns old mask as i64 (>= 0) or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 {
+pub fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let set = ((set_hi as u64) << 32) | (set_lo as u64);
     let result = match syscalls::sys_sigprocmask(proc, how, set) {
@@ -9460,8 +9409,7 @@ pub extern "C" fn kernel_sigprocmask(how: u32, set_lo: u32, set_hi: u32) -> i64 
 /// Get the current time from a clock source.
 /// Writes a WasmTimespec struct to ts_ptr.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
+pub fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_clock_gettime(proc, &mut host, clock_id) {
@@ -9486,8 +9434,7 @@ pub extern "C" fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
 /// Sleep for a specified duration.
 /// Reads a WasmTimespec struct from req_ptr.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
+pub fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
@@ -9500,8 +9447,7 @@ pub extern "C" fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
 }
 
 /// Get clock resolution. Returns 0 or negative errno. Writes WasmTimespec to ts_ptr.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
+pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_clock_getres(proc, clock_id) {
@@ -9526,8 +9472,7 @@ pub extern "C" fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
 }
 
 /// Sleep with clock selection. Returns 0 or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *const u8) -> i32 {
+pub fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *const u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
@@ -9541,8 +9486,7 @@ pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *co
 }
 
 /// Set file timestamps. Returns 0 or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_utimensat(
+pub fn kernel_utimensat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -9576,8 +9520,7 @@ pub extern "C" fn kernel_utimensat(
 }
 
 /// Memory advice hint. No-op, returns 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
+pub fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_madvise(proc, addr, len, advice) {
@@ -9590,8 +9533,7 @@ pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
 
 /// statfs — get filesystem statistics in the caller's native `struct statfs`.
 /// Returns 0 on success.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_statfs(
+pub fn kernel_statfs(
     path_ptr: *const u8,
     path_len: u32,
     buf_ptr: *mut u8,
@@ -9628,8 +9570,7 @@ pub extern "C" fn kernel_statfs(
 
 /// fstatfs — get filesystem statistics for an open fd.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8, process_pointer_width: i64) -> i32 {
+pub fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8, process_pointer_width: i64) -> i32 {
     use crate::process_wire::ProcessDataModel;
 
     let model = match ProcessDataModel::from_width(process_pointer_width) {
@@ -9680,8 +9621,7 @@ fn kernel_setregid(rgid: u32, egid: u32) -> i32 {
 }
 
 /// setresuid — set real, effective, and saved user IDs.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
+pub fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setresuid(proc, ruid, euid, suid) {
         Ok(()) => 0,
@@ -9694,8 +9634,7 @@ pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
 
 /// getresuid — get real, effective, and saved user IDs.
 /// Writes three u32 values to the pointers.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getresuid(
+pub fn kernel_getresuid(
     ruid_ptr: *mut u32,
     euid_ptr: *mut u32,
     suid_ptr: *mut u32,
@@ -9713,8 +9652,7 @@ pub extern "C" fn kernel_getresuid(
 }
 
 /// setresgid — set real, effective, and saved group IDs.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setresgid(rgid: u32, egid: u32, sgid: u32) -> i32 {
+pub fn kernel_setresgid(rgid: u32, egid: u32, sgid: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_setresgid(proc, rgid, egid, sgid) {
         Ok(()) => 0,
@@ -9727,8 +9665,7 @@ pub extern "C" fn kernel_setresgid(rgid: u32, egid: u32, sgid: u32) -> i32 {
 
 /// getresgid — get real, effective, and saved group IDs.
 /// Writes three u32 values to the pointers.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getresgid(
+pub fn kernel_getresgid(
     rgid_ptr: *mut u32,
     egid_ptr: *mut u32,
     sgid_ptr: *mut u32,
@@ -9813,8 +9750,7 @@ mod getgroups_destination_tests {
 }
 
 /// setgroups — replace the complete ordered supplementary group list.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setgroups(size: u32, list_ptr: *const u32) -> i32 {
+pub fn kernel_setgroups(size: u32, list_ptr: *const u32) -> i32 {
     if size as usize > crate::credentials::NGROUPS_MAX {
         return -(Errno::EINVAL as i32);
     }
@@ -9917,8 +9853,7 @@ fn extract_scm_rights(
 /// contiguous kernel-owned buffer itself — datagram atomicity requires the
 /// whole message in one piece, and only the kernel can bound that buffer by
 /// `SSIZE_MAX` rather than by a transport's capacity.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendmsg(
+pub fn kernel_sendmsg(
     fd: i32,
     msg_addr: i64,
     flags: u32,
@@ -10098,8 +10033,7 @@ pub extern "C" fn kernel_sendmsg(
 /// kernel-owned buffer sized by the caller's whole iovec table, then scatters
 /// the result back across those buffers — a datagram must be delivered or
 /// truncated as a unit, which a per-iovec receive could not guarantee.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_recvmsg(
+pub fn kernel_recvmsg(
     fd: i32,
     msg_addr: i64,
     flags: u32,
@@ -10358,8 +10292,7 @@ pub extern "C" fn kernel_wait4(
 
 /// Check if a file descriptor refers to a terminal.
 /// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_isatty(fd: i32) -> i32 {
+pub fn kernel_isatty(fd: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_isatty(proc, fd) {
         Ok(v) => v,
@@ -10372,8 +10305,7 @@ pub extern "C" fn kernel_isatty(fd: i32) -> i32 {
 
 /// Get an environment variable by name.
 /// Returns the length of the value on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getenv(
+pub fn kernel_getenv(
     name_ptr: *const u8,
     name_len: u32,
     buf_ptr: *mut u8,
@@ -10393,8 +10325,7 @@ pub extern "C" fn kernel_getenv(
 
 /// Set an environment variable.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setenv(
+pub fn kernel_setenv(
     name_ptr: *const u8,
     name_len: u32,
     val_ptr: *const u8,
@@ -10415,8 +10346,7 @@ pub extern "C" fn kernel_setenv(
 
 /// Remove an environment variable.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
+pub fn kernel_unsetenv(name_ptr: *const u8, name_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
     let result = match syscalls::sys_unsetenv(proc, name) {
@@ -10485,8 +10415,7 @@ pub extern "C" fn kernel_argv_read(index: u32, buf_ptr: *mut u8, buf_max: u32) -
 
 /// getrandom — fill buffer with random bytes from the host.
 /// Returns number of bytes written, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) -> i32 {
+pub fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let mut host = WasmHostIO;
@@ -10499,8 +10428,7 @@ pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) 
 }
 
 /// munmap. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_munmap(addr: usize, len: usize) -> i32 {
+pub fn kernel_munmap(addr: usize, len: usize) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_munmap(proc, &mut host, addr, len) {
@@ -10513,8 +10441,7 @@ pub extern "C" fn kernel_munmap(addr: usize, len: usize) -> i32 {
 
 /// brk. Returns the current or new program break.
 /// Grows Wasm memory if the new break exceeds the current memory size.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_brk(addr: usize) -> usize {
+pub fn kernel_brk(addr: usize) -> usize {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = syscalls::sys_brk(proc, addr);
 
@@ -10529,8 +10456,7 @@ pub extern "C" fn kernel_brk(addr: usize) -> usize {
 }
 
 /// mprotect. Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
+pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_mprotect(proc, addr, len, prot) {
         Ok(()) => 0,
@@ -10651,8 +10577,7 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
 /// process `Running` after a non-main thread calls `exit()`, which is what
 /// `host/test/pthread.test.ts`'s "preserves exit(0) from a non-main thread
 /// while the main thread is blocked" observes.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_exit_group(status: i32) -> ! {
+pub fn kernel_exit_group(status: i32) -> ! {
     let _ = commit_current_task_exit(status, ExitScope::ProcessGroup);
     // Halt execution — musl's _exit loops forever if we just return.
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
@@ -10716,8 +10641,7 @@ pub extern "C" fn kernel_socketpair(
 }
 
 /// Bind a socket to an address. Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
+pub fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
     let mut host = WasmHostIO;
@@ -10730,8 +10654,7 @@ pub extern "C" fn kernel_bind(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i3
 }
 
 /// Listen for connections. Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
+pub fn kernel_listen(fd: i32, backlog: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_listen(proc, &mut host, fd, backlog) {
@@ -10751,8 +10674,7 @@ fn accept4_flags_are_valid(flags: u32) -> bool {
 
 /// Accept a connection with flags. Returns new fd or negative errno.
 /// Flags: SOCK_CLOEXEC, SOCK_NONBLOCK (same values as socket()).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_accept4(
+pub fn kernel_accept4(
     fd: i32,
     addr_ptr: *mut u8,
     addrlen_ptr: *mut u8,
@@ -10848,8 +10770,7 @@ pub extern "C" fn kernel_accept4(
 /// If the same-process loopback connect fails with ECONNREFUSED, searches
 /// all processes in the ProcessTable for a matching listener. This enables
 /// cross-process loopback (e.g. nginx -> php-fpm).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
+pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let pid = table.current_pid();
@@ -11836,8 +11757,7 @@ pub extern "C" fn kernel_poll(fds_ptr: *mut u8, fds_capacity: u32, nfds: u32, ti
 }
 
 /// Send data to a specific address. Returns bytes sent or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendto(
+pub fn kernel_sendto(
     fd: i32,
     buf_ptr: *const u8,
     buf_len: u32,
@@ -11873,8 +11793,7 @@ pub extern "C" fn kernel_sendto(
 
 /// Receive data with sender address. Returns bytes received or negative errno.
 /// Writes sender address to addr_ptr and address length to addr_len_ptr.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_recvfrom(
+pub fn kernel_recvfrom(
     fd: i32,
     buf_ptr: *mut u8,
     buf_len: u32,
@@ -11930,8 +11849,7 @@ pub extern "C" fn kernel_recvfrom(
 }
 
 /// time() - returns seconds since epoch as i64.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_time() -> i64 {
+pub fn kernel_time() -> i64 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_time(proc, &mut host) {
@@ -11944,8 +11862,7 @@ pub extern "C" fn kernel_time() -> i64 {
 
 /// usleep() - sleep for usec microseconds.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_usleep(usec: u32) -> i32 {
+pub fn kernel_usleep(usec: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_usleep(proc, &mut host, usec) {
@@ -11958,8 +11875,7 @@ pub extern "C" fn kernel_usleep(usec: u32) -> i32 {
 
 /// openat() - open relative to directory fd.
 /// Returns fd on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_openat(
+pub fn kernel_openat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -11979,8 +11895,7 @@ pub extern "C" fn kernel_openat(
 
 /// fstatat() - stat relative to directory fd.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fstatat(
+pub fn kernel_fstatat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12003,8 +11918,7 @@ pub extern "C" fn kernel_fstatat(
 
 /// unlinkat() - unlink relative to directory fd.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_unlinkat(
+pub fn kernel_unlinkat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12023,8 +11937,7 @@ pub extern "C" fn kernel_unlinkat(
 
 /// mkdirat() - mkdir relative to directory fd.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+pub fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -12038,8 +11951,7 @@ pub extern "C" fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32,
 
 /// renameat() - rename relative to directory fds.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_renameat(
+pub fn kernel_renameat(
     olddirfd: i32,
     old_ptr: *const u8,
     old_len: u32,
@@ -12592,8 +12504,7 @@ fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, coun
 /// Delegates to fstatat and fills the statx buffer from WasmStat.
 /// statx struct layout: we write a simplified version compatible with musl expectations.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_statx(
+pub fn kernel_statx(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12658,8 +12569,7 @@ pub extern "C" fn kernel_statx(
 
 /// Get resource limits. Writes soft and hard limits as two u64 LE values (16 bytes) to rlim_ptr.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
+pub fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getrlimit(proc, resource) {
         Ok((soft, hard)) => {
@@ -12677,8 +12587,7 @@ pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
 
 /// Set resource limits. Reads soft and hard limits as two u64 LE values (16 bytes) from rlim_ptr.
 /// Returns 0 on success, or negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
+pub fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let buf = unsafe { core::slice::from_raw_parts(rlim_ptr, 16) };
     let soft = u64::from_le_bytes([
@@ -12701,8 +12610,7 @@ pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// faccessat — check file accessibility relative to directory fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_faccessat(
+pub fn kernel_faccessat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12721,8 +12629,7 @@ pub extern "C" fn kernel_faccessat(
 }
 
 /// fchmodat — change file mode relative to directory fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fchmodat(
+pub fn kernel_fchmodat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12741,8 +12648,7 @@ pub extern "C" fn kernel_fchmodat(
 }
 
 /// fchownat — change file owner/group relative to directory fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fchownat(
+pub fn kernel_fchownat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -12762,8 +12668,7 @@ pub extern "C" fn kernel_fchownat(
 }
 
 /// linkat — create hard link relative to directory fds.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_linkat(
+pub fn kernel_linkat(
     olddirfd: i32,
     old_ptr: *const u8,
     old_len: u32,
@@ -12786,8 +12691,7 @@ pub extern "C" fn kernel_linkat(
 }
 
 /// symlinkat — create symbolic link relative to directory fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_symlinkat(
+pub fn kernel_symlinkat(
     target_ptr: *const u8,
     target_len: u32,
     newdirfd: i32,
@@ -12807,8 +12711,7 @@ pub extern "C" fn kernel_symlinkat(
 }
 
 /// readlinkat — read symbolic link relative to directory fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_readlinkat(
+pub fn kernel_readlinkat(
     dirfd: i32,
     path_ptr: *const u8,
     path_len: u32,
@@ -13000,8 +12903,7 @@ pub extern "C" fn kernel_getrusage(who: i32, buf_ptr: *mut u8, buf_len: u32) -> 
 // ---------------------------------------------------------------------------
 
 /// realpath — resolve canonical path. Returns bytes written, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_realpath(
+pub fn kernel_realpath(
     path_ptr: *const u8,
     path_len: u32,
     buf_ptr: *mut u8,
@@ -13172,8 +13074,7 @@ pub extern "C" fn kernel_clear_fork_exec() -> i32 {
 
 /// Schedule a SIGALRM after `seconds` seconds.
 /// Returns the number of seconds remaining from a previous alarm, or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
+pub fn kernel_alarm(seconds: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_alarm(proc, &mut host, seconds) {
@@ -13194,8 +13095,7 @@ pub extern "C" fn kernel_alarm(seconds: u32) -> i32 {
 /// record. wasm32 musl translates its public time64 `itimerval` to this record;
 /// wasm64 passes its 32-byte native record directly.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_setitimer(
+pub fn kernel_setitimer(
     which: u32,
     new_ptr: *const u8,
     old_ptr: *mut u8,
@@ -13256,8 +13156,7 @@ pub extern "C" fn kernel_setitimer(
 /// getitimer -- get current value of interval timer.
 /// `curr_ptr` receives the caller's four-native-`long` kernel-facing record.
 /// Returns 0 on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getitimer(
+pub fn kernel_getitimer(
     which: u32,
     curr_ptr: *mut u8,
     process_pointer_width: i64,
@@ -13386,8 +13285,7 @@ mod posix_timer_tests {
 /// kernel scratch. The explicit process data model keeps `union sigval`
 /// pointer-width lossless on both wasm32 and wasm64.
 /// Returns 0 on success, negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_create(
+pub fn kernel_timer_create(
     clock_id: u32,
     sevp_ptr: *const u8,
     timerid_ptr: *mut i32,
@@ -13538,8 +13436,7 @@ fn queue_posix_timer_fire(proc: &mut Process, timer_id: u32) -> i32 {
 
 /// timer_settime(timerid, flags, new_value_ptr, old_value_ptr)
 /// new/old are itimerspec as 4 × i64 = 32 bytes: {interval_sec, interval_nsec, value_sec, value_nsec}.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_settime(
+pub fn kernel_timer_settime(
     timerid: i32,
     flags: i32,
     new_ptr: *const u8,
@@ -13620,8 +13517,7 @@ pub extern "C" fn kernel_timer_settime(
 
 /// timer_gettime(timerid, curr_value_ptr)
 /// Writes current itimerspec (32 bytes) to curr_value_ptr.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
+pub fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
@@ -13645,8 +13541,7 @@ pub extern "C" fn kernel_timer_gettime(timerid: i32, curr_ptr: *mut u8) -> i32 {
 
 /// timer_getoverrun(timerid)
 /// Returns the overrun count on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
+pub fn kernel_timer_getoverrun(timerid: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
@@ -13661,8 +13556,7 @@ pub extern "C" fn kernel_timer_getoverrun(timerid: i32) -> i32 {
 }
 
 /// timer_delete(timerid)
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
+pub fn kernel_timer_delete(timerid: i32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
 
@@ -13688,8 +13582,7 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
 /// Temporarily replace the signal mask and suspend until a signal is delivered.
 /// The mask is passed as two u32 halves (lo, hi) to form a u64.
 /// Always returns negative EINTR on success (signal was delivered).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
+pub fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
@@ -13703,8 +13596,7 @@ pub extern "C" fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
 
 /// pause -- suspend until a signal is delivered.
 /// Always returns negative EINTR.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pause() -> i32 {
+pub fn kernel_pause() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_pause(proc, &mut host) {
@@ -13716,8 +13608,7 @@ pub extern "C" fn kernel_pause() -> i32 {
 }
 
 /// pathconf -- get configurable pathname variable for a path.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pathconf(
+pub fn kernel_pathconf(
     path_ptr: *const u8,
     path_len: u32,
     name: i32,
@@ -13741,8 +13632,7 @@ pub extern "C" fn kernel_pathconf(
 }
 
 /// fpathconf -- get configurable pathname variable for an open fd.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i32 {
+pub fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i32 {
     if value_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -13760,8 +13650,7 @@ pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i
 }
 
 /// getsockname -- get local socket address.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
+pub fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     // addrlen_ptr points to a u32 containing the buffer size (channel-rewritten pointer)
     let addrlen = if !addrlen_ptr.is_null() {
@@ -13799,8 +13688,7 @@ pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
 }
 
 /// getpeername -- get remote socket address.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
+pub fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mut u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let addrlen = if !addrlen_ptr.is_null() {
         unsafe { *addrlen_ptr }
@@ -13836,8 +13724,7 @@ pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
 }
 
 /// Resolve a hostname to an IP address. Returns bytes written or negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_getaddrinfo(
+pub fn kernel_getaddrinfo(
     name_ptr: *const u8,
     name_len: u32,
     result_ptr: *mut u8,
@@ -13861,8 +13748,7 @@ pub extern "C" fn kernel_getaddrinfo(
 // ---------------------------------------------------------------------------
 
 /// gettid - returns pid for the main thread or the host-bound worker TID.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_gettid() -> i32 {
+pub fn kernel_gettid() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     syscalls::sys_gettid(proc)
 }
@@ -13872,15 +13758,13 @@ pub extern "C" fn kernel_gettid() -> i32 {
 /// This is part of the musl pthread syscall ABI Kandelo supports so POSIX
 /// pthreads can join and clean up correctly; it is not a promise of Linux
 /// kernel compatibility.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_tid_address(tidptr: usize) -> i32 {
+pub fn kernel_set_tid_address(tidptr: usize) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     syscalls::sys_set_tid_address(proc, tidptr)
 }
 
 /// set_robust_list — stores the robust list head pointer (no-op for now).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_robust_list(_head: usize, _len: usize) -> i32 {
+pub fn kernel_set_robust_list(_head: usize, _len: usize) -> i32 {
     match syscalls::sys_set_robust_list() {
         Ok(()) => 0,
         Err(e) => -(e as i32),
@@ -13888,8 +13772,7 @@ pub extern "C" fn kernel_set_robust_list(_head: usize, _len: usize) -> i32 {
 }
 
 /// get_robust_list — returns 0 to indicate robust list support.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i32 {
+pub fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i32 {
     0
 }
 
@@ -13985,8 +13868,7 @@ mod thread_worker_derivation_tests {
 }
 
 /// futex — real implementation via host Atomics.wait/notify.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_futex(
+pub fn kernel_futex(
     uaddr: usize,
     op: u32,
     val: u32,
@@ -14008,8 +13890,7 @@ pub extern "C" fn kernel_futex(
 
 /// ppoll — poll with atomic signal mask swap.
 /// has_mask: 1 if a signal mask was provided (even if all-zero), 0 if NULL.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_ppoll(
+pub fn kernel_ppoll(
     fds_ptr: *mut u8,
     nfds: u32,
     timeout_ms: i32,
@@ -14037,8 +13918,7 @@ pub extern "C" fn kernel_ppoll(
 
 /// pselect6 — select with atomic signal mask swap.
 /// has_mask: 1 if a signal mask was provided (even if all-zero), 0 if NULL.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_pselect6(
+pub fn kernel_pselect6(
     nfds: i32,
     readfds_ptr: *mut u8,
     writefds_ptr: *mut u8,
