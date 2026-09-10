@@ -31,13 +31,26 @@
    independently written *chain* policies that disagree on depth and errno
    (§3). Both TS copies are deletable today with **no new host surface and no
    ABI motion**.
-5. **Architecture: stage it.** Step 1 = one shared TypeScript lifecycle module
+5. **host-native is not the answer, but it is the best evidence.** It cannot
+   compile for the browser and shares nothing with `runtime-core`, so it
+   cannot become the shared implementation (§6.0). What it *does* prove is
+   that the kernel export contract is sufficient for a non-JavaScript host to
+   drive the full lifecycle in **~1,050 code lines of handler logic** — and
+   that it needs **no generation concept at all** where the TS entries have
+   221 and 251 `generation` references. Most of the duplicated TS is Worker-
+   ownership complexity, not POSIX complexity (§6.3).
+6. **Architecture: stage it.** Step 1 = one shared TypeScript lifecycle module
    (delivers V1 now, no host-surface growth, makes the drift impossible).
    Step 2 = the Rust move, which becomes tractable *because* step 1 leaves one
    algorithm to port instead of two divergent ones. Going straight to Rust
    means porting two implementations that disagree, in the campaign's most
    delicate code, with the browser half largely untested in CI (§4, §7).
    Whether step 2 is mandatory is a **NEEDS-DEFER-DECISION** (§8).
+7. **A separable prize the grounding surfaced:** three places where the kernel
+   export contract is incomplete — waitpid selection, the vfork release
+   window, and the exec transaction as a unit — force *both* host-native and
+   the TS entries to re-implement POSIX policy in the host (§6.5). Closing
+   them shrinks every host at once. See NDD-6.
 
 ---
 
@@ -435,6 +448,20 @@ the hardest shared pieces — `process-generation-detach.ts`, `vfork-lifetime.ts
   then be diffed against a single reference implementation instead of two that
   disagree, and the dormant-flag-then-cutover pattern the census recommends
   (`tmpfs.rs`) actually works, because there is one flag, not two.
+
+**§6.3 reinforces this.** host-native runs the same lifecycle with **zero**
+generation concept, no quiescence fence and no lease retirement — because its
+dispatch is synchronous on one pump thread. The TS entries' 221 and 251
+`generation` references, their `ProcessGenerationOwnership` interface, their
+exact-vs-forced lease retirement and their `memory_quiescent` protocol exist
+because **browser and Node Workers are asynchronous and `Worker.terminate()`
+is not an ownership fence**. That is host-object ownership complexity specific
+to the Worker model, not POSIX complexity. Relocating it to Rust does not
+dissolve it — a Rust driver would have to reproduce the same fence protocol
+through its command list. So the language choice is *not* what determines
+whether this code shrinks; the fence requirement is. Unify first, in the
+language where the fence protocol already lives; move it afterwards, if a
+probe shows the move pays.
 
 The honest cost of this recommendation: **K4a is a stop the campaign might
 never leave.** A shared TS module is comfortable, and V2/V4 never arrive. That
@@ -939,6 +966,30 @@ Nothing below was self-deferred. Each is a maintainer call.
 - **Recommendation:** wire them before K4 lands. This is provisioning, not
   scope creep (build-docs-and-prs contract).
 
+### NDD-6 — Close the three incomplete kernel-export seams the grounding found?
+
+- **What:** `host_waitpid` + a host-side `WaitTable` (`crates/host-native/src/guest.rs:2441-2547`)
+  implements the **whole POSIX waitpid contract in the host** because the
+  kernel's `sys_waitpid` delegates entirely to it. Likewise the vfork release
+  window (`:9279`, `:9301`, `:10530-10608`) and the exec rollback/errno matrix
+  (`:11080`, `:11147`, `:11231`) are host-side POSIX decisions. These are
+  ~3 of the 4 sites where host-native makes POSIX decisions at all (§6.5), and
+  the TS entries carry the same decisions in their own shapes.
+- **Why it needs a decision:** it is a **separate, separable item** that no
+  K-number currently owns, and it shrinks *every* host at once — the strongest
+  V1/V4 shape in the grounding. It is also the kind of thing that gets
+  absorbed into K4 unannounced and then makes K4's diff unreviewable.
+- **Cost now:** kernel-side ownership of waitpid child selection (including
+  the process-group cases host-native returns `-ENOSYS` for), the vfork
+  release window, and an exec transaction primitive. Real Rust work in
+  `runtime-core`, and it is ABI-adjacent (new or widened exports) — this
+  campaign is one ABI epoch, so that is affordable, but it must be stated,
+  not slipped in.
+- **Cost later:** K4 unifies two TS copies of decisions that should not be in
+  the host at all, and host-native keeps its own third copy.
+- **Recommendation:** give it its own K-number, rank it **before** K4b and
+  **independent of** K4a. Do **not** fold it into K4.
+
 ---
 
 ## 9. STRONG DOUBT register
@@ -949,7 +1000,9 @@ Nothing below was self-deferred. Each is a maintainer call.
 | "The genuinely host-specific residue is small — constructing a Worker, constructing a `WebAssembly.Memory`, posting a message" (census §3 F1) | **True, and stronger than stated**: those three are *already* abstracted (`worker-adapter.ts`, `process-memory.ts`). Residue ≈ 360 lines plus a host-specific `handleInit` prologue. |
 | "K4 depends on K3" (census §10) | **Disproved.** Two lines of coupling. Correct the census. |
 | "`parseShebang` exists three times… the Rust one already exists and already works" | **Half right.** The Rust parser works and is already reachable from both TS hosts via `kernel_exec_target_shebang`. But there are 4 `#!` sites plus a 5th predicate, and the *chain* policies disagree — one of them producing ENOENT for a file that exists. |
-| "host-native implements process lifecycle in Rust already; it could become the shared one" | **UNVERIFIED — do not rely on it.** host-native has no Workers and is a partial host. Confirm before using it as a K4 argument. |
+| "host-native implements process lifecycle in Rust already" | **VERIFIED, with material gaps** — no signal delivery at all, process-group waits return `-ENOSYS`, a hard 16-thread cap, and a non-fork-instrumented guest's fork child never runs its copied program (§6.2). |
+| "…and that Rust implementation could become the shared one for all hosts" | **REFUTED.** It cannot compile for the browser by construction (`crates/host-native/Cargo.toml:8-22`), every lifecycle function is typed in `wasmtime::{Store,Linker,Module,SharedMemory,TypedFunc}` and `std::thread::JoinHandle`, and it shares **nothing** with `runtime-core` (zero dependency; all 16 mentions are doc comments). §6.0. Substitute the true claim: it proves the **kernel export contract** suffices for a non-JS host to drive the full lifecycle in ~1,050 code lines. |
+| "host-native runs real software, so its Rust lifecycle is battle-tested" | **REFUTED.** It never boots a real VFS image (`guest.rs:1518-1526`, `build_base_image:1541`, `archive_count = 0`); guests are 24 committed C fixtures; ~42 of its 54 tests self-skip green in CI (§6.6). |
 | Any need to **add host surface** for K4a | **None.** K4a adds zero imports and zero ABI motion. K4b would add host-executed primitives whose count depends on the encoding — possibly one import, on the `fork-module` precedent. See NDD-2; doubt stands until the probe runs. |
 | Any **ABI bump** demand from K4 | **None found.** Neither K4a nor the shebang deletion touches syscall numbers, marshalling, channel layout, memory layout, `repr(C)` structs, kernel exports, or VFS image metadata. The shebang change *reuses* an existing export. |
 | "Behaviour that genuinely cannot be shared" | **Two boundaries hold**: `forkModuleInitFields` (browser ships wasm32 only) and the browser's `memory_quiescent`-fence requirement (`Worker.terminate()` is not a fence in the browser). Everything else claimed as host-specific is either already abstracted or accidental. The `argv[0]`-keyed Chrome settle delay is a real boundary implemented in a program-specific way — worth revisiting. |
