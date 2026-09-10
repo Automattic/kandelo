@@ -35,7 +35,12 @@
 # `WASM_POSIX_RESOLUTION_POLICY` and `WASM_POSIX_SOURCE_ONLY_BINARY_ROOT`
 # select which binary tier the browser app resolves against; dropping
 # them silently falls back to the default tier, which is the same class
-# of wrong-artifact bug. PATH is intentionally NOT kept — Nix
+# of wrong-artifact bug. `WASM_POSIX_LOCAL_INSTALL_SOURCE` and
+# `WASM_POSIX_LOCAL_INSTALL_SESSION` name the bytes and session for
+# `build-deps install-local-artifact`; dropped, an install routed through
+# this shell silently installs nothing. `WASM_POSIX_LOCAL_BUILD_JOBS` caps
+# local-build concurrency and is likewise inert unless it crosses here.
+# PATH is intentionally NOT kept — Nix
 # rebuilds it from the flake so anything that needs to leak from
 # the host raises a "command not found" instead of building wrong.
 #
@@ -150,6 +155,8 @@ nix_develop=(
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
     --keep WASM_POSIX_LOCAL_BUILD_JOBS \
+    --keep WASM_POSIX_LOCAL_INSTALL_SOURCE \
+    --keep WASM_POSIX_LOCAL_INSTALL_SESSION \
     --accept-flake-config
 )
 
