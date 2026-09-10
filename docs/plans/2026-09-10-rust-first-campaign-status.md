@@ -57,16 +57,16 @@ avoid a contested file. The coordinator resolves at merge.
 | K0 probes | **DONE** | Disproved the E1 GC blockers and the V8 `epoll_pwait` crash |
 | K13a | **DONE** | Dead export deletion |
 | K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
-| K10 | **PARTIAL** | I1/I2/I3/I7 landed; I6 (`wasi-shim.ts`, 1,649) owed; I4/I5 browser cutover owed |
+| K10 | **PARTIAL; I6 RUNNING** | I1/I2/I3/I7 landed; I6 re-examines its own fixtures gate |
 | K14 | **DONE** | |
 | K5 | **Rust landed 2026-09-10; NOT cut over** | Placement adjudicated; re-cut as I6a + I6b. See the correction below |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
-| K7 | **Rust landed; cutover MIS-SCOPED — re-cut into 3** | See "K7 cutover" below |
+| K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
-| K4 | **K4a partial; K4b probe PASS** | 19 functions shared; 39 pairs still differ |
+| K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
 | K13b | **NOT STARTED** | Export cull |
 
@@ -341,6 +341,30 @@ export KANDELO_SOURCE_CACHE_ROOT=/tmp/kandelo-cache-<item>
 
 The cost is a cold first build. That is the right trade for anything doing
 browser provisioning or a full `setup`.
+
+## Browser validation debt — for the tier-end consolidated pass
+
+Per the maintainer's ruling, browser runs as **one consolidated pass at the end
+of Tier 2 and again after Tier 3**, plus their own manual check of the web app
+before merge. Agents no longer fight browser provisioning; they name what is
+unproven. This is that list.
+
+| Change | Unproven |
+|---|---|
+| K4 **D17 fix** | A browser VM interrupt timer left armed across lease release could `Atomics.store` into a handed-back backing. Fixed and reasoned about; **not run in a browser.** |
+| K4 **D2 change** | Browser once-only process-exit now uses explicit `reportedExits` instead of relying on statement adjacency. |
+| K4 lifecycle paths | Every browser path through the new `process-lifecycle.ts`. |
+| K8 **MITM CA write** | Browser-only; ordering changes if the boot flip lands. |
+| K11 pieces 2/3/4 | Not attempted — blocked at the time on file ownership. |
+| K10 I4/I5 | WASI browser cutover, if I6 needs it. |
+| K5 | Entirely unproven — that agent changed zero TypeScript. |
+
+**Note K4's browser gap was caused by the cache race, not by the change.** Three
+`prepare-browser` attempts failed on `shell/wasm32`, which blocks every browser
+product; once from a sibling's concurrent mutation of
+`packages/registry/program-packages.json` mid-digest. With
+`KANDELO_SOURCE_CACHE_ROOT` now standard in every brief, the tier-end pass
+should not hit it.
 
 ## Open decisions for the maintainer
 
