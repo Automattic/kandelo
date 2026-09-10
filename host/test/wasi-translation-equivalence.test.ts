@@ -246,11 +246,16 @@ describe("WASI translation: the documented per-defect divergences", () => {
         // precisely why this defect has gone unnoticed.
         expect(rustCtim, `${row.name}: ctim agrees when padding is zero`).toBe(tsCtim);
       } else {
-        // With non-zero padding it is not: 0xDEADBEEF lands in the high 32
-        // bits of the nanosecond value handed to the guest.
+        // With non-zero padding it is not. And the damage is worse than a
+        // wrong magnitude: `getBigInt64` reads offset 80 as SIGNED, so
+        // 0xDEADBEEF_075BCD15 has its top bit set and the nanosecond term
+        // comes out large and negative. The guest is handed a ctim that is
+        // not merely inaccurate but nonsensical.
         expect(rustCtim, `${row.name}: Rust reads only the u32`).not.toBe(tsCtim);
-        expect(tsCtim, "the corruption is the padding, shifted").toBeGreaterThan(
-          0xdead_beefn,
+        expect(tsCtim, "the padding drives ctim negative").toBeLessThan(0n);
+        // Rust's answer is the real one: 1700000002s + 123456789ns.
+        expect(rustCtim, "Rust reports the true timestamp").toBe(
+          1_700_000_002_123_456_789n,
         );
       }
     }
@@ -280,8 +285,9 @@ describe("WASI translation: the i64 guard the TypeScript needs and Rust does not
     // `checkedSignedI64Scalar` exists only because a JS number is a double.
     // Rust takes an i64 and the question cannot arise, so this is asserted
     // here rather than in the differential tables.
-    expect(() => ts.checkedSignedI64Scalar(2 ** 53, "probe")).not.toThrow();
-    expect(() => ts.checkedSignedI64Scalar(2 ** 53 + 1, "probe")).toThrow(RangeError);
+    // Number.MAX_SAFE_INTEGER is 2**53 - 1; 2**53 itself is already unsafe.
+    expect(() => ts.checkedSignedI64Scalar(2 ** 53 - 1, "probe")).not.toThrow();
+    expect(() => ts.checkedSignedI64Scalar(2 ** 53, "probe")).toThrow(RangeError);
     expect(() => ts.checkedSignedI64Scalar(1.5, "probe")).toThrow(RangeError);
     expect(() => ts.checkedSignedI64Scalar(1n << 63n, "probe")).toThrow(RangeError);
     expect(() => ts.checkedSignedI64Scalar(-(1n << 63n), "probe")).not.toThrow();
