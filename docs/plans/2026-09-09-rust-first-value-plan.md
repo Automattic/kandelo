@@ -1376,6 +1376,116 @@ behind it.
    `cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh`.
    Recorded in `docs/future-improvements.md`.
 
+## 2t. K12 — the twelfth disproved claim, and this one was mine, today (2026-09-09)
+
+Worktree `.claude/worktrees/agent-a4b7423970fe02e78`, base `4874238a8`, tip
+`4abb59d3b`, cherry-picked as `a6a22ffbe`, `fad8c3a15`, `16eb3a463`.
+
+**I briefed this item asserting that the K0 probes had unlocked the elimination
+of `ForkGcProvenanceRegistry`. That assertion was wrong, and the agent
+disproved it rather than implementing it.** The brief even warned the agent not
+to inherit the three claims it named; it did not warn the agent about the one I
+had just added.
+
+### Why the elimination is impossible, structurally
+
+An **immutable** GC array of **runtime-determined length** with **non-uniform
+contents** has no reconstruction path in the WebAssembly GC instruction set
+except `array.new_data` / `array.new_elem` reading a **static** segment:
+
+- `array.new_fixed` takes its element count as an **immediate** — it cannot
+  accept a length discovered at replay time.
+- `array.new` and `array.new_default` write **one** value to every slot.
+- `array.set`, `array.copy`, `array.fill`, `array.init_data` and
+  `array.init_elem` all require a **mutable** destination.
+- Data and element segments cannot be synthesized at runtime.
+
+So the value cannot be rebuilt generically from its type. Provenance is not a
+substitute for type recovery — **it never was type recovery.** It records the
+**constructor shape** and the **allocation seeds**, which is the one thing
+casting cannot recover.
+
+**The shipped code already encodes exactly this distinction**, and I verified it
+independently of the agent: `crates/fork-codec/src/gc_codec.rs:81-86` defines
+`LAYOUT_FLAG_REQUIRES_PROVENANCE` alongside `LAYOUT_FLAG_DEFAULTABLE_SHELL` —
+one bit for layouts that can be raised as a default shell and then mutated,
+another for layouts that cannot and must carry recorded provenance. The design
+had the right answer before I claimed otherwise.
+
+### The probes argue *for* the registry, not against it
+
+- The `ref.test` cascade P1 demonstrates **is already implemented and already
+  orders most-derived-first**. P1 confirmed shipped behaviour; it unlocked no
+  deletion.
+- **Canonicalization — P1's own headline result — is what makes cross-activation
+  ownership unanswerable by casting** (`fork-activation-registry.ts:1245-1247`).
+  Structurally identical types collapsing to one type is precisely why "which
+  activation minted this" cannot be recovered from the value.
+- **P2c is the reason mint-time externref provenance exists.** A host externref
+  is not `ref.eq`-comparable once internalized, so identity must be recorded
+  when it is minted.
+
+**Agent's own re-verification:** all 15 probe rows reproduced on Node v24.15.0,
+Chromium **149.0.7827.55** (older than the recorded 151 — still agreeing) and
+WebKit 26.5, `P2c.host_externref_is_eq = 0` on all three. The probes are sound.
+**The inference I drew from them was not.**
+
+### (b) blocked by ownership, correctly
+
+The segmented externref-handle scan runs in the **kernel worker**, which only
+*compiles* the fork module (`browser-kernel-worker-entry.ts:1392`) and never
+instantiates it — so no `fm_*` entry point is callable there at all. Its Rust
+home is a kernel export in `wasm_api.rs`, and its consumers are the two
+`*-kernel-worker-entry.ts` files: all three sibling-owned this round. Untouched,
+and the reason is a real architectural fact rather than a scheduling excuse.
+
+### (c) `fm_*` folded 72 → 70, and the agent declined to go further — correctly
+
+`fm_decoded_node_{kind,module_activation,ordinal}` → `fm_decoded_node_field(index, field)`:
+one concept, three identical `(usize) -> i32` signatures, so **no type safety is
+lost** (the `fm_stats` precedent). The agent then **refused to fold the other
+~40** and cited this plan against my own brief: the tracked item says "drive the
+count well below 71", but §1 says the count is never the target and warns
+against collapsing the contract behind one opaque call. Folding
+`fm_capture_intern_*`, whose operands are variously `(activation, ordinal)`,
+`(handle)` and `(value)`, would trade **V2 type checking** for a cosmetic
+number. **That is the §6.3 cheating criterion applied to an instruction I
+wrote.** Recommendation adopted: fold only where operand types already coincide.
+
+### NEEDS-DEFER-DECISION — two, for the maintainer
+
+1. **The struct seed path may still be removable.** Struct fields are mutable,
+   so fill already rewrites them; a fabricated typed placeholder could replace
+   the recorded operand. *Cost now:* four implementations, fixture regeneration,
+   and an ABI-tracked `gc_codec.layout_record` change. *Cost later:* none — it
+   is independent. *Agent's recommendation:* defer; it is a semantics change,
+   not a re-derivation. **This is the live remainder of the GC question — the
+   array path is closed, the struct path is not.**
+2. **The remaining ~40 `fm_*` exports.** See above.
+
+### Side finding — a declared validation command did not compile
+
+`cargo test -p host-native` — named in this plan as a gate — **failed to build
+from a clean checkout.** Three `include_bytes!` fixtures were missing, and
+`.gitignore`'s `*.wasm` kept them out while their generators live in the very
+crate that will not build without them. Built through the normal path and
+committed (`a6a22ffbe`); they back `smoke_fork_gc_array_reconstructs` and both
+externref smokes. **A gate that cannot run is not a gate** — the same lesson as
+the two skipping test gates found on 2026-09-09.
+
+**Validation:** `cargo test -p fork-codec -p fork-module-inject -p host-native`
+— 444 / 2 / 52, zero failures. Vitest `host/test/fork` 285 passed; 4 files fail
+on absent `programs/*.wasm` and sysroot, which is fresh-worktree provisioning
+and fails before any fork code runs. **Browser not run, and the agent said so
+plainly** — the folded export is a pure readout accessor with no host-parity
+surface, but that is an argument, not evidence.
+
+**Ledger** `4874238a8..4abb59d3b`: in-scope TS **+22**, Rust +4. The agent named
+the owner of the difference without being asked: the removal was to come from
+(a), and (a) is closed. The safe fold in (c) nets positive because a documented
+enum plus one shared body outweigh three deleted call bodies. **That is the
+correct trade and the ledger should show it as one.**
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
