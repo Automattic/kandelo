@@ -1,5 +1,9 @@
 extern crate alloc;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
+use wasm_posix_shared::Errno;
 
 /// Tracks a single mmap'd region.
 #[derive(Debug, Clone)]
@@ -1426,5 +1430,639 @@ mod tests {
         assert_eq!(reserved, mapped + 0x10000);
 
         assert!(!mm.can_grow_at(mapped + 0x10000, 0x10000));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared-mapping page cache and coherence protocol
+// ---------------------------------------------------------------------------
+//
+// POSIX `MAP_SHARED` semantics for a platform where every process owns a
+// *distinct* linear memory. A store performed by one pid is not visible in a
+// peer's memory, so shared mappings are kept coherent by an explicit
+// publish/refresh protocol run at syscall boundaries:
+//
+//   1. **publish** — diff the mapping's bytes in the process against the
+//      per-mapping `snapshot` and merge only the changed byte *runs* into the
+//      authoritative backing, bumping the backing `version`;
+//   2. **refresh** — when the mapping has not seen the backing's current
+//      version, read the authoritative range back, store it into the process,
+//      and advance `snapshot`/`seen_version` together.
+//
+// Merging runs rather than whole ranges is what lets two processes write
+// disjoint parts of the same shared object without clobbering each other.
+//
+// BOUNDARY (not closed by this module): coherence is boundary-synchronous, not
+// immediate. A store in one pid becomes visible to a peer at the next
+// synchronization point, not at the instant of the store. That is an
+// architectural limit of one-linear-memory-per-process — a peer's shared buffer
+// cannot be addressed and `futex` cannot target it — and moving ownership of
+// this table into Rust does not address it. See `docs/future-improvements.md`.
+//
+// Reentrancy: the TypeScript implementation this replaces had to re-verify,
+// after every host call, that the backing it staged bytes for was still the
+// same object registered under the same key, because a host callback could
+// re-enter the worker and mutate the table mid-operation. Rust's `&mut`
+// borrows make that class of interleaving unrepresentable, so those checks are
+// absent here by construction rather than by omission.
+
+/// Page granularity of the file-backing cache.
+pub const FILE_PAGE_SIZE: usize = 4096;
+
+/// `st_mode` file-type mask and the regular-file type.
+const S_IFMT: u32 = 0o170000;
+const S_IFREG: u32 = 0o100000;
+
+/// Cap on writeback-loss diagnostics: bounded so a pathological guest cannot
+/// flood the log, never zero so the loss is never silent.
+pub const WRITEBACK_LOSS_REPORT_LIMIT: u32 = 50;
+
+/// The subset of `struct stat` the mapping layer needs, plus the concrete host
+/// handle when the file is host-backed. `host_handle == None` marks a
+/// kernel-owned file (in-kernel tmpfs / memfd): it has no persistent host
+/// descriptor, so it cannot anchor a host byte-store backing and instead uses
+/// the fd-writeback bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedMappingStat {
+    pub dev: u64,
+    pub ino: u64,
+    pub size: u64,
+    pub mode: u32,
+    pub host_handle: Option<i64>,
+}
+
+impl SharedMappingStat {
+    pub fn is_regular_file(&self) -> bool {
+        (self.mode & S_IFMT) == S_IFREG
+    }
+}
+
+/// Capabilities the mapping table needs from its environment.
+///
+/// Only five of these cross to the host, and all five are existing kernel
+/// imports: `read_process`/`write_process` (`host_proc_read_bytes` /
+/// `host_proc_write_bytes`), `pread`/`pwrite` (`host_pread`/`host_pwrite`) and
+/// `fstat_handle` (`host_fstat`). The rest — guest-fd stat/pwrite/close, SysV
+/// segment access, handle retain/release, diagnostics — are in-kernel
+/// operations the kernel already owns; they appear here as trait methods only
+/// so the protocol is unit-testable without a kernel instance.
+pub trait SharedMappingIo {
+    /// Copy `dst.len()` bytes out of process `pid`'s linear memory at `addr`.
+    fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno>;
+    /// Copy `src` into process `pid`'s linear memory at `addr`.
+    fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno>;
+    /// Current size of process `pid`'s linear memory, or `None` if it is gone.
+    fn process_memory_len(&mut self, pid: u32) -> Option<u64>;
+
+    /// Positional read from a stable host handle. Returns bytes read; a return
+    /// of 0 for a non-empty request is a short read and is an error to the
+    /// caller, because zero-filling would manufacture data.
+    fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno>;
+    /// Positional write to a stable host handle. Returns bytes written.
+    fn pwrite(&mut self, handle: i64, offset: u64, src: &[u8]) -> Result<usize, Errno>;
+    /// `fstat` a stable host handle.
+    fn fstat_handle(&mut self, handle: i64) -> Result<SharedMappingStat, Errno>;
+    /// Backend-qualified identity for a handle, derived from the live handle
+    /// and never from a pathname. `None` means the backend cannot name the
+    /// object stably, which makes it ineligible for a shared backing.
+    fn handle_identity(&mut self, handle: i64, dev: u64, ino: u64) -> Option<String>;
+    /// Keep a host handle alive for as long as a backing references it.
+    fn retain_handle(&mut self, handle: i64) -> Result<(), Errno>;
+    fn release_handle(&mut self, handle: i64);
+
+    /// `fstat` a *guest* descriptor of process `pid` (fd-writeback bridge).
+    fn fd_stat(&mut self, pid: u32, fd: i32) -> Result<SharedMappingStat, Errno>;
+    /// Positional write through a *guest* descriptor of process `pid`.
+    fn fd_pwrite(&mut self, pid: u32, fd: i32, offset: u64, src: &[u8]) -> Result<usize, Errno>;
+    /// Close a writeback dup. Best-effort: a failure must not abort teardown.
+    fn close_fd(&mut self, pid: u32, fd: i32);
+
+    /// Read from a SysV shared-memory segment the kernel owns.
+    fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno>;
+    /// Write into a SysV shared-memory segment the kernel owns.
+    fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno>;
+
+    /// Report a refused or failed writeback so the loss is never silent.
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str);
+}
+
+/// Which authoritative store a mapping publishes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackingKind {
+    /// Host-owned byte store for an anonymous `MAP_SHARED` region.
+    Anonymous,
+    /// Page-cached regular file behind a stable host handle.
+    File,
+}
+
+/// Page cache for one shared regular-file object, keyed by backend identity.
+///
+/// `pages` holds whole `FILE_PAGE_SIZE` pages; `dirty_pages` records which of
+/// them hold bytes not yet written back through `handle`. `version` is bumped
+/// once per publication so observers can tell whether their `snapshot` is
+/// current without re-reading the file.
+#[derive(Debug)]
+pub struct FileBacking {
+    pub key: String,
+    pub handle: i64,
+    /// Whether `handle` is an `O_RDWR` description, i.e. whether writeback is
+    /// possible at all. Derived from the fd's *lifetime capability*, not its
+    /// initial protection, so a later `PROT_WRITE` upgrade is representable
+    /// after the fd and pathname are gone.
+    pub writable: bool,
+    /// Authoritative file size from the stable handle's `fstat`.
+    pub size: u64,
+    pub size_valid: bool,
+    pages: BTreeMap<u64, Vec<u8>>,
+    dirty_pages: BTreeSet<u64>,
+    pub ref_count: u32,
+    pub version: u64,
+}
+
+/// Host-owned byte store for an anonymous `MAP_SHARED` region.
+#[derive(Debug)]
+pub struct AnonymousBacking {
+    pub key: String,
+    pub bytes: Vec<u8>,
+    pub ref_count: u32,
+    pub version: u64,
+}
+
+/// One tracked `MAP_SHARED` interval of one process.
+#[derive(Debug, Clone)]
+pub struct SharedMapping {
+    pub fd: i32,
+    /// Offset into the backing object (file offset, or offset into the
+    /// anonymous byte store).
+    pub file_offset: u64,
+    pub len: usize,
+    pub writable: bool,
+    /// Whether the originating description permits a later `PROT_WRITE`
+    /// upgrade.
+    pub write_allowed: bool,
+    pub backing_kind: Option<BackingKind>,
+    pub backing_key: Option<String>,
+    /// The bytes this process last observed. Diffing against it is what lets
+    /// two mappings publish disjoint writes without clobbering each other.
+    pub snapshot: Option<Vec<u8>>,
+    pub seen_version: u64,
+
+    // --- fd-writeback bridge (kernel-owned tmpfs/memfd files) ---
+    /// Writable `MAP_SHARED` of a kernel-owned regular file: there is no host
+    /// byte store, so writeback rides `writeback_fd`.
+    pub fd_writeback: bool,
+    /// Stable descriptor (an `F_DUPFD_CLOEXEC` dup taken at mmap time) used for
+    /// writeback, so writeback survives a guest `close(fd)` as POSIX requires.
+    /// Falls back to `fd` when the dup could not be taken.
+    pub writeback_fd: Option<i32>,
+    /// Last observed size of the kernel-owned file; writeback is clamped to the
+    /// live size so a whole-page mapping never grows the file past EOF.
+    pub file_size: u64,
+    /// Identity the writeback descriptor must still refer to at flush time.
+    /// Because `writeback_fd` is a guest-visible number, a `closefrom`/`dup2`
+    /// can close or repoint it; verifying `(dev, ino)` stops this mapping's
+    /// bytes from being written into an unrelated file.
+    pub expected_dev: Option<u64>,
+    pub expected_ino: Option<u64>,
+}
+
+impl SharedMapping {
+    /// A tracked anonymous `MAP_SHARED` interval.
+    pub fn anonymous(len: usize, writable: bool, key: String, snapshot: Vec<u8>) -> Self {
+        Self {
+            fd: -1,
+            file_offset: 0,
+            len,
+            writable,
+            write_allowed: false,
+            backing_kind: Some(BackingKind::Anonymous),
+            backing_key: Some(key),
+            snapshot: Some(snapshot),
+            seen_version: 0,
+            fd_writeback: false,
+            writeback_fd: None,
+            file_size: 0,
+            expected_dev: None,
+            expected_ino: None,
+        }
+    }
+
+    /// A tracked file `MAP_SHARED` interval over a host-backed page cache.
+    pub fn file(
+        fd: i32,
+        file_offset: u64,
+        len: usize,
+        writable: bool,
+        write_allowed: bool,
+        key: String,
+        snapshot: Vec<u8>,
+        seen_version: u64,
+    ) -> Self {
+        Self {
+            fd,
+            file_offset,
+            len,
+            writable,
+            write_allowed,
+            backing_kind: Some(BackingKind::File),
+            backing_key: Some(key),
+            snapshot: Some(snapshot),
+            seen_version,
+            fd_writeback: false,
+            writeback_fd: None,
+            file_size: 0,
+            expected_dev: None,
+            expected_ino: None,
+        }
+    }
+
+    /// A writable `MAP_SHARED` of a kernel-owned (tmpfs/memfd) regular file.
+    /// It has no host byte store; writeback rides `writeback_fd`.
+    pub fn fd_writeback(
+        fd: i32,
+        file_offset: u64,
+        len: usize,
+        writeback_fd: i32,
+        file_size: u64,
+        dev: u64,
+        ino: u64,
+        snapshot: Vec<u8>,
+    ) -> Self {
+        Self {
+            fd,
+            file_offset,
+            len,
+            writable: true,
+            write_allowed: true,
+            backing_kind: None,
+            backing_key: None,
+            snapshot: Some(snapshot),
+            seen_version: 0,
+            fd_writeback: true,
+            writeback_fd: Some(writeback_fd),
+            file_size,
+            expected_dev: Some(dev),
+            expected_ino: Some(ino),
+        }
+    }
+
+    /// The writeback dup this mapping *owns* and must refcount. A guest-fd
+    /// fallback (`writeback_fd == fd`) is not owned and is never closed.
+    fn owned_writeback_fd(&self) -> Option<i32> {
+        if !self.fd_writeback {
+            return None;
+        }
+        match self.writeback_fd {
+            Some(wf) if wf != self.fd => Some(wf),
+            _ => None,
+        }
+    }
+}
+
+/// Byte-coherence mirror for one Rust-owned SysV shared-memory attachment.
+///
+/// The kernel owns segment identity, lifetime and bytes; this records what a
+/// given attachment last observed so the same run-merge protocol applies.
+#[derive(Debug, Clone)]
+pub struct SysvShmMapping {
+    pub seg_id: i32,
+    pub size: usize,
+    pub read_only: bool,
+    pub snapshot: Vec<u8>,
+    pub seen_version: u64,
+}
+
+/// Yield the `[start, end)` runs where `source` differs from `snapshot`.
+/// A shorter `snapshot` makes every trailing byte a difference, which is the
+/// conservative direction (publish more, never less).
+fn changed_runs(source: &[u8], snapshot: &[u8]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let len = source.len();
+    let mut i = 0usize;
+    while i < len {
+        while i < len && snapshot.get(i) == Some(&source[i]) {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+        let start = i;
+        loop {
+            i += 1;
+            if i >= len || snapshot.get(i) == Some(&source[i]) {
+                break;
+            }
+        }
+        runs.push((start, i));
+    }
+    runs
+}
+
+/// Merge the changed runs of `source` (relative to `snapshot`) into
+/// `destination` at `destination_offset`. Returns whether anything changed.
+pub fn merge_changed_byte_runs(
+    source: &[u8],
+    snapshot: &[u8],
+    destination: &mut [u8],
+    destination_offset: usize,
+) -> bool {
+    let mut changed = false;
+    for (start, end) in changed_runs(source, snapshot) {
+        destination[destination_offset + start..destination_offset + end]
+            .copy_from_slice(&source[start..end]);
+        changed = true;
+    }
+    changed
+}
+
+/// Whether any byte of `source` differs from `snapshot`.
+pub fn range_differs_from_snapshot(source: &[u8], snapshot: &[u8]) -> bool {
+    source != snapshot
+}
+
+impl FileBacking {
+    pub fn new(key: String, handle: i64, writable: bool, size: u64) -> Self {
+        Self {
+            key,
+            handle,
+            writable,
+            size,
+            size_valid: true,
+            pages: BTreeMap::new(),
+            dirty_pages: BTreeSet::new(),
+            ref_count: 0,
+            version: 0,
+        }
+    }
+
+    pub fn dirty_page_count(&self) -> usize {
+        self.dirty_pages.len()
+    }
+
+    pub fn cached_page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// Re-derive size and identity from the live handle. Any inconsistency
+    /// invalidates the cached size rather than letting a stale size clamp a
+    /// later writeback.
+    pub fn revalidate(&mut self, io: &mut dyn SharedMappingIo) -> Result<(), Errno> {
+        let handle = self.handle;
+        let stat = match io.fstat_handle(handle) {
+            Ok(stat) => stat,
+            Err(err) => {
+                self.size_valid = false;
+                return Err(err);
+            }
+        };
+        if !stat.is_regular_file() {
+            self.size_valid = false;
+            return Err(Errno::EIO);
+        }
+        match io.handle_identity(handle, stat.dev, stat.ino) {
+            Some(key) if key == self.key => {}
+            Some(_) => {
+                self.size_valid = false;
+                return Err(Errno::EIO);
+            }
+            None => {
+                self.size_valid = false;
+                return Err(Errno::ENOTSUP);
+            }
+        }
+        self.size = stat.size;
+        self.size_valid = true;
+        Ok(())
+    }
+
+    /// Read one whole page. Bytes past EOF stay zero; bytes the stat declared
+    /// readable must actually be read, because a short read means the file
+    /// raced this snapshot and zero-filling would manufacture data.
+    fn read_page(&mut self, page: u64, io: &mut dyn SharedMappingIo) -> Result<Vec<u8>, Errno> {
+        if !self.size_valid {
+            return Err(Errno::EIO);
+        }
+        let page_offset = page.saturating_mul(FILE_PAGE_SIZE as u64);
+        let readable = self
+            .size
+            .saturating_sub(page_offset)
+            .min(FILE_PAGE_SIZE as u64) as usize;
+        let mut bytes = vec![0u8; FILE_PAGE_SIZE];
+        let mut total = 0usize;
+        while total < readable {
+            let read = io.pread(
+                self.handle,
+                page_offset + total as u64,
+                &mut bytes[total..readable],
+            )?;
+            if read == 0 || read > readable - total {
+                return Err(Errno::EIO);
+            }
+            total += read;
+        }
+        Ok(bytes)
+    }
+
+    /// Ensure one page is resident, revalidating a doubtful size first.
+    pub fn ensure_page_loaded(
+        &mut self,
+        page: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if self.pages.contains_key(&page) {
+            return Ok(());
+        }
+        if !self.size_valid {
+            self.revalidate(io)?;
+        }
+        let loaded = self.read_page(page, io)?;
+        self.pages.insert(page, loaded);
+        Ok(())
+    }
+
+    pub fn ensure_range_loaded(
+        &mut self,
+        offset: u64,
+        len: usize,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if len == 0 {
+            return Ok(());
+        }
+        let first = offset / FILE_PAGE_SIZE as u64;
+        let last = (offset + len as u64 - 1) / FILE_PAGE_SIZE as u64;
+        for page in first..=last {
+            self.ensure_page_loaded(page, io)?;
+        }
+        Ok(())
+    }
+
+    /// Assemble `len` bytes of the authoritative cache starting at `offset`.
+    pub fn read_range(
+        &mut self,
+        offset: u64,
+        len: usize,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<Vec<u8>, Errno> {
+        let mut out = vec![0u8; len];
+        let mut copied = 0usize;
+        while copied < len {
+            let absolute = offset + copied as u64;
+            let page = absolute / FILE_PAGE_SIZE as u64;
+            let page_offset = (absolute % FILE_PAGE_SIZE as u64) as usize;
+            let count = (FILE_PAGE_SIZE - page_offset).min(len - copied);
+            self.ensure_page_loaded(page, io)?;
+            let src = &self.pages[&page][page_offset..page_offset + count];
+            out[copied..copied + count].copy_from_slice(src);
+            copied += count;
+        }
+        Ok(out)
+    }
+
+    /// Copy bytes into the cache at `offset`, marking touched pages dirty.
+    ///
+    /// (The TypeScript original also had an `else` branch clearing the dirty
+    /// bit for pages that were not already dirty — always a no-op, since it
+    /// removed a page known to be absent from the set. It is not reproduced.)
+    pub fn write_range(
+        &mut self,
+        offset: u64,
+        bytes: &[u8],
+        mark_dirty: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let mut copied = 0usize;
+        while copied < bytes.len() {
+            let absolute = offset + copied as u64;
+            let page = absolute / FILE_PAGE_SIZE as u64;
+            let page_offset = (absolute % FILE_PAGE_SIZE as u64) as usize;
+            let count = (FILE_PAGE_SIZE - page_offset).min(bytes.len() - copied);
+            self.ensure_page_loaded(page, io)?;
+            let dst = self.pages.get_mut(&page).expect("page just loaded");
+            dst[page_offset..page_offset + count].copy_from_slice(&bytes[copied..copied + count]);
+            if mark_dirty {
+                self.dirty_pages.insert(page);
+            }
+            copied += count;
+        }
+        Ok(())
+    }
+
+    /// Merge the byte runs of `source` that differ from `snapshot` into the
+    /// cache at `backing_offset`, marking them dirty. Merging runs (not the
+    /// whole range) is what preserves a peer's disjoint writes.
+    pub fn merge_changed_runs(
+        &mut self,
+        source: &[u8],
+        snapshot: &[u8],
+        backing_offset: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<bool, Errno> {
+        let mut changed = false;
+        for (start, end) in changed_runs(source, snapshot) {
+            self.write_range(backing_offset + start as u64, &source[start..end], true, io)?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// Write dirty pages overlapping `[offset, offset + len)` back through the
+    /// stable handle, clamped to the file's size so a mapped file is never
+    /// grown past EOF. Dirty bytes lying entirely past EOF are dropped when a
+    /// flush covers their page, because they are unrepresentable.
+    pub fn flush_range(&mut self, offset: u64, len: u64, io: &mut dyn SharedMappingIo) -> bool {
+        if len == 0 || self.dirty_pages.is_empty() {
+            return true;
+        }
+        if !self.size_valid {
+            return false;
+        }
+        let requested_end = offset.saturating_add(len);
+        let end = requested_end.min(self.size);
+        let mut success = true;
+        let pages: Vec<u64> = self.dirty_pages.iter().copied().collect();
+        for page in pages {
+            let page_start = page.saturating_mul(FILE_PAGE_SIZE as u64);
+            let page_end = page_start.saturating_add(FILE_PAGE_SIZE as u64);
+            if page_start >= self.size {
+                if page_start < requested_end && page_end > offset {
+                    self.dirty_pages.remove(&page);
+                }
+                continue;
+            }
+            if page_start >= end || page_end <= offset {
+                continue;
+            }
+            let write_start = offset.max(page_start);
+            let valid_page_end = page_end.min(self.size);
+            let write_end = end.min(valid_page_end);
+            if write_end <= write_start {
+                continue;
+            }
+            if self.ensure_page_loaded(page, io).is_err() {
+                success = false;
+                continue;
+            }
+            let lo = (write_start - page_start) as usize;
+            let hi = (write_end - page_start) as usize;
+            let source: Vec<u8> = self.pages[&page][lo..hi].to_vec();
+            if !self.write_all(&source, write_start, io) {
+                success = false;
+                continue;
+            }
+            if write_start == page_start && write_end == valid_page_end {
+                self.dirty_pages.remove(&page);
+            }
+        }
+        success
+    }
+
+    /// Flush every dirty page, with no range restriction.
+    pub fn flush_all(&mut self, io: &mut dyn SharedMappingIo) -> bool {
+        self.flush_range(0, u64::MAX, io)
+    }
+
+    fn write_all(&mut self, source: &[u8], offset: u64, io: &mut dyn SharedMappingIo) -> bool {
+        let mut written = 0usize;
+        while written < source.len() {
+            match io.pwrite(self.handle, offset + written as u64, &source[written..]) {
+                Ok(count) if count > 0 && count <= source.len() - written => written += count,
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Drop *clean* cached pages overlapping a range so the next read re-reads
+    /// the file. Dirty pages are preserved: discarding them would silently lose
+    /// acknowledged `MAP_SHARED` stores.
+    pub fn invalidate_range(&mut self, offset: u64, len: u64) {
+        if len == 0 {
+            return;
+        }
+        let first = offset / FILE_PAGE_SIZE as u64;
+        let last = (offset.saturating_add(len) - 1) / FILE_PAGE_SIZE as u64;
+        let victims: Vec<u64> = self
+            .pages
+            .keys()
+            .copied()
+            .filter(|p| *p >= first && *p <= last && !self.dirty_pages.contains(p))
+            .collect();
+        for page in victims {
+            self.pages.remove(&page);
+        }
+    }
+
+    /// Drop every clean cached page.
+    pub fn invalidate_clean_pages(&mut self) {
+        let victims: Vec<u64> = self
+            .pages
+            .keys()
+            .copied()
+            .filter(|p| !self.dirty_pages.contains(p))
+            .collect();
+        for page in victims {
+            self.pages.remove(&page);
+        }
     }
 }
