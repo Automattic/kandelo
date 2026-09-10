@@ -28,21 +28,6 @@ import {
   PR_GET_NAME,
   PR_SET_NAME,
   IOCTL_REQUESTS,
-  KERNEL_CMSGHDR_WIRE_ALIGN,
-  KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEN_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
-  KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
-  KERNEL_IOVEC_WIRE_BASE_OFFSET,
-  KERNEL_IOVEC_WIRE_LEN_OFFSET,
-  KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT,
-  KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-  KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
   KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
   POSIX_IOV_MAX,
@@ -79,8 +64,6 @@ import {
   SOCKET_MSG_TRUNC,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-  STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
@@ -763,12 +746,12 @@ function writeNativeRightsRecords(
 function canonicalRightsBytes(records: number[][]): Uint8Array {
   const lengths = records.map(
     (descriptors) =>
-      KERNEL_CMSGHDR_WIRE_DATA_OFFSET +
+      PROCESS_CMSGHDR_WASM32_DATA_OFFSET +
       descriptors.length * SCM_RIGHTS_FD_BYTES,
   );
   const output = new Uint8Array(
     lengths.reduce(
-      (total, length) => total + alignUp(length, KERNEL_CMSGHDR_WIRE_ALIGN),
+      (total, length) => total + alignUp(length, PROCESS_CMSGHDR_WASM32_ALIGN),
       0,
     ),
   );
@@ -776,27 +759,27 @@ function canonicalRightsBytes(records: number[][]): Uint8Array {
   let offset = 0;
   records.forEach((descriptors, recordIndex) => {
     const length = lengths[recordIndex];
-    view.setUint32(offset + KERNEL_CMSGHDR_WIRE_LEN_OFFSET, length, true);
+    view.setUint32(offset + PROCESS_CMSGHDR_WASM32_LEN_OFFSET, length, true);
     view.setUint32(
-      offset + KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
+      offset + PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
       SOCKET_SOL_SOCKET,
       true,
     );
     view.setUint32(
-      offset + KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
+      offset + PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
       SOCKET_SCM_RIGHTS,
       true,
     );
     descriptors.forEach((descriptor, descriptorIndex) => {
       view.setInt32(
         offset +
-          KERNEL_CMSGHDR_WIRE_DATA_OFFSET +
+          PROCESS_CMSGHDR_WASM32_DATA_OFFSET +
           descriptorIndex * SCM_RIGHTS_FD_BYTES,
         descriptor,
         true,
       );
     });
-    offset += alignUp(length, KERNEL_CMSGHDR_WIRE_ALIGN);
+    offset += alignUp(length, PROCESS_CMSGHDR_WASM32_ALIGN);
   });
   return output;
 }

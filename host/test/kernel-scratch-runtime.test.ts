@@ -5,9 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   CH_DATA_SIZE,
   CH_TOTAL_SIZE,
-  KERNEL_IOVEC_WIRE_ALIGN,
   POSIX_IOV_MAX,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
 } from "../src/generated/abi";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
@@ -24,10 +22,14 @@ const programs = [
     join(repoRoot, "examples/kernel_scratch_browser_test.wasm64.wasm"),
   ],
 ] as const;
-const boundaryReadvDataBytes =
-  CH_DATA_SIZE - POSIX_IOV_MAX * STRUCT_SIZE_KERNEL_IOVEC_WIRE;
-const boundaryReadvBytesPerIovec =
-  boundaryReadvDataBytes / POSIX_IOV_MAX;
+// An IOV_MAX-entry transfer whose total exactly fills the ordinary channel
+// data area. The kernel walks the caller's iovec table itself now, so no part
+// of that table is staged in the channel and the old
+// `CH_DATA_SIZE - IOV_MAX * STRUCT_SIZE_KERNEL_IOVEC_WIRE` figure no longer
+// names anything. What is still worth pinning is the widest legal table at the
+// size where the scalar transfer underneath sits exactly on its capacity edge.
+const boundaryReadvBytesPerIovec = Math.floor(CH_DATA_SIZE / POSIX_IOV_MAX);
+const boundaryReadvDataBytes = boundaryReadvBytesPerIovec * POSIX_IOV_MAX;
 const largeIovecCount = 2;
 const largeBytesPerIovec = Math.floor(CH_DATA_SIZE / 2) + 1;
 const largeBytes = largeIovecCount * largeBytesPerIovec;
@@ -36,10 +38,9 @@ const ptyLength = CH_TOTAL_SIZE + 1;
 
 if (
   !Number.isInteger(boundaryReadvBytesPerIovec) ||
-  boundaryReadvBytesPerIovec <= 0 ||
-  boundaryReadvBytesPerIovec % KERNEL_IOVEC_WIRE_ALIGN !== 0
+  boundaryReadvBytesPerIovec <= 0
 ) {
-  throw new Error("generated readv scratch layout cannot form an exact boundary");
+  throw new Error("generated readv layout cannot form an exact boundary");
 }
 if (largeBytes <= CH_DATA_SIZE) {
   throw new Error("large vector fixture must exceed ordinary channel scratch");

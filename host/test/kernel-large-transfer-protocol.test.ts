@@ -20,11 +20,6 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
-  KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-  KERNEL_CMSGHDR_WIRE_ALIGN,
-  KERNEL_CMSGHDR_WIRE_LEN_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
-  KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
   POSIX_IOV_MAX,
   PROCESS_CMSGHDR_WASM64_DATA_OFFSET,
   PROCESS_CMSGHDR_WASM64_LEN_OFFSET,
@@ -46,8 +41,6 @@ import {
   PROCESS_STATE_EXITED,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-  STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
 } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -342,10 +335,11 @@ function writeLargeSendmsg(
   const messagePointer = 256;
   const iovecPointer = 512;
   const sourcePointer = 1024;
-  const length = CH_DATA_SIZE
-    - STRUCT_SIZE_KERNEL_MSGHDR_WIRE
-    - STRUCT_SIZE_KERNEL_IOVEC_WIRE
-    + 1;
+  // One byte past the ordinary channel mailbox. The figure used to subtract
+  // the fixed msghdr and iovec wires the host staged beside the payload; the
+  // kernel walks the caller's own header now, so nothing but the payload has
+  // ever to fit, and "too large for the mailbox" is the whole property.
+  const length = CH_DATA_SIZE + 1;
   const bytes = new Uint8Array(channel.memory.buffer);
   bytes.fill(payloadByte, sourcePointer, sourcePointer + length);
   writeIovec(
