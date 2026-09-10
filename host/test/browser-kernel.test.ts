@@ -13,10 +13,17 @@
  * kernel-worker pump end-to-end.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import type { Mock } from "vitest";
 import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
 import { createPcmTransport } from "./pcm-test-helpers";
+import { browserForkModule32ArtifactUrl } from "../src/browser-fork-module-artifact";
+import { browserWasiModule32ArtifactUrl } from "../src/browser-wasi-module-artifact";
+import { browserDylinkModule32ArtifactUrl } from "../src/browser-dylink-module-artifact";
+
+const DEFAULT_KERNEL_URL = "stub://default-kernel";
+const DEFAULT_ROOTFS_URL = "stub://default-rootfs";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
 vi.mock("../src/browser-kernel-default-artifacts", () => {
@@ -28,6 +35,56 @@ vi.mock("../src/browser-kernel-default-artifacts", () => {
     },
   };
 });
+
+/**
+ * The co-resident module artifacts every browser boot pulls in.
+ *
+ * `bootWorker` awaits the fork-module and the WASI module unconditionally —
+ * they are platform components, not the demo build's optional default kernel
+ * and rootfs — and probes the dynamic-linking planner on the same path. The
+ * URLs come from the production modules rather than being written out here,
+ * so these are the exact URLs `bootWorker` will fetch.
+ */
+const BOOT_MODULE_ARTIFACT_URLS: readonly string[] = [
+  browserForkModule32ArtifactUrl,
+  browserWasiModule32ArtifactUrl,
+  browserDylinkModule32ArtifactUrl,
+];
+
+interface FetchStubResponse {
+  ok: boolean;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+}
+
+/**
+ * Install a `fetch` stub that serves the boot-mandatory module artifacts and
+ * whatever else `serve` chooses to answer, and throws for everything else.
+ *
+ * Truthful by construction: an unexpected URL is a loud failure naming the
+ * URL, so a boot that starts fetching something new cannot pass quietly.
+ */
+function stubBootFetch(
+  serve: (url: string) => FetchStubResponse | undefined = () => undefined,
+): Mock {
+  const fetchMock = vi.fn(async (url: string) => {
+    const served = serve(url);
+    if (served) return served;
+    if (BOOT_MODULE_ARTIFACT_URLS.includes(url)) {
+      // A fresh buffer per call: bootWorker transfers each one to the worker.
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    throw new Error(`BrowserKernel test should not fetch ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** Every URL `fetch` was called with, in call order. */
+function fetchedUrls(): string[] {
+  return (globalThis.fetch as unknown as Mock).mock.calls.map(
+    ([url]) => String(url),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Mock Worker
@@ -163,13 +220,10 @@ describe("BrowserKernel", () => {
     MockWorker.instances = [];
     MockWorker.detachTransfers = false;
     vi.stubGlobal("Worker", MockWorker as any);
-    // Provide a fetch stub for kernel.init() / boot() default kernelWasm
-    // fetch path. Tests that exercise init/boot pass kernelWasm explicitly,
-    // but the constructor logs reference globalThis.fetch when it shouldn't —
-    // this is a defensive stub to keep failures readable.
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      throw new Error("BrowserKernel test should not fetch");
-    }));
+    // Serve only the co-resident module artifacts every boot needs. Tests
+    // that exercise a default kernel or rootfs fetch re-stub with their own
+    // `serve`; any other URL is an unexpected fetch and fails loudly.
+    stubBootFetch();
   });
 
   afterEach(() => {
@@ -195,7 +249,13 @@ describe("BrowserKernel", () => {
     const worker = MockWorker.instances[0]!;
     const init = worker.lastMessage("init");
     expect(defaultArtifactModuleState.loads).toBe(0);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    // The default-artifact module is the only source of the default kernel
+    // and rootfs URLs, so never loading it already proves neither was
+    // fetched. Pin the whole fetch set too: a boot with explicit bytes may
+    // pull in the co-resident modules and nothing else.
+    expect([...fetchedUrls()].sort()).toEqual(
+      [...BOOT_MODULE_ARTIFACT_URLS].sort(),
+    );
     expect(new Uint8Array(init.kernelWasmBytes)).toEqual(
       new Uint8Array(kernelWasm),
     );
@@ -207,12 +267,11 @@ describe("BrowserKernel", () => {
 
   it("fetches the bundled kernel only when kernel bytes are omitted", async () => {
     const defaultKernel = new Uint8Array([7, 8, 9]);
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      expect(url).toBe("stub://default-kernel");
-      return {
-        arrayBuffer: async () => defaultKernel.buffer.slice(0),
-      };
-    }));
+    stubBootFetch((url) =>
+      url === DEFAULT_KERNEL_URL
+        ? { ok: true, arrayBuffer: async () => defaultKernel.buffer.slice(0) }
+        : undefined,
+    );
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const vfsImage = new Uint8Array([10, 11]);
@@ -221,7 +280,10 @@ describe("BrowserKernel", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const worker = MockWorker.instances[0]!;
     const init = worker.lastMessage("init");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(
+      fetchedUrls().filter((url) => url === DEFAULT_KERNEL_URL),
+    ).toEqual([DEFAULT_KERNEL_URL]);
+    expect(fetchedUrls()).not.toContain(DEFAULT_ROOTFS_URL);
     expect(new Uint8Array(init.kernelWasmBytes)).toEqual(defaultKernel);
     expect(init.vfsImage).toBe(vfsImage);
 
@@ -231,12 +293,11 @@ describe("BrowserKernel", () => {
 
   it("fetches the bundled rootfs only for the default VFS sentinel", async () => {
     const defaultRootfs = new Uint8Array([12, 13, 14]);
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      expect(url).toBe("stub://default-rootfs");
-      return {
-        arrayBuffer: async () => defaultRootfs.buffer.slice(0),
-      };
-    }));
+    stubBootFetch((url) =>
+      url === DEFAULT_ROOTFS_URL
+        ? { ok: true, arrayBuffer: async () => defaultRootfs.buffer.slice(0) }
+        : undefined,
+    );
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const kernelWasm = new Uint8Array([15, 16]).buffer;
@@ -248,7 +309,10 @@ describe("BrowserKernel", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const worker = MockWorker.instances[0]!;
     const init = worker.lastMessage("init");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(
+      fetchedUrls().filter((url) => url === DEFAULT_ROOTFS_URL),
+    ).toEqual([DEFAULT_ROOTFS_URL]);
+    expect(fetchedUrls()).not.toContain(DEFAULT_KERNEL_URL);
     expect(new Uint8Array(init.kernelWasmBytes)).toEqual(
       new Uint8Array(kernelWasm),
     );

@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const viteUrlStub = resolve(__dirname, "test/fixtures/vite-url-stub.ts");
+
+/** Virtual-module prefix for a stubbed Vite `?url` import. */
+const VITE_URL_STUB_PREFIX = "\0vite-url-stub:";
 
 /**
  * Resolve the Vite-specific `?url` / `?worker&url` imports (and the
@@ -11,6 +13,13 @@ const viteUrlStub = resolve(__dirname, "test/fixtures/vite-url-stub.ts");
  * modules that originate from the browser demos (e.g. BrowserKernel)
  * without spinning up a real Vite environment. Tests that need a real
  * Worker stub `globalThis.Worker` directly.
+ *
+ * Every stub is DISTINCT, keyed by the import source. Production code
+ * branches on which artifact a URL names — a boot fetches the default
+ * kernel, the default rootfs, the fork-module and the WASI module from four
+ * separate URLs — so a single shared stub string would erase the exact
+ * distinction the tests exist to check, and a test asserting on one of them
+ * could not be satisfied by any kernel.
  */
 export default defineConfig({
   resolve: {
@@ -23,13 +32,19 @@ export default defineConfig({
       name: "vitest-stub-vite-url-imports",
       enforce: "pre",
       resolveId(source: string) {
+        if (source.startsWith(VITE_URL_STUB_PREFIX)) return source;
         if (source === "@kernel-wasm" || source === "@kernel-wasm?url") {
-          return viteUrlStub;
+          return `${VITE_URL_STUB_PREFIX}@kernel-wasm`;
         }
         if (source.endsWith("?url") || source.endsWith("?worker&url")) {
-          return viteUrlStub;
+          return VITE_URL_STUB_PREFIX + source;
         }
         return null;
+      },
+      load(id: string) {
+        if (!id.startsWith(VITE_URL_STUB_PREFIX)) return null;
+        const source = id.slice(VITE_URL_STUB_PREFIX.length);
+        return `export default ${JSON.stringify(`stub://vite-url/${source}`)};\n`;
       },
     },
   ],
