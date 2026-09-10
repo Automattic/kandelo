@@ -210,6 +210,37 @@ impl HandleTable {
         Ok(())
     }
 
+    /// Drop one object's outgoing dependency edges, as its unload does.
+    ///
+    /// A retain that is not there is a bookkeeping bug, not something to
+    /// tolerate: it would mean an object was counted as needing a provider it
+    /// never named, and the provider would then be unloadable one reference too
+    /// early. `dylink.ts:3903-3910` raises on the same condition.
+    pub fn release_dependency_edges<D>(&mut self, owner: &str, dependencies: D) -> DylinkResult<()>
+    where
+        D: IntoIterator<Item = String>,
+    {
+        if !self.dependency_owners.remove(owner) {
+            // Never counted, so there is nothing to give back.
+            return Ok(());
+        }
+        for dependency in dependencies {
+            let retains = self.dependency_retains(&dependency);
+            if retains == 0 {
+                return Err(DylinkError::DependencyMissing {
+                    library: String::from(owner),
+                    dependency,
+                });
+            }
+            if retains == 1 {
+                self.dependency_retains.remove(&dependency);
+            } else {
+                self.dependency_retains.insert(dependency, retains - 1);
+            }
+        }
+        Ok(())
+    }
+
     /// May this object be unloaded now?
     pub fn is_unloadable(&self, library: &str) -> bool {
         self.by_library.get(library).is_none() && self.dependency_retains(library) == 0

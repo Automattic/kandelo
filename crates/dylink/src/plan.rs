@@ -140,6 +140,24 @@ pub enum HostRequest {
     /// the function as an activation+ordinal recipe rather than as an opaque
     /// callable with no reconstruction recipe.
     JournalTableMutation { first_index: u64, length: u64 },
+    /// Read one `DT_NEEDED` search-path candidate. Answered with
+    /// [`ActResult::Bytes`]: `Some(image)` when the file exists, `None` when it
+    /// does not, at which point the planner tries the next candidate itself.
+    ///
+    /// The driver performs `openat`/`read`/`close` and nothing else. Which
+    /// paths are tried, in what order, and what a miss means are ELF search
+    /// semantics and stay in [`crate::session::Session`] — a driver that chose
+    /// the candidates would be making the loader's decisions again, in the file
+    /// this crate exists to replace.
+    ReadDependency { library: String, path: String },
+    /// Write archive record bytes into a process mapping the driver already
+    /// obtained through [`HostRequest::AllocateMemory`].
+    ///
+    /// Archive records live in guest linear memory, which neither this crate
+    /// nor the wasm planner module can address. Every layout, padding, digest,
+    /// cursor and `next`-pointer decision is still made here; the driver
+    /// performs one `Uint8Array.set`.
+    WriteArchive { address: u64, bytes: Vec<u8> },
 }
 
 /// What the driver must do next.
@@ -184,6 +202,14 @@ impl LoadRequest {
     /// `RTLD_LOCAL`.
     pub fn local(mut self) -> Self {
         self.global_visibility = false;
+        self
+    }
+
+    /// `RTLD_GLOBAL` when true. Used where the visibility is inherited rather
+    /// than chosen — a `DT_NEEDED` dependency takes the visibility of the
+    /// object that pulled it in.
+    pub fn visibility(mut self, global: bool) -> Self {
+        self.global_visibility = global;
         self
     }
 }
@@ -276,6 +302,15 @@ pub struct LinkerConfig {
     pub shared_memory: bool,
     /// Host-held heap high-water mark, for embedders with no allocator.
     pub heap_pointer: Option<u64>,
+    /// The default `DT_NEEDED` search path, in order, for a dependency name
+    /// that carries no `/`.
+    ///
+    /// Configured rather than hard-coded because it is a property of the
+    /// process's filesystem, not of the linker: a sysroot that puts its shared
+    /// objects somewhere else is a different machine, not a different loader.
+    /// The requesting object's own directory is always tried first and is not
+    /// listed here.
+    pub library_search_paths: Vec<String>,
 }
 
 impl Default for LinkerConfig {
@@ -291,6 +326,7 @@ impl Default for LinkerConfig {
             memory_bytes: 0,
             shared_memory: false,
             heap_pointer: None,
+            library_search_paths: Vec::new(),
         }
     }
 }

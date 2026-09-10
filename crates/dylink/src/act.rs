@@ -368,6 +368,14 @@ pub enum ActResult {
     Index(u64),
     /// A module's exports, for [`LinkAct::ReadExports`].
     Exports(Vec<InstanceExport>),
+    /// File bytes, for [`crate::plan::HostRequest::ReadDependency`].
+    ///
+    /// `None` means "no such file", which is an ordinary miss the planner
+    /// answers by trying the next search-path candidate. A real I/O failure is
+    /// the driver's to raise: encoding it as an empty file would turn an
+    /// unreadable `libfoo.so` into a malformed-module diagnostic naming the
+    /// wrong layer.
+    Bytes(Option<Vec<u8>>),
 }
 
 impl ActResult {
@@ -396,6 +404,13 @@ impl ActResult {
         match self {
             ActResult::Exports(exports) => Ok(exports),
             _ => Err(DylinkError::ActResultMismatch { expected: "Exports" }),
+        }
+    }
+
+    pub fn expect_bytes(self) -> DylinkResult<Option<Vec<u8>>> {
+        match self {
+            ActResult::Bytes(bytes) => Ok(bytes),
+            _ => Err(DylinkError::ActResultMismatch { expected: "Bytes" }),
         }
     }
 }

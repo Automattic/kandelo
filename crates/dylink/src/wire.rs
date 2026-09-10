@@ -719,6 +719,16 @@ fn put_host_request(w: &mut Writer, request: &HostRequest) -> DylinkResult<()> {
             w.u64(*first_index);
             w.u64(*length);
         }
+        HostRequest::ReadDependency { library, path } => {
+            w.u8(7);
+            w.str(library)?;
+            w.str(path)?;
+        }
+        HostRequest::WriteArchive { address, bytes } => {
+            w.u8(8);
+            w.u64(*address);
+            w.blob(bytes)?;
+        }
     }
     Ok(())
 }
@@ -758,6 +768,14 @@ fn get_host_request(r: &mut Reader<'_>) -> DylinkResult<HostRequest> {
         6 => HostRequest::JournalTableMutation {
             first_index: r.u64()?,
             length: r.u64()?,
+        },
+        7 => HostRequest::ReadDependency {
+            library: r.str()?,
+            path: r.str()?,
+        },
+        8 => HostRequest::WriteArchive {
+            address: r.u64()?,
+            bytes: r.blob()?,
         },
         _ => return Err(malformed("unknown wire host request")),
     })
@@ -854,6 +872,16 @@ pub fn encode_act_result(result: &ActResult) -> DylinkResult<Vec<u8>> {
                 put_instance_export(&mut w, export)?;
             }
         }
+        ActResult::Bytes(bytes) => {
+            w.u8(4);
+            match bytes {
+                Some(bytes) => {
+                    w.bool(true);
+                    w.blob(bytes)?;
+                }
+                None => w.bool(false),
+            }
+        }
     }
     Ok(w.into_bytes())
 }
@@ -873,6 +901,7 @@ pub fn decode_act_result(bytes: &[u8]) -> DylinkResult<ActResult> {
             }
             ActResult::Exports(exports)
         }
+        4 => ActResult::Bytes(if r.bool()? { Some(r.blob()?) } else { None }),
         _ => return Err(malformed("unknown wire act result")),
     };
     r.finish()?;
@@ -1002,6 +1031,10 @@ pub fn encode_linker_config(config: &LinkerConfig) -> DylinkResult<Vec<u8>> {
     w.u64(config.memory_bytes);
     w.bool(config.shared_memory);
     put_option_u64(&mut w, config.heap_pointer);
+    w.len_prefix(config.library_search_paths.len())?;
+    for path in &config.library_search_paths {
+        w.str(path)?;
+    }
     Ok(w.into_bytes())
 }
 
@@ -1017,6 +1050,14 @@ pub fn decode_linker_config(bytes: &[u8]) -> DylinkResult<LinkerConfig> {
         memory_bytes: r.u64()?,
         shared_memory: r.bool()?,
         heap_pointer: get_option_u64(&mut r)?,
+        library_search_paths: {
+            let count = r.vec_len(MIN_STRING_BYTES)?;
+            let mut paths = Vec::with_capacity(count);
+            for _ in 0..count {
+                paths.push(r.str()?);
+            }
+            paths
+        },
     };
     r.finish()?;
     Ok(config)

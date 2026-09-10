@@ -87,6 +87,7 @@ pub mod metadata;
 pub mod placement;
 pub mod plan;
 pub mod scope;
+pub mod session;
 pub mod wasm;
 pub mod wire;
 
@@ -109,6 +110,7 @@ pub use plan::{
     HostRequest, InitializationStage, LinkPlan, Linker, LinkerConfig, LoadRequest,
     PendingTransaction, PlanStep, ReplayInputs, StagedCall,
 };
+pub use session::{MemoryOwnership, ReplayModule, Session};
 pub use scope::{
     is_fork_runtime_export, is_public_dylink_export, DataBinding, LinkerScope, LoadState,
     LoadedLibrary, ResolvedSymbol, SymbolValue, MAIN_INSTANCE,

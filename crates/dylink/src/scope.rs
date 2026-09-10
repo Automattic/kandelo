@@ -191,6 +191,15 @@ pub struct LinkerScope {
     /// Dependency-first insertion order, which is also the archive's order.
     order: Vec<String>,
     libraries: BTreeMap<String, LoadedLibrary>,
+    /// The main image's own public exports.
+    ///
+    /// Held apart from [`Self::global_symbols`] because an unload has to
+    /// REBUILD the global scope from the live closure rather than subtract one
+    /// object's names from it: a symbol the unloaded object interposed must
+    /// become visible again, and one it merely shadowed must not be lost. The
+    /// TypeScript keeps the same base for the same reason
+    /// (`baseGlobalSymbols`, `dylink.ts:2608`).
+    main_symbols: BTreeMap<String, ResolvedSymbol>,
     /// The process-global symbol table. First definition wins.
     global_symbols: BTreeMap<String, ResolvedSymbol>,
     /// Function identity → indirect-function-table index. See D5 above.
@@ -230,12 +239,57 @@ impl LinkerScope {
             if !is_public_dylink_export(&name) {
                 continue;
             }
-            self.global_symbols.entry(name).or_insert(ResolvedSymbol {
-                value,
-                owner: None,
-                globally_visible: true,
-            });
+            let symbol = ResolvedSymbol { value, owner: None, globally_visible: true };
+            self.main_symbols.entry(name.clone()).or_insert(symbol.clone());
+            self.global_symbols.entry(name).or_insert(symbol);
         }
+    }
+
+    /// Rebuild the process-global scope from the exact live object closure.
+    ///
+    /// Ports `rebuildRuntimeIndexes`'s symbol half (`dylink.ts:3794-3853`).
+    /// Retaining an unloaded object's function in the global scope would keep a
+    /// stale callable reachable after the archive stopped carrying its
+    /// activation recipe, so the map is rebuilt rather than edited.
+    pub fn rebuild_global_symbols(&mut self) {
+        self.global_symbols = self.main_symbols.clone();
+        for name in &self.order {
+            let Some(library) = self.libraries.get(name) else {
+                continue;
+            };
+            if !library.global_visibility {
+                continue;
+            }
+            for (export_name, value) in &library.exports {
+                if !is_public_dylink_export(export_name)
+                    || self.global_symbols.contains_key(export_name)
+                {
+                    continue;
+                }
+                self.global_symbols.insert(
+                    export_name.clone(),
+                    ResolvedSymbol {
+                        value: value.clone(),
+                        owner: Some(library.name.clone()),
+                        globally_visible: true,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Unload one object: drop it, forget the table slots its instance owned,
+    /// and rebuild the global scope from what is left.
+    ///
+    /// [`Self::remove`] is the raw map removal the rollback path wants, which
+    /// restores a whole snapshot afterwards. This is the `dlclose` path, where
+    /// nothing else is going to repair the indexes.
+    pub fn release(&mut self, name: &str) -> Option<LoadedLibrary> {
+        let library = self.remove(name)?;
+        let instance = library.instance;
+        self.table_index_by_function.retain(|(owner, _), _| *owner != instance);
+        self.rebuild_global_symbols();
+        Some(library)
     }
 
     /// Look up a function's table index without scanning the table.
@@ -433,6 +487,7 @@ impl LinkerScope {
         ScopeSnapshot {
             order: self.order.clone(),
             libraries: self.libraries.clone(),
+            main_symbols: self.main_symbols.clone(),
             global_symbols: self.global_symbols.clone(),
             table_index_by_function: self.table_index_by_function.clone(),
             table_length: self.table_length,
@@ -447,6 +502,7 @@ impl LinkerScope {
         let length = self.table_length.max(snapshot.table_length);
         self.order = snapshot.order;
         self.libraries = snapshot.libraries;
+        self.main_symbols = snapshot.main_symbols;
         self.global_symbols = snapshot.global_symbols;
         self.table_index_by_function = snapshot.table_index_by_function;
         self.table_length = length;
@@ -457,6 +513,7 @@ impl LinkerScope {
 pub struct ScopeSnapshot {
     order: Vec<String>,
     libraries: BTreeMap<String, LoadedLibrary>,
+    main_symbols: BTreeMap<String, ResolvedSymbol>,
     global_symbols: BTreeMap<String, ResolvedSymbol>,
     table_index_by_function: BTreeMap<(InstanceId, String), u64>,
     table_length: u64,
