@@ -495,9 +495,10 @@ fn get_module_source(r: &mut Reader<'_>) -> DylinkResult<ModuleSource> {
 
 fn put_link_act(w: &mut Writer, act: &LinkAct) -> DylinkResult<()> {
     match act {
-        LinkAct::Compile { module, source } => {
+        LinkAct::Compile { module, library, source } => {
             w.u8(0);
             w.u32(module.index());
+            w.str(library)?;
             put_module_source(w, source)?;
         }
         LinkAct::NewGlobal {
@@ -572,6 +573,7 @@ fn get_link_act(r: &mut Reader<'_>) -> DylinkResult<LinkAct> {
     Ok(match r.u8()? {
         0 => LinkAct::Compile {
             module: ModuleId(r.u32()?),
+            library: r.str()?,
             source: get_module_source(r)?,
         },
         1 => LinkAct::NewGlobal {

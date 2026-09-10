@@ -45,10 +45,12 @@ fn every_step() -> Vec<PlanStep> {
         PlanStep::Finished,
         PlanStep::Act(LinkAct::Compile {
             module: ModuleId(3),
+            library: String::from("libplain.so"),
             source: ModuleSource::Original,
         }),
         PlanStep::Act(LinkAct::Compile {
             module: ModuleId(4),
+            library: String::from("librewritten.so"),
             source: ModuleSource::Rewritten(vec![0, 97, 115, 109, 1, 0, 0, 0]),
         }),
         PlanStep::Act(LinkAct::NewGlobal {
@@ -168,6 +170,31 @@ fn every_step() -> Vec<PlanStep> {
             first_index: 1024,
             length: 8,
         }),
+        PlanStep::Host(HostRequest::ReadDependency {
+            library: "libleaf.so".into(),
+            path: "/usr/lib/libleaf.so".into(),
+        }),
+        PlanStep::Host(HostRequest::ReadArchive {
+            address: 0x3_0000,
+            length: 136,
+        }),
+        PlanStep::Host(HostRequest::AllocateArchive { size: 104 }),
+        PlanStep::Host(HostRequest::WriteArchive {
+            address: 0x3_0000,
+            bytes: vec![0xab; 40],
+        }),
+        PlanStep::Host(HostRequest::PublishGeneration {
+            address: 0x3_0028,
+            generation: 7,
+        }),
+        PlanStep::Host(HostRequest::ReleaseArchive {
+            address: 0x4_0000,
+            size: 200,
+        }),
+        PlanStep::Host(HostRequest::SavedGotFunc {
+            library: "opcache.so".into(),
+            symbol: "zend_hash_find".into(),
+        }),
         PlanStep::Call(StagedCall {
             library: "opcache.so".into(),
             stage: InitializationStage::Bootstrap,
@@ -220,6 +247,12 @@ fn every_result() -> Vec<ActResult> {
                 mutable: None,
             },
         ]),
+        // A dependency that was found, and one that was not. The empty file and
+        // the absent file must not encode the same way: an empty `.so` is a
+        // malformed module and a missing one is the next candidate's turn.
+        ActResult::Bytes(None),
+        ActResult::Bytes(Some(vec![])),
+        ActResult::Bytes(Some(vec![0, 97, 115, 109, 1, 0, 0, 0])),
     ]
 }
 
@@ -336,20 +369,23 @@ fn duplicate_bindings_survive_the_encoding_in_order() {
 /// therefore encode to a handful of bytes, not to a second copy.
 #[test]
 fn compiling_the_original_image_transfers_no_bytes() {
+    let name = "lib.so";
     let original = encode_plan_step(&PlanStep::Act(LinkAct::Compile {
         module: ModuleId(1),
+        library: String::from(name),
         source: ModuleSource::Original,
     }))
     .expect("encode");
     assert_eq!(
         original.len(),
-        // step tag + act tag + module id + source tag
-        1 + 1 + 4 + 1,
-        "Original must be tags and an id only",
+        // step tag + act tag + module id + library name + source tag
+        1 + 1 + 4 + (4 + name.len()) + 1,
+        "Original must be tags, an id and a name -- never a second copy of the image",
     );
 
     let rewritten = encode_plan_step(&PlanStep::Act(LinkAct::Compile {
         module: ModuleId(1),
+        library: String::from(name),
         source: ModuleSource::Rewritten(vec![7; 1000]),
     }))
     .expect("encode");

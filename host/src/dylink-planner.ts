@@ -54,13 +54,14 @@
 import {
   decodeCloseOutcome,
   decodePlanStep,
-  decodeResolvedSymbol,
   encodeActResult,
   encodeLinkerConfig,
   encodeLoadRequest,
   encodeMainImage,
+  encodeTablePatches,
   type ActResult,
   type CloseOutcome,
+  type DylinkTablePatch,
   type ExternKind,
   type HostRequest,
   type ImportBinding,
@@ -70,7 +71,6 @@ import {
   type LoadRequest,
   type MainImage,
   type PlanStep,
-  type ResolvedSymbol,
   type ValType,
   type WasmValue,
 } from "./dylink-planner-wire";
@@ -92,19 +92,32 @@ interface PlannerExports {
   readonly dl_reset: () => void;
   readonly dl_publish_main_image: (len: number) => number;
   readonly dl_open_begin: (len: number) => number;
-  readonly dl_step: () => number;
-  readonly dl_resume: (len: number) => number;
-  readonly dl_open_finish: (replayHandle: number) => number;
-  readonly dl_open_abort: () => number;
-  readonly dl_plan_instance: () => bigint;
-  readonly dl_plan_memory_base: () => bigint;
-  readonly dl_plan_table_base: () => bigint;
-  readonly dl_plan_tls_base: () => bigint;
-  readonly dl_plan_activation: () => bigint;
-  readonly dl_sym: (handle: number, len: number) => number;
-  readonly dl_close: (handle: number) => number;
-  readonly dl_is_unloadable: (len: number) => number;
-  readonly dl_forget: (len: number) => number;
+  readonly dl_step: (token: number) => number;
+  readonly dl_resume: (token: number, len: number) => number;
+  readonly dl_open_finish: (token: number, replayHandle: number) => number;
+  readonly dl_abort: (token: number) => number;
+  readonly dl_discard: (token: number) => void;
+  readonly dl_pending: (token: number) => number;
+  readonly dl_note_staged_slot: (token: number, tableIndex: bigint) => number;
+  readonly dl_plan_instance: (token: number) => bigint;
+  readonly dl_plan_memory_base: (token: number) => bigint;
+  readonly dl_plan_table_base: (token: number) => bigint;
+  readonly dl_plan_tls_base: (token: number) => bigint;
+  readonly dl_plan_activation: (token: number) => bigint;
+  readonly dl_sym_begin: (handle: number, len: number) => number;
+  readonly dl_sym_address: (token: number) => bigint;
+  readonly dl_close_begin: (handle: number) => number;
+  readonly dl_close_result: (token: number) => number;
+  readonly dl_archive_read_begin: (head: bigint) => number;
+  readonly dl_archive_read_finish: (token: number) => number;
+  readonly dl_archive_sync_begin: () => number;
+  readonly dl_archive_sync_finish: (token: number) => number;
+  readonly dl_archive_is_empty: () => number;
+  readonly dl_archive_generation: (token: number) => bigint;
+  readonly dl_archive_set_table_patches: (len: number) => number;
+  readonly dl_archive_set_table_state_root: (root: bigint) => number;
+  readonly dl_fork_reconcile_begin: (borrowed: number) => number;
+  readonly dl_fork_reconcile_finish: (token: number) => number;
 }
 
 /** A planner call that failed, carrying the module's own `dlerror` text. */
@@ -202,27 +215,34 @@ export class PlannerSession {
     this.#require(this.#exports.dl_publish_main_image(length), "dl_publish_main_image");
   }
 
-  openBegin(request: LoadRequest): void {
+  /**
+   * Begin a `dlopen`. Returns the transaction token to drive.
+   *
+   * A second concurrent begin is a NESTED load, not a refusal: a constructor
+   * calling `dlopen` is legal POSIX. The module's token map is the authority on
+   * which loads are live, which is why this driver keeps none of its own.
+   */
+  openBegin(request: LoadRequest): number {
     const length = this.#write(encodeLoadRequest(request));
-    this.#require(this.#exports.dl_open_begin(length), "dl_open_begin");
+    return this.#token(this.#exports.dl_open_begin(length), "dl_open_begin");
   }
 
-  step(): PlanStep {
-    this.#require(this.#exports.dl_step(), "dl_step");
+  step(token: number): PlanStep {
+    this.#require(this.#exports.dl_step(token), "dl_step");
     return decodePlanStep(this.#output());
   }
 
-  resume(result: ActResult): void {
+  resume(token: number, result: ActResult): void {
     const length = this.#write(encodeActResult(result));
-    this.#require(this.#exports.dl_resume(length), "dl_resume");
+    this.#require(this.#exports.dl_resume(token, length), "dl_resume");
   }
 
   /**
    * Complete the load. `replayHandle` pins a fork parent's exact handle; pass
    * -1 for an ordinary load.
    */
-  openFinish(replayHandle = -1): number {
-    const handle = this.#exports.dl_open_finish(replayHandle);
+  openFinish(token: number, replayHandle = -1): number {
+    const handle = this.#exports.dl_open_finish(token, replayHandle);
     if (handle < 0) {
       throw new DylinkPlannerError("dl_open_finish", this.takeError() ?? "");
     }
@@ -230,19 +250,42 @@ export class PlannerSession {
   }
 
   /**
-   * Abandon the load in flight and re-arm the SAME drive loop with its
+   * Abandon the transaction in flight and re-arm the SAME drive loop with its
    * rollback. Returns the table range to reclaim, when there is one.
    */
-  openAbort(): { readonly firstIndex: bigint; readonly length: bigint } | null {
-    this.#require(this.#exports.dl_open_abort(), "dl_open_abort");
+  abort(token: number): { readonly firstIndex: bigint; readonly length: bigint } | null {
+    this.#require(this.#exports.dl_abort(token), "dl_abort");
     const bytes = this.#output();
     if (bytes.length === 0 || bytes[0] === 0) return null;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     return { firstIndex: view.getBigUint64(1, true), length: view.getBigUint64(9, true) };
   }
 
+  /** Forget a transaction whose rollback has drained. */
+  discard(token: number): void {
+    this.#exports.dl_discard(token);
+  }
+
+  /** Is `token` a live transaction? */
+  pending(token: number): boolean {
+    return this.#exports.dl_pending(token) === 1;
+  }
+
+  /**
+   * Tell the module where the staged `() -> ()` entry was published.
+   *
+   * The slot is an engine fact only this side has, and a fork child needs it to
+   * resume an interrupted `dlopen` at the exact continuation point.
+   */
+  noteStagedSlot(token: number, tableIndex: bigint): void {
+    this.#require(
+      this.#exports.dl_note_staged_slot(token, tableIndex),
+      "dl_note_staged_slot",
+    );
+  }
+
   /** The layout the plan chose, for the caller that has to record it. */
-  planLayout(): {
+  planLayout(token: number): {
     readonly instance: number;
     readonly memoryBase: bigint;
     readonly tableBase: bigint;
@@ -250,46 +293,131 @@ export class PlannerSession {
     readonly activationId: number | null;
   } {
     const optional = (value: bigint): bigint | null => (value < 0n ? null : value);
-    const tls = optional(this.#exports.dl_plan_tls_base());
-    const activation = optional(this.#exports.dl_plan_activation());
+    const tls = optional(this.#exports.dl_plan_tls_base(token));
+    const activation = optional(this.#exports.dl_plan_activation(token));
     return {
-      instance: Number(this.#exports.dl_plan_instance()),
-      memoryBase: this.#exports.dl_plan_memory_base(),
-      tableBase: this.#exports.dl_plan_table_base(),
+      instance: Number(this.#exports.dl_plan_instance(token)),
+      memoryBase: this.#exports.dl_plan_memory_base(token),
+      tableBase: this.#exports.dl_plan_table_base(token),
       tlsBase: tls,
       activationId: activation === null ? null : Number(activation),
     };
   }
 
-  /** Resolve a symbol. `null` is a miss, which POSIX reports via `dlerror`. */
-  sym(handle: number, name: string): ResolvedSymbol | null {
+  /**
+   * Begin a `dlsym`. Returns the transaction token to drive, after which
+   * {@link symAddress} reports the answer.
+   *
+   * A transaction rather than a plain call because a resolved function may have
+   * no indirect-function-table slot yet, and taking one is a table mutation
+   * only this side can perform. A C function pointer IS that index.
+   */
+  symBegin(handle: number, name: string): number {
     const length = this.#write(TEXT_ENCODER.encode(name));
-    this.#require(this.#exports.dl_sym(handle, length), "dl_sym");
-    return decodeResolvedSymbol(this.#output());
+    return this.#token(this.#exports.dl_sym_begin(handle, length), "dl_sym_begin");
   }
 
-  close(handle: number): CloseOutcome {
-    this.#require(this.#exports.dl_close(handle), "dl_close");
+  /**
+   * The resolved address, or `null` for a miss.
+   *
+   * A miss is a SUCCESSFUL call: POSIX reports it through `dlerror`, and
+   * conflating the two would make a legitimately absent weak symbol
+   * indistinguishable from a broken lookup.
+   */
+  symAddress(token: number): bigint | null {
+    const address = this.#exports.dl_sym_address(token);
+    if (address === -1n) return null;
+    if (address < 0n) {
+      throw new DylinkPlannerError("dl_sym_address", this.takeError() ?? "");
+    }
+    return address;
+  }
+
+  /** Begin a `dlclose`. Returns the transaction token to drive. */
+  closeBegin(handle: number): number {
+    return this.#token(this.#exports.dl_close_begin(handle), "dl_close_begin");
+  }
+
+  /** What the `dlclose` did. */
+  closeResult(token: number): CloseOutcome {
+    this.#require(this.#exports.dl_close_result(token), "dl_close_result");
     return decodeCloseOutcome(this.#output());
   }
 
   /**
-   * Whether the library the last {@link close} released is safe to unload.
-   * Releasing the last HANDLE reference does not authorize unloading: a
-   * dependency edge from another object keeps the image alive.
+   * Read the process archive whose header is at `head` into the module.
+   *
+   * `head` of zero is a process that has never published, which decodes to
+   * nothing rather than to an error.
    */
-  isUnloadable(library: string): boolean {
-    const length = this.#write(TEXT_ENCODER.encode(library));
-    const status = this.#exports.dl_is_unloadable(length);
-    if (status < 0) {
-      throw new DylinkPlannerError("dl_is_unloadable", this.takeError() ?? "");
-    }
-    return status === 1;
+  archiveReadBegin(head: bigint): number {
+    return this.#token(this.#exports.dl_archive_read_begin(head), "dl_archive_read_begin");
   }
 
-  forget(library: string): void {
-    const length = this.#write(TEXT_ENCODER.encode(library));
-    this.#require(this.#exports.dl_forget(length), "dl_forget");
+  archiveReadFinish(token: number): void {
+    this.#require(this.#exports.dl_archive_read_finish(token), "dl_archive_read_finish");
+  }
+
+  /** Publish the loader's current state into the process archive. */
+  archiveSyncBegin(): number {
+    return this.#token(this.#exports.dl_archive_sync_begin(), "dl_archive_sync_begin");
+  }
+
+  /** The head address and generation the sync published. */
+  archiveSyncFinish(token: number): { readonly head: bigint; readonly generation: bigint } {
+    this.#require(this.#exports.dl_archive_sync_finish(token), "dl_archive_sync_finish");
+    const bytes = this.#output();
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { head: view.getBigUint64(0, true), generation: view.getBigUint64(8, true) };
+  }
+
+  /** Does the decoded archive describe a process that ever loaded anything? */
+  archiveIsEmpty(): boolean {
+    return this.#exports.dl_archive_is_empty() === 1;
+  }
+
+  /** The generation of the archive the last read decoded. */
+  archiveGeneration(): bigint {
+    return this.#exports.dl_archive_generation(0);
+  }
+
+  /**
+   * Hand the activation coordinator's funcref table patches to the archive.
+   * They are not loader state, but they ride in the same record chain under the
+   * same generation fence, so publishing them is publishing the archive.
+   */
+  setTablePatches(patches: readonly DylinkTablePatch[]): void {
+    const length = this.#write(encodeTablePatches(patches));
+    this.#require(
+      this.#exports.dl_archive_set_table_patches(length),
+      "dl_archive_set_table_patches",
+    );
+  }
+
+  /** Seal a typed table snapshot; patches before a checkpoint are superseded. */
+  setTableStateRoot(root: bigint): void {
+    this.#require(
+      this.#exports.dl_archive_set_table_state_root(root),
+      "dl_archive_set_table_state_root",
+    );
+  }
+
+  /** Begin a fork reconcile against the archive the last read decoded. */
+  forkReconcileBegin(borrowed: boolean): number {
+    return this.#token(
+      this.#exports.dl_fork_reconcile_begin(borrowed ? 1 : 0),
+      "dl_fork_reconcile_begin",
+    );
+  }
+
+  forkReconcileFinish(token: number): void {
+    this.#require(this.#exports.dl_fork_reconcile_finish(token), "dl_fork_reconcile_finish");
+  }
+
+  /** A transaction token, or the module's own diagnostic. */
+  #token(value: number, operation: string): number {
+    if (value > 0) return value;
+    throw new DylinkPlannerError(operation, this.takeError() ?? "");
   }
 }
 
@@ -331,6 +459,38 @@ export interface DylinkProcessHost {
   registerActivation(library: string, activation: number, instance: number): void;
   unregisterActivation(library: string, activation: number): void;
   journalTableMutation(firstIndex: bigint, length: bigint): void;
+  /**
+   * Read one `DT_NEEDED` search-path candidate: `openat`/`read`/`close` and
+   * nothing else. `null` means the file does not exist, which the planner
+   * answers by trying the next candidate ITSELF. Which paths are tried, in what
+   * order, and what a miss means are ELF search semantics and are not decided
+   * here.
+   */
+  readDependency(library: string, path: string): Uint8Array | null;
+  /** Read one byte range of the process archive out of guest memory. */
+  readArchive(address: bigint, length: bigint): Uint8Array;
+  /** Allocate one archive record block; returns its address. */
+  allocateArchive(size: bigint): bigint;
+  /** Copy record bytes into a block already obtained. */
+  writeArchive(address: bigint, bytes: Uint8Array): void;
+  /**
+   * Store the archive's generation as ONE aligned 8-byte write.
+   *
+   * It is the publication fence a pthread peer consumes: every reachable record
+   * is complete before it lands, and it must land atomically rather than as the
+   * tail of a header copy.
+   */
+  publishGeneration(address: bigint, generation: bigint): void;
+  /** Release an archive block that is no longer reachable. */
+  releaseArchive(address: bigint, size: bigint): void;
+  /**
+   * The parent's saved `GOT.func` value for one symbol, during fork replay.
+   *
+   * A funcref's identity in a child must match the parent's exactly: the guest
+   * holds table indexes in copied memory, so re-deriving one would aim a live
+   * function pointer at a different function.
+   */
+  savedGotFunc(library: string, symbol: string): bigint;
 }
 
 export interface AllocationRecord {
@@ -467,26 +627,41 @@ export function buildImportObject(
 export class DylinkActExecutor {
   readonly #environment: DylinkEngineEnvironment;
   readonly #host: DylinkProcessHost;
+  readonly #pointerWidth: 4 | 8;
   readonly #modules = new Map<number, WebAssembly.Module>();
   readonly #instances = new Map<number, WebAssembly.Instance>();
   readonly #globals = new Map<number, WebAssembly.Global>();
   readonly #tags = new Map<number, WebAssembly.Tag>();
   /**
-   * The image the current load was requested with. `ModuleSource.original`
-   * carries no bytes on the wire — the driver already holds the caller's copy,
-   * so shipping a second one across the boundary would double the cost of
-   * every `dlopen` for nothing.
+   * Every image this executor holds, by library name.
+   *
+   * `ModuleSource.original` carries no bytes on the wire — the driver already
+   * holds the caller's copy, so shipping a second one across the boundary would
+   * double the cost of every `dlopen` for nothing. A load resolves its whole
+   * `DT_NEEDED` closure, so "the image" is not one image: the `compile` act
+   * names which library it means, and a dependency's bytes are recorded here
+   * the moment the planner asks for them.
    */
-  #currentImage: Uint8Array | null = null;
+  readonly #images = new Map<string, Uint8Array>();
 
-  constructor(environment: DylinkEngineEnvironment, host: DylinkProcessHost) {
+  constructor(
+    environment: DylinkEngineEnvironment,
+    host: DylinkProcessHost,
+    pointerWidth: 4 | 8 = 4,
+  ) {
     this.#environment = environment;
     this.#host = host;
+    this.#pointerWidth = pointerWidth;
   }
 
-  /** Announce the image the next `compile` act refers to. */
-  setCurrentImage(bytes: Uint8Array | null): void {
-    this.#currentImage = bytes;
+  /** Announce an image the planner may ask to compile, by library name. */
+  setImage(library: string, bytes: Uint8Array): void {
+    this.#images.set(library, bytes);
+  }
+
+  /** Drop an image once its object is loaded or its load was abandoned. */
+  forgetImage(library: string): void {
+    this.#images.delete(library);
   }
 
   instance(id: number): WebAssembly.Instance | undefined {
@@ -527,9 +702,11 @@ export class DylinkActExecutor {
     switch (act.act) {
       case "compile": {
         const bytes =
-          act.source.kind === "rewritten" ? act.source.bytes : this.#currentImage;
+          act.source.kind === "rewritten"
+            ? act.source.bytes
+            : this.#images.get(act.library);
         if (!bytes) {
-          throw new Error("dylink: compile act has no module image");
+          throw new Error(`dylink: no module image for ${act.library}`);
         }
         this.#modules.set(act.module, new WebAssembly.Module(asModuleSource(bytes)));
         return { result: "done" };
@@ -652,6 +829,41 @@ export class DylinkActExecutor {
       case "journalTableMutation":
         this.#host.journalTableMutation(request.firstIndex, request.length);
         return { result: "done" };
+      case "readDependency": {
+        const bytes = this.#host.readDependency(request.library, request.path);
+        // The planner will ask to compile this image by name, and this is the
+        // only point at which the driver sees it.
+        if (bytes !== null) this.#images.set(request.library, bytes);
+        return { result: "bytes", bytes };
+      }
+      case "readArchive":
+        return {
+          result: "bytes",
+          bytes: this.#host.readArchive(request.address, request.length),
+        };
+      case "allocateArchive":
+        return { result: "index", index: this.#host.allocateArchive(request.size) };
+      case "writeArchive":
+        this.#host.writeArchive(request.address, request.bytes);
+        return { result: "done" };
+      case "publishGeneration":
+        this.#host.publishGeneration(request.address, request.generation);
+        return { result: "done" };
+      case "releaseArchive":
+        this.#host.releaseArchive(request.address, request.size);
+        return { result: "done" };
+      case "savedGotFunc": {
+        const saved = this.#host.savedGotFunc(request.library, request.symbol);
+        // The planner asked for a pointer-width value and will bind it into a
+        // GOT cell of that width, so the width is the process's, not this
+        // value's magnitude.
+        return {
+          result: "value",
+          value: this.#pointerWidth === 8
+            ? { kind: "i64", value: BigInt.asUintN(64, saved) }
+            : { kind: "i32", value: Number(BigInt.asUintN(32, saved)) },
+        };
+      }
     }
   }
 
@@ -774,22 +986,23 @@ function probeMutable(global: WebAssembly.Global, current: unknown): boolean {
 export function drivePlan(
   session: PlannerSession,
   executor: DylinkActExecutor,
+  token: number,
   onStagedCall: (call: Extract<PlanStep, { step: "call" }>["call"]) => void,
 ): void {
   for (;;) {
-    const step = session.step();
+    const step = session.step(token);
     switch (step.step) {
       case "finished":
         return;
       case "act":
-        session.resume(executor.perform(step.act));
+        session.resume(token, executor.perform(step.act));
         break;
       case "host":
-        session.resume(executor.performHost(step.request));
+        session.resume(token, executor.performHost(step.request));
         break;
       case "call":
         onStagedCall(step.call);
-        session.resume({ result: "done" });
+        session.resume(token, { result: "done" });
         break;
     }
   }

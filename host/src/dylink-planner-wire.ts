@@ -72,7 +72,20 @@ export type ModuleSource =
   | { readonly kind: "rewritten"; readonly bytes: Uint8Array };
 
 export type LinkAct =
-  | { readonly act: "compile"; readonly module: number; readonly source: ModuleSource }
+  | {
+      readonly act: "compile";
+      readonly module: number;
+      /**
+       * The object this image belongs to.
+       *
+       * A load resolves its whole `DT_NEEDED` closure, so the image being
+       * compiled is often NOT the one the `dlopen` named. The driver already
+       * holds every image it was given or fetched; naming the one this act
+       * means is what stops it from guessing.
+       */
+      readonly library: string;
+      readonly source: ModuleSource;
+    }
   | {
       readonly act: "newGlobal";
       readonly global: number;
@@ -139,6 +152,37 @@ export type HostRequest =
       readonly request: "journalTableMutation";
       readonly firstIndex: bigint;
       readonly length: bigint;
+    }
+  | {
+      readonly request: "readDependency";
+      readonly library: string;
+      readonly path: string;
+    }
+  | {
+      readonly request: "readArchive";
+      readonly address: bigint;
+      readonly length: bigint;
+    }
+  | { readonly request: "allocateArchive"; readonly size: bigint }
+  | {
+      readonly request: "writeArchive";
+      readonly address: bigint;
+      readonly bytes: Uint8Array;
+    }
+  | {
+      readonly request: "publishGeneration";
+      readonly address: bigint;
+      readonly generation: bigint;
+    }
+  | {
+      readonly request: "releaseArchive";
+      readonly address: bigint;
+      readonly size: bigint;
+    }
+  | {
+      readonly request: "savedGotFunc";
+      readonly library: string;
+      readonly symbol: string;
     };
 
 export type InitializationStage = "bootstrap" | "relocations" | "constructors";
@@ -167,7 +211,8 @@ export type ActResult =
   | { readonly result: "done" }
   | { readonly result: "value"; readonly value: WasmValue }
   | { readonly result: "index"; readonly index: bigint }
-  | { readonly result: "exports"; readonly exports: readonly InstanceExport[] };
+  | { readonly result: "exports"; readonly exports: readonly InstanceExport[] }
+  | { readonly result: "bytes"; readonly bytes: Uint8Array | null };
 
 export type DataBinding =
   | { readonly kind: "export"; readonly instance: number; readonly name: string }
@@ -200,6 +245,13 @@ export interface LinkerConfig {
   readonly memoryBytes: bigint;
   readonly sharedMemory: boolean;
   readonly heapPointer?: bigint;
+  /**
+   * The default `DT_NEEDED` search path, in order. A property of the process's
+   * filesystem rather than of the linker, which is why it is configured and not
+   * compiled in. The requesting object's own directory is always tried first
+   * and is not listed here.
+   */
+  readonly librarySearchPaths: readonly string[];
 }
 
 export interface MainImage {
@@ -549,7 +601,7 @@ function getModuleSource(r: Reader): ModuleSource {
 function getLinkAct(r: Reader): LinkAct {
   switch (r.u8()) {
     case 0:
-      return { act: "compile", module: r.u32(), source: getModuleSource(r) };
+      return { act: "compile", module: r.u32(), library: r.str(), source: getModuleSource(r) };
     case 1:
       return {
         act: "newGlobal",
@@ -636,6 +688,20 @@ function getHostRequest(r: Reader): HostRequest {
       return { request: "unregisterActivation", library: r.str(), activation: r.u32() };
     case 6:
       return { request: "journalTableMutation", firstIndex: r.u64(), length: r.u64() };
+    case 7:
+      return { request: "readDependency", library: r.str(), path: r.str() };
+    case 8:
+      return { request: "readArchive", address: r.u64(), length: r.u64() };
+    case 9:
+      return { request: "allocateArchive", size: r.u64() };
+    case 10:
+      return { request: "writeArchive", address: r.u64(), bytes: r.blob() };
+    case 11:
+      return { request: "publishGeneration", address: r.u64(), generation: r.u64() };
+    case 12:
+      return { request: "releaseArchive", address: r.u64(), size: r.u64() };
+    case 13:
+      return { request: "savedGotFunc", library: r.str(), symbol: r.str() };
     default:
       throw new RangeError("unknown dylink wire host request");
   }
@@ -695,6 +761,15 @@ export function encodeActResult(result: ActResult): Uint8Array {
       w.u32(result.exports.length);
       for (const exported of result.exports) putInstanceExport(w, exported);
       break;
+    case "bytes":
+      w.u8(4);
+      if (result.bytes === null) {
+        w.bool(false);
+      } else {
+        w.bool(true);
+        w.blob(result.bytes);
+      }
+      break;
   }
   return w.bytes();
 }
@@ -720,6 +795,9 @@ export function decodeActResult(bytes: Uint8Array): ActResult {
       result = { result: "exports", exports };
       break;
     }
+    case 4:
+      result = { result: "bytes", bytes: r.bool() ? r.blob() : null };
+      break;
     default:
       throw new RangeError("unknown dylink wire act result");
   }
@@ -743,7 +821,63 @@ export function encodeLinkerConfig(config: LinkerConfig): Uint8Array {
     w.u8(1);
     w.u64(config.heapPointer);
   }
+  w.u32(config.librarySearchPaths.length);
+  for (const path of config.librarySearchPaths) w.str(path);
   return w.bytes();
+}
+
+/**
+ * Encode the funcref table patches an archive publication must carry.
+ *
+ * They belong to the fork activation coordinator rather than to the linker, but
+ * they ride in the same archive record chain and under the same generation
+ * fence, so the record layout — which is the planner's — has to know about
+ * them. The generation is deliberately not carried: it is assigned by the
+ * publication, and a caller-chosen fence could claim to be newer than the
+ * archive it lands in.
+ */
+export function encodeTablePatches(patches: readonly DylinkTablePatch[]): Uint8Array {
+  const w = new Writer();
+  w.u32(patches.length);
+  for (const patch of patches) {
+    w.u32(patch.activationId);
+    w.u32(patch.ownerId);
+    w.u64(patch.start);
+    w.u64(patch.tableLength);
+    w.u32(patch.runs.length);
+    for (const run of patch.runs) {
+      w.u64(run.length);
+      if (run.function === undefined) {
+        w.bool(false);
+      } else {
+        w.bool(true);
+        w.u32(run.function.activationId);
+        w.u32(run.function.ordinal);
+      }
+    }
+  }
+  return w.bytes();
+}
+
+/** One funcref coordinate inside a table-patch run. */
+export interface DylinkTableFunction {
+  readonly activationId: number;
+  readonly ordinal: number;
+}
+
+/** `length` consecutive slots set to `function`, or cleared when absent. */
+export interface DylinkTablePatchRun {
+  readonly length: bigint;
+  readonly function?: DylinkTableFunction;
+}
+
+/** One published funcref table patch. */
+export interface DylinkTablePatch {
+  readonly activationId: number;
+  readonly ownerId: number;
+  readonly start: bigint;
+  readonly tableLength: bigint;
+  readonly runs: readonly DylinkTablePatchRun[];
 }
 
 function putSymbolValue(w: Writer, value: SymbolValue): void {

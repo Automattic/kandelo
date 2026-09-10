@@ -147,6 +147,13 @@ describe("the Rust planner drives a real side module", () => {
       journalTableMutation: () => {
         /* no fork archive on this path */
       },
+      readDependency: () => null,
+      readArchive: refused("read a process archive"),
+      allocateArchive: refused("allocate an archive record"),
+      writeArchive: refused("write an archive record"),
+      publishGeneration: refused("publish an archive generation"),
+      releaseArchive: refused("release an archive record"),
+      savedGotFunc: refused("ask for a parent's saved GOT.func value"),
     };
 
     const session = PlannerSession.instantiate(plannerModule);
@@ -159,6 +166,7 @@ describe("the Rust planner drives a real side module", () => {
       memoryBytes: BigInt(memory.buffer.byteLength),
       sharedMemory: true,
       heapPointer: BigInt(memory.buffer.byteLength),
+      librarySearchPaths: [],
     });
     // No main image: the global scope is empty, so this object must be
     // self-contained. That is the strictest form of the test -- anything it
@@ -166,24 +174,27 @@ describe("the Rust planner drives a real side module", () => {
     session.publishMainImage({ tableLength: BigInt(table.length), exports: [], elementSlots: [] });
 
     const executor = new DylinkActExecutor(environment, host);
-    executor.setCurrentImage(image);
+    executor.setImage("adder.so", image);
 
     const stages: string[] = [];
-    session.openBegin({
+    const token = session.openBegin({
       name: "adder.so",
       moduleBytes: image,
       globalVisibility: true,
       borrowedMemory: false,
     });
     const layout = { instance: -1 };
-    drivePlan(session, executor, (call) => {
+    let plan = session.planLayout(token);
+    drivePlan(session, executor, token, (call) => {
       stages.push(call.stage);
       layout.instance = call.instance;
+      // Read the layout while the plan is still in flight: `openFinish`
+      // consumes the transaction, and the archive records exactly this.
+      plan = session.planLayout(token);
       const target = executor.instance(call.instance)?.exports[call.exportName];
       if (typeof target === "function") (target as () => void)();
     });
-    const plan = session.planLayout();
-    const handle = session.openFinish();
+    const handle = session.openFinish(token);
 
     expect(handle).toBeGreaterThan(1);
     // `__wasm_apply_data_relocs` and `__wasm_call_ctors` are the two stages an
@@ -203,16 +214,24 @@ describe("the Rust planner drives a real side module", () => {
     // The data segment was placed at the relocated base and is writable there.
     expect(add(20, 15)).toBe(43);
 
-    // dlsym goes through the planner's scope, not through `instance.exports`.
-    const resolved = session.sym(handle, "adder_add");
-    expect(resolved).not.toBeNull();
-    expect(resolved!.value.kind).toBe("func");
-    expect(session.sym(handle, "no_such_symbol")).toBeNull();
+    // dlsym goes through the planner's scope, not through `instance.exports`,
+    // and it answers with the guest scalar a C function pointer actually is:
+    // an indirect-function-table index.
+    const symToken = session.symBegin(handle, "adder_add");
+    drivePlan(session, executor, symToken, () => {});
+    const address = session.symAddress(symToken);
+    expect(address).not.toBeNull();
+    expect(table.get(Number(address))).toBe(instance!.exports.adder_add);
 
-    // The object is the only thing holding itself, so dlclose releases it.
-    const outcome = session.close(handle);
-    expect(outcome.outcome).toBe("released");
-    expect(session.isUnloadable("adder.so")).toBe(true);
+    const missToken = session.symBegin(handle, "no_such_symbol");
+    drivePlan(session, executor, missToken, () => {});
+    expect(session.symAddress(missToken)).toBeNull();
+
+    // The object is the only thing holding itself, so dlclose releases it --
+    // and the release is driven through the same loop as the load.
+    const closeToken = session.closeBegin(handle);
+    drivePlan(session, executor, closeToken, () => {});
+    expect(session.closeResult(closeToken).outcome).toBe("released");
   });
 
   it("refuses a strong undefined symbol instead of zeroing it", () => {
@@ -244,6 +263,7 @@ describe("the Rust planner drives a real side module", () => {
       memoryBytes: BigInt(memory.buffer.byteLength),
       sharedMemory: true,
       heapPointer: BigInt(memory.buffer.byteLength),
+      librarySearchPaths: [],
     });
     session.publishMainImage({ tableLength: BigInt(table.length), exports: [], elementSlots: [] });
 
@@ -267,26 +287,33 @@ describe("the Rust planner drives a real side module", () => {
         registerActivation: () => {},
         unregisterActivation: () => {},
         journalTableMutation: () => {},
+        readDependency: () => null,
+        readArchive: () => new Uint8Array(),
+        allocateArchive: () => 0n,
+        writeArchive: () => {},
+        publishGeneration: () => {},
+        releaseArchive: () => {},
+        savedGotFunc: () => 0n,
       },
     );
-    executor.setCurrentImage(image);
+    executor.setImage("needs.so", image);
 
     // ELF: a STRONG undefined symbol fails the load. K5 adjudicated this on ELF
     // and RTLD_LAZY semantics, not on which symbols any package happens to
     // leave unresolved, so it must hold for a module no artifact in this tree
     // ships.
     expect(() => {
-      session.openBegin({
+      const token = session.openBegin({
         name: "needs.so",
         moduleBytes: image,
         globalVisibility: true,
         borrowedMemory: false,
       });
-      drivePlan(session, executor, (call) => {
+      drivePlan(session, executor, token, (call) => {
         const target = executor.instance(call.instance)?.exports[call.exportName];
         if (typeof target === "function") (target as () => void)();
       });
-      session.openFinish();
+      session.openFinish(token);
     }).toThrow(/missing_helper|undefined/i);
   });
 });
@@ -329,26 +356,30 @@ describe("the wire format agrees with crates/dylink/src/wire.rs", () => {
   });
 });
 
+
 /**
- * What the module surface does NOT yet let a driver do.
+ * The two contracts these cases used to PIN as missing.
  *
- * These are not aspirational tests. Each one pins a gap standing between this
- * executor and the deletion of `host/src/dylink.ts`, and each is written so
- * that CLOSING the gap makes the test fail — at which point it becomes the
- * positive test for the new behaviour. Recording them as executed assertions
- * rather than as prose in a plan is the difference between a measured boundary
- * and a remembered one.
+ * They were written so that closing the gap would make them fail, at which
+ * point they become the positive test for the new behaviour. That is what has
+ * happened: `crates/dylink::session` owns dependency resolution and holds a map
+ * of concurrent transactions, so both now assert what the module DOES rather
+ * than what it could not.
  *
- * See NDD-K5-1 in `docs/plans/2026-09-10-rust-first-campaign-status.md`.
+ * A tripwire that vanishes when tripped is not a tripwire, which is why these
+ * are rewritten in place rather than deleted.
  */
-describe("the gaps between this executor and the dlopen cutover", () => {
+describe("the contracts the dlopen cutover needed, now closed", () => {
   let plannerModule: WebAssembly.Module | undefined;
 
   beforeAll(() => {
     if (PLANNER_WASM) plannerModule = new WebAssembly.Module(readFileSync(PLANNER_WASM));
   });
 
-  function standaloneSession(): { session: PlannerSession; memory: WebAssembly.Memory } {
+  function standaloneSession(searchPaths: readonly string[] = []): {
+    session: PlannerSession;
+    memory: WebAssembly.Memory;
+  } {
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true });
     const session = PlannerSession.instantiate(plannerModule!);
     session.configure({
@@ -360,16 +391,22 @@ describe("the gaps between this executor and the dlopen cutover", () => {
       memoryBytes: BigInt(memory.buffer.byteLength),
       sharedMemory: true,
       heapPointer: BigInt(memory.buffer.byteLength),
+      librarySearchPaths: searchPaths,
     });
     session.publishMainImage({ tableLength: 8n, exports: [], elementSlots: [] });
     return { session, memory };
   }
 
-  function bareExecutor(memory: WebAssembly.Memory): DylinkActExecutor {
+  function bareExecutor(
+    memory: WebAssembly.Memory,
+    table: WebAssembly.Table,
+    files: ReadonlyMap<string, Uint8Array>,
+    probed: string[],
+  ): DylinkActExecutor {
     return new DylinkActExecutor(
       {
         memory,
-        table: new WebAssembly.Table({ initial: 8, element: "anyfunc" }),
+        table,
         stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
         mainInstance: () => undefined,
         activationEnv: (name) => {
@@ -386,6 +423,16 @@ describe("the gaps between this executor and the dlopen cutover", () => {
         registerActivation: () => {},
         unregisterActivation: () => {},
         journalTableMutation: () => {},
+        readDependency: (_library, path) => {
+          probed.push(path);
+          return files.get(path) ?? null;
+        },
+        readArchive: () => new Uint8Array(),
+        allocateArchive: () => 0n,
+        writeArchive: () => {},
+        publishGeneration: () => {},
+        releaseArchive: () => {},
+        savedGotFunc: () => 0n,
       },
     );
   }
@@ -402,7 +449,7 @@ describe("the gaps between this executor and the dlopen cutover", () => {
     return new Uint8Array(readFileSync(object));
   }
 
-  it("refuses a second concurrent dlopen instead of nesting it", () => {
+  it("gives a second concurrent dlopen its own token instead of refusing it", () => {
     if (!plannerModule || !CAN_BUILD) return;
     const build = mkdtempSync(join(tmpdir(), "dylink-planner-nest-"));
     const image = buildSo(build, "leaf", "static int v = 1;\nint leaf(void) { return ++v; }\n");
@@ -414,18 +461,23 @@ describe("the gaps between this executor and the dlopen cutover", () => {
       globalVisibility: true,
       borrowedMemory: false,
     };
-    session.openBegin(request);
     // A constructor that calls `dlopen` is legal POSIX, and
-    // `LoadState::Initializing` exists for exactly that case.
-    // `worker-main.ts` keeps a MAP of pending transaction tokens; this module
-    // has one slot.
-    expect(() => session.openBegin({ ...request, name: "other.so" })).toThrow();
+    // `LoadState::Initializing` exists for exactly that case. The module used
+    // to have ONE slot, which is why `worker-main.ts` kept a map of pending
+    // tokens beside it; now the module holds the map and is the authority.
+    const first = session.openBegin(request);
+    const second = session.openBegin({ ...request, name: "other.so" });
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBeGreaterThan(0);
+    expect(second).not.toBe(first);
+    expect(session.pending(first)).toBe(true);
+    expect(session.pending(second)).toBe(true);
   });
 
-  it("has no way to resolve a DT_NEEDED dependency for the driver", () => {
+  it("resolves a DT_NEEDED dependency itself, asking the driver only to read files", () => {
     if (!plannerModule || !CAN_BUILD) return;
     const build = mkdtempSync(join(tmpdir(), "dylink-planner-needed-"));
-    buildSo(build, "libleaf", "int leaf_value(void) { return 5; }\n");
+    const leaf = buildSo(build, "libleaf", "int leaf_value(void) { return 5; }\n");
     const top = buildSo(
       build,
       "libtop",
@@ -433,23 +485,35 @@ describe("the gaps between this executor and the dlopen cutover", () => {
       [join(build, "libleaf.so")],
     );
 
-    const { session, memory } = standaloneSession();
-    const executor = bareExecutor(memory);
-    executor.setCurrentImage(top);
+    const { session, memory } = standaloneSession(["/lib", "/usr/lib"]);
+    const table = new WebAssembly.Table({ initial: 8, element: "anyfunc" });
+    const probed: string[] = [];
+    const executor = bareExecutor(
+      memory,
+      table,
+      new Map([["/usr/lib/libleaf.so", leaf]]),
+      probed,
+    );
+    executor.setImage("libtop.so", top);
 
-    // The planner requires every `DT_NEEDED` object already in scope. No
-    // `HostRequest` asks the driver to fetch one, and no entry point reports an
-    // image's NEEDED list, so a driver cannot satisfy this without parsing
-    // `dylink.0` itself -- which would put linker policy back into TypeScript.
-    expect(() => {
-      session.openBegin({
-        name: "libtop.so",
-        moduleBytes: top,
-        globalVisibility: true,
-        borrowedMemory: false,
-      });
-      drivePlan(session, executor, () => {});
-      session.openFinish();
-    }).toThrow();
+    // The driver performs `openat`/`read`/`close` for one named candidate and
+    // decides nothing. Which paths are tried, in what order, and what a miss
+    // means are the session's -- a driver that chose them would be applying ELF
+    // search rules in TypeScript, which is the thing this item exists to
+    // remove.
+    const token = session.openBegin({
+      name: "libtop.so",
+      moduleBytes: top,
+      globalVisibility: true,
+      borrowedMemory: false,
+    });
+    drivePlan(session, executor, token, (call) => {
+      const target = executor.instance(call.instance)?.exports[call.exportName];
+      if (typeof target === "function") (target as () => void)();
+    });
+    const handle = session.openFinish(token);
+
+    expect(handle).toBeGreaterThan(1);
+    expect(probed).toEqual(["libleaf.so", "/lib/libleaf.so", "/usr/lib/libleaf.so"]);
   });
 });

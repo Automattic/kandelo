@@ -302,9 +302,14 @@ impl ImportPlan {
 pub enum LinkAct {
     /// `new WebAssembly.Module(bytes)` / `Module::new`.
     ///
-    /// `bytes` is a byte range into the caller-owned module image, or an owned
-    /// rewrite when a borrowed replay had to strip the start section.
-    Compile { module: ModuleId, source: ModuleSource },
+    /// `source` is either the caller-owned image named by `library`, or an
+    /// owned rewrite when a borrowed replay had to strip the start section.
+    ///
+    /// `library` is carried because a load resolves its `DT_NEEDED` closure,
+    /// so the image being compiled is often NOT the one the `dlopen` named. The
+    /// driver already holds every image it was given or fetched; naming the one
+    /// this act means is what stops it from guessing.
+    Compile { module: ModuleId, library: String, source: ModuleSource },
     /// `new WebAssembly.Global({ value, mutable }, init)` / `Global::new`.
     NewGlobal { global: GlobalId, ty: ValType, mutable: bool, init: WasmValue },
     /// `Global.value` get / `Global::get`. Answered with [`ActResult::Value`].

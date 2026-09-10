@@ -840,6 +840,7 @@ impl LinkPlan {
                     self.emit(
                         PlanStep::Act(LinkAct::Compile {
                             module: self.module,
+                            library: self.request.name.clone(),
                             source: self.source.clone(),
                         }),
                         Pending::Compile,
