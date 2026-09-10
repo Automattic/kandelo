@@ -110,6 +110,14 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
    * guest parked in `Atomics.wait` cannot be observed to have stopped. When
    * this is `false`, a slot or a memory backing released after termination
    * must be force-retired rather than exactly released.
+   *
+   * NOT YET CONSUMED. Both hosts declare it correctly, but the code that
+   * should branch on it — thread-slot reclaim in `handleClone`, the exec
+   * rollback's lease release, and the browser's `memoryRetirementSafe`
+   * bookkeeping — still lives in the two entries and has not been moved here.
+   * It is declared now because it is the adjudicated form of that behaviour
+   * and the next tranche derives all three from it; until then it documents
+   * the boundary rather than enforcing it.
    */
   readonly terminationProvesQuiescence: boolean;
 
