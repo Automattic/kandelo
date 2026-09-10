@@ -650,10 +650,19 @@
   padding-right: 44px;
 }
 
+/* A nickname is wider than a role word, so its corner is too. */
+.kdock-status[data-named] .kdock-status-title {
+  padding-right: 104px;
+}
+
 .kdock-role {
   position: absolute;
   top: 5px;
   right: 5px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 1px 5px;
   border: 1px solid var(--kdock-border);
   border-radius: 5px;
@@ -4841,6 +4850,16 @@
   font-size: 11px;
   line-height: 1.4;
   word-break: break-all;
+}
+
+.knetwork-name {
+  padding: 8px;
+  border: 1px solid var(--k-border);
+  border-radius: 8px;
+  background: var(--k-surface);
+  color: var(--k-text);
+  font-family: var(--k-font-mono, monospace);
+  font-size: 12px;
 }
 
 .knetwork-status,

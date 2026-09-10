@@ -13,6 +13,7 @@ import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
+import { usePeerNickname } from "./peer-nickname";
 import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
 import { useTerminalPublisher } from "./shared-terminal";
@@ -109,6 +110,7 @@ export const App: React.FC = () => {
   // handover must not offer that replica as a second machine to take.
   const replication = useMachineReplication(host, peer.link);
   const handover = useMachineHandover(host, peer.link, replication.replicating);
+  const names = usePeerNickname(peer.link);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -318,6 +320,18 @@ export const App: React.FC = () => {
   }, [terminals]);
 
   const isEmpty = surface.status === "idle";
+  // Only in a pair. A computer on its own is neither, and one machine with
+  // one person at it needs no word for that.
+  const pairRole =
+    peer.link === null
+      ? null
+      : isEmpty || replication.replicating
+        ? "viewer"
+        : "user";
+  // A name only for someone you are watching: on your own dock you know who
+  // you are, so the user's badge keeps the role word, and the other person's
+  // name replaces only "Viewer". Null falls back to the role words.
+  const pairRoleName = pairRole === "viewer" ? names.peerNickname : null;
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
     : null;
@@ -503,6 +517,8 @@ export const App: React.FC = () => {
             hasMachine={!isEmpty}
             presenting={presenting}
             replication={replication}
+            nickname={names.nickname}
+            onNicknameChange={names.setNickname}
           />
         }
         themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
@@ -512,15 +528,8 @@ export const App: React.FC = () => {
         internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
         networkOpen={networkOpen}
         networkConnected={peer.link !== null}
-        // Only in a pair. A computer on its own is neither, and one machine
-        // with one person at it needs no word for that.
-        role={
-          peer.link === null
-            ? null
-            : isEmpty || replication.replicating
-              ? "viewer"
-              : "user"
-        }
+        role={pairRole}
+        roleName={pairRoleName}
         themeOpen={themeOpen}
         // A machine on its way here is booting, whatever the surface it is
         // replacing happens to be doing. During a take-over the departing

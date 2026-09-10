@@ -117,6 +117,16 @@ export const Dock: React.FC<{
    * keyboard do nothing" lives here instead.
    */
   role: "user" | "viewer" | null;
+  /**
+   * The name of the person this page watches, or null: no name is shown for
+   * yourself, only for someone else.
+   *
+   * It replaces the role word for the eye — on the watching page, "Viewer"
+   * becomes who you are viewing. The role itself stays in the aria-label and
+   * the data-role styling, so the read-only state is still said and shown
+   * whatever the name is.
+   */
+  roleName: string | null;
   machineTitle?: string;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
   onSelectPane: (pane: DockPaneId | null) => void;
@@ -146,6 +156,7 @@ export const Dock: React.FC<{
   networkOpen,
   networkConnected,
   role,
+  roleName,
   themeOpen,
   status,
   machineTitle,
@@ -483,9 +494,10 @@ export const Dock: React.FC<{
               type="button"
               className="kdock-status"
               data-role={role ?? undefined}
+              data-named={role !== null && roleName !== null ? "" : undefined}
               onClick={() => onSelectPane(null)}
               title={`${title}: ${statusLabel}`}
-              aria-label={`Current machine: ${title}, ${statusLabel}${role === null ? "" : role === "user" ? ", User" : ", Viewer"}`}
+              aria-label={`Current machine: ${title}, ${statusLabel}${role === null ? "" : `${role === "user" ? ", User" : ", Viewer"}${roleName === null ? "" : ` (${roleName})`}`}`}
             >
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
@@ -497,7 +509,7 @@ export const Dock: React.FC<{
               </span>
               {role !== null && (
                 <span className="kdock-role">
-                  {role === "user" ? "User" : "Viewer"}
+                  {roleName ?? (role === "user" ? "Sharing" : "Anonymous")}
                 </span>
               )}
             </button>
