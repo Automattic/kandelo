@@ -141,7 +141,6 @@ import {
   PROCESS_STATE_RUNNING,
   PROCESS_STATE_STOPPED,
   POSIX_ARG_MAX_BYTES,
-  POSIX_IOV_MAX,
   POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
@@ -167,12 +166,6 @@ import {
   PROCESS_SNAPSHOT_UID_OFFSET,
   PROCESS_SNAPSHOT_VSIZE_OFFSET,
   type ProcessForkMode,
-  PROCESS_IOVEC_WASM32_BASE_OFFSET,
-  PROCESS_IOVEC_WASM32_LEN_OFFSET,
-  PROCESS_IOVEC_WASM32_SIZE,
-  PROCESS_IOVEC_WASM64_BASE_OFFSET,
-  PROCESS_IOVEC_WASM64_LEN_OFFSET,
-  PROCESS_IOVEC_WASM64_SIZE,
   PROCESS_SIGINFO_CODE_OFFSET,
   PROCESS_SIGINFO_SIGNO_OFFSET,
   PROCESS_SIGINFO_WASM32_PID_OFFSET,
@@ -965,14 +958,6 @@ function alignWasmPageLength(len: number): number {
   return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
 }
 
-/**
- * Reassemble Linux preadv/pwritev's low/high offset words without routing the
- * signed i64 value through JavaScript Number.
- */
-function joinPositionedVectorOffset(low: number, high: number): bigint {
-  return (BigInt(high | 0) << 32n) | BigInt(low >>> 0);
-}
-
 /** Syscall numbers for scatter/gather I/O */
 const SYS_WRITEV = ABI_SYSCALLS.Writev;
 const SYS_READV = ABI_SYSCALLS.Readv;
@@ -1182,20 +1167,16 @@ function vectorRequestForbidsEagainRetry(
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
+/**
+ * One caller-owned byte range a large transfer stages through kernel scratch.
+ *
+ * The vector syscalls no longer produce these: the kernel walks the caller's
+ * `struct iovec` table itself. What remains is the single range a large
+ * `write`/`read`/`pwrite`/`pread` presents.
+ */
 interface CheckedProcessIovec {
   base: number;
   len: number;
-}
-
-interface CheckedProcessIovecs {
-  entries: CheckedProcessIovec[];
-  totalData: number;
-}
-
-interface ProcessIovecLayout {
-  size: number;
-  baseOffset: number;
-  lenOffset: number;
 }
 
 interface PlannedChannelScratchArg {
@@ -2011,7 +1992,6 @@ type BlockingRetrySnapshot =
   | GenericBlockingRetrySnapshot
   | FcntlLockBlockingRetrySnapshot
   | SelectBlockingRetrySnapshot
-  | FlattenedBlockingRetrySnapshot
   | FlattenedBlockingRetrySnapshot;
 
 interface BlockingRetryWakeTargets {
@@ -6083,31 +6063,10 @@ export class CentralizedKernelWorker {
         }
         return;
       }
-      case SYS_WRITEV:
-      case SYS_PWRITEV:
-      case SYS_PWRITEV2:
-      case SYS_READV:
-      case SYS_PREADV:
-      case SYS_PREADV2: {
-        // POSIX defines a zero-count vector as an empty operation and does
-        // not inspect iov. Validate the complete i64 count before touching
-        // the pointer so wasm64 high bits cannot alias a small JavaScript
-        // number, then canonicalize the ignored pointer.
-        const rawCount = rawArgs[2] ?? 0n;
-        if (rawCount < 0n || rawCount > BigInt(POSIX_IOV_MAX)) {
-          throw new KernelScratchError(
-            `iovec count must be between 0 and ${POSIX_IOV_MAX}`,
-            EINVAL,
-          );
-        }
-        args[2] = Number(rawCount);
-        if (rawCount === 0n) {
-          args[1] = 0;
-          return;
-        }
-        pointer(1, "iovec table pointer");
-        return;
-      }
+      // writev/readv/preadv/pwritev/preadv2/pwritev2 are deliberately absent:
+      // their iovec table is a generated process-address slot now, validated
+      // by `checkGeneratedExactScalarArguments`, and the count is the kernel's
+      // to bound because it owns the table walk.
       case SYS_SENDMSG:
       case SYS_RECVMSG:
         pointer(1, "message header pointer");
@@ -6584,124 +6543,6 @@ export class CentralizedKernelWorker {
       outputWrites: [],
       sleepDelayMs: undefined,
     };
-  }
-
-  private checkedProcessIovecs(
-    channel: ChannelInfo,
-    iovPointer: number | bigint,
-    iovCount: number,
-    allowEmpty: boolean,
-    capturedProcessMemory?: Uint8Array,
-  ): CheckedProcessIovecs {
-    if (
-      !Number.isSafeInteger(iovCount) ||
-      iovCount < (allowEmpty ? 0 : 1) ||
-      iovCount > POSIX_IOV_MAX
-    ) {
-      throw new KernelScratchError(
-        `iovec count must be ${allowEmpty ? "between 0" : "between 1"} and ${POSIX_IOV_MAX}`,
-        EINVAL,
-      );
-    }
-    if (iovCount === 0) return { entries: [], totalData: 0 };
-    const pointerWidth = this.getPtrWidth(channel.pid);
-    const layout = this.processIovecLayout(pointerWidth);
-    const tableBytes = iovCount * layout.size;
-    if (!Number.isSafeInteger(tableBytes)) {
-      throw new KernelScratchError("process iovec table size overflows", EINVAL);
-    }
-    const checkRange = (
-      pointer: number | bigint,
-      length: number | bigint,
-      field: string,
-      allowAddressZero = false,
-    ): { pointer: number; length: number; end: number } =>
-      capturedProcessMemory === undefined
-        ? this.checkedProcessRange(
-            channel,
-            pointer,
-            length,
-            field,
-            allowAddressZero,
-          )
-        : checkedProcessMemoryViewRange(
-            capturedProcessMemory,
-            pointer,
-            length,
-            pointerWidth,
-            field,
-            allowAddressZero,
-          );
-    const table = checkRange(
-      iovPointer,
-      tableBytes,
-      "process iovec table",
-      // WHY: zero is an addressable byte in caller process linear memory.
-      // It means allocator failure only for kernel allocator/export results,
-      // so a nonempty caller-owned table at address zero is valid when its
-      // complete native table range fits.
-      true,
-    );
-    const processMemory = capturedProcessMemory
-      ?? new Uint8Array(channel.memory.buffer);
-    const processView = new DataView(
-      processMemory.buffer,
-      processMemory.byteOffset + table.pointer,
-      table.length,
-    );
-    const entries: CheckedProcessIovec[] = [];
-    let totalData = 0;
-    for (let index = 0; index < iovCount; index++) {
-      const offset = index * layout.size;
-      const rawBase = pointerWidth === 8
-        ? processView.getBigUint64(offset + layout.baseOffset, true)
-        : processView.getUint32(offset + layout.baseOffset, true);
-      const rawLength = pointerWidth === 8
-        ? processView.getBigUint64(offset + layout.lenOffset, true)
-        : processView.getUint32(offset + layout.lenOffset, true);
-      // POSIX ignores iov_base when iov_len is zero. In particular, a wasm64
-      // caller may place a value above JavaScript's exact integer range there
-      // without naming any byte. Normalize it to zero only for the empty
-      // entry; every positive-length range is still checked losslessly.
-      const lengthRange = rawLength === 0n || rawLength === 0
-        ? { pointer: 0, length: 0 }
-        : checkRange(
-            rawBase,
-            rawLength,
-            `iovec[${index}] data`,
-            // WHY: like the table itself, positive-length caller data may
-            // begin at linear-memory address zero. The complete range proof,
-            // rather than null-pointer convention, establishes ownership.
-            true,
-          );
-      const len = lengthRange.length;
-      totalData += len;
-      if (
-        !Number.isSafeInteger(totalData)
-        || totalData > MAX_REPORTABLE_TRANSFER_BYTES
-      ) {
-        throw new KernelScratchError(
-          "aggregate iovec length exceeds SSIZE_MAX",
-          EINVAL,
-        );
-      }
-      entries.push({ base: lengthRange.pointer, len });
-    }
-    return { entries, totalData };
-  }
-
-  private processIovecLayout(pointerWidth: 4 | 8): ProcessIovecLayout {
-    return pointerWidth === 8
-      ? {
-          size: PROCESS_IOVEC_WASM64_SIZE,
-          baseOffset: PROCESS_IOVEC_WASM64_BASE_OFFSET,
-          lenOffset: PROCESS_IOVEC_WASM64_LEN_OFFSET,
-        }
-      : {
-          size: PROCESS_IOVEC_WASM32_SIZE,
-          baseOffset: PROCESS_IOVEC_WASM32_BASE_OFFSET,
-          lenOffset: PROCESS_IOVEC_WASM32_LEN_OFFSET,
-        };
   }
 
   private readProcessUsize(
@@ -11897,28 +11738,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- Scatter/gather I/O (writev/readv/pwritev/preadv) ---
-    // These have nested pointers (iov array → base buffers) that can't be
-    // handled by the simple ArgDesc system.
-    if (
-      syscallNr === SYS_WRITEV
-      || syscallNr === SYS_PWRITEV
-      || syscallNr === SYS_PWRITEV2
-    ) {
-      if (logging) console.error(logEntry);
-      this.#handleWritev(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-
-    if (
-      syscallNr === SYS_READV
-      || syscallNr === SYS_PREADV
-      || syscallNr === SYS_PREADV2
-    ) {
-      if (logging) console.error(logEntry);
-      this.#handleReadv(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
+    // (writev/readv/preadv/pwritev/preadv2/pwritev2 now go through the normal
+    // kernel path. Their `struct iovec` table is declared KernelDereferenced,
+    // so the kernel walks the caller's table and its buffers itself, in the
+    // caller's data model, and gathers or scatters in one operation.)
 
     // --- Large write/pwrite/read/pread: one kernel-owned transfer region ---
     // The ordinary channel has a fixed data capacity. Preserve one POSIX I/O
@@ -13050,7 +12873,13 @@ export class CentralizedKernelWorker {
           syscallNr,
           adjustedArgs,
           plannedScratchWrites,
-        ) || syscallHasMsgDontwait(syscallNr, origArgs);
+        )
+          || syscallHasMsgDontwait(syscallNr, origArgs)
+          // WHY origArgs and not adjustedArgs: preadv2/pwritev2's sixth guest
+          // argument is `flags`, and that is the slot the descriptor path
+          // overwrites with the caller's pointer width. `origArgs` is captured
+          // before that overwrite, so it still carries what the guest passed.
+          || vectorRequestForbidsEagainRetry(syscallNr, origArgs);
       } catch (error) {
         this.#rejectScratchTransfer(channel, error, entry);
         return;
@@ -19751,22 +19580,19 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Map scalar and vector variants to one contiguous kernel operation. */
+  /** Name the one contiguous kernel operation a large transfer performs. */
   #scalarTransferSyscall(syscallNr: number): number {
+    // Only the scalar transfers reach this path now. The vector syscalls are
+    // dispatched to the kernel under their own numbers, which walks the
+    // caller's iovec table itself.
     switch (syscallNr) {
       case SYS_WRITE:
-      case SYS_WRITEV:
         return SYS_WRITE;
       case SYS_PWRITE:
-      case SYS_PWRITEV:
-      case SYS_PWRITEV2:
         return SYS_PWRITE;
       case SYS_READ:
-      case SYS_READV:
         return SYS_READ;
       case SYS_PREAD:
-      case SYS_PREADV:
-      case SYS_PREADV2:
         return SYS_PREAD;
       default:
         throw new KernelScratchError(
@@ -19774,16 +19600,6 @@ export class CentralizedKernelWorker {
           EINVAL,
         );
     }
-  }
-
-  private checkedVectorCount(rawCount: bigint): number {
-    if (rawCount < 0n || rawCount > BigInt(POSIX_IOV_MAX)) {
-      throw new KernelScratchError(
-        "iovec count must be between 0 and " + String(POSIX_IOV_MAX),
-        EINVAL,
-      );
-    }
-    return Number(rawCount);
   }
 
   #copyFlattenedTransferInput(
@@ -20574,64 +20390,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Handle writev/pwritev as one logical contiguous kernel write.
-   *
-   * pwritev2 flags remain ignored, matching the kernel's existing ABI 43
-   * behavior, but the offset and complete caller ranges remain exact.
-   */
-  #handleWritev(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    let checkedIovecs: CheckedProcessIovecs;
-    let offset: bigint | null;
-    try {
-      const iovCount = this.checkedVectorCount(rawArgs[2] ?? 0n);
-      checkedIovecs = this.checkedProcessIovecs(
-        channel,
-        rawArgs[1] ?? 0n,
-        iovCount,
-        true,
-      );
-      offset = syscallNr === SYS_PWRITEV || syscallNr === SYS_PWRITEV2
-        ? joinPositionedVectorOffset(origArgs[3], origArgs[4])
-        : null;
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    let request: FlattenedTransferRequest;
-    try {
-      request = {
-        fd: origArgs[0],
-        entries: checkedIovecs.entries.slice(),
-        totalData: checkedIovecs.totalData,
-        read: false,
-        offset,
-        inputBytes: this.#snapshotFlattenedTransferInput(
-          channel,
-          checkedIovecs.entries,
-          checkedIovecs.totalData,
-        ),
-      };
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      request,
-      entry,
-    );
-  }
-
-  /**
    * Handle large write/pwrite as one operation, not channel-sized chunks.
    */
   #handleLargeWrite(
@@ -20726,50 +20484,6 @@ export class CentralizedKernelWorker {
         totalData: destination.length,
         read: true,
         offset: syscallNr === SYS_PREAD ? rawArgs[3] ?? 0n : null,
-      },
-      entry,
-    );
-  }
-
-  /**
-   * Handle readv/preadv as one logical contiguous kernel read and scatter only
-   * the returned prefix into caller-owned ranges.
-   */
-  #handleReadv(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    let checkedIovecs: CheckedProcessIovecs;
-    let offset: bigint | null;
-    try {
-      const iovCount = this.checkedVectorCount(rawArgs[2] ?? 0n);
-      checkedIovecs = this.checkedProcessIovecs(
-        channel,
-        rawArgs[1] ?? 0n,
-        iovCount,
-        true,
-      );
-      offset = syscallNr === SYS_PREADV || syscallNr === SYS_PREADV2
-        ? joinPositionedVectorOffset(origArgs[3], origArgs[4])
-        : null;
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      {
-        fd: origArgs[0],
-        entries: checkedIovecs.entries.slice(),
-        totalData: checkedIovecs.totalData,
-        read: true,
-        offset,
       },
       entry,
     );
