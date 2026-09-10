@@ -1017,3 +1017,22 @@ Estimated shape when taken: relocate `EpollInstance` ownership to an OFD-keyed
 table alongside the socket table's model, then key `EpollInterest` on OFD
 identity and prune on close/exec. `docs/posix-status.md` now records both gaps
 against the three epoll entries, which previously read "Full".
+
+### The agent scratchpad is not isolated between concurrent agents
+
+An agent wrote a helper script to its scratchpad path, and by the time it ran
+it, **another agent had overwritten that path with its own script**. The
+executed script `cd`'d into the sibling's worktree and ran that worktree's
+`install_local_binary kernel`, refreshing a sibling's
+`local-binaries/kernel.wasm`.
+
+No data was lost, and the agent caught and reported it. But the environment
+presents the scratchpad as session-isolated, and with several agents running it
+is not isolated between them.
+
+Until that is fixed, a helper script written from an agent must use a
+uniquely-named path and guard on its own content before executing — the agent
+that hit this re-did it that way. The wider point is that a cross-worktree
+build side effect is exactly the class of thing that produces failures naming
+neither worktree, which is the same shape as the shared-cache defect recorded
+above.
