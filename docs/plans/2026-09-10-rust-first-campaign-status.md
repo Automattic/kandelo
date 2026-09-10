@@ -2234,6 +2234,8 @@ foundation file.
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
 | B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines, blocked at the time on file ownership that has since cleared |
+| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; **no longer gated — B7 is done.** See "B7 — epoll OFD ownership" below for what the mirror now contradicts |
+| B7 | **epoll fork inheritance + OFD keying** | **DONE.** One change, as recorded — verified, not assumed. See below |
 | B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; gated on B7 |
 | B7 | *(moved to A7 — dispatched)* | |
 | B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
@@ -2253,6 +2255,63 @@ foundation file.
 | B19 | *(moved to A8 — dispatched)* | |
 | B20 | **Tier-end browser pass** | Now split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed this way |
 
+### B7 — epoll OFD ownership (DONE 2026-09-10)
+
+**The register's "one change, not two" was verified before being built on,
+not inherited.** The grounding (`2026-09-09-k3-blocking-scheduler-grounding.md`
+§4.4, §11.3) splits this into D2 (fork inheritance) and D3 (OFD re-keying) and
+calls D3 "separable". It is not. `Process::epolls` was a per-process
+`Vec<Option<EpollInstance>>`; genuine sharing means the instance cannot live in
+`Process`, and once it does not, the interests it holds cannot be numeric fds,
+because the same number means different things in different processes.
+**Treat §4.4's D2/D3 split as superseded.**
+
+**The refused shortcut, for the record.** Copying the instance into the child
+gets the common case right and is silently wrong on shared mutation. It was not
+taken. Both directions of visibility are proved — the child's `epoll_ctl` seen
+by the parent and the parent's seen by the child — precisely because a
+child-only test would also pass against the copy.
+
+**Where ownership lives now:** `descriptor_backing::with_epolls`, the
+kernel-global OFD-keyed backing table that already owned eventfd, timerfd,
+signalfd, memfd, procfs and PCM. Epoll joins `manages_ofd`,
+`is_live_managed_ofd`, `add_ref_for_ofd` and `release_for_ofd`, so fork takes
+the child's reference through `bump_inherited_resource_refcounts` and exec
+releases CLOEXEC-dropped ones through `removed_backings_for_exec`. Both
+`epolls.clear()` calls in `fork.rs` are gone. `EpollInterest` carries the
+registered description's `OfdId` beside the descriptor number, mirroring
+Linux's `(struct file *, fd)` key.
+
+**No ABI motion.** No new `env.host_*` import (surface stays **76**), no new
+kernel export, and `epolls` was never in the fork wire, so `abi/snapshot.json`
+is untouched.
+
+**Conformance: there was none.** `tests/posix` and `tests/libc` contain no
+epoll behaviour test at all — checked, not assumed. All of `tests/` holds one
+incidental `EPOLLOUT` readiness check inside a UDP backpressure case and a
+struct-layout assertion in `tests/abi`. This is the same shape as B14 (SysV).
+A first case now exists at
+`tests/sortix/os-test-local/basic/sys_epoll/epoll-fork-shares-instance.c`,
+picked up automatically by the `basic` suite.
+
+**What B6 must know.** The host mirror (`kernel-worker.ts`, `epollInterests`)
+is now not merely a second authority but a **weaker model** of the kernel's:
+keyed `pid:epfd` on numeric fds and copied per process at fork, where the
+kernel keys `(fd, OfdId)` and shares one instance. Its comments have been
+corrected to say so. Any divergence is the mirror being wrong. Its one
+surviving reader is `resolveEpollReadinessIndices`, a wake-index hint; a
+fork-shared epoll can now diverge there, which is not a regression — that case
+returned `EBADF` before — but it is one more reason to delete the mirror rather
+than repair it.
+
+**Residual gap, left visible rather than papered over.** An interest naming a
+description the *calling* process can no longer reach contributes nothing to
+its wait. That is exactly Linux when the description is dead, and a divergence
+while only a sibling process still holds it. Closing it needs readiness
+evaluation against an OFD the caller does not hold, which `sys_poll`'s
+`&mut Process` shape cannot express today. `epoll_ctl()` and `epoll_pwait()`
+therefore stay **Partial** in `posix-status.md`; `epoll_create1()` becomes
+**Full**, and the `exec()` row's epoll numeric-fd gap is gone.
 ### B17/B18/B19 closed — three build-environment defects, one shape
 
 Each produced a failure that named something other than its cause.

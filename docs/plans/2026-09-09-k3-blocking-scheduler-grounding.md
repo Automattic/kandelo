@@ -652,6 +652,16 @@ fixture path, not the live exec. The live exec problem is Gap 2, not a clear.)*
 the deletion, and they are exactly the "treat the failure as platform feedback"
 the values contract asks for. **NEEDS-DEFER-DECISION (§11.3).**
 
+> **SUPERSEDED 2026-09-10 — the D2/D3 split above is wrong.** Calling D3
+> "separable" does not survive contact with the code. `Process::epolls` was a
+> per-process `Vec<Option<EpollInstance>>`, so implementing D2's genuine
+> sharing means the instance cannot live in `Process` — which *is* D3 — and
+> once it does not, an interest cannot key on a numeric fd, because the same
+> number means different things in different processes. Landed as one change
+> (item B7); see the B7 section of
+> `docs/plans/2026-09-10-rust-first-campaign-status.md`. D2 and D3 rows above
+> are kept only as the record of what was believed.
+
 D1 alone is a comment deletion with no risk and should not wait for K3.
 
 *(Housekeeping found while grounding: the `handleChannel` mock in
@@ -1326,6 +1336,13 @@ contract forbids.
 **Recommendation:** land D2 (inheritance) inside K3-7 as a prerequisite; split
 D3 (OFD keying) into its own POSIX item, since it is orthogonal to who owns the
 wait and has its own conformance surface. **Ask before splitting.**
+
+> **RESOLVED 2026-09-10 — and the recommendation was wrong.** D3 is not
+> separable from D2; see the superseded note in §4.4. Both landed together as
+> item B7, with the fork-child `EBADF` reproduced as a failing test first.
+> `epoll_create1()` is now Full; `epoll_ctl()`/`epoll_pwait()` stay Partial for
+> gaps unrelated to ownership. The epoll mirror deletion (D4/D5/D8) is
+> ungated.
 
 ### 11.4 NEEDS-DEFER-DECISION — the post-cutover safety net
 
