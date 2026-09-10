@@ -664,7 +664,11 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect(harness.relistenChannel).not.toHaveBeenCalled();
     expect(harness.state.pendingPollRetries.size).toBe(0);
-    expect(harness.handleChannel).not.toHaveBeenCalled();
+    // The kernel IS dispatched, exactly as it is for a non-empty interest
+    // list: an empty list is its zero-event answer, not a host short-circuit.
+    // What matters is that the reap happens on the far side of that boundary
+    // and the guest is never woken, which the assertions above and below pin.
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_STATUS, true),
     ).toBe(CHANNEL_STATUS_PENDING);

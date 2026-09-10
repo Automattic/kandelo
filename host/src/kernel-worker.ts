@@ -15138,46 +15138,56 @@ export class CentralizedKernelWorker {
     pipeIndices: number[];
     acceptIndices: number[];
   } {
-    const wakeIndices = this.#kernelInstanceForEntry(entry).exports
-      .kernel_epoll_wake_indices as
-      ((
-        pid: number,
-        epfd: number,
-        kind: number,
-        outPtr: KernelPointer,
-        outLen: number,
-      ) => number) | undefined;
-    if (!wakeIndices) return { pipeIndices: [], acceptIndices: [] };
+    return {
+      pipeIndices: this.#epollWakeIndices(pid, epfd, 0, entry),
+      acceptIndices: this.#epollWakeIndices(pid, epfd, 1, entry),
+    };
+  }
 
+  /**
+   * Read one wake-token family for `epfd` out of the kernel.
+   *
+   * `kind` selects the family: 0 for pipe/socket receive-buffer indices, 1 for
+   * listener accept tokens. Kept a method rather than a closure so the entry
+   * context is threaded explicitly instead of captured.
+   */
+  #epollWakeIndices(
+    pid: number,
+    epfd: number,
+    kind: number,
+    entry: KernelWorkerEntryContext,
+  ): number[] {
+    // No availability probe for `kernel_epoll_wake_indices`: an absent export
+    // is a stale kernel artifact, and the scratch lease already fails loudly
+    // by name for one. Tolerating it would be the compatibility shim the ABI
+    // contract forbids, and it would silently turn every epoll wait into a
+    // timer poll.
     const scratch = this.#requireMainScratchRegion();
-    const read = (kind: number): number[] =>
-      scratch.withLease((lease) => {
-        const request = Math.min(SCRATCH_SIZE, scratch.capacity);
-        const n = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_epoll_wake_indices",
-          [pid, epfd, kind, lease.exportPointer(0, request), request],
+    return scratch.withLease((lease) => {
+      const request = Math.min(SCRATCH_SIZE, scratch.capacity);
+      const n = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_epoll_wake_indices",
+        [pid, epfd, kind, lease.exportPointer(0, request), request],
+      );
+      // A negative result is the kernel declining to answer for this epfd
+      // (EBADF once it is closed, ESRCH once the process is gone). Both are
+      // ordinary races against a wait that is about to be retried anyway.
+      if (n <= 0) return [];
+      const bytes = n * 4;
+      if (!Number.isSafeInteger(bytes) || bytes > request) {
+        throw new KernelScratchError(
+          "epoll wake-index output exceeded scratch capacity",
+          EIO,
         );
-        // A negative result is the kernel declining to answer for this epfd
-        // (EBADF once it is closed, ESRCH once the process is gone). Both are
-        // ordinary races against a wait that is about to be retried anyway.
-        if (n <= 0) return [];
-        const bytes = n * 4;
-        if (!Number.isSafeInteger(bytes) || bytes > request) {
-          throw new KernelScratchError(
-            "epoll wake-index output exceeded scratch capacity",
-            EIO,
-          );
-        }
-        const out = lease.copyOut(0, bytes);
-        const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-        const values: number[] = [];
-        for (let i = 0; i < n; i++) values.push(view.getInt32(i * 4, true));
-        return values;
-      });
-
-    return { pipeIndices: read(0), acceptIndices: read(1) };
+      }
+      const out = lease.copyOut(0, bytes);
+      const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+      const values: number[] = [];
+      for (let i = 0; i < n; i++) values.push(view.getInt32(i * 4, true));
+      return values;
+    });
   }
 
   private wakeBlockedAccept(acceptIdx: number): void {
