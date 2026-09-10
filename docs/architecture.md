@@ -2131,14 +2131,56 @@ Decompressed layout:
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
 4        4      Version: 1
-8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata
+8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
+                bit 3 = typed lazy archives, bit 4 = kernel lazy linkage
 12       4      SharedArrayBuffer data length (N)
 16       N      Raw SharedArrayBuffer bytes (block filesystem)
 16+N     4      Lazy entries JSON length (M)
 20+N     M      Lazy-file JSON (identity, aliases, URL, declared size)
 ...      4+L    Optional lazy-archive/deferred-tree JSON length and bytes (when bit 1 is set)
 ...      4+P    Optional image-metadata JSON length and bytes (when bit 2 is set)
+...      4+K    Kernel lazy-linkage section ("KLZY") length and bytes (when bit 4 is set)
 ```
+
+Bit 3 adds no section of its own; it asserts that every lazy-archive group in
+the bit-1 section carries a `kind` discriminator.
+
+### The kernel lazy-linkage section ("KLZY")
+
+The three JSON sections are the host's persistence form for host authority:
+fetch URLs and transport mirrors, integrity digests, activation modes,
+atomic-group seals, and per-builder image metadata. Exactly two facts in them
+are kernel-relevant — a lazy file's real size, and an archive member's
+`(archive_id, source_path, size)` — and the kernel already consumes both in
+binary today, through the RTFS boot manifest's `KIND_LAZY_FILE` entries, which
+the host produces by walking the restored filesystem after loading the image.
+
+`KLZY` carries that kernel-needed subset in the image itself, so an image's
+lazy linkage is readable without a JSON parser and without a host-side tree
+walk first. `archive_id` is assigned by the image writer rather than minted at
+boot, which makes "the kernel's archive table and the host's fetch table are
+the same table" a structural property of the image.
+
+The section is written today and read by
+`crates/runtime-core/src/klzy.rs`; the host still drives boot from the JSON,
+so both are emitted. Because the section is appended after the metadata
+section and readers stop there, an older reader neither sees the flag nor the
+bytes, and a reader of a newer image is unaffected by it.
+
+Its layout is documented once, next to its structural constants
+(`VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs`), in the `KFIG` idiom:
+a magic, `u16` version, `u16` header size, counts, then size-prefixed records
+with trailing length-prefixed UTF-8 names. Encoder:
+`host/src/vfs/kernel-lazy-section.ts`. Cross-language fixture:
+`crates/runtime-core/src/testdata/klzy-v1.bin`, emitted by the real encoder via
+`host/scripts/gen-klzy-fixture.mts`.
+
+Source paths are encoded explicitly. In every image the repo ships today a
+member's source path is exactly its VFS path with the mount prefix stripped,
+which would let the paths be derived instead — but that is a property of
+today's builders, not of the format, so the writer does not assume it. A group
+flag is reserved for a writer that proves the invariant per group and falls
+back to explicit paths otherwise.
 
 ## Networking
 

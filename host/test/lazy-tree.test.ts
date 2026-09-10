@@ -3337,9 +3337,14 @@ describe("format-neutral deferred trees", () => {
       truncated.byteOffset,
       truncated.byteLength,
     );
+    // Declare an archive section longer than every byte that follows it. A
+    // bare `+1` stopped overrunning the image once a further section was
+    // appended after the metadata section, which would have made this assert
+    // nothing; the length has to beat the whole remaining tail to prove the
+    // bound is checked against the image and not against the next section.
     truncatedView.setUint32(
       archiveOffset,
-      truncatedView.getUint32(archiveOffset, true) + 1,
+      truncated.byteLength - archiveOffset,
       true,
     );
     expect(() => MemoryFileSystem.fromImage(truncated))

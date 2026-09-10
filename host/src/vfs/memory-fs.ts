@@ -57,6 +57,13 @@ import {
   assertUnicodeScalarText,
   compareUnicodeScalarText,
 } from "./canonical-text";
+import {
+  decodeKernelLazySection,
+  encodeKernelLazySection,
+  VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
+  VFS_IMAGE_MAX_KERNEL_LAZY_BYTES,
+} from "./kernel-lazy-section";
+import type { KernelLazyLinkage } from "./kernel-lazy-section";
 
 const intrinsicApply = Reflect.apply;
 const intrinsicObjectCreate = Object.create;
@@ -506,8 +513,9 @@ const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
   + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
   + VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES
   + VFS_IMAGE_MAX_METADATA_BYTES
+  + VFS_IMAGE_MAX_KERNEL_LAZY_BYTES
   + VFS_IMAGE_HEADER_SIZE
-  + 12;
+  + 16;
 const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
 const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
@@ -7063,17 +7071,29 @@ export class MemoryFileSystem implements FileSystemBackend {
     const metadataJson = encodeMetadata(metadata);
     const hasMetadata = metadataJson.byteLength > 0;
 
-    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson
+    // The kernel-facing lazy linkage is written in binary alongside the JSON
+    // that still carries the host's fetch authority (URLs, transports,
+    // integrity, activation, seals). See ./kernel-lazy-section.ts for why the
+    // two halves are split this way. It is emitted unconditionally, so its
+    // presence is a positive assertion that this image's lazy linkage is
+    // readable without a JSON parser -- an image with no lazy state at all
+    // still says so, in 20 bytes, rather than being indistinguishable from an
+    // image written before the section existed.
+    const kernelLazyJson = encodeKernelLazySection(lazyEntries, archiveEntries);
+
+    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson | u32 kernelLazyLen | kernelLazy
     // Archive and metadata sections are only appended when their flags are set.
     const archiveSectionSize = hasArchives ? 4 + archiveJson.byteLength : 0;
     const metadataSectionSize = hasMetadata ? 4 + metadataJson.byteLength : 0;
+    const kernelLazySectionSize = 4 + kernelLazyJson.byteLength;
     const totalSize =
       VFS_IMAGE_HEADER_SIZE +
       sabBytes.byteLength +
       4 +
       lazyJson.byteLength +
       archiveSectionSize +
-      metadataSectionSize;
+      metadataSectionSize +
+      kernelLazySectionSize;
     const image = new Uint8Array(totalSize);
     const view = new DataView(image.buffer);
 
@@ -7085,7 +7105,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       (hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0) |
         (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0) |
         (hasArchives ? VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES : 0) |
-        (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0),
+        (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0) |
+        VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
       true,
     );
     view.setUint32(12, sabBytes.byteLength, true);
@@ -7108,12 +7129,18 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     // Metadata
+    const metadataOffset =
+      lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
     if (hasMetadata) {
-      const metadataOffset =
-        lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
       view.setUint32(metadataOffset, metadataJson.byteLength, true);
       image.set(metadataJson, metadataOffset + 4);
     }
+
+    // Kernel-facing lazy linkage, last so every reader that stops at the
+    // metadata section is unaffected by it.
+    const kernelLazyOffset = metadataOffset + metadataSectionSize;
+    view.setUint32(kernelLazyOffset, kernelLazyJson.byteLength, true);
+    image.set(kernelLazyJson, kernelLazyOffset + 4);
 
     return image;
   }
@@ -7146,6 +7173,50 @@ export class MemoryFileSystem implements FileSystemBackend {
         metadataOffset + 4,
         metadataOffset + 4 + metadataLen,
       ),
+    );
+  }
+
+  /**
+   * Read an image's kernel-facing lazy linkage without materializing the
+   * filesystem SAB. `null` for an image written before the section existed:
+   * that is a legitimate older image, not a corrupt one. A declared section
+   * over truncated or self-inconsistent framing throws.
+   *
+   * Mirrors `sffs::kernel_lazy_span` + `klzy::decode_kernel_lazy_linkage` in
+   * `crates/runtime-core`.
+   */
+  static readImageKernelLazyLinkage(
+    image: Uint8Array,
+  ): KernelLazyLinkage | null {
+    const parsed = parseImageHeader(image);
+    if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY)) return null;
+    const { metadataOffset } = sectionOffsetAfterArchives(
+      parsed.image,
+      parsed.view,
+      parsed.flags,
+      parsed.sabLen,
+    );
+    let offset = metadataOffset;
+    if (parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA) {
+      if (parsed.image.byteLength < offset + 4) {
+        throw new Error("VFS image truncated (metadata section)");
+      }
+      offset += 4 + parsed.view.getUint32(offset, true);
+    }
+    if (parsed.image.byteLength < offset + 4) {
+      throw new Error("VFS image truncated (kernel lazy linkage section)");
+    }
+    const length = parsed.view.getUint32(offset, true);
+    if (length > VFS_IMAGE_MAX_KERNEL_LAZY_BYTES) {
+      throw new Error(
+        `VFS image kernel lazy linkage exceeds ${VFS_IMAGE_MAX_KERNEL_LAZY_BYTES} bytes`,
+      );
+    }
+    if (parsed.image.byteLength < offset + 4 + length) {
+      throw new Error("VFS image truncated (kernel lazy linkage payload)");
+    }
+    return decodeKernelLazySection(
+      parsed.image.subarray(offset + 4, offset + 4 + length),
     );
   }
 
