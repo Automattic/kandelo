@@ -227,7 +227,6 @@ async function runProgram(
       },
     },
   );
-  kernelWorker.usePolling = false;
   (kernelWorker as CentralizedKernelWorker & { relistenBatchSize: number }).relistenBatchSize = 8;
   kernelWorker.setOutputCallbacks({
     onStdout: (data) => {

@@ -228,12 +228,15 @@ function makeTransferHarness(
     sharedMmapBackings: new Map(),
     relistenBatchSize: 64,
     relistenCount: 0,
-    // Avoid installing a waitAsync listener in these synchronous protocol
-    // tests. Completion still publishes the genuine process mailbox.
-    usePolling: true,
     pendingPollRetries: new Map(),
     pendingSelectRetries: new Map(),
     ptyOutputCallbacks: new Map(),
+  });
+  // These synchronous protocol tests install the channel directly instead of
+  // registering a process, so suppress arming an Atomics.waitAsync listener
+  // on it. Completion still publishes the genuine process mailbox.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   worker.testAuthority.initializeKernelForTest({
     instance: scratchInstance,

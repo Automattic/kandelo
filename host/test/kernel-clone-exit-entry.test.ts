@@ -155,7 +155,12 @@ function makeHarness(
     syscallTraceEnabled: false,
     syscallTraceRing: [],
     threadForkContexts: new Map(),
-    usePolling: true,
+  });
+  // This harness installs its channels directly instead of registering a
+  // process, and drives them synchronously, so suppress arming an
+  // Atomics.waitAsync listener on them.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   worker.testAuthority.initializeKernelForTest({
     instance: gatedInstance,

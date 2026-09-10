@@ -1422,8 +1422,8 @@ interface ChannelInfo {
   /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
   /** True while this channel is being handled by handleSyscall or an async
-   *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
-   *  channel that is already in flight. Only used when usePolling=true. */
+   *  retry/sleep/fork/exec path. Suppresses re-entry into a channel whose
+   *  request is already in flight. */
   handling?: boolean;
   /** Absolute deadline for the current finite poll/select/epoll wait. */
   readinessDeadline?: number;
@@ -2276,6 +2276,17 @@ interface ScratchBoundaryTestHooks {
     retVal: number,
     errVal: number,
   ) => void;
+  /**
+   * Suppress arming an `Atomics.waitAsync` listener on a channel.
+   *
+   * WHY: focused harnesses install channels directly and drive them
+   * synchronously, so an armed listener is either useless or impossible —
+   * `Atomics.waitAsync` requires shared memory, and several harnesses build
+   * unshared `WebAssembly.Memory`. This suppresses only the arming; all
+   * relisten bookkeeping (`handling`, stopped-channel deferral, registration
+   * generation) still runs, so a test still observes the real state machine.
+   */
+  readonly listenOnChannel?: (channel: ChannelInfo) => void;
   readonly relistenChannel?: (channel: ChannelInfo) => void;
   readonly wakePendingSignalWaits?: (
     pid: number,
@@ -3519,6 +3530,8 @@ export class CentralizedKernelWorker {
             options.completeChannel ?? previous?.completeChannel,
           completeChannelRaw:
             options.completeChannelRaw ?? previous?.completeChannelRaw,
+          listenOnChannel:
+            options.listenOnChannel ?? previous?.listenOnChannel,
           relistenChannel:
             options.relistenChannel ?? previous?.relistenChannel,
           wakePendingSignalWaits:
@@ -4891,7 +4904,6 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredInterval(this.vblankTimer);
       this.vblankTimer = null;
     }
-    this.stopPolling();
     for (const channel of this.activeChannels) {
       channel.handling = true;
     }
@@ -6910,12 +6922,8 @@ export class CentralizedKernelWorker {
           this.processes.set(pid, registration);
           this.activeChannels.push(...channels);
 
-          if (this.usePolling) {
-            this.startPolling();
-          } else {
-            for (const channel of channels) {
-              this.listenOnChannel(channel);
-            }
+          for (const channel of channels) {
+            this.listenOnChannel(channel);
           }
           return undefined;
         });
@@ -7859,11 +7867,6 @@ export class CentralizedKernelWorker {
     this.committedExecSecureExec.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
-
-    // Stop poller if no more processes
-    if (this.usePolling && this.processes.size === 0) {
-      this.stopPolling();
-    }
 
     // Clean up PTY state
     const ptyIdx = this.ptyIndexByPid.get(pid);
@@ -9631,10 +9634,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      // In polling mode, the poller picks up new channels automatically.
-      if (!this.usePolling) {
-        this.listenOnChannel(channel);
-      }
+      this.listenOnChannel(channel);
       pending.attachedChannelOffset = channelOffset;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -10412,6 +10412,11 @@ export class CentralizedKernelWorker {
    * When the process sets status to PENDING, we handle the syscall.
    */
   private listenOnChannel(channel: ChannelInfo): void {
+    const testHook = this.#scratchBoundaryTestHooks?.listenOnChannel;
+    if (testHook) {
+      testHook(channel);
+      return;
+    }
     if (this.#kernelFatalError !== null) return;
     // A waitAsync continuation from the discarded exec image may run after a
     // replacement registration with the same pid has been installed.
@@ -14977,117 +14982,6 @@ export class CentralizedKernelWorker {
    *  browser worker sets this to 1 so worker messages keep progressing. */
   relistenBatchSize = 64;
 
-  /**
-   * When true, use a MessageChannel-based poller to check all channels
-   * instead of per-channel Atomics.waitAsync listeners.
-   *
-   * This avoids a V8 bug where Atomics.waitAsync microtask chains from
-   * multiple concurrent processes freeze the main thread. The poller
-   * uses MessageChannel for ~0ms dispatch (bypassing the browser's 4ms
-   * timer clamp on setTimeout/setInterval), with periodic setTimeout
-   * yields every 4ms to keep timers and rendering alive.
-   *
-   * This remains a legacy opt-in for browser embeddings that run the kernel
-   * on the main thread. The dedicated browser worker and Node.js both keep
-   * the default event-driven Atomics.waitAsync mode.
-   */
-  usePolling = false;
-  private pollMC: MessageChannel | null = null;
-  private pollScheduled = false;
-  private pollLastYield = 0;
-
-  /** Start the channel poller. Called automatically when usePolling=true
-   *  and a process is registered. */
-  private startPolling(): void {
-    if (this.pollMC !== null) return;
-    this.pollMC = new MessageChannel();
-    this.pollMC.port1.onmessage = () => this.pollTick();
-    this.pollLastYield = performance.now();
-    this.schedulePoll();
-  }
-
-  /** Stop the channel poller. Called when all processes are unregistered. */
-  private stopPolling(): void {
-    if (this.pollMC !== null) {
-      this.pollMC.port1.close();
-      this.pollMC = null;
-      this.pollScheduled = false;
-    }
-  }
-
-  /** Schedule the next poll tick. Uses MessageChannel for ~0ms dispatch,
-   *  with a setTimeout yield every 4ms to prevent timer starvation. */
-  private schedulePoll(): void {
-    if (this.#kernelFatalError !== null || this.pollScheduled || !this.pollMC) {
-      return;
-    }
-    this.pollScheduled = true;
-    const now = performance.now();
-    if (now - this.pollLastYield >= 4) {
-      // Yield to timers/rendering
-      this.pollLastYield = now;
-      this.#registerTimeout(() => {
-        this.pollScheduled = false;
-        this.pollTick();
-      }, 0);
-    } else {
-      this.pollMC.port2.postMessage(null);
-    }
-  }
-
-  /** Poll all active channels for PENDING syscalls. */
-  private pollTick(): void {
-    this.pollScheduled = false;
-    if (
-      this.#kernelFatalError !== null
-      || !this.pollMC
-      || this.activeChannels.length === 0
-    ) {
-      return;
-    }
-
-    // Snapshot to handle mutations during iteration
-    // (attachThreadChannel/removeChannel).
-    const channels = this.activeChannels.slice();
-    for (const channel of channels) {
-      if (!this.isRegisteredChannel(channel)) continue;
-      if (this.stoppedPids?.has(channel.pid)) {
-        const stoppedView = new Int32Array(
-          channel.memory.buffer,
-          channel.channelOffset,
-        );
-        channel.i32View = stoppedView;
-        if (
-          Atomics.load(
-            stoppedView,
-            CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-          ) === CH_PENDING
-        ) {
-          this.deferChannelWhileStopped(channel);
-        }
-        continue;
-      }
-      if (channel.handling) continue;
-      // Re-create view in case memory was grown
-      const i32View = new Int32Array(
-        channel.memory.buffer,
-        channel.channelOffset,
-      );
-      channel.i32View = i32View;
-      if (
-        Atomics.load(
-          i32View,
-          CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-        ) === CH_PENDING
-      ) {
-        channel.handling = true;
-        this.handleSyscall(channel);
-      }
-    }
-
-    this.schedulePoll();
-  }
-
   private relistenChannel(channel: ChannelInfo): void {
     const testHook = this.#scratchBoundaryTestHooks?.relistenChannel;
     if (testHook) {
@@ -15107,11 +15001,9 @@ export class CentralizedKernelWorker {
     }
     if (this.deferChannelWhileStopped(channel)) return;
 
-    // Clear handling flag so the poller can pick up this channel again
+    // Clear handling flag so the next listener may re-enter this channel.
     channel.handling = false;
     if (!this.isRegisteredChannel(channel)) return;
-    // In polling mode, don't re-listen — the poller will pick up the next syscall
-    if (this.usePolling) return;
     this.relistenCount++;
     const useImmediate = this.relistenCount >= this.relistenBatchSize;
     if (useImmediate) {

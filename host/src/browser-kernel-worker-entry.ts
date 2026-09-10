@@ -986,9 +986,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
   );
 
-  // In a dedicated worker, use Atomics.waitAsync directly — no V8 microtask
-  // chain freeze bug (that's main-thread-only).
-  kernelWorker.usePolling = false;
   // Defer every relisten and already-PENDING dispatch through the
   // MessageChannel-backed setImmediate queue so syscall handling and worker
   // messages both keep progressing under multi-process bridge load.

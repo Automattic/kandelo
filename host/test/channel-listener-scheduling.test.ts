@@ -57,7 +57,7 @@ describe("browser channel-listener scheduling", () => {
     )).toBe(CHANNEL_STATUS_COMPLETE);
   });
 
-  it("arms Atomics.waitAsync for an idle channel instead of polling", async () => {
+  it("arms Atomics.waitAsync for an idle channel and queues no task", async () => {
     const tasks = controlTaskQueues();
     const { worker, channel } = createScheduler(CHANNEL_STATUS_IDLE);
     let wake!: (value: "ok") => void;
@@ -76,7 +76,6 @@ describe("browser channel-listener scheduling", () => {
 
     worker.listenOnChannel(channel);
 
-    expect(worker.usePolling).toBe(false);
     expect(waitAsync).toHaveBeenCalledOnce();
     expect(waitAsync).toHaveBeenCalledWith(
       channel.i32View,
@@ -154,7 +153,6 @@ function createScheduler(status = CHANNEL_STATUS_IDLE): {
     stoppedPids: new Set(),
     parkedChannelCompletions: new Map(),
     deferredStoppedChannels: new Map(),
-    usePolling: false,
     relistenBatchSize: 1,
     relistenCount: 0,
   });

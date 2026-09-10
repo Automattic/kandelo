@@ -1295,7 +1295,6 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
       activeChannels: [oldChannel],
-      usePolling: false,
       relistenBatchSize: 64,
       kernelInstance: {
         exports: { kernel_handle_channel: kernelHandleChannel },
