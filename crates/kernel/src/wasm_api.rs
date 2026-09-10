@@ -1773,11 +1773,14 @@ pub extern "C" fn kernel_rootfs_set_foreign_prefixes(ptr: *const u8, len: u32) -
 /// capability; operations under it fail with `ENOSYS` rather than falling back
 /// to name resolution. See `rootfs::set_foreign_mount_roots`.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(ptr: *const u8, len: u32) -> i32 {
-    let buf: &[u8] = if len == 0 {
+pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
+    roots_ptr: *const u8,
+    roots_len: u32,
+) -> i32 {
+    let buf: &[u8] = if roots_len == 0 {
         &[]
     } else {
-        unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+        unsafe { core::slice::from_raw_parts(roots_ptr, roots_len as usize) }
     };
     i32::try_from(crate::rootfs::set_foreign_mount_roots(buf)).unwrap_or(i32::MAX)
 }
