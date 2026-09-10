@@ -34,6 +34,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Some xtask verbs shell out to repo tooling that only exists on the dev
+# shell's PATH -- `verify-fresh` runs `scripts/check-sysv-ipc-layouts.sh`,
+# which needs the SDK's `wasm32posix-cc`. Outside the shell that sub-check
+# cannot run, and `verify-fresh` then reports "the ABI-snapshot freshness check
+# did not pass (either abi/snapshot.json drifted ... or the check could not
+# run)" -- a message that reads as ABI drift when nothing has drifted. Re-exec
+# through the dev shell rather than let the wrapper produce that.
+if [ -z "${IN_NIX_SHELL:-}" ] && [ -z "${KANDELO_XTASK_NO_DEV_SHELL:-}" ]; then
+    exec "$REPO_ROOT/scripts/dev-shell.sh" "$REPO_ROOT/scripts/xtask.sh" "$@"
+fi
+
 host="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')" || true
 if [ -z "${host:-}" ]; then
     echo "scripts/xtask.sh: could not determine the host triple from 'rustc -vV'." >&2
