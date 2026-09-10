@@ -66,7 +66,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
-| K4 | **RUNNING** | Worker entry unification |
+| K4 | **K4a partial; K4b probe PASS** | 19 functions shared; 39 pairs still differ |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
 | K13b | **NOT STARTED** | Export cull |
 
@@ -277,6 +277,70 @@ the deletion — the item was scoped as I7 but is really I2–I7.
 **Re-cut as I6a** (module crate + the 14 pipeline points, provable by
 `verify-fresh` plus a browser boot) **and I6b** (KFLA encoder, TS
 driver/executor, `worker-main` rewire, deletion, browser pass).
+
+## K4 — a real browser defect fixed, and the grounding blamed the wrong host
+
+**Re-measuring corrected the census.** At this base the two worker entries are
+**13 identical / 3 cosmetic / 39 differing**, not the 13/17/16 the grounding
+recorded a day earlier. **71% of pairs differ**, holding 3,430 lines — the drift
+is moving faster than the document describing it.
+
+**K4b probe: PASS.** A 220-line `no_std` Rust cdylib — 2,017 bytes, `env.memory`
+its only import — drove `CREATE_WORKER → AWAIT_FENCE → RELEASE_LEASE` plus a
+rollback branch it chose itself, from a Node harness with real Workers, a real
+`memory_quiescent` fence, and a simulated reentrancy refusal. **Asynchrony is
+not the blocker.** The grounding's "abandoned seam" warning was a misreading:
+`kernel_is_fork_child` is a *guest→host CRT import*, killed by a worker-boundary
+refactor, not by async. STRONG DOUBT **relaxed, not lifted** — the pump has
+never run in a browser.
+
+**One boundary explained three "bugs", and the grounding blamed the wrong host.**
+Measured: `await worker.terminate()` **is** an ownership fence on Node (a thread
+parked in `Atomics.wait` does not resume; a control proves `notify` wakes a live
+one) and **is not** in the browser. That single fact accounts for D1, D10 and
+D16 — **none of which is a Node bug**, as the grounding had it.
+
+**D17 is the one real defect, and it is the browser's:** a VM interrupt timer
+left armed across lease release could `Atomics.store` into a handed-back
+backing. **Fixed.** D2: both hosts already reported exactly once, but the
+browser's guarantee depended on statement adjacency; it now uses Node's explicit
+`reportedExits`. A Node comment justifying an exact release with "was never
+started" was also false — it tests `preparedTransferred`.
+
+**NEEDS-DEFER-DECISION (NDD-K4-1): `parseShebang` is not deletable on this
+plan's terms.** `kernel_exec_target_shebang` needs a *prepared target token*;
+the spawn preflight has none and exists to be side-effect-free (POSIX requires
+`file_actions` run exactly once). Closing it needs a prepare/cancel pair, a new
+bytes-oriented export (ABI-adjacent), or folding into the observable-depth-1
+item. **Agent recommends the third and did not delete them.**
+
+**Ledger: +67 TS** (625 added / 558 removed) — honest, with the owner named: the
+shared module is 464 lines paid once, 488 left the entries, 60 left
+`worker-main.ts`; the remaining 39 differing pairs are K4a's outstanding work.
+
+**Browser NOT validated** — see the cache race below.
+
+## Concurrent agents race on the shared build cache — use an isolated root
+
+K4 lost **three consecutive** `./run.sh prepare-browser` attempts to this, and
+K11 reported several suites as flaky that passed when run alone. Every worktree
+on this machine defaults to `$HOME/.cache/kandelo/source-only`, so six
+concurrent agents mutate one `program-packages.json` and one product tree.
+
+**These failures look exactly like real defects.** That is the danger: an agent
+reports a racy provisioning failure as a finding, or worse, treats a corrupted
+product tree as evidence.
+
+The repo already has the fix — `KANDELO_SOURCE_CACHE_ROOT` (documented at
+`run.sh:25`, implemented at `tools/xtask/src/local_build.rs:406`). Every agent
+brief from now on sets it:
+
+```
+export KANDELO_SOURCE_CACHE_ROOT=/tmp/kandelo-cache-<item>
+```
+
+The cost is a cold first build. That is the right trade for anything doing
+browser provisioning or a full `setup`.
 
 ## Open decisions for the maintainer
 
