@@ -687,6 +687,7 @@ name = "fork-codec"
 version = "0.1.0"
 dependencies = [
  "fork-instrument",
+ "sha2",
  "walrus",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
