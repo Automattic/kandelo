@@ -5230,13 +5230,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 Ok(pin) => pin,
                 Err(error) => return -(error as i32),
             };
-            let pointer_width = match args[5] {
-                4 => 4,
-                8 => 8,
-                _ => return -(Errno::EINVAL as i32),
-            };
-            let msgp = channel_mut_ptr!(1, u8);
-            if msgp.is_null() {
+            let pointer_width = caller_pointer_width!();
+            // A raw guest address: `struct msgbuf` opens with a caller-native
+            // `long mtype`, so the kernel writes the reply into the caller's
+            // memory itself rather than through a fixed-width scratch wire.
+            let msgp = guest_address!(1);
+            if msgp == 0 {
                 return -(Errno::EFAULT as i32);
             }
             let msgsz = process_size_u32!(2);
@@ -5273,19 +5272,25 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 )
             };
             match receive {
+                // The message has already left the queue at this point, so a
+                // failed copy-back loses it. `max_output_mtype` above is what
+                // prevents that for the one case a wasm32 caller could hit:
+                // an `mtype` that will not fit its `long` is refused BEFORE
+                // the receive consumes anything. What remains here is a plain
+                // unreadable-buffer EFAULT, which Linux reports the same way.
                 Ok(result) => {
-                    let wire_size = match crate::ipc_wire::sysv_message_wire_size(result.data.len())
-                    {
-                        Ok(size) => size,
-                        Err(error) => return -(error as i32),
-                    };
-                    let out = unsafe { core::slice::from_raw_parts_mut(msgp, wire_size) };
-                    if let Err(error) =
-                        crate::ipc_wire::write_sysv_message(out, result.mtype, &result.data)
-                    {
-                        return -(error as i32);
+                    let mut host = WasmHostIO;
+                    match crate::ipc_wire::write_sysv_msgbuf_to_guest(
+                        &mut host,
+                        pid as i32,
+                        msgp,
+                        result.mtype,
+                        &result.data,
+                        pointer_width,
+                    ) {
+                        Ok(()) => result.data.len() as i32,
+                        Err(error) => -(error as i32),
                     }
-                    result.data.len() as i32
                 }
                 Err(e) => -(e as i32),
             }
@@ -5294,24 +5299,27 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_MSGSND: (qid, msgp, msgsz, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
-            if !matches!(args[5], 4 | 8) {
-                return -(Errno::EINVAL as i32);
-            }
-            let msgp = channel_const_ptr!(1, u8);
-            if msgp.is_null() {
+            let pointer_width = caller_pointer_width!();
+            let msgp = guest_address!(1);
+            if msgp == 0 {
                 return -(Errno::EFAULT as i32);
             }
             let msgsz = process_size!(2);
-            let wire_size = match crate::ipc_wire::sysv_message_wire_size(msgsz) {
-                Ok(size) => size,
+            let mut host = WasmHostIO;
+            // Copy the caller's `struct msgbuf` once and parse the copy: the
+            // `mtype` prefix and the text must be the same snapshot, or a peer
+            // thread could change the type between the two reads.
+            let (mtype, data) = match crate::ipc_wire::read_sysv_msgbuf_from_guest(
+                &mut host,
+                pid as i32,
+                msgp,
+                msgsz,
+                pointer_width,
+            ) {
+                Ok(message) => message,
                 Err(error) => return -(error as i32),
             };
-            let message = unsafe { core::slice::from_raw_parts(msgp, wire_size) };
-            let mtype = match crate::ipc_wire::read_sysv_message_type(message) {
-                Ok(mtype) => mtype,
-                Err(error) => return -(error as i32),
-            };
-            let data = &message[crate::ipc_wire::SYSV_MESSAGE_HEADER_SIZE..];
+            let data = data.as_slice();
             let task = unsafe { &*PROCESS_TABLE.0.get() };
             let tid = task.current_tid();
             let active_pin = match task.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
@@ -6203,33 +6211,60 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         333 => {
             // SYS_MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout_ptr)
+            //
+            // `msg_ptr` is a raw guest address. POSIX requires EMSGSIZE when
+            // `msg_len` exceeds this descriptor's `mq_msgsize`, and only the
+            // kernel holds that attribute — so the kernel must resolve the
+            // queue BEFORE it reads or reserves anything for the caller's
+            // bytes. Sizing a buffer from `msg_len` first would let an
+            // oversized request fail as ENOMEM instead.
             let data_len = process_size!(2);
-            if data_len > channel_scalar::MAX_REPORTABLE_TRANSFER_BYTES as usize {
-                return -(Errno::EMSGSIZE as i32);
-            }
-            let data = channel_const_slice!(1, data_len);
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             let process_table = unsafe { &*PROCESS_TABLE.0.get() };
             let pid = process_table.current_pid();
             let tid = process_table.current_tid();
-            let (send, nonblock) =
-                match process_table.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
-                    proc.blocked_retries
-                        .active_mqueue(tid, crate::blocked_retry::BlockingRetryOperation::MqSend)
-                }) {
-                    Ok(Some(pin)) => {
-                        let nonblock = match table.pinned_is_nonblock(pin) {
-                            Ok(nonblock) => nonblock,
-                            Err(error) => return -(error as i32),
-                        };
-                        (table.mq_send_pinned(pin, data, a4 as u32), nonblock)
-                    }
-                    Ok(None) => (
-                        table.mq_send(a1 as u32, data, a4 as u32),
-                        table.is_nonblock(a1 as u32).unwrap_or(false),
-                    ),
-                    Err(error) => return -(error as i32),
-                };
+            let pin = match process_table.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+                proc.blocked_retries
+                    .active_mqueue(tid, crate::blocked_retry::BlockingRetryOperation::MqSend)
+            }) {
+                Ok(pin) => pin,
+                Err(error) => return -(error as i32),
+            };
+            let msgsize = match match pin {
+                Some(pin) => table.pinned_descriptor_msgsize(pin),
+                None => table.descriptor_msgsize(a1 as u32),
+            } {
+                Ok(msgsize) => msgsize as usize,
+                Err(error) => return -(error as i32),
+            };
+            if data_len > msgsize {
+                return -(Errno::EMSGSIZE as i32);
+            }
+            let mut host = WasmHostIO;
+            let data = match crate::guest_ptr::read_guest_bytes(
+                &mut host,
+                pid as i32,
+                guest_address!(1),
+                data_len,
+                msgsize,
+            ) {
+                Ok(data) => data,
+                Err(error) => return -(error as i32),
+            };
+            let data = data.as_slice();
+            let (send, nonblock) = match pin {
+                Some(pin) => {
+                    let nonblock = match table.pinned_is_nonblock(pin) {
+                        Ok(nonblock) => nonblock,
+                        Err(error) => return -(error as i32),
+                    };
+                    (table.mq_send_pinned(pin, data, a4 as u32), nonblock)
+                }
+                None => (
+                    table.mq_send(a1 as u32, data, a4 as u32),
+                    table.is_nonblock(a1 as u32).unwrap_or(false),
+                ),
+            };
             match send {
                 Ok(result) => {
                     if let Some(notif) = result.notification {
@@ -6287,19 +6322,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             match receive {
                 Ok(result) => {
                     // WHY: a queued zero-length message has no destination
-                    // bytes, so do not make an ignored pointer satisfy Rust's
-                    // stronger non-null slice requirement.
+                    // bytes, so do not make an ignored pointer satisfy the
+                    // cross-memory primitive's non-empty precondition.
                     if !result.data.is_empty() {
-                        // SAFETY: mq_receive proved the message fits the
-                        // caller-supplied capacity, which the host staged in
-                        // checked kernel scratch before dispatch.
-                        let dst = unsafe {
-                            core::slice::from_raw_parts_mut(
-                                channel_mut_ptr!(1, u8),
-                                result.data.len(),
-                            )
-                        };
-                        dst.copy_from_slice(&result.data);
+                        // `mq_receive` has already proved the message fits the
+                        // caller's capacity, and that capacity is at least
+                        // `mq_msgsize` — POSIX requires EMSGSIZE otherwise.
+                        let mut host = WasmHostIO;
+                        if let Err(error) = crate::guest_ptr::write_guest_bytes(
+                            &mut host,
+                            pid as i32,
+                            guest_address!(1),
+                            &result.data,
+                        ) {
+                            return -(error as i32);
+                        }
                     }
                     // Write priority if pointer provided
                     if args[3] != 0 {
@@ -7080,27 +7117,6 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 // ---------------------------------------------------------------------------
 // POSIX mqueue kernel exports
 // ---------------------------------------------------------------------------
-
-/// Return the configured maximum message size for one queue descriptor.
-///
-/// PID and TID are explicit because this is a host sizing preflight, not a
-/// channel dispatch: it must validate the caller without installing or
-/// consuming the one-shot ambient task binding used by `kernel_handle_channel`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mq_descriptor_msgsize(pid: u32, tid: u32, mqd: i32) -> i32 {
-    let process_table = unsafe { &*PROCESS_TABLE.0.get() };
-    if let Err(error) = process_table.validate_task(pid, tid) {
-        return -(error as i32);
-    }
-    if mqd < 0 {
-        return -(Errno::EBADF as i32);
-    }
-    let table = unsafe { crate::mqueue::global_mqueue_table() };
-    match table.descriptor_msgsize(mqd as u32) {
-        Ok(size) => i32::try_from(size).unwrap_or(-(Errno::EOVERFLOW as i32)),
-        Err(error) => -(error as i32),
-    }
-}
 
 fn queue_mqueue_signal_notification(
     process_table: &mut crate::process_table::ProcessTable,
