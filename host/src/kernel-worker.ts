@@ -4049,19 +4049,30 @@ export class CentralizedKernelWorker {
             const { channel, pointerWidth } = channelSnapshot;
 
             if (triggerNotification) {
+              // WHY the message byte goes in the CALLER's memory:
+              // `mq_timedsend`'s buffer is declared KernelDereferenced, so
+              // arg 1 is a guest address the kernel reads through the
+              // cross-memory primitives. Staging it in kernel scratch and
+              // passing a scratch offset — which this probe used to do, back
+              // when the host marshalled the message — would now make the
+              // kernel read the guest's memory at that offset instead.
+              //
+              // The channel's own data area is guest memory this host already
+              // owns for this channel, so it is the natural place to put one
+              // byte without inventing an allocation.
+              const messageAddress = channel.channelOffset + CH_DATA;
+              new Uint8Array(channel.memory.buffer)[messageAddress] = 0x51;
               const sent = this.#requireMainScratchRegion().withLease(
                 (lease) => {
                   lease.fill(0, 0, CH_TOTAL_SIZE);
-                  lease.fill(0x51, CH_DATA, 1);
                   const view = lease.dataView(0, CH_TOTAL_SIZE);
                   view.setUint32(CH_STATUS, CH_PENDING, true);
                   view.setUint32(CH_SYSCALL, SYS_MQ_TIMEDSEND, true);
                   view.setBigInt64(CH_ARGS, BigInt(descriptor), true);
-                  lease.writeAddress(
+                  view.setBigInt64(
                     CH_ARGS + CH_ARG_SIZE,
-                    CH_DATA,
-                    1,
-                    "u64-le",
+                    BigInt(messageAddress),
+                    true,
                   );
                   view.setBigInt64(
                     CH_ARGS + 2 * CH_ARG_SIZE,
