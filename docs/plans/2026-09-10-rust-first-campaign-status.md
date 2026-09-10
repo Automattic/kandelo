@@ -136,6 +136,54 @@ preflight this item deleted. Worth an `examples/` program.
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
 | K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
 
+### K6 validation — what was run, and what it proves
+
+Against a kernel rebuilt from this branch and installed into
+`local-binaries/kernel.wasm` (the ambient path guest tests resolve):
+
+| evidence | result |
+|---|---|
+| `cargo test -p runtime-core -p kandelo -p wasm-posix-shared` | green (1,887 + 4 + 3 + 64) |
+| `cargo check -p runtime-core -p kandelo` for **wasm32** | clean — the shipping target, and `no_std` |
+| `host/test/sysv-ipc.test.ts` | 2/2, **wasm32 + wasm64** |
+| `host/test/mqueue.test.ts` (new) | 2/2, **wasm32 + wasm64** |
+| `host/test/scm-rights-semantics.test.ts` | 16/16, **wasm32 + wasm64** |
+| `host/test/scm-rights-pipe-lifetime.test.ts` | 2/2, **wasm32 + wasm64** |
+| `scripts/xtask.sh verify-fresh` | exit 0 |
+| `scripts/check-abi-version.sh` | snapshot in sync, version consistent |
+| `tsc --noEmit -p host` | 32 errors, all pre-existing (identical count at `44f321ae4`) |
+
+The 22 end-to-end cases are real compiled C programs running under the
+kernel, not host-side mocks — which matters here, because the mocks are
+precisely what this item deleted. They exercise `msgctl` IPC_SET/IPC_STAT,
+`semctl` IPC_STAT/GETALL/SETALL/GETVAL including post-`IPC_RMID` EINVAL,
+`shmctl`, `msgsnd`/`msgrcv`, `mq_send`/`mq_receive` with both EMSGSIZE
+directions, and `sendmsg`/`recvmsg` fd passing across stream, peek,
+datagram and truncation paths.
+
+**Not proven:** browser. The consolidated per-tier browser pass owns it. No
+benchmarks were run and no performance claim is made.
+
+**wasm64 note.** `runtime-core` and the kernel ship to **wasm32 only** —
+`wasm64-unknown-unknown` is not an installed Rust target and nothing builds
+the kernel for it. wasm64 is a *caller* data model, which is why every
+end-to-end suite above runs both widths against the one wasm32 kernel.
+
+### Two build-environment findings
+
+1. **`KANDELO_SOURCE_CACHE_ROOT` did nothing through `./run.sh`.** It was
+   missing from `scripts/dev-shell.sh`'s `--keep` allowlist, and
+   `nix develop --ignore-environment` stripped it before xtask could read
+   it — so every `./run.sh rebuild` silently used the shared `$HOME` cache
+   that the flag exists to avoid. Fixed and verified both ways. An
+   isolation flag that quietly does nothing is worse than no flag: it makes
+   the hazard unfalsifiable.
+2. **A full `vitest run host/test` overlapping `./run.sh rebuild kernel` is
+   worthless.** The rebuild's `[>>] Cleaned kernel` step removes the ambient
+   `local-binaries/kernel.wasm`, so 74 test files failed with "package
+   resolver did not materialize" / missing-projection errors. Re-run alone
+   after the artifact is installed.
+
 ## Host import surface
 
 **83**, measured on a freshly built kernel (`wasm-objdump -x
