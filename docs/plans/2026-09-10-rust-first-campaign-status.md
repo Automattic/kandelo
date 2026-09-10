@@ -8,7 +8,7 @@ Update it as work lands. The reasoning lives in
 `brandonpayton/epoll-kernel-route` (PR #1350). **Push forward-only. Never
 amend, never force-push. The maintainer is the sole merger.**
 
-**Last pushed:** `29eba8c72` (2026-09-10)
+**Last pushed:** (see git) (2026-09-10)
 
 ## Ledger — the number that judges this campaign
 
@@ -150,6 +150,46 @@ needed and not added**; the sanctioned import remains unspent.
 2. **Write the coherence layer in Rust**, sized as policy rather than as
    plumbing.
 3. **Anon + file cutover**, gated on that targeted benchmark.
+
+## In-scope test failures — coordinator owns these
+
+| Failure | State |
+|---|---|
+| `zip::real_man_zip_cross_checks_members` | **FIXED** — asserted a locally built binary's byte count; now asserts the archive's own `uncompressed_size`, which is strictly stronger |
+| `kernel-scratch-contract` — pointer-role | **FIXED** — `kernel_spawn_blob_decode` used `buf_cap`; the repo uses `_capacity` 13× and `_len` 74×, so the guard was right and the code had drifted |
+| `kernel-scratch-contract` — spawn symbols | **FIXED** — the guard demanded the host reference spawn limits the kernel owns under ABI 44; satisfying it would have pushed an authority back out of the kernel to make a test pass |
+| `kernel-scratch-contract` — unreviewed memory authority | **53 → 16**, see below |
+| `vfs-image-wasm-policy` | **NOT STARTED** |
+
+### The unreviewed-memory-authority guard: 53 → 16, and why the rest waits
+
+Two genuine scope gaps accounted for 37 of the 53, and neither fix weakens the
+guard:
+
+- `isOrdinaryTestHarness` matched `/test/`, the TypeScript layout. Rust crates
+  use Cargo's `tests/`, and the `.mts` generators that build their `.wasm`
+  inputs sit in `testdata/`. Those are test infrastructure by exactly the same
+  argument as `host/test/`; the match missed them purely on directory spelling.
+  Recognizing both applies **one rule across two language conventions** rather
+  than granting Rust an exemption.
+- Probe harnesses under `docs/plans/probes/` are recorded measurements, not
+  runtime sources. They are run by hand to prove or disprove a claim about an
+  engine and never enter the product. Auditing them made the contract depend on
+  which experiments happened to be committed.
+
+`wasm-memory-write-audit.test.ts`, which shares the scope function, still passes
+87/87 — the narrowing did not blind it.
+
+**The remaining 16 are real and are all in `host/src`**: K8's `loadImage`
+direct export use, the spawn-blob decode scratch leases, the opaque-transport
+`#handleRecordSyscall` leases, the `host_image_read` destination factory calls,
+and fork-module/trampoline instantiation. Each is a new view into kernel memory
+created by this campaign, and the guard is correctly demanding review of each.
+
+**Deliberately deferred to the tier-end reconciliation, not forgotten.** Those
+sites live in `kernel-worker.ts` and `kernel.ts`, which K9, K4 and K8-i2 are
+actively rewriting. Reviewing and allowlisting them now guarantees doing it
+twice. **Owner: coordinator, at the end of Tier 2.**
 
 ## Open decisions for the maintainer
 
