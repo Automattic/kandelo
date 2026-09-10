@@ -12252,45 +12252,9 @@ pub extern "C" fn kernel_fchown(fd: i32, uid: u32, gid: u32) -> i32 {
 
 // Scatter/gather I/O, walked in the caller's own address space.
 //
-// WHY the kernel walks the table rather than the host. A `struct iovec` array
-// is caller-native and every entry holds another guest pointer sized by the
-// same entry, so no static argument descriptor can describe it. Argument 1 is
-// declared `SyscallArgSize::KernelDereferenced`: the host copies nothing and
-// hands over the caller's raw guest address plus its pointer width, and the
-// kernel reads and writes caller memory through the cross-memory primitives.
-//
-// WHY one gathered buffer instead of per-entry transfers. POSIX defines
-// `writev` as `write` applied to the concatenation of the buffers, so issuing
-// one scalar operation is what preserves PIPE_BUF atomicity and datagram
-// boundaries; iterating per entry would create several operations with
-// observably different boundaries. `readv` likewise makes one observation and
-// scatters only the returned prefix.
-
-/// One scatter/gather request, either freshly read from the caller or restored
-/// from the binding a previous EAGAIN left behind.
-struct VectorRequest {
-    entries: alloc::vec::Vec<crate::msghdr::NativeIovec>,
-    outgoing: alloc::vec::Vec<u8>,
-    total: usize,
-}
-
-impl VectorRequest {
-    fn into_pending(self) -> crate::blocked_retry::PendingVectorIo {
-        crate::blocked_retry::PendingVectorIo {
-            entries: self.entries,
-            outgoing: self.outgoing,
-            total: self.total,
-        }
-    }
-
-    fn from_pending(pending: crate::blocked_retry::PendingVectorIo) -> Self {
-        Self {
-            entries: pending.entries,
-            outgoing: pending.outgoing,
-            total: pending.total,
-        }
-    }
-}
+// The POSIX semantics live in `syscalls::sys_vector_io`, where they can be
+// tested natively. These adapters are the channel shell: they take the ambient
+// process/tid authority, name the caller's pointer width, and deliver signals.
 
 fn caller_pointer_width_byte(pointer_width: u32) -> Result<u8, Errno> {
     match pointer_width {
@@ -12300,155 +12264,46 @@ fn caller_pointer_width_byte(pointer_width: u32) -> Result<u8, Errno> {
     }
 }
 
-/// Read the caller's iovec table, and for a write also gather its bytes.
-///
-/// Both happen once, at entry. A retry reuses what this produced rather than
-/// re-reading caller memory a peer thread may have changed in the meantime.
-fn read_vector_request(
-    host: &mut dyn crate::process::HostIO,
-    pid: i32,
-    iov_addr: u64,
-    iovcnt: u32,
-    width: u8,
-    gather_input: bool,
-) -> Result<VectorRequest, Errno> {
-    let entries = crate::msghdr::read_iovecs(host, pid, iov_addr, iovcnt, width)?;
-    let total = crate::msghdr::iovec_total(&entries)?;
-    let outgoing = if gather_input {
-        crate::msghdr::gather(host, pid, &entries)?
-    } else {
-        alloc::vec::Vec::new()
-    };
-    Ok(VectorRequest {
-        entries,
-        outgoing,
-        total,
-    })
+fn joined_positioned_offset(offset_lo: u32, offset_hi: i32) -> i64 {
+    ((offset_hi as i64) << 32) | (offset_lo as u64 as i64)
 }
 
-/// What one vector syscall does once its request has been assembled.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VectorIoKind {
-    Write,
-    Read,
-    Pwrite { offset: i64 },
-    Pread { offset: i64 },
-}
-
-impl VectorIoKind {
-    fn is_write(self) -> bool {
-        matches!(self, Self::Write | Self::Pwrite { .. })
-    }
-}
-
-/// Run one scatter/gather syscall against the caller's own iovec table.
 fn channel_vector_io(
     syscall_nr: u32,
     fd: i32,
     iov_addr: u64,
     iovcnt: u32,
     pointer_width: u32,
-    kind: VectorIoKind,
+    kind: syscalls::VectorIoKind,
 ) -> i32 {
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let pid = proc.pid as i32;
 
-    let result = 'done: {
-        let width = match caller_pointer_width_byte(pointer_width) {
-            Ok(width) => width,
-            Err(error) => break 'done -(error as i32),
-        };
-        let operation = match crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)
-        {
-            Ok(operation) => operation,
-            Err(error) => break 'done -(error as i32),
-        };
-        // A retry must transfer the request the caller made, not whatever its
-        // buffers hold now. `take_active_vector_io` returns None on the first
-        // attempt and moves the retained request out on every later one.
-        let request = match syscalls::take_active_vector_io(proc, tid, operation) {
-            Ok(Some(pending)) => VectorRequest::from_pending(pending),
-            Ok(None) => {
-                match read_vector_request(&mut host, pid, iov_addr, iovcnt, width, kind.is_write())
-                {
-                    Ok(request) => request,
-                    Err(error) => break 'done -(error as i32),
-                }
-            }
-            Err(error) => break 'done -(error as i32),
-        };
-
-        let outcome = match kind {
-            VectorIoKind::Write => syscalls::sys_write(proc, &mut host, fd, &request.outgoing),
-            VectorIoKind::Pwrite { offset } => {
-                syscalls::sys_pwrite(proc, &mut host, fd, &request.outgoing, offset)
-            }
-            VectorIoKind::Read | VectorIoKind::Pread { .. } => {
-                let mut staging = match try_initialized_kernel_io_bytes(request.total) {
-                    Ok(bytes) => bytes,
-                    Err(error) => break 'done -(error as i32),
-                };
-                let read = match kind {
-                    VectorIoKind::Read => syscalls::sys_read(proc, &mut host, fd, &mut staging),
-                    VectorIoKind::Pread { offset } => {
-                        syscalls::sys_pread(proc, &mut host, fd, &mut staging, offset)
-                    }
-                    _ => unreachable!("write kinds are handled above"),
-                };
-                match read {
-                    Ok(n) => match staging.get(..n) {
-                        Some(prefix) => {
-                            crate::msghdr::scatter(&mut host, pid, &request.entries, prefix)
-                                .map(|_| n)
-                        }
-                        None => Err(Errno::EIO),
-                    },
-                    Err(error) => Err(error),
-                }
-            }
-        };
-
-        match outcome {
+    let result = match caller_pointer_width_byte(pointer_width) {
+        Err(error) => -(error as i32),
+        Ok(width) => match syscalls::sys_vector_io(
+            proc,
+            &mut host,
+            advisory_locks,
+            tid,
+            syscall_nr,
+            fd,
+            iov_addr,
+            iovcnt,
+            width,
+            kind,
+        ) {
             Ok(n) => match i32::try_from(n) {
                 Ok(n) => n,
                 Err(_) => -(Errno::EOVERFLOW as i32),
             },
-            Err(Errno::EAGAIN) => {
-                // Nothing was transferred: `sys_write` returns a short count
-                // whenever any byte moved, so replaying the whole retained
-                // request can never write a byte twice.
-                match syscalls::ensure_blocking_retry_vector_binding(
-                    proc,
-                    advisory_locks,
-                    &mut host,
-                    tid,
-                    syscall_nr,
-                    fd,
-                    request.into_pending(),
-                ) {
-                    Ok(_) => -(Errno::EAGAIN as i32),
-                    Err(error) => -(error as i32),
-                }
-            }
             Err(error) => -(error as i32),
-        }
+        },
     };
 
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-fn try_initialized_kernel_io_bytes(length: usize) -> Result<Vec<u8>, Errno> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
-    bytes.resize(length, 0);
-    Ok(bytes)
-}
-
-fn joined_positioned_offset(offset_lo: u32, offset_hi: i32) -> i64 {
-    ((offset_hi as i64) << 32) | (offset_lo as u64 as i64)
 }
 
 /// writev -- gather the caller's buffers and write them as one operation.
@@ -12459,7 +12314,7 @@ fn channel_writev(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i3
         iov_addr,
         iovcnt,
         pointer_width,
-        VectorIoKind::Write,
+        syscalls::VectorIoKind::Write,
     )
 }
 
@@ -12471,7 +12326,7 @@ fn channel_readv(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32
         iov_addr,
         iovcnt,
         pointer_width,
-        VectorIoKind::Read,
+        syscalls::VectorIoKind::Read,
     )
 }
 
@@ -12491,7 +12346,7 @@ fn channel_preadv(
         iov_addr,
         iovcnt,
         pointer_width,
-        VectorIoKind::Pread {
+        syscalls::VectorIoKind::Pread {
             offset: joined_positioned_offset(offset_lo, offset_hi),
         },
     )
@@ -12513,7 +12368,7 @@ fn channel_pwritev(
         iov_addr,
         iovcnt,
         pointer_width,
-        VectorIoKind::Pwrite {
+        syscalls::VectorIoKind::Pwrite {
             offset: joined_positioned_offset(offset_lo, offset_hi),
         },
     )

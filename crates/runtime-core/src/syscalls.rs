@@ -16,7 +16,7 @@ use wasm_posix_shared::rlimit::{RLIMIT_FSIZE, RLIM_INFINITY};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::{
-    platform_limits, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec,
+    WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec,
 };
 
 use crate::blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget};
@@ -6446,40 +6446,6 @@ pub fn sys_pwrite(
 /// preadv -- scatter-gather read at offset.
 /// Reads into multiple buffers from a file descriptor at the given offset
 /// without modifying the file position.
-pub fn sys_preadv(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    iovecs: &mut [&mut [u8]],
-    offset: i64,
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    let requested_len = checked_iovec_len(iovecs.len(), iovecs.iter().map(|buf| buf.len()))?;
-    let mut gathered = try_initialized_vec(requested_len)?;
-    let read = sys_pread(proc, host, fd, &mut gathered, offset)?;
-    scatter_iovec_prefix(iovecs, &gathered, read)?;
-    Ok(read)
-}
-
-/// Validate the total byte count represented by one wasm32 scatter/gather
-/// operation. Syscall return values are signed 32-bit even when the guest uses
-/// memory64, so a larger aggregate cannot be reported faithfully.
-fn checked_iovec_len(
-    iovec_count: usize,
-    lengths: impl IntoIterator<Item = usize>,
-) -> Result<usize, Errno> {
-    if iovec_count > wasm_posix_shared::platform_limits::IOV_MAX {
-        return Err(Errno::EINVAL);
-    }
-    let total = lengths.into_iter().try_fold(0usize, |total, length| {
-        total.checked_add(length).ok_or(Errno::EINVAL)
-    })?;
-    if total > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
-        return Err(Errno::EINVAL);
-    }
-    Ok(total)
-}
-
 fn try_initialized_vec(length: usize) -> Result<Vec<u8>, Errno> {
     try_initialized_vec_with_reserve(length, |bytes, additional| {
         bytes
@@ -6499,72 +6465,6 @@ fn try_initialized_vec_with_reserve(
     }
     bytes.resize(length, 0);
     Ok(bytes)
-}
-
-fn gather_iovecs(iovecs: &[&[u8]]) -> Result<Vec<u8>, Errno> {
-    gather_iovecs_with_reserve(iovecs, |bytes, additional| {
-        bytes
-            .try_reserve_exact(additional)
-            .map_err(|_| Errno::ENOMEM)
-    })
-}
-
-fn gather_iovecs_with_reserve(
-    iovecs: &[&[u8]],
-    reserve: impl FnOnce(&mut Vec<u8>, usize) -> Result<(), Errno>,
-) -> Result<Vec<u8>, Errno> {
-    let length = checked_iovec_len(iovecs.len(), iovecs.iter().map(|buf| buf.len()))?;
-    let mut gathered = Vec::new();
-    reserve(&mut gathered, length)?;
-    if gathered.capacity() < length {
-        return Err(Errno::ENOMEM);
-    }
-    for buf in iovecs {
-        gathered.extend_from_slice(buf);
-    }
-    Ok(gathered)
-}
-
-fn scatter_iovec_prefix(
-    iovecs: &mut [&mut [u8]],
-    gathered: &[u8],
-    length: usize,
-) -> Result<(), Errno> {
-    let source = gathered.get(..length).ok_or(Errno::EIO)?;
-    let mut copied = 0usize;
-    for destination in iovecs {
-        if copied == source.len() {
-            break;
-        }
-        let count = destination.len().min(source.len() - copied);
-        destination[..count].copy_from_slice(&source[copied..copied + count]);
-        copied += count;
-    }
-    if copied == source.len() {
-        Ok(())
-    } else {
-        Err(Errno::EIO)
-    }
-}
-
-/// pwritev -- scatter-gather write at offset.
-/// Writes from multiple buffers to a file descriptor at the given offset
-/// without modifying the file position.
-pub fn sys_pwritev(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    iovecs: &[&[u8]],
-    offset: i64,
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    if offset < 0 {
-        return Err(Errno::EINVAL);
-    }
-    let gathered = gather_iovecs(iovecs)?;
-    // One scalar positioned write preserves the operation-wide file offset,
-    // file-size-limit decision, and backing-object atomicity.
-    sys_pwrite(proc, host, fd, &gathered, offset)
 }
 
 /// sendfile -- copy data between file descriptors.
@@ -17631,37 +17531,114 @@ pub fn sys_fchown(
     }
 }
 
-/// writev -- write data from multiple buffers as one logical operation.
-pub fn sys_writev(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    fd: i32,
-    buffers: &[&[u8]],
-) -> Result<usize, Errno> {
-    require_io_fd(proc, fd)?;
-    let gathered = gather_iovecs(buffers)?;
-    // WHY: issuing one scalar write preserves PIPE_BUF and datagram message
-    // atomicity. Iterating per iovec would create multiple operations with
-    // observably different boundaries.
-    sys_write(proc, host, fd, &gathered)
+/// What one scatter/gather syscall does once its request is assembled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorIoKind {
+    Write,
+    Read,
+    Pwrite { offset: i64 },
+    Pread { offset: i64 },
 }
 
-/// readv -- perform one read, then scatter its returned prefix.
-pub fn sys_readv(
+impl VectorIoKind {
+    fn is_write(self) -> bool {
+        matches!(self, Self::Write | Self::Pwrite { .. })
+    }
+}
+
+/// writev/readv/preadv/pwritev over the CALLER's own `struct iovec` table.
+///
+/// The table and the buffers it names live in the calling process's address
+/// space, not in kernel memory, so every access goes through the cross-memory
+/// primitives in [`crate::guest_ptr`]. `pointer_width` is the caller's, never
+/// the kernel's: one kernel instance serves both wasm32 and wasm64 processes.
+///
+/// WHY one gathered buffer rather than a transfer per entry. POSIX defines
+/// `writev` as `write` applied to the concatenation of the `iovcnt` buffers,
+/// so issuing one scalar operation is what preserves PIPE_BUF atomicity and
+/// datagram boundaries; iterating per entry would create several operations
+/// with observably different boundaries. `readv` likewise makes exactly one
+/// observation and scatters only the prefix that came back.
+///
+/// A request that blocks is retained rather than re-read; see
+/// [`crate::blocked_retry::PendingVectorIo`] for why that is a POSIX
+/// requirement and not a convenience.
+#[allow(clippy::too_many_arguments)]
+pub fn sys_vector_io(
     proc: &mut Process,
     host: &mut dyn HostIO,
+    locks: &mut AdvisoryLockManager,
+    tid: u32,
+    syscall_nr: u32,
     fd: i32,
-    buffers: &mut [&mut [u8]],
+    iov_addr: u64,
+    iovcnt: u32,
+    pointer_width: u8,
+    kind: VectorIoKind,
 ) -> Result<usize, Errno> {
+    // Reject a descriptor that cannot carry I/O before reading caller memory,
+    // so a zero-length vector on a closed or path-only fd still fails.
     require_io_fd(proc, fd)?;
-    let requested_len = checked_iovec_len(buffers.len(), buffers.iter().map(|buf| buf.len()))?;
-    let mut gathered = try_initialized_vec(requested_len)?;
-    // WHY: one scalar read consumes at most one datagram and makes a single
-    // stream/pipe observation. Scatter happens only after that operation has
-    // completed.
-    let read = sys_read(proc, host, fd, &mut gathered)?;
-    scatter_iovec_prefix(buffers, &gathered, read)?;
-    Ok(read)
+    let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
+    let pid = proc.pid as i32;
+
+    let request = match take_active_vector_io(proc, tid, operation)? {
+        Some(pending) => pending,
+        None => {
+            let entries = crate::msghdr::read_iovecs(host, pid, iov_addr, iovcnt, pointer_width)?;
+            let total = crate::msghdr::iovec_total(&entries)?;
+            let outgoing = if kind.is_write() {
+                crate::msghdr::gather(host, pid, &entries)?
+            } else {
+                Vec::new()
+            };
+            crate::blocked_retry::PendingVectorIo {
+                entries,
+                outgoing,
+                total,
+            }
+        }
+    };
+
+    let outcome = match kind {
+        VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
+        VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
+        VectorIoKind::Read | VectorIoKind::Pread { .. } => {
+            match try_initialized_vec(request.total) {
+                Err(error) => Err(error),
+                Ok(mut staging) => {
+                    let read = match kind {
+                        VectorIoKind::Read => sys_read(proc, host, fd, &mut staging),
+                        VectorIoKind::Pread { offset } => {
+                            sys_pread(proc, host, fd, &mut staging, offset)
+                        }
+                        _ => unreachable!("write kinds are handled above"),
+                    };
+                    match read {
+                        Ok(n) => match staging.get(..n) {
+                            Some(prefix) => {
+                                crate::msghdr::scatter(host, pid, &request.entries, prefix)
+                                    .map(|_| n)
+                            }
+                            None => Err(Errno::EIO),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+            }
+        }
+    };
+
+    match outcome {
+        // Nothing was transferred: `sys_write` returns a short count whenever
+        // any byte moved, so retaining and replaying the whole request can
+        // never move the same byte twice.
+        Err(Errno::EAGAIN) => {
+            ensure_blocking_retry_vector_binding(proc, locks, host, tid, syscall_nr, fd, request)?;
+            Err(Errno::EAGAIN)
+        }
+        other => other,
+    }
 }
 
 /// getrlimit — get resource limits
@@ -18774,6 +18751,8 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::abi::extended_syscalls;
+    use wasm_posix_shared::Syscall;
     use crate::credentials::Credentials;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
@@ -20764,6 +20743,104 @@ mod tests {
         mock_hostio_at_over_paths!();
 }
 
+    /// Lay a caller-native `struct iovec` table plus its buffers into the
+    /// mock guest memory, and return the table's guest address.
+    ///
+    /// Mirrors what a real guest does: the table entries point at buffers in
+    /// the same address space, and the kernel never sees kernel-owned slices.
+    fn stage_guest_iovecs(
+        host: &mut MockHostIO,
+        table_addr: u64,
+        buffers_addr: u64,
+        buffers: &[&[u8]],
+        pointer_width: u8,
+    ) -> u64 {
+        let entry_size = if pointer_width == 8 { 16usize } else { 8 };
+        let len_offset = if pointer_width == 8 { 8usize } else { 4 };
+        let mut cursor = buffers_addr;
+        for (index, buffer) in buffers.iter().enumerate() {
+            let entry = table_addr as usize + index * entry_size;
+            let base = if buffer.is_empty() { 0 } else { cursor };
+            let base_bytes = base.to_le_bytes();
+            let len_bytes = (buffer.len() as u64).to_le_bytes();
+            let width = pointer_width as usize;
+            host.proc_memory[entry..entry + width].copy_from_slice(&base_bytes[..width]);
+            host.proc_memory[entry + len_offset..entry + len_offset + width]
+                .copy_from_slice(&len_bytes[..width]);
+            if !buffer.is_empty() {
+                let at = cursor as usize;
+                host.proc_memory[at..at + buffer.len()].copy_from_slice(buffer);
+                cursor += buffer.len() as u64;
+            }
+        }
+        table_addr
+    }
+
+    /// Read back the bytes one staged iovec entry names.
+    fn guest_iovec_contents(
+        host: &MockHostIO,
+        buffers_addr: u64,
+        lengths: &[usize],
+    ) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut cursor = buffers_addr as usize;
+        for &len in lengths {
+            out.push(host.proc_memory[cursor..cursor + len].to_vec());
+            cursor += len;
+        }
+        out
+    }
+
+    const IOV_TABLE_ADDR: u64 = 0x100;
+    const IOV_BUFFERS_ADDR: u64 = 0x400;
+
+    /// Run one vector syscall over a freshly staged guest table.
+    fn vector_bufs(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        bufs: &[&[u8]],
+        kind: VectorIoKind,
+    ) -> Result<usize, Errno> {
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, bufs, 4);
+        vector_io(proc, host, syscall_nr, fd, iov, bufs.len() as u32, kind)
+    }
+
+    /// Run one vector read over zero-filled guest buffers of the given sizes,
+    /// returning the result and what each buffer holds afterwards.
+    fn vector_read(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        lengths: &[usize],
+        fill: u8,
+        kind: VectorIoKind,
+    ) -> (Result<usize, Errno>, Vec<Vec<u8>>) {
+        let owned: Vec<Vec<u8>> = lengths.iter().map(|&n| alloc::vec![fill; n]).collect();
+        let refs: Vec<&[u8]> = owned.iter().map(|b| b.as_slice()).collect();
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, &refs, 4);
+        let result = vector_io(proc, host, syscall_nr, fd, iov, lengths.len() as u32, kind);
+        let contents = guest_iovec_contents(host, IOV_BUFFERS_ADDR, lengths);
+        (result, contents)
+    }
+
+    fn vector_io(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        syscall_nr: u32,
+        fd: i32,
+        iov_addr: u64,
+        iovcnt: u32,
+        kind: VectorIoKind,
+    ) -> Result<usize, Errno> {
+        let mut locks = AdvisoryLockManager::new();
+        sys_vector_io(
+            proc, host, &mut locks, 0, syscall_nr, fd, iov_addr, iovcnt, 4, kind,
+        )
+    }
+
     fn user_process(pid: u32) -> Process {
         let mut proc = Process::new(pid);
         set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[]);
@@ -21910,17 +21987,38 @@ mod tests {
         assert_eq!(sys_pwrite(proc, host, fd, b"x", -1), Err(Errno::EBADF));
         assert_eq!(sys_lseek(proc, host, fd, 0, SEEK_SET), Err(Errno::EBADF));
 
-        let mut read_iovecs: [&mut [u8]; 1] = [&mut byte];
+        let iov = stage_guest_iovecs(host, IOV_TABLE_ADDR, IOV_BUFFERS_ADDR, &[b"x"], 4);
         assert_eq!(
-            sys_preadv(proc, host, fd, &mut read_iovecs, 0),
+            vector_io(
+                proc,
+                host,
+                extended_syscalls::SYS_PREADV,
+                fd,
+                iov,
+                1,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_readv(proc, host, fd, &mut read_iovecs),
+            vector_io(proc, host, Syscall::Readv as u32, fd, iov, 1, VectorIoKind::Read),
             Err(Errno::EBADF),
         );
-        assert_eq!(sys_pwritev(proc, host, fd, &[b"x"], 0), Err(Errno::EBADF));
-        assert_eq!(sys_writev(proc, host, fd, &[b"x"]), Err(Errno::EBADF));
+        assert_eq!(
+            vector_bufs(
+                proc,
+                host,
+                extended_syscalls::SYS_PWRITEV,
+                fd,
+                &[b"x"],
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            vector_bufs(proc, host, Syscall::Writev as u32, fd, &[b"x"], VectorIoKind::Write),
+            Err(Errno::EBADF),
+        );
         assert_eq!(
             sys_getdents64(proc, host, fd, &mut [0u8; 64]),
             Err(Errno::EBADF)
@@ -33117,7 +33215,15 @@ mod tests {
         let mut host = MockHostIO::new();
         let (r, w) = sys_pipe(&mut proc).unwrap();
         let bufs: &[&[u8]] = &[b"hello", b" ", b"world"];
-        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        let n = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            w,
+            bufs,
+            VectorIoKind::Write,
+        )
+        .unwrap();
         assert_eq!(n, 11);
         // Read back
         let mut rbuf = [0u8; 32];
@@ -33134,13 +33240,18 @@ mod tests {
         // Write data to pipe
         sys_write(&mut proc, &mut host, w, b"helloworld").unwrap();
         // Read into multiple buffers
-        let mut buf1 = [0u8; 5];
-        let mut buf2 = [0u8; 5];
-        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
-        assert_eq!(n, 10);
-        assert_eq!(&buf1, b"hello");
-        assert_eq!(&buf2, b"world");
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[5, 5],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(10));
+        assert_eq!(buffers[0].as_slice(), b"hello");
+        assert_eq!(buffers[1].as_slice(), b"world");
     }
 
     #[test]
@@ -33149,7 +33260,15 @@ mod tests {
         let mut host = MockHostIO::new();
         let (_r, w) = sys_pipe(&mut proc).unwrap();
         let bufs: &[&[u8]] = &[b"", b"data", b""];
-        let n = sys_writev(&mut proc, &mut host, w, bufs).unwrap();
+        let n = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            w,
+            bufs,
+            VectorIoKind::Write,
+        )
+        .unwrap();
         assert_eq!(n, 4);
     }
 
@@ -33158,7 +33277,14 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let bufs: &[&[u8]] = &[b"hello"];
-        let result = sys_writev(&mut proc, &mut host, 99, bufs);
+        let result = vector_bufs(
+            &mut proc,
+            &mut host,
+            Syscall::Writev as u32,
+            99,
+            bufs,
+            VectorIoKind::Write,
+        );
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -33166,9 +33292,15 @@ mod tests {
     fn test_readv_bad_fd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let mut buf1 = [0u8; 5];
-        let mut buffers: [&mut [u8]; 1] = [&mut buf1];
-        let result = sys_readv(&mut proc, &mut host, 99, &mut buffers);
+        let (result, _) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            99,
+            &[5],
+            0,
+            VectorIoKind::Read,
+        );
         assert_eq!(result, Err(Errno::EBADF));
     }
 
@@ -33177,20 +33309,28 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (r, w) = sys_pipe(&mut proc).unwrap();
-        let mut empty1 = [0u8; 0];
-        let mut empty2 = [0u8; 0];
-        let mut empty_buffers: [&mut [u8]; 2] = [&mut empty1, &mut empty2];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, r, &mut empty_buffers),
-            Ok(0),
+        let (empty, _) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[0, 0],
+            0,
+            VectorIoKind::Read,
         );
+        assert_eq!(empty, Ok(0));
         sys_write(&mut proc, &mut host, w, b"data").unwrap();
-        let mut buf1 = [0u8; 0];
-        let mut buf2 = [0u8; 4];
-        let mut buffers: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        let n = sys_readv(&mut proc, &mut host, r, &mut buffers).unwrap();
-        assert_eq!(n, 4);
-        assert_eq!(&buf2, b"data");
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            r,
+            &[0, 4],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(4));
+        assert_eq!(buffers[1].as_slice(), b"data");
     }
 
     #[test]
@@ -33206,25 +33346,38 @@ mod tests {
             0o644,
         )
         .unwrap();
-        let empty_writes: &[&[u8]] = &[b"", b""];
+        let empty: &[&[u8]] = &[b"", b""];
 
-        let mut first = [0u8; 0];
-        let mut second = [0u8; 0];
-        let mut empty_reads: [&mut [u8]; 2] = [&mut first, &mut second];
+        // A zero-byte vector still validates the descriptor and its direction,
+        // and still refuses a nonsensical offset, without reaching the host.
         assert_eq!(
-            sys_readv(&mut proc, &mut host, read_fd, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, read_fd, empty, VectorIoKind::Read),
             Ok(0),
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, empty, VectorIoKind::Write),
             Ok(0),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut empty_reads, 17),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                read_fd,
+                empty,
+                VectorIoKind::Pread { offset: 17 },
+            ),
             Ok(0),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, empty_writes, 23),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: 23 },
+            ),
             Ok(0),
         );
         assert_eq!(host.read_calls, 0);
@@ -33233,46 +33386,88 @@ mod tests {
         assert!(host.pwrite_calls.is_empty());
 
         assert_eq!(
-            sys_readv(&mut proc, &mut host, write_fd, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, write_fd, empty, VectorIoKind::Read),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, read_fd, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, read_fd, empty, VectorIoKind::Write),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, write_fd, &mut empty_reads, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                write_fd,
+                empty,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, read_fd, empty_writes, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                read_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
             Err(Errno::EBADF),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut empty_reads, -1),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                read_fd,
+                empty,
+                VectorIoKind::Pread { offset: -1 },
+            ),
             Err(Errno::EINVAL),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, empty_writes, -1),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                empty,
+                VectorIoKind::Pwrite { offset: -1 },
+            ),
             Err(Errno::EINVAL),
         );
 
         let (pipe_read, pipe_write) = sys_pipe(&mut proc).unwrap();
         assert_eq!(
-            sys_readv(&mut proc, &mut host, pipe_read, &mut empty_reads),
+            vector_bufs(&mut proc, &mut host, Syscall::Readv as u32, pipe_read, empty, VectorIoKind::Read),
             Ok(0),
             "an empty pipe read must not report EAGAIN",
         );
         assert_eq!(
-            sys_writev(&mut proc, &mut host, pipe_write, empty_writes),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, pipe_write, empty, VectorIoKind::Write),
             Ok(0),
         );
         assert_eq!(
-            sys_preadv(&mut proc, &mut host, pipe_read, &mut empty_reads, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PREADV,
+                pipe_read,
+                empty,
+                VectorIoKind::Pread { offset: 0 },
+            ),
             Err(Errno::ESPIPE),
         );
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, pipe_write, empty_writes, 0),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                pipe_write,
+                empty,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
             Err(Errno::ESPIPE),
         );
     }
@@ -33291,36 +33486,56 @@ mod tests {
         )
         .unwrap();
 
-        let mut first = [0xAA; 2];
-        let mut second = [0xAA; 4];
-        let mut read_iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, read_fd, &mut read_iovecs),
-            Ok(5),
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            read_fd,
+            &[2, 4],
+            0xAA,
+            VectorIoKind::Read,
         );
+        assert_eq!(n, Ok(5));
         assert_eq!(host.read_calls, 0);
         assert_eq!(host.pread_calls, vec![(100, 0, 6)]);
-        assert_eq!(&first, b"he");
-        assert_eq!(&second, &[b'l', b'l', b'o', 0xAA]);
+        assert_eq!(buffers[0].as_slice(), b"he");
+        assert_eq!(buffers[1].as_slice(), &[b'l', b'l', b'o', 0xAA]);
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &[b"ab", b"cd"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                write_fd,
+                &[b"ab", b"cd"],
+                VectorIoKind::Write,
+            ),
             Ok(4),
         );
         assert_eq!(host.write_calls, 0);
         assert_eq!(host.pwrite_calls, vec![(101, 0, b"abcd".to_vec())],);
 
-        let mut positioned_first = [0u8; 2];
-        let mut positioned_second = [0u8; 3];
-        let mut positioned_iovecs: [&mut [u8]; 2] = [&mut positioned_first, &mut positioned_second];
-        assert_eq!(
-            sys_preadv(&mut proc, &mut host, read_fd, &mut positioned_iovecs, 7,),
-            Ok(5),
+        let (positioned, _) = vector_read(
+            &mut proc,
+            &mut host,
+            extended_syscalls::SYS_PREADV,
+            read_fd,
+            &[2, 3],
+            0,
+            VectorIoKind::Pread { offset: 7 },
         );
+        assert_eq!(positioned, Ok(5));
         assert_eq!(host.read_calls, 0);
         assert_eq!(host.pread_calls, vec![(100, 0, 6), (100, 7, 5)]);
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, write_fd, &[b"ef", b"gh"], 9,),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                write_fd,
+                &[b"ef", b"gh"],
+                VectorIoKind::Pwrite { offset: 9 },
+            ),
             Ok(4),
         );
         assert_eq!(host.write_calls, 0);
@@ -33665,17 +33880,30 @@ mod tests {
         let value = 0x0102_0304_0506_0708u64.to_le_bytes();
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, fd, &[&value[..4], &value[4..]]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                fd,
+                &[&value[..4], &value[4..]],
+                VectorIoKind::Write,
+            ),
             Ok(8),
         );
 
-        let mut first = [0u8; 3];
-        let mut second = [0u8; 5];
-        let mut iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(sys_readv(&mut proc, &mut host, fd, &mut iovecs), Ok(8),);
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            fd,
+            &[3, 5],
+            0,
+            VectorIoKind::Read,
+        );
+        assert_eq!(n, Ok(8));
         let mut observed = [0u8; 8];
-        observed[..3].copy_from_slice(&first);
-        observed[3..].copy_from_slice(&second);
+        observed[..3].copy_from_slice(&buffers[0]);
+        observed[3..].copy_from_slice(&buffers[1]);
         assert_eq!(u64::from_le_bytes(observed), u64::from_le_bytes(value));
     }
 
@@ -33691,7 +33919,14 @@ mod tests {
         );
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &[b"ab", b"cd"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                write_fd,
+                &[b"ab", b"cd"],
+                VectorIoKind::Write,
+            ),
             Err(Errno::EAGAIN),
         );
         let mut observed = vec![0u8; DEFAULT_PIPE_CAPACITY];
@@ -33712,18 +33947,28 @@ mod tests {
             sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
 
         assert_eq!(
-            sys_writev(&mut proc, &mut host, sender, &[b"abc", b"def"]),
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                Syscall::Writev as u32,
+                sender,
+                &[b"abc", b"def"],
+                VectorIoKind::Write,
+            ),
             Ok(6),
         );
-        let mut first = [0u8; 2];
-        let mut second = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 2] = [&mut first, &mut second];
-        assert_eq!(
-            sys_readv(&mut proc, &mut host, receiver, &mut iovecs),
-            Ok(6),
+        let (n, buffers) = vector_read(
+            &mut proc,
+            &mut host,
+            Syscall::Readv as u32,
+            receiver,
+            &[2, 4],
+            0,
+            VectorIoKind::Read,
         );
-        assert_eq!(&first, b"ab");
-        assert_eq!(&second, b"cdef");
+        assert_eq!(n, Ok(6));
+        assert_eq!(buffers[0].as_slice(), b"ab");
+        assert_eq!(buffers[1].as_slice(), b"cdef");
 
         let mut empty = [0u8; 1];
         assert_eq!(
@@ -33739,42 +33984,29 @@ mod tests {
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
         let exact = vec![&[][..]; wasm_posix_shared::platform_limits::IOV_MAX];
-        assert_eq!(sys_writev(&mut proc, &mut host, write_fd, &exact), Ok(0),);
+        assert_eq!(
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, &exact, VectorIoKind::Write),
+            Ok(0),
+        );
         let iovecs = vec![&[][..]; wasm_posix_shared::platform_limits::IOV_MAX + 1];
         assert_eq!(
-            sys_writev(&mut proc, &mut host, write_fd, &iovecs),
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, &iovecs, VectorIoKind::Write),
             Err(Errno::EINVAL),
         );
     }
 
     #[test]
     fn vector_io_allocation_failure_is_enomem() {
-        assert_eq!(
-            checked_iovec_len(2, [i32::MAX as usize, 0]),
-            Ok(i32::MAX as usize),
-        );
-        assert_eq!(
-            checked_iovec_len(2, [i32::MAX as usize, 1]),
-            Err(Errno::EINVAL),
-        );
-        assert_eq!(
-            gather_iovecs_with_reserve(&[b"a", b"bc"], |bytes, length| {
-                assert!(bytes.is_empty());
-                assert_eq!(length, 3);
-                Err(Errno::ENOMEM)
-            }),
-            Err(Errno::ENOMEM),
-        );
+        // The aggregate-length and staging-allocation rules moved to
+        // `msghdr::read_iovecs` / `guest_ptr::zeroed_staging` with the table
+        // walk itself. What stays here is the one helper the vector path still
+        // owns: the read staging buffer.
         assert_eq!(
             try_initialized_vec_with_reserve(7, |bytes, length| {
                 assert!(bytes.is_empty());
                 assert_eq!(length, 7);
                 Err(Errno::ENOMEM)
             }),
-            Err(Errno::ENOMEM),
-        );
-        assert_eq!(
-            gather_iovecs_with_reserve(&[b"abc"], |_, _| Ok(())),
             Err(Errno::ENOMEM),
         );
         assert_eq!(
@@ -33961,7 +34193,10 @@ mod tests {
         sys_setrlimit(&mut proc, RLIMIT_FSIZE, 5, 5).unwrap();
         let iovecs: &[&[u8]] = &[b"ab", b"cde", b"f"];
 
-        assert_eq!(sys_writev(&mut proc, &mut host, write_fd, iovecs), Ok(5));
+        assert_eq!(
+            vector_bufs(&mut proc, &mut host, Syscall::Writev as u32, write_fd, iovecs, VectorIoKind::Write),
+            Ok(5),
+        );
         assert!(!fsize_signal_pending(&proc));
         assert_eq!(
             sys_write(&mut proc, &mut host, write_fd, b"x"),
@@ -33971,8 +34206,15 @@ mod tests {
 
         clear_fsize_signal(&mut proc);
         assert_eq!(
-            sys_pwritev(&mut proc, &mut host, pwrite_fd, iovecs, 0),
-            Ok(5)
+            vector_bufs(
+                &mut proc,
+                &mut host,
+                extended_syscalls::SYS_PWRITEV,
+                pwrite_fd,
+                iovecs,
+                VectorIoKind::Pwrite { offset: 0 },
+            ),
+            Ok(5),
         );
         assert!(!fsize_signal_pending(&proc));
         assert_eq!(
@@ -36802,42 +37044,6 @@ impl HostIO for NetMock {
         // Fourth should fail
         let r4 = sys_sigtimedwait(&mut proc, &mut host, mask, 0);
         assert_eq!(r4, Err(Errno::EAGAIN));
-    }
-
-    // ===== preadv / pwritev tests =====
-
-    #[test]
-    fn test_preadv_basic() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let fd = sys_open(&mut proc, &mut host, b"/test/file", O_RDONLY, 0).unwrap();
-        let mut buf1 = [0u8; 4];
-        let mut buf2 = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 2] = [&mut buf1, &mut buf2];
-        // TrackingHostIO reads return 0 (EOF), so total should be 0
-        let result = sys_preadv(&mut proc, &mut host, fd, &mut iovecs, 0);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_preadv_rejects_pipe() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
-        let mut buf = [0u8; 4];
-        let mut iovecs: [&mut [u8]; 1] = [&mut buf];
-        let result = sys_preadv(&mut proc, &mut host, read_fd, &mut iovecs, 0);
-        assert_eq!(result, Err(Errno::ESPIPE));
-    }
-
-    #[test]
-    fn test_pwritev_rejects_pipe() {
-        let mut proc = Process::new(1);
-        let mut host = TrackingHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let iovecs: [&[u8]; 1] = [b"hello"];
-        let result = sys_pwritev(&mut proc, &mut host, write_fd, &iovecs, 0);
-        assert_eq!(result, Err(Errno::ESPIPE));
     }
 
     // ===== sendfile tests =====
