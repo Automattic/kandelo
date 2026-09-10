@@ -1824,6 +1824,33 @@ task killed a *concurrent* `dev-shell.sh` build in the same worktree
 (`Terminated: 15`, exit 143). Agents sharing a worktree must not stop dev-shell
 tasks.
 
+## Baseline before the merge wave, measured 2026-09-10
+
+Taken deliberately, before eight agents land, so any breakage afterwards is
+attributable to whoever caused it rather than to whoever merged first.
+
+- **`cargo test --workspace`: 3,668 passed, 0 failed.**
+- **`tsc -p host/tsconfig.typecheck.json`: 9 errors** — 8 in
+  `packages/registry/openssl/src/tls/` and 1 in
+  `host/src/networking/tls-network-backend.ts`, all the same
+  `SharedArrayBuffer`-versus-`BufferSource` family (B15/B16). **Zero elsewhere
+  in `host/src`.**
+- Host imports **76**, kernel exports **~201**, in-scope TypeScript **−884**.
+
+**The run found one failure and it was the coordinator's** — the asyncify gate's
+own test. Its fixture was a wasm header followed by the loose text
+`exported asyncify_start_unwind`, with no export section at all, so it had
+never tested the property it claimed to test; only that the bytes contained a
+string. It stopped passing the moment the gate began reading export names
+instead of substring-scanning.
+
+That is the same defect one level down: **the gate could not tell a property
+from a mention, and neither could its test.** A fixture built to satisfy the
+scan rather than the property is how the gap survived to reject the kernel.
+
+Had the baseline not been taken, that failure would have surfaced inside
+someone else's merge and been attributed to them.
+
 ## OWED-WORK REGISTER — every outstanding item, audited 2026-09-10
 
 Written after an audit found **six items that existed only in agent briefs and
