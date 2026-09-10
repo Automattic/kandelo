@@ -2745,6 +2745,57 @@ trait, with six tests, four of them rollback paths asserting exact call order
 **Generalizable:** "moved to Rust" is not automatically "better covered".
 Check where in Rust, and whether that place can be tested.
 
+### The host import count moved 83 → 84, and it is not growth
+
+`host_debug_log`. Nothing was declared and no capability was added: it was
+already the contract's single diagnostics sink, and it was absent from the
+built artifact only because the one implementation reaching it —
+`WasmSharedMappingIo`'s writeback-loss report — was unreachable while
+`SharedMappingTable` was dormant. Cutting over constructs that type for real,
+so the linker keeps the edge. **§4's concept table is unchanged: diagnostics
+was 1 and is still 1.**
+
+The instrument is reporting that dead code became live. The only way to keep
+the number at 83 would be to make the writeback-loss report conditional, which
+trades a truthful diagnostic for a smaller number — the trade this campaign
+exists to refuse. `EXPECTED_HOST_IMPORT_COUNT` is bumped in its own one-line
+commit so it can be dropped if the maintainer would rather the gate stay red
+until the whole subsystem lands.
+
+**Worth generalizing:** every remaining dormant module in this campaign may
+carry the same latent edge. A cutover's import delta is not knowable from the
+diff; it has to be measured on a built kernel, before and after.
+
+### The scratch-contract audit caught a real weakening, in correct code
+
+The first cut resolved the entry points through one generic
+`#requireSysvMirrorExport<T>(name)` that indexed `exports[name]` with a
+computed string and returned `exported as unknown as T`. The audit flagged
+every call through it as `kernel-pointer-export-bypass`, correctly: a helper
+that erases *which* export is being called also erases what its arguments mean,
+so a `KernelPointer` could be handed a plain `number` and truncate silently for
+a wasm64 process — the failure `checkedWasmPointer` exists to prevent,
+reintroduced one layer up. The exports are now resolved by literal name with
+exact signatures, and the findings moved to `kernel-export-direct-use`, the
+reviewable kind.
+
+**A convenience helper is where typing quietly goes to die.** The code was
+otherwise correct; nothing failed; only the gate saw it.
+
+### There is no conformance coverage for SysV shared memory anywhere in the repo
+
+Checked rather than assumed: `shmget`, `shmat`, `shmctl` and `sys/shm.h` appear
+nowhere under `tests/`. The open-posix-testsuite covers POSIX realtime
+`shm_open`, not XSI SysV IPC, so the validation contract's "consider the
+conformance suites" resolves to *there are none to consider* for this surface.
+
+The coverage that exists is: 48 `SharedMappingTable` unit tests in Rust (14 of
+them SysV), the host↔kernel contract tests, and
+`benchmarks/programs/sysv-shm-bench.c`, which is a real multi-process exercise
+(`shmget` / `fork` / two `shmat`s / peer handshake / `shmdt` / `IPC_RMID`) and
+so doubles as the only end-to-end functional check of the subsystem. **That is
+a platform gap worth its own item**, not something this cutover created.
+
 ### What is explicitly NOT covered by this item
 
 Stated because silence in a work contract reads as completeness:

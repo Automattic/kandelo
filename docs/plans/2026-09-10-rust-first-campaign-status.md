@@ -187,9 +187,20 @@ end-to-end suite above runs both widths against the one wasm32 kernel.
 
 ## Host import surface
 
-**83**, measured on a freshly built kernel (`wasm-objdump -x
+**84**, measured on a freshly built kernel (`wasm-objdump -x
 local-binaries/kernel.wasm | grep -o "env\.host_[a-z_0-9]*" | sort -u | wc -l`).
-84 → 85 (K8's `host_image_read`) → 83 (K3 0b removed two dead ones).
+84 → 85 (K8's `host_image_read`) → 83 (K3 0b removed two dead ones) → **84**
+(K7's SysV cutover made `host_debug_log` reachable).
+
+**That last step declared nothing and added no capability.**
+`host_debug_log` is the contract's existing single diagnostics sink; it was
+missing from the artifact only because the code reaching it was dormant, and
+cutting over made it live. The §4 concept table is unchanged. Verified by
+diffing the import lists of a base-commit kernel and a cutover kernel: the
+difference is exactly `env.host_debug_log`.
+
+**Generalizes to every remaining dormant module:** a cutover's import delta is
+not visible in the diff. Measure it on a built kernel, before and after.
 
 **One new import is sanctioned**, gated on measurement: cross-memory
 `host_proc_compare_bytes`, the third member of the read/write family. See §2w of
