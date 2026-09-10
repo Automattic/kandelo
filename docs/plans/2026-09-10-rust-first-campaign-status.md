@@ -158,7 +158,7 @@ Rust unit tests and the EMSGSIZE ordering is pinned by a source-shape contract
 test, but no guest program exercises `mq_send`/`mq_receive` under the kernel.
 The three Vitest cases that touched mqueue only ever exercised the host
 preflight this item deleted. Worth an `examples/` program.
-| K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
+| K4 | **K4a COMPLETE (21 of 38 pairs); NDD-K4-2 open** | 16 pairs left as one inseparable fork/exec/clone/init family; K4b probe PASS |
 | K6 | **COMPLETE** | All four families cut over; TS −1,978; no new host import |
 | K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
 
@@ -1211,6 +1211,42 @@ preserve named explicitly rather than the code shape.
 parallel, expect collisions in the *shared foundation* files rather than in the
 leaf files each was assigned — `local_build.rs` and `rootfs.rs`, not the
 subsystems themselves.
+
+## K4a complete — and the validation number only means something because of provisioning
+
+**21 of 38 worker-entry pairs unified**, ledger **−80 TS**. The agent
+re-measured the census with its own extractor rather than adopting the brief's
+figures, reported the difference (38 pairs / 3 identical / 35 differing versus
+13/3/39) and said the counting differed while the conclusion did not.
+
+**Worker-lifecycle: 236/236 across 23 files, no skips.** That number is only
+meaningful because `vfork-lifecycle-guest` and `spawn-pid-authority` had been
+failing at *collection* on a missing fixture — **contributing zero executed
+tests, at base as well as at tip**. They cover this pass's riskiest change, and
+the six vfork tests now executing include the ones driving the shared
+`containVforkAddressSpace` and the shared `finishProcessExit` — the two changes
+the agent had explicitly flagged as reasoned-but-unexecuted.
+
+**One boundary declared rather than collapsed**, which is the right instinct:
+`defaultExitCrashSignum` stays host-specific because the synthesized reap is a
+*callee* responsibility in the browser and a *caller* responsibility on Node,
+and unifying it would change Node's worker-`exit` path in a way the Node suites
+cannot prove. Sharing code you cannot test the effect of is not sharing.
+
+**It also corrected one of its own reports mid-run**: it had called
+`./run.sh setup` successful on a notification's exit 0 when the build exited 1,
+because its command chain ended in `tail`. **That is the same false green the
+coordinator hit earlier in this campaign** — the harness reports the last
+command's status. No test claim depended on it, and it flagged the error rather
+than letting it stand.
+
+### NEEDS-DEFER-DECISION (NDD-K4-2) — the last 16 pairs
+
+They are **one fork/exec/clone/init family, ~2,700 node lines, and cannot be
+split**: each constructs or tears down a process generation, so all need the
+same ~3 new host hooks. Three together buy the hooks once; one alone saves
+almost nothing. Recommendation: take it as a single item, with the fork-path
+guest suites provisioned *first* — this pass proved those suites were dark.
 
 ## Open decisions collected — the ones needing the maintainer, in one place
 
