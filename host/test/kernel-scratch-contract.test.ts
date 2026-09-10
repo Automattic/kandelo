@@ -827,12 +827,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmdt::kernel-export-direct-use::kernelShmdt(channel.pid, callerTid, kernelAddr)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::arrayBytes( channel.pid, this.guestTidForChannel(channel), semid, rawCmd, )",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::statBytes(processPointerWidth)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, entry.fd)",
   ),
   reviewedScalarKernelExportCall(
@@ -1321,11 +1315,6 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-pointer-export-bypass::waitPoll( channel.pid, callerTid, childPid, WAIT_EVENT_EXITED, 0, this.#kernelPointerWidth === 8 ? 0n : 0, capacity, )",
     disposition: "kernel-control",
     why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed wait companion is the only intentional direct null call to this export and proves Rust rejects the destination before selecting or consuming child status; guarded destinations still require opaque lease tokens.",
-  },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcControl::kernel-pointer-export-bypass::structureBytes(pointerWidth)",
-    disposition: "kernel-control",
-    why: "This exact two-name IPC metadata branch passes only pointer width and returns a structure-size scalar.",
   },
   {
     key: "host/src/kernel.ts::bufferByteLength::kernel-buffer-escape::intrinsicApply( intrinsicSharedArrayBufferByteLength, buffer, [], )",

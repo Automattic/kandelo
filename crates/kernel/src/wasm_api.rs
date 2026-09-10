@@ -5236,7 +5236,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // consumed argument. Retry selection must not duplicate the
             // signed-i64 interpretation of msgtyp.
             let msgtyp = channel_scalar::i64_argument(338, args, 3);
-            let receive = if let Some(pin) = active_pin {
+            // `msgrcv` retains nothing across a retry: it has no caller input
+            // to preserve, only a destination it writes on success.
+            let receive = if let Some((pin, _no_retained_input)) = active_pin {
                 ipc.msgrcv_pinned_with_mtype_max(
                     pin,
                     msgsz,
@@ -5340,7 +5342,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         // That happens only when the host's retry preflight
                         // created it, so this dispatch is the first to hold
                         // the bytes; sending this copy is still copy-at-entry.
-                        Some((pin, None)) => ipc.msgsnd_pinned(
+                        // A binding that DOES carry one is handled by the
+                        // outer arm and never reaches here.
+                        Some((pin, _)) => ipc.msgsnd_pinned(
                             pin,
                             mtype,
                             &data,

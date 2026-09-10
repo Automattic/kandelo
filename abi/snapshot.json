@@ -481,6 +481,28 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "sendmsg",
+        "number": 137,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "recvmsg",
+        "number": 138,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 0,
             "kind": "process-address"
           }
@@ -775,6 +797,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -786,6 +812,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -796,6 +826,10 @@
       },
       {
         "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
           {
             "index": 2,
             "kind": "process-size"
@@ -812,12 +846,27 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
         ],
         "musl_name": "msgsnd",
         "number": 339,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "msgctl",
+        "number": 340,
         "result": "i32"
       },
       {
@@ -834,12 +883,34 @@
       {
         "arguments": [
           {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "semctl",
+        "number": 343,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 1,
             "kind": "process-size"
           }
         ],
         "musl_name": "shmget",
         "number": 344,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "shmctl",
+        "number": 347,
         "result": "i32"
       },
       {
@@ -2563,18 +2634,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_mq_descriptor_msgsize",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_mq_drain_notification",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_msqid_ds_bytes",
-      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2903,16 +2964,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_semctl_array_bytes",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_semid_ds_bytes",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_send",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -3054,11 +3105,6 @@
     {
       "kind": "func",
       "name": "kernel_setuid",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_shmid_ds_bytes",
       "signature": "(i32) -> (i32)"
     },
     {
@@ -8329,10 +8375,9 @@
       {
         "argIndex": 1,
         "direction": "in",
-        "required": true,
+        "nullable": true,
         "size": {
-          "argIndex": 2,
-          "type": "arg"
+          "type": "kernel-dereferenced"
         }
       },
       {
@@ -8349,10 +8394,9 @@
       {
         "argIndex": 1,
         "direction": "out",
-        "required": true,
+        "nullable": true,
         "size": {
-          "argIndex": 2,
-          "type": "arg"
+          "type": "kernel-dereferenced"
         }
       },
       {
@@ -8408,6 +8452,36 @@
         }
       }
     ],
+    "338": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "339": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "340": [
+      {
+        "argIndex": 2,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
     "342": [
       {
         "argIndex": 1,
@@ -8417,6 +8491,26 @@
           "argIndex": 2,
           "multiplier": 6,
           "type": "arg"
+        }
+      }
+    ],
+    "343": [
+      {
+        "argIndex": 3,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "347": [
+      {
+        "argIndex": 2,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
         }
       }
     ],

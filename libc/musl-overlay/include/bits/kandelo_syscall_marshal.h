@@ -751,12 +751,10 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_332[] = {
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_333[] = {
-    { 1u, 1u, 1u, 0u, 2u, 1u, 0u },
     { 4u, 1u, 3u, 1u, 16u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_334[] = {
-    { 1u, 2u, 1u, 0u, 2u, 1u, 0u },
     { 3u, 2u, 3u, 1u, 4u, 0u, 0u },
     { 4u, 1u, 3u, 1u, 16u, 0u, 0u },
 };
@@ -770,8 +768,23 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_336[] = {
     { 2u, 2u, 4u, 1u, 32u, 64u, 0u },
 };
 
+static const struct kandelo_marshal_arg kandelo_marshal_args_338[] = {
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_339[] = {
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_340[] = {
+};
+
 static const struct kandelo_marshal_arg kandelo_marshal_args_342[] = {
     { 1u, 1u, 1u, 0u, 2u, 6u, 0u },
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_343[] = {
+};
+
+static const struct kandelo_marshal_arg kandelo_marshal_args_347[] = {
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_377[] = {
@@ -914,18 +927,23 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 328u, 0u, 1u, kandelo_marshal_args_328 },
     { 331u, 0u, 2u, kandelo_marshal_args_331 },
     { 332u, 0u, 1u, kandelo_marshal_args_332 },
-    { 333u, 0u, 2u, kandelo_marshal_args_333 },
-    { 334u, 0u, 3u, kandelo_marshal_args_334 },
+    { 333u, 0u, 1u, kandelo_marshal_args_333 },
+    { 334u, 0u, 2u, kandelo_marshal_args_334 },
     { 335u, 0u, 1u, kandelo_marshal_args_335 },
     { 336u, 0u, 2u, kandelo_marshal_args_336 },
+    { 338u, 0u, 0u, kandelo_marshal_args_338 },
+    { 339u, 0u, 0u, kandelo_marshal_args_339 },
+    { 340u, 0u, 0u, kandelo_marshal_args_340 },
     { 342u, 0u, 1u, kandelo_marshal_args_342 },
+    { 343u, 0u, 0u, kandelo_marshal_args_343 },
+    { 347u, 0u, 0u, kandelo_marshal_args_347 },
     { 377u, 0u, 1u, kandelo_marshal_args_377 },
     { 382u, 0u, 1u, kandelo_marshal_args_382 },
     { 383u, 0u, 1u, kandelo_marshal_args_383 },
     { 384u, 0u, 2u, kandelo_marshal_args_384 },
 };
 
-#define KANDELO_MARSHAL_SYSCALL_COUNT 131u
+#define KANDELO_MARSHAL_SYSCALL_COUNT 136u
 
 /* Phase 2 RAW syscalls: keep raw args, never build a record.
 * Source of truth: wasm_posix_shared::host_raw_syscalls. Sorted

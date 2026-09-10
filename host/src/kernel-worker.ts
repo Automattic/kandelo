@@ -2153,29 +2153,13 @@ interface RecvmsgBlockingRetrySnapshot extends BlockingRetryDisposition {
   readonly retryToken: bigint;
 }
 
-interface SysvMessageBlockingRetrySnapshot
-  extends FrozenCancellationPointIdentity {
-  readonly kind: "sysv-message";
-  readonly syscallNr: typeof SYS_MSGSND | typeof SYS_MSGRCV;
-  readonly origArgs: number[];
-  readonly pointerWidth: 4 | 8;
-  readonly processPointer: number;
-  readonly messageSize: number;
-  readonly flags: number;
-  readonly input: Uint8Array | null;
-  readonly nativeType: bigint;
-  readonly messageType: bigint;
-  readonly retryToken: bigint;
-}
-
 type BlockingRetrySnapshot =
   | GenericBlockingRetrySnapshot
   | FcntlLockBlockingRetrySnapshot
   | SelectBlockingRetrySnapshot
   | FlattenedBlockingRetrySnapshot
   | SendmsgBlockingRetrySnapshot
-  | RecvmsgBlockingRetrySnapshot
-  | SysvMessageBlockingRetrySnapshot;
+  | RecvmsgBlockingRetrySnapshot;
 
 interface BlockingRetryWakeTargets {
   readonly readPipeIndex?: number;
@@ -12349,26 +12333,11 @@ export class CentralizedKernelWorker {
       this.handleIpcShmdt(channel, origArgs, rawArgs, entry);
       return;
     }
-    // --- SysV messages: msgbuf starts with native `long`, which differs
-    // between wasm32 and wasm64. Translate it to the fixed kernel wire header
-    // while the caller width is still known. ---
-    if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) {
-      this.handleSysvMessage(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-    // --- SysV IPC: control structures follow the caller's wasm32/wasm64
-    // data model and their pointer direction depends on cmd. ---
-    if (syscallNr === SYS_MSGCTL || syscallNr === SYS_SHMCTL) {
-      this.handleIpcControl(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-    // --- SysV IPC: semctl has cmd-dependent arg types (scalar vs pointer) ---
-    if (syscallNr === SYS_SEMCTL) {
-      this.handleSemctl(channel, origArgs, rawArgs, entry);
-      return;
-    }
-
-    // (POSIX mqueue syscalls 331-336 now go through the normal kernel path)
+    // (SysV msgsnd/msgrcv/msgctl/shmctl/semctl and the POSIX mqueue syscalls
+    // now go through the normal kernel path. Their caller structures —
+    // `msgbuf`'s native `long` prefix, the cmd-dependent `msqid_ds`/`shmid_ds`
+    // buffer, semctl's `union semun` — are declared KernelDereferenced, so the
+    // kernel reads and writes them itself in the caller's data model.)
 
     // --- pselect6: fd_sets (inout) + timeout/sigmask decoding ---
     if (syscallNr === SYS_PSELECT6) {
@@ -12417,107 +12386,6 @@ export class CentralizedKernelWorker {
 
     // Process pointer args: copy data between process and kernel memory
     const pointerWidth = this.getPtrWidth(channel.pid);
-    if (
-      syscallNr === SYS_MQ_TIMEDSEND
-      || syscallNr === SYS_MQ_TIMEDRECEIVE
-    ) {
-      try {
-        const messageSizeForDescriptor = this.#kernelInstanceForEntry(entry)
-          .exports.kernel_mq_descriptor_msgsize as
-          | ((
-              pid: number,
-              tid: number,
-              descriptor: number,
-            ) => number)
-          | undefined;
-        if (typeof messageSizeForDescriptor !== "function") {
-          throw new KernelScratchError(
-            "kernel mqueue descriptor sizing export is unavailable",
-            EIO,
-          );
-        }
-        const queueMessageSize = messageSizeForDescriptor(
-          channel.pid,
-          this.guestTidForChannel(channel),
-          origArgs[0],
-        );
-        if (queueMessageSize < 0) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            -queueMessageSize,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (
-          !Number.isSafeInteger(queueMessageSize)
-          || queueMessageSize <= 0
-          || queueMessageSize > MAX_REPORTABLE_TRANSFER_BYTES
-        ) {
-          throw new KernelScratchError(
-            "kernel returned an invalid mqueue descriptor message size",
-            EIO,
-          );
-        }
-        const requestedSize = adjustedArgs[2];
-        const requestedSizeBigInt = typeof requestedSize === "bigint"
-          ? requestedSize
-          : BigInt(requestedSize);
-        if (
-          syscallNr === SYS_MQ_TIMEDSEND
-          && requestedSizeBigInt > BigInt(queueMessageSize)
-        ) {
-          // WHY: POSIX requires EMSGSIZE for a message larger than this
-          // queue's mq_msgsize. Resolve that authoritative limit before a
-          // large kernel reservation can turn the same request into ENOMEM.
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EMSGSIZE,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (
-          syscallNr === SYS_MQ_TIMEDRECEIVE
-          && requestedSizeBigInt < BigInt(queueMessageSize)
-        ) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EMSGSIZE,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (syscallNr === SYS_MQ_TIMEDRECEIVE) {
-          // WHY: the caller's size is a capacity, not a demand to allocate it.
-          // Rust proves no complete queue message can exceed mq_msgsize; stage
-          // and range-check exactly that complete-result maximum.
-          adjustedArgs[2] = BigInt(queueMessageSize);
-        }
-      } catch (error) {
-        this.#rethrowKernelEntryFatal(error);
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-    }
     let argDescs = SYSCALL_ARGS[syscallNr];
     if (argDescs) {
       argDescs = applyNullableDereferencePairPresence(
@@ -12634,11 +12502,50 @@ export class CentralizedKernelWorker {
 
     if (argDescs) {
       this.#scratchBoundaryTestHooks?.afterProcessMemorySnapshot?.(channel);
-      if (argDescs.some((desc) => desc.size.type === "process-layout")) {
+      if (
+        argDescs.some((desc) =>
+          desc.size.type === "process-layout"
+          || desc.size.type === "kernel-dereferenced"
+        )
+      ) {
         // WHY: the kernel Wasm target cannot select a native guest structure
         // layout because one instance may serve both wasm32 and wasm64.
         adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
       }
+
+      // A kernel-dereferenced argument is read and written by the kernel
+      // itself, through the cross-memory primitives. The host stages no bytes
+      // for it and plans no subregion; it publishes the caller's own address,
+      // canonicalized to its full physical bits so a wasm64 pointer above
+      // 4 GiB cannot alias its low word. A null pointer is passed through
+      // unchanged: the correct errno is per-syscall — and, for the IPC
+      // control calls, per-command — so it is the kernel's decision.
+      for (const desc of argDescs) {
+        if (desc.size.type !== "kernel-dereferenced") continue;
+        try {
+          adjustedArgs[desc.argIndex] = canonicalGuestUnsignedScalar(
+            rawArgs[desc.argIndex] ?? 0n,
+            pointerWidth,
+            `syscall ${syscallNr} arg ${desc.argIndex} pointer`,
+          );
+        } catch {
+          this.completeChannel(
+            channel,
+            syscallNr,
+            origArgs,
+            undefined,
+            -1,
+            EFAULT,
+            [],
+            undefined,
+            entry,
+          );
+          return;
+        }
+      }
+      argDescs = argDescs.filter(
+        (desc) => desc.size.type !== "kernel-dereferenced",
+      );
 
       // Capture every pointer-derived size before planning any subregion.
       // WHY: descriptor order is generated ABI data and may change. If the
@@ -17470,16 +17377,6 @@ export class CentralizedKernelWorker {
           channel,
           snapshot.origArgs,
           null,
-          entry,
-          snapshot,
-        );
-        return;
-      case "sysv-message":
-        this.handleSysvMessage(
-          channel,
-          snapshot.syscallNr,
-          snapshot.origArgs,
-          [],
           entry,
           snapshot,
         );
@@ -33409,628 +33306,18 @@ export class CentralizedKernelWorker {
   }
 
   // =========================================================================
-  // SysV IPC handlers — shmat/shmdt/semctl need host-side interception
+  // SysV IPC handlers — only shmat/shmdt are still intercepted here
   //
-  // Most IPC syscalls now go through the kernel via SYSCALL_ARGS marshalling.
-  // shmat/shmdt are intercepted because they require process memory management
-  // (mmap address allocation, data transfer between kernel and process memory).
-  // Control syscalls are intercepted because pointer direction and target
-  // structure size depend on cmd and the calling process's pointer width.
+  // They require host-side process memory management: mmap address allocation
+  // and data transfer between kernel and process memory.
+  //
+  // msgsnd/msgrcv, msgctl/shmctl and semctl used to be intercepted too,
+  // because their caller structures are caller-native and, for the control
+  // calls, cmd-dependent in both direction and size. Those arguments are now
+  // declared KernelDereferenced: the kernel reads and writes the caller's
+  // memory itself, so the layout knowledge lives beside the Rust types that
+  // define it rather than in a second copy here.
   // =========================================================================
-
-  /**
-   * Marshal msgsnd/msgrcv without exposing the guest's native `long` layout
-   * to the fixed kernel scratch protocol.
-   *
-   * WHY: wasm32 msgbuf has a four-byte mtype prefix while wasm64 uses eight
-   * bytes. The process range must be proved against that native prefix, but
-   * Rust always receives one generated, fixed-width i64 header. The complete
-   * copy/invoke/snapshot operation stays inside one exclusive scratch lease.
-   */
-  private handleSysvMessage(
-    channel: ChannelInfo,
-    syscallNr: typeof SYS_MSGSND | typeof SYS_MSGRCV,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: SysvMessageBlockingRetrySnapshot,
-  ): void {
-    const pointerWidth =
-      retainedSnapshot?.pointerWidth ?? this.getPtrWidth(channel.pid);
-    const rawPointer = rawArgs[1] ?? BigInt(origArgs[1] ?? 0);
-    const rawMessageSize = rawArgs[2] ?? BigInt(origArgs[2] ?? 0);
-    const sending = syscallNr === SYS_MSGSND;
-    const flags = retainedSnapshot?.flags
-      ?? (sending ? origArgs[3] : origArgs[4]);
-
-    try {
-      let snapshot = retainedSnapshot;
-      if (!snapshot) {
-        if (rawPointer === 0n) {
-          throw new KernelScratchError("SysV message pointer is null", EFAULT);
-        }
-        if (
-          rawMessageSize < 0n
-          || rawMessageSize > BigInt(Number.MAX_SAFE_INTEGER)
-        ) {
-          throw new KernelScratchError("invalid SysV message length", EINVAL);
-        }
-        const messageSize = Number(rawMessageSize);
-        const processBytes = pointerWidth + messageSize;
-        const scratchBytes =
-          STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + messageSize;
-        if (
-          !Number.isSafeInteger(processBytes)
-          || !Number.isSafeInteger(scratchBytes)
-          || scratchBytes > CH_DATA_SIZE
-        ) {
-          throw new KernelScratchError(
-            "SysV message exceeds bounded kernel transport",
-            EINVAL,
-          );
-        }
-
-        const processPointer = this.checkedProcessRange(
-          channel,
-          rawPointer,
-          processBytes,
-          "SysV message caller buffer",
-        ).pointer;
-        const processMemory = new Uint8Array(channel.memory.buffer);
-        const input = sending
-          ? processMemory.slice(processPointer, processPointer + processBytes)
-          : null;
-        const nativeType = input
-          ? (
-              pointerWidth === 8
-                ? new DataView(
-                    input.buffer,
-                    input.byteOffset,
-                    input.byteLength,
-                  ).getBigInt64(0, true)
-                : BigInt(new DataView(
-                    input.buffer,
-                    input.byteOffset,
-                    input.byteLength,
-                  ).getInt32(0, true))
-            )
-          : 0n;
-        const rawMessageType = rawArgs[3] ?? BigInt(origArgs[3] ?? 0);
-        snapshot = {
-          ...this.#cancellationPointIdentity(channel),
-          kind: "sysv-message",
-          syscallNr,
-          origArgs: origArgs.slice(),
-          pointerWidth,
-          processPointer,
-          messageSize,
-          flags,
-          input,
-          nativeType,
-          messageType: rawMessageType,
-          retryToken: 0n,
-        };
-      }
-      const {
-        processPointer,
-        messageSize,
-        input,
-        nativeType,
-        messageType,
-      } = snapshot;
-      const scratchBytes =
-        STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + messageSize;
-
-      this.#bindKernelTidForChannel(channel, entry);
-      const result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        lease.fill(0, CH_DATA, scratchBytes);
-        if (input) {
-          lease.dataView(
-            CH_DATA,
-            STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-          ).setBigInt64(0, nativeType, true);
-          if (messageSize > 0) {
-            lease.copyFrom(
-              input,
-              CH_DATA + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-              pointerWidth,
-              messageSize,
-            );
-          }
-        }
-
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        for (let index = 0; index < CH_ARGS_COUNT; index++) {
-          kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
-        }
-        kernelView.setBigInt64(CH_ARGS, BigInt(origArgs[0]), true);
-        lease.writeAddress(
-          CH_ARGS + CH_ARG_SIZE,
-          CH_DATA,
-          scratchBytes,
-          "u64-le",
-        );
-        kernelView.setBigInt64(
-          CH_ARGS + 2 * CH_ARG_SIZE,
-          BigInt(messageSize),
-          true,
-        );
-        if (sending) {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            messageType,
-            true,
-          );
-          kernelView.setBigInt64(
-            CH_ARGS + 4 * CH_ARG_SIZE,
-            BigInt(flags),
-            true,
-          );
-        }
-        // Rust uses this only to reject an unrepresentable mtype before a
-        // mixed-width receive removes the message from the queue.
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(pointerWidth),
-          true,
-        );
-
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              snapshot.retryToken,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        let retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        let errVal = kernelView.getUint32(CH_ERRNO, true);
-        let canonicalOutput: Uint8Array | null = null;
-        if (!sending && retVal >= 0) {
-          if (!Number.isSafeInteger(retVal) || retVal > messageSize) {
-            retVal = -1;
-            errVal = EIO;
-          } else {
-            canonicalOutput = lease.copyOut(
-              CH_DATA,
-              STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER + retVal,
-            );
-          }
-        }
-        return { retVal, errVal, canonicalOutput };
-      });
-
-      const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
-      if (this.#finishSignalTermination(channel, entry)) return;
-
-      if (result.retVal === -1 && result.errVal === EAGAIN) {
-        if (!this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)) {
-          return;
-        }
-        if ((flags & IPC_NOWAIT) !== 0) {
-          // Rust retains the exact queue generation before returning EAGAIN.
-          // IPC_NOWAIT forbids a host retry, but it does not waive the one
-          // exact release required before terminal guest publication.
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            undefined,
-            -1,
-            EAGAIN,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        this.handleBlockingRetry(
-          channel,
-          syscallNr,
-          origArgs,
-          [],
-          entry,
-          retainedSnapshot !== undefined,
-          deliveredSignal,
-        );
-        return;
-      }
-
-      let outputWrites: ChannelOutputWrite[] | undefined;
-      if (result.canonicalOutput) {
-        const canonical = result.canonicalOutput;
-        const mtype = new DataView(
-          canonical.buffer,
-          canonical.byteOffset,
-          canonical.byteLength,
-        ).getBigInt64(0, true);
-        if (
-          pointerWidth === 4
-          && BigInt.asIntN(32, mtype) !== mtype
-        ) {
-          throw new KernelScratchError(
-            "kernel returned a message type that does not fit caller long",
-            EIO,
-          );
-        }
-        const textBytes =
-          canonical.byteLength - STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER;
-        const output = new Uint8Array(pointerWidth + textBytes);
-        const outputView = new DataView(output.buffer);
-        if (pointerWidth === 8) {
-          outputView.setBigInt64(0, mtype, true);
-        } else {
-          outputView.setInt32(0, Number(mtype), true);
-        }
-        output.set(
-          canonical.subarray(STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER),
-          pointerWidth,
-        );
-        outputWrites = [{ ptr: processPointer, bytes: output }];
-      }
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        undefined,
-        result.retVal,
-        result.errVal,
-        outputWrites,
-        undefined,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
-
-  private handleIpcControl(
-    channel: ChannelInfo,
-    syscallNr: typeof SYS_MSGCTL | typeof SYS_SHMCTL,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const IPC_RMID = 0;
-    const IPC_SET = 1;
-    const IPC_STAT = 2;
-    const objectId = origArgs[0];
-    const rawCmd = origArgs[1];
-    const cmd = rawCmd & ~IPC_64;
-    // The live syscall path supplies the original i64 values. Keeping the
-    // direct-call fallback as a number lets the checked pointer conversion
-    // reject fractional or unsafe test inputs instead of BigInt coercion
-    // throwing before the syscall can report EFAULT.
-    const rawPointer = rawArgs[2] ?? BigInt(origArgs[2] ?? 0);
-    const pointerWidth = this.getPtrWidth(channel.pid);
-    const pointerCommand = cmd === IPC_SET || cmd === IPC_STAT;
-    const outputCommand = cmd === IPC_STAT;
-
-    try {
-      let transferBytes = 0;
-      let processPointer = 0;
-      if (pointerCommand) {
-        if (rawPointer === 0n) {
-          throw new KernelScratchError("IPC control pointer is null", EFAULT);
-        }
-        const exportName = syscallNr === SYS_MSGCTL
-          ? "kernel_msqid_ds_bytes"
-          : "kernel_shmid_ds_bytes";
-        const structureBytes = this.#kernelInstanceForEntry(entry).exports[exportName] as
-          | ((width: number) => number)
-          | undefined;
-        if (typeof structureBytes !== "function") {
-          throw new KernelScratchError(
-            `${exportName} export is unavailable`,
-            EIO,
-          );
-        }
-        transferBytes = structureBytes(pointerWidth);
-        if (
-          !Number.isSafeInteger(transferBytes)
-          || transferBytes <= 0
-          || transferBytes > CH_DATA_SIZE
-        ) {
-          if (Number.isSafeInteger(transferBytes) && transferBytes < 0) {
-            this.completeChannelRawAndRelisten(
-              channel,
-              -1,
-              -transferBytes,
-              entry,
-            );
-            return;
-          }
-          throw new KernelScratchError(
-            "kernel returned an invalid IPC control transfer size",
-            EIO,
-          );
-        }
-        processPointer = this.checkedProcessRange(
-          channel,
-          rawPointer,
-          transferBytes,
-          "IPC control caller buffer",
-        ).pointer;
-      } else if (cmd !== IPC_RMID) {
-        // Unknown commands still dispatch so Rust owns the errno decision,
-        // but no unchecked process pointer crosses into kernel memory.
-        processPointer = 0;
-      }
-
-      const processMemory = new Uint8Array(channel.memory.buffer);
-      const result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        if (cmd === IPC_SET) {
-          lease.copyFrom(
-            processMemory,
-            CH_DATA,
-            processPointer,
-            transferBytes,
-          );
-        } else if (outputCommand) {
-          lease.fill(0, CH_DATA, transferBytes);
-        }
-
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(objectId), true);
-        kernelView.setBigInt64(
-          CH_ARGS + CH_ARG_SIZE,
-          BigInt(rawCmd),
-          true,
-        );
-        if (pointerCommand) {
-          lease.writeAddress(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            CH_DATA,
-            transferBytes,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 2 * CH_ARG_SIZE,
-            0n,
-            true,
-          );
-        }
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(pointerWidth),
-          true,
-        );
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        const errVal = kernelView.getUint32(CH_ERRNO, true);
-        const output = retVal >= 0 && outputCommand
-          ? lease.copyOut(CH_DATA, transferBytes)
-          : null;
-        return { retVal, errVal, output };
-      });
-
-      if (result.output) {
-        processMemory.set(result.output, processPointer);
-      }
-      this.completeChannelRawAndRelisten(
-        channel,
-        result.retVal,
-        result.errVal,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
-
-  /** semctl: cmd-dependent arg handling — can't use SYSCALL_ARGS since arg[3]
-   *  is a scalar for some commands and a pointer for others. */
-  private handleSemctl(
-    channel: ChannelInfo,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const [semid, semnum, rawCmd, arg] = origArgs;
-    const rawArg = rawArgs[3] ?? BigInt(arg);
-    const cmd = rawCmd & ~IPC_64;
-    const IPC_STAT = 2;
-    const GETALL = 13;
-    const SETALL = 17;
-    const pointerCommand = cmd === IPC_STAT || cmd === GETALL || cmd === SETALL;
-    const processPointerWidth = this.getPtrWidth(channel.pid);
-    let transferBytes = 0;
-    try {
-      if (pointerCommand) {
-        if (rawArg === 0n) {
-          throw new KernelScratchError("semctl pointer is null", EFAULT);
-        }
-        if (cmd === IPC_STAT) {
-          const statBytes = this.#kernelInstanceForEntry(entry).exports
-            .kernel_semid_ds_bytes as
-            | ((pointerWidth: number) => number)
-            | undefined;
-          if (typeof statBytes !== "function") {
-            throw new KernelScratchError(
-              "kernel semid_ds sizing export is unavailable",
-              EIO,
-            );
-          }
-          const result = statBytes(processPointerWidth);
-          if (result < 0) {
-            this.completeChannelRawAndRelisten(channel, -1, -result, entry);
-            return;
-          }
-          transferBytes = result;
-        } else {
-          const arrayBytes = this.#kernelInstanceForEntry(entry).exports
-            .kernel_semctl_array_bytes as
-            | ((
-                pid: number,
-                tid: number,
-                semid: number,
-                command: number,
-              ) => number)
-            | undefined;
-          if (typeof arrayBytes !== "function") {
-            throw new KernelScratchError(
-              "kernel semctl array sizing export is unavailable",
-              EIO,
-            );
-          }
-          const result = arrayBytes(
-            channel.pid,
-            this.guestTidForChannel(channel),
-            semid,
-            rawCmd,
-          );
-          if (result < 0) {
-            this.completeChannelRawAndRelisten(channel, -1, -result, entry);
-            return;
-          }
-          transferBytes = result;
-        }
-        if (
-          !Number.isSafeInteger(transferBytes)
-          || transferBytes <= 0
-          || transferBytes > CH_DATA_SIZE
-        ) {
-          throw new KernelScratchError(
-            "kernel returned an invalid semctl transfer size",
-            EIO,
-          );
-        }
-        this.checkedProcessRange(
-          channel,
-          rawArg,
-          transferBytes,
-          "semctl caller buffer",
-        );
-      }
-
-      const processMem = new Uint8Array(channel.memory.buffer);
-      const scratch = this.#requireMainScratchRegion();
-      const result = scratch.withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-
-        if (cmd === SETALL) {
-          const processPointer = checkedWasmPointer(
-            rawArg,
-            processPointerWidth,
-            "semctl caller pointer",
-          );
-          lease.copyFrom(processMem, CH_DATA, processPointer, transferBytes);
-        } else if (pointerCommand) {
-          lease.fill(0, CH_DATA, transferBytes);
-        }
-
-        kernelView.setUint32(CH_SYSCALL, SYS_SEMCTL, true);
-        kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(semid), true);
-        kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(semnum), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(rawCmd), true);
-        if (pointerCommand) {
-          lease.writeAddress(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            CH_DATA,
-            transferBytes,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            BigInt(arg),
-            true,
-          );
-        }
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        // semid_ds follows the calling process data model, which can differ
-        // from the kernel Wasm's pointer width in a mixed-width machine.
-        kernelView.setBigInt64(
-          CH_ARGS + 5 * CH_ARG_SIZE,
-          BigInt(processPointerWidth),
-          true,
-        );
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-
-        const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        const errVal = kernelView.getUint32(CH_ERRNO, true);
-        const output = retVal >= 0 && (cmd === IPC_STAT || cmd === GETALL)
-          ? lease.copyOut(CH_DATA, transferBytes)
-          : null;
-        return { retVal, errVal, output };
-      });
-
-      if (result.output) {
-        const processPointer = checkedWasmPointer(
-          rawArg,
-          processPointerWidth,
-          "semctl caller pointer",
-        );
-        processMem.set(result.output, processPointer);
-      }
-      this.completeChannelRawAndRelisten(
-        channel,
-        result.retVal,
-        result.errVal,
-        entry,
-      );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-    }
-  }
 
   private runSyntheticMemorySyscall(
     channel: ChannelInfo,

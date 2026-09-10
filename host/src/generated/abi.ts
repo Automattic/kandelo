@@ -1309,6 +1309,8 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   128: { 0: "process-address", 1: "process-size", },
   135: { 0: "process-size", },
   136: { 0: "process-size", },
+  137: { 1: "process-address", },
+  138: { 1: "process-address", },
   200: { 0: "process-address", },
   203: { 0: "process-address", },
   237: { 1: "u32", },
@@ -1331,12 +1333,15 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   297: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
   298: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
   308: { 2: "i64", 3: "i64", },
-  333: { 2: "process-size", },
-  334: { 2: "process-size", },
-  338: { 2: "process-size", 3: "i64", },
-  339: { 2: "process-size", },
+  333: { 1: "process-address", 2: "process-size", },
+  334: { 1: "process-address", 2: "process-size", },
+  338: { 1: "process-address", 2: "process-size", 3: "i64", },
+  339: { 1: "process-address", 2: "process-size", },
+  340: { 2: "process-address", },
   342: { 2: "process-size", },
+  343: { 3: "process-address", },
   344: { 1: "process-size", },
+  347: { 2: "process-address", },
   377: { 2: "process-size", },
 } as const;
 export const CHANNEL_RESULT_CONTRACTS: Readonly<
@@ -1619,7 +1624,8 @@ export type SyscallArgSizeSpec =
   | { type: "arg"; argIndex: number; multiplier?: number; add?: number }
   | { type: "deref"; argIndex: number }
   | { type: "fixed"; size: number }
-  | { type: "process-layout"; wasm32Size: number; wasm64Size: number };
+  | { type: "process-layout"; wasm32Size: number; wasm64Size: number }
+  | { type: "kernel-dereferenced" };
 
 export type SyscallArgCopyOutLengthSpec =
   | { type: "u32-field"; argIndex: number; offset: number }
@@ -2135,11 +2141,11 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 256, tooLongErrno: 36 }, required: true },
   ],
   333: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
     { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   334: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
+    { argIndex: 1, direction: "out", size: { type: "kernel-dereferenced" }, nullable: true },
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
     { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
@@ -2150,8 +2156,23 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "in", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
     { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 32, wasm64Size: 64 }, nullable: true },
   ],
+  338: [
+    { argIndex: 1, direction: "out", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  339: [
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  340: [
+    { argIndex: 2, direction: "inout", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
   342: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, multiplier: 6 }, required: true },
+  ],
+  343: [
+    { argIndex: 3, direction: "inout", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  347: [
+    { argIndex: 2, direction: "inout", size: { type: "kernel-dereferenced" }, nullable: true },
   ],
   377: [
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 }, required: true },

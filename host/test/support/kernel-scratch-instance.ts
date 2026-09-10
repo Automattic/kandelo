@@ -279,16 +279,8 @@ function signatures(
       parameters: [pointer, i32],
       result: i32,
     },
-    kernel_mq_descriptor_msgsize: {
-      parameters: [i32, i32, i32],
-      result: i32,
-    },
     kernel_mark_process_signaled: {
       parameters: [i32, i32],
-      result: i32,
-    },
-    kernel_msqid_ds_bytes: {
-      parameters: [i32],
       result: i32,
     },
     kernel_kms_commit_count: {
@@ -425,14 +417,6 @@ function signatures(
       ],
       result: i32,
     },
-    kernel_semctl_array_bytes: {
-      parameters: [i32, i32, i32, i32],
-      result: i32,
-    },
-    kernel_semid_ds_bytes: {
-      parameters: [i32],
-      result: i32,
-    },
     kernel_send: {
       parameters: [i32, pointer, i32, i32],
       result: i32,
@@ -451,10 +435,6 @@ function signatures(
     },
     kernel_set_process_credentials: {
       parameters: [i32, i32, i32],
-      result: i32,
-    },
-    kernel_shmid_ds_bytes: {
-      parameters: [i32],
       result: i32,
     },
     kernel_set_current_tid: {

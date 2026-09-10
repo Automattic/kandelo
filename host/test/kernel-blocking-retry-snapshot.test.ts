@@ -210,7 +210,6 @@ function createRetryHarness(
     kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
     kernel_is_fd_nonblock: () => 0,
-    kernel_mq_descriptor_msgsize: () => 4,
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
     kernel_thread_has_deliverable: vi.fn(() => 1),
