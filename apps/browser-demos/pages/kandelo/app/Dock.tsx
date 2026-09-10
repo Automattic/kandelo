@@ -118,12 +118,13 @@ export const Dock: React.FC<{
    */
   role: "user" | "viewer" | null;
   /**
-   * The current user's nickname, or null while neither person gave one.
+   * The name of the person this page watches, or null: no name is shown for
+   * yourself, only for someone else.
    *
-   * It replaces the role word for the eye: the badge names who the user is,
-   * and a name that is not yours is what says someone else types. The role
-   * itself stays in the aria-label and the data-role styling, so the
-   * read-only state is still said and shown whatever the name is.
+   * It replaces the role word for the eye — on the watching page, "Viewer"
+   * becomes who you are viewing. The role itself stays in the aria-label and
+   * the data-role styling, so the read-only state is still said and shown
+   * whatever the name is.
    */
   roleName: string | null;
   machineTitle?: string;
@@ -508,7 +509,7 @@ export const Dock: React.FC<{
               </span>
               {role !== null && (
                 <span className="kdock-role">
-                  {roleName ?? (role === "user" ? "User" : "Viewer")}
+                  {roleName ?? (role === "user" ? "Sharing" : "Anonymous")}
                 </span>
               )}
             </button>

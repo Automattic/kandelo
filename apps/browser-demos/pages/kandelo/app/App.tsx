@@ -13,7 +13,6 @@ import { SharedMachine } from "../panes/SharedMachine";
 import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
-import { presentableNickname } from "../../../lib/peer-nickname";
 import { usePeerNickname } from "./peer-nickname";
 import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
@@ -329,15 +328,10 @@ export const App: React.FC = () => {
       : isEmpty || replication.replicating
         ? "viewer"
         : "user";
-  // The badge names who the user is now, on both computers: your own name
-  // when you hold the machine, the other person's when you are watching
-  // theirs. Null falls back to the role words in the dock.
-  const pairRoleName =
-    pairRole === "user"
-      ? presentableNickname(names.nickname)
-      : pairRole === "viewer"
-        ? names.peerNickname
-        : null;
+  // A name only for someone you are watching: on your own dock you know who
+  // you are, so the user's badge keeps the role word, and the other person's
+  // name replaces only "Viewer". Null falls back to the role words.
+  const pairRoleName = pairRole === "viewer" ? names.peerNickname : null;
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
     : null;

@@ -6,25 +6,15 @@
 // role, so it lives here rather than in the replication state — a take-over
 // moves the machine and the names stay where the people are.
 //
-// The name is this browser's own, kept in localStorage: user-local,
-// clearable, never part of a machine, a checkpoint, or the decision log. It
-// crosses the wire as presentation on the replication channel, next to the
-// publisher's cursor. The other person's name is their input, so it is
-// capped and stripped like every other text that arrives on the wire.
+// The name lives only on this page: typed for the session, gone with it,
+// never part of a machine, a checkpoint, or the decision log. It crosses the
+// wire as presentation on the replication channel, next to the publisher's
+// cursor. The other person's name is their input, so it is capped and
+// stripped like every other text that arrives on the wire.
 import * as React from "react";
 import { LocalReplicationLog } from "@host/replication/log-local";
 import type { PeerLink } from "../../../lib/peer-link";
 import { presentableNickname } from "../../../lib/peer-nickname";
-
-const NICKNAME_STORAGE_KEY = "kandelo.nickname";
-
-function readStoredNickname(): string {
-  try {
-    return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
 
 interface PeerNickname {
   /** This person's name as typed, for the input. */
@@ -35,24 +25,15 @@ interface PeerNickname {
 }
 
 export function usePeerNickname(link: PeerLink | null): PeerNickname {
-  const [nickname, setNicknameState] = React.useState(readStoredNickname);
+  const [nickname, setNicknameState] = React.useState("");
   const [peerNickname, setPeerNickname] = React.useState<string | null>(null);
-  // The exchange outlives renders, and the effect below must not rerun on
-  // every keystroke, so changes reach the wire through refs rather than deps.
+  // The name is typed before connecting and announced at link-up, so the
+  // effect below reads it through a ref rather than rerun on keystrokes.
   const nicknameRef = React.useRef(nickname);
-  const announceRef = React.useRef<{
-    set: (name: string | null) => void;
-  } | null>(null);
 
   const setNickname = React.useCallback((name: string) => {
     nicknameRef.current = name;
     setNicknameState(name);
-    try {
-      window.localStorage.setItem(NICKNAME_STORAGE_KEY, name);
-    } catch {
-      // User preference storage can be unavailable in private or restricted contexts.
-    }
-    announceRef.current?.set(presentableNickname(name));
   }, []);
 
   React.useEffect(() => {
@@ -69,11 +50,7 @@ export function usePeerNickname(link: PeerLink | null): PeerNickname {
         );
       },
     );
-    announceRef.current = announce;
-    return () => {
-      announceRef.current = null;
-      announce.stop();
-    };
+    return () => announce.stop();
   }, [link]);
 
   return { nickname, setNickname, peerNickname };
