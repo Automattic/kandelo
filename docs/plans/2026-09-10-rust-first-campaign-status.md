@@ -224,6 +224,60 @@ because `programs/wasm32/spidermonkey-node.wasm` is not built. That is
 fresh-worktree provisioning, not a result. The production-side change is proven
 by `vfs-image-wasm-policy` at 13/13.
 
+## The fifth silent-success defect — a deletion gate pre-armed to lie
+
+Found by the K5 cutover agent, 2026-09-10, and it is the most dangerous shape
+this campaign has met.
+
+**All 18 real-`dlopen` end-to-end tests skip unless `local-binaries/kernel.wasm`
+exists — and `./run.sh setup` never creates it.** A fresh worktree therefore
+reports `3 passed | 3 skipped`, **exit 0**, alongside 100 green unit tests.
+
+An agent told to "run the dlopen suites before deleting `dylink.ts`" would have
+seen green and **proven nothing**. The gate guarding a 6,340-line deletion was
+armed to pass by default.
+
+The agent provisioned properly — kernel via `install-local-artifact`,
+`crates/fork-module/build-wasm.sh`, and `npm --prefix host install` (`vitest` is
+a `host/` devDependency and the root has no workspaces) — and recorded the real
+baseline: **116 passed / 2 failed of 118**, the two being the tracked
+pre-existing pthread `__wpk_fork_frame_reserve` gap. **That number, not
+"green", is what the cutover must show.**
+
+This is the fifth silent-success defect: a rebuild that did not rebuild, two
+test gates scoring a skip as a pass, `build-musl.sh` exiting 0 on failure, and
+now a suite that skips its entire real-behaviour half unless an artifact nobody
+builds happens to be present. **The pattern is consistent enough to be a
+standing suspicion: when a gate reports success, check that it ran.**
+
+## K5's placement question — adjudicated, do not re-derive
+
+The planner is a pure Rust library with no wire format and no wasm entry point,
+so on JavaScript hosts **nothing could call it**. That, not scope, is what held
+the deletion — the item was scoped as I7 but is really I2–I7.
+
+- **(β) fold into `crates/fork-module` — REFUTED, and the grounding had
+  *recommended* it.** Fork-module instantiates under
+  `if (hasForkInstrumentation)` (`worker-main.ts:3473`), while
+  `buildDlopenImports`'s call site (`:5533`) is in the **non**-instrumented
+  branch. Folding would remove `dlopen` from every uninstrumented process — and
+  **no in-repo artifact would catch it**, because PHP is the only runtime-
+  `dlopen` consumer and PHP *is* instrumented. A textbook generic-first
+  violation, invisible to the test suite.
+- **(ζ) link into the kernel — refuted.** The kernel reaches process memory only
+  through `HostIO::process_memory_len` and channel scratch; both the `.so` image
+  and the KFLA archive live in guest memory.
+- **(α) standalone module — forced**, and cleaner than assumed: **zero imports,
+  not even `env.memory`.** Cost measured rather than estimated: **14 integration
+  points** (build 3, freshness 2, projection 4, hosts 5 — four *independent*
+  browser registrations that fail only in a SourceOnly build).
+  `crates/wasi-module` is the negative example: correct build script and stamp,
+  zero pipeline.
+
+**Re-cut as I6a** (module crate + the 14 pipeline points, provable by
+`verify-fresh` plus a browser boot) **and I6b** (KFLA encoder, TS
+driver/executor, `worker-main` rewire, deletion, browser pass).
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
