@@ -37,7 +37,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
 | Override an artifact locally                   | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these over the cache.                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — `revision` lives in the project-view file). Invalidates the local cache for that package. Only bump when output bytes legitimately change.                                                            |
-| Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share.                     |
+| Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share. **The path must contain a `kandelo/` segment** — see the warning below.                     |
 | Publish package recipes from another repository | [docs/package-sources.md](package-sources.md) — package-source layout for source-built recipes consumed via `WASM_POSIX_DEPS_REGISTRY`.                                                                                                                          |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
@@ -45,6 +45,35 @@ Most readers want one of these. Detailed sections follow further down.
 The rest of this doc is the reference manual: schema details, cache-key
 hashing, resolver ordering, the consumer-side migration pattern, and
 release semantics.
+
+### Known trap: an isolated cache root must contain `kandelo/`
+
+`KANDELO_SOURCE_CACHE_ROOT` accepts any absolute path, but the SDK's
+`pkg-config` wrapper (`sdk/src/bin/pkg-config.ts`) does not. It filters the
+caller's `PKG_CONFIG_PATH` down to entries it believes target wasm, and it
+decides that by testing whether the path contains the literal `kandelo/` (or a
+`sysroot`/`sysroot64` segment). A cache root such as
+`~/.cache/kandelo-agent-1` contains `kandelo-agent-1/`, not `kandelo/`, so
+every dependency `.pc` directory under it is dropped.
+
+The failure names neither the cache root nor the filter. The first package to
+notice is `php`, whose ICU dependency is reached only through
+`PKG_CONFIG_PATH` (the other libraries it uses are also installed into the
+sysroot, so they still resolve):
+
+```
+checking for icu-uc >= 50.1 icu-io icu-i18n... no
+configure: error: Package requirements (icu-uc >= 50.1 icu-io icu-i18n) were not met
+```
+
+Until the filter is repaired, keep an isolated root under a `kandelo/`
+segment — `~/.cache/kandelo/<worktree-name>` rather than
+`~/.cache/kandelo-<worktree-name>`. The filter itself is a substring guess
+where it should be a comparison against the resolver's real roots; repairing
+it changes `sdk/src`, which is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS`, so the
+repair invalidates the cache key of every library and program package and
+should be batched with another cache-invalidating change rather than landed on
+its own.
 
 ## Why
 

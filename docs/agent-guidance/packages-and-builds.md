@@ -63,6 +63,14 @@ not preventing races. Do not reach for it as a routine default — a
 per-worktree cache discards the cross-worktree reuse the shared cache exists
 to provide.
 
+If you do isolate, **the path you choose must contain a `kandelo/` segment**
+(`~/.cache/kandelo/<worktree>`, not `~/.cache/kandelo-<worktree>`). The SDK's
+`pkg-config` wrapper filters `PKG_CONFIG_PATH` down to entries whose path
+contains that literal, so a root outside it silently drops every dependency
+`.pc` directory and `php` fails its ICU configure check with an error naming
+neither the cache root nor the filter. See "Known trap" in
+`docs/package-management.md`.
+
 A workspace-crate-backed package's cache-key inputs must derive from that
 crate's actual `cargo metadata` dependency closure (`inputs = ["cargo:<crate
 name>"]` in `build.toml`; see `tools/xtask/src/cargo_closure.rs`), never a
