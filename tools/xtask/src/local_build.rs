@@ -839,7 +839,7 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
         return Ok(());
     }
     snapshot_drift_check(repo, false)?;
-    verify_fresh_coresident_fork_module(repo)?;
+    verify_fresh_coresident_side_modules(repo)?;
     Ok(())
 }
 
@@ -920,8 +920,8 @@ fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<bool, Str
 /// `crates/fork-module/build-wasm.sh` builds `fork_module{32,64}.wasm`
 /// out-of-band (no `packages/registry/<name>/build.toml`), and the local-build
 /// engine projects them into the SourceOnlyV1 root as first-class owned members
-/// alongside `kernel.wasm` (see `coresident_fork_module_projection` /
-/// `coresident_fork_module_nodes`). The browser's pinned-projection resolver
+/// alongside `kernel.wasm` (see `coresident_side_module_projection` /
+/// `coresident_side_module_nodes`). The browser's pinned-projection resolver
 /// (`binary-resolver.ts` / `source-only-vite-assets.ts`) serves each fork-module
 /// member and validates the fetched bytes against the size + sha the projection
 /// manifest declares for it.
@@ -944,7 +944,7 @@ fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<bool, Str
 ///
 /// Mirrors the kernel check's "not projected yet -> Ok" semantics: a missing
 /// manifest, or one that carries no fork-module node, is not a staleness error.
-fn verify_fresh_coresident_fork_module(repo: &Path) -> Result<(), String> {
+fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
     let output_root = repo.join("local-binaries").join("source-only-v1");
     let manifest_path = output_root
         .join(".kandelo")
@@ -957,25 +957,41 @@ fn verify_fresh_coresident_fork_module(repo: &Path) -> Result<(), String> {
     let manifest: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
 
-    // Freshness signal 1 (stale vs source): recompute the current fork-module
-    // closure digest once and compare every projected node against it. Computed
-    // here (needs `cargo metadata` on `repo`) and handed to the pure validator
-    // so the validator itself is unit-testable without a Cargo workspace.
-    let current_closure = crate::util::hex(&crate::cargo_closure::workspace_crates_closure_sha(
-        repo,
-        &["fork-module".to_string(), "fork-module-inject".to_string()],
-    )?);
-
-    check_projected_fork_module_freshness(&manifest, &current_closure, &output_root, &manifest_path)
+    for module in CORESIDENT_SIDE_MODULES {
+        // Freshness signal 1 (stale vs source): recompute this module's current
+        // closure digest and compare every projected node against it. Computed
+        // here (needs `cargo metadata` on `repo`) and handed to the pure
+        // validator so the validator itself is unit-testable without a Cargo
+        // workspace.
+        let crates: Vec<String> = module
+            .closure_crates
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        let current_closure = crate::util::hex(
+            &crate::cargo_closure::workspace_crates_closure_sha(repo, &crates)?,
+        );
+        check_projected_side_module_freshness(
+            module.node_name,
+            module.closure_description,
+            &manifest,
+            &current_closure,
+            &output_root,
+            &manifest_path,
+        )?;
+    }
+    Ok(())
 }
 
-/// Pure validator for [`verify_fresh_coresident_fork_module`]: given the parsed
+/// Pure validator for [`verify_fresh_coresident_side_modules`]: given the parsed
 /// projection `manifest`, the `current_closure` digest recomputed from source,
 /// and the `output_root` the fork-module members are staged under, fail loud on
 /// either staleness dimension (see the caller's doc). Split out with no I/O
 /// beyond reading the already-staged member files so it can be unit-tested with
 /// a synthetic manifest and a known closure, without a Cargo workspace.
-fn check_projected_fork_module_freshness(
+fn check_projected_side_module_freshness(
+    node_name: &str,
+    closure_description: &str,
     manifest: &serde_json::Value,
     current_closure: &str,
     output_root: &Path,
@@ -992,7 +1008,7 @@ fn check_projected_fork_module_freshness(
             node.get("node")
                 .and_then(|id| id.get("name"))
                 .and_then(|name| name.as_str())
-                == Some(CORESIDENT_FORK_MODULE_NODE_NAME)
+                == Some(node_name)
         })
         .collect();
     if fork_nodes.is_empty() {
@@ -1012,17 +1028,17 @@ fn check_projected_fork_module_freshness(
             .and_then(|value| value.as_str())
             .ok_or_else(|| {
                 format!(
-                    "{}: projected fork-module node ({arch}) has no cacheKeySha256",
+                    "{}: projected {node_name} node ({arch}) has no cacheKeySha256",
                     manifest_path.display()
                 )
             })?;
         if recorded_key != current_closure {
             return Err(format!(
-                "{} is stale: the projected co-resident fork-module ({arch}) was built for \
-                 closure key {recorded_key}, but the current source tree (crates/fork-module, \
-                 crates/fork-module-inject, crates/fork-codec, crates/shared) resolves to \
-                 {current_closure}. Rebuild + re-project with `./run.sh setup` (or a \
-                 `cargo xtask local-build` that finalizes the SourceOnly projection).",
+                "{} is stale: the projected co-resident {node_name} ({arch}) was built for \
+                 closure key {recorded_key}, but the current source tree \
+                 ({closure_description}) resolves to {current_closure}. Rebuild + re-project \
+                 with `./run.sh setup` (or a `cargo xtask local-build` that finalizes the \
+                 SourceOnly projection).",
                 manifest_path.display()
             ));
         }
@@ -1034,7 +1050,7 @@ fn check_projected_fork_module_freshness(
             .and_then(|value| value.as_array())
             .ok_or_else(|| {
                 format!(
-                    "{}: projected fork-module node ({arch}) has no members array",
+                    "{}: projected {node_name} node ({arch}) has no members array",
                     manifest_path.display()
                 )
             })?;
@@ -1044,7 +1060,7 @@ fn check_projected_fork_module_freshness(
                 .and_then(|value| value.as_str())
                 .ok_or_else(|| {
                     format!(
-                        "{}: projected fork-module member has no mirrorPath",
+                        "{}: projected {node_name} member has no mirrorPath",
                         manifest_path.display()
                     )
                 })?;
@@ -1053,7 +1069,7 @@ fn check_projected_fork_module_freshness(
                 .and_then(|value| value.as_u64())
                 .ok_or_else(|| {
                     format!(
-                        "{}: projected fork-module member {mirror_path} has no size",
+                        "{}: projected {node_name} member {mirror_path} has no size",
                         manifest_path.display()
                     )
                 })?;
@@ -1062,7 +1078,7 @@ fn check_projected_fork_module_freshness(
                 .and_then(|value| value.as_str())
                 .ok_or_else(|| {
                     format!(
-                        "{}: projected fork-module member {mirror_path} has no sha256",
+                        "{}: projected {node_name} member {mirror_path} has no sha256",
                         manifest_path.display()
                     )
                 })?;
@@ -1073,7 +1089,7 @@ fn check_projected_fork_module_freshness(
             let actual_sha = sha256_bytes(&staged_bytes);
             if actual_size != recorded_size || actual_sha.as_str() != recorded_sha {
                 return Err(format!(
-                    "{} is stale: the projection manifest declares co-resident fork-module \
+                    "{} is stale: the projection manifest declares co-resident {node_name} \
                      member {mirror_path} as size {recorded_size} sha {recorded_sha}, but the \
                      staged file is size {actual_size} sha {actual_sha}. The browser's \
                      pinned-projection resolver validates each fetched member against the \
@@ -1791,10 +1807,11 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
     validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
 
-    // Build/refresh the co-resident fork-module PIC side modules (Phase 6 D5)
-    // before finalization so they can be projected as owned members. build-wasm.sh
-    // owns the build + closure-derived freshness stamp; this only invokes it.
-    ensure_coresident_fork_module_built(&repo)?;
+    // Build/refresh the co-resident PIC side modules (the fork module and the
+    // WASI module) before finalization so they can be projected as owned
+    // members. Each build-wasm.sh owns its build + closure-derived freshness
+    // stamp; this only invokes them.
+    ensure_coresident_side_modules_built(&repo)?;
 
     let run_directory = create_run_directory(&output_root)?;
     let mut result_paths = BTreeMap::new();
@@ -1981,7 +1998,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
             .all(|node| skip_receipts.contains_key(node))
         && source_only_program_projection_is_current(&output_root, &graph.authority_sha256)
-        && coresident_fork_module_projection_is_current(&output_root, &repo);
+        && coresident_side_module_projection_is_current(&output_root, &repo);
     let projection_finalization_error = if projection_up_to_date {
         None
     } else if package_projection_is_eligible(&selected, &results) {
@@ -2305,6 +2322,62 @@ fn selected_resolved_package_nodes(
 /// admits as a root-level member alongside `kernel.wasm`.
 const CORESIDENT_FORK_MODULE_NODE_NAME: &str = "fork-module";
 
+/// The name every co-resident WASI-module projection node carries. Same rule as
+/// the fork-module's: `crates/wasi-module` carries no `build.toml` either.
+const CORESIDENT_WASI_MODULE_NODE_NAME: &str = "wasi-module";
+
+/// A co-resident PIC wasm side module the local-build engine builds and
+/// projects, but the package resolver does not model.
+///
+/// There are two: `crates/fork-module` (fork capture/replay) and
+/// `crates/wasi-module` (WASI Preview 1). Both are built out-of-band by their
+/// own `build-wasm.sh`, both stage a closure-derived build-key stamp next to
+/// the artifact, and both must reach the SourceOnly projection as owned
+/// root-level members or the browser's pinned-projection resolver refuses to
+/// serve them. Describing them rather than duplicating the machinery means a
+/// third side module is one entry here.
+struct CoresidentSideModule {
+    /// Projection node name; also the identity the consumer's root-level
+    /// member rule admits.
+    node_name: &'static str,
+    /// Build script, repo-relative. Owns the build and the freshness stamp.
+    script: &'static str,
+    /// Crates whose contents define this artifact's closure digest. Derived
+    /// from the real build closure, never a hand-list of files.
+    closure_crates: &'static [&'static str],
+    /// The artifacts the script stages into `local-binaries/`, as
+    /// `(file name, target arch, required)`. A non-required artifact mirrors a
+    /// best-effort tier-3 target: absent is not an error, but a present one is
+    /// still freshness-checked.
+    artifacts: &'static [(&'static str, &'static str, bool)],
+    /// The crate list named in a staleness message, for a reader who has to
+    /// act on it.
+    closure_description: &'static str,
+}
+
+const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
+    CoresidentSideModule {
+        node_name: CORESIDENT_FORK_MODULE_NODE_NAME,
+        script: "crates/fork-module/build-wasm.sh",
+        closure_crates: &["fork-module", "fork-module-inject"],
+        artifacts: &[
+            ("fork_module32.wasm", "wasm32", true),
+            // wasm64 is a tier-3 best-effort target in build-wasm.sh.
+            ("fork_module64.wasm", "wasm64", false),
+        ],
+        closure_description:
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: CORESIDENT_WASI_MODULE_NODE_NAME,
+        script: "crates/wasi-module/build-wasm.sh",
+        closure_crates: &["wasi-module", "wasi-abi"],
+        // WASI Preview 1 is a wasm32 ABI, so there is no wasm64 counterpart.
+        artifacts: &[("wasi_module32.wasm", "wasm32", true)],
+        closure_description: "crates/wasi-module, crates/wasi-abi, crates/shared",
+    },
+];
+
 /// The pointer-width co-resident fork-module wasm side modules
 /// (`fork_module32.wasm` / `fork_module64.wasm`) are built out-of-band by
 /// `crates/fork-module/build-wasm.sh` — a position-independent (`--pie`)
@@ -2323,7 +2396,7 @@ const CORESIDENT_FORK_MODULE_NODE_NAME: &str = "fork-module";
 /// host-visible resolver relPath is the unadjusted `fork_module{32,64}.wasm`),
 /// each as its own single-member node so the consumer's root-level member rule
 /// admits them next to `kernel.wasm`.
-struct CoresidentForkModuleProjection {
+struct CoresidentSideModuleProjection {
     /// The fork-module cargo-closure digest that gates freshness, reused from
     /// `build-wasm.sh`'s build-key stamp (see
     /// `cargo_closure::workspace_crates_closure_sha`).
@@ -2337,26 +2410,29 @@ struct CoresidentForkModuleProjection {
 /// closure. `fork_module32.wasm` is required; `fork_module64.wasm` mirrors the
 /// build script's best-effort wasm64 policy (a tier-3 target) and is projected
 /// only when present.
-fn coresident_fork_module_projection(
+fn coresident_side_module_projection(
     repo: &Path,
-) -> Result<CoresidentForkModuleProjection, String> {
-    let closure = crate::cargo_closure::workspace_crates_closure_sha(
-        repo,
-        &["fork-module".to_string(), "fork-module-inject".to_string()],
-    )?;
+    module: &CoresidentSideModule,
+) -> Result<CoresidentSideModuleProjection, String> {
+    let crates: Vec<String> = module
+        .closure_crates
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let closure = crate::cargo_closure::workspace_crates_closure_sha(repo, &crates)?;
     let closure_sha = crate::util::hex(&closure);
+    let script = module.script;
     let mut members = Vec::new();
-    for width in [32u32, 64] {
-        let name = format!("fork_module{width}.wasm");
+    for (name, _arch, required) in module.artifacts {
+        let name = (*name).to_string();
         let artifact = repo.join("local-binaries").join(&name);
         if !artifact.is_file() {
-            if width == 32 {
+            if *required {
                 return Err(format!(
-                    "co-resident fork module {name} is missing from local-binaries; \
-                     build it with `crates/fork-module/build-wasm.sh`"
+                    "co-resident side module {name} is missing from local-binaries; \
+                     build it with `{script}`"
                 ));
             }
-            // wasm64 is a tier-3 best-effort target in build-wasm.sh.
             continue;
         }
         let key_path = repo
@@ -2364,15 +2440,15 @@ fn coresident_fork_module_projection(
             .join(format!("{name}.build-key"));
         let stamped = fs::read_to_string(&key_path).map_err(|error| {
             format!(
-                "co-resident fork module {name} carries no build-key stamp ({}): {error}; \
-                 rebuild with `crates/fork-module/build-wasm.sh`",
+                "co-resident side module {name} carries no build-key stamp ({}): {error}; \
+                 rebuild with `{script}`",
                 key_path.display()
             )
         })?;
         if stamped.trim() != closure_sha {
             return Err(format!(
-                "co-resident fork module {name} is stale (build-key {}, current closure \
-                 {closure_sha}); rebuild with `crates/fork-module/build-wasm.sh`",
+                "co-resident side module {name} is stale (build-key {}, current closure \
+                 {closure_sha}); rebuild with `{script}`",
                 stamped.trim()
             ));
         }
@@ -2390,7 +2466,7 @@ fn coresident_fork_module_projection(
         (&left.mirror_path, &left.source_artifact)
             .cmp(&(&right.mirror_path, &right.source_artifact))
     });
-    Ok(CoresidentForkModuleProjection {
+    Ok(CoresidentSideModuleProjection {
         closure_sha,
         members,
     })
@@ -2399,18 +2475,20 @@ fn coresident_fork_module_projection(
 /// One source-only projection node per co-resident fork-module width. Each is a
 /// single root-level member so the consumer admits it under the same
 /// root-level member rule as `kernel.wasm` (`binary-resolver.ts`).
-fn coresident_fork_module_nodes(
-    projection: &CoresidentForkModuleProjection,
+fn coresident_side_module_nodes(
+    module: &CoresidentSideModule,
+    projection: &CoresidentSideModuleProjection,
 ) -> Vec<SourceOnlyProgramNodeV1> {
     projection
         .members
         .iter()
         .map(|member| {
-            let target_arch = if member.mirror_path == "fork_module64.wasm" {
-                "wasm64"
-            } else {
-                "wasm32"
-            };
+            let target_arch = module
+                .artifacts
+                .iter()
+                .find(|(name, _, _)| *name == member.mirror_path)
+                .map(|(_, arch, _)| *arch)
+                .unwrap_or("wasm32");
             // The node's manifest identity is a stable declaration tag (the
             // members ARE the artifacts, not a package manifest); its cache key
             // is the fork-module closure digest that gates freshness; its
@@ -2427,7 +2505,7 @@ fn coresident_fork_module_nodes(
             SourceOnlyProgramNodeV1 {
                 node: SourceOnlyProgramNodeIdentityV1 {
                     kind: "package",
-                    name: CORESIDENT_FORK_MODULE_NODE_NAME.to_string(),
+                    name: module.node_name.to_string(),
                     target_arch: target_arch.to_string(),
                 },
                 manifest_sha256,
@@ -2444,10 +2522,10 @@ fn coresident_fork_module_nodes(
 /// per-node materialization stages `kernel.wasm`). Copies the freshness-verified
 /// `local-binaries/` artifact and forces the recorded `0o644` mode so the
 /// consumer's stable-read mode check matches.
-fn stage_coresident_fork_module_members(
+fn stage_coresident_side_module_members(
     repo: &Path,
     output_root: &Path,
-    projection: &CoresidentForkModuleProjection,
+    projection: &CoresidentSideModuleProjection,
 ) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     for member in &projection.members {
@@ -2467,34 +2545,39 @@ fn stage_coresident_fork_module_members(
 /// current fork-module cargo closure; only a stale/unstamped/missing artifact
 /// triggers a rebuild. This is what makes `fork_module*.wasm` a build-pipeline
 /// artifact instead of a manual side step.
-fn ensure_coresident_fork_module_built(repo: &Path) -> Result<(), String> {
-    let script = repo.join("crates/fork-module/build-wasm.sh");
-    let fresh = Command::new("bash")
-        .arg(&script)
-        .arg("--verify-fresh")
-        .current_dir(repo)
-        .status()
-        .map_err(|error| format!("spawn {} --verify-fresh: {error}", script.display()))?;
-    if fresh.success() {
-        return Ok(());
+fn ensure_coresident_side_modules_built(repo: &Path) -> Result<(), String> {
+    for module in CORESIDENT_SIDE_MODULES {
+        let script = repo.join(module.script);
+        let fresh = Command::new("bash")
+            .arg(&script)
+            .arg("--verify-fresh")
+            .current_dir(repo)
+            .status()
+            .map_err(|error| format!("spawn {} --verify-fresh: {error}", script.display()))?;
+        if fresh.success() {
+            continue;
+        }
+        run_repo_script(repo, module.script, &[])?;
     }
-    run_repo_script(repo, "crates/fork-module/build-wasm.sh", &[])
+    Ok(())
 }
 
 /// Whether the projection root already carries the current co-resident
 /// fork-module artifacts byte-for-byte. Called only on the fully-clean no-op
-/// fast path, after `ensure_coresident_fork_module_built` has refreshed the
+/// fast path, after `ensure_coresident_side_modules_built` has refreshed the
 /// `local-binaries/` copies, so a stale or missing projected copy (e.g. a
 /// fork-module source change with an otherwise-unchanged package graph) forces
 /// the finalizer to re-stage rather than leaving a stale module on disk.
-fn coresident_fork_module_projection_is_current(output_root: &Path, repo: &Path) -> bool {
-    for width in [32u32, 64] {
-        let name = format!("fork_module{width}.wasm");
-        let src = fs::read(repo.join("local-binaries").join(&name)).ok();
-        let dst = fs::read(output_root.join(&name)).ok();
-        match (width, src, dst) {
-            // wasm64 is best-effort: an absent source must also be absent here.
-            (64, None, None) => {}
+fn coresident_side_module_projection_is_current(output_root: &Path, repo: &Path) -> bool {
+    for (name, _arch, required) in CORESIDENT_SIDE_MODULES
+        .iter()
+        .flat_map(|module| module.artifacts.iter())
+    {
+        let src = fs::read(repo.join("local-binaries").join(name)).ok();
+        let dst = fs::read(output_root.join(name)).ok();
+        match (required, src, dst) {
+            // A best-effort artifact: an absent source must also be absent here.
+            (false, None, None) => {}
             (_, Some(source), Some(projected)) if source == projected => {}
             _ => return false,
         }
@@ -2548,24 +2631,26 @@ fn refreshed_source_only_program_projection(
         receipts,
         &root_mirror_nodes,
     )?;
-    // Project the co-resident fork-module side modules as owned root-level
-    // members (built out-of-band by build-wasm.sh; see
-    // `coresident_fork_module_projection`). Appended after the package-derived
+    // Project the co-resident side modules as owned root-level members (built
+    // out-of-band by their build-wasm.sh scripts; see
+    // `coresident_side_module_projection`). Appended after the package-derived
     // candidate so the package receipt validation loop is untouched, then the
     // whole node set is re-sorted to preserve the consumer's (name, targetArch)
     // ordering invariant.
-    let coresident = coresident_fork_module_projection(repo)?;
-    for node in coresident_fork_module_nodes(&coresident) {
-        if authority.nodes.iter().any(|existing| {
-            existing.node.name == node.node.name
-                && existing.node.target_arch == node.node.target_arch
-        }) {
-            return Err(format!(
-                "co-resident fork-module node {}/{} collides with a package projection node",
-                node.node.name, node.node.target_arch
-            ));
+    for module in CORESIDENT_SIDE_MODULES {
+        let coresident = coresident_side_module_projection(repo, module)?;
+        for node in coresident_side_module_nodes(module, &coresident) {
+            if authority.nodes.iter().any(|existing| {
+                existing.node.name == node.node.name
+                    && existing.node.target_arch == node.node.target_arch
+            }) {
+                return Err(format!(
+                    "co-resident side-module node {}/{} collides with a package projection node",
+                    node.node.name, node.node.target_arch
+                ));
+            }
+            authority.nodes.push(node);
         }
-        authority.nodes.push(node);
     }
     authority.nodes.sort_by(|left, right| {
         (&left.node.name, &left.node.target_arch)
@@ -2604,10 +2689,13 @@ fn finalize_source_only_program_projection(
         graph_authority_sha256,
         receipts,
     )?;
-    // The co-resident fork-module members the candidate records are staged into
+    // The co-resident side-module members the candidate records are staged into
     // the projection root under the same lock, before the manifest goes live, so
     // the published authority never references bytes that are not yet on disk.
-    let coresident = coresident_fork_module_projection(repo)?;
+    let coresident: Vec<CoresidentSideModuleProjection> = CORESIDENT_SIDE_MODULES
+        .iter()
+        .map(|module| coresident_side_module_projection(repo, module))
+        .collect::<Result<_, String>>()?;
     with_source_only_program_projection_lock(output_root, |authority| {
         for node in expected_receipt_nodes {
             let PlanNodeV1::Package { name, target_arch } = node else {
@@ -2642,7 +2730,9 @@ fn finalize_source_only_program_projection(
             )?;
         }
 
-        stage_coresident_fork_module_members(repo, output_root, &coresident)?;
+        for projection in &coresident {
+            stage_coresident_side_module_members(repo, output_root, projection)?;
+        }
 
         if verify_cache {
             // Recompute the projection under the lock and confirm nothing moved
@@ -6499,10 +6589,10 @@ materialization = "lazy"
 
     // -- L5: projected co-resident fork-module freshness gate --
     //
-    // Exercise the pure validator `check_projected_fork_module_freshness`
+    // Exercise the pure validator `check_projected_side_module_freshness`
     // directly with a synthetic projection manifest + staged member bytes and a
     // known closure digest, so no Cargo workspace / `cargo metadata` run is
-    // needed. The outer `verify_fresh_coresident_fork_module` only adds the
+    // needed. The outer `verify_fresh_coresident_side_modules` only adds the
     // closure recompute + manifest read, both covered end-to-end against the
     // real repo in the empirical validation step.
 
@@ -6541,7 +6631,9 @@ materialization = "lazy"
         let closure = "deadbeef";
         let manifest =
             fork_module_manifest("wasm32", "fork_module32.wasm", closure, bytes.len() as u64, &sha);
-        check_projected_fork_module_freshness(
+        check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
             &manifest,
             closure,
             &output_root,
@@ -6567,7 +6659,9 @@ materialization = "lazy"
             bytes.len() as u64,
             &sha,
         );
-        let err = check_projected_fork_module_freshness(
+        let err = check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
             &manifest,
             "newclosurekey",
             &output_root,
@@ -6598,7 +6692,9 @@ materialization = "lazy"
             999,
             &sha256_bytes(b"older-manifest-bytes"),
         );
-        let err = check_projected_fork_module_freshness(
+        let err = check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
             &manifest,
             closure,
             &output_root,
@@ -6619,7 +6715,9 @@ materialization = "lazy"
             { "node": { "kind": "package", "name": "kernel", "targetArch": "wasm32" },
               "cacheKeySha256": "x", "members": [] }
         ]});
-        check_projected_fork_module_freshness(
+        check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
             &manifest,
             "anyclosure",
             Path::new("/nonexistent"),
@@ -6630,10 +6728,10 @@ materialization = "lazy"
 
     #[test]
     fn l5_ok_when_no_projection_manifest_exists() {
-        // `verify_fresh_coresident_fork_module` treats an absent manifest as
+        // `verify_fresh_coresident_side_modules` treats an absent manifest as
         // "not projected yet", mirroring the kernel check's NotFound -> Ok.
         let temp = tempfile::TempDir::new().unwrap();
-        verify_fresh_coresident_fork_module(temp.path())
+        verify_fresh_coresident_side_modules(temp.path())
             .expect("absent projection manifest must not fail freshness");
     }
 
