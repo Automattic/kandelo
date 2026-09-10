@@ -63,8 +63,6 @@ import {
   isWasmModuleBytes,
 } from "./constants";
 import {
-  classifiedSignalOrFallback as classifySignalOrFallback,
-  classifiedTrapExitStatus as classifyTrapExitStatus,
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
@@ -73,25 +71,6 @@ import {
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
 
-/**
- * Ask the kernel what a trap message means. The message can only be captured
- * here, but the table that reads it lives in `wasm_posix_shared::trap_signal`
- * so this host, the other one, and `crates/host-native` agree — see
- * `CentralizedKernelWorker.classifyWasmTrapSignal`. Returns 0 before the
- * kernel worker exists, which callers treat as "unclassified".
- */
-const classifyWasmTrap = (text: string): number =>
-  typeof kernelWorker === "undefined"
-    ? 0
-    : kernelWorker.classifyWasmTrapSignal(text);
-
-const classifiedSignalOrFallback = (
-  reason: unknown,
-  fallback: number = SIGSEGV,
-): number => classifySignalOrFallback(classifyWasmTrap, reason, fallback);
-
-const classifiedTrapExitStatus = (reason: unknown): number | null =>
-  classifyTrapExitStatus(classifyWasmTrap, reason);
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
@@ -478,6 +457,10 @@ const {
   handlePosixSpawn,
   handleOrdinaryFork,
   handleVfork,
+  handleFork,
+  classifyWasmTrap,
+  classifiedSignalOrFallback,
+  classifiedTrapExitStatus,
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
@@ -1422,51 +1405,6 @@ function installProcessWorkerListeners(
 }
 
 // ── Process lifecycle callbacks ──
-
-async function handleFork(
-  parentPid: number,
-  childPid: number,
-  mode: ProcessForkMode,
-  parentMemory: WebAssembly.Memory,
-  continuation: ForkContinuationContext,
-  borrowedReplay?: ForkBorrowedReplayWorkspace,
-  releaseCreatorAdmission?: () => void,
-): Promise<number[]> {
-  traceVforkMechanism(
-    "dispatch",
-    `mode=${mode} parent=${parentPid} child=${childPid}`,
-  );
-  if (mode === PROCESS_FORK_MODE_VFORK) {
-    if (!borrowedReplay) {
-      throw new VforkAddressSpaceBusyError(
-        "vfork launch is missing its admitted replay workspace",
-      );
-    }
-    return handleVfork(
-      parentPid,
-      childPid,
-      parentMemory,
-      continuation,
-      borrowedReplay,
-      releaseCreatorAdmission,
-    );
-  }
-  if (releaseCreatorAdmission) {
-    throw new Error("ordinary fork cannot release vfork creator admission");
-  }
-  if (borrowedReplay) {
-    throw new Error("ordinary fork cannot borrow replay workspace");
-  }
-  return handleOrdinaryFork(
-    parentPid,
-    childPid,
-    mode,
-    parentMemory,
-    continuation,
-  );
-}
-
-
 
 async function handleExec(
   request: PreparedExecLaunchRequest,

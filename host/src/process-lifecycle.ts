@@ -93,7 +93,12 @@ import {
   type VforkLifetimeCoordinator,
   type VforkLifetimeDisposition,
 } from "./vfork-lifetime";
-import { SIGSEGV, signalExitStatus } from "./trap-signals";
+import {
+  classifiedSignalOrFallback as classifySignalOrFallback,
+  classifiedTrapExitStatus as classifyTrapExitStatus,
+  SIGSEGV,
+  signalExitStatus,
+} from "./trap-signals";
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import type {
   ExactProcessGenerationDetachLedger,
@@ -2622,6 +2627,77 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   }
 
   /**
+   * Ask the kernel what a trap message means.
+   *
+   * The message can only be captured in a host realm, but the table that
+   * reads it lives in `wasm_posix_shared::trap_signal` so both hosts and
+   * `crates/host-native` agree. Returns 0 before the kernel worker exists,
+   * which callers treat as "unclassified".
+   */
+  const classifyWasmTrap = (text: string): number => {
+    const kernel = host.kernel() as CentralizedKernelWorker | undefined;
+    return kernel ? kernel.classifyWasmTrapSignal(text) : 0;
+  };
+
+  const classifiedSignalOrFallback = (
+    reason: unknown,
+    fallback: number = SIGSEGV,
+  ): number => classifySignalOrFallback(classifyWasmTrap, reason, fallback);
+
+  const classifiedTrapExitStatus = (reason: unknown): number | null =>
+    classifyTrapExitStatus(classifyWasmTrap, reason);
+
+  /**
+   * Route a committed fork to the construction its mode names.
+   *
+   * Byte-identical in the two entries before this, and it stays a pure
+   * dispatcher: the preconditions it enforces come from the kernel's launch
+   * contract, not from host policy.
+   */
+  async function handleFork(
+    parentPid: number,
+    childPid: number,
+    mode: ProcessForkMode,
+    parentMemory: WebAssembly.Memory,
+    continuation: ForkContinuationContext,
+    borrowedReplay?: ForkBorrowedReplayWorkspace,
+    releaseCreatorAdmission?: () => void,
+  ): Promise<number[]> {
+    traceVforkMechanism(
+      "dispatch",
+      `mode=${mode} parent=${parentPid} child=${childPid}`,
+    );
+    if (mode === PROCESS_FORK_MODE_VFORK) {
+      if (!borrowedReplay) {
+        throw new VforkAddressSpaceBusyError(
+          "vfork launch is missing its admitted replay workspace",
+        );
+      }
+      return handleVfork(
+        parentPid,
+        childPid,
+        parentMemory,
+        continuation,
+        borrowedReplay,
+        releaseCreatorAdmission,
+      );
+    }
+    if (releaseCreatorAdmission) {
+      throw new Error("ordinary fork cannot release vfork creator admission");
+    }
+    if (borrowedReplay) {
+      throw new Error("ordinary fork cannot borrow replay workspace");
+    }
+    return handleOrdinaryFork(
+      parentPid,
+      childPid,
+      mode,
+      parentMemory,
+      continuation,
+    );
+  }
+
+  /**
    * Construct a vfork child: it borrows the parent's address space and the
    * parent stays suspended until the child execs or exits.
    *
@@ -3043,6 +3119,10 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
 
   return {
     bindForkHostImports,
+    classifyWasmTrap,
+    classifiedSignalOrFallback,
+    classifiedTrapExitStatus,
+    handleFork,
     completeVforkGenerationTeardown,
     handleVfork,
     handleSpawn,
