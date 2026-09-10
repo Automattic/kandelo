@@ -92,7 +92,25 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
     artifact="$REPO_ROOT/local-binaries/fork_module${width}.wasm"
     key_path="$(build_key_path "$width")"
     if [[ ! -f "$artifact" ]]; then
-      continue # this width was never built here (e.g. wasm64 best-effort); nothing to verify.
+      if [[ "$width" == "32" ]]; then
+        # wasm32 is REQUIRED, and its absence has to fail.
+        #
+        # This used to `continue` for every width, so a tree with no
+        # fork-module at all reported "fresh" and exited 0. The caller that
+        # matters is `ensure_coresident_fork_module_built` in
+        # `tools/xtask/src/local_build.rs`: it runs this check first and only
+        # builds when it FAILS. A success on a missing artifact therefore meant
+        # the module was never built, and the local-build then died much later
+        # at projection finalization with "missing from local-binaries" -- an
+        # error about a step that should have run automatically.
+        #
+        # Absence is not freshness. wasm64 below stays best-effort because it
+        # is a tier-3 target this script itself builds only opportunistically.
+        echo "fork-module: $artifact is missing; build it with" \
+          "'bash crates/fork-module/build-wasm.sh'." >&2
+        status=1
+      fi
+      continue
     fi
     if [[ ! -f "$key_path" ]]; then
       echo "fork-module: $artifact carries no build-key stamp ($key_path is missing);" \
