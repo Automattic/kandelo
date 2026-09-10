@@ -9488,17 +9488,6 @@ pub extern "C" fn kernel_sendmsg(
     } else {
         None
     };
-    let control_records = match crate::msghdr::read_control(
-        &mut host,
-        pid,
-        header.control_addr,
-        header.control_len,
-        width,
-    ) {
-        Ok(records) => records,
-        Err(error) => bail!(error),
-    };
-
     let active_ancillary = match syscalls::clone_active_sendmsg_ancillary(proc, tid) {
         Ok(ancillary) => ancillary,
         Err(err) => {
@@ -9514,6 +9503,26 @@ pub extern "C" fn kernel_sendmsg(
     let (ancillary_fds, binding_template) = if let Some(ancillary) = active_ancillary {
         (ancillary, None)
     } else {
+        // WHY the control chain is parsed HERE, and not before the retained
+        // check above: a blocked `sendmsg` keeps its in-flight descriptors in
+        // `BlockingRetryTarget::Sendmsg`, and a retry must use those rather
+        // than re-read the caller's buffer. Another thread could have
+        // scribbled it while this one waited, and a retry that then failed
+        // EINVAL would refuse a message the caller had already committed.
+        let control_records = match crate::msghdr::read_control(
+            &mut host,
+            pid,
+            header.control_addr,
+            header.control_len,
+            width,
+        ) {
+            Ok(records) => records,
+            Err(error) => {
+                finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+                deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+                return -(error as i32);
+            }
+        };
         let ancillary = match extract_scm_rights(proc, &control_records) {
             Ok(fds) => fds,
             Err(err) => {
