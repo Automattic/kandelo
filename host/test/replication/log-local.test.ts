@@ -1079,6 +1079,39 @@ describe("local replication log promotion", () => {
     }
   });
 
+  it("ends the taker's watch before the release answer arrives", async () => {
+    const link = `replication-test-${crypto.randomUUID()}`;
+    const keeper = new LocalReplicationLog<string>(link);
+    const taker = new LocalReplicationLog<string>(link);
+    const recorder = new ReplicationLogRecorder();
+    const stopPublish = keeper.publish(recorder);
+    const sink = fakeSink();
+    const stopWatch = taker.watch(sink.sink);
+    const stopServing = keeper.servePromotion({
+      seal: async () => ({ seq: 0, hash: stateHash(0, "aa") }),
+      adopt: async () => {
+        // Releasing the machine stops its recording; the answer follows.
+        stopPublish();
+        return true;
+      },
+    });
+    try {
+      recordClocks(recorder, 1);
+      await vi.waitFor(() => expect(sink.taken()).toHaveLength(1));
+      const sealed = await taker.requestPromotion(5_000);
+      await taker.requestAdoption(sealed.takeId, stateHash(0, "aa"), 5_000);
+      // The recording's end outran the release answer: a taker that drops
+      // its replica on `ended` destroys the machine it is adopting. The
+      // taker must hold the replica through the adoption.
+      expect(sink.ended()).toBe(1);
+    } finally {
+      stopServing();
+      stopWatch();
+      keeper.close();
+      taker.close();
+    }
+  });
+
   it("refuses the adoption when the keeper's proof says no", async () => {
     const link = `replication-test-${crypto.randomUUID()}`;
     const keeper = new LocalReplicationLog<string>(link);

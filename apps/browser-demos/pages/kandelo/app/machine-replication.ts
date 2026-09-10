@@ -483,6 +483,11 @@ export function useMachineReplication(
        * running now.
        */
       let stopMisses: (() => void) | null = null;
+      // The keeper's release stops its recording, and the recording's end
+      // reaches this page on the wire before the release does. During an
+      // adoption that end is the take-over happening, not the machine going
+      // away: the replica must stay, because it is about to be the machine.
+      let adopting = false;
       const dropReplica = () => {
         if (!replica) return;
         replica = false;
@@ -569,6 +574,7 @@ export function useMachineReplication(
             hashed.hash as MachineStateHash,
           );
           if (report.diverged) return false;
+          adopting = true;
           await wire.requestAdoption(
             sealed.takeId,
             hashed.hash as MachineStateHash,
@@ -577,7 +583,10 @@ export function useMachineReplication(
           // The keeper released: the machine is this computer's own from
           // here, whatever happens to this stint. Adopt before anything can
           // drop what the person just took.
-          await host.promoteReplicaMachine();
+          const progress = await host.promoteReplicaMachine();
+          if (progress === null) {
+            throw new Error("this page no longer holds the replica it hashed");
+          }
           replica = false;
           live = null;
           stopMisses?.();
@@ -591,6 +600,7 @@ export function useMachineReplication(
           decide(host.getStatus());
           return true;
         } catch {
+          adopting = false;
           return false;
         }
       };
@@ -625,6 +635,7 @@ export function useMachineReplication(
               },
               ended: () => {
                 saved.writer.end();
+                if (adopting) return;
                 dropReplica();
               },
               diverged: (error) => {
@@ -715,6 +726,7 @@ export function useMachineReplication(
             },
             ended: () => {
               writer.end();
+              if (adopting) return;
               if (!replica) {
                 // The recording ended before this attempt was running on it —
                 // the machine moved again, or it had briefly recorded for an
