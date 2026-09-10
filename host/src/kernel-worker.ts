@@ -1596,13 +1596,6 @@ interface AnonymousSharedMmapBacking {
   version: number;
 }
 
-interface SysvShmMapping {
-  segId: number;
-  size: number;
-  readOnly: boolean;
-  snapshot: Uint8Array;
-  seenVersion: number;
-}
 
 interface PreparedInheritedSharedMapping {
   readonly mapAddr: number;
@@ -1628,13 +1621,6 @@ interface PreparedInheritedFdWritebackMapping {
   readonly inherited: SharedMmapMapping;
 }
 
-interface PreparedInheritedSysvMapping {
-  readonly mapAddr: number;
-  readonly source: SysvShmMapping;
-  readonly segId: number;
-  readonly size: number;
-  readonly readOnly: boolean;
-}
 
 interface PreparedSharedMappingInheritance {
   readonly parentPid: number;
@@ -1644,24 +1630,11 @@ interface PreparedSharedMappingInheritance {
   readonly parentSharedMap: Map<number, SharedMmapMapping> | undefined;
   readonly parentSharedEntries:
     readonly (readonly [number, SharedMmapMapping])[];
-  readonly parentSysvMap: Map<number, SysvShmMapping> | undefined;
-  readonly parentSysvEntries:
-    readonly (readonly [number, SysvShmMapping])[];
   readonly sharedMappings: readonly PreparedInheritedSharedMapping[];
   readonly fdWritebackMappings: readonly PreparedInheritedFdWritebackMapping[];
-  readonly sysvMappings: readonly PreparedInheritedSysvMapping[];
 }
 
-interface MaterializedInheritedSysvMapping
-  extends PreparedInheritedSysvMapping {
-  readonly latest: Uint8Array;
-  readonly seenVersion: number;
-}
 
-interface MaterializedSharedMappingInheritance {
-  readonly prepared: PreparedSharedMappingInheritance;
-  readonly sysvMappings: readonly MaterializedInheritedSysvMapping[];
-}
 
 interface RegisterProcessOptions {
   argv?: string[];
@@ -3140,15 +3113,25 @@ export class CentralizedKernelWorker {
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
   /**
-   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
+   * Number of processes owning at least one SysV shared-memory attachment.
    *
-   * WHY: separate WebAssembly memories cannot directly share segment bytes.
-   * Rust owns attachment identity and lifetime; the shared host still needs
-   * snapshots and versions to reconcile bytes across those memories.
+   * The mirror itself is Rust-owned: `SharedMappingTable` in
+   * `crates/runtime-core/src/memory.rs` holds every attachment's snapshot and
+   * every segment's version, and the kernel reads its own segment bytes.
+   *
+   * WHY THIS NUMBER EXISTS. `synchronizeSharedMemoryForBoundary` runs on every
+   * syscall boundary and has to answer "does this machine own SysV shared
+   * state" without paying for the answer; that used to be `shmMappings.size`.
+   * Asking the kernel once per boundary would put a new call on the syscall
+   * hot path for every process, including the ones that never touch SysV IPC.
+   * So the host caches the answer and refreshes it from the kernel at every
+   * site that can change it: shmat, shmdt, fork inheritance, exec, teardown.
+   *
+   * It is a cached predicate refreshed from the authority, never a second
+   * authority. Nothing here increments or decrements it independently, so it
+   * cannot drift from the kernel's table.
    */
-  private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
-  /** Authoritative segment version, incremented after each merged publication. */
-  private shmSegmentVersions = new Map<number, number>();
+  #sysvActivePidCount = 0;
 
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results.
@@ -9135,7 +9118,10 @@ export class CentralizedKernelWorker {
     const channel = registration?.channels[0];
     if (!channel) {
       const hasShared = (this.sharedMappings.get(pid)?.size ?? 0) > 0;
-      const hasSysv = (this.shmMappings.get(pid)?.size ?? 0) > 0;
+      const hasSysv = this.#requireSysvMirrorExport<(pid: number) => number>(
+        "kernel_shared_mapping_sysv_process_count",
+        entry,
+      )(pid) > 0;
       return hasShared || hasSysv ? -EIO : 0;
     }
 
@@ -9182,13 +9168,7 @@ export class CentralizedKernelWorker {
           )) return -EIO;
         }
       }
-      return this.syncSysvShmMappingsFromProcess(
-        channel,
-        { force: true },
-        entry,
-      )
-        ? 0
-        : -EIO;
+      return this.#syncSysvMirrorForProcess(pid, true, entry) ? 0 : -EIO;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       return -EIO;
@@ -9236,7 +9216,11 @@ export class CentralizedKernelWorker {
     // kernelExecCommit is the irreversible Rust commit. It has already drained
     // the authoritative attachment records and decremented nattch; repeating
     // detach here would release a different same-segment attachment.
-    this.shmMappings.delete(pid);
+    this.#releaseSysvMirrorForProcess(
+      pid,
+      { publish: false, detach: false },
+      entry,
+    );
     return 0;
   }
 
@@ -20712,13 +20696,7 @@ export class CentralizedKernelWorker {
       { force: true },
       entry,
     );
-    if (
-      !this.syncSysvShmMappingsFromProcess(
-        channel,
-        { force: true },
-        entry,
-      )
-    ) {
+    if (!this.#syncSysvMirrorForProcess(parentPid, true, entry)) {
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, EIO, entry,
       );
@@ -25625,6 +25603,136 @@ export class CentralizedKernelWorker {
     });
   }
 
+  /**
+   * Resolve one of the kernel's SysV shared-memory mirror entry points.
+   *
+   * A missing export is a kernel/host ABI mismatch, not a runtime condition:
+   * the mirror has no host-side implementation left to fall back to, so
+   * failing loudly is the only truthful outcome.
+   */
+  #requireSysvMirrorExport<T>(
+    name: string,
+    entry?: KernelWorkerEntryContext,
+  ): T {
+    const exported = this.#kernelInstanceForEntry(entry).exports[name];
+    if (typeof exported !== "function") {
+      throw new Error(`Kernel lacks SysV shared-memory export ${name}`);
+    }
+    return exported as unknown as T;
+  }
+
+  /**
+   * Re-read the machine-wide SysV attachment population from the kernel.
+   *
+   * Every site that can change it calls this; see `#sysvActivePidCount`.
+   */
+  #refreshSysvActivePidCount(entry?: KernelWorkerEntryContext): void {
+    const count = this.#requireSysvMirrorExport<() => number>(
+      "kernel_shared_mapping_sysv_active_pid_count",
+      entry,
+    )();
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(
+        `Invalid SysV attachment population from the kernel: ${count}`,
+      );
+    }
+    this.#sysvActivePidCount = count;
+  }
+
+  /**
+   * Reconcile one process's SysV attachments against the segments behind them.
+   *
+   * `force` bypasses the kernel's sole-observer skip, for the publication
+   * points that must become current with no live peer: fork, the exec
+   * address-space preflight, and teardown.
+   */
+  #syncSysvMirrorForProcess(
+    pid: number,
+    force: boolean,
+    entry?: KernelWorkerEntryContext,
+  ): boolean {
+    const result = this.#requireSysvMirrorExport<
+      (pid: number, force: number) => number
+    >("kernel_shared_mapping_sysv_sync_process", entry)(pid, force ? 1 : 0);
+    if (!Number.isSafeInteger(result) || result > 0) {
+      throw new Error(
+        `Invalid SysV mirror sync result from the kernel: ${result}`,
+      );
+    }
+    return result === 0;
+  }
+
+  /**
+   * Publish one attachment's writes, or stop mirroring it, checked against the
+   * kernel attachment record the caller already resolved.
+   *
+   * Returns 0 or a negative errno. shmdt publishes, detaches, and only then
+   * drops, so a failed detach leaves a mirrored attachment rather than an
+   * attachment nobody reconciles.
+   */
+  #sysvMirrorMappingOp(
+    op: "publish" | "drop",
+    pid: number,
+    kernelAddr: KernelPointer,
+    segId: number,
+    size: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const result = this.#requireSysvMirrorExport<
+      (
+        pid: number,
+        addr: KernelPointer,
+        segId: number,
+        size: number,
+      ) => number
+    >(
+      op === "publish"
+        ? "kernel_shared_mapping_sysv_publish_mapping"
+        : "kernel_shared_mapping_sysv_drop_mapping",
+      entry,
+    )(pid, kernelAddr, segId, size);
+    if (op === "drop") this.#refreshSysvActivePidCount(entry);
+    if (!Number.isSafeInteger(result) || result > 0) {
+      throw new Error(
+        `Invalid SysV mirror ${op} result from the kernel: ${result}`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Drop every SysV attachment mirror a process owns.
+   *
+   * `detach` also releases the kernel's own attachment records, which is what
+   * ordinary teardown wants. exec passes false because its commit already
+   * drained them, and repeating the detach would release a different
+   * same-segment attachment.
+   */
+  #releaseSysvMirrorForProcess(
+    pid: number,
+    options: { publish: boolean; detach: boolean },
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const result = this.#requireSysvMirrorExport<
+      (pid: number, publish: number, detach: number) => number
+    >("kernel_shared_mapping_sysv_release_process", entry)(
+      pid,
+      options.publish ? 1 : 0,
+      options.detach ? 1 : 0,
+    );
+    this.#refreshSysvActivePidCount(entry);
+    if (!Number.isSafeInteger(result) || result > 0) {
+      throw new Error(
+        `Invalid SysV mirror release result from the kernel: ${result}`,
+      );
+    }
+    if (result < 0) {
+      throw new Error(
+        `Cannot release SysV attachments for pid=${pid}: errno ${-result}`,
+      );
+    }
+  }
+
   private synchronizeSharedMemoryForBoundary(
     process: Pick<ChannelInfo, "pid" | "memory">,
     entry?: KernelWorkerEntryContext,
@@ -25638,13 +25746,20 @@ export class CentralizedKernelWorker {
     const registration = this.processes?.get(process.pid);
     if (registration && registration.memory !== process.memory) return;
     if (this.processes && !registration) return;
+    const machineOwnsSysvState = this.#sysvActivePidCount > 0;
     if (
       (this.sharedMappings?.size ?? 0) === 0
-      && (this.shmMappings?.size ?? 0) === 0
+      && !machineOwnsSysvState
     ) return;
     this.syncAnonymousSharedMappingsFromProcess(process);
     this.syncFileSharedMappingsFromProcess(process, {}, entry);
-    this.syncSysvShmMappingsFromProcess(process, {}, entry);
+    // Cross into the kernel only when SysV shared memory exists somewhere on
+    // this machine. The kernel returns immediately for a process with no
+    // attachments, but the call itself would otherwise be paid at every
+    // boundary of every process on a machine that never used SysV IPC.
+    if (machineOwnsSysvState) {
+      this.#syncSysvMirrorForProcess(process.pid, false, entry);
+    }
   }
 
   /**
@@ -27812,10 +27927,7 @@ export class CentralizedKernelWorker {
     // Capture the allocation whose bounds were checked and never redirect the
     // prepared transaction to a later memory object.
     const childMemory = child.memory;
-    if (
-      this.sharedMappings.has(childPid)
-      || this.shmMappings.has(childPid)
-    ) {
+    if (this.sharedMappings.has(childPid)) {
       throw new Error(
         `Process ${childPid} already owns inherited shared mappings`,
       );
@@ -27824,10 +27936,6 @@ export class CentralizedKernelWorker {
     const parentSharedMap = this.sharedMappings.get(parentPid);
     const parentSharedEntries = parentSharedMap
       ? Array.from(parentSharedMap.entries())
-      : [];
-    const parentSysvMap = this.shmMappings.get(parentPid);
-    const parentSysvEntries = parentSysvMap
-      ? Array.from(parentSysvMap.entries())
       : [];
     const childBytes = childMemory.buffer.byteLength;
     const sharedMappings: PreparedInheritedSharedMapping[] = [];
@@ -27922,34 +28030,6 @@ export class CentralizedKernelWorker {
       });
     }
 
-    const sysvMappings: PreparedInheritedSysvMapping[] = [];
-    for (const [mapAddr, mapping] of parentSysvEntries) {
-      if (
-        !Number.isSafeInteger(mapAddr)
-        || mapAddr < 0
-        || mapAddr > 0xffff_ffff
-        || !Number.isSafeInteger(mapping.segId)
-        || mapping.segId < 0
-        || mapping.segId > 0x7fff_ffff
-        || !Number.isSafeInteger(mapping.size)
-        || mapping.size <= 0
-        || mapping.size > 0x7fff_ffff
-        || !Number.isSafeInteger(mapAddr + mapping.size)
-        || mapAddr + mapping.size > childBytes
-      ) {
-        throw new Error(
-          `Cannot inherit SysV mapping at 0x${mapAddr.toString(16)}`,
-        );
-      }
-      sysvMappings.push({
-        mapAddr,
-        source: mapping,
-        segId: mapping.segId,
-        size: mapping.size,
-        readOnly: mapping.readOnly,
-      });
-    }
-
     return {
       parentPid,
       childPid,
@@ -27957,11 +28037,8 @@ export class CentralizedKernelWorker {
       childMemory,
       parentSharedMap,
       parentSharedEntries,
-      parentSysvMap,
-      parentSysvEntries,
       sharedMappings,
       fdWritebackMappings,
-      sysvMappings,
     };
   }
 
@@ -27975,7 +28052,6 @@ export class CentralizedKernelWorker {
       this.processes.get(prepared.childPid) !== prepared.child
       || prepared.child.memory !== prepared.childMemory
       || this.sharedMappings.has(prepared.childPid)
-      || this.shmMappings.has(prepared.childPid)
     ) {
       return new Error(
         `Process ${prepared.childPid} changed during shared mapping inheritance`,
@@ -27986,9 +28062,6 @@ export class CentralizedKernelWorker {
         !== prepared.parentSharedMap
       || (prepared.parentSharedMap?.size ?? 0)
         !== prepared.parentSharedEntries.length
-      || this.shmMappings.get(prepared.parentPid) !== prepared.parentSysvMap
-      || (prepared.parentSysvMap?.size ?? 0)
-        !== prepared.parentSysvEntries.length
     ) {
       return new Error(
         `Process ${prepared.parentPid} changed during shared mapping inheritance`,
@@ -27998,13 +28071,6 @@ export class CentralizedKernelWorker {
       if (prepared.parentSharedMap?.get(mapAddr) !== source) {
         return new Error(
           `Process ${prepared.parentPid} changed shared mapping 0x${mapAddr.toString(16)}`,
-        );
-      }
-    }
-    for (const [mapAddr, source] of prepared.parentSysvEntries) {
-      if (prepared.parentSysvMap?.get(mapAddr) !== source) {
-        return new Error(
-          `Process ${prepared.parentPid} changed SysV mapping 0x${mapAddr.toString(16)}`,
         );
       }
     }
@@ -28043,17 +28109,6 @@ export class CentralizedKernelWorker {
         );
       }
     }
-    for (const mapping of prepared.sysvMappings) {
-      if (
-        mapping.source.segId !== mapping.segId
-        || mapping.source.size !== mapping.size
-        || mapping.source.readOnly !== mapping.readOnly
-      ) {
-        return new Error(
-          `SysV mapping changed during inheritance at 0x${mapping.mapAddr.toString(16)}`,
-        );
-      }
-    }
     const childBytes = prepared.childMemory.buffer.byteLength;
     for (const mapping of prepared.sharedMappings) {
       if (mapping.mapAddr + mapping.inherited.len > childBytes) {
@@ -28069,13 +28124,11 @@ export class CentralizedKernelWorker {
         );
       }
     }
-    for (const mapping of prepared.sysvMappings) {
-      if (mapping.mapAddr + mapping.size > childBytes) {
-        return new Error(
-          `Child memory changed during SysV mapping inheritance`,
-        );
-      }
-    }
+    // SysV attachments are not revalidated here: the kernel owns both the
+    // attachment records and the byte mirror, resolves the parent's list at
+    // call time rather than from a host snapshot, and bounds every address
+    // against the child memory length it is handed. There is no host-held
+    // SysV state left for a callback to invalidate between prepare and commit.
     return null;
   }
 
@@ -28595,248 +28648,21 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private hasPeerSysvShmMapping(pid: number, mapAddr: number, segId: number): boolean {
-    for (const [otherPid, mappings] of this.shmMappings) {
-      for (const [otherAddr, mapping] of mappings) {
-        if (mapping.segId !== segId) continue;
-        if (otherPid === pid && otherAddr === mapAddr) continue;
-        return true;
-      }
-    }
-    return false;
-  }
 
-  private syncSysvShmMappingsFromProcess(
-    process: Pick<ChannelInfo, "pid" | "memory">,
-    options: { force?: boolean } = {},
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    const pidMap = this.shmMappings?.get(process.pid);
-    if (!pidMap) return true;
-    const processMem = new Uint8Array(process.memory.buffer);
-    let success = true;
-    for (const [mapAddr, mapping] of pidMap) {
-      if (!options.force
-          && !this.hasPeerSysvShmMapping(process.pid, mapAddr, mapping.segId)) continue;
-      if (!this.mergeAndRefreshSysvShmMapping(
-        processMem,
-        mapAddr,
-        mapping,
-        entry,
-      )) success = false;
-    }
-    return success;
-  }
 
-  /** Publish all current attachments before a new observer joins a segment. */
-  private syncSysvShmSegmentFromMappedProcesses(
-    segId: number,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    for (const [pid, mappings] of this.shmMappings) {
-      const registration = this.processes.get(pid);
-      if (!registration) continue;
-      const processMem = new Uint8Array(registration.memory.buffer);
-      for (const [mapAddr, mapping] of mappings) {
-        if (mapping.segId === segId) {
-          this.mergeAndRefreshSysvShmMapping(
-            processMem,
-            mapAddr,
-            mapping,
-            entry,
-          );
-        }
-      }
-    }
-  }
 
-  private mappingDiffersFromSnapshot(
-    processMem: Uint8Array,
-    mapAddr: number,
-    snapshot: Uint8Array,
-    len: number,
-  ): boolean {
-    for (let offset = 0; offset < len; offset += 4096) {
-      const chunkLen = Math.min(4096, len - offset);
-      if (this.rangeDiffersFromSnapshot(
-        processMem,
-        mapAddr + offset,
-        snapshot,
-        offset,
-        chunkLen,
-      )) return true;
-    }
-    return false;
-  }
 
-  private mergeAndRefreshSysvShmMapping(
-    processMem: Uint8Array,
-    mapAddr: number,
-    mapping: SysvShmMapping,
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    if (mapAddr + mapping.size > processMem.length) return false;
-    const currentVersion = this.shmSegmentVersions.get(mapping.segId) ?? 0;
-    const locallyChanged = !mapping.readOnly && this.mappingDiffersFromSnapshot(
-      processMem,
-      mapAddr,
-      mapping.snapshot,
-      mapping.size,
-    );
-    if (!locallyChanged && mapping.seenVersion === currentVersion) return true;
 
-    const authoritative = this.readSysvShmRange(
-      mapping.segId,
-      0,
-      mapping.size,
-      entry,
-    );
-    if (!authoritative) return false;
-    let published = false;
-    let success = true;
-    if (locallyChanged) {
-      for (let offset = 0; offset < mapping.size; offset += 4096) {
-        const chunkLen = Math.min(4096, mapping.size - offset);
-        if (!this.rangeDiffersFromSnapshot(
-          processMem,
-          mapAddr + offset,
-          mapping.snapshot,
-          offset,
-          chunkLen,
-        )) continue;
-        let i = 0;
-        while (i < chunkLen) {
-          while (
-            i < chunkLen
-            && processMem[mapAddr + offset + i] === mapping.snapshot[offset + i]
-          ) i++;
-          if (i >= chunkLen) break;
-          const start = i;
-          do { i++; } while (
-            i < chunkLen
-            && processMem[mapAddr + offset + i] !== mapping.snapshot[offset + i]
-          );
-          const bytes = processMem.subarray(
-            mapAddr + offset + start,
-            mapAddr + offset + i,
-          );
-          if (!this.writeSysvShmRange(
-            mapping.segId,
-            offset + start,
-            bytes,
-            entry,
-          )) {
-            success = false;
-            break;
-          }
-          authoritative.set(bytes, offset + start);
-          published = true;
-        }
-        if (!success) break;
-      }
-    }
 
-    if (published) {
-      this.shmSegmentVersions.set(mapping.segId, currentVersion + 1);
-    }
-    processMem.set(authoritative, mapAddr);
-    mapping.snapshot = authoritative;
-    mapping.seenVersion = this.shmSegmentVersions.get(mapping.segId) ?? currentVersion;
-    return success;
-  }
-
-  private readSysvShmRange(
-    segId: number,
-    offset: number,
-    len: number,
-    entry?: KernelWorkerEntryContext,
-  ): Uint8Array | null {
-    const readChunk = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shm_read_chunk as
-      ((shmid: number, offset: number, outPtr: KernelPointer, maxLen: number) => number) | undefined;
-    if (!readChunk) return null;
-    const result = new Uint8Array(len);
-    const scratch = this.#requireMainScratchRegion();
-    let transferred = 0;
-    while (transferred < len) {
-      const toRead = Math.min(CH_DATA_SIZE, len - transferred);
-      const attempt = scratch.withLease((lease) => {
-        const nRead = this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_ipc_shm_read_chunk",
-          [
-            segId,
-            offset + transferred,
-            lease.exportPointer(CH_DATA, toRead),
-            toRead,
-          ],
-        );
-        if (
-          !Number.isSafeInteger(nRead)
-          || nRead < 0
-          || nRead > toRead
-        ) {
-          return { nRead, bytes: null };
-        }
-        return {
-          nRead,
-          bytes: nRead > 0 ? lease.copyOut(CH_DATA, nRead) : null,
-        };
-      });
-      if (attempt.nRead < 0 || attempt.nRead > toRead || !attempt.bytes) {
-        if (attempt.nRead === 0) break;
-        return null;
-      }
-      result.set(attempt.bytes, transferred);
-      transferred += attempt.nRead;
-    }
-    return transferred === len ? result : null;
-  }
-
-  private writeSysvShmRange(
-    segId: number,
-    offset: number,
-    bytes: Uint8Array,
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    const writeChunk = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shm_write_chunk as
-      ((shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number) | undefined;
-    if (!writeChunk) return false;
-    const exactBytes = intrinsicUint8ArrayView(
-      bytes,
-      "System V shared-memory input",
-    );
-    const scratch = this.#requireMainScratchRegion();
-    let transferred = 0;
-    while (transferred < exactBytes.byteLength) {
-      const toWrite = Math.min(
-        CH_DATA_SIZE,
-        exactBytes.byteLength - transferred,
-      );
-      const written = scratch.withLease((lease) => {
-        lease.copyFrom(exactBytes, CH_DATA, transferred, toWrite);
-        return this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_ipc_shm_write_chunk",
-          [
-            segId,
-            offset + transferred,
-            lease.exportPointer(CH_DATA, toWrite),
-            toWrite,
-          ],
-        );
-      });
-      if (!Number.isSafeInteger(written) || written <= 0 || written > toWrite) {
-        return false;
-      }
-      transferred += written;
-    }
-    return true;
-  }
 
   /**
-   * Attach and snapshot every SysV segment under one exact entry.
+   * Give a forked child its parent's shared mappings under one exact entry.
+   *
+   * SysV inheritance is a single kernel transaction: the attachment records
+   * (`nattch` and `Process::shm_mappings`) and the byte mirror commit or roll
+   * back together, inside the authority that owns both. The host used to
+   * interleave `shmat`, `record_mapping` and a segment read per attachment and
+   * unwind them itself; it no longer holds the attachment list to drive that.
    *
    * Expected errno-style failures are rolled back before the scope releases;
    * a thrown export traps the generation and is handled by the gate's fatal
@@ -28850,200 +28676,55 @@ export class CentralizedKernelWorker {
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) return validationError;
 
-    const kernelShmat = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmat_for_process as
-      ((pid: number, shmid: number, shmaddr: number, flags: number) => number)
-      | undefined;
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    const recordMapping = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shm_record_mapping_for_process as
-      ((
-        pid: number,
-        addr: KernelPointer,
-        shmid: number,
-        size: number,
-      ) => number) | undefined;
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (
-      prepared.sysvMappings.length > 0
-      && (!kernelShmat || !kernelShmdt || !recordMapping || !kernelShmdtAddr)
-    ) {
-      return new Error("Kernel lacks SysV SHM inheritance exports");
+    const inheritResult = this.#requireSysvMirrorExport<
+      (parentPid: number, childPid: number, childMemoryLen: bigint) => number
+    >("kernel_shared_mapping_sysv_inherit", entry)(
+      prepared.parentPid,
+      prepared.childPid,
+      BigInt(prepared.childMemory.buffer.byteLength),
+    );
+    this.#refreshSysvActivePidCount(entry);
+    if (!Number.isSafeInteger(inheritResult) || inheritResult > 0) {
+      // A positive or imprecise response violates the additive ABI's 0/-errno
+      // contract, so attachment state is no longer provable.
+      throw new Error(
+        `Invalid SysV inheritance result from the kernel: ${inheritResult}`,
+      );
     }
-
-    let kernelMapAddrs: KernelPointer[];
-    try {
-      // Validate the complete child set before the first shmat. A mixed-model
-      // guest address that the kernel usize cannot represent must not acquire
-      // an attachment that Rust is then unable to identify for rollback.
-      kernelMapAddrs = prepared.sysvMappings.map((mapping) =>
-        this.toKernelPtr(mapping.mapAddr));
-    } catch (cause) {
+    if (inheritResult < 0) {
       return new Error(
-        "Cannot represent inherited SysV mapping in the kernel address model",
-        { cause },
+        `SysV shared-memory inheritance failed for pid=${prepared.childPid}`
+        + `: errno ${-inheritResult}`,
       );
-    }
-
-    const attachedMappings: Array<{ mapAddr: number; segId: number }> = [];
-    const materializedSysv: MaterializedInheritedSysvMapping[] = [];
-    for (const [mappingIndex, mapping] of prepared.sysvMappings.entries()) {
-      const result = kernelShmat!(
-        prepared.childPid,
-        mapping.segId,
-        mapping.mapAddr,
-        mapping.readOnly ? SHM_RDONLY : 0,
-      );
-      if (
-        !Number.isSafeInteger(result)
-        || result < 0
-        || result !== mapping.size
-      ) {
-        // Every nonnegative shmat result already incremented nattch, even when
-        // an incompatible kernel reports an unexpected size. It has no Rust
-        // address record yet, so release this one by segment identity.
-        if (Number.isSafeInteger(result) && result >= 0) {
-          const detachResult = kernelShmdt!(
-            prepared.childPid,
-            mapping.segId,
-          );
-          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
-            throw new Error(
-              `SysV shmdt rollback failed for segment ${mapping.segId}`,
-            );
-          }
-        }
-        this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-          prepared.childPid,
-          attachedMappings,
-          entry,
-        );
-        return new Error(
-          `SysV shmat inheritance failed for segment ${mapping.segId}`,
-        );
-      }
-      const recordResult = recordMapping!(
-        prepared.childPid,
-        kernelMapAddrs[mappingIndex]!,
-        mapping.segId,
-        mapping.size,
-      );
-      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
-        if (Number.isSafeInteger(recordResult) && recordResult < 0) {
-          const detachResult = kernelShmdt!(
-            prepared.childPid,
-            mapping.segId,
-          );
-          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
-            throw new Error(
-              `SysV shmdt rollback failed for segment ${mapping.segId}`,
-            );
-          }
-          this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-            prepared.childPid,
-            attachedMappings,
-            entry,
-          );
-          return new Error(
-            `Cannot record inherited SysV segment ${mapping.segId}`,
-          );
-        }
-        // A positive or imprecise response violates the additive ABI's
-        // 0/-errno contract, so attachment state is no longer provable.
-        throw new Error(
-          `Invalid SysV mapping record result for segment ${mapping.segId}`,
-        );
-      }
-      attachedMappings.push({
-        mapAddr: mapping.mapAddr,
-        segId: mapping.segId,
-      });
-      const latest = this.readSysvShmRange(
-        mapping.segId,
-        0,
-        mapping.size,
-        entry,
-      );
-      if (!latest) {
-        this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
-          prepared.childPid,
-          attachedMappings,
-          entry,
-        );
-        return new Error(
-          `Cannot read inherited SysV segment ${mapping.segId}`,
-        );
-      }
-      materializedSysv.push({
-        ...mapping,
-        latest,
-        seenVersion:
-          this.shmSegmentVersions.get(mapping.segId)
-          ?? mapping.source.seenVersion,
-      });
     }
 
     const postExportValidation =
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (postExportValidation !== null) {
-      this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
+      this.#releaseSysvMirrorForProcess(
         prepared.childPid,
-        attachedMappings,
+        { publish: false, detach: true },
         entry,
       );
       return postExportValidation;
     }
 
-    const materialized: MaterializedSharedMappingInheritance = {
-      prepared,
-      sysvMappings: materializedSysv,
-    };
     entry.deferProtocolEffect(() => {
       // WHY: child bytes, mapping ownership, and backing references become
       // visible together only after every Rust attachment succeeded and the
       // exact entry token was revoked.
-      this.#publishSharedMappingInheritance(materialized);
+      this.#publishSharedMappingInheritance(prepared);
       return undefined;
     });
     return null;
-  }
-
-  #rollbackInheritedSysvAttachmentsWithinKernelEntry(
-    childPid: number,
-    attachedMappings: readonly { mapAddr: number; segId: number }[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (!kernelShmdtAddr) {
-      throw new Error("Kernel lost required SysV SHM rollback export");
-    }
-    for (let index = attachedMappings.length - 1; index >= 0; index--) {
-      const mapping = attachedMappings[index]!;
-      const result = kernelShmdtAddr(
-        childPid,
-        this.toKernelPtr(mapping.mapAddr),
-      );
-      if (!Number.isSafeInteger(result) || result < 0) {
-        throw new Error(
-          `SysV shmdt rollback failed for inherited segment ${mapping.segId}`,
-        );
-      }
-    }
   }
 
   /**
    * Publish the prepared child state without invoking host or kernel callbacks.
    */
   #publishSharedMappingInheritance(
-    materialized: MaterializedSharedMappingInheritance,
+    prepared: PreparedSharedMappingInheritance,
   ): void {
-    const { prepared } = materialized;
     const validationError =
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) throw validationError;
@@ -29062,16 +28743,6 @@ export class CentralizedKernelWorker {
         ),
       });
     }
-    for (const mapping of materialized.sysvMappings) {
-      originals.push({
-        mapAddr: mapping.mapAddr,
-        bytes: childMem.slice(
-          mapping.mapAddr,
-          mapping.mapAddr + mapping.size,
-        ),
-      });
-    }
-
     const childSharedMap = new Map<number, SharedMmapMapping>();
     for (const mapping of prepared.sharedMappings) {
       childSharedMap.set(mapping.mapAddr, {
@@ -29096,26 +28767,11 @@ export class CentralizedKernelWorker {
       childSharedMap.set(mapping.mapAddr, childMapping);
       childFdWritebackMappings.push(childMapping);
     }
-    const childSysvMap = new Map<number, SysvShmMapping>();
-    for (const mapping of materialized.sysvMappings) {
-      childSysvMap.set(mapping.mapAddr, {
-        segId: mapping.segId,
-        size: mapping.size,
-        readOnly: mapping.readOnly,
-        snapshot: mapping.latest,
-        seenVersion: mapping.seenVersion,
-      });
-    }
-
     const retainedBackings:
       Array<AnonymousSharedMmapBacking | SharedMmapBacking> = [];
     let sharedPublished = false;
-    let sysvPublished = false;
     try {
       for (const mapping of prepared.sharedMappings) {
-        childMem.set(mapping.latest, mapping.mapAddr);
-      }
-      for (const mapping of materialized.sysvMappings) {
         childMem.set(mapping.latest, mapping.mapAddr);
       }
       for (const mapping of prepared.sharedMappings) {
@@ -29137,10 +28793,6 @@ export class CentralizedKernelWorker {
           this.retainFdWritebackFd(prepared.childPid, childMapping);
         }
       }
-      if (childSysvMap.size > 0) {
-        this.shmMappings.set(prepared.childPid, childSysvMap);
-        sysvPublished = true;
-      }
     } catch (cause) {
       if (
         sharedPublished
@@ -29150,12 +28802,6 @@ export class CentralizedKernelWorker {
         // Undo the writeback-dup refcounts taken for this child; nothing was
         // dup'd here (fork already copied the fd table) so no close is needed.
         this.fdWritebackFdRefs.delete(prepared.childPid);
-      }
-      if (
-        sysvPublished
-        && this.shmMappings.get(prepared.childPid) === childSysvMap
-      ) {
-        this.shmMappings.delete(prepared.childPid);
       }
       for (let index = retainedBackings.length - 1; index >= 0; index--) {
         retainedBackings[index]!.refCount--;
@@ -29167,37 +28813,6 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private releaseAllSysvShmMappingsForProcess(
-    pid: number,
-    publish: boolean = true,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    const pidMap = this.shmMappings?.get(pid);
-    if (!pidMap) return;
-    const registration = this.processes.get(pid);
-    if (publish && registration) {
-      this.syncSysvShmMappingsFromProcess(
-        registration,
-        { force: true },
-        entry,
-      );
-    }
-    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_addr_for_process as
-      ((pid: number, addr: KernelPointer) => number) | undefined;
-    if (!kernelShmdtAddr) {
-      throw new Error("Kernel lacks address-owned SysV SHM teardown export");
-    }
-    for (const [addr, mapping] of pidMap) {
-      const result = kernelShmdtAddr(pid, this.toKernelPtr(addr));
-      if (!Number.isSafeInteger(result) || result !== 0) {
-        throw new Error(
-          `Cannot detach SysV segment ${mapping.segId} at ${addr} for pid=${pid}`,
-        );
-      }
-    }
-    this.shmMappings.delete(pid);
-  }
 
   private releaseAllSharedMemoryForProcess(
     pid: number,
@@ -29227,11 +28842,7 @@ export class CentralizedKernelWorker {
           this.#rethrowKernelEntryFatal(error);
         }
         try {
-          this.syncSysvShmMappingsFromProcess(
-            registration,
-            { force: true },
-            entry,
-          );
+          this.#syncSysvMirrorForProcess(pid, true, entry);
         } catch (error) {
           this.#rethrowKernelEntryFatal(error);
         }
@@ -29286,9 +28897,11 @@ export class CentralizedKernelWorker {
       // dups vanish with it; drop their bookkeeping without issuing closes.
       this.fdWritebackFdRefs.delete(pid);
       this.invalidateSharedMmapFdCacheForPid(pid);
-      if (this.shmMappings) {
-        this.releaseAllSysvShmMappingsForProcess(pid, false, entry);
-      }
+      this.#releaseSysvMirrorForProcess(
+        pid,
+        { publish: false, detach: true },
+        entry,
+      );
     } finally {
       releasing.delete(pid);
     }
@@ -32159,7 +31772,10 @@ export class CentralizedKernelWorker {
 
     // A previously sole observer may not have published at ordinary boundaries.
     // Force it current before this new attachment reads the segment.
-    this.syncSysvShmSegmentFromMappedProcesses(shmid, entry);
+    this.#requireSysvMirrorExport<(segId: number) => number>(
+      "kernel_shared_mapping_sysv_sync_segment",
+      entry,
+    )(shmid);
 
     const kernelShmat = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmat_for_task as
       (pid: number, tid: number, shmid: number, shmaddr: number, flags: number) => number;
@@ -32243,8 +31859,6 @@ export class CentralizedKernelWorker {
         [checkedShmaddr, size, prot, 0x22, -1, 0],
         entry,
       );
-      const snapshot = this.readSysvShmRange(shmid, 0, size, entry);
-      const processMem = new Uint8Array(channel.memory.buffer);
       let mappedRangeValid = false;
       try {
         this.checkedProcessRange(
@@ -32255,7 +31869,7 @@ export class CentralizedKernelWorker {
         );
         mappedRangeValid = true;
       } catch {}
-      if (!snapshot || !mappedRangeValid) {
+      if (!mappedRangeValid) {
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -32267,14 +31881,32 @@ export class CentralizedKernelWorker {
         this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
         return;
       }
-      processMem.set(snapshot, allocatedAddr);
 
-      let pidMappings = this.shmMappings.get(channel.pid);
-      if (!pidMappings) {
-        pidMappings = new Map();
-        this.shmMappings.set(channel.pid, pidMappings);
+      // The kernel reads its own segment bytes and seeds the process's mapped
+      // range from them, so the snapshot no longer travels back to the host
+      // through chunked `kernel_ipc_shm_read_chunk` scratch round trips.
+      const trackResult = this.#requireSysvMirrorExport<
+        (
+          pid: number,
+          addr: KernelPointer,
+          segId: number,
+          size: number,
+          readOnly: number,
+        ) => number
+      >("kernel_shared_mapping_sysv_track", entry)(
+        channel.pid,
+        kernelAllocatedAddr,
+        shmid,
+        size,
+        readOnly ? 1 : 0,
+      );
+      this.#refreshSysvActivePidCount(entry);
+      if (!Number.isSafeInteger(trackResult) || trackResult > 0) {
+        throw new Error(
+          `Invalid SysV mirror registration result from the kernel: ${trackResult}`,
+        );
       }
-      if (pidMappings.has(allocatedAddr)) {
+      if (trackResult < 0) {
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -32286,13 +31918,6 @@ export class CentralizedKernelWorker {
         this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
         return;
       }
-      pidMappings.set(allocatedAddr, {
-        segId: shmid,
-        size,
-        readOnly,
-        snapshot,
-        seenVersion: this.shmSegmentVersions.get(shmid) ?? 0,
-      });
       const recordMapping = this.#kernelInstanceForEntry(entry).exports
         .kernel_ipc_shm_record_mapping_for_task as
         ((
@@ -32312,8 +31937,16 @@ export class CentralizedKernelWorker {
         )
         : -EIO;
       if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
-        pidMappings.delete(allocatedAddr);
-        if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+        // Unwind the mirror without publishing: these bytes are the segment's
+        // own, and the attachment they belong to is about to be released.
+        this.#sysvMirrorMappingOp(
+          "drop",
+          channel.pid,
+          kernelAllocatedAddr,
+          shmid,
+          size,
+          entry,
+        );
         this.#rollbackIpcShmatWithinKernelEntry(
           channel,
           shmid,
@@ -32401,34 +32034,25 @@ export class CentralizedKernelWorker {
       segId: Number(BigInt.asIntN(32, packed)),
       size: Number((packed >> 32n) & 0xffff_ffffn),
     };
-    const pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) {
+    if (kernelMapping.segId < 0 || kernelMapping.size <= 0) {
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
-    const mapping = pidMappings.get(addr);
-    // Rust is authoritative. A missing or divergent byte mirror means the
-    // host cannot publish the attachment safely, so retain the Rust record
-    // for teardown and report the internal coherence failure truthfully.
+    // Publish this attachment's writes before detaching. The kernel checks its
+    // byte mirror against the attachment record just resolved: a missing or
+    // divergent mirror means the two in-kernel authorities disagree, so the
+    // attachment record is retained for teardown and the internal coherence
+    // failure is reported truthfully rather than papered over.
     if (
-      !mapping
-      || kernelMapping.segId < 0
-      || kernelMapping.size <= 0
-      || mapping.segId !== kernelMapping.segId
-      || mapping.size !== kernelMapping.size
+      this.#sysvMirrorMappingOp(
+        "publish",
+        channel.pid,
+        kernelAddr,
+        kernelMapping.segId,
+        kernelMapping.size,
+        entry,
+      ) !== 0
     ) {
-      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
-      return;
-    }
-
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const synced = this.mergeAndRefreshSysvShmMapping(
-      processMem,
-      addr,
-      mapping,
-      entry,
-    );
-    if (!synced) {
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
@@ -32443,14 +32067,22 @@ export class CentralizedKernelWorker {
     if (result < 0) {
       this.completeChannelRawAndRelisten(channel, result, -result, entry);
     } else {
-      pidMappings.delete(addr);
-      if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+      // Forget the mirror only after the detach succeeded, so a failed detach
+      // leaves a mirrored attachment rather than one nobody reconciles.
+      this.#sysvMirrorMappingOp(
+        "drop",
+        channel.pid,
+        kernelAddr,
+        kernelMapping.segId,
+        kernelMapping.size,
+        entry,
+      );
       let unmapFailed = false;
       try {
         const unmap = this.runSyntheticMemorySyscall(
           channel,
           SYS_MUNMAP,
-          [addr, mapping.size],
+          [addr, kernelMapping.size],
           entry,
         );
         if (this.hostReaped?.has(channel.pid)) return;
