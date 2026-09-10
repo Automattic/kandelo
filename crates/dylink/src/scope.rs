@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 
 use wasm_posix_shared::abi::WPK_FORK_REQUIRED_EXPORTS;
 
-use crate::act::InstanceId;
+use crate::act::{GlobalId, InstanceId};
 use crate::error::{DylinkError, DylinkResult};
 use crate::metadata::DylinkMetadata;
 
@@ -69,16 +69,47 @@ pub fn is_public_dylink_export(name: &str) -> bool {
     !name.starts_with("__") && !is_fork_runtime_export(name)
 }
 
+/// How a data symbol's defining global is reached.
+///
+/// A GOT cell needs only the symbol's ADDRESS, but a direct `env.<sym>`
+/// immutable-global import needs the global OBJECT, and the two are not always
+/// the same thing: the main image's data symbols are its own global exports,
+/// while a side module's are loader-created globals holding the raw export
+/// value plus the module's base. Recording which it is keeps
+/// [`crate::act::BindingValue`] constructible without a second lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataBinding {
+    /// The defining instance's own global export.
+    Export { instance: InstanceId, name: String },
+    /// A loader-created relocated global.
+    Global(GlobalId),
+}
+
 /// What a resolved symbol denotes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolValue {
     /// A data symbol: its address in linear memory, already relocated.
-    Data { address: u64 },
+    Data { address: u64, binding: DataBinding },
     /// A function symbol, named by the instance that exports it.
     Func { instance: InstanceId, export: String },
 }
 
 impl SymbolValue {
+    /// A data symbol defined by the main image.
+    pub fn main_data(name: impl Into<String>, address: u64) -> Self {
+        SymbolValue::Data {
+            address,
+            binding: DataBinding::Export { instance: MAIN_INSTANCE, name: name.into() },
+        }
+    }
+
+    pub fn address(&self) -> Option<u64> {
+        match self {
+            SymbolValue::Data { address, .. } => Some(*address),
+            SymbolValue::Func { .. } => None,
+        }
+    }
+
     pub fn kind_str(&self) -> &'static str {
         match self {
             SymbolValue::Data { .. } => "data object",

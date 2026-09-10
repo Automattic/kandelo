@@ -343,7 +343,7 @@ pub fn decide_got_cell(request: GotRequest<'_>) -> DylinkResult<GotDecision> {
 
     let init = match (resolved, kind) {
         (Some(resolved), GotKind::Mem) => {
-            let SymbolValue::Data { address } = resolved.value else {
+            let SymbolValue::Data { address, .. } = resolved.value else {
                 unreachable!("kind agreement was checked above");
             };
             GotInit::Resolved(WasmValue::address(width, address)?)
@@ -422,7 +422,7 @@ pub fn refresh_shared_cells(
     for (symbol, cell) in table.shared_cells() {
         let resolved = lookup(symbol);
         let next = match (&resolved, cell.kind) {
-            (Some(ResolvedSymbol { value: SymbolValue::Data { address }, .. }), GotKind::Mem) => {
+            (Some(ResolvedSymbol { value: SymbolValue::Data { address, .. }, .. }), GotKind::Mem) => {
                 WasmValue::address(width, *address)?
             }
             (Some(ResolvedSymbol { value: value @ SymbolValue::Func { .. }, .. }), GotKind::Func) => {

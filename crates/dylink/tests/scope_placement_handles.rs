@@ -58,7 +58,7 @@ fn library(name: &str, instance: u32, needed: &[&str], global: bool) -> LoadedLi
 fn the_first_global_definition_wins() {
     let mut scope = LinkerScope::new();
     scope.publish_main_image(
-        [(String::from("malloc"), SymbolValue::Data { address: 0x100 })],
+        [(String::from("malloc"), SymbolValue::main_data("malloc", 0x100))],
         [],
         0,
     );
@@ -66,15 +66,15 @@ fn the_first_global_definition_wins() {
     let mut first = library("libone.so", 1, &[], true);
     first
         .exports
-        .insert("malloc".into(), SymbolValue::Data { address: 0x200 });
+        .insert("malloc".into(), SymbolValue::main_data("malloc", 0x200));
     first
         .exports
-        .insert("only_here".into(), SymbolValue::Data { address: 0x201 });
+        .insert("only_here".into(), SymbolValue::main_data("only_here", 0x201));
     scope.insert(first).expect("insert");
     scope.publish_global_library_symbols("libone.so").expect("publish");
 
     let resolved = scope.global_symbol("malloc").expect("malloc");
-    assert_eq!(resolved.value, SymbolValue::Data { address: 0x100 });
+    assert_eq!(resolved.value, SymbolValue::main_data("malloc", 0x100));
     assert_eq!(resolved.owner, None, "the main image keeps the definition");
     assert_eq!(
         scope.global_symbol("only_here").map(|symbol| symbol.owner.clone()),
@@ -101,7 +101,7 @@ fn a_local_object_is_scoped_not_global() {
     let mut local = library("libprivate.so", 1, &[], false);
     local
         .exports
-        .insert("helper".into(), SymbolValue::Data { address: 0x500 });
+        .insert("helper".into(), SymbolValue::main_data("helper", 0x500));
     scope.insert(local).expect("insert");
     scope.publish_global_library_symbols("libprivate.so").expect("publish");
 
@@ -121,10 +121,10 @@ fn promotion_reaches_the_whole_dependency_closure() {
     let mut scope = LinkerScope::new();
     let mut leaf = library("libleaf.so", 1, &[], false);
     leaf.exports
-        .insert("leaf_symbol".into(), SymbolValue::Data { address: 0x10 });
+        .insert("leaf_symbol".into(), SymbolValue::main_data("leaf_symbol", 0x10));
     let mut mid = library("libmid.so", 2, &["libleaf.so"], false);
     mid.exports
-        .insert("mid_symbol".into(), SymbolValue::Data { address: 0x20 });
+        .insert("mid_symbol".into(), SymbolValue::main_data("mid_symbol", 0x20));
     scope.insert(leaf).expect("insert");
     scope.insert(mid).expect("insert");
 

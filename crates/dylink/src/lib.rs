@@ -105,11 +105,12 @@ pub use placement::{
     MemoryPlacement, TablePlacement, TlsRegion,
 };
 pub use plan::{
-    InitializationStage, LinkPlan, LoadRequest, PlanStep, ReplayInputs, StagedCall,
+    HostRequest, InitializationStage, LinkPlan, Linker, LinkerConfig, LoadRequest,
+    PendingTransaction, PlanStep, ReplayInputs, StagedCall,
 };
 pub use scope::{
-    is_fork_runtime_export, is_public_dylink_export, LinkerScope, LoadState, LoadedLibrary,
-    ResolvedSymbol, SymbolValue, MAIN_INSTANCE,
+    is_fork_runtime_export, is_public_dylink_export, DataBinding, LinkerScope, LoadState,
+    LoadedLibrary, ResolvedSymbol, SymbolValue, MAIN_INSTANCE,
 };
 pub use wasm::{
     custom_section, read_module_shape, require_passive_data_segments,

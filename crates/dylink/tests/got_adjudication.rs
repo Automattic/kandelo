@@ -202,7 +202,7 @@ fn a_resolved_function_without_a_slot_is_pending_not_zero() {
 #[test]
 fn a_data_symbol_cannot_satisfy_a_function_address() {
     let metadata = metadata_with(vec![("GOT.func", "value", 0)]);
-    let resolved = global(SymbolValue::Data { address: 0x1000 }, None, true);
+    let resolved = global(SymbolValue::main_data("value", 0x1000), None, true);
     assert_eq!(
         decide_got_cell(request(
             &metadata,
@@ -247,7 +247,7 @@ fn a_function_cannot_satisfy_a_data_address() {
 #[test]
 fn a_globally_resolved_symbol_shares_its_cell() {
     let metadata = metadata_with(vec![("GOT.mem", "environ", 0)]);
-    let resolved = global(SymbolValue::Data { address: 0x2000 }, None, true);
+    let resolved = global(SymbolValue::main_data("environ", 0x2000), None, true);
     let decision = decide_got_cell(request(
         &metadata,
         GotKind::Mem,
@@ -268,7 +268,7 @@ fn a_globally_resolved_symbol_shares_its_cell() {
 fn a_locally_resolved_symbol_takes_an_instance_local_cell() {
     let metadata = metadata_with(vec![("GOT.mem", "private_state", 0)]);
     let resolved = global(
-        SymbolValue::Data { address: 0x3000 },
+        SymbolValue::main_data("private_state", 0x3000),
         Some("libprivate.so"),
         false,
     );
@@ -319,7 +319,7 @@ fn an_archived_value_wins_over_fresh_resolution() {
 #[test]
 fn pointer_width_is_honoured_in_both_directions() {
     let metadata = metadata_with(vec![("GOT.mem", "big", 0)]);
-    let resolved = global(SymbolValue::Data { address: 0x1_0000_0000 }, None, true);
+    let resolved = global(SymbolValue::main_data("big", 0x1_0000_0000), None, true);
     let mut req = request(
         &metadata,
         GotKind::Mem,
