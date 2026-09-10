@@ -1121,7 +1121,11 @@ fn read_i32_const_from_function(
     // TypeScript had to enumerate every opcode's immediate shape, and an opcode
     // it did not know desynchronized the walk silently.
     let reader = wasmparser::BinaryReader::new(body, 0);
-    let mut body_reader = wasmparser::FunctionBody::new(reader);
+    let body_reader = wasmparser::FunctionBody::new(reader);
+    // `get_operators_reader` skips the locals declarations itself. They are read
+    // here first purely to REJECT a body whose locals are malformed: without
+    // that, a corrupt body would fall through to "no constant found", which the
+    // policy reads as "predates the marker" rather than as the corruption it is.
     let mut locals = body_reader.get_locals_reader().ok()?;
     for _ in 0..locals.get_count() {
         locals.read().ok()?;

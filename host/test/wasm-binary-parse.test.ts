@@ -1624,8 +1624,16 @@ describe("wasm artifact policy helpers", () => {
   it("rejects function signatures that drift from the descriptor pointer width", () => {
     const wasm = completeForkWasm({ pointerWidth: 8, exportPointerWidth: 4 });
     expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
-    expect(describeWasmArtifactPolicyFailures(wasm)).toContain(
-      `ABI ${ABI_VERSION} wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()`,
+    // A PREFIX match, not an exact one: the reader now appends what the
+    // artifact actually declares (`, found (i32) -> ()`), which is the fact
+    // that tells whoever reads the refusal which rebuild would fix it. The
+    // expectation still pins the export named and the signature required.
+    expect(describeWasmArtifactPolicyFailures(wasm)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          `ABI ${ABI_VERSION} wasm-fork-instrument export wpk_fork_abort_begin has the wrong signature; expected (i64) -> ()`,
+        ),
+      ]),
     );
   });
 
