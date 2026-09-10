@@ -257,17 +257,17 @@ fn detached_failure(message: &str) -> i32 {
 /// This may grow the module's memory, so the caller MUST re-acquire its
 /// `ArrayBuffer` view before writing. See the memory contract above.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_input_reserve(len: u32) -> u32 {
+pub extern "C" fn dl_input_reserve(len: u32) -> usize {
     let input = &mut buffers().input;
     input.clear();
     input.resize(len as usize, 0);
-    input.as_ptr() as usize as u32
+    input.as_ptr() as usize
 }
 
 /// The address of the answer bytes from the last successful call.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_output_ptr() -> u32 {
-    buffers().output.as_ptr() as usize as u32
+pub extern "C" fn dl_output_ptr() -> usize {
+    buffers().output.as_ptr() as usize
 }
 
 /// The length of the answer bytes from the last successful call.
@@ -419,13 +419,18 @@ pub extern "C" fn dl_resume(len: u32) -> i32 {
 /// memory, so a child that renumbered them would hand back a handle the program
 /// has never seen — which is why the planner treats a mismatch as an error
 /// rather than silently reassigning.
+///
+/// `i32` rather than `i64` deliberately: handles are allocated from 2 upwards,
+/// one per live `dlopen`, so they cannot approach `i32::MAX`, and an `i64`
+/// parameter would force every JavaScript caller to pass a `BigInt` for a small
+/// counter.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_open_finish(replay_handle: i64) -> i32 {
+pub extern "C" fn dl_open_finish(replay_handle: i32) -> i32 {
     buffers().output.clear();
     let replay_handle = match replay_handle {
         -1 => None,
-        handle if (0..=u32::MAX as i64).contains(&handle) => Some(handle as u32),
-        _ => return fail("replay handle is outside the u32 handle space"),
+        handle if handle >= 0 => Some(handle as u32),
+        _ => return fail("replay handle must be -1 (none) or a non-negative handle"),
     };
     let Some(state) = session().as_mut() else {
         return detached_failure("no linker session; call dl_configure first");
