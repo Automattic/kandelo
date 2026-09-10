@@ -261,20 +261,30 @@ describe("WASI translation: the documented per-defect divergences", () => {
     }
   });
 
-  it("defect 6 (unchartered) — wasiClockToPosix silently defaults to CLOCK_REALTIME", () => {
+  it("defect 6 — wasiClockToPosix silently substitutes CLOCK_REALTIME", () => {
     const t = expectDomainSize("wasiClockToPosix", 9);
-    expect(t.divergence!.defect).toBe("defect-6-unchartered");
+    expect(t.divergence!.defect).toBe("defect-6");
+    const diverging = new Set((t.divergence!.inputs as number[]).map(Number));
+    // Exactly the undefined clock ids.
+    expect([...diverging].sort((a, b) => a - b)).toEqual([4, 5, 6, 7, 8]);
+
     for (const row of t.values) {
       const clock = row.in as number;
-      // `out` is the bug-compatible answer, and it must still match today's
-      // TypeScript exactly: this defect was NOT chartered for a fix.
+      // `out` must still describe the TypeScript exactly, everywhere — that
+      // is what makes the divergence below attributable to the fix rather
+      // than to drift in the baseline.
       expect(ts.wasiClockToPosix(clock), `clock ${clock}`).toBe(row.out);
-      if (clock <= 3) {
-        expect(row.strict, "defined clocks are unambiguous").toBe(clock);
+
+      if (!diverging.has(clock)) {
+        // A defined clock: Rust and the TypeScript agree.
+        expect(row.strict, `clock ${clock} is unambiguous`).toBe(clock);
+        expect(row.strict).toBe(row.out);
       } else {
-        // What the honest answer would be, recorded but not yet adopted.
-        expect(row.strict).toBeNull();
-        expect(row.out).toBe(0);
+        // An undefined clock: the TypeScript hands back CLOCK_REALTIME and
+        // the guest cannot tell it asked for something unimplemented. Rust
+        // returns null, which the entry points surface as EINVAL.
+        expect(row.out, "the TypeScript substitutes REALTIME").toBe(0);
+        expect(row.strict, "Rust refuses instead of substituting").toBeNull();
       }
     }
   });

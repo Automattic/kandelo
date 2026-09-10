@@ -1206,13 +1206,46 @@ fn clock_time_get_folds_the_timespec_into_nanoseconds() {
 }
 
 #[test]
-fn an_undefined_clock_still_silently_becomes_realtime() {
-    // Bug-compatible on purpose: this is the unchartered sixth defect, left
-    // for a maintainer decision rather than changed here.
-    let mem = memory();
-    let shim = shim_with(&mem, |_, _| ChannelResponse::ok(0));
-    shim.clock_time_get(99, 0, GUEST).expect("clock");
-    assert_eq!(shim.chan.only_call().args[0], 0, "CLOCK_REALTIME");
+fn defect_6_an_undefined_clock_is_refused_not_substituted() {
+    // The TypeScript answers CLOCK_REALTIME for anything it does not
+    // recognise, so a guest asking for an unimplemented clock silently gets a
+    // different one. Both clock entry points now refuse.
+    for clock in [4u32, 5, 99, u32::MAX] {
+        let mem = memory();
+        let shim = shim_ok(&mem, 0);
+        assert_eq!(
+            shim.clock_time_get(clock, 0, GUEST),
+            Err(WasiErrno::Inval),
+            "clock_time_get({clock})"
+        );
+        assert!(
+            shim.chan.calls().is_empty(),
+            "an unimplemented clock must not reach the kernel as a different one"
+        );
+
+        let mem = memory();
+        let shim = shim_ok(&mem, 0);
+        assert_eq!(
+            shim.clock_res_get(clock, GUEST),
+            Err(WasiErrno::Inval),
+            "clock_res_get({clock})"
+        );
+        assert!(shim.chan.calls().is_empty());
+    }
+}
+
+#[test]
+fn the_four_defined_clocks_map_straight_through() {
+    for clock in 0u32..=3 {
+        let mem = memory();
+        let shim = shim_with(&mem, |_, _| ChannelResponse::ok(0));
+        shim.clock_time_get(clock, 0, GUEST).expect("clock");
+        assert_eq!(
+            shim.chan.only_call().args[0],
+            clock as i64,
+            "WASI clock ids 0-3 share their numbering with POSIX CLOCK_*"
+        );
+    }
 }
 
 #[test]

@@ -73,12 +73,15 @@ pub const fn wasi_whence_to_posix(whence: u32) -> Option<u32> {
 
 /// Map a WASI `clockid` onto a POSIX `CLOCK_*`.
 ///
-/// Returns `None` for an undefined clock. **This is stricter than the
-/// TypeScript**, which silently defaults an unknown clock to `CLOCK_REALTIME`
-/// (`wasi-shim.ts:398`). That silent default is a sixth latent defect beyond
-/// the five the migration was chartered to fix, so this function reports the
-/// truth and the *caller* decides; see `wasi_clock_to_posix_lenient` for the
-/// bug-compatible behavior the entry points currently keep.
+/// **DEFECT FIX 6.** Returns `None` for an undefined clock, which the entry
+/// points turn into `EINVAL`. The TypeScript silently defaults anything it
+/// does not recognise to `CLOCK_REALTIME` (`wasi-shim.ts:398`), so a guest
+/// asking for a clock Kandelo does not implement is handed a *different* one
+/// with no way to detect the substitution.
+///
+/// This is the behavior `wasi-module` uses. See
+/// [`wasi_clock_to_posix_lenient`] for the TypeScript-parity form the
+/// differential harness compares against.
 pub const fn wasi_clock_to_posix(clock: u32) -> Option<u32> {
     match WasiClock::from_u32(clock) {
         Some(WasiClock::Realtime) => Some(posix_clock::CLOCK_REALTIME),
@@ -89,13 +92,13 @@ pub const fn wasi_clock_to_posix(clock: u32) -> Option<u32> {
     }
 }
 
-/// Bug-compatible companion to [`wasi_clock_to_posix`]: an undefined clock
-/// becomes `CLOCK_REALTIME`, exactly as `wasiClockToPosix` does today.
+/// The TypeScript's behavior, kept only so the differential harness can pin
+/// the divergence: an undefined clock becomes `CLOCK_REALTIME`.
 ///
-/// Kept separate and named so the behavior is a deliberate, greppable choice
-/// rather than an accident of a `match` arm, and so the differential harness
-/// can assert *both* -- that Rust agrees with the TypeScript here, and that
-/// the strict function disagrees precisely on the undefined inputs.
+/// No entry point calls this. It exists so the harness can assert both halves
+/// of defect 6 -- that this reproduces `wasiClockToPosix` exactly, and that
+/// [`wasi_clock_to_posix`] disagrees with it on precisely the undefined
+/// inputs. It should be deleted along with `host/src/wasi-shim.ts`.
 pub const fn wasi_clock_to_posix_lenient(clock: u32) -> u32 {
     match wasi_clock_to_posix(clock) {
         Some(posix) => posix,

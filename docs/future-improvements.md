@@ -195,6 +195,57 @@ The kernel has full PTY support (PR #181), and browser UI surfaces should use xt
 
 ## Package artifacts
 
+### `bc`'s upstream source cannot be fetched, so the rootfs cannot be built
+
+**A fresh checkout cannot build `rootfs.vfs`.** `scripts/build-rootfs.sh`
+fails at `bc@1.07.1`:
+
+```
+xtask build-deps: bc@1.07.1: build script packages/registry/bc/build-bc.sh
+  exited with exit status: 1
+curl: (22) The requested URL returned error: 404
+```
+
+This is not a missing tarball, and not a local accident. Measured
+2026-09-09:
+
+| URL | Result |
+|---|---|
+| `https://ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (what `packages/registry/bc/package.toml:8` declares) | **404** |
+| ...which redirects to `https://mirror.ihost.md/gnu//gnu/bc/bc-1.07.1.tar.gz` | note the doubled `/gnu/` |
+| `https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (canonical) | **200** |
+
+`ftpmirror.gnu.org` is a redirector that picks a nearby GNU mirror. At least
+one mirror in its rotation answers with a **malformed path** — the `/gnu`
+prefix appears twice — so the redirect lands on a URL that cannot exist.
+Reproducible across retries, so it is not transient. Because the redirector
+is chosen per request and per region, whether a given machine can build `bc`
+depends on which mirror it is handed, which is exactly the kind of
+undeclared-host-state dependency the build contract exists to remove.
+
+**What it blocks.** `rootfs.vfs` is a hard prerequisite for every test that
+boots a kernel with the canonical image. Concretely, the three original WASI
+fixtures (`host/test/wasi-shim.test.ts`, the `wasi-hello` / `wasi-args` /
+`wasi-scalar-abi` cases) cannot run at all in a checkout where the rootfs has
+not been built, and neither can anything else that asks for
+`rootfsImage: "default"`.
+
+**Workaround for tests that do not need the base programs.** A test that
+creates everything it needs can pass `useDefaultRootfs: false` and write
+under `/tmp`, the tmpfs the kernel enables. The kernel's overlay `/` is
+**read-only** with no image loaded — a `path_open` under `/` returns `EROFS`
+— so a scratch file has to go somewhere else. `wasi-file-io.wat` and
+`wasi-readdir.wat` are built this way and run without a rootfs image at all.
+That is a better shape for a fixture regardless: a test of WASI file I/O has
+no business requiring the whole base-program set.
+
+**Fixes to consider**, in rough order of preference: point the recipe at the
+canonical `ftp.gnu.org` URL instead of the redirector (loses mirror
+selection, gains determinism); teach the fetcher to retry the canonical host
+when a redirected fetch 404s; or vendor the checksum-pinned tarball the way
+other pinned sources are handled. The source has a recorded `sha256`, so any
+of these stays verifiable.
+
 ### Restore external software gallery support
 
 The browser currently exposes only repository-defined gallery entries and

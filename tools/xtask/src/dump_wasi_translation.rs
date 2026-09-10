@@ -137,12 +137,13 @@ fn clock_table() -> Table {
         description: "wasiClockToPosix: WASI clockid -> POSIX CLOCK_*",
         values,
         divergence: Some(Divergence {
-            defect: "defect-6-unchartered",
+            defect: "defect-6",
             summary:
-                "wasiClockToPosix silently defaults an undefined clock to CLOCK_REALTIME. \
-                 This is NOT one of the five chartered fixes, so `out` preserves it and the \
-                 harness asserts agreement. `strict` records what the honest answer would be \
-                 (null), pending a maintainer decision.",
+                "wasiClockToPosix silently defaults an undefined clock to CLOCK_REALTIME, so a \
+                 guest asking for a clock Kandelo does not implement is handed a DIFFERENT one \
+                 with no way to detect the substitution. `out` reproduces that behavior so the \
+                 harness can confirm it still describes the TypeScript; `strict` is what \
+                 wasi-module actually does -- null, which the entry points return as EINVAL.",
             inputs: (4u32..=8).map(|c| serde_json::json!(c)).collect(),
         }),
     }
