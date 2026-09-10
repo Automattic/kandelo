@@ -51,21 +51,8 @@ fn message_exports_never_borrow_a_guest_address_as_kernel_memory() {
     // write the KERNEL's address space at a caller-chosen offset, so what has
     // to be pinned now is that neither export does it.
     let source = include_str!("../src/wasm_api.rs");
-    for (name, start_marker, end_marker) in [
-        (
-            "kernel_sendmsg",
-            "pub extern \"C\" fn kernel_sendmsg(",
-            "\n/// recvmsg",
-        ),
-        (
-            "kernel_recvmsg",
-            "pub extern \"C\" fn kernel_recvmsg(",
-            "\n/// wait4 —",
-        ),
-    ] {
-        let start = source.find(start_marker).expect("export start");
-        let end = source[start..].find(end_marker).expect("export end");
-        let body = &source[start..start + end];
+    for name in ["kernel_sendmsg", "kernel_recvmsg"] {
+        let body = item_body(source, &format!("{name}("));
         assert!(
             !body.contains("from_raw_parts"),
             "{name} must not borrow a guest address as kernel memory"
@@ -167,33 +154,67 @@ fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     );
 }
 
-/// Slice out one `pub extern "C" fn` item's text, from its signature to the
-/// start of the next such item.
+/// Every declaration form a `kernel_*` item can take in `wasm_api.rs`.
+///
+/// Both are accepted because being EXPORTED and being pointer-safe are
+/// unrelated properties. Most `kernel_*` functions are reached only as plain
+/// Rust calls from `dispatch_channel_syscall`, never through the Wasm export
+/// table, so they carry no `#[unsafe(no_mangle)] pub extern "C"` -- and the
+/// guest addresses they dereference are exactly as dangerous either way.
+/// Matching only the exported form would silently stop auditing a function on
+/// the day its vestigial export attribute was dropped.
+const ITEM_FORMS: [&str; 2] = ["pub fn ", "pub extern \"C\" fn "];
+
+/// Slice out one `kernel_*` item's text, from its signature to the start of
+/// the next item.
 ///
 /// The boundary is the next item's own signature rather than a neighbouring
-/// doc comment's prose: doc comments belong to whichever export happens to sit
+/// doc comment's prose: doc comments belong to whichever item happens to sit
 /// next in the file, so a delimiter like `"\n/// Remap memory."` silently
 /// breaks -- with a confusing "start not found" panic -- the moment that
 /// neighbour is renamed or deleted. Deleting the dead `kernel_mremap` export
 /// in ABI 44 did exactly that.
-fn extern_item_body<'a>(source: &'a str, function: &str) -> &'a str {
-    let signature = format!("pub extern \"C\" fn {function}");
-    let start = source
-        .find(&signature)
+fn item_body<'a>(source: &'a str, function: &str) -> &'a str {
+    let (start, signature_len) = ITEM_FORMS
+        .iter()
+        .find_map(|form| {
+            let signature = format!("{form}{function}");
+            source.find(&signature).map(|at| (at, signature.len()))
+        })
         .unwrap_or_else(|| panic!("{function} start"));
-    let after = start + signature.len();
-    let end = source[after..]
-        .find("\npub extern \"C\" fn ")
-        .map(|offset| after + offset)
-        .unwrap_or(source.len());
-    &source[start..end]
+
+    let after = start + signature_len;
+    let end = ITEM_FORMS
+        .iter()
+        .filter_map(|form| source[after..].find(&format!("\n{form}")))
+        .min()
+        .map_or(source.len(), |offset| after + offset);
+
+    // Walk back over the doc comments and attributes that introduce the NEXT
+    // item. They sit between the two signatures but belong to the neighbour,
+    // and letting a neighbour's prose into this body would let it satisfy --
+    // or trip -- an assertion about this function.
+    let mut body = &source[start..end];
+    loop {
+        let trimmed = body.trim_end();
+        let Some(last_line_start) = trimmed.rfind('\n') else {
+            break;
+        };
+        let last_line = trimmed[last_line_start + 1..].trim_start();
+        if last_line.starts_with("///") || last_line.starts_with("#[") {
+            body = &trimmed[..last_line_start];
+        } else {
+            break;
+        }
+    }
+    body
 }
 
 #[test]
 fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
     let source = include_str!("../src/wasm_api.rs");
 
-    let utimensat = extern_item_body(source, "kernel_utimensat(");
+    let utimensat = item_body(source, "kernel_utimensat(");
     let path_guard = utimensat
         .find("let path = if path_len == 0 {")
         .expect("zero-length utimensat path guard");
@@ -206,7 +227,7 @@ fn nullable_zero_length_dispatch_paths_never_construct_null_raw_slices() {
     assert!(path_guard < empty_slice && empty_slice < path_raw_slice);
 
     for function in ["kernel_getsockname(", "kernel_getpeername("] {
-        let body = extern_item_body(source, function);
+        let body = item_body(source, function);
         let empty_guard = body
             .find("let result = if addrlen == 0 {")
             .unwrap_or_else(|| panic!("{function} zero-length guard"));
