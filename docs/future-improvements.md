@@ -954,3 +954,15 @@ name it through `alloc`. A native-only check called that code green.
 
 Runtime-core and the kernel ship to wasm. Check **wasm32 and wasm64** before
 claiming a Rust change builds.
+
+Two reproducible symptoms of the shared-cache contention above, recorded so
+they are recognized rather than investigated as defects in the current tree:
+
+- `trusted source-only cache entry vanished before capture` — two agents
+  populating the same entry concurrently.
+- `source-only build input changed while it was validated and digested` — a
+  concurrent Vitest run regenerating `packages/registry/program-packages.json`
+  underneath an in-flight build.
+
+Both cost one agent several build cycles and three consecutive
+`prepare-browser` attempts.

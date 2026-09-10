@@ -366,6 +366,40 @@ product; once from a sibling's concurrent mutation of
 `KANDELO_SOURCE_CACHE_ROOT` now standard in every brief, the tier-end pass
 should not hit it.
 
+## NDD-K4-1 `parseShebang` — RULED (2026-09-10)
+
+**Maintainer's ruling:** *"pursue whatever is first POSIX compliant and useful
+and favor reuse where possible."*
+
+Applied, that splits the question in two, and the cheap half was available all
+along:
+
+**Now — share the duplicate.** The two copies
+(`browser-kernel-worker-entry.ts:311`, `node-kernel-worker-entry.ts:947`) are
+**byte-identical**; verified by diff. The only difference in the surrounding
+pair is the caller's read function — `readExecFileFromFs` in the browser,
+`resolveExec` on Node. Moving `parseShebang` and `MAX_SHEBANG_DEPTH` into the
+shared `process-lifecycle.ts` is therefore **zero behaviour change, zero new
+exports, zero ABI surface, no new state** — the purest available reuse. Assigned
+to the K4a continuation.
+
+**Later — the kernel-owning question stays open, unchanged.**
+`kernel_exec_target_shebang(owner_pid, token, out_ptr, out_len)` needs a
+*prepared target token*; the spawn preflight has none and must remain
+side-effect-free, because POSIX requires `file_actions` run exactly once. The
+three costed options stand (prepare/cancel pair, a new bytes-oriented export, or
+folding into the observable-depth-1 item), and the recommendation remains the
+third.
+
+**Why sharing first is strictly better than choosing among those three today:**
+it removes the duplication immediately at no risk, and leaves **one** call site
+to repoint instead of two when the kernel does take ownership. Nothing is
+foreclosed. Under the maintainer's test — POSIX-correct first, useful, favour
+reuse — a prepare/cancel pair would also have been POSIX-defensible but
+introduces lifecycle state that can leak, and a new bytes-oriented export would
+add a second way to do something the kernel can already do. Reuse wins on both
+counts.
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
