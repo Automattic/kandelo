@@ -4159,6 +4159,25 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
         };
     }
+    // A KERNEL-DEREFERENCED argument: a raw guest address the kernel passes
+    // straight to the cross-memory primitives. It must NOT be narrowed to the
+    // kernel's own `usize` the way `process_address!` does — the kernel never
+    // dereferences it locally, so a wasm64 caller's address above 4 GiB is
+    // perfectly valid even when the kernel itself is wasm32.
+    macro_rules! guest_address {
+        ($index:literal) => {
+            channel_scalar::process_address_argument(nr, args, $index) as u64
+        };
+    }
+    macro_rules! caller_pointer_width {
+        () => {
+            match args[wasm_posix_shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX as usize] {
+                4 => 4u32,
+                8 => 8u32,
+                _ => return -(Errno::EINVAL as i32),
+            }
+        };
+    }
     macro_rules! conditional_process_address {
         ($index:literal) => {
             match checked_channel_pointer(args[$index]) {
@@ -5314,36 +5333,26 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         340 => {
             // SYS_MSGCTL: (qid, cmd, buf_ptr)
+            //
+            // `buf_ptr` is a raw guest address. The argument's direction and
+            // size both depend on `cmd`, so no static descriptor describes it
+            // and the host stages nothing; the kernel reads and writes the
+            // caller's `struct msqid_ds` itself, in the caller's data model.
+            // The private sixth channel slot names that model, because one
+            // kernel instance serves both wasm32 and wasm64 processes.
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-                                   // The host-only sixth slot names the caller data model; it may
-                                   // differ from the kernel Wasm's own pointer width.
-            let wire_transfer = if cmd == 1 || cmd == 2 {
-                let pointer_width = match args[5] {
-                    4 => 4,
-                    8 => 8,
-                    _ => return -(Errno::EINVAL as i32),
-                };
-                match crate::ipc_wire::msqid_ds_size(pointer_width) {
-                    Ok(size) => Some((size, pointer_width)),
-                    Err(error) => return -(error as i32),
-                }
-            } else {
-                None
-            };
+            let buf_addr = guest_address!(2);
+            let mut host = WasmHostIO;
             if cmd == 1 {
-                if args[2] == 0 {
-                    return -(Errno::EFAULT as i32);
-                }
-                let Some((size, pointer_width)) = wire_transfer else {
-                    return -(Errno::EINVAL as i32);
-                };
-                let input_pointer = channel_const_ptr!(2, u8);
-                // SAFETY: the ABI-43 host copied this exact caller-width
-                // structure into its checked channel-scratch lease.
-                let input = unsafe { core::slice::from_raw_parts(input_pointer, size) };
-                let fields = match crate::ipc_wire::read_msqid_ds_set_fields(input, pointer_width) {
+                let pointer_width = caller_pointer_width!();
+                let fields = match crate::ipc_wire::read_msqid_ds_set_fields_from_guest(
+                    &mut host,
+                    pid as i32,
+                    buf_addr,
+                    pointer_width,
+                ) {
                     Ok(fields) => fields,
                     Err(error) => return -(error as i32),
                 };
@@ -5361,20 +5370,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
             match ipc.msgctl(a1, cmd, pid, uid, gid) {
                 Ok(Some(info)) => {
-                    if args[2] == 0 {
-                        return -(Errno::EFAULT as i32);
+                    let pointer_width = caller_pointer_width!();
+                    match crate::ipc_wire::write_msqid_ds_to_guest(
+                        &mut host,
+                        pid as i32,
+                        buf_addr,
+                        &info,
+                        pointer_width,
+                    ) {
+                        Ok(()) => 0,
+                        Err(error) => -(error as i32),
                     }
-                    let Some((size, pointer_width)) = wire_transfer else {
-                        return -(Errno::EINVAL as i32);
-                    };
-                    let output_pointer = channel_mut_ptr!(2, u8);
-                    // SAFETY: the ABI-43 host stages this exact-sized output
-                    // in its checked, kernel-owned channel-scratch lease.
-                    let out = unsafe { core::slice::from_raw_parts_mut(output_pointer, size) };
-                    if let Err(error) = crate::ipc_wire::write_msqid_ds(out, &info, pointer_width) {
-                        return -(error as i32);
-                    }
-                    0
                 }
                 Ok(None) => 0,
                 Err(e) => -(e as i32),
@@ -5429,43 +5435,39 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         343 => {
             // SYS_SEMCTL: (semid, semnum, cmd, arg)
+            //
+            // `arg` is a `union semun`: an `int` for SETVAL, a
+            // `struct semid_ds *` for IPC_STAT/IPC_SET, and an
+            // `unsigned short *` array for GETALL/SETALL. The array's length
+            // is the set's own `nsems` — the caller supplies no length at all
+            // — which is exactly why no static size rule can describe this
+            // argument, and why the kernel reads and writes it directly.
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a3 & !0x100; // strip IPC_64
-                                   // WHY: the host-only sixth channel slot carries the caller's
-                                   // pointer width. The kernel Wasm width is not authoritative
-                                   // because one kernel may serve both wasm32 and wasm64 processes.
-            let stat_transfer = if cmd == 2 {
-                let pointer_width = match args[5] {
-                    4 => 4,
-                    8 => 8,
-                    _ => return -(Errno::EINVAL as i32),
-                };
-                match crate::ipc_wire::semid_ds_size(pointer_width) {
-                    Ok(size) => Some((size, pointer_width)),
-                    Err(error) => return -(error as i32),
-                }
-            } else {
-                None
-            };
-            // SETALL (17): arg points to u16[] in scratch
+            let arg_addr = guest_address!(3);
+            let mut host = WasmHostIO;
+            // SETALL (17)
             if cmd == 17 {
-                if args[3] == 0 {
-                    return -(Errno::EFAULT as i32);
-                }
+                // WHY the byte count comes first: SETALL requires only write
+                // permission. Discovering the length through IPC_STAT would
+                // add a read-permission requirement POSIX does not impose, so
+                // `semctl_array_bytes` applies SETALL's own check.
                 let bytes = match ipc.semctl_array_bytes(a1, 17, uid, gid) {
                     Ok(bytes) => bytes,
                     Err(error) => return -(error as i32),
                 };
-                let values_pointer =
-                    match checked_channel_scratch_start_range(args[3], bytes, scratch_region) {
-                        Ok(pointer) => pointer as *const u8,
-                        Err(error) => return -(error as i32),
-                    };
-                // SAFETY: the ABI-43 host obtained the same permission-checked
-                // byte count before copying into its channel-scratch lease.
-                let values = unsafe { core::slice::from_raw_parts(values_pointer, bytes) };
-                match ipc.semctl_set_all_bytes(a1, values, uid, gid) {
+                let values = match crate::guest_ptr::read_guest_bytes(
+                    &mut host,
+                    pid as i32,
+                    arg_addr,
+                    bytes,
+                    bytes,
+                ) {
+                    Ok(values) => values,
+                    Err(error) => return -(error as i32),
+                };
+                match ipc.semctl_set_all_bytes(a1, &values, uid, gid) {
                     Ok(()) => 0,
                     Err(error) => -(error as i32),
                 }
@@ -5474,55 +5476,28 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                     Ok(crate::ipc::SemCtlResult::Ok) => 0,
                     Ok(crate::ipc::SemCtlResult::Value(v)) => v,
                     Ok(crate::ipc::SemCtlResult::Stat(info)) => {
-                        if args[3] == 0 {
-                            return -(Errno::EFAULT as i32);
-                        }
-                        let Some((size, pointer_width)) = stat_transfer else {
-                            return -(Errno::EINVAL as i32);
-                        };
-                        let output_pointer = match checked_channel_scratch_start_range(
-                            args[3],
-                            size,
-                            scratch_region,
+                        let pointer_width = caller_pointer_width!();
+                        match crate::ipc_wire::write_semid_ds_to_guest(
+                            &mut host,
+                            pid as i32,
+                            arg_addr,
+                            &info,
+                            pointer_width,
                         ) {
-                            Ok(pointer) => pointer as *mut u8,
-                            Err(error) => return -(error as i32),
-                        };
-                        // SAFETY: the ABI-43 host stages this exact-sized
-                        // output in its checked channel-scratch lease.
-                        let out = unsafe { core::slice::from_raw_parts_mut(output_pointer, size) };
-                        if let Err(error) =
-                            crate::ipc_wire::write_semid_ds(out, &info, pointer_width)
-                        {
-                            return -(error as i32);
+                            Ok(()) => 0,
+                            Err(error) => -(error as i32),
                         }
-                        0
                     }
                     Ok(crate::ipc::SemCtlResult::All(vals)) => {
-                        // GETALL: write u16[] to arg pointer
-                        if args[3] == 0 {
-                            return -(Errno::EFAULT as i32);
-                        }
-                        let byte_len = match vals.len().checked_mul(core::mem::size_of::<u16>()) {
-                            Some(byte_len) => byte_len,
-                            None => return -(Errno::EOVERFLOW as i32),
-                        };
-                        let output_pointer = match checked_channel_scratch_start_range(
-                            args[3],
-                            byte_len,
-                            scratch_region,
+                        match crate::ipc_wire::write_sem_values_to_guest(
+                            &mut host,
+                            pid as i32,
+                            arg_addr,
+                            &vals,
                         ) {
-                            Ok(pointer) => pointer as *mut u8,
-                            Err(error) => return -(error as i32),
-                        };
-                        // SAFETY: the ABI-43 host obtained this exact byte
-                        // count before reserving the channel-scratch lease.
-                        let out =
-                            unsafe { core::slice::from_raw_parts_mut(output_pointer, byte_len) };
-                        for (chunk, value) in out.chunks_exact_mut(2).zip(vals.iter()) {
-                            chunk.copy_from_slice(&value.to_le_bytes());
+                            Ok(()) => 0,
+                            Err(error) => -(error as i32),
                         }
-                        0
                     }
                     Err(e) => -(e as i32),
                 }
@@ -5554,37 +5529,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             kernel_ipc_shmdt_addr(shmaddr)
         }
         347 => {
-            // SYS_SHMCTL: (shmid, cmd, buf_ptr)
+            // SYS_SHMCTL: (shmid, cmd, buf_ptr) — same shape as SYS_MSGCTL
+            // above: a raw guest address whose direction and size follow `cmd`.
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-                                   // The host-only sixth slot names the caller data model; it may
-                                   // differ from the kernel Wasm's own pointer width.
-            let wire_transfer = if cmd == 1 || cmd == 2 {
-                let pointer_width = match args[5] {
-                    4 => 4,
-                    8 => 8,
-                    _ => return -(Errno::EINVAL as i32),
-                };
-                match crate::ipc_wire::shmid_ds_size(pointer_width) {
-                    Ok(size) => Some((size, pointer_width)),
-                    Err(error) => return -(error as i32),
-                }
-            } else {
-                None
-            };
+            let buf_addr = guest_address!(2);
+            let mut host = WasmHostIO;
             if cmd == 1 {
-                if args[2] == 0 {
-                    return -(Errno::EFAULT as i32);
-                }
-                let Some((size, pointer_width)) = wire_transfer else {
-                    return -(Errno::EINVAL as i32);
-                };
-                let input_pointer = channel_const_ptr!(2, u8);
-                // SAFETY: the ABI-43 host copied this exact caller-width
-                // structure into its checked channel-scratch lease.
-                let input = unsafe { core::slice::from_raw_parts(input_pointer, size) };
-                let fields = match crate::ipc_wire::read_shmid_ds_set_fields(input, pointer_width) {
+                let pointer_width = caller_pointer_width!();
+                let fields = match crate::ipc_wire::read_shmid_ds_set_fields_from_guest(
+                    &mut host,
+                    pid as i32,
+                    buf_addr,
+                    pointer_width,
+                ) {
                     Ok(fields) => fields,
                     Err(error) => return -(error as i32),
                 };
@@ -5595,20 +5554,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
             match ipc.shmctl(a1, cmd, pid, uid, gid) {
                 Ok(Some(info)) => {
-                    if args[2] == 0 {
-                        return -(Errno::EFAULT as i32);
+                    let pointer_width = caller_pointer_width!();
+                    match crate::ipc_wire::write_shmid_ds_to_guest(
+                        &mut host,
+                        pid as i32,
+                        buf_addr,
+                        &info,
+                        pointer_width,
+                    ) {
+                        Ok(()) => 0,
+                        Err(error) => -(error as i32),
                     }
-                    let Some((size, pointer_width)) = wire_transfer else {
-                        return -(Errno::EINVAL as i32);
-                    };
-                    let output_pointer = channel_mut_ptr!(2, u8);
-                    // SAFETY: the ABI-43 host stages this exact-sized output
-                    // in its checked, kernel-owned channel-scratch lease.
-                    let out = unsafe { core::slice::from_raw_parts_mut(output_pointer, size) };
-                    if let Err(error) = crate::ipc_wire::write_shmid_ds(out, &info, pointer_width) {
-                        return -(error as i32);
-                    }
-                    0
                 }
                 Ok(None) => 0,
                 Err(e) => -(e as i32),
@@ -7118,62 +7074,6 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
     match ipc.shm_write_chunk(shmid, offset, data) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
-    }
-}
-
-/// Byte size of the target musl `struct semid_ds`.
-///
-/// `pointer_width` is the caller process width in bytes, not the kernel Wasm
-/// width: one kernel may serve wasm32 and wasm64 processes. wasm32 uses its
-/// time64 ILP32 layout; wasm64 uses the LP64 layout. The host queries this
-/// before validating or allocating the IPC_STAT transfer.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_semid_ds_bytes(pointer_width: u32) -> i32 {
-    match crate::ipc_wire::semid_ds_size(pointer_width) {
-        Ok(size) => size as i32,
-        Err(error) => -(error as i32),
-    }
-}
-
-/// Byte size of the target musl `struct msqid_ds`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_msqid_ds_bytes(pointer_width: u32) -> i32 {
-    match crate::ipc_wire::msqid_ds_size(pointer_width) {
-        Ok(size) => size as i32,
-        Err(error) => -(error as i32),
-    }
-}
-
-/// Byte size of the target musl `struct shmid_ds`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_shmid_ds_bytes(pointer_width: u32) -> i32 {
-    match crate::ipc_wire::shmid_ds_size(pointer_width) {
-        Ok(size) => size as i32,
-        Err(error) => -(error as i32),
-    }
-}
-
-/// Return the exact kernel-owned array size used by semctl GETALL/SETALL.
-///
-/// The host validates the caller range against this value before moving any
-/// bytes into or out of kernel scratch. Permission checking happens here so
-/// the sizing preflight cannot disclose metadata the command itself could not
-/// access. PID and TID are explicit because a sizing query must not install or
-/// consume the one-shot ambient binding reserved for `kernel_handle_channel`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd: i32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    if let Err(error) = table.validate_task(pid, tid) {
-        return -(error as i32);
-    }
-    let (uid, gid) = match table.get(pid) {
-        Some(process) => (process.effective_uid(), process.effective_gid()),
-        None => return -(Errno::ESRCH as i32),
-    };
-    let ipc = unsafe { crate::ipc::global_ipc_table() };
-    match ipc.semctl_array_bytes(semid, cmd & !0x100, uid, gid) {
-        Ok(bytes) => i32::try_from(bytes).unwrap_or(-(Errno::EOVERFLOW as i32)),
-        Err(error) => -(error as i32),
     }
 }
 
