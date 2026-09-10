@@ -781,6 +781,50 @@ in-development, and because guest re-instrumentation and package rebuilds are
 available — but it is recorded here rather than left to the structural snapshot
 check, which sees a signature change without knowing it is breaking.
 
+**The scatter/gather syscalls follow in ABI 44, and take three `repr(C)`
+struct layouts out of the snapshot with them.** `writev` (81), `readv` (82),
+`preadv` (295), `pwritev` (296), `preadv2` (297) and `pwritev2` (298) now
+declare argument 1 — the caller's `struct iovec *` table — as
+`SyscallArgSize::KernelDereferenced`, with slot 1 declared
+`ChannelScalarKind::ProcessAddress` so a wasm64 address above 4 GiB cannot
+alias its low word. The host copies nothing; the kernel walks the caller's
+table and its buffers itself and carries out one gathered or scattered
+transfer, which is what preserves PIPE_BUF atomicity and datagram boundaries.
+No kernel export is added or removed: these arguments reach the kernel through
+`kernel_handle_channel`'s existing dispatch.
+
+Three structures leave `abi/snapshot.json` as a result — `KernelIovecWire`,
+`KernelMsghdrWire` and `KernelCmsghdrWire` — along with the
+`kernel_message_wire.flattened_iovec_count` constant. They described the
+fixed-width table the host used to stage into kernel scratch; nothing stages it
+any more, on any host. **This is a snapshot REMOVAL, not an additive change:** a
+consumer reading those layouts out of the snapshot will not find them. It stays
+under ABI 44 for the same reason the export removals above do — the epoch is
+unreleased — and it is recorded here rather than left to the structural
+snapshot check.
+
+Two generated musl headers move with it, so **musl and everything linked
+against it must be rebuilt**: `kandelo_channel_scalars.h` gains `__NR_writev` /
+`__NR_readv` assertions, and `kandelo_syscall_marshal.h` drops the nested
+IOVEC_ARRAY span entry for all six syscalls, exactly as it has none for
+`sendmsg`/`recvmsg`. The opaque transport still decodes an IOVEC_ARRAY or
+MSGHDR span, but preparation now refuses one with `EINVAL`: honouring it would
+replace the caller's guest address with a kernel-scratch offset the guest never
+named.
+
+**One collision is recorded rather than hidden.** The caller's pointer width
+lands in `host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX`, channel slot 5. For
+`preadv2`/`pwritev2` — Linux extensions, not POSIX interfaces — slot 5 is the
+guest's `flags`, so no `RWF_*` value reaches the kernel. None was implemented
+before this change either, and the host discarded the word too; the one flag
+with host-visible meaning, `RWF_NOWAIT`, is still read from the host's
+pre-overwrite view of the guest arguments so it continues to suppress the
+EAGAIN park. Implementing real `RWF_*` semantics requires freeing that slot
+first — for example by giving the kernel a per-process pointer width at
+registration instead of per-dispatch. A guard test in `crates/shared` pins the
+set of kernel-dereferenced syscalls so the next addition has to answer the same
+question.
+
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
 (16/32), `mq_attr` (32/64), `sigevent` (64/64), `statfs` (88/120), and

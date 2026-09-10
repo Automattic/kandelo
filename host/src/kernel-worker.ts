@@ -1154,6 +1154,33 @@ function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
   return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
 }
 
+/**
+ * Canonicalize the scatter/gather table pointer a zero count makes meaningless.
+ *
+ * POSIX does not inspect `iov` when `iovcnt` is zero, so a caller may leave
+ * anything at all in that slot -- including bits no pointer of its data model
+ * could hold. Normalize it to the null the kernel will ignore before the
+ * generated process-address contract can reject a value that names nothing.
+ * `examples/kernel_scratch_browser_test.c` pins this with `UINTPTR_MAX - 15`.
+ */
+function normalizeIgnoredVectorTablePointer(
+  syscallNr: number,
+  rawArgs: bigint[],
+): void {
+  switch (syscallNr) {
+    case SYS_WRITEV:
+    case SYS_READV:
+    case SYS_PREADV:
+    case SYS_PWRITEV:
+    case SYS_PREADV2:
+    case SYS_PWRITEV2:
+      if ((rawArgs[2] ?? 0n) === 0n) rawArgs[1] = 0n;
+      return;
+    default:
+      return;
+  }
+}
+
 function vectorRequestForbidsEagainRetry(
   syscallNr: number,
   args: readonly number[],
@@ -11473,6 +11500,7 @@ export class CentralizedKernelWorker {
     // addresses stay bigint in adjustedArgs; ProcessSize is first normalized
     // to the guest width, then projected to Number only after an exact safe-
     // integer proof because planner arithmetic consumes it.
+    normalizeIgnoredVectorTablePointer(syscallNr, rawArgs);
     const adjustedArgs = normalizeChannelScalarArguments(syscallNr, rawArgs);
     const origArgs: number[] = adjustedArgs.map((value, index) =>
       typeof value === "number"
