@@ -2645,6 +2645,21 @@ pub fn open_prepared_exec_target(
         return open_prepared_exec_target_rootfs(proc, &resolved, flags);
     }
 
+    // Kernel devfs owns its namespace. Every node it holds is a character
+    // device, a directory, or a `/dev/fd` entry, and POSIX gives EACCES for
+    // executing any of them — a devfs path can never be the regular file
+    // `execve` requires. Without this the path fell through to the host `/dev`
+    // mount, which reached the same EACCES for the character devices it knew
+    // and ENOENT for the ones it did not, so the errno came from whichever
+    // node table the host happened to carry.
+    //
+    // GAP: Linux resolves `/dev/fd/N` to the file behind descriptor N, so
+    // `execve("/dev/fd/3")` runs it. Kandelo does not implement that, and this
+    // reports the truthful EACCES rather than pretending the name is unknown.
+    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+        return Err(Errno::EACCES);
+    }
+
     let open_flags = O_RDONLY
         | if flags & AT_SYMLINK_NOFOLLOW != 0 {
             O_NOFOLLOW
@@ -8264,6 +8279,15 @@ pub fn sys_readlink(
         return Ok(n);
     }
 
+    // Kernel devfs owns its namespace, as `/proc` does. Resolution already
+    // proved the node exists, and the only devfs symlinks are the `/dev/fd`
+    // family answered above, so anything still here is not a symlink: EINVAL
+    // per POSIX. Without this the path fell through to the host filesystem,
+    // where the `/dev` mount answered on the kernel's behalf.
+    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+        return Err(Errno::EINVAL);
+    }
+
     if crate::tmpfs::claims_path(&resolved) {
         return crate::tmpfs::readlink(&resolved, buf);
     }
@@ -13169,6 +13193,18 @@ pub fn sys_bind(
             // for a missing parent directory, propagate unchanged.
             if !abstract_unix {
                 use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+                // Kernel devfs owns its namespace. A name that does not exist
+                // under `/dev` already failed resolution with EROFS, so a name
+                // that got here exists — which is EADDRINUSE, the same answer
+                // Linux reaches by way of `filename_create` returning EEXIST
+                // before it tests the mount for writability. Without this the
+                // bind fell through to the host `/dev` mount, whose backend
+                // ignores `O_EXCL`: `bind(fd, "/dev/null")` *succeeded* and
+                // registered a socket endpoint at a path `unlink` then refuses
+                // to remove, because unlink under `/dev` is EROFS.
+                if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+                    return Err(Errno::EADDRINUSE);
+                }
                 check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
                 // Linux pathname sockets start with every permission bit enabled,
                 // filtered through the creating process's umask. Abstract sockets
@@ -17996,6 +18032,15 @@ pub fn sys_readlinkat(
         let n = buf.len().min(target.len());
         buf[..n].copy_from_slice(&target[..n]);
         return Ok(n);
+    }
+
+    // Kernel devfs owns its namespace, as `/proc` does. Resolution already
+    // proved the node exists, and the only devfs symlinks are the `/dev/fd`
+    // family answered above, so anything still here is not a symlink: EINVAL
+    // per POSIX. Without this the path fell through to the host filesystem,
+    // where the `/dev` mount answered on the kernel's behalf.
+    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+        return Err(Errno::EINVAL);
     }
 
     if crate::tmpfs::claims_path(&resolved) {
@@ -36513,6 +36558,32 @@ impl HostIO for TrackingHostIO {
     }
 
     #[test]
+    fn test_bind_to_an_existing_devfs_node_is_eaddrinuse() {
+        // This used to *succeed*: the host `/dev` mount ignored `O_EXCL`, so a
+        // socket endpoint was registered at `/dev/null` that `unlink` then
+        // refused to remove, because unlink under `/dev` is EROFS.
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.set_pid_for_test(9031);
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [
+            0u8;
+            wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_BYTES as usize
+        ];
+        addr[0] = 1;
+        let path = b"/dev/null";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        assert_eq!(
+            sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]),
+            Err(Errno::EADDRINUSE)
+        );
+
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.cleanup_process(9031);
+    }
+
+    #[test]
     fn test_unlink_unix_socket_path() {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
@@ -37285,6 +37356,63 @@ impl HostIO for NetMock {
         let mut buf = [0u8; 32];
         let n = sys_readlink(&mut proc, &mut host, &path, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/dev/null");
+    }
+
+    // ---- devfs namespace containment ----
+    //
+    // `/dev` is kernel-owned, but three syscalls used to carry a resolved
+    // `/dev` path into `crate::hostdir::*`, where the host's own `/dev` mount
+    // answered on the kernel's behalf. These assert the kernel answers instead.
+    // No host `/dev` anchor exists in these fixtures, so a fall-through to the
+    // host filesystem answers ENOSYS. The specified errno is therefore evidence
+    // that the kernel answered, not merely that the errno happens to be right.
+
+    #[test]
+    fn test_readlink_of_a_devfs_node_is_einval_without_asking_the_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 64];
+        for path in [
+            &b"/dev/null"[..],
+            b"/dev/zero",
+            b"/dev/console",
+            b"/dev/tty",
+            b"/dev/ptmx",
+            b"/dev",
+            b"/dev/pts",
+            b"/dev/dri",
+        ] {
+            assert_eq!(
+                sys_readlink(&mut proc, &mut host, path, &mut buf),
+                Err(Errno::EINVAL),
+                "{:?}",
+                core::str::from_utf8(path)
+            );
+        }
+    }
+
+    #[test]
+    fn test_dev_fd_readlink_still_answers_before_the_containment_check() {
+        // The `/dev/fd` family are the only devfs symlinks, and they are
+        // answered above the containment check rather than swallowed by it.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 32];
+        let n = sys_readlink(&mut proc, &mut host, b"/dev/stdout", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/dev/fd/1");
+    }
+
+    #[test]
+    fn test_exec_of_a_devfs_node_is_eacces_without_asking_the_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [&b"/dev/null"[..], b"/dev/zero", b"/dev/tty", b"/dev", b"/dev/pts"] {
+            let err = match open_prepared_exec_target(&mut proc, &mut host, -100, path, 0) {
+                Ok(_) => panic!("{:?} must not be executable", core::str::from_utf8(path)),
+                Err(e) => e,
+            };
+            assert_eq!(err, Errno::EACCES, "{:?}", core::str::from_utf8(path));
+        }
     }
 
     #[test]
