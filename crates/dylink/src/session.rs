@@ -144,6 +144,15 @@ struct LoadFlow {
     table_growth_start: u64,
     /// A replay pins each object's handle; an ordinary load allocates one.
     replay: bool,
+    /// The staged call this transaction is being REBUILT to, in a fork child.
+    ///
+    /// A child re-drives an interrupted load's plan to reach the exact call the
+    /// parent was suspended in. Every earlier staged call is acknowledged
+    /// WITHOUT being invoked: the parent already ran it, and its effects are in
+    /// the copied memory this child inherited. Running one again would relocate
+    /// twice or re-enter a constructor over its own finished state. Ports
+    /// `advanceWithoutGuestCalls` (`dylink.ts:2981-3013`).
+    resume_at: Option<(String, InitializationStage)>,
 }
 
 struct SymFlow {
@@ -379,6 +388,7 @@ impl Session {
             finished: false,
             table_growth_start,
             replay: false,
+            resume_at: None,
         };
         self.transactions
             .insert(token, Transaction { awaiting: None, flow: Flow::Load(flow) });
@@ -896,11 +906,23 @@ impl Session {
                 load.frames.pop();
                 Ok(Advance::Again)
             }
-            step @ PlanStep::Call(_) => {
-                if let PlanStep::Call(call) = &step {
-                    load.current_stage = Some((call.library.clone(), call.stage));
+            PlanStep::Call(call) => {
+                if let Some((library, stage)) = load.resume_at.clone() {
+                    if call.library != library || call.stage != stage {
+                        // Not the call the parent was suspended in. Acknowledge
+                        // it without invoking it: the parent already ran it, and
+                        // its effects are in the memory this child inherited.
+                        load.frames[last]
+                            .plan
+                            .as_mut()
+                            .expect("plan installed above")
+                            .resume(&mut self.linker, ActResult::Done)?;
+                        return Ok(Advance::Again);
+                    }
+                    load.resume_at = None;
                 }
-                Ok(Advance::Emit(step, Awaiting::Plan))
+                load.current_stage = Some((call.library.clone(), call.stage));
+                Ok(Advance::Emit(PlanStep::Call(call), Awaiting::Plan))
             }
             step => Ok(Advance::Emit(step, Awaiting::Plan)),
         }
@@ -1272,6 +1294,7 @@ impl Session {
             );
         }
         let mut pending_roots = VecDeque::new();
+        let mut interrupted = Vec::new();
         for module in &archive.modules {
             if self.is_present(&module.name) {
                 // An object already rebuilt — by a peer, or by a reconcile this
@@ -1284,7 +1307,22 @@ impl Session {
                 .replay_modules
                 .get(&module.name)
                 .expect("just inserted");
-            pending_roots.push_back(replay_request(&module.name, replay, borrowed));
+            let request = replay_request(&module.name, replay, borrowed);
+            match &module.initialization {
+                // An object the parent was suspended inside is rebuilt under
+                // the PARENT'S token, because the guest holds that token in
+                // copied memory and libc will drive it. It is deliberately not
+                // part of the reconcile's own transaction: the reconcile runs
+                // to completion, and this one must stop.
+                Some(initialization) => interrupted.push((
+                    initialization.transaction_token,
+                    initialization.table_index,
+                    module.name.clone(),
+                    session_stage(initialization.stage),
+                    request,
+                )),
+                None => pending_roots.push_back(request),
+            }
         }
         let token = self.allocate_token()?;
         let table_growth_start = self.linker.scope.table_length();
@@ -1313,10 +1351,80 @@ impl Session {
                     finished: false,
                     table_growth_start,
                     replay: true,
+                    resume_at: None,
                 }),
             },
         );
+        self.restore_interrupted(interrupted, table_growth_start)?;
         Ok(token)
+    }
+
+    /// Rebuild the transactions the parent was suspended inside, under the
+    /// parent's own tokens.
+    ///
+    /// Ports `restorePendingDlopenTransactions` (`dylink.ts:2854`). The guest
+    /// holds these tokens in copied memory and will call
+    /// `__wasm_dlopen_next(token)` on them, so a child that allocated fresh ones
+    /// would answer for a transaction the program has never seen.
+    fn restore_interrupted(
+        &mut self,
+        interrupted: Vec<(u32, u64, String, InitializationStage, LoadRequest)>,
+        table_growth_start: u64,
+    ) -> DylinkResult<()> {
+        for (token, table_index, library, stage, request) in interrupted {
+            if self.transactions.contains_key(&token) {
+                return Err(DylinkError::DuplicateLibrary { library });
+            }
+            // The child's own allocator must never hand out a token the parent
+            // already used, or a later `dlopen` would collide with one the guest
+            // is still driving.
+            self.next_token = self.next_token.max(
+                token
+                    .checked_add(1)
+                    .ok_or(DylinkError::HandleOutOfRange { handle: token })?,
+            );
+            let global_visibility = request.global_visibility;
+            let frame = Frame::new(request)?;
+            self.transactions.insert(
+                token,
+                Transaction {
+                    awaiting: None,
+                    flow: Flow::Load(LoadFlow {
+                        root: library.clone(),
+                        global_visibility,
+                        frames: alloc::vec![frame],
+                        pending_roots: VecDeque::new(),
+                        completed: Vec::new(),
+                        queue: VecDeque::new(),
+                        current_stage: None,
+                        staged_slot: Some(table_index),
+                        commit_planned: false,
+                        finished: false,
+                        table_growth_start,
+                        replay: true,
+                        resume_at: Some((library, stage)),
+                    }),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// The transactions a reconcile restored, as `(token, table slot)`.
+    ///
+    /// The driver publishes each one's staged entry into the slot the parent
+    /// recorded — not a fresh one — because the guest's copied memory already
+    /// names that index.
+    pub fn restored_transactions(&self) -> Vec<(u32, u64)> {
+        self.transactions
+            .iter()
+            .filter_map(|(token, transaction)| match &transaction.flow {
+                Flow::Load(load) if load.resume_at.is_some() => {
+                    load.staged_slot.map(|slot| (*token, slot))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Adopt the parent's handle table once the reconcile's drive loop has
@@ -1630,6 +1738,15 @@ fn replay_request(name: &str, replay: &ReplayModule, borrowed: bool) -> LoadRequ
         global_visibility: replay.inputs.global_visibility,
         replay: Some(replay.inputs.clone()),
         borrowed_memory: borrowed,
+    }
+}
+
+/// The session's spelling of an archived initialization stage.
+fn session_stage(stage: DylinkInitializationStage) -> InitializationStage {
+    match stage {
+        DylinkInitializationStage::Bootstrap => InitializationStage::Bootstrap,
+        DylinkInitializationStage::Relocations => InitializationStage::Relocations,
+        DylinkInitializationStage::Constructors => InitializationStage::Constructors,
     }
 }
 

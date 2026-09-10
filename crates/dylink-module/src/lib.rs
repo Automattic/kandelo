@@ -697,6 +697,27 @@ pub extern "C" fn dl_fork_reconcile_begin(borrowed: i32) -> i32 {
     }) as i32
 }
 
+/// The transactions the last reconcile restored, as
+/// `[u32 count][(u32 token, u64 table slot)...]`.
+///
+/// The driver publishes each one's staged entry into the slot the parent
+/// recorded — not a fresh one — because the guest's copied memory already names
+/// that index, and libc will call `__wasm_dlopen_next(token)` on it.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_restored_transactions() -> i32 {
+    with_session(|state| {
+        let restored = state.restored_transactions();
+        let mut output = Vec::new();
+        output.extend_from_slice(&(restored.len() as u32).to_le_bytes());
+        for (token, slot) in restored {
+            output.extend_from_slice(&token.to_le_bytes());
+            output.extend_from_slice(&slot.to_le_bytes());
+        }
+        buffers().output = output;
+        Ok(())
+    })
+}
+
 /// Adopt the parent's handle table once the reconcile's drive loop has
 /// finished.
 #[unsafe(no_mangle)]

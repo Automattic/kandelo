@@ -124,6 +124,7 @@ interface PlannerExports {
   readonly dl_archive_modules: () => number;
   readonly dl_fork_reconcile_begin: (borrowed: number) => number;
   readonly dl_fork_reconcile_finish: (token: number) => number;
+  readonly dl_restored_transactions: () => number;
 }
 
 /**
@@ -541,6 +542,28 @@ export class PlannerSession {
 
   forkReconcileFinish(token: number): void {
     this.#require(this.#exports.dl_fork_reconcile_finish(token), "dl_fork_reconcile_finish");
+  }
+
+  /**
+   * The transactions the reconcile restored, as `(token, tableSlot)`.
+   *
+   * Each carries the slot the PARENT recorded, because the guest's copied
+   * memory already names that index and libc will drive the token from it.
+   */
+  restoredTransactions(): { readonly token: number; readonly tableSlot: number }[] {
+    this.#require(this.#exports.dl_restored_transactions(), "dl_restored_transactions");
+    const bytes = this.#output();
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = view.getUint32(0, true);
+    const restored: { token: number; tableSlot: number }[] = [];
+    for (let index = 0; index < count; index++) {
+      const offset = 4 + index * 12;
+      restored.push({
+        token: view.getUint32(offset, true),
+        tableSlot: Number(view.getBigUint64(offset + 4, true)),
+      });
+    }
+    return restored;
   }
 
   /** A transaction token, or the module's own diagnostic. */

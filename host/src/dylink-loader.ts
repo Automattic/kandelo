@@ -555,6 +555,21 @@ export class DylinkLoader {
       (target as () => void)();
     });
     this.#session.forkReconcileFinish(token);
+
+    // A load the parent was suspended inside is now live under the parent's own
+    // token, positioned at the exact staged call it stopped in. Publish that
+    // call into the slot the parent recorded — the guest's copied memory names
+    // that index — and leave the transaction for libc to drive.
+    for (const restored of this.#session.restoredTransactions()) {
+      this.#stagedSlot.set(restored.token, restored.tableSlot);
+      const entry = this.nextInitialization(restored.token);
+      if (entry !== restored.tableSlot) {
+        throw new Error(
+          `dylink: restored transaction ${restored.token} resumed at slot ${entry}, ` +
+            `not the ${restored.tableSlot} its parent recorded`,
+        );
+      }
+    }
   }
 
   /** The archive's table-replication state. */
@@ -660,6 +675,13 @@ export class DylinkLoader {
       throw new Error(`${call.library}: ${call.exportName} is not callable`);
     }
     let index = this.#stagedSlot.get(token);
+    if (index !== undefined) {
+      // A restored transaction carries the slot its parent recorded, and a
+      // child's table may not have grown that far yet. The index is not
+      // negotiable: the guest's copied memory names it.
+      const length = tableLength(table);
+      if (length <= index) growTable(table, index + 1 - length);
+    }
     if (index === undefined) {
       index = tableLength(table);
       if (index === 0) {
