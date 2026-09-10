@@ -1095,7 +1095,18 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array(4).fill(0xa5));
   });
 
-  it("rejects null positive-length process transfer ranges", () => {
+  it("transfers at guest address zero but refuses a null kernel range", () => {
+    // Address zero means two different things on the two sides of this copy.
+    //
+    // On the PROCESS side it is an ordinary addressable byte: WebAssembly
+    // reserves nothing at offset 0, and `host/test/fixtures/wasi-hello.wat`
+    // places its `ciovec` there on purpose, so refusing it breaks a guest that
+    // is doing nothing wrong. The C null-pointer convention still holds for
+    // arguments that ARE C pointers, but it is enforced by the syscall that
+    // knows which those are -- `guest_ptr`'s rule 4 -- not by this byte mover.
+    //
+    // On the KERNEL side zero means the Rust allocator returned nothing, so it
+    // stays a refusal.
     const processMemory = new WebAssembly.Memory({ initial: 1 });
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, {
@@ -1109,12 +1120,22 @@ describe("Rust-owned host import ranges", () => {
     new Uint8Array(memory.buffer, 4096, 4).set([1, 2, 3, 4]);
     new Uint8Array(processMemory.buffer, 0, 4).fill(0xa5);
 
-    expect(imports.env.host_proc_write_bytes(7, 0n, 4096, 4)).toBe(-14);
+    // Kernel -> process at guest address zero.
+    expect(imports.env.host_proc_write_bytes(7, 0n, 4096, 4)).toBe(0);
     expect(new Uint8Array(processMemory.buffer, 0, 4))
-      .toEqual(new Uint8Array(4).fill(0xa5));
-    expect(imports.env.host_proc_read_bytes(7, 0n, 4096, 4)).toBe(-14);
-    expect(new Uint8Array(memory.buffer, 4096, 4))
       .toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    // Process -> kernel from guest address zero.
+    new Uint8Array(processMemory.buffer, 0, 4).set([9, 8, 7, 6]);
+    expect(imports.env.host_proc_read_bytes(7, 0n, 4096, 4)).toBe(0);
+    expect(new Uint8Array(memory.buffer, 4096, 4))
+      .toEqual(new Uint8Array([9, 8, 7, 6]));
+
+    // A null KERNEL range is still allocator failure, in both directions.
+    expect(imports.env.host_proc_write_bytes(7, 0n, 0, 4)).toBe(-14);
+    expect(imports.env.host_proc_read_bytes(7, 0n, 0, 4)).toBe(-14);
+    expect(new Uint8Array(processMemory.buffer, 0, 4))
+      .toEqual(new Uint8Array([9, 8, 7, 6]));
   });
 
   it("enforces exact process-memory transfer boundaries", () => {
