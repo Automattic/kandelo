@@ -140,10 +140,8 @@ import {
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
-  execOverlayRetryDelay,
   formatError,
   handleThreadExit,
-  isMissingPathError,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -207,7 +205,6 @@ let processMemoryAllocator: ProcessMemoryAllocator;
 const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
-const ENOEXEC = 8;
 
 type LazyRegistrationMessage = Extract<
   MainToKernelMessage,
@@ -329,58 +326,6 @@ const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
  */
 const intentionallyTerminated = new WeakSet<object>();
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
-async function resolveExecutableForLaunch(
-  path: string,
-  argv: string[],
-  depth = 0,
-): Promise<ResolvedSpawnProgram | { errno: number } | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
-  const bytes = await readExecFileFromFs(path);
-  if (!bytes) return null;
-
-  const shebang = parseShebang(bytes);
-  if (!shebang) {
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
-      expectedAbi: kernelWorker.getKernelAbiVersion(),
-    });
-    if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    let programModule: WebAssembly.Module;
-    try {
-      programModule = await WebAssembly.compile(bytes);
-    } catch (error) {
-      if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
-      throw error;
-    }
-    const declaredAbi = extractAbiVersion(bytes);
-    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
-      return { errno: ENOEXEC };
-    }
-    return { programBytes: bytes, programModule, argv };
-  }
-
-  const scriptArgv = [
-    shebang.interpreter,
-    ...(shebang.arg ? [shebang.arg] : []),
-    path,
-    ...argv.slice(1),
-  ];
-  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
-}
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
 // all threads of the same process. Keyed by PID of the process that spawned threads.
@@ -570,7 +515,7 @@ const processGenerationDetaches =
  * reclaim and exec-rollback paths look different from these.
  */
 const lifecycle = createProcessLifecycle<ProcessInfo>({
-  post: (message) => post(message),
+  post: (message, transfer) => post(message, transfer),
   terminationProvesQuiescence: false,
   isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
   vforkLifetimes,
@@ -580,18 +525,27 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   forkHostImportsByWorker,
   processGenerationDetaches,
   ptyByPid,
+  execMountIO: () => io,
+  // No `resolveExecFile`: the browser has no locally injected program buffers
+  // and no main-thread `resolve_exec` fallback, so the filesystem is the only
+  // source of exec bytes.
 });
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  handlePosixSpawnResolve,
   handlePtyResize,
   handlePtyWrite,
   handleVmInterruptTimer,
   postForkModuleProof,
+  readExecFromVfs,
   releaseVforkWorkspace,
   reportHostDiagnostic,
+  reportWorkerProtocolError,
+  resolveExecutableForLaunch,
+  respondTransferredBytes,
   reportRetainedProcessGeneration,
   respond,
   respondError,
@@ -735,12 +689,6 @@ function resetBridgePendingRequests(): void {
   reportBridgePendingRequests();
 }
 
-function respondTransferredBytes(requestId: number, result: Uint8Array) {
-  post(
-    { type: "response", requestId, result },
-    [result.buffer as ArrayBuffer],
-  );
-}
 
 function respondIfRequested(
   msg: { requestId?: number },
@@ -760,13 +708,6 @@ function respondErrorIfRequested(
   }
 }
 
-function reportWorkerProtocolError(message: string): void {
-  reportHostDiagnostic({
-    pid: 0,
-    source: "worker protocol",
-    message: `[kernel-worker] ${message}`,
-  });
-}
 
 async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
   if (msg.type === "register_lazy_files") {
@@ -1455,7 +1396,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       programBytes = msg.programBytes;
     } else if (msg.programPath) {
       // Read from shared filesystem
-      const bytes = await readExecFileFromFs(msg.programPath);
+      const bytes = await readExecFromVfs(msg.programPath);
       if (!bytes) {
         respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
         return;
@@ -3155,12 +3096,6 @@ async function handleExec(
  * contents from the VFS, follows shebangs, and compiles the final Wasm
  * module. Safe to call before the kernel applies spawn file actions.
  */
-async function handlePosixSpawnResolve(
-  path: string,
-  argv: string[],
-): Promise<SpawnProgramResolution | null> {
-  return resolveExecutableForLaunch(path, argv);
-}
 
 /**
  * Launch a worker for a SYS_SPAWN child whose program is derived from the
@@ -4405,118 +4340,6 @@ function readFileFromFs(path: string): ArrayBuffer | null {
   } catch {
     return null;
   }
-}
-
-// EAGAIN retry shape for host-initiated exec-byte reads through the in-kernel
-// rootfs overlay (`kernelWorker.rootfsReadFile`, kernel-worker.ts:5151).
-// Mirrors the node entry's `readExecFromOverlay` (see
-// host/src/node-kernel-worker-entry.ts) and host/src/exec-target.ts's
-// `readPreparedExecTarget` EAGAIN retry: a lazy-archive member not yet
-// fetched (rootfs-lazy-archives.ts) surfaces as EAGAIN from the kernel; the
-// fetch runs on this same worker's event loop, so a `setTimeout`-backed (not
-// microtask) delay is required between retries so it can complete.
-const EXEC_OVERLAY_EAGAIN_ERRNO = 11;
-const EXEC_OVERLAY_ENOENT_ERRNO = 2;
-const EXEC_OVERLAY_ENOTDIR_ERRNO = 20;
-const EXEC_OVERLAY_EISDIR_ERRNO = 21;
-const EXEC_OVERLAY_ETIMEDOUT_ERRNO = 110;
-const EXEC_OVERLAY_RETRY_DELAY_MS = 10;
-// Defensive backstop only — normal operation always resolves via bytes or a
-// terminal errno well before this. It exists so a hypothetical stuck fetch
-// fails with a truthful timeout instead of hanging exec forever.
-const EXEC_OVERLAY_RETRY_MAX_WAIT_MS = 30_000;
-
-class ExecOverlayReadTimeoutError extends Error {
-  readonly errno = EXEC_OVERLAY_ETIMEDOUT_ERRNO;
-  constructor(path: string, waitedMs: number) {
-    super(
-      `rootfs overlay exec read of ${path} timed out after ${waitedMs}ms ` +
-        "waiting for a lazy archive fetch to complete",
-    );
-    this.name = "ExecOverlayReadTimeoutError";
-  }
-}
-
-// Read a file's bytes for host-initiated exec THROUGH the in-kernel rootfs
-// overlay. The overlay is the unconditional sole `/` authority, so it is the
-// sole source of exec bytes for `/`-tree paths (the host `/` mount no longer
-// exists). ENOENT/ENOTDIR/EISDIR mean "not a readable regular
-// file here" -> null, so callers fall through to the same resolution the
-// pre-overlay path used. Any other errno is a truthful failure.
-async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
-  const start = Date.now();
-  for (;;) {
-    try {
-      // `rootfsReadFile` is an immediate, result-bearing kernel entry. The
-      // guest-initiated spawn resolver (`onResolveSpawn` ->
-      // `resolveExecutableForLaunch` -> `resolveExec` -> here) runs from inside
-      // the SYS_SPAWN protocol transaction-start (kernel-worker.ts
-      // `#handleSpawn` -> `deferProtocolTransactionStart`), whose synchronous
-      // prefix reaches this read while `#runningProtocolTransactionStart` is
-      // still set. The entry gate then rejects the read with
-      // `KernelReentrantEntryError` BEFORE touching any kernel state
-      // (kernel-entry-gate.ts `runImmediateVoidIngress`), so retrying it on a
-      // later host turn is safe and idempotent — the sanctioned handling for
-      // spawn/exec/fork/clone continuations (see kernel-entry-retry.ts). Once
-      // the transaction-start operation returns and the gate is idle, the read
-      // completes. Host-initiated exec (`handleSpawn`/`spawnFromVfs`) reaches
-      // this with an idle gate, so it resolves on the first attempt.
-      const data = await retryKernelEntryResult(
-        () => kernelWorker.rootfsReadFile(path),
-      );
-      return data.buffer.slice(
-        data.byteOffset,
-        data.byteOffset + data.byteLength,
-      ) as ArrayBuffer;
-    } catch (error) {
-      const errno = (error as { errno?: number }).errno;
-      if (
-        errno === EXEC_OVERLAY_ENOENT_ERRNO ||
-        errno === EXEC_OVERLAY_ENOTDIR_ERRNO ||
-        errno === EXEC_OVERLAY_EISDIR_ERRNO
-      ) {
-        return null;
-      }
-      if (errno !== EXEC_OVERLAY_EAGAIN_ERRNO) throw error;
-      const waited = Date.now() - start;
-      if (waited >= EXEC_OVERLAY_RETRY_MAX_WAIT_MS) {
-        throw new ExecOverlayReadTimeoutError(path, waited);
-      }
-      await execOverlayRetryDelay(EXEC_OVERLAY_RETRY_DELAY_MS);
-    }
-  }
-}
-
-async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  // The overlay owns `/` unconditionally, so it is the authority for `/`-tree
-  // exec bytes — read through it directly (the host `/` mount no longer
-  // exists), with async EAGAIN retry so a lazy archive fetch can complete.
-  // Mirrors the Node entry's `readExecFromVfs`.
-  const fromOverlay = await readExecFromOverlay(path);
-  if (fromOverlay) return fromOverlay;
-  // The overlay is the sole `/` authority, but sibling foreign mounts that
-  // remain in the guest mount table (e.g. session-seed trees, extra host
-  // mounts) still serve their own exec bytes. The overlay correctly disowns
-  // those paths (see `rootfs::owns_path` foreign-mount registry), so a null
-  // overlay read must fall through to the guest mount table rather than
-  // fail — otherwise `spawnFromVfs` of a program that only lives under a
-  // foreign mount would ENOENT. `/` is unmounted, so only genuine sibling
-  // mounts resolve here.
-  if (io) {
-    try {
-      // The base-image / foreign mount resolves symlinks and materializes lazy
-      // programs.
-      const { data } = await readPreparedPlatformFile(io, path);
-      return data.buffer.slice(
-        data.byteOffset,
-        data.byteOffset + data.byteLength,
-      ) as ArrayBuffer;
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      // Missing from the mount table; nothing else to fall through to.
-    }
-  }
-  return null;
 }
 
 // ── Message dispatch ──

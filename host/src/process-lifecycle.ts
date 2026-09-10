@@ -42,7 +42,20 @@
  * missing.
  */
 
-import type { CentralizedKernelWorker } from "./kernel-worker";
+import type {
+  CentralizedKernelWorker,
+  ResolvedSpawnProgram,
+  SpawnProgramResolution,
+} from "./kernel-worker";
+import { retryKernelEntryResult } from "./kernel-entry-retry";
+import { readPreparedPlatformFile } from "./vfs";
+import type { PlatformIO } from "./types";
+import {
+  describeWasmArtifactPolicyFailures,
+  extractAbiVersion,
+  isWasmModuleBytes,
+} from "./constants";
+import { FILE_MODES } from "./generated/abi";
 import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
 import type {
@@ -99,8 +112,16 @@ export type ProcessLifecycleOutboundMessage =
  * place instead of being inferred from two 4,000-line files.
  */
 export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
-  /** Send a message to the main thread. */
-  post(message: ProcessLifecycleOutboundMessage): void;
+  /**
+   * Send a message to the main thread, optionally transferring buffers.
+   *
+   * Both hosts support a transfer list; the Node entry previously reached
+   * past `post` to `port.postMessage` for the one message that needs one.
+   */
+  post(
+    message: ProcessLifecycleOutboundMessage,
+    transfer?: ArrayBuffer[],
+  ): void;
 
   /**
    * Whether an awaited worker termination proves the worker has stopped.
@@ -149,6 +170,26 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
 
   /** PTY index by PID. */
   readonly ptyByPid: Map<number, number>;
+
+  /**
+   * The guest mount table, when one exists.
+   *
+   * The in-kernel overlay owns `/` unconditionally, but sibling foreign mounts
+   * still serve their own exec bytes, so exec resolution falls through to this
+   * when the overlay disowns a path. A function rather than a field because
+   * both entries build it during `handleInit`.
+   */
+  execMountIO(): PlatformIO | null | undefined;
+
+  /**
+   * Extra exec-byte sources this host has beyond the filesystem, if any.
+   *
+   * Node injects program buffers into the worker and can ask the main thread
+   * to resolve a path; the browser has neither, so it leaves this undefined
+   * and exec resolution reads the filesystem alone. This is the *whole* host
+   * difference in exec resolution — see `resolveExecutableForLaunch`.
+   */
+  resolveExecFile?(path: string): Promise<ArrayBuffer | null>;
 }
 
 // ── Host-independent helpers ────────────────────────────────────────────────
@@ -441,20 +482,187 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     host.kernel().ptySetWinsize(ptyIdx, rows, cols);
   }
 
+  function respondTransferredBytes(requestId: number, result: Uint8Array): void {
+    host.post(
+      { type: "response", requestId, result },
+      [result.buffer as ArrayBuffer],
+    );
+  }
+
+  function reportWorkerProtocolError(message: string): void {
+    reportHostDiagnostic({
+      pid: 0,
+      source: "worker protocol",
+      message: `${host.diagnosticPrefix} ${message}`,
+    });
+  }
+
+  /**
+   * Read a file's bytes for exec THROUGH the in-kernel rootfs overlay.
+   *
+   * The overlay is the unconditional sole `/` authority, so it is the sole
+   * source of exec bytes for `/`-tree paths (the host `/` mount no longer
+   * exists). ENOENT/ENOTDIR/EISDIR mean "not a readable regular file here" ->
+   * null, so callers fall through to the remaining resolution stages. Any
+   * other errno is a truthful failure.
+   *
+   * `rootfsReadFile` is an immediate, result-bearing kernel entry. The
+   * guest-initiated spawn resolver (`onResolveSpawn` ->
+   * `resolveExecutableForLaunch` -> here) runs from inside the SYS_SPAWN
+   * protocol transaction-start (kernel-worker.ts `#handleSpawn` ->
+   * `deferProtocolTransactionStart`), whose synchronous prefix reaches this
+   * read while `#runningProtocolTransactionStart` is still set. The entry gate
+   * then rejects the read with `KernelReentrantEntryError` BEFORE touching any
+   * kernel state (kernel-entry-gate.ts `runImmediateVoidIngress`), so retrying
+   * it on a later host turn is safe and idempotent — the sanctioned handling
+   * for spawn/exec/fork/clone continuations (see kernel-entry-retry.ts). Once
+   * the transaction-start operation returns and the gate is idle, the read
+   * completes. Host-initiated exec reaches this with an idle gate, so it
+   * resolves on the first attempt.
+   */
+  async function readExecFromOverlay(path: string): Promise<ArrayBuffer | null> {
+    const start = Date.now();
+    for (;;) {
+      try {
+        return bufferToArrayBuffer(
+          await retryKernelEntryResult(() => host.kernel().rootfsReadFile(path)),
+        );
+      } catch (error) {
+        const errno = (error as { errno?: number }).errno;
+        if (
+          errno === EXEC_OVERLAY_ENOENT_ERRNO ||
+          errno === EXEC_OVERLAY_ENOTDIR_ERRNO ||
+          errno === EXEC_OVERLAY_EISDIR_ERRNO
+        ) {
+          return null;
+        }
+        if (errno !== EXEC_OVERLAY_EAGAIN_ERRNO) throw error;
+        const waited = Date.now() - start;
+        if (waited >= EXEC_OVERLAY_RETRY_MAX_WAIT_MS) {
+          throw new ExecOverlayReadTimeoutError(path, waited);
+        }
+        await execOverlayRetryDelay(EXEC_OVERLAY_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  /**
+   * Read exec bytes from the filesystem: the overlay first, then any sibling
+   * foreign mount that still serves the path.
+   *
+   * The overlay correctly disowns foreign-mount paths (see
+   * `rootfs::owns_path`'s foreign-mount registry), so a null overlay read must
+   * fall through to the guest mount table rather than fail — otherwise a
+   * program that only lives under a foreign mount would ENOENT.
+   *
+   * The directory check is not optional: `readPreparedPlatformFile` will hand
+   * back bytes for a directory on some mounts, and a directory is never an
+   * executable image. The browser entry lacked this check and the Node entry
+   * had it; POSIX agrees with Node, so the check is now universal.
+   */
+  async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
+    const fromOverlay = await readExecFromOverlay(path);
+    if (fromOverlay) return fromOverlay;
+    const io = host.execMountIO();
+    if (io) {
+      try {
+        // The base-image / foreign mount resolves symlinks and materializes
+        // lazy programs.
+        const { data, stat } = await readPreparedPlatformFile(io, path);
+        if ((stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) return null;
+        return bufferToArrayBuffer(data);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+        // Missing from the mount table; nothing else to fall through to.
+      }
+    }
+    return null;
+  }
+
+  /** Every exec-byte source this host has, in resolution order. */
+  function readExecFile(path: string): Promise<ArrayBuffer | null> {
+    return host.resolveExecFile
+      ? host.resolveExecFile(path)
+      : readExecFromVfs(path);
+  }
+
+  /**
+   * Resolve `path` to a launchable wasm image, following `#!` chains.
+   *
+   * Returns null when nothing is there, `{ errno }` when the bytes exist but
+   * cannot be executed, and the compiled program otherwise.
+   */
+  async function resolveExecutableForLaunch(
+    path: string,
+    argv: string[],
+    depth = 0,
+  ): Promise<ResolvedSpawnProgram | { errno: number } | null> {
+    if (depth > MAX_SHEBANG_DEPTH) return null;
+    const bytes = await readExecFile(path);
+    if (!bytes) return null;
+
+    const shebang = parseShebang(bytes);
+    if (!shebang) {
+      if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+      const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
+        expectedAbi: host.kernel().getKernelAbiVersion(),
+      });
+      if (artifactFailures.length > 0) return { errno: ENOEXEC };
+      let programModule: WebAssembly.Module;
+      try {
+        programModule = await WebAssembly.compile(bytes);
+      } catch (error) {
+        if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
+        throw error;
+      }
+      const declaredAbi = extractAbiVersion(bytes);
+      if (
+        declaredAbi !== null &&
+        declaredAbi !== host.kernel().getKernelAbiVersion()
+      ) {
+        return { errno: ENOEXEC };
+      }
+      return { programBytes: bytes, programModule, argv };
+    }
+
+    const scriptArgv = [
+      shebang.interpreter,
+      ...(shebang.arg ? [shebang.arg] : []),
+      path,
+      ...argv.slice(1),
+    ];
+    return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
+  }
+
+  /** The kernel's guest-initiated spawn resolver. */
+  function handlePosixSpawnResolve(
+    path: string,
+    argv: string[],
+  ): Promise<SpawnProgramResolution | null> {
+    return resolveExecutableForLaunch(path, argv);
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
     detachExactProcessGeneration,
     dispatchForkHostImport,
+    handlePosixSpawnResolve,
     handlePtyResize,
     handlePtyWrite,
     handleVmInterruptTimer,
     postForkModuleProof,
+    readExecFile,
+    readExecFromOverlay,
+    readExecFromVfs,
     releaseVforkWorkspace,
     reportHostDiagnostic,
     reportRetainedProcessGeneration,
+    reportWorkerProtocolError,
+    resolveExecutableForLaunch,
     respond,
     respondError,
+    respondTransferredBytes,
     threadAllocatorForLayout,
     traceVforkMechanism,
   };
@@ -462,3 +670,76 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
 
 export type ProcessLifecycle<Info extends ProcessLifecycleInfo> =
   ReturnType<typeof createProcessLifecycle<Info>>;
+
+// ── Exec target resolution ──────────────────────────────────────────────────
+//
+// Reading a program's bytes, following `#!` chains and admitting the result as
+// a wasm image is POSIX policy, not platform code. Both entries carried the
+// whole family — the errno table, the retry loop, the shebang parser, the
+// resolution recursion — and the only genuine difference is *where the bytes
+// come from*: the browser has the VFS alone, while Node also has locally
+// injected program buffers and a main-thread `resolve_exec` fallback. That
+// difference is declared as `ProcessLifecycleHost.resolveExecFile`; everything
+// else is shared.
+
+/** Copy `bytes` into a standalone `ArrayBuffer` it exclusively owns. */
+export function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
+const ENOEXEC = 8;
+
+// A `/`-tree path whose backing archive has not been fetched
+// (rootfs-lazy-archives.ts) surfaces as EAGAIN from the kernel; the fetch runs
+// on this same worker's event loop, so a `setTimeout`-backed (not microtask)
+// delay is required between retries so it can complete. Mirrors
+// host/src/exec-target.ts's `readPreparedExecTarget` EAGAIN retry (10ms
+// cadence, 30s defensive cap -> truthful timeout).
+const EXEC_OVERLAY_EAGAIN_ERRNO = 11;
+const EXEC_OVERLAY_ENOENT_ERRNO = 2;
+const EXEC_OVERLAY_ENOTDIR_ERRNO = 20;
+const EXEC_OVERLAY_EISDIR_ERRNO = 21;
+const EXEC_OVERLAY_ETIMEDOUT_ERRNO = 110;
+const EXEC_OVERLAY_RETRY_DELAY_MS = 10;
+// Defensive backstop only — normal operation always resolves via bytes or a
+// terminal errno well before this. It exists so a hypothetical stuck fetch
+// fails with a truthful timeout instead of hanging exec forever.
+const EXEC_OVERLAY_RETRY_MAX_WAIT_MS = 30_000;
+
+export class ExecOverlayReadTimeoutError extends Error {
+  readonly errno = EXEC_OVERLAY_ETIMEDOUT_ERRNO;
+  constructor(path: string, waitedMs: number) {
+    super(
+      `rootfs overlay exec read of ${path} timed out after ${waitedMs}ms ` +
+        "waiting for a lazy archive fetch to complete",
+    );
+    this.name = "ExecOverlayReadTimeoutError";
+  }
+}
+
+/** How deep a `#!` interpreter chain may nest before exec gives up. */
+export const MAX_SHEBANG_DEPTH = 4;
+
+/**
+ * The interpreter line of a `#!` script, or null when `bytes` is not a script.
+ *
+ * POSIX leaves the optional single argument implementation-defined; this
+ * follows Linux in taking everything after the first whitespace run as one
+ * argument.
+ */
+export function parseShebang(
+  bytes: ArrayBuffer,
+): { interpreter: string; arg?: string } | null {
+  const view = new Uint8Array(bytes);
+  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
+  let end = 2;
+  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
+  const line = new TextDecoder().decode(view.subarray(2, end))
+    .replace(/\r$/, "").trim();
+  if (!line) return null;
+  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
+  if (!match) return null;
+  return { interpreter: match[1], arg: match[2] };
+}
