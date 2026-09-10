@@ -94,18 +94,36 @@ fn source_u32(source: &impl BlockSource, offset: u64) -> Result<u32, Errno> {
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Turn a header read's failure into a container verdict WITHOUT flattening a
+/// transport failure into one.
+///
+/// A resident `[u8]` source can only fail one way — the range is not in the
+/// image — so "read failed" and "the container is malformed" used to be the same
+/// statement. A host-backed source can also fail because the host has no image
+/// installed (`ENOSYS`), because the transport broke (`EIO`), or because the
+/// bytes are not ready yet (`EAGAIN`). Reporting any of those as `EINVAL` would
+/// tell the operator their image is corrupt when it is not, and would swallow
+/// the one errno the kernel must be able to act on. Only the out-of-range case
+/// becomes `EINVAL`; every other errno propagates as itself.
+fn container_errno(error: Errno) -> Errno {
+    match error {
+        Errno::EIO => Errno::EINVAL,
+        other => other,
+    }
+}
+
 /// Byte span of the inner SFFS filesystem inside a VFSI container.
 ///
 /// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
 /// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
 pub fn sffs_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
-    if source_u32(source, 0).map_err(|_| Errno::EINVAL)? != VFSI_MAGIC {
+    if source_u32(source, 0).map_err(container_errno)? != VFSI_MAGIC {
         return Err(Errno::EINVAL);
     }
-    if source_u32(source, 4).map_err(|_| Errno::EINVAL)? != VFSI_VERSION {
+    if source_u32(source, 4).map_err(container_errno)? != VFSI_VERSION {
         return Err(Errno::EINVAL);
     }
-    let sab_len = source_u32(source, 12).map_err(|_| Errno::EINVAL)? as u64;
+    let sab_len = source_u32(source, 12).map_err(container_errno)? as u64;
     let end = (VFSI_HEADER as u64).checked_add(sab_len).ok_or(Errno::EINVAL)?;
     if end > source.len() {
         return Err(Errno::EINVAL);
@@ -138,7 +156,7 @@ const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
 /// their flags are set. See [`crate::klzy`] for the section's own contents.
 pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
     let (sab_offset, sab_len) = sffs_span(source)?;
-    let flags = source_u32(source, 8).map_err(|_| Errno::EINVAL)?;
+    let flags = source_u32(source, 8).map_err(container_errno)?;
     if flags & wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY == 0 {
         return Ok(None);
     }
@@ -146,7 +164,7 @@ pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>,
     let mut offset = sab_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
     // The lazy-file JSON section is unconditional; the other two are flagged.
     let skip_section = |offset: &mut u64| -> Result<(), Errno> {
-        let len = source_u32(source, *offset).map_err(|_| Errno::EINVAL)? as u64;
+        let len = source_u32(source, *offset).map_err(container_errno)? as u64;
         *offset = offset
             .checked_add(4)
             .and_then(|value| value.checked_add(len))
@@ -164,7 +182,7 @@ pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>,
         skip_section(&mut offset)?;
     }
 
-    let len = source_u32(source, offset).map_err(|_| Errno::EINVAL)? as u64;
+    let len = source_u32(source, offset).map_err(container_errno)? as u64;
     let start = offset.checked_add(4).ok_or(Errno::EINVAL)?;
     let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
     if end > source.len() {
@@ -243,18 +261,18 @@ const SB_TOTAL_INODES: u64 = 16;
 
 impl<S: BlockSource> Sffs<S> {
     pub fn mount(source: S) -> Result<Sffs<S>, Errno> {
-        if source_u32(&source, 0).map_err(|_| Errno::EINVAL)? != SFFS_MAGIC {
+        if source_u32(&source, 0).map_err(container_errno)? != SFFS_MAGIC {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 4).map_err(|_| Errno::EINVAL)? != SFFS_VERSION {
+        if source_u32(&source, 4).map_err(container_errno)? != SFFS_VERSION {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 8).map_err(|_| Errno::EINVAL)? != BLOCK_SIZE as u32 {
+        if source_u32(&source, 8).map_err(container_errno)? != BLOCK_SIZE as u32 {
             return Err(Errno::EINVAL);
         }
         let inode_table_start =
-            source_u32(&source, SB_INODE_TABLE_START).map_err(|_| Errno::EINVAL)?;
-        let total_inodes = source_u32(&source, SB_TOTAL_INODES).map_err(|_| Errno::EINVAL)?;
+            source_u32(&source, SB_INODE_TABLE_START).map_err(container_errno)?;
+        let total_inodes = source_u32(&source, SB_TOTAL_INODES).map_err(container_errno)?;
         // The inode table spans `total_inodes.div_ceil(32)` blocks starting at
         // `inode_table_start`; require the whole region to fit in the source
         // so every accepted `ino < total_inodes` yields an in-bounds
