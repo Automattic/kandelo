@@ -955,6 +955,17 @@ export KANDELO_SOURCE_CACHE_ROOT=/tmp/kandelo-cache-<item>
 The cost is a cold first build. That is the right trade for anything doing
 browser provisioning or a full `setup`.
 
+**It does not isolate everything, and the gap was measured on 2026-09-10.**
+`KANDELO_SOURCE_CACHE_ROOT` redirects the `source-only` tier. It does **not**
+redirect `$HOME/.cache/kandelo/programs`, which is where package builds install
+their resolver scratch: a `./run.sh rebuild rootfs` under an isolated cache
+root was still observed writing
+`/Users/<user>/.cache/kandelo/programs/.findutils-…`. So concurrent agents
+still share that directory, and a stale entry there surfaces as
+`artifact lacks an __abi_version export — legacy binary predates the ABI
+marker rollout` in unrelated suites. Setting the cache root and then treating
+every artifact as private is the mistake to avoid.
+
 ## Browser validation debt — for the tier-end consolidated pass
 
 Per the maintainer's ruling, browser runs as **one consolidated pass at the end
@@ -3575,3 +3586,29 @@ Vitest `webgl-bridge` / `webgl-shadow` / `dri-multiplex`: 36 passed. Vitest
 controls are browser-only; they belong to the tier-end consolidated pass.
 Piece 3's GL path likewise has no guest-level suite — the webgl tests drive a
 hand-rolled `WebGL2RenderingContext` stand-in, not a real context.
+
+**The full host Vitest run is not a usable gate in a fresh worktree, and this
+is the seventh provisioning surprise the campaign has logged.** After every
+documented provisioning step — both sysroots, root and `host` npm installs,
+`fork-module/build-wasm.sh`, `./run.sh rebuild kernel` *plus*
+`install-local-artifact`, `./run.sh rebuild rootfs`, `build-programs.sh` — the
+run was **259 files passed / 131 failed / 37 skipped**. The failures are
+environmental, not this item's:
+
+- **203 occurrences of `Could not find repo root (expected workspace
+  Cargo.toml + package.json)`**, thrown by `findRepoRoot`
+  (`binary-resolver.ts:102`) from inside the *bundled* worker entry. The
+  bundle is materialized at `$TMPDIR/kandelo-worker-entry-*/worker-entry.mjs`,
+  so `currentModuleDir()` starts in a temp directory and walking up never
+  reaches the checkout. `describeWasmArtifactPolicy` calls `findRepoRoot()`
+  with no start path, and `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` is the only
+  escape.
+- Stale entries in the *shared* `$HOME/.cache/kandelo/programs`, reported as
+  `artifact lacks an __abi_version export`.
+
+**Verified pre-existing, not assumed.** `test/audio-integration.test.ts` was
+re-run at the base commit `d34e9ed01` with this item's changes absent: 6 of 6
+failed identically. This item touches 17 files, none of them
+`binary-resolver.ts`, the worker entry, or the bundler.
+
+Targeted suites are therefore the honest evidence, and they are green.
