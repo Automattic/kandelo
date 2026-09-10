@@ -4,6 +4,7 @@ members = [
     "crates/shared",
     "crates/runtime-core",
     "crates/fork-codec",
+    "crates/dylink",
     "crates/fork-module",
     "crates/fork-module-inject",
     "crates/kernel",
