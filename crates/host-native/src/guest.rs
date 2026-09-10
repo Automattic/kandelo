@@ -12856,6 +12856,16 @@ fn marshal_in(
             anyhow::bail!("syscall {syscall_nr}: copy_out_length special-case not implemented");
         }
         let idx = d.arg_index as usize;
+        // A kernel-dereferenced argument is not staged at all: the kernel
+        // reads and writes the caller's memory itself through
+        // `host_proc_read_bytes`/`host_proc_write_bytes`, which this host
+        // already provides. Leave the guest address in place and name the
+        // caller's data model in the private sixth slot, exactly as the
+        // TypeScript host does. This host runs wasm32 guests only.
+        if d.size == SyscallArgSize::KernelDereferenced {
+            args[wasm_posix_shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX as usize] = 4;
+            continue;
+        }
         let guest_ptr = args[idx] as u32 as usize;
         let size = match d.size {
             SyscallArgSize::Fixed { size } => size as usize,
