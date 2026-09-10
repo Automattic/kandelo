@@ -2210,8 +2210,10 @@ the six exposed six more, each verified against a call site:
     a load suspended at bootstrap has no committed record to claim it. The
     session synthesizes the provisional record from the in-flight plan.
 12. **An in-flight staged transaction must be RESTORED in a fork child** —
-    `dylink.ts:2854 restorePendingDlopenTransactions`. Not done; see
-    NDD-K5-2.
+    `dylink.ts:2854 restorePendingDlopenTransactions`. Done: the child
+    rebuilds the interrupted object under the PARENT's token, stopping at
+    the call the parent was suspended in and acknowledging every earlier
+    staged call WITHOUT invoking it.
 
 ### One defect that was blocking the whole branch
 
@@ -2228,42 +2230,50 @@ duplicated authority.
 
 ### NEEDS-DEFER-DECISION — NDD-K5-2
 
-**What:** restoring an in-flight staged `dlopen` transaction in a fork child.
+**What:** the ABI-43 legacy two-argument `__wasm_dlopen`, lowered by the SDK
+to the staged protocol, when a constructor forks.
 
-**Why it is open:** a fork taken while a side module's constructor is
-running archives the transaction and a provisional record for the object.
-The child rebuilds the object, but the parent's TOKEN is in the child's
-copied memory and libc will call `__wasm_dlopen_next(token)` on it. The
-child's session has no such transaction, and the reconcile currently drives
-the replayed object to completion instead — re-running a constructor over
-already-constructed state.
+**Status of the rest of contract 12.** Restoring an in-flight staged
+transaction in a fork child IS done: `fork_reconcile_begin` rebuilds the
+interrupted object under the PARENT's token with `resume_at` naming the call
+to stop at, and every earlier staged call is acknowledged without being
+invoked — the rule `advanceWithoutGuestCalls` (`dylink.ts:2981-3013`)
+encodes, which settles the question the planner's own `runs_stage` comment
+poses. "replays a fork issued while dlopen runs a side-module constructor"
+passes on that.
 
-**Cost now:** the child must create a Load transaction under the ARCHIVED
-token whose plan is positioned at the recorded stage, and the reconcile must
-stop there rather than finish. `LinkPlan` already yields the full staged
-sequence for an in-flight replay precisely so a selector can stop at the
-resumed call — but WHICH earlier stages a child must re-run is a fork
-semantics question (bootstrap is instance-local; relocations are already
-applied in copied memory), and guessing it corrupts a child silently rather
-than loudly. That is why it is not guessed at here.
+**What is still red:** "lowers the original two-argument loader before a
+constructor can fork". `__wasm_dlopen_prepare` succeeds and returns a token;
+the guest's `legacy_open` then reports handle 0 and its `dlerror()` is
+`(null)`. The null is explained: the rewritten stub is not libc's `dlopen`,
+so it never populates `dl_error_buf` — which also means the guest-visible
+diagnostic cannot say what failed. Worker stderr from that path is lost when
+the worker is torn down, so the next step is a diagnostic that survives the
+teardown rather than more `console.error`.
 
-**Cost later:** none that grows. Two tests are red and named.
+**Cost now:** unknown, and deliberately not guessed at — this is the ONE
+path whose failure mode is not yet understood, and every other one in this
+item was fixed only after it was.
 
-**Gates:** `fork-from-dlopen-side-module-e2e` — "replays a fork issued while
-dlopen runs a side-module constructor" and "lowers the original
-two-argument loader before a constructor can fork". Both fail with
-`fork-replay-dlopen failed: [object WebAssembly.Exception]`.
+**Cost later:** one test, on the ABI-43 compatibility path.
 
-**Recommendation:** one item, scoped as "restore the in-flight transaction",
-with the stage-selection question answered by the maintainer or by reading
-the deleted `loadSharedLibrarySyncSteps` resume path out of git history.
+**Recommendation:** treat as a bug against the cutover, not a design gap.
+The two-argument import is a documented compatibility boundary and the
+staged path it lowers to is otherwise green, including the same
+fork-during-constructor case reached through the ABI-43 import.
 
 ### What was measured
 
-The `dlopen` suite, in the dev shell against an installed kernel:
-**32 passed / 4 failed / 1 skipped of 37.** Two of the four are the tracked
-pre-existing pthread `__wpk_fork_frame_reserve` gap (73fd6763f); two are
-NDD-K5-2.
+The `dlopen` suite, in the dev shell against a freshness-verified kernel and
+a rebuilt planner module: **33 passed / 3 failed / 1 skipped of 37.** Two of
+the three are the tracked pre-existing pthread `__wpk_fork_frame_reserve`
+gap (73fd6763f); one is NDD-K5-2.
+
+**On the recorded `118 executed` baseline.** That count included
+`host/test/dylink.test.ts` (77 cases) and `host/test/dylink-fork-archive.test.ts`
+(12), which tested the deleted implementations and went with them. The
+suite's composition changed; quoting 37 against 118 without saying so would
+be comparing two different things.
 
 `cargo test -p dylink -p dylink-module -p fork-codec -p runtime-core
 --target aarch64-apple-darwin`: **2,501 passed, 0 failed.**
