@@ -2170,10 +2170,23 @@ pub struct SharedMappingTable {
 }
 
 impl SharedMappingTable {
-    pub fn new() -> Self {
+    /// Build an empty table.
+    ///
+    /// `const` so the machine-wide singleton below needs no lazy
+    /// initialization: the kernel is single-threaded Wasm and a `static`
+    /// initializer that can run at compile time keeps the table out of any
+    /// first-use branch on the syscall path.
+    pub const fn new() -> Self {
         Self {
+            mappings: BTreeMap::new(),
+            file_backings: BTreeMap::new(),
+            anon_backings: BTreeMap::new(),
             next_anon_id: 1,
-            ..Default::default()
+            writeback_refs: BTreeMap::new(),
+            releasing_pids: BTreeSet::new(),
+            sysv: BTreeMap::new(),
+            sysv_versions: BTreeMap::new(),
+            writeback_loss_reports: 0,
         }
     }
 
@@ -3606,6 +3619,32 @@ impl SharedMappingTable {
         }
         Ok(())
     }
+}
+
+// ── Machine-wide singleton ──
+
+struct SharedMappingTableCell(core::cell::UnsafeCell<SharedMappingTable>);
+// SAFETY: the kernel Wasm module is single-threaded; every access is made from
+// a serialized kernel dispatch under the global kernel lock.
+unsafe impl Sync for SharedMappingTableCell {}
+
+static SHARED_MAPPING_TABLE: SharedMappingTableCell =
+    SharedMappingTableCell(core::cell::UnsafeCell::new(SharedMappingTable::new()));
+
+/// Machine-wide authority for every process's `MAP_SHARED` interval, the
+/// backings behind them, and the SysV attachment mirror.
+///
+/// This is a peer of [`crate::ipc::global_ipc_table`] rather than a
+/// `ProcessTable` field on purpose: the `SharedMappingIo` bridge needs
+/// `&mut Process` for the fd-writeback path, so owning the table outside the
+/// process table keeps that borrow disjoint instead of aliasing it.
+///
+/// # Safety
+/// Must only be called from a single-threaded context (Wasm is
+/// single-threaded), and the returned reference must not be held across a
+/// re-entry into the same table.
+pub unsafe fn global_shared_mapping_table() -> &'static mut SharedMappingTable {
+    unsafe { &mut *SHARED_MAPPING_TABLE.0.get() }
 }
 
 #[cfg(test)]
