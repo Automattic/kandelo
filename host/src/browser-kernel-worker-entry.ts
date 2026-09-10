@@ -1037,7 +1037,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         : async () => {
           throw new Error("no lazy transport configured");
         };
-    const { lazyInput, archiveProvider } = buildRootfsLazyWiring(
+    // Only the archive provider is needed now: the kernel learns which files
+    // are lazy from the image's own `KLZY` section, not from a host-built
+    // linkage. `buildRootfsLazyWiring` still produces both; `lazyInput` is the
+    // manifest half and now has only the test oracle as a consumer.
+    const { archiveProvider } = buildRootfsLazyWiring(
       memfs.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
     );
