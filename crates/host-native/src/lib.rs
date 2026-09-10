@@ -140,7 +140,28 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// already the only host treating the filesystem as optional (its imports are
 /// wired only when `GuestOptions::mounts` is non-empty); K9 makes that the
 /// contract rather than one host's local choice.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 75;
+/// **75 or 76 is an open maintainer decision, and this pin is deliberately at
+/// 76 rather than 75 while it is open.**
+///
+/// The extra import is `host_debug_log`. It has always been *declared*; until
+/// today it had no caller and the linker dropped it, so K9 removed the dead
+/// declaration and measured 75. K7's shared-mapping work then added a real
+/// caller — `report_writeback_loss`, which reports an **unrecoverable**
+/// writeback loss — and the merge routed it through `runtime-core`'s existing
+/// declaration rather than re-declaring the extern. The import is now live and
+/// linked.
+///
+/// Two opposite fixes are both correct, which is why this is not decided here:
+/// accept the import and document it, or delete the caller and return to 75.
+/// Deleting the caller does not stop the loss happening; it stops it being
+/// **observable** — which is the exact shape of the eight silent-success
+/// defects this campaign has spent the day finding. Against that, the
+/// smallest-host-surface goal counts every import, and a diagnostic is a weak
+/// thing to spend one on.
+///
+/// Pinned at the measured value so the branch states what is true. Moving it to
+/// 75 is a one-line change once the caller goes.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 76;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
