@@ -14671,9 +14671,6 @@ fn wasm_artifact_policy_failures_for(
     }
 
     let mut failures = Vec::new();
-    if bytes_contain(bytes, b"asyncify_") {
-        failures.push("contains legacy asyncify_ instrumentation".to_string());
-    }
 
     let facts = match wasm_artifact_facts(bytes) {
         Ok(facts) => facts,
@@ -14682,6 +14679,18 @@ fn wasm_artifact_policy_failures_for(
             return failures;
         }
     };
+
+    // WHY export names rather than a raw byte scan: this was
+    // `bytes_contain(bytes, b"asyncify_")`, which rejects any artifact that
+    // merely *mentions* the string anywhere in its data section. It began
+    // rejecting the kernel itself once `crates/wasm-artifact` -- which carries
+    // the literal in order to *detect* legacy instrumentation -- was linked in.
+    // A wasm module is asyncify-instrumented when it exports the transform's
+    // entry points, so that is what is checked. `wasm-artifact`'s own detector
+    // already tested export names; the build gate had not.
+    if facts.exports.iter().any(|name| name.starts_with("asyncify_")) {
+        failures.push("contains legacy asyncify_ instrumentation".to_string());
+    }
 
     if facts.is_relocatable_object {
         return failures;
