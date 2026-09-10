@@ -710,54 +710,72 @@ pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
 /// as avoiding, since the ancestors have to exist before any host path below
 /// them resolves.
 ///
-/// Per component, from the shallowest:
-///
-/// * missing — create a `0755` root-owned directory;
-/// * an existing directory — descend into it;
-/// * an existing symlink — follow it within the overlay and descend if it
-///   resolves to a directory (the host's `stat`-based check followed symlinks
-///   too, and a `/usr/local -> /opt/local` image is a normal shape);
-/// * anything else — stop descending this prefix. A regular file where a
-///   directory must go is a real conflict between the image and the mount
-///   table; inventing a directory over it would hide it, and the mount then
-///   fails visibly at the missing component, which is the truthful result.
+/// Each prefix is walked by [`mkdir_parents`], which owns the per-component
+/// rules (create a missing component, descend through an existing directory or
+/// a symlink to one, and stop rather than paper over anything else).
 ///
 /// Returns the number of directories created.
 pub fn ensure_foreign_mount_parents() -> usize {
     let prefixes: Vec<Vec<u8>> = FOREIGN_MOUNTS.with(|slot| slot.clone());
+    prefixes
+        .iter()
+        .map(|prefix| mkdir_parents(prefix, 0o755, 0, 0))
+        .sum()
+}
+
+/// Create the missing ancestor directories of `path`, so `path` itself becomes
+/// creatable. `path`'s final component is never created — it is the thing the
+/// caller is about to make, or, for a foreign mount point, the thing another
+/// filesystem owns.
+///
+/// Per component, from the shallowest:
+///
+/// * missing — create a directory with `mode`/`uid`/`gid`;
+/// * an existing directory — descend into it;
+/// * an existing symlink — follow it within the overlay and descend if it
+///   resolves to a directory (a `/usr/local -> /opt/local` image is a normal
+///   shape, and a host `stat`-based check would follow it too);
+/// * anything else — stop. A regular file where a directory must go is a real
+///   conflict; inventing a directory over it would hide it, and the caller's
+///   own operation then fails visibly at the missing component, which is the
+///   truthful result.
+///
+/// Returns the number of directories created. It is deliberately infallible:
+/// every stopping condition leaves the caller's next operation to report the
+/// real error against the real path, rather than this helper guessing which
+/// errno the caller wanted.
+pub fn mkdir_parents(path: &[u8], mode: u32, uid: u32, gid: u32) -> usize {
+    let comps = split_components(path);
+    // `comps.len() <= 1` means the target sits directly under `/`, whose only
+    // ancestor is the root itself and always exists.
+    if comps.len() <= 1 {
+        return 0;
+    }
     let mut created = 0usize;
-    for prefix in &prefixes {
-        let comps = split_components(prefix);
-        // `comps.len() <= 1` means the mount sits directly under `/`, whose
-        // only ancestor is the root itself and always exists.
-        if comps.len() <= 1 {
-            continue;
-        }
-        // Canonical path walked so far; empty means the mount root.
-        let mut base: Vec<u8> = Vec::new();
-        for comp in &comps[..comps.len() - 1] {
-            let mut candidate = base.clone();
-            candidate.push(b'/');
-            candidate.extend_from_slice(comp);
-            match lstat(&candidate) {
-                Err(_) => {
-                    if mkdir(&candidate, 0o755, 0, 0).is_err() {
-                        break;
-                    }
-                    created += 1;
-                    base = candidate;
+    // Canonical path walked so far; empty means the mount root.
+    let mut base: Vec<u8> = Vec::new();
+    for comp in &comps[..comps.len() - 1] {
+        let mut candidate = base.clone();
+        candidate.push(b'/');
+        candidate.extend_from_slice(comp);
+        match lstat(&candidate) {
+            Err(_) => {
+                if mkdir(&candidate, mode, uid, gid).is_err() {
+                    break;
                 }
-                Ok(st) if st.st_mode & S_IFMT == S_IFDIR => {
-                    base = candidate;
-                }
-                Ok(st) if st.st_mode & S_IFMT == S_IFLNK => {
-                    match resolve_read_symlinks(&candidate) {
-                        Ok(resolved) if is_dir(&resolved) => base = resolved,
-                        _ => break,
-                    }
-                }
-                Ok(_) => break,
+                created += 1;
+                base = candidate;
             }
+            Ok(st) if st.st_mode & S_IFMT == S_IFDIR => {
+                base = candidate;
+            }
+            Ok(st) if st.st_mode & S_IFMT == S_IFLNK => {
+                match resolve_read_symlinks(&candidate) {
+                    Ok(resolved) if is_dir(&resolved) => base = resolved,
+                    _ => break,
+                }
+            }
+            Ok(_) => break,
         }
     }
     created
@@ -4032,6 +4050,60 @@ mod tests {
         let n = read_file_at(b"/usr/bin/fresh", 0, &mut buf, &mut blob).unwrap();
         assert_eq!(&buf[..n], b"data");
         assert_eq!(lstat(b"/usr/bin/fresh").unwrap().st_mode & 0o7777, 0o644);
+    }
+
+    /// The host-facing "place this file in the rootfs" path does NOT create the
+    /// directories leading to it, and `mkdir_parents` is what closes that gap.
+    ///
+    /// This is the measured refutation of a claim in the K8 grounding, which
+    /// said the browser MITM CA-certificate write could move to
+    /// `kernel_rootfs_write_file` because "the mechanism already exists — no
+    /// new host surface". The browser entry writes
+    /// `/etc/ssl/certs/ca-certificates.crt` and creates `/etc`, `/etc/ssl` and
+    /// `/etc/ssl/certs` first, because a demo image need not carry them.
+    /// `write_file_at` opens with `O_CREAT`, which is `ENOENT` on a missing
+    /// parent exactly as POSIX requires, so the write half alone loses the
+    /// directory half silently.
+    #[test]
+    fn write_file_at_needs_its_parents_and_mkdir_parents_supplies_them() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let (mut blob, _) = make_byte_source(alloc::vec![], alloc::vec::Vec::new());
+
+        // The gap, stated as a fact rather than as reasoning.
+        assert_eq!(
+            write_file_at(
+                b"/etc/ssl/certs/ca-certificates.crt",
+                0,
+                b"-----BEGIN CERTIFICATE-----\n",
+                0o644,
+                true,
+                &mut blob,
+            ),
+            Err(Errno::ENOENT),
+        );
+
+        // And the capability that closes it, from the same code the foreign
+        // mount points use.
+        assert_eq!(
+            mkdir_parents(b"/etc/ssl/certs/ca-certificates.crt", 0o755, 0, 0),
+            3,
+        );
+        let n = write_file_at(
+            b"/etc/ssl/certs/ca-certificates.crt",
+            0,
+            b"-----BEGIN CERTIFICATE-----\n",
+            0o644,
+            true,
+            &mut blob,
+        )
+        .unwrap();
+        assert_eq!(n, 28);
+        assert!(is_dir(b"/etc/ssl/certs"));
+        assert_eq!(
+            lstat(b"/etc/ssl/certs/ca-certificates.crt").unwrap().st_mode & 0o7777,
+            0o644,
+        );
     }
 
     /// Minimal RXPT record: (kind, mode, uid, gid, mtime_sec, size, path, target).
