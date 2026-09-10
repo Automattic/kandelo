@@ -324,6 +324,41 @@ describe("LocalVirtualNetwork", () => {
     expect(twoAccepted).toBe(1);
   });
 
+  it("defers every internet-domain bind conflict to the kernel", () => {
+    // The kernel decides EADDRINUSE in crates/runtime-core/src/socket.rs
+    // (udp_can_bind / tcp_can_bind) and only notifies the host once that
+    // decision has succeeded. The fabric must not hold a second opinion: it
+    // cannot see SO_REUSEADDR, and it cannot see that two pids are
+    // fork-inherited co-owners of one logical binding, so any answer it gives
+    // is guesswork that overrides a correct one.
+    const net = new LocalVirtualNetwork();
+    const machine = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const noopUdp = { receive: () => 0 };
+    const noopTcp = { accept: () => 0 };
+
+    // Two distinct sockets on the same wildcard address and port: the shape
+    // SO_REUSEADDR produces, and the shape a fork leaves behind.
+    expect(machine.bindUdp!("1:4", new Uint8Array([0, 0, 0, 0]), 5000, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("1:5", new Uint8Array([0, 0, 0, 0]), 5000, noopUdp)).toBe(0);
+    // A specific address overlapping an existing wildcard binding, and the
+    // reverse order, are likewise the kernel's call and not the fabric's.
+    expect(machine.bindUdp!("2:4", new Uint8Array([10, 88, 0, 2]), 5000, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("2:5", new Uint8Array([0, 0, 0, 0]), 5001, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("2:6", new Uint8Array([10, 88, 0, 2]), 5001, noopUdp)).toBe(0);
+
+    expect(machine.listenTcp!("1:8", new Uint8Array([0, 0, 0, 0]), 8080, noopTcp)).toBe(0);
+    expect(machine.listenTcp!("1:9", new Uint8Array([0, 0, 0, 0]), 8080, noopTcp)).toBe(0);
+    expect(machine.listenTcp!("2:8", new Uint8Array([10, 88, 0, 2]), 8080, noopTcp)).toBe(0);
+
+    // The one address fact the fabric does own is which machine holds which
+    // virtual address, so binding a peer's address still fails here.
+    net.attachMachine({ id: "peer", address: [10, 88, 0, 3] });
+    expect(machine.bindUdp!("3:4", new Uint8Array([10, 88, 0, 3]), 5002, noopUdp))
+      .toBe(VIRTUAL_NETWORK_ERRNO.EADDRNOTAVAIL);
+    expect(machine.listenTcp!("3:8", new Uint8Array([10, 88, 0, 3]), 8081, noopTcp))
+      .toBe(VIRTUAL_NETWORK_ERRNO.EADDRNOTAVAIL);
+  });
+
   it("uses normal UDP errno style for missing destination hosts and ports", () => {
     const net = new LocalVirtualNetwork();
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
