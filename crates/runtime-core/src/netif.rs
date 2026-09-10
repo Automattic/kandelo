@@ -253,9 +253,6 @@ mod tests {
         fn fb_write(&mut self, _: i32, _: usize, _: &[u8]) {
             unimplemented!()
         }
-        fn host_call_signal_handler(&mut self, _: u32, _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> {
             buf.fill(self.random_fill);
             Ok(buf.len())

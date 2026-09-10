@@ -187,7 +187,6 @@ unsafe extern "C" {
         interval_ms_lo: u32,
         interval_ms_hi: u32,
     ) -> i32;
-    fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(
         dir: i64,
@@ -769,16 +768,6 @@ impl HostIO for WasmHostIO {
                 (interval_ms >> 32) as u32,
             )
         };
-        i32_to_result(result)
-    }
-
-    fn host_call_signal_handler(
-        &mut self,
-        handler_index: u32,
-        signum: u32,
-        sa_flags: u32,
-    ) -> Result<(), Errno> {
-        let result = unsafe { host_call_signal_handler(handler_index, signum, sa_flags) };
         i32_to_result(result)
     }
 

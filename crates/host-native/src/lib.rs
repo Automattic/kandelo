@@ -140,8 +140,8 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// already the only host treating the filesystem as optional (its imports are
 /// wired only when `GuestOptions::mounts` is non-empty); K9 makes that the
 /// contract rather than one host's local choice.
-/// **75 or 76 is an open maintainer decision, and this pin is deliberately at
-/// 76 rather than 75 while it is open.**
+/// **74 or 75 is an open maintainer decision, and this pin is deliberately at
+/// 75 rather than 74 while it is open.**
 ///
 /// The extra import is `host_debug_log`. It has always been *declared*; until
 /// today it had no caller and the linker dropped it, so K9 removed the dead
@@ -160,8 +160,18 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// thing to spend one on.
 ///
 /// Pinned at the measured value so the branch states what is true. Moving it to
-/// 75 is a one-line change once the caller goes.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 76;
+/// 74 is a one-line change once the caller goes.
+///
+/// **2026-09-10: 76 → 75.** `host_call_signal_handler` was removed. It had no
+/// production caller — the kernel never asked a host to invoke a user-space
+/// signal handler, because delivery runs guest-side through
+/// `__deliver_pending_signal` — so it cost a real import to describe a
+/// capability nothing used. It was the third entry on the disposition ledger's
+/// §2.2 "Wasm cannot do this" KEEP list to prove dead, after `host_futex_wait`
+/// and `host_sigsuspend_wait`; the ledger entry is corrected there. This shifts
+/// the `host_debug_log` arithmetic above by one without settling it: the open
+/// decision is now 74-or-75, on the same reasoning.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 75;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]

@@ -247,18 +247,6 @@ pub trait HostIO {
         value_ms: i64,
         interval_ms: i64,
     ) -> Result<(), Errno>;
-    /// Ask the host to invoke a user-space signal handler.
-    /// `handler_index` is the Wasm function table index.
-    /// `signum` is the signal number being delivered.
-    /// `sa_flags` is the sigaction flags (SA_SIGINFO, SA_RESTART, etc.)
-    /// When SA_SIGINFO is set, the host should call handler(signum, siginfo_ptr, 0)
-    /// instead of handler(signum).
-    fn host_call_signal_handler(
-        &mut self,
-        handler_index: u32,
-        signum: u32,
-        sa_flags: u32,
-    ) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
     /// Set timestamps on an entry named by one component of a directory handle.
     /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
@@ -2564,9 +2552,6 @@ pub mod test_host {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             for x in b.iter_mut() {
                 *x = 0;
@@ -2734,9 +2719,6 @@ pub mod test_host {
         }
         fn host_set_posix_timer(&mut self, t: i32, s: i32, v: i64, i: i64) -> Result<(), Errno> {
             NoopHost.host_set_posix_timer(t, s, v, i)
-        }
-        fn host_call_signal_handler(&mut self, h: u32, s: u32, f: u32) -> Result<(), Errno> {
-            NoopHost.host_call_signal_handler(h, s, f)
         }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getrandom(b)

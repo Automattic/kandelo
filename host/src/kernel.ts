@@ -185,7 +185,6 @@ const intrinsicWasmInstanceExports = Object.getOwnPropertyDescriptor(
   WebAssembly.Instance.prototype,
   "exports",
 )!.get!;
-const intrinsicWasmTableGet = WebAssembly.Table.prototype.get;
 
 const wasmPosixKernelTestCapability = {};
 
@@ -851,8 +850,6 @@ export class WasmPosixKernel {
     | "initializing"
     | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
-  private programFuncTable: WebAssembly.Table | null = null;
-  #kernelFuncTable: WebAssembly.Table | null = null;
   /**
    * Rootfs overlay content byte-leaf provider (Phase 5 Increment 2). The Rust
    * kernel owns the `/` tree and asks the host only for a base file's immutable
@@ -974,14 +971,6 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Set the user program's indirect function table so signal handlers
-   * registered by the program can be called from the kernel.
-   */
-  setProgramFuncTable(table: WebAssembly.Table): void {
-    this.programFuncTable = table;
-  }
-
-  /**
    * Install the rootfs overlay content byte-leaf provider (Phase 5 Increment 2).
    * See {@link WasmPosixKernel.prototype} `#rootfsBlobProvider`.
    */
@@ -1027,13 +1016,6 @@ export class WasmPosixKernel {
         throw new Error("missing WasmPosixKernel test runtime");
       }
       this.#instance = testRuntime.instance ?? null;
-      this.#kernelFuncTable = testRuntime.instance === undefined
-        || testRuntime.instance === null
-        ? null
-        : (
-            wasmInstanceExports(testRuntime.instance)
-              .__indirect_function_table as WebAssembly.Table | undefined
-          ) ?? null;
       this.#memory = testRuntime.memory ?? null;
       this.#kernelPtrWidth = testRuntime.pointerWidth ?? 4;
       this.#testEngine = testRuntime.engine;
@@ -1498,10 +1480,6 @@ export class WasmPosixKernel {
               [module, importObject],
             ) as WebAssembly.Instance
           : await this.#testEngine.instantiate(module, importObject);
-      this.#kernelFuncTable = (
-        wasmInstanceExports(rawInstance)
-          .__indirect_function_table as WebAssembly.Table | undefined
-      ) ?? null;
       this.#instance = createKernelEntryGatedInstance(
         rawInstance,
         this.#kernelEntryGate,
@@ -1600,7 +1578,6 @@ export class WasmPosixKernel {
     // A failed first attempt has created no usable kernel generation. Clear
     // the partially published import state so callers may retry cleanly.
     this.#instance = null;
-    this.#kernelFuncTable = null;
     this.#memoryGeneration = intrinsicObjectFreeze({});
     this.#memory = null;
     this.#kernelPtrWidth = 4;
@@ -1992,34 +1969,6 @@ export class WasmPosixKernel {
           const valueMs = (valueMsHi >>> 0) * 0x100000000 + (valueMsLo >>> 0);
           const intervalMs = (intervalMsHi >>> 0) * 0x100000000 + (intervalMsLo >>> 0);
           return this.#hostSetPosixTimer(timerId, signo, valueMs, intervalMs);
-        },
-        host_call_signal_handler: (handler_index: number, signum: number, sa_flags: number): number => {
-          const SA_SIGINFO = 4;
-          const table = this.programFuncTable
-            ?? this.#kernelFuncTable;
-          if (!table) {
-            return -22; // EINVAL
-          }
-          const handler = intrinsicApply(
-            intrinsicWasmTableGet,
-            table,
-            [handler_index],
-          );
-          if (handler) {
-            try {
-              if (sa_flags & SA_SIGINFO) {
-                // SA_SIGINFO: call handler(signum, siginfo_ptr, ucontext_ptr)
-                // siginfo_ptr=0 and ucontext_ptr=0 for now (no siginfo written to memory yet)
-                (handler as Function)(signum, 0, 0);
-              } else {
-                (handler as Function)(signum);
-              }
-              return 0;
-            } catch (e) {
-              return -5; // EIO
-            }
-          }
-          return -22; // EINVAL
         },
         host_getrandom: (bufPtr: KernelPointer, bufLen: number): number => {
           try {

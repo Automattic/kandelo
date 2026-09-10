@@ -20654,14 +20654,6 @@ mod tests {
             Ok(())
         }
 
-        fn host_call_signal_handler(
-            &mut self,
-            _handler_index: u32,
-            _signum: u32,
-            _sa_flags: u32,
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
 
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
             // Fill with deterministic pattern for testing
@@ -35702,14 +35694,6 @@ impl HostIO for TrackingHostIO {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_call_signal_handler(
-            &mut self,
-            _handler_index: u32,
-            _signum: u32,
-            _sa_flags: u32,
-        ) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
             for (i, b) in buf.iter_mut().enumerate() {
                 *b = (i & 0xFF) as u8;
@@ -36852,9 +36836,6 @@ impl HostIO for NetMock {
                 _v: i64,
                 _i: i64,
             ) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
@@ -41242,9 +41223,6 @@ impl HostIO for SymlinkMock {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -41459,9 +41437,6 @@ impl HostIO for LoopMock {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
                 for x in b.iter_mut() {
                     *x = 0x42;
@@ -41671,9 +41646,6 @@ impl HostIO for RelSymlinkMock {
                 _v: i64,
                 _i: i64,
             ) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {

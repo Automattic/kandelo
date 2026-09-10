@@ -215,7 +215,27 @@ Wasm cannot instantiate itself or spawn a thread:
 - `Memory.grow`, `Table.grow`, `WebAssembly.Table` get/set
 - `new WebAssembly.Tag`
 - `postMessage` between real host threads
-- calling a guest export on the kernel's behalf (`host_call_signal_handler`)
+- ~~calling a guest export on the kernel's behalf
+  (`host_call_signal_handler`)~~ — **DISPROVED and REMOVED 2026-09-10.** The
+  import had **no production caller**, verified three ways: a call-form grep
+  (`.host_call_signal_handler(` appeared only in `process.rs`'s `#[cfg(test)]
+  pub mod test_host`), symbol enumeration, and a Serena
+  `find_referencing_symbols` that returned empty against a working control
+  (`HostIO/host_futex_wake` → 5 references in `sys_futex`). The kernel never
+  asked a host to invoke a user-space handler: delivery runs guest-side
+  through `__deliver_pending_signal`. The TypeScript implementation was
+  additionally unreachable in a second, independent way — it read
+  `programFuncTable`, whose only writer, `setProgramFuncTable`, had no callers
+  at all, so it would have fallen back to the *kernel's* own indirect table
+  and called a kernel function by a guest table index. Removed with its
+  extern, its four mocks, its `WasmHostIO` body and its host implementation;
+  `EXPECTED_HOST_IMPORT_COUNT` 76 → 75.
+
+  **Third entry on this KEEP list to prove dead this way**, after
+  `host_futex_wait` and `host_sigsuspend_wait`. The pattern is now strong
+  enough to be a standing suspicion: a "Wasm cannot do this" floor entry is a
+  claim about the *language*, not evidence that the kernel exercises the
+  capability. Check the caller before inheriting the floor.
 
 ### 2.3 Real byte stores
 
