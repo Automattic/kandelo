@@ -14,6 +14,7 @@ members = [
     "crates/wasi-abi",
     "crates/wasi-module",
     "crates/wasm-artifact",
+    "crates/wasm-artifact-module",
     "crates/host-native",
     "tools/xtask",
 ]

@@ -2087,6 +2087,17 @@ dependencies = [
  "fork-codec",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
+ "wat",
+]
+
+[[package]]
+name = "wasm-artifact-module"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "wasm-artifact",
+ "wasm-posix-shared",
+ "wat",
 ]
 
 [[package]]
