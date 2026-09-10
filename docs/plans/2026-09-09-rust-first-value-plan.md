@@ -1125,6 +1125,91 @@ claims nothing** about the O(n)→O(1) table scan.
 production, 2,353 test). Deleting `dylink.ts` + `dylink-fork-archive.ts`
 (**6,340 lines**) is debt owed by **K5 I7** — recorded below.
 
+## 2q. K3 — increments 0a/1/2 LANDED, 0b BLOCKED ON OWNERSHIP (2026-09-09)
+
+Worktree `.claude/worktrees/agent-a80522f9a40f00a13`, base `4cc15a99b`, tip
+`352945f3d`, 3 commits, cherry-picked onto the branch as `ae20af7b9`,
+`736b18bee`, `201f5e1fb`. No ABI bump, no new `env.host_*`, no STRONG DOUBT.
+
+**0a — the comments now say what the code does.** Four comments asserting the
+V8 `epoll_pwait` crash as fact were rewritten to cite the K0c disproof and name
+the K3 epoll cutover as owner of the mirror's deletion. `handleEpollPwait`
+already dispatched `SYS_EPOLL_PWAIT` through `kernel_handle_channel` — the
+comments contradicted their own adjacent code.
+
+**A tenth disproved claim, and it was a doc promising an export that never
+existed.** `pshared.rs` said `kernel_wake_blocked_retries()` wakes waiters
+"rather than through pure timer polling". No such export has ever existed in
+this repo; the module pushes no wakeup at all. **pshared blocking *is* pure
+timer polling**, and the doc now states that as the gap it is. Verified
+independently by the coordinator: the only surviving occurrence of that symbol
+anywhere in the tree is the correction itself.
+
+**1 — `wait_queue.rs`, dormant and wired to nothing.** `ChannelGeneration`
+reproduces `ChannelInfo` object identity as a never-reused id;
+`BlockingRetryTarget` sits on the sleeper rather than behind a token; a
+monotonic deadline heap exposes `next_deadline_ns()` so the machine needs one
+timer, not one per sleeper. `wake()` selects-then-removes, which makes the
+host's `Map`-iterator livelock — the WordPress SMTP reset deadlock —
+**structurally impossible** rather than merely fixed. 20 tests.
+
+**2 — a shadow apparatus, and it has not shadowed the live machine.**
+`wait_shadow.rs` compares old against new with an asymmetric comparator:
+`WouldHang` (host woke on an identified source, kernel would not) blocks
+cutover; `WouldWakeEarly` is safe. `unattributed_broad_wakes` counts tasks
+resumed only by a sweep — each of those hangs the day the sweep dies — and
+`is_cutover_clean()` refuses while the count is nonzero. 17 tests, six
+differential against a model of the host containers.
+
+**What it showed about the live machine: nothing, and the agent said so.**
+Feeding it real traffic needs exports in `wasm_api.rs`, frozen this round.
+Agreement on modelled scenarios is evidence the design reproduces the routing —
+**not** the zero-divergence conformance/WordPress run §7.2 requires before
+cutover.
+
+### 0b — two dead host imports, blocked only by file ownership
+
+`host_futex_wait` and `host_sigsuspend_wait` have **zero production callers**.
+Coordinator re-verified the whole surface: `process.rs:148,225` are the `HostIO`
+trait declarations, `process.rs:2495,2547` and `netif.rs:301,351` are
+`#[cfg(test)]` mocks, `host_raw_syscalls.rs` mentions are prose, and
+`kernel.ts:1898,2065` are the host-side implementations of methods nothing
+calls. Removal is all-or-nothing — dropping the trait method without the impls
+does not compile — and the remaining 9 sites live in `crates/kernel/src/wasm_api.rs`
+(3) and `crates/runtime-core/src/syscalls.rs` (6), **both owned by K8 this round**.
+
+**This is a genuine 84 → 82 host-import reduction, the first direct V4 win of
+the campaign.** It is queued for the coordinator to apply the moment K8 lands;
+it is minutes of work, not a design question. `EXPECTED_HOST_IMPORT_COUNT` at
+`crates/host-native/src/lib.rs:89` moves with it.
+
+### K3's NEEDS-DEFER-DECISION items — returned undecided, for the maintainer
+
+1. **§11.1 futex-as-floor probe.** Whether the futex path is genuinely
+   irreducible, or merely unmeasured.
+2. **§11.2 `usePolling` deletion.**
+3. **§11.3 two epoll POSIX gaps** — D2 interest-list inheritance across `fork`,
+   D3 OFD keying of registrations. These are conformance gaps the migration
+   uncovered, not migration work.
+4. **0b's ownership conflict** (resolved by the coordinator above: queued, not
+   deferred).
+
+Unactioned by choice: freeze-list item 5 (moving `epollInterests` out of the K7
+field block), judged unasked-for churn in a contested file. Correct call.
+
+**Validation:** `cargo test -p runtime-core` 1825/1825; 10 scheduler Vitest
+files, 212 passed. `select-signal-guest` skipped — guest binary unbuilt, not
+run, and reported as such rather than counted.
+
+**Ledger** `4874238a8..201f5e1fb`: in-scope TS **+24**, Rust **+2,088**.
+The +24 TS is truthful comment expansion in `kernel-worker.ts`; its owner is
+**K3-7.7**, which deletes the epoll mirror and those comments outright. Caveat
+recorded by the agent and worth keeping: ~1,028 of the Rust is in-module
+`#[cfg(test)]` that `scripts/migration-ledger.sh` counts as production, because
+the script splits on file path, not on `cfg` attributes. The aggregate Rust
+production figure is therefore an over-count of this shape wherever a crate puts
+its tests inline.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
@@ -1175,8 +1260,8 @@ census. "Serves" lists the values each item advances.
 | id | item | serves | why it matters |
 |---|---|---|---|
 | **K4** | **Unify the two worker entries** (9,107 lines, **54 duplicated functions**) | **V1**, V2 | The single clearest V1 win in the repo. `handleFork`/`handleVfork`/`handleExec`/`handleSpawn`/vfork teardown written twice, in the language where parity bugs live. Includes deleting both `parseShebang` copies in favour of `exec_target.rs` |
-| **K5** | **Dynamic linker → Rust** (`dylink*.ts` 6,340 + `worker-main.ts` pieces) | **V1**, **V2**, V4 | A full `ld.so` in TS. Host-native has no linker at all, so this *gains* native `dlopen` rather than relocating it. Also removes hand-maintained wasm32/wasm64 offset pairs and TS wasm binary rewriting |
-| **K3** | **Blocking scheduler → Rust** (~4,500 lines, 21 state containers) | V1, **V2**, V4 | Keystone: signals, IPC blocking, and process-wait all collapse into it. Removes the epoll mirror. Highest risk in the campaign — every historical hang lives here |
+| **K5** *(COMPLETE, §2p)* | **Dynamic linker → Rust** (`dylink*.ts` 6,340 + `worker-main.ts` pieces) | **V1**, **V2**, V4 | A full `ld.so` in TS. Host-native has no linker at all, so this *gains* native `dlopen` rather than relocating it. Also removes hand-maintained wasm32/wasm64 offset pairs and TS wasm binary rewriting |
+| **K3** *(0a/1/2 landed, §2q)* | **Blocking scheduler → Rust** (~4,500 lines, 21 state containers) | V1, **V2**, V4 | Keystone: signals, IPC blocking, and process-wait all collapse into it. Removes the epoll mirror. Highest risk in the campaign — every historical hang lives here |
 | **K8** | **VFS runtime authority → Rust** (~12,000 lines) | **V3**, V1, V2 | Retires `memory-fs.ts`/`sharedfs-vendor.ts` as readers; in-kernel shmfs for `/dev/shm`; drops the image ABI stamp. Completes V3 |
 | **K9** | **Handle-only host contract** — remove all 25 name-taking imports | **V4** | The largest single V4 movement, in both count and concept |
 
