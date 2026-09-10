@@ -2141,11 +2141,16 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
 
     // A process removed without reaching sys_exit (worker crash or explicit
     // host termination) can still own host-side VFS handles. Close directory
-    // iterators before their backing file handles,
-    // matching sys_close/process-exit ordering. Normal exited zombies already
-    // have empty OFD and directory-stream tables, so reaping is a no-op here.
+    // iterators before their backing file handles, matching
+    // sys_close/process-exit ordering. Normal exited zombies already have empty
+    // OFD and directory-stream tables, so reaping is a no-op here.
+    //
+    // A directory handle is an ordinary host handle under the handle-only
+    // contract — `host_openat(..., O_DIRECTORY)` issues it and `host_close`
+    // releases it — so both loops call the same import. The ordering still
+    // matters, and the two lists stay separate to preserve it.
     for dir_handle in result.host_dir_closes {
-        unsafe { host_closedir(dir_handle) };
+        unsafe { host_close(dir_handle) };
     }
     for handle in result.host_closes {
         unsafe { host_close(handle) };
