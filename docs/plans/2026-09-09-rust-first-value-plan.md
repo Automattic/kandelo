@@ -1210,6 +1210,155 @@ the script splits on file path, not on `cfg` attributes. The aggregate Rust
 production figure is therefore an over-count of this shape wherever a crate puts
 its tests inline.
 
+## 2r. K8 — increment 1 LANDED, boot cutover NEEDS A DECISION (2026-09-09)
+
+Worktree `.claude/worktrees/agent-a969418c429674637`, base `210384516`, tip
+`c043994e0`, 6 commits, cherry-picked as `782c15566`…`7a6d9ebd0`. **The kernel
+now parses a real VFS image in production code, and `klzy.rs`/`sffs.rs` have
+callers** — closing the second and third of the three ported-but-unwired Rust
+modules (K5 closed `dylink_archive.rs`).
+
+`ByteReq::Image { offset }` joins the byte-request enum; all eight `match req`
+sites route to a new `HostIO::image_read`. `rootfs::load_image` mounts the
+image's SFFS through a cursor, walks it root-first and sorted exactly as
+`emitRootfsManifest` does, and applies `KLZY` — **both lazy kinds, not only the
+one shipped images happen to use.** That is generic-first applied without being
+asked, and it is the right instinct.
+
+**Proved by an oracle, not by reasoning.** `host/test/rootfs-image-tree-parity.test.ts`
+runs a real kernel Wasm over the real `rootfs.vfs`, builds the base tree twice —
+host-walked manifest versus kernel image parse — and asserts the two
+`kernel_rootfs_export_tree` RXPT buffers are **byte-identical**: 375 entries,
+including mode, uid, gid, size, ino, target and times. The cursor touches under
+half the image's bytes.
+
+**Three defects the oracle found that reasoning had not.** The shipped
+`host/wasm/rootfs.vfs` **predates KLZY** (flags `0x5`); `load_image` now refuses
+such an image with `EINVAL` instead of silently building a tree of size-0 files.
+`sffs.rs` flattened `ENOSYS`/`EAGAIN`/`EIO` into "corrupt image", blaming the
+image for a host failure. A truncated image returned `EINVAL` or `EIO` depending
+on which byte ran out first.
+
+### The STRONG DOUBT, adjudicated: the honest import was the right call
+
+K8 added `env.host_image_read` and flagged it, because §2c item 2 had asserted
+the typed variant "needs no import change". **§2c was wrong and K8 was right.**
+That claim only holds if `ByteReq::Image` rides a reserved `blob_id` sentinel —
+which is the same semantic overload §2c itself rejected, pushed one layer down
+and made invisible in the kernel's own types. Taking the honest import and
+documenting it as temporary is the choice this campaign's values require.
+
+**And the net is now negative anyway.** K3's increment 0b removed two imports
+the kernel never called, so the surface went 84 → 85 → **83**, measured on a
+freshly built artifact. `host_blob_read` still leaves at cutover: 83 − 1 = 82.
+
+**Snapshot drift, resolved correctly.** One export added,
+`kernel_rootfs_load_image`; snapshot regenerated, no `ABI_VERSION` bump, per
+`docs/abi-versioning.md:143` on additive exports. The reasoning is recorded there.
+
+### NEEDS-DEFER-DECISION — for the maintainer, not self-decided
+
+**Neither worker entry passes an image, so a real boot still uses the manifest.**
+`load_image` is production code with a real oracle, but the two
+`configureRootfsOverlay` call sites still hand over a host-walked tree.
+
+*Why it is not a one-line flip:* `fromImage` copies, and the host then mutates
+that copy three times — `normalizeLegacyRootfs`, `ensureMountParentDirectories`,
+and the browser MITM CA write. Handing the kernel the raw image drops all three
+**silently**, which is precisely the failure mode this project's values forbid.
+Every shipped image also needs rebuilding for KLZY.
+
+*Cost now:* three transfers into `rootfs.rs` and `rootfsWriteFile`, an image
+rebuild, and real browser validation of the CA-write ordering change.
+*Cost later:* `load_image` stays test-only in real boots — the V3 win is built
+but not collected.
+*Agent's recommendation:* increment 2 — move 4.2 into `rootfs.rs`, 4.3 via
+`rootfsWriteFile`, delete 4.1, rebuild images, then flip both entries with
+`./run.sh browser`.
+
+**Coordinator note:** this is blocked on file ownership too — the worker entries
+belong to K4 and `kernel-worker.ts` to K3/K7 this round — so it is queued behind
+them regardless of the maintainer's call.
+
+**Validation:** `cargo test -p runtime-core -p kandelo` 1810/0. Nine-image gate
+21/21. Two pre-existing failures, both provisioning and neither built by the
+agent: `rootfs-overlay-foreign-mounts` (`fork_module32.wasm` absent from that
+checkout) and `abi-version`'s freshly-built-user-programs case.
+
+**Ledger** `210384516..c043994e0`: in-scope TS **+157**, Rust +717. The removal
+is owed: the cutover deletes `host/src/vfs/rootfs-manifest.ts` (354 lines —
+`emitRootfsManifest`, `blobPaths`, `createRootfsBlobProvider`) plus the manifest
+branch, taking the item well below zero. **Owner: K8 increment 2.**
+
+### One real accident, and it is worth keeping in the record
+
+The kernel build script writes into `host/wasm/`, which in that worktree was a
+**symlink into `/Users/brandon/src/kandelo`**, so the agent's first build
+overwrote a different checkout's `kandelo-kernel.wasm`. It then made `host/wasm`
+and `local-binaries` worktree-local. `host/wasm/` is gitignored, so no source
+was harmed and the artifact is rebuildable — but a worktree that silently shares
+a build output directory with another checkout is a freshness hazard of exactly
+the kind this campaign has been closing.
+
+## 2s. K3 increment 0b — LANDED, and the host contract is 83 (2026-09-09)
+
+Applied by the coordinator once K8 freed `wasm_api.rs` and `syscalls.rs`.
+Commit `a8f31a44d`.
+
+**Both imports were dead, and the check was exhaustive.** No Rust call site
+anywhere invoked either `HostIO` method — verified by searching for the method
+call form (`.host_futex_wait(` / `.host_sigsuspend_wait(`) across the tree, not
+merely for the names. What remained were two trait declarations, twelve
+`#[cfg(test)]` mocks in `syscalls.rs`, four more in `process.rs`/`netif.rs`, two
+`extern` declarations plus their `WasmHostIO` bodies in `wasm_api.rs`, two prose
+mentions, and 96 lines of live `SharedArrayBuffer` CAS and `Atomics.wait`
+machinery in `host/src/kernel.ts` that nothing could reach.
+
+**An eleventh disproved claim.** `host_raw_syscalls.rs` documented `sigsuspend`
+and `pause` as blocking "through the distinct `host_sigsuspend_wait` signal-wait
+park (see `sys_sigsuspend`)". `sys_sigsuspend` does no such thing: it registers
+a signal-mask wait on the process and returns `EAGAIN` for blocked-retry to
+drive — its `host` parameter is literally named `_host`. The text is corrected
+in place rather than deleted, so the next reader learns the real mechanism
+instead of inheriting the wrong model. **Same shape as K3's `pshared.rs` find
+hours earlier: a doc describing host-import-based blocking that the kernel
+actually does with blocked-retry. Two instances is a pattern; the remaining
+blocking docs deserve the same audit.**
+
+Deleting the pair stranded `signalWakeSab` and `registerSignalWakeSab` — the
+field's only reader was the deleted implementation, and the setter had no
+callers anywhere outside a stale `host/dist/` build output. Both removed.
+
+**Measured, not asserted.** A freshly built kernel declares **83** `env.host_*`
+imports, counted two independent ways from `wasm-objdump`, with both removed
+names absent and `host_image_read` present. `host-native`'s pinned-surface test
+passes against the real artifact (52/52).
+
+**Ledger** `7a6d9ebd0..a8f31a44d`: in-scope TS **−101**, Rust **−96**.
+**The first step in this campaign that is net-negative in both languages** — and
+the first that shrinks the host contract outright rather than relocating work
+behind it.
+
+### Two build-machinery facts this step established
+
+1. **`verify-fresh` works, proven in the wild.** The extension added earlier
+   today caught the real thing: `./run.sh rebuild kernel` refreshed the
+   source-only projection to key `b610508c…` but left ambient
+   `local-binaries/kernel.wasm` at `d9828ad3…`, and `host-native` then failed
+   loudly against an 84-import kernel that predated both K8 and this change.
+   The gate named the stale artifact and the two keys. That is the "stale
+   artifacts fail loudly" contract doing its job on a defect it was not
+   written for.
+2. **`cargo run -p xtask` builds xtask for wasm32 unless given a target.**
+   `.cargo/config.toml` sets `[build] target = "wasm32-unknown-unknown"`
+   workspace-wide, so the obvious invocation compiles xtask's own host-side
+   dependencies (`ring`, `getrandom`, `zstd-sys`) for wasm32, where nix's
+   `zerocallusedregs` hardening flag expands to
+   `-fzero-call-used-regs=used-gpr` and clang rejects it. **The freshness gate
+   cannot be run by the obvious command.** Correct form:
+   `cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh`.
+   Recorded in `docs/future-improvements.md`.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
@@ -1262,7 +1411,7 @@ census. "Serves" lists the values each item advances.
 | **K4** | **Unify the two worker entries** (9,107 lines, **54 duplicated functions**) | **V1**, V2 | The single clearest V1 win in the repo. `handleFork`/`handleVfork`/`handleExec`/`handleSpawn`/vfork teardown written twice, in the language where parity bugs live. Includes deleting both `parseShebang` copies in favour of `exec_target.rs` |
 | **K5** *(COMPLETE, §2p)* | **Dynamic linker → Rust** (`dylink*.ts` 6,340 + `worker-main.ts` pieces) | **V1**, **V2**, V4 | A full `ld.so` in TS. Host-native has no linker at all, so this *gains* native `dlopen` rather than relocating it. Also removes hand-maintained wasm32/wasm64 offset pairs and TS wasm binary rewriting |
 | **K3** *(0a/1/2 landed, §2q)* | **Blocking scheduler → Rust** (~4,500 lines, 21 state containers) | V1, **V2**, V4 | Keystone: signals, IPC blocking, and process-wait all collapse into it. Removes the epoll mirror. Highest risk in the campaign — every historical hang lives here |
-| **K8** | **VFS runtime authority → Rust** (~12,000 lines) | **V3**, V1, V2 | Retires `memory-fs.ts`/`sharedfs-vendor.ts` as readers; in-kernel shmfs for `/dev/shm`; drops the image ABI stamp. Completes V3 |
+| **K8** *(incr 1 landed, §2r)* | **VFS runtime authority → Rust** (~12,000 lines) | **V3**, V1, V2 | Retires `memory-fs.ts`/`sharedfs-vendor.ts` as readers; in-kernel shmfs for `/dev/shm`; drops the image ABI stamp. Completes V3 |
 | **K9** | **Handle-only host contract** — remove all 25 name-taking imports | **V4** | The largest single V4 movement, in both count and concept |
 
 ### Tier 3 — mechanical once their enablers land

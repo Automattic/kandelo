@@ -871,3 +871,22 @@ items reduce host surface, remove fixed caps, or close truthful-failure gaps.
   backend, when both exist) to the `replicaActivationOwner` options. Deferred
   because it is pre-existing and a shared pthread-worker-lifecycle change beyond
   this PR's inversion scope. **Files:** `host/src/worker-main.ts`.
+
+### `cargo run -p xtask` needs an explicit host target
+
+`.cargo/config.toml` sets `[build] target = "wasm32-unknown-unknown"` for the
+whole workspace, so `cargo run -p xtask -- verify-fresh` compiles **xtask
+itself** for wasm32. xtask depends on `ring`, `getrandom` and `zstd-sys`, none
+of which build for that target, and nix's `NIX_HARDENING_ENABLE=…zerocallusedregs`
+expands to `-fzero-call-used-regs=used-gpr`, which clang rejects for wasm32.
+The failure is a wall of `cc-rs` errors that names none of this.
+
+The freshness gate — the thing that makes stale artifacts fail loudly — is
+therefore unreachable by its obvious invocation. Correct form:
+
+```
+./scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh
+```
+
+Worth fixing properly: either give xtask its own workspace/`.cargo/config.toml`
+so it defaults to the host triple, or have `run.sh` wrap the verb.
