@@ -1071,6 +1071,57 @@ re-derive why the slice exists.
 sanctioned import is now evidence-backed, but a fix costing zero imports
 deserves to fail first.
 
+## Fresh-worktree provisioning — the full list, because `setup` does none of it
+
+Assembled from three agents that each hit the next step only after clearing the
+previous one. **`./run.sh setup` performs none of these**, and each turned
+*erroring* test files into *executing* ones — which is why omitting one reads as
+a broken feature rather than a missing artifact.
+
+1. musl wasm32 **and** wasm64 sysroots
+2. `npm --prefix host install` — vitest is a `host/` devDependency
+3. **`npm ci` at the repository root** — without it `rootfs` and
+   `node-browser-bundle` fail on a locked `tsx` CLI, and `rootfs` failing
+   **cascade-blocks every browser product**
+4. `crates/fork-module/build-wasm.sh` — missing `fork_module32.wasm` fails
+   `coreutils-docs`, which blocks **six of nine images**
+5. a kernel build installed via `build-deps … install-local-artifact`
+   (`./run.sh rebuild kernel` alone does **not** repoint the ambient artifact)
+6. `./run.sh rebuild rootfs`
+7. `scripts/build-programs.sh` — without it `spawn-pid-authority` and
+   `vfork-lifecycle-guest` fail at **collection**, contributing zero executed
+   tests while appearing merely "failed"
+
+**Two suites were contributing nothing all along.** `vfork-lifecycle-guest` is
+the only suite that exercises `containVforkAddressSpace`; it had never run.
+That is the same "green means nothing ran" shape as the seven silent-success
+defects, wearing provisioning clothes.
+
+Once provisioned, three previously-blocked guest suites passed —
+`environment-lifecycle`, `fifo-lifecycle-guest`, `wait-lifecycle-guest` — real
+guest programs forking, exec'ing, blocking on FIFOs and reaping children
+through the shared `finishProcessExit`. Worker-lifecycle standing went from
+**209/3 to 212 passed / 0 failed** of the tests that execute.
+
+## A second design collision, handled the same way
+
+K8 increment 2 and K9 both restructured `crates/runtime-core/src/rootfs.rs`.
+K9 added a `MountRoots` registry — *"deliberately independent of
+`ForeignMounts`"*, because which paths are host-owned and which host directory
+anchors a path are different questions. K8's
+`ensure_foreign_mount_parents`/`mkdir_parents` rewrote overlapping code.
+
+The conflict's two halves **each carry an unbalanced brace** — both cut through
+a function body — so neither "keep both" nor "take one" compiles. That is
+entanglement at the design level, not textual adjacency. Aborted and handed
+back, as with the K5/K10 pipeline-table collision, with the behaviour to
+preserve named explicitly rather than the code shape.
+
+**Twice in one session.** When several agents restructure one subsystem in
+parallel, expect collisions in the *shared foundation* files rather than in the
+leaf files each was assigned — `local_build.rs` and `rootfs.rs`, not the
+subsystems themselves.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
