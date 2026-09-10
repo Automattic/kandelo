@@ -8,17 +8,20 @@ Update it as work lands. The reasoning lives in
 `brandonpayton/epoll-kernel-route` (PR #1350). **Push forward-only. Never
 amend, never force-push. The maintainer is the sole merger.**
 
-**Last pushed:** (see git) (2026-09-10)
+**Last pushed:** `d72190d0e` (2026-09-10)
 
 ## Ledger — the number that judges this campaign
 
-`9638a2023..bb9fe63ec`: in-scope TS **+474** (890 added / 416 removed),
-Rust **+21,211** (16,678 production / 4,533 test).
+`9638a2023..d72190d0e`: in-scope TS **−2,397** (5,388 added / 7,785 removed),
+Rust **+26,134** (21,565 production / 4,569 test).
 
-**TypeScript is still net POSITIVE. That is the campaign's central open risk.**
-If work stopped now the repo would be strictly worse than at the start: the same
-TypeScript, plus a large parallel Rust implementation. All the value is
-backloaded into cutovers.
+**TypeScript is NEGATIVE as of 2026-09-10.** It stood at **+550** before the
+cutover round and moved 2,947 lines in one merge sequence: K6 marshalling
+(−1,978), K10 I6 (`wasi-shim.ts`, −1,055), K7 SysV (−267), plus two small
+census deletions (−86). The campaign no longer leaves the repo worse than it
+found it if it stops here.
+
+**Host imports: 83 → 75** (K9). Kernel exports 310 → 305 (K6).
 
 Measure with `scripts/migration-ledger.sh --step <base> <tip>`. It is a
 measurement, not a gate; line count is a poor metric but a useful hint.
@@ -58,7 +61,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K13a | **DONE** | Dead export deletion |
 | K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
 | K10 | **DONE** | I1/I2/I3/I7 landed earlier; I4/I5/I6 landed 2026-09-10 — the Rust module runs and `wasi-shim.ts` is deleted. See §2x of the value plan |
-| K10 | **PARTIAL; I6 RUNNING** | I1/I2/I3/I7 landed; I6 re-examines its own fixtures gate |
+| K10 | **COMPLETE** | I6 deleted `wasi-shim.ts` (−1,055); fixtures gate disproved; I4/I5 done |
 | K14 | **DONE** | |
 | K5 | **Rust landed; I6a RUNNING** | Placement adjudicated (standalone module, 14 pipeline points). I6b = rewire + delete 6,340 lines |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
@@ -67,7 +70,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
-| K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
+| K9 | **COMPLETE** | Imports 83 → **75**; 18 path-taking removed, 10 `*at` added |
 | K4 | **RUNNING** | Worker entry unification |
 | K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
 | K13b | **NOT STARTED** | |
@@ -135,7 +138,7 @@ test, but no guest program exercises `mq_send`/`mq_receive` under the kernel.
 The three Vitest cases that touched mqueue only ever exercised the host
 preflight this item deleted. Worth an `examples/` program.
 | K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
-| K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
+| K6 | **COMPLETE** | All four families cut over; TS −1,978; no new host import |
 | K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
 
 ### K6 validation — what was run, and what it proves
