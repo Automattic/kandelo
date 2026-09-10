@@ -61,6 +61,35 @@ had contaminated with their own builds rather than report a number they could
 not stand behind. That is the standard here, so the number above is the Rust
 workspace and nothing more.
 
+## The ledger moved the wrong way, deliberately — read this before quoting it
+
+**In-scope TypeScript is −693, not −2,386.** It was −2,386 an hour ago. The
+difference is K5 I6b's **+1,693**, merged knowingly.
+
+**What that buys and what it costs.** I6b landed the KFLA archive writer and the
+surviving TypeScript floor — the wire codec and the eight-act executor — both
+*exercised*, not dormant: the writer reproduces the committed
+TypeScript-written fixture byte for byte, and the executor drives a real
+`wasm32posix-cc -shared` `.so` to a live instance and back out through
+`dl_close`. But it does **not** delete `dylink.ts`, because six of thirteen
+`DynamicLinker` methods have no host↔module contract yet (NDD-K5-1).
+
+**So the tree now carries both implementations: `dylink.ts` at 6,340 lines and
+the new planner TypeScript at 1,693.** That is precisely the parallel-
+implementation state this campaign spent the day escaping, and it is here on
+purpose rather than by drift.
+
+**Why merge instead of holding it in the agent's worktree until I6c:** two
+design collisions landed today (`local_build.rs`, `rootfs.rs`) in work that sat
+out-of-tree for hours. Held work rots against a moving branch, and reconciling
+it costs more than carrying it. The duplication has **one named owner and a
+failing-test tripwire** — I6b pinned two of the six missing contracts as tests
+that break when the contracts arrive — whereas drift has neither.
+
+**When quoting the campaign's TypeScript figure, quote −693 and say what it
+carries.** The −2,386 was true before this merge and will be true again, more
+so, when I6c deletes 6,340.
+
 ## The rule that governs everything from 2026-09-10
 
 **Cutover is part of the item.** An item is done when the Rust *runs* and the
