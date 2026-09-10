@@ -643,10 +643,52 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::messageSizeForDescriptor( channel.pid, this.guestTidForChannel(channel), origArgs[0], )",
   ),
-  // The three SysV inheritance calls that stood here -- shmat, shmdt and
-  // record_mapping, interleaved per attachment -- are gone: the transaction
-  // moved into the kernel, which drives its own tables without crossing the
-  // host boundary at all.
+  // -- SysV shared-memory byte-coherence mirror -------------------------
+  //
+  // The three calls that stood here -- shmat, shmdt and record_mapping,
+  // interleaved per attachment during fork -- are gone: that transaction moved
+  // into the kernel, which drives its own tables without crossing the host
+  // boundary at all.
+  //
+  // What replaces them is the host's entry points into the Rust-owned mirror,
+  // grouped here rather than scattered alphabetically because reviewing them
+  // means reviewing one subsystem. Every argument is a scalar the caller
+  // already holds: a pid, a segment id, a byte length, a boolean flag, or a
+  // `KernelPointer` produced by `toKernelPtr` from an address the kernel
+  // itself returned. None of them lends a host-owned buffer, so none needs a
+  // scratch lease.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::this.#sysvMirrorExports(entry).inherit( prepared.parentPid, prepared.childPid, BigInt(prepared.childMemory.buffer.byteLength), )",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareAddressSpaceForExecWithinKernelEntry::kernel-export-direct-use::this.#sysvMirrorExports(entry).processCount(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#refreshSysvActivePidCount::kernel-export-direct-use::this.#sysvMirrorExports(entry).activePidCount()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#releaseSysvMirrorForProcess::kernel-export-direct-use::this.#sysvMirrorExports(entry).releaseProcess( pid, options.publish ? 1 : 0, options.detach ? 1 : 0, )",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#syncSysvMirrorForProcess::kernel-export-direct-use::this.#sysvMirrorExports(entry).syncProcess( pid, force ? 1 : 0, )",
+  ),
+  // The accessor itself: returning the resolved exports as one typed object is
+  // what lets every call site above carry `KernelPointer` rather than `number`.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorExports::kernel-export-direct-use::return { activePidCount, processCount, track, syncProcess, syncSegment, publishMapping, dropMapping, releaseProcess, inherit, };",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorMappingOp::kernel-export-direct-use::exports.dropMapping(pid, kernelAddr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorMappingOp::kernel-export-direct-use::exports.publishMapping(pid, kernelAddr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmat::kernel-export-direct-use::this.#sysvMirrorExports(entry).syncSegment(shmid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmat::kernel-export-direct-use::this.#sysvMirrorExports(entry).track( channel.pid, kernelAllocatedAddr, shmid, size, readOnly ? 1 : 0, )",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
   ),
