@@ -3193,6 +3193,71 @@ again). Every case they asserted is now a Rust test beside the table, and
 FIFO by name and by descriptor, and a pipe — because a change to an observable
 POSIX return value is not settled by unit tests.
 
+### Two measurement defects found while validating this item
+
+**1. `EXPECTED_HOST_IMPORT_COUNT` is stale, and the test that would say so
+skips silently.** Measured on the built kernel:
+
+```
+wasm-objdump -x target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+  | grep -o "env\.host_[a-z_0-9]*" | sort -u | wc -l
+```
+
+gives **76**, at this item's base `aab5314c0` and at its tip. The constant in
+`crates/host-native/src/lib.rs:143` says 75, and every recent report — this
+item's own brief included — has quoted the constant rather than a measurement.
+
+The 76th is **`env.host_debug_log`**, declared in
+`crates/runtime-core/src/lib.rs:78` rather than in `wasm_api.rs`'s extern
+block, which is why a reader counting the block gets 75. K9 deleted the kernel
+crate's own copy after finding it callerless; K7's `report_writeback_loss`
+(`wasm_api.rs:1287`) then supplied a caller, and a live caller is what puts the
+import back in the module. So a diagnostic re-linked a host import into the
+production kernel, and nothing noticed.
+
+Nothing noticed because `host-native`'s `smoke_loads_real_kernel_and_reads_abi`
+— the test that pins the surface — calls `kernel_path_or_skip()` and returns
+early when `local-binaries/kernel.wasm` is absent, which is the normal state of
+a fresh worktree. `cargo test -p host-native` then reports **56 passed** and
+proves nothing about the import count. **Eighth silent-success defect in this
+campaign**, and the reason this item measured with `wasm-objdump` instead of
+trusting the green.
+
+Not fixed here, because the right fix is not this item's to choose — see the
+NEEDS-DEFER-DECISION below.
+
+**2. This item changed the surface by zero.** 76 before, 76 after; no
+`env.host_*` added or removed. The only `fn host_*` this item adds is
+`host_pathconf_or_default`, a private helper inside `syscalls.rs`.
+
+### NEEDS-DEFER-DECISION — `host_debug_log` is a host import nobody chose
+
+*What:* the production kernel imports `env.host_debug_log` because a
+writeback-loss diagnostic calls `runtime-core`'s `debug_log`. The pinned count
+says 75 and the real surface is 76.
+
+*Why it is a decision and not a typo:* there are two correct outcomes and they
+point opposite ways. Either the platform accepts that kernel diagnostics need a
+host sink — in which case the constant moves to 76 and `host_debug_log` should
+be documented as a deliberate member of the surface — or a diagnostic must not
+grow the host contract, in which case the caller changes and the count returns
+to 75. The second reading is the campaign's own: V4 counts **distinct concepts
+a host must implement**, and "print a string for the kernel" is a concept every
+new host would have to supply.
+
+*Cost now:* small either way — one constant, or one call site. The
+investigation is done.
+
+*Cost later:* the guard stays wrong, so the next real surface change is
+invisible: a stale pin cannot detect drift, and this one is already off by one.
+
+*Recommendation:* **remove the caller, return to 75.** `report_writeback_loss`
+is a diagnostic on a loss path; routing it through the kernel's existing
+diagnostic ring rather than a host import keeps the contract at what a host
+must implement to *run* Kandelo. Whichever way it goes, the pin should be
+re-derived from `wasm-objdump` rather than from the extern block, and the
+skip-when-missing test wants a companion that CI cannot satisfy by skipping.
+
 **What is unproven:** no automated *browser* test now exercises trap
 classification. The path it takes in a browser (kernel worker → scratch lease →
 `kernel_classify_wasm_trap_signal`) is the same code Node runs, but the
