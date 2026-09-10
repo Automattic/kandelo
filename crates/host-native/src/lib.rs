@@ -774,6 +774,66 @@ mod tests {
         Ok(())
     }
 
+    /// Per-thread resources are a limit on *concurrent* threads, not a budget
+    /// spent once per thread ever created.
+    ///
+    /// POSIX gives `pthread_create` EAGAIN only when "the system lacked the
+    /// necessary resources to create another thread, or the system-imposed
+    /// limit on the total number of threads in a process {PTHREAD_THREADS_MAX}
+    /// would be exceeded" — both clauses are about threads that exist *now*. A
+    /// joined thread has released its resources and no longer counts against
+    /// either, so a create/join loop must run for as long as the caller wants.
+    ///
+    /// The fixture runs 17 rounds with exactly one thread live at a time.
+    ///
+    /// RED, measured rather than predicted: the run **deadlocked on round 2**,
+    /// surfacing as `pump timed out after 30s (1 process(es), 2 channel(s), 0
+    /// blocked op(s))`. Tracing the serviced syscalls showed main parked in
+    /// `futex(&thread->detach_state, FUTEX_WAIT, DT_EXITING)` inside
+    /// `pthread_join` while the new thread was parked in
+    /// `futex(&__thread_list_lock, FUTEX_WAIT, 100)` inside `__pthread_exit`,
+    /// with `__thread_list_lock` pinned at the main thread's tid forever.
+    ///
+    /// The cause was not the slot arena: it was the kernel ignoring
+    /// `CLONE_PARENT_SETTID`, so `struct pthread.tid` stayed 0 for every
+    /// worker. musl's `__tl_lock` reads `__pthread_self()->tid`, compares it
+    /// against `__thread_list_lock`, and treats an equal value as a
+    /// *recursive* acquisition — with both zero, the first worker bumped the
+    /// process-global `tl_lock_count` without ever holding the lock, and the
+    /// next `__tl_unlock` on any thread spent that phantom count instead of
+    /// releasing. The practical limit was one pthread per process, not 16.
+    ///
+    /// This is the native half of a deliberate cross-host pair; the Node half
+    /// is `host/test/pthread.test.ts`'s "reuses a joined thread's slot across
+    /// many sequential threads", running the same C source. The pair exists
+    /// because the bug was a *divergence*: the identical program passed on
+    /// Node and in the browser and failed here, and it did so because
+    /// `CLONE_PARENT_SETTID` was implemented in the TypeScript host rather
+    /// than in the kernel both hosts share.
+    #[test]
+    fn smoke_pthread_slot_reuse_across_join() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_thread_churn.wasm");
+
+        let outcome = run_trivial_guest(&path, guest)?;
+
+        assert_eq!(
+            outcome.exit_code, 0,
+            "guest exit code (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            outcome.stdout, b"PTHREAD_SLOT_CHURN_PASS\n",
+            "every round must create, run and join its thread; a slot freed by \
+             pthread_join must become available to the next pthread_create"
+        );
+        Ok(())
+    }
+
     /// N1-I1a: the native host defaults to a **sandboxed in-memory VFS** — the
     /// in-kernel rootfs overlay owns `/` and tmpfs owns `/tmp`, both empty and
     /// writable, with no manifest loaded and no blob provider installed. A
