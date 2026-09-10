@@ -73,6 +73,12 @@
 
 use wasm_posix_shared::Errno;
 
+/// The archive WRITER. Kept as a child module so it sees the format constants
+/// and the padding/bounds helpers the reader enforces, which is the only way
+/// the two halves cannot drift apart.
+#[path = "dylink_archive_encode.rs"]
+pub mod encode;
+
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;

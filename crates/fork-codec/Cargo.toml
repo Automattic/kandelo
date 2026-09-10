@@ -10,6 +10,12 @@ crate-type = ["rlib"]
 
 [dependencies]
 wasm-posix-shared = { path = "../shared" }
+# The KFLA archive record carries a SHA-256 template digest of each side
+# module's bytes. The decoder reports it as stored; the encoder recomputes it,
+# so the writer needs a hash. `default-features = false` keeps this a pure
+# `no_std` dependency -- the archive encoder runs inside the standalone planner
+# module, which imports nothing at all.
+sha2 = { version = "0.10", default-features = false }
 
 # The gc_codec descriptor is emitted by the REAL Rust instrumenter
 # (`fork_instrument::module_gc_codec::encode_descriptor`), not by any TypeScript
