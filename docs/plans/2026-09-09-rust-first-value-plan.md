@@ -3175,6 +3175,51 @@ mid-flight by the coordinator; overlap resolved at merge.
 `#maybeLoadKernelRootfs`, the removed `#rootfsManifest` field, and the new
 `rootfsMkdirParents` wrapper.
 
+### Validation
+
+**The parity oracle, extended to all nine production images, is the load-bearing
+evidence.** For every image the repository ships, the kernel's own parse and the
+host-walked manifest produce a **byte-identical** `kernel_rootfs_export_tree`
+buffer — mode, uid, gid, size, inode, symlink target and times. 13/13, with each
+per-image case named in the output rather than skipped. The nine-image `KLZY`
+equivalence gate is 21/21, also naming each image.
+
+`cargo test -p runtime-core -p kandelo --target aarch64-apple-darwin`: 1874
+passed, 1 failed — `zip::real_man_zip_cross_checks_members`, which is one of the
+three long-standing campaign failures and is **not** untouchable background
+noise. Diagnosed while here: it hard-codes `bin/mandoc` at 1,397,299 bytes and
+the locally built artifact is 1,421,696. It is a stale expectation about a build
+output, not a decoder defect.
+
+**Full host Vitest, run at this item's tip and at its base on the same
+artifacts.** Tip 52 failed / 371 passed / 9 skipped; base 58 failed / 365 passed
+/ 9 skipped. **The failing-file sets differ in one direction only: no file fails
+at the tip that does not also fail at base.** Six fail only at base, two of them
+this item's doing —
+
+- `rootfs-image-tree-parity` fails at base *because the images were rebuilt*: its
+  pre-`KLZY` case asserted that the on-disk `host/wasm/rootfs.vfs` lacked the
+  section, and a rebuilt image has it (flags gained bit 16). That is the concrete
+  demonstration that the rebuild was on the critical path, and that a gate keyed
+  to a stale artifact stops testing what it was written for. The tip builds the
+  stale case by clearing the flag instead.
+- `image-source-immutability` fails at base for the mirror reason.
+
+The two dominant failure clusters were checked individually at base and reproduce
+exactly: `browser-kernel` 33/43 and `fork-instrument-coverage` + `audio` +
+`wasm64` 49. A large share of the rest is provisioning — missing
+`local-binaries/programs/wasm32` fixtures until `build-programs.sh` was run, and
+fixtures without a `kandelo.abi.contract` stamp because `build-programs.sh` does
+not stamp the way the local-build engine does.
+
+**Provisioning this needed, recorded because a fresh worktree needs it too:**
+musl submodule, both sysroots, root and `host/` npm installs,
+`crates/fork-module/build-wasm.sh` (its absence fails `coreutils-docs`, which
+blocks six of the nine images), `./run.sh setup`, and `scripts/build-programs.sh`.
+`./run.sh setup` does not create `local-binaries/kernel.wasm`; the kernel
+resolves through `local-binaries/source-only-v1/kernel.wasm`, which it does
+create.
+
 ### What is NOT proven
 
 The MITM CA write is browser-only and its ordering changed: it now runs after
