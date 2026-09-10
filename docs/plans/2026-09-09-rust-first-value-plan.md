@@ -622,10 +622,34 @@ sweeping for more.
 
 **D2 — redis reclassified, ACCEPTED on evidence.** No Redis module `.so` is
 built anywhere; its `dlopen` caller is upstream's own module API pulled in by
-`-ldl`. **The real dlopen consumer is one product: PHP** (`php`/`php-fpm` + 6
-`.so`). Browser regression gate is WordPress / LAMP / nginx-php, all of which
-`dlopen` `opcache.so`. This materially shrinks K5's blast radius — and the
-earlier "php, php-fpm and redis-server" framing was wrong.
+`-ldl`. PHP (`php`/`php-fpm` + 6 `.so`) is the only consumer currently
+exercisable, and the browser regression gate is WordPress / LAMP / nginx-php,
+all of which `dlopen` `opcache.so`.
+
+> **GUARD (maintainer, 2026-09-09) — read this before implementing K5.**
+> *"dlopen is supposed to be a generically useful feature, not purpose built for
+> PHP's use."*
+>
+> "PHP is the only consumer" bounds the **validation surface**, not the
+> **design**. It is a fact about today's package set, not a licence to scope the
+> linker to what `opcache.so` happens to need. `dlopen`/`dlsym`/`dlclose`/
+> `dlerror` are POSIX interfaces and must be generically correct — including for
+> paths no in-repo artifact exercises. An earlier revision of this section said
+> the reclassification "materially shrinks K5's blast radius", which invited
+> exactly the PHP-shaped implementation the platform-values contract forbids
+> ("a fix that only makes one program, demo, package script, or button work is
+> suspect"). It shrinks what we can *regression-test*, and nothing else.
+>
+> **Two open adjudications are directly exposed to this drift:**
+> - **D4 (GOT zero-write).** Decide it on ELF/`RTLD_LAZY` semantics, not on
+>   which symbols PHP happens to leave unresolved. "No PHP extension hits this"
+>   is not an answer.
+> - **D5 (table-scan complexity).** `intl.so`'s 1,646 scans motivate the change;
+>   they must not define the data structure. A generic loader has to behave for
+>   a library with a different symbol profile.
+>
+> Where generic correctness cannot be validated today, say so as a documented
+> boundary — do not narrow the implementation to match the test surface.
 
 **D3 — shape DECIDED: a pure `crates/dylink` planner, not a co-resident
 module.** It emits an **ordered** `Vec<LinkAct>` / `ImportBinding` — which is
