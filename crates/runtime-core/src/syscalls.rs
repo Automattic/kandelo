@@ -65,6 +65,9 @@ pub fn resolve_io_ofd(proc: &Process, fd: i32) -> Result<usize, Errno> {
             BlockingRetryTarget::Ofd(target)
             | BlockingRetryTarget::Sendmsg {
                 carrier: target, ..
+            }
+            | BlockingRetryTarget::Vector {
+                carrier: target, ..
             } => target,
             BlockingRetryTarget::OfdPair { input, output } => {
                 if input.original_fd == fd {
@@ -4539,6 +4542,12 @@ fn release_blocking_retry_target(
         BlockingRetryTarget::SysvSemaphore(pinned) => unsafe {
             crate::ipc::global_ipc_table().release_sem_set_pin(pinned)
         },
+        BlockingRetryTarget::Vector { carrier, pending } => {
+            drop(pending);
+            let result = release_ofd_reference_impl(proc, Some(&mut *locks), host, carrier.ofd_idx);
+            drain_deferred_scm_rights_releases(locks, host);
+            result
+        }
     }
 }
 
@@ -4619,6 +4628,9 @@ pub fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
     for binding in proc.blocked_retries.take_all() {
         match binding.target {
             BlockingRetryTarget::Ofd(_) | BlockingRetryTarget::OfdPair { .. } => {}
+            // The retained payload is plain kernel-owned memory and the
+            // carrier's OFD refcount dies with the process's own table.
+            BlockingRetryTarget::Vector { pending, .. } => drop(pending),
             BlockingRetryTarget::Sendmsg { ancillary, .. } => drop(ancillary),
             BlockingRetryTarget::Mqueue(pinned) => unsafe {
                 let _ = crate::mqueue::global_mqueue_table().release_pinned_descriptor(pinned);
@@ -4654,6 +4666,91 @@ pub fn clone_active_sendmsg_ancillary(
         cloned.push(fd.try_clone_retained()?);
     }
     Ok(Some(cloned))
+}
+
+/// Take the scatter/gather request a blocked `writev`/`readv` retained.
+///
+/// The payload is moved out rather than cloned: it can be up to `SSIZE_MAX`
+/// bytes, and the dispatch that consumes it needs `&mut Process` for the
+/// transfer itself. A retry that still ends in EAGAIN hands the same request
+/// back through [`ensure_blocking_retry_vector_binding`].
+pub fn take_active_vector_io(
+    proc: &mut Process,
+    tid: u32,
+    operation: BlockingRetryOperation,
+) -> Result<Option<crate::blocked_retry::PendingVectorIo>, Errno> {
+    let Some(binding) = proc.blocked_retries.active_binding_mut(tid, operation)? else {
+        return Ok(None);
+    };
+    let BlockingRetryTarget::Vector { pending, .. } = &mut binding.target else {
+        // A scalar `read`/`write` blocked on this task retains no vector
+        // request. Report that plainly rather than inventing one.
+        return Ok(None);
+    };
+    Ok(pending.take())
+}
+
+/// Pin the open file description a blocked scatter/gather call names and
+/// retain the exact request the caller presented.
+///
+/// A first EAGAIN creates the binding; a later one stores the request back
+/// into the binding it already owns.
+pub fn ensure_blocking_retry_vector_binding(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    tid: u32,
+    syscall: u32,
+    fd: i32,
+    pending: crate::blocked_retry::PendingVectorIo,
+) -> Result<i64, Errno> {
+    let operation = BlockingRetryOperation::from_syscall(syscall)?;
+    if !operation.is_single_ofd() {
+        return Err(Errno::EINVAL);
+    }
+    if let Ok(token) = proc.blocked_retries.token_for(tid, operation) {
+        let binding = proc
+            .blocked_retries
+            .binding_for_token_mut(token)
+            .ok_or(Errno::ENOENT)?;
+        let BlockingRetryTarget::Vector {
+            pending: slot,
+            carrier,
+        } = &mut binding.target
+        else {
+            return Err(Errno::EINVAL);
+        };
+        if carrier.original_fd != fd {
+            return Err(Errno::EINVAL);
+        }
+        *slot = Some(pending);
+        return Ok(token);
+    }
+    if proc.blocked_retries.has_binding_for_tid(tid) {
+        return Err(Errno::EBUSY);
+    }
+
+    let token = proc.blocked_retries.prepare_insert()?;
+    let carrier = stable_ofd_target(proc, fd)?;
+    proc.ofd_table
+        .try_inc_ref_exact(carrier.ofd_idx, carrier.ofd_id)?;
+    let target = BlockingRetryTarget::Vector {
+        carrier,
+        pending: Some(pending),
+    };
+    if let Err((error, target)) = proc
+        .blocked_retries
+        .insert_prepared(token, tid, operation, target)
+    {
+        let BlockingRetryTarget::Vector { carrier, pending } = target else {
+            unreachable!("vector insertion returned a non-vector target");
+        };
+        drop(pending);
+        let release = release_ofd_reference_impl(proc, Some(&mut *locks), host, carrier.ofd_idx);
+        drain_deferred_scm_rights_releases(locks, host);
+        return release.and(Err(error));
+    }
+    Ok(token)
 }
 
 /// Return the cursor after a byte transfer without narrowing or wrapping.

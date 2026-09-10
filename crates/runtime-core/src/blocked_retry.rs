@@ -178,6 +178,40 @@ pub enum BlockingRetryTarget {
         pending_send: Option<PendingSysvMessage>,
     },
     SysvSemaphore(PinnedSemSet),
+    /// A blocked `writev`/`readv`/`preadv`/`pwritev` on one pinned open file
+    /// description, holding the request exactly as the caller presented it.
+    Vector {
+        carrier: StableOfdTarget,
+        pending: Option<PendingVectorIo>,
+    },
+}
+
+/// One scatter/gather request held across EAGAIN retries.
+///
+/// WHY this is retained rather than re-read from the caller. POSIX defines
+/// `writev` as `write` applied to the concatenation of the `iovcnt` buffers,
+/// and bounds the return value by the sum of `iov_len` **as presented at the
+/// call**. Kandelo's blocking model re-enters the syscall from the top after
+/// EAGAIN, so a retry that re-read the caller's `struct iovec` table would let
+/// a peer thread change the request between attempts: a widened `iov_len`
+/// could make `writev` return more than the caller asked for, and a narrowed
+/// one could make `readv` drop bytes already consumed from a pipe. Linux never
+/// re-enters — it holds one `iov_iter` across the wait — and its message
+/// analogue, `do_msgsnd`, calls `load_msg()` before the wait for the same
+/// reason.
+///
+/// The kernel only reaches EAGAIN with zero bytes transferred (see
+/// `sys_write`, which returns a short count whenever any byte moved), so
+/// replaying the whole retained request can never write the same byte twice.
+#[derive(Debug)]
+pub struct PendingVectorIo {
+    /// The caller's `struct iovec` table, decoded at entry.
+    pub entries: alloc::vec::Vec<crate::msghdr::NativeIovec>,
+    /// Bytes gathered from the caller at entry. Empty for a read, whose
+    /// buffers are outputs rather than inputs.
+    pub outgoing: alloc::vec::Vec<u8>,
+    /// Total bytes the retained table addresses.
+    pub total: usize,
 }
 
 /// A `msgsnd` message held across EAGAIN retries.
@@ -204,6 +238,16 @@ impl BlockingRetryTarget {
                 BlockingRetryOperation::MsgSend | BlockingRetryOperation::MsgReceive
             ),
             Self::SysvSemaphore(_) => operation == BlockingRetryOperation::Semop,
+            // The vector syscalls normalize onto the same four scalar
+            // operations as their scalar twins, so this target answers for
+            // exactly those and nothing else.
+            Self::Vector { .. } => matches!(
+                operation,
+                BlockingRetryOperation::Read
+                    | BlockingRetryOperation::Write
+                    | BlockingRetryOperation::Pread
+                    | BlockingRetryOperation::Pwrite
+            ),
         }
     }
 }
@@ -322,6 +366,12 @@ impl BlockingRetryState {
         self.token_for(tid, operation)
     }
 
+    pub fn binding_for_token_mut(&mut self, token: i64) -> Option<&mut BlockingRetryBinding> {
+        self.bindings
+            .iter_mut()
+            .find(|binding| binding.token == token)
+    }
+
     pub fn has_binding_for_tid(&self, tid: u32) -> bool {
         self.bindings.iter().any(|binding| binding.tid == tid)
     }
@@ -437,6 +487,26 @@ impl BlockingRetryState {
         }
         self.bindings
             .iter()
+            .find(|binding| binding.token == token)
+            .map(Some)
+            .ok_or(Errno::ENOENT)
+    }
+
+    /// Mutable twin of [`Self::active_binding`], for targets whose retained
+    /// payload is moved out and back rather than cloned.
+    pub fn active_binding_mut(
+        &mut self,
+        tid: u32,
+        operation: BlockingRetryOperation,
+    ) -> Result<Option<&mut BlockingRetryBinding>, Errno> {
+        let Some((active_tid, token, active_operation)) = self.active else {
+            return Ok(None);
+        };
+        if active_tid != tid || active_operation != operation {
+            return Err(Errno::EINVAL);
+        }
+        self.bindings
+            .iter_mut()
             .find(|binding| binding.token == token)
             .map(Some)
             .ok_or(Errno::ENOENT)
