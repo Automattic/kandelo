@@ -2426,6 +2426,16 @@ into `.kandelo-local-generations`, and refuses a set of regular files unless
 regular files, so the moment a program closure needs any multi-member package,
 the whole tier is refused and the other three tiers are empty.
 
+**Confirmed against a near-complete tree, so it is definitively not a missing
+artifact.** A later `./run.sh setup` drove the graph to only **four** package
+failures — `gzip`, `xz`, `nginx`, `php` (the last three blocked behind the
+first two) — with `dash`, `coreutils`, `login`, `perl`, `node` and the
+`rootfs` package all succeeding and `platform-rootfs` reporting success. The
+conformance case still failed with the identical tier-identity error. Whatever
+else that setup run is worth, it removes "you just have not built enough" as
+an explanation. (`gzip`/`xz` failing is its own finding, adjacent to B17 and
+what blocks the `shell` product and every image below it; not chased here.)
+
 **Do not work around this by hand-placing artifacts.** Copying a built
 `kernel.wasm` to the scalar mirror was tried and made things worse: the
 resolver then refused it, and `install-local-artifact` refused to replace it
