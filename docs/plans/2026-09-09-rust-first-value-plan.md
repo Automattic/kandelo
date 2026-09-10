@@ -1267,6 +1267,31 @@ and both currently real:
 2. `onUdpUnbind` drops the whole fabric entry when one owner closes, although
    `socket.rs` keeps the binding live for the remaining owners.
 
+**A fifth false-provenance comment, and what it was hiding.** Corrected in
+`socket.rs` at the coordinator's request after a read-only audit. The
+`host_net_handle` note called the field "a host-side network handle (returned
+by `host_net_connect` / `host_net_accept`)". `host_net_accept` **does not
+exist** — the host net imports are `connect`, `connect_status`, `listen`,
+`poll`, `recv`, `send`, `close` — and `host_net_connect` returns
+`Result<(), Errno>`, so it returns no handle. The kernel mints the value
+itself: `let net_handle = sock_idx as i32` (`syscalls.rs:13829`, `:13835`).
+It is a correlation token the kernel issues *to* the host, which the host
+uses as its connection-map key.
+
+**The consequence nobody had looked for**, because the comment said the host
+owned the value: the token is a **per-process** table index, so it is stable
+across fork — which is what makes the refcount correct — but it is **not
+unique across processes**. Two processes on one machine with sockets at the
+same `sock_idx` present the same token to a host connection map keyed with no
+pid, on **both** hosts (`VirtualNetworkBackend.connections`,
+`TcpBackend.connections`). Generic, and no demo reaches it. Not fixed here:
+namespacing the token by pid spans `syscalls.rs` and both host backends.
+**Owner: K11 second pass.** The field name wants renaming with it.
+
+This is the same shape as the four the ledger already lists — a stated host
+mechanism that turns out not to exist — and it is the second one authored
+inside this repository rather than inherited.
+
 **Unrelated finding, reported not fixed** (`syscalls.rs` is sibling-owned):
 `is_virtual_network_addr` (`syscalls.rs:10945`) hardcodes `10.88/16` as *the*
 virtual network prefix, so "is this a bindable address" is answered from a

@@ -24,16 +24,45 @@ use wasm_posix_shared::Errno;
 
 // ── host_net_handle cross-process refcount ───────────────────────────────
 //
-// `SocketInfo::host_net_handle` is a host-side network handle (returned by
-// `host_net_connect` / `host_net_accept`). When fork or non-forking-spawn
-// gives a child process a SocketInfo carrying this handle, both parent and
-// child reference the same host-side connection. The first close-side
-// `host_net_close` would then kill the connection for the other process —
-// this table refcounts inherited references so only the *last* close
-// actually tears down the connection.
+// **The kernel mints this value; the host never returns one.** This comment
+// used to describe `SocketInfo::host_net_handle` as "a host-side network
+// handle (returned by `host_net_connect` / `host_net_accept`)". Both halves
+// were false. `host_net_accept` does not exist — the host net imports are
+// `connect`, `connect_status`, `listen`, `poll`, `recv`, `send`, `close` —
+// and `host_net_connect` returns `Result<(), Errno>`, so it hands back no
+// handle at all.
+//
+// What is actually stored is the kernel's own socket-table index:
+// `let net_handle = sock_idx as i32; … sock.host_net_handle = Some(net_handle)`
+// (`syscalls.rs:13829`, `:13835`). The kernel passes that number *to* the
+// host on `host_net_connect`, and the host uses it as the key of its own
+// connection map — `VirtualNetworkBackend.connections` in the browser,
+// `TcpBackend.connections` in Node. It is a correlation token the kernel
+// issues, not a capability the host grants.
+//
+// The refcount below is still needed, but for that reason rather than the
+// stated one. When fork or non-forking-spawn gives a child a `SocketInfo`
+// carrying this token, the child's socket lands at the same `sock_idx`, so
+// both processes name the same host-side connection object. The first
+// close-side `host_net_close` would tear it down under the other process;
+// this table counts inherited references so only the *last* close does.
 //
 // Mirrors the `host_handle_fork_ref` / `host_handle_close_ref` pattern in
-// `crates/kernel/src/ofd.rs` for plain-file host handles.
+// `crates/kernel/src/ofd.rs` for plain-file host handles — but note the
+// difference the old wording hid: those are genuinely host-issued.
+//
+// **Known consequence, not yet fixed.** Because the token is a *per-process*
+// table index, it is stable across fork (which is what makes the refcount
+// work) but it is **not unique across processes**. Two processes on one
+// machine whose sockets sit at the same `sock_idx` present the same token to
+// a host connection map that has no pid in its key, on both hosts. The fix
+// is to namespace the token by pid, which spans `syscalls.rs` and both host
+// backends. Tracked with K11 in
+// `docs/plans/2026-09-09-rust-first-value-plan.md` §2q.
+//
+// The field name `host_net_handle` is itself misleading for the same reason
+// and wants renaming (`host_net_token`, say); that touches `syscalls.rs`,
+// which K11 does not own.
 
 struct HostNetRefs(UnsafeCell<Option<BTreeMap<i32, u32>>>);
 unsafe impl Sync for HostNetRefs {}
@@ -632,7 +661,12 @@ pub struct SocketInfo {
     pub shut_rd: bool,
     /// Whether the write half has been shut down.
     pub shut_wr: bool,
-    /// Host-side network handle for AF_INET sockets (assigned on connect).
+    /// Correlation token for an external AF_INET connection, assigned on
+    /// connect. **Minted by the kernel, not returned by the host**: it is
+    /// this socket's own `sock_idx`, handed to `host_net_connect` for the
+    /// host to key its connection map by. See the `host_net_handle`
+    /// cross-process refcount note at the top of this module, including why
+    /// the name is misleading and what it is not unique across.
     pub host_net_handle: Option<i32>,
     /// Stored socket options as (level, optname, value) tuples.
     pub options: Vec<(u32, u32, u32)>,
