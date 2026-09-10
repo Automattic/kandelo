@@ -2625,16 +2625,29 @@ export class CentralizedKernelWorker {
    *
    * NEITHER worker entry passes an image yet, and that is deliberate rather
    * than unfinished. `MemoryFileSystem.fromImage` copies the image into a fresh
-   * buffer and the host then applies three mutations to that COPY, none of
-   * which the on-disk image carries: `normalizeLegacyRootfs`, whose `/etc/group`
-   * patch should be deleted and the affected images rebuilt;
-   * `ensureMountParentDirectories`, which belongs in the kernel where the
-   * namespace lives; and the browser's runtime MITM CA-certificate write, which
-   * is genuine per-session data and must move to `rootfsWriteFile` after `init`
-   * — a real browser boot-ordering change. Handing the kernel the raw image
-   * before those move would silently drop all three: a tree that looks right
-   * and is not. The shipped images also predate the kernel-lazy section the
-   * kernel requires, so they need rebuilding first.
+   * buffer and the host then mutates that COPY in ways the on-disk image does
+   * not carry. Handing the kernel the raw image before those mutations move
+   * would silently drop them: a tree that looks right and is not.
+   *
+   * Two of the three are now dealt with. `normalizeLegacyRootfs` is gone — it
+   * patched a `nobody` line into `/etc/group` for already-published demo
+   * images, every builder emits that line, and re-implementing a demo-image
+   * patch inside the kernel is the package-specific platform behaviour the
+   * values contract forbids. `ensureMountParentDirectories` has moved into the
+   * kernel: `rootfs::set_foreign_prefixes` now synthesises the directories
+   * leading to each registered foreign mount point, so the prefixes this class
+   * already hands over carry the reachability with them, on every host.
+   *
+   * What remains is the browser's runtime MITM CA-certificate write. It is
+   * genuine per-session data that can never be in an image, so it must become a
+   * `rootfsWriteFile` after `init` — a real browser boot-ordering change. It
+   * also creates `/etc`, `/etc/ssl` and `/etc/ssl/certs` first, and there is no
+   * host-facing mkdir on the kernel-owned rootfs: `rootfs::mkdir_parents`
+   * exists and is tested, but has no `kernel_rootfs_*` export yet. Until it
+   * does, the cert write cannot move and the flip cannot land.
+   *
+   * The shipped images also predate the kernel-lazy section the kernel
+   * requires, so they need rebuilding first.
    */
   #rootfsImage: Uint8Array | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;

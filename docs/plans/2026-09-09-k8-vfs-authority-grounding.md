@@ -798,8 +798,31 @@ Writes the runtime-generated MITM CA certificate to
 `/etc/ssl/certs/ca-certificates.crt` (creating `/etc`, `/etc/ssl`,
 `/etc/ssl/certs`) so guest OpenSSL trusts it.
 
-**Verdict: must move into the kernel, and the mechanism already exists — no new
-host surface.** `kernel_rootfs_write_file` is already an export
+**CORRECTED 2026-09-10 (increment 2), by measurement.** The verdict below said
+"the mechanism already exists — no new host surface". It does not. The write
+half exists; the *directory* half does not. `rootfs::write_file_at` opens with
+`O_CREAT`, which returns `ENOENT` on a missing parent exactly as POSIX
+requires, and there is no host-facing mkdir on the kernel-owned rootfs at all
+(the seven `kernel_rootfs_*` exports are `load_manifest`, `load_image`,
+`set_foreign_prefixes`, `read_file`, `write_file`, `stat_mode`, `export_tree`).
+So moving only the write would silently drop the `/etc`, `/etc/ssl`,
+`/etc/ssl/certs` creation the browser entry does today — the exact failure mode
+this section was written to prevent, one sentence away from where it was named.
+`rootfs::mkdir_parents` (increment 2) is the missing half; it is reachable from
+Rust but not yet from a host, because the export lives in
+`crates/kernel/src/wasm_api.rs`. See the value plan's K8 increment-2 entry for
+the open decision on how that export lands.
+
+Two alternatives were considered and rejected. Giving `write_file_at` implicit
+`mkdir -p` needs no new export but silently changes the live `write_vfs_file`
+contract for every existing caller, which must be a deliberate decision rather
+than a side effect of moving a certificate. Re-serialising the restored
+`MemoryFileSystem` with `saveImage()` after the cert write also needs no new
+export, but it replaces "the host walks the image" with "the host rebuilds the
+image" on every browser boot, which is worse than what step 4 removes.
+
+**Verdict: must move into the kernel.** `kernel_rootfs_write_file` is already an
+export
 (`host/src/kernel-scratch.ts:163`, `:278`, `:352`) with a host-side wrapper
 `KernelWorker.rootfsWriteFile`, used today by the `write_vfs_file` RPC
 (`browser-kernel-worker-entry.ts:3969-3985`, `node-kernel-worker-entry.ts:4012-4030`,
@@ -819,11 +842,22 @@ trusts the CA — not code reasoning (`docs/agent-guidance/browser-and-user.md`)
 
 The three mutations are **not one problem**. One is an image-artifact patch that
 should be deleted (4.1); one is namespace policy the kernel already has the
-inputs for (4.2); one is genuine runtime data with an existing kernel write path
-(4.3). None of them requires new host surface, and none of them blocks step 4 —
-they block the *deletion of `emitRootfsManifest`*, which is the same moment.
-D-B5 in the value plan can be closed with these three answers, subject to the
-maintainer accepting 4.1's "rebuild, don't re-implement".
+inputs for (4.2); one is genuine runtime data with a kernel write path that is
+one primitive short (4.3). None of them blocks step 4 — they block the
+*deletion of `emitRootfsManifest`*, which is the same moment. D-B5 in the value
+plan can be closed with these three answers, subject to the maintainer
+accepting 4.1's "rebuild, don't re-implement".
+
+**Status after increment 2 (2026-09-10).** 4.1 is deleted
+(`65bdf6377`); every image builder already emits the `nobody` line, so it was
+already a no-op for anything this repository produces. 4.2 is in the kernel
+(`379c244f4`): registering a foreign mount prefix now synthesises the
+directories leading to it, for all three hosts, through the
+`kernel_rootfs_set_foreign_prefixes` call they already make. 4.3 is half
+landed (`b563e290d`): `rootfs::mkdir_parents` exists and is tested, and the
+`ENOENT` it closes is asserted rather than argued, but no host can call it
+until the export lands. The sentence "none of them requires new host surface"
+above was the claim that did not survive contact.
 
 ---
 
