@@ -203,8 +203,22 @@ Wasm cannot instantiate itself or spawn a thread:
 
 ### 2.3 Real byte stores
 
-OPFS handles and workers, Node `fs`, `fetch`, and the lazy-archive fetcher.
-The kernel decides *what* to read; the host performs the read. Contract
+Node `fs`, `fetch`, and the lazy-archive fetcher. The kernel decides *what* to
+read; the host performs the read.
+
+**CORRECTED 2026-09-09.** This entry previously led with OPFS. **OPFS is not
+mounted in the shipping path**: `OpfsFileSystem.create` (`host/src/vfs/opfs.ts:37`)
+has no production caller — the only non-test references are two doc comments and
+a re-export from `index.ts` (VERIFIED). Listing it as a live KEEP floor
+overstated the host contract. It is a backend that exists but is unreachable;
+decide whether to wire or delete it, and do not count it as floor until then.
+
+Related, and larger: after Phase 5 the host `/` mount is **unconditionally
+dropped** (`node-kernel-worker-entry.ts:1244`), and every path first hits
+`tmpfs::claims_path` then `rootfs::claims_path`. The host's remaining filesystem
+reach is therefore only the foreign prefixes — `/dev/shm` (a `MemoryFileSystem`,
+not a host capability), `/dev` (shadowed), and Node `--mount`. The 25
+path-taking imports are far less load-bearing than this ledger first implied. Contract
 shape: `host_read`/`host_write`/`host_pread`/`host_pwrite`/`host_seek`/
 `host_close` on an opaque handle, plus `host_blob_read`/`host_fetch_archive`.
 
@@ -240,9 +254,18 @@ timeout and collapse into these.
 for being a floor whose **use should grow**: generalizing it is what deletes
 all pre-dispatch marshalling.
 
-### 2.8 Clock, entropy, diagnostics
+### 2.8 Clock and entropy
 
-`host_clock_gettime`, `host_getrandom`, `host_debug_log` (a raw byte sink).
+`host_clock_gettime`, `host_getrandom`.
+
+**CORRECTED 2026-09-09.** This entry previously also listed `host_debug_log` as
+a KEEP floor. **It is not an import at all**: `host/src/kernel.ts` supplies it,
+but it is dead-code-eliminated out of the built kernel and does not appear in
+`local-binaries/kernel.wasm` (VERIFIED — `wasm-tools print | grep host_debug_log`
+→ 0, against 84 function imports plus `env.memory`). So the host contract is
+**84 mandatory imports, not 85**, and the "diagnostics" concept in the value
+plan's §4 table is already **0**, not 1. A floor that does not exist in the
+artifact is not a floor.
 
 ---
 

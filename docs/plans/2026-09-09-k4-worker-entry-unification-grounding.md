@@ -259,9 +259,9 @@ uses it on the authoritative exec **and spawn** path
 **On parsing: yes.** The Rust `parse_shebang` is an explicit, documented port
 of the TS one (`exec_target.rs:283-293`), reproducing JS `String.trim`,
 `/\r$/`, `/^(\S+)(?:\s+(.*))?$/`, the full JS `\s` set, and the 4096-byte line
-cap. The two TS copies differ from each other in **exactly one line** — the
-byte source (`readExecFileFromFs` vs `resolveExec`) — VERIFIED by diff.
-
+cap. `parseShebang` itself is **byte-identical** between the two entries; its
+caller `resolveExecutableForLaunch` differs in **exactly one line** — the byte
+source (`readExecFileFromFs` vs `resolveExec`). VERIFIED by diff.
 **On chaining: no.** Rust and `exec-target.ts` allow **one** shebang level and
 fail `ENOEXEC`. The two entry copies allow **four** (`MAX_SHEBANG_DEPTH = 4`)
 and return `null`, which their own doc comments define as **ENOENT**
@@ -497,51 +497,237 @@ K3 migrates one call-site set instead of two.
 
 ## 6. What does `crates/host-native` do instead?
 
-Pending — the host-native survey was still running when this document was
-written. The one thing VERIFIED here: host-native is the sole binder of
-`kernel_exec_target_resolve_shebang` (`crates/host-native/src/guest.rs:1215-1217`)
-and assembles the argv prefix without a chain loop of its own
-(`guest.rs:11498-11506`), i.e. it delegates shebang policy entirely to
-`runtime-core`. That is the shape a unified implementation should copy: the
-host executes primitives, the kernel decides.
+### 6.0 Verdict on the census's standing claim
 
-The census's standing claim — host-native is a **partial** host, ~20 `env`
-`func_wrap` registrations plus 9 defines with ~60 imports left to
-`define_unknown_imports_as_traps` (`guest.rs:1656`) — means it is unlikely to
-be a full third implementation of the *worker/generation/vfork* choreography,
-because it has no Workers. **INFERRED, flagged for confirmation before this
-document is used to argue that host-native's Rust lifecycle should become the
-shared one.** Do not treat "host-native already does it in Rust" as
-established until that is checked; it is exactly the kind of inherited claim
-this campaign has disproved four times.
+> *"host-native implements process lifecycle in Rust already… is that a third
+> implementation that should become the shared one?"*
 
-### 6.1 If host-native does become the shared implementation, its CI is a blocker (VERIFIED)
+- **"implements process lifecycle in Rust already" — VERIFIED, with material gaps.**
+- **"could become the shared one for all hosts" — REFUTED as stated.**
 
-`crates/host-native` has **54 tests** (41 in `lib.rs`, 12 in `guest.rs`, 1
-integration), **4 of them `#[ignore]`d** — including `smoke_fork_from_thread`
-(`lib.rs:1990`), a real functional blocker labelled *"N1 residual #4a:
-fork-instrumented worker-thread replay"*.
+Four independent reasons, in order of decisiveness (all VERIFIED):
 
-In CI, most of the rest prove nothing. The `cargo-workspace` job
-(`prepare-merge.yml:1753-1805`) **never stages `local-binaries/`**, so roughly
-**42 of the 54 tests hit `kernel_path_or_skip` (`lib.rs:384-402`) and return
-green having executed no kernel**. What actually runs:
-`smoke_channel_wait_notify_handshake`, seven `proc_bytes_tests`, two
-`base_image_tests`, and one GC-provenance unit test.
+1. **It cannot compile for the browser, by construction.**
+   `crates/host-native/Cargo.toml:8-22` says so outright: *"Wasmtime (and its
+   Cranelift backend) does not build for `wasm32-unknown-unknown`, so this
+   crate … must always be built and tested for the host target."* Every
+   lifecycle function is typed in engine-specific types — `wasmtime::Store<()>`,
+   `Linker`, `Module`, `SharedMemory`, `TypedFunc`, `std::thread::JoinHandle`.
+   `run_pump` (`guest.rs:9475-9511`) takes **30 `&wasmtime::TypedFunc<…>`
+   parameters**; `GuestProcess` (`guest.rs:9022-9086`) holds `module: Module`,
+   `memory: SharedMemory`, `thread_handles: HashMap<usize, thread::JoinHandle<()>>`.
+   There is no engine-abstract seam to lift. Promoting it is a rewrite against
+   an abstraction that does not exist.
+2. **It shares nothing with `runtime-core`.** `Cargo.toml:44-72` — deps are
+   exactly `wasmtime 48`, `wasm-posix-shared`, `fork-codec`, `anyhow`. All 16
+   `runtime_core` / `process_table` / `ProcessTable` mentions in the crate are
+   **doc comments** (`guest.rs:10350`, `:11378`, `:11394`, `:11513`;
+   `lib.rs:1683`) — zero `use`, zero code paths. It is not a shared core; it is
+   a **second consumer of the kernel's Wasm export ABI**.
+3. **The part that is genuinely POSIX policy is the part you would want to
+   delete, not share** (§6.3).
+4. **Its lifecycle coverage is not at parity** (§6.2), and its evidence base
+   is thin (§6.1, §6.5).
 
-It is additionally **triple-gated**: `kernel_only: true`
-(`prepare-merge.yml:1725`, `staging-build.yml:868`) means a host-native-only
-diff does not set the `kernel` change-scope and the suite skips entirely;
-staging-build also skips on a `skip-staging-tests` label; and prepare-merge
-only runs on `ready-to-ship`. Nothing in `scripts/`, `run.sh`, or `xtask`
-invokes host-native at all.
+**The true and useful claim, which should replace it in the census:**
+host-native proves the kernel's export contract is **sufficient for a
+non-JavaScript host to drive the full process lifecycle in ~1,050 code lines
+of handler logic**, with no `runtime-core` linkage and no JavaScript. *The
+transferable asset is the contract — and the demonstration that the TS hosts'
+~9,100 lines of entry code are not intrinsic — not the code.*
 
-**Practical reading: host-native's ~42 real lifecycle tests are
-developer-local-only today.** Staging `local-binaries/kernel.wasm` and
-`fork_module32.wasm` into that job is a **prerequisite**, not a nicety, if
-host-native's Rust is to become anyone's shared implementation.
+### 6.1 Inventory (VERIFIED)
 
----
+| file | lines |
+|---|---|
+| `crates/host-native/src/guest.rs` | 11,965 (6,613 non-comment) — the entire host |
+| `crates/host-native/src/lib.rs` | 2,851 — ABI/import-surface probes + the smoke suite (tests at `:316`) |
+| `crates/host-native/tests/wasi_module.rs` | 417 — 1 integration test |
+| `crates/host-native/Cargo.toml` | 71 |
+| `crates/host-native/fixtures/` | 24 hand-written C fixtures + committed `.wasm`/`.wat` |
+
+End to end (`run_guest`, `guest.rs:1018-1438`): build a wasmtime `Engine`,
+compute the boot process's `SharedMemory` + `ProcessLayout`
+(`compute_guest_memory:2548`), one `Store` for `kernel.wasm`, define
+`env.memory` (`:1071`) and 20 `env.host_*` closures (`:1818`), trap the rest
+(`:1085`), assert `__abi_version == 44` (`:1089`), take ~30 typed handles to
+`kernel_*` exports (`:1094-1250`), enable tmpfs + rootfs overlay
+(`:1290-1338`), launch the boot process on its own OS thread
+(`launch_process:4906`), then run a single-threaded channel pump
+(`run_pump:9475`).
+
+**Correction to the census.** The kernel declares exactly **84** `env.host_*`
+function imports (VERIFIED by `wasm-objdump -x` on `local-binaries/kernel.wasm`;
+matches `EXPECTED_HOST_IMPORT_COUNT = 84`). host-native implements **20** and
+traps **64**. The census's citation `guest.rs:1656` for
+`define_unknown_imports_as_traps` is **wrong** — that line is inside
+`mod base_image_tests`. The real trap sites are `guest.rs:1085` (kernel
+linker), `:4797` (fork-module), `:6955` (main guest), `:8750` (worker guest).
+"9 defines" also maps to no single site: `linker.define(` appears 18 times
+across four linkers, only one of which (`env.memory`, `:1071`) is on the
+kernel linker.
+
+Of the **7 process-lifecycle host imports** the kernel declares, host-native
+has 4 real — `host_futex_wake` (`:1846`), `host_proc_read_bytes` (`:1907`),
+`host_proc_write_bytes` (`:1923`), `host_waitpid` (`:2441`) — and **3
+trapped**: `host_futex_wait`, `host_call_signal_handler`,
+`host_sigsuspend_wait`.
+
+### 6.2 Lifecycle coverage, one verdict each (VERIFIED)
+
+| behaviour | verdict |
+|---|---|
+| **fork** | IMPLEMENTED. `kernel_fork` import (`guest.rs:5560`) → `handle_fork` (`:9812`); child = byte-copied memory + fresh OS thread + fresh Store. **Gap:** a non-fork-instrumented guest's child gets `ForkEntry::ChildPendingStub` (`:10501-10504`) and **never runs any of its copied program** — documented, accepted. |
+| **vfork** | IMPLEMENTED with real borrow semantics: the child shares the parent's `SharedMemory` and the parent's channel is deliberately left `STATUS_PENDING` until the child `_exit`s or execs (`:10530-10608`). **Main-thread only** — a worker thread's vfork returns `-ENOSYS` (`:8615-8620`). Non-instrumented vfork silently degrades to COW fork. |
+| **clone / threads** | IMPLEMENTED (`:5553` → `:9682-9760`). **Hard limit `RESERVED_THREAD_SLOTS = 16`** (`:104`); exceeding it is a pump-ending `bail!` (`:9719`). Nested `pthread_create` from a worker thread is an unwired gap (`:8735-8740`). |
+| **exec / execve** | IMPLEMENTED; `execve` + `execveat` share `handle_exec_common` (`:10806-11079`), full ENOENT/EACCES/ENOEXEC matrix, one-level shebang via the kernel. **A stale stub coexists:** the `kernel_execve` guest import hardcodes `-ENOSYS` (`:5726-5731`) with an out-of-date comment; the live path is `SYS_EXECVE` over the channel. |
+| **posix_spawn** | IMPLEMENTED. `SYS_SPAWN` intercepted before marshalling (`:9766-9781`); the blob is decoded by the **kernel**, never re-parsed by the host (`:10077-10442`). |
+| **exit** | IMPLEMENTED (`:9628-9680`); per-thread `SYS_exit` → `kernel_thread_exit` with child-tid futex clear. |
+| **wait / reap** | IMPLEMENTED **but the POSIX policy lives in the host** — see §6.3. Process-group waits (`pid == 0` or `pid < -1`) return **`-ENOSYS`** (`:2446-2449`). |
+| **teardown** | PARTIAL. `reclaim_all_channels` (`:9418-9474`) publishes `CH_TEARDOWN` and joins parked threads; **compute-bound siblings are dropped unjoined** (`:9435-9441`), a documented residual. |
+| **signals** | **ABSENT.** `host_call_signal_handler` and `host_sigsuspend_wait` are trapped. No signal delivery exists at all. |
+
+### 6.3 Structurally different, and materially simpler — this is the finding that bears on §4
+
+Same coarse shape: **one OS thread + one wasmtime `Store` + one `Linker` per
+Kandelo process** (`launch_process:4906` → `spawn_guest_thread:5104`), exactly
+where the TS hosts create one Worker per process; main + up to 16 workers.
+
+But it **sidesteps every concept that makes the TS entries expensive**:
+
+- **No generations.** `grep -i generation` in `guest.rs` returns only
+  fork-module doc comments (`:2999`, `:5211`) and references to the *kernel's*
+  `exec_generation` (`:1196`, `:10991`). There is no generation type, no
+  generation id, no generation ownership. Compare
+  `node-kernel-worker-entry.ts`: **221** `generation` hits, an
+  `interface ProcessGenerationOwnership` at `:276`,
+  `interface ProcessInfo extends ProcessGenerationOwnership` at `:287`, and a
+  whole imported module `./process-generation-detach` (`:139`). The browser
+  entry has **251** hits. host-native's entire exec transition is two lines
+  (`guest.rs:11077-11078`):
+  `let old_proc = std::mem::replace(&mut processes[pi], new_proc); reclaim_all_channels(old_proc);`
+- **No memory-quiescence fence and no lease retirement.** Neither primitive
+  exists in the crate. Quiescence is achieved **structurally**: syscall
+  dispatch is synchronous on a single pump thread, so nothing can interleave
+  with a `kernel_handle_channel` call. `host_proc_read_bytes` leans on this
+  explicitly (`guest.rs:1884-1892`).
+- **It does have vfork containment**, and arguably a more honest version:
+  `struct VforkParentRelease` (`:9279-9293`) and the
+  `vfork_awaiting_child` anti-refork guard (`:9793-9808`), whose comment
+  records that the double-fork it prevents was **observed, not hypothetical**.
+  The borrow window ends at exactly two sites: child `_exit` (`:9660`) and
+  child exec success (`:11073`), both via `resolve_vfork_parent_release`
+  (`:9301-9354`).
+- Single-threaded pump with a 30-second hard cap (`run_pump:9484`,
+  `bail!` at `:9512`); no async, no message passing, no worker protocol.
+
+**Why this matters for §4.** A large share of the ~6,718 duplicated TS lines
+— generations, ownership records, quiescence fences, exact-vs-forced lease
+retirement — exists because **browser and Node Workers are asynchronous and
+`Worker.terminate()` is not an ownership fence**. It is not POSIX complexity;
+it is *host-object ownership complexity specific to the Worker model.*
+Relocating it to Rust does not dissolve it: a Rust driver would have to
+reproduce the same fence protocol through a command list. **This strengthens
+the staged recommendation in §4.3** and it also names the real prize — if the
+Worker model's fence requirement could be simplified, the code shrinks on
+*both* hosts, whatever language it is in.
+
+### 6.4 What it reuses from `runtime-core`: nothing directly
+
+Only through the compiled `kernel.wasm` export surface — **44
+`kernel_store.call(…)` sites across 42 distinct `kernel_*` exports**
+(`kernel_fork_process`, `kernel_spawn_process`, `kernel_spawn_blob_decode`,
+`kernel_publish_spawn_child`, `kernel_exec_target_prepare/_size/_read/_resolve_shebang/_cancel`,
+`kernel_spawn_exec_target_prepare`, `kernel_spawn_exec_commit`,
+`kernel_exec_commit`, `kernel_remove_process`, `kernel_reap_exited_child`,
+`kernel_thread_exit`, `kernel_handle_channel`, …).
+
+**`crates/runtime-core/src/process_table.rs` is a real process table**
+(VERIFIED): 4,082 lines, production ending ~2,221 (`mod tests` at `:2222`), so
+~1,700 lines of table logic. It owns pid/tid allocation behind a linear,
+non-`Clone` capability token (`AllocatedTaskId`, `:42` — only this module can
+mint one), parent/child links, per-process fd/OFD tables, zombie/reaping
+(`ProcessState::{Running,Stopped,Exited,Limbo}`, `process.rs:441-457`), process
+groups and sessions, credentials, and a machine-wide `AdvisoryLockManager`.
+`RemoveProcessResult` (`:114`) returns deferred host-side teardown for the
+caller to drain — which is precisely what keeps the module host-agnostic.
+
+**Who uses it:** `runtime-core` internally (208 refs) and `crates/kernel` (33
+direct + 128 via the `PROCESS_TABLE` alias at `wasm_api.rs:1155`) ≈ 160 kernel
+call sites. **`crates/host-native`: zero.** No other crate touches it.
+`crates/kernel/src/lib.rs:12` is `pub use runtime_core::*;` — the kernel crate
+is a pure wasm-FFI shell over `runtime-core`, where every line of POSIX
+semantics lives.
+
+### 6.5 Orchestration vs POSIX decision-making — ~85-90% vs ~10-15%
+
+VERIFIED by line attribution over the lifecycle path.
+
+**Orchestration (~2,700 code lines):** `spawn_guest_thread` `:5104-7269`
+(1,355 code lines — one Linker, 29 `func_wrap`s, fork-module instantiation,
+externref/GC provenance registries, resume-table binding; essentially zero
+POSIX policy); `run_worker_thread` `:8440-8959` (317); `instantiate_fork_module`
+`:4592-4905` (159); provenance registries `:2632-3277` (~645);
+`define_kernel_host_imports` `:1818-2509` (493 — leaf capabilities, not
+decisions); channel plumbing (`stage_raw:9123`, `dispatch_once:9156`,
+`marshal_in:11591`, `proc_copy_in/out:557/:578`).
+
+**POSIX decision-making actually made in the host (~250 code lines, four sites):**
+
+1. **`host_waitpid` + `WaitTable`** — ~90 lines, `guest.rs:2441-2547`. The
+   significant one. Which child matches `-1`, ECHILD vs EAGAIN vs
+   WNOHANG-returns-0, reap ordering, wait-status encoding
+   (`encode_wait_status:2510`) — all in host Rust, because the kernel's
+   `sys_waitpid` **delegates wholly to this import**. Its own doc comment says
+   so.
+2. **vfork borrow-window policy** — ~120 lines (`:10530-10608`, `:9279`,
+   `:9301`, `:9793-9808`). *When may the parent be released* is a POSIX
+   decision made in the host.
+3. **exec/spawn rollback + errno matrix** — ~120 lines (`cancel_exec_target:11080`,
+   `rollback_spawned_child:11231`,
+   `terminate_process_after_failed_exec_commit:11147`).
+4. **syscall routing policy in `run_pump`** — ~80 lines of main-vs-non-main
+   channel gates for CLONE/FORK/VFORK/EXECVE/EXECVEAT/SPAWN/EXIT
+   (`:9628-9910`).
+
+Everything else — exec target resolution, shebang, `X_OK`, set-ID creds,
+cloexec, signal reset, `exec_generation`, pid allocation, fd/OFD inheritance,
+blocking-retry readiness, the process table — is already in the kernel.
+
+**The architectural reading: that 10-15% is not a design, it is the residue of
+places where the kernel export contract is incomplete.** Three of the four
+sites would disappear if the kernel owned (i) waitpid selection, (ii) the
+vfork release window, and (iii) the exec transaction as a unit. That is an
+actionable, separately-schedulable finding — and it is the *opposite* of
+"promote the host code".
+
+### 6.6 Its evidence base is thinner than it looks (VERIFIED)
+
+- **54 tests** (41 `lib.rs`, 12 `guest.rs`, 1 integration), **4 `#[ignore]`d**
+  — including `smoke_fork_from_thread` (`lib.rs:1990`), a real functional
+  blocker labelled *"N1 residual #4a: fork-instrumented worker-thread replay"*.
+- **~42 of the 54 silently self-skip green in CI.** The `cargo-workspace` job
+  (`prepare-merge.yml:1753-1805`) **never stages `local-binaries/`**, so those
+  tests hit `kernel_path_or_skip` (`lib.rs:384-402`) and return green having
+  executed no kernel. What actually runs:
+  `smoke_channel_wait_notify_handshake`, seven `proc_bytes_tests`, two
+  `base_image_tests`, one GC-provenance unit test.
+- **Triple-gated** on top of that: `kernel_only: true`
+  (`prepare-merge.yml:1725`, `staging-build.yml:868`) means a host-native-only
+  diff does not set the `kernel` change-scope and the suite skips entirely;
+  staging-build also skips on a `skip-staging-tests` label; prepare-merge only
+  runs on `ready-to-ship`. Nothing in `scripts/`, `run.sh`, or `xtask` invokes
+  host-native at all.
+- **It never boots a real VFS image.** `BaseImage` (`guest.rs:1520-1526`) is
+  built in memory from hand-written `BaseEntrySpec` entries
+  (`build_base_image:1541`), emitting RTFS-v3 with `archive_count = 0` and no
+  symlinks; the doc at `:1518-1520` says explicitly *"never from rootfs.vfs /
+  SFFS"*. Its sole consumer, `smoke_reads_base_file` (`lib.rs:740-766`), feeds
+  a 3-entry tree. Guests are the 24 committed C fixtures.
+
+**Any claim resting on host-native "running real software" is unsupported.**
+Staging `local-binaries/kernel.wasm` + `fork_module32.wasm` into that CI job is
+a prerequisite before host-native evidence carries weight in any argument.
 
 ## 7. Test coverage — the unification risk list
 

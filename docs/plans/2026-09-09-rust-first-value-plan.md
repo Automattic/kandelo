@@ -662,6 +662,89 @@ the opposite risk too: `intl.so`'s 2,469 Global constructions could regress.
 bump, no new host capability — so the V1 prize (host-native gains `dlopen`,
 which it has never had) is real and affordable.
 
+## 2k. K14 + K9 grounding — outcomes and decisions (2026-09-09)
+
+`docs/plans/2026-09-09-k14-k9-host-contract-grounding.md`.
+
+### Four more disproved claims — three of them ours
+
+1. **84 imports, not 85.** `host_debug_log` is supplied by `kernel.ts` but
+   DCE'd out of the artifact (VERIFIED independently: `wasm-tools print
+   local-binaries/kernel.wasm | grep host_debug_log` → 0, against 84 function
+   imports plus `env.memory`). The ledger listed it as a KEEP floor; a floor
+   absent from the artifact is not a floor. The §4 "diagnostics: 1" concept is
+   already 0.
+2. **`host_access` has zero kernel call sites.** Dead like K13a's 24 exports —
+   fold its removal into K9.
+3. **OPFS is not mounted.** `OpfsFileSystem.create` has no production caller
+   (VERIFIED independently). Ledger §2.3 corrected.
+4. **The host `/` mount is unconditionally dropped** post-Phase-5
+   (`node-kernel-worker-entry.ts:1244`); every path hits `tmpfs::claims_path`
+   then `rootfs::claims_path` first. Host filesystem reach is only the foreign
+   prefixes: `/dev/shm`, `/dev` (shadowed), Node `--mount`. **The 25
+   path-taking imports are far less load-bearing than the census implied.**
+
+That is nine disproved "floors" across the campaign now, five of them authored
+in this document set. The lesson is not that the docs are bad — it is that
+*asserting a contract fact without checking the artifact* is the recurring
+failure mode, and the artifact is always cheap to check.
+
+### K14 — the design, and why it is bigger than a visibility fix
+
+`dump_abi.rs:7226-7256` **already parses the import section** for index
+arithmetic and then discards module, name and `TypeRef`. Keep them, render with
+the existing `format_func_type` (`:7349`), emit a `kernel_imports` section beside
+`:4296`. ≈150 lines, not the 50-100 K2 estimated.
+
+The extra is a **new inverse classifier**, and it is the point:
+**import polarity is the reverse of export polarity.** *Adding* an import is
+BREAKING — an older host cannot satisfy it. *Removing* one is compatible. So
+K14 does not merely make K9's 25 removals visible:
+
+> **it makes any future host-import ADDITION fail the ABI gate.**
+
+That converts this campaign's most-repeated STRONG DOUBT — "any need to ADD host
+surface" — from a thing agents are asked to notice into a thing the build
+enforces. Strongest V4 mechanism available, and it is ~150 lines.
+
+**Trap to honour:** `"kernel_imports"` must be added to
+`additive_top_level_section` (`:7455`), or K14 fails its own gate and tempts a
+spurious ABI bump. Diff ≈350-430 additive JSON lines, no bump.
+
+### K9 — protocol and corrected target
+
+**No new import.** Mount-root handles ride the existing
+`kernel_rootfs_set_foreign_prefixes` **export** (free under V4), and the
+kernel's existing per-component walk (`syscalls.rs:2250`) steps
+`host_openat(dir, component)`. Result: 25 → **9 `*at` imports**, 84 → 68, each
+retiring a named predecessor. Precedent exists — tmpfs/rootfs already issue
+synthetic negative handle bands.
+
+**"25 → 0" was wrong in mechanism.** `mkdir`, `unlink`, `rename` and
+`lstat`-of-symlink have no handle-only form on any host API. The honest target
+is **0 mandatory + ~9 optional** (a host-directory capability; the browser
+implements zero of them after K8). §4's "85 → ≈31" happened to survive because
+two errors cancelled; the corrected figure is **84 → ≈30 mandatory**.
+
+**Cheating criteria** are enumerated in the grounding's §6.3 — opcode collapse,
+struct-pointer collapse, moving a capability to an export, and trapping-as-removal.
+Any of those would shrink the count while worsening the contract.
+
+### Decisions
+
+- **K9 FOLLOWS K8** — ACCEPTED on evidence: before K8, the browser's only
+  consumer of these paths is a data structure K8 deletes.
+- **`host_access` and `host_debug_log`**: remove with K9; neither is reachable.
+  Correct the §4 concept table when they go.
+- **`cap-std` for host-native**: ACCEPTED in principle — `std` has no `openat`,
+  and cap-std encodes the directory-relative invariant in the type system, which
+  is a V2 win rather than merely a dependency. host-native is a host, not
+  `runtime-core` (which deliberately keeps 3 deps); the bar is different.
+- **host-native cost**: 8 of its 21 implemented imports are in the 25;
+  ~500-700 lines.
+- Two items still need detail before deciding: wasm64 recording in the snapshot,
+  and the mount-handle payload shape.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
