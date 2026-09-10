@@ -1994,6 +1994,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_commit_process_group_exit",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_connect",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2110,6 +2115,11 @@
     {
       "kind": "func",
       "name": "kernel_exit",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exit_group",
       "signature": "(i32) -> ()"
     },
     {
@@ -2634,6 +2644,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_msqid_ds_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_munmap",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2959,6 +2974,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_semctl_array_bytes",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_semid_ds_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_send",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -3100,6 +3125,56 @@
     {
       "kind": "func",
       "name": "kernel_setuid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_active_pid_count",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_drop_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_inherit",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_process_count",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_publish_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_release_process",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_sync_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_sync_segment",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_track",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shmid_ds_bytes",
       "signature": "(i32) -> (i32)"
     },
     {

@@ -1285,10 +1285,16 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
     }
 
     fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+        // Routed through runtime-core's `debug_log` rather than a second
+        // `host_debug_log` declaration here. K9 removed this crate's copy after
+        // finding it callerless, and K7's writeback reporting then supplied the
+        // caller; two declarations of one import is how a declared-versus-linked
+        // gap opens in the first place. runtime-core's is already cfg-gated to
+        // wasm and is a no-op natively, which this call site wants anyway.
         let message = alloc::format!(
             "shared-mapping writeback lost: pid={pid} addr={map_addr:#x} reason={reason}"
         );
-        unsafe { host_debug_log(message.as_ptr(), message.len() as u32) };
+        runtime_core::debug_log(&message);
     }
 }
 

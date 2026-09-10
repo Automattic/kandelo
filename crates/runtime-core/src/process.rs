@@ -2679,9 +2679,6 @@ pub mod test_host {
             }
         }
 
-        fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
-            NoopHost.host_open(path, flags, mode)
-        }
         fn host_close(&mut self, h: i64) -> Result<(), Errno> {
             NoopHost.host_close(h)
         }
@@ -2697,50 +2694,8 @@ pub mod test_host {
         fn host_fstat(&mut self, h: i64) -> Result<WasmStat, Errno> {
             NoopHost.host_fstat(h)
         }
-        fn host_stat(&mut self, p: &[u8]) -> Result<WasmStat, Errno> {
-            NoopHost.host_stat(p)
-        }
-        fn host_lstat(&mut self, p: &[u8]) -> Result<WasmStat, Errno> {
-            NoopHost.host_lstat(p)
-        }
-        fn host_mkdir(&mut self, p: &[u8], m: u32) -> Result<(), Errno> {
-            NoopHost.host_mkdir(p, m)
-        }
-        fn host_rmdir(&mut self, p: &[u8]) -> Result<(), Errno> {
-            NoopHost.host_rmdir(p)
-        }
-        fn host_unlink(&mut self, p: &[u8]) -> Result<(), Errno> {
-            NoopHost.host_unlink(p)
-        }
-        fn host_rename(&mut self, o: &[u8], n: &[u8]) -> Result<(), Errno> {
-            NoopHost.host_rename(o, n)
-        }
-        fn host_link(&mut self, o: &[u8], n: &[u8]) -> Result<(), Errno> {
-            NoopHost.host_link(o, n)
-        }
-        fn host_symlink(&mut self, t: &[u8], l: &[u8]) -> Result<(), Errno> {
-            NoopHost.host_symlink(t, l)
-        }
-        fn host_readlink(&mut self, p: &[u8], b: &mut [u8]) -> Result<usize, Errno> {
-            NoopHost.host_readlink(p, b)
-        }
-        fn host_chmod(&mut self, p: &[u8], m: u32) -> Result<(), Errno> {
-            NoopHost.host_chmod(p, m)
-        }
-        fn host_chown(&mut self, p: &[u8], u: u32, g: u32) -> Result<(), Errno> {
-            NoopHost.host_chown(p, u, g)
-        }
-        fn host_access(&mut self, p: &[u8], a: u32) -> Result<(), Errno> {
-            NoopHost.host_access(p, a)
-        }
-        fn host_opendir(&mut self, p: &[u8]) -> Result<i64, Errno> {
-            NoopHost.host_opendir(p)
-        }
         fn host_readdir(&mut self, h: i64, b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
             NoopHost.host_readdir(h, b)
-        }
-        fn host_closedir(&mut self, h: i64) -> Result<(), Errno> {
-            NoopHost.host_closedir(h)
         }
         fn host_clock_gettime(&mut self, c: u32) -> Result<(i64, i64), Errno> {
             NoopHost.host_clock_gettime(c)
@@ -2771,9 +2726,6 @@ pub mod test_host {
         }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getrandom(b)
-        }
-        fn host_utimensat(&mut self, p: &[u8], a_s: i64, an: i64, ms: i64, mn: i64) -> Result<(), Errno> {
-            NoopHost.host_utimensat(p, a_s, an, ms, mn)
         }
         fn host_waitpid(&mut self, p: i32, o: u32) -> Result<(i32, i32), Errno> {
             NoopHost.host_waitpid(p, o)
