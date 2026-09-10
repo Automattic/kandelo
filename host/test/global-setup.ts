@@ -162,7 +162,9 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
 const WAT_FIXTURES = [
   "deep-wasm-recursion.wat",
   "wasi-args.wat",
+  "wasi-file-io.wat",
   "wasi-hello.wat",
+  "wasi-readdir.wat",
   "wasi-scalar-abi.wat",
 ];
 
