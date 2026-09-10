@@ -46,12 +46,24 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     for (const diagnosticSource of [
       "worker-main error message",
       "exec post-commit transition",
-      "clone allocation",
-      "thread worker failure",
     ]) {
       expect(source).toContain(`source: "${diagnosticSource}"`);
     }
-    expect(sharedLifecycleSource).toContain('source: "worker protocol"');
+    // `clone allocation` and `thread worker failure` join `worker protocol`
+    // in `host/src/process-lifecycle.ts`: `handleClone` is now one
+    // implementation serving both hosts, so each is raised once. That is
+    // stronger than asserting it twice — a clone failure can no longer be
+    // reported on one host and swallowed on the other — and the entry must
+    // still bind the reporter and the handler, so deleting either wire keeps
+    // failing this test.
+    for (const diagnosticSource of [
+      "worker protocol",
+      "clone allocation",
+      "thread worker failure",
+    ]) {
+      expect(sharedLifecycleSource).toContain(`source: "${diagnosticSource}"`);
+    }
+    expect(source).toContain("handleClone");
     expect(source).toContain("reportWorkerProtocolError");
     expect(source).toContain("reportHostDiagnostic");
   });

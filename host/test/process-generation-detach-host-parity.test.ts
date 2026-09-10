@@ -73,37 +73,53 @@ const sharedLifecycle = readFileSync(
 function indentedAsyncFunction(
   source: string,
   name: string,
-  nextName: string,
 ): string {
-  const start = source.indexOf(`  async function ${name}(`);
-  const end = source.indexOf(`\n  async function ${nextName}(`, start);
+  const startName = `  async function ${name}(`;
+  const start = source.indexOf(startName);
   expect(start, `${name} must exist`).toBeGreaterThanOrEqual(0);
-  expect(end, `${nextName} must follow ${name}`).toBeGreaterThan(start);
+  // Bounded by the module's own structure — the next declaration at the same
+  // two-space indent — rather than by naming whichever function follows.
+  // Naming a neighbour couples this assertion to code it is not testing:
+  // moving that neighbour turns the slice into `-1` and fails a test whose
+  // subject has not changed.
+  const bodyStart = start + startName.length;
+  const next = source.slice(bodyStart).search(
+    /\n  (?:async )?(?:function|const|let|class|interface|type) /,
+  );
+  const end = next === -1 ? source.length : bodyStart + next;
+  expect(end, `no declaration follows ${name}`).toBeGreaterThan(start);
   return source.slice(start, end);
 }
 
 describe("process generation detach host parity", () => {
   for (const { host, source, terminate } of entries) {
     it(`${host} routes every process-generation terminal path through the shared ledger`, () => {
-      const spawn = asyncFunction(source, "handleSpawn", "handleFork");
-      const fork = asyncFunction(source, "handleFork", "handleExec");
-      const posixSpawn = asyncFunction(
-        source,
+      // `handleSpawn`, `handleOrdinaryFork`, `handleVfork` and
+      // `handlePosixSpawn` are one implementation each in the shared
+      // lifecycle module now, so each is sliced from there. That is stronger
+      // than checking two copies: a construction path can no longer route
+      // through the ledger on one host and bypass it on the other. Each entry
+      // must still bind them, which the loop below requires.
+      for (const name of [
+        "handleSpawn",
+        "handleOrdinaryFork",
+        "handleVfork",
         "handlePosixSpawn",
-        "handleClone",
-      );
+      ]) {
+        expect(
+          source.includes(`  ${name},\n`) && source.includes("} = lifecycle;"),
+          `${host} must bind ${name} from ./process-lifecycle`,
+        ).toBe(true);
+      }
       const lifecycleSurfaces = [
-        spawn,
-        fork,
-        posixSpawn,
+        indentedAsyncFunction(sharedLifecycle, "handleSpawn"),
+        indentedAsyncFunction(sharedLifecycle, "handlePosixSpawn"),
+        indentedAsyncFunction(sharedLifecycle, "handleOrdinaryFork"),
+        indentedAsyncFunction(sharedLifecycle, "handleVfork"),
         // `finishProcessExit` is one implementation in the shared lifecycle
         // module now; slicing it from there means the ledger route cannot be
         // present on one host's exit path and missing on the other's.
-        indentedAsyncFunction(
-          sharedLifecycle,
-          "finishProcessExit",
-          "awaitFinalizedProcessTeardown",
-        ),
+        indentedAsyncFunction(sharedLifecycle, "finishProcessExit"),
         asyncFunction(source, terminate, "performDestroy"),
       ];
 
@@ -131,12 +147,12 @@ describe("process generation detach host parity", () => {
       // WHY: Worker termination yields. Keep the installed object itself,
       // rather than looking the PID up afterward and accidentally retiring an
       // exec successor that appeared during the await.
-      expect(spawn).toContain("let createdGeneration: ProcessInfo | undefined");
+      const spawn = indentedAsyncFunction(sharedLifecycle, "handleSpawn");
+      expect(spawn).toContain("let createdGeneration: Info | undefined");
       expect(spawn).toContain("generation = createdGeneration ??");
-      for (const rollback of [fork, posixSpawn]) {
-        expect(rollback).toContain(
-          "let childGeneration: ProcessInfo | undefined",
-        );
+      for (const name of ["handleOrdinaryFork", "handlePosixSpawn"]) {
+        const rollback = indentedAsyncFunction(sharedLifecycle, name);
+        expect(rollback).toContain("let childGeneration: Info | undefined");
         expect(rollback).toContain("generation = childGeneration ??");
       }
 
@@ -181,12 +197,17 @@ describe("process generation detach host parity", () => {
     });
   }
 
-  it("browser posix_spawn rollback owns the allocated newMemory identity", () => {
-    const browser = entries[1].source;
-    const handler = asyncFunction(browser, "handlePosixSpawn", "handleClone");
-    expect(handler).toContain("memory: newMemory");
+  it("posix_spawn rollback owns the exact allocated memory identity", () => {
+    // Was browser-only, because only the browser's copy had named its
+    // allocation `newMemory` and awaited the host alias release. With one
+    // implementation the subject is what it always was: the rollback detaches
+    // the generation it actually allocated, and clears whatever host-side
+    // alias of that Memory the host still holds — which is where the browser's
+    // framebuffer release now lives, behind `releaseGenerationAliases`.
+    const handler = indentedAsyncFunction(sharedLifecycle, "handlePosixSpawn");
+    expect(handler).toContain("const generation = childGeneration ?? { memory, memoryLease }");
     expect(handler).toContain(
-      "releaseMainFramebufferGeneration(childPid, childGeneration)",
+      "host.releaseGenerationAliases(childPid, childGeneration)",
     );
     expect(handler).not.toContain(
       "kernelWorker.deactivateProcess(childPid, memory)",
