@@ -39,6 +39,8 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "../src/generated/abi";
+import { resetWasmArtifactModuleForTesting } from "../src/wasm-artifact-driver";
+import { useNodeWasmArtifactModule } from "../src/wasm-artifact-module-node";
 import {
   MemoryFileSystem,
   type VfsImageMetadata,
@@ -1406,6 +1408,33 @@ describe("binary resolver source-only tier package closures", () => {
     );
   });
 
+  it("distinguishes an uninspectable artifact from a policy verdict", () => {
+    // The reader module is a HOST bootstrap dependency: without it no artifact
+    // can be examined at all. Reporting that as "rejected by artifact policy"
+    // sends the reader to rebuild an artifact nothing ever looked at. This is
+    // not hypothetical — it is the single reason behind the
+    // `the wasm-artifact module has not been installed in this realm` cluster
+    // whenever a host entry point forgets to install it.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    writeKernelArtifact(join(repo, "local-binaries"));
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    resetWasmArtifactModuleForTesting();
+    try {
+      let message = "";
+      try {
+        resolveBinary("kernel.wasm");
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain("could not be inspected");
+      expect(message).toContain("has not been installed in this realm");
+      expect(message).not.toContain("rejected by artifact policy");
+    } finally {
+      useNodeWasmArtifactModule();
+    }
+  });
+
   it("names a rejected tier as rejected, never as a missing artifact", () => {
     delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
     const repo = makeTempRepo();
@@ -1608,16 +1637,21 @@ describe("binary resolver artifact policy", () => {
       rejected,
       new TextEncoder().encode("not a Wasm module"),
     );
+    // The message must name the verdict, not just report one: an artifact the
+    // reader could not examine at all is a different failure from one it
+    // examined and refused.
     expect(() => tryResolveBinary(rejected)).toThrow(
-      /exists but was rejected by artifact policy/,
+      /exists but was not accepted[\s\S]*rejected by artifact policy: not a WebAssembly module/,
     );
 
     const dangling = fixtureRelPath(".dat");
     const danglingPath = candidatePath(localBinariesDir(), dangling);
     mkdirSync(dirname(danglingPath), { recursive: true });
     symlinkSync(`${danglingPath}.missing-target`, danglingPath);
+    // A dangling symlink is present-but-unusable, and the reason says so
+    // rather than blaming the artifact's contents.
     expect(() => tryResolveBinary(dangling)).toThrow(
-      /exists but was rejected by artifact policy/,
+      /exists but was not accepted[\s\S]*could not be read/,
     );
   });
 });

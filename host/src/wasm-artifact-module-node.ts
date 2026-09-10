@@ -37,8 +37,31 @@ import { setWasmArtifactModuleLoader } from "./wasm-artifact-driver";
  * three previous copies of this code stayed alive.
  */
 
-/** The tiers `resolveBinary` searches, in its order. */
-const MODULE_TIERS = ["local-binaries", "host/wasm", "binaries"] as const;
+/**
+ * The tiers `resolveBinary` searches, in its order.
+ *
+ * This list must stay identical to `binaryCandidateTiers()` in
+ * `binary-resolver.ts`, because the whole point of resolving by path is to give
+ * up the policy check and NOTHING else. It had drifted in both directions: it
+ * omitted `local-binaries/source-only-v1` — the tier a completed local build
+ * actually writes, and the resolver's FIRST — and it ranked the installed
+ * package's `host/wasm` above `binaries`, which is the reverse of the
+ * resolver's order.
+ *
+ * The consequence was not subtle. A worktree whose only copy of the module was
+ * the freshly built one reported "the wasm-artifact module has not been
+ * installed in this realm", and since this module is what reads every artifact,
+ * that failure propagates to every artifact-policy decision in the host. A
+ * worktree that ALSO had an older copy at `local-binaries/` silently read the
+ * older one instead of the one the build had just produced — the same
+ * two-locations-for-one-artifact defect that lets a stale kernel be served.
+ */
+const MODULE_TIERS = [
+  "local-binaries/source-only-v1",
+  "local-binaries",
+  "binaries",
+  "host/wasm",
+] as const;
 
 const MODULE_FILE = "wasm_artifact_module32.wasm";
 

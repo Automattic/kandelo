@@ -2975,6 +2975,73 @@ function hasBinaryArtifactPolicyFailures(
     hasVfsArtifactPolicyFailures(path, relPath);
 }
 
+/**
+ * Say WHY an artifact was refused, distinguishing a real policy verdict from
+ * an inspection that never happened.
+ *
+ * The boolean helpers above are fail-closed by design, and they must stay that
+ * way. But they reach `true` down two very different roads: the reader looked
+ * at the bytes and found a genuine defect, or the reader could not run at all —
+ * the file could not be read, or, much more commonly now, the wasm-artifact
+ * reader module has not been installed in this realm, which is a host bootstrap
+ * gap that has nothing to do with the artifact. Reporting the second as
+ * "rejected by artifact policy" sends the reader to rebuild an artifact that
+ * was never examined.
+ *
+ * Only the message-producing paths call this; resolution keeps using the
+ * booleans, so acceptance behaviour is unchanged.
+ */
+function describeBinaryArtifactRejection(
+  path: string,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): string | null {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(path);
+  } catch (error) {
+    return `could not be read: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  const programBytes = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(programBytes).set(bytes);
+
+  if (relPath.endsWith(".wasm")) {
+    try {
+      const forkDisabled = capturedForkInstrumentation === undefined
+        ? disablesForkInstrumentation(relPath)
+        : capturedForkInstrumentation === "disabled";
+      const failures = describeWasmArtifactPolicyFailures(programBytes, {
+        expectedAbi: ABI_VERSION,
+        requiredExports: requiredExportsForRelPath(relPath),
+        forbiddenExports: forbiddenExportsForRelPath(relPath),
+        requireForkInstrumentation: forkDisabled ? false : undefined,
+        forbidForkInstrumentation: forkDisabled,
+      });
+      return failures.length > 0
+        ? `rejected by artifact policy: ${failures.join("; ")}`
+        : null;
+    } catch (error) {
+      return `could not be inspected: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+  if (relPath.endsWith(".vfs") || relPath.endsWith(".vfs.zst")) {
+    try {
+      return hasVfsArtifactPolicyFailuresForBytes(bytes, relPath)
+        ? "rejected by artifact policy: VFS image declares a different kernel ABI"
+        : null;
+    } catch (error) {
+      return `could not be inspected: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+  return null;
+}
+
 function hasBinaryArtifactPolicyFailuresForBytes(
   bytes: Uint8Array,
   relPath: string,
@@ -3509,10 +3576,24 @@ function resolveBinaryInFreshProgramContext(relPath: string): string {
   }
   const candidate = chooseBinaryCandidate(candidates, relPath);
   if (candidate) return pinScalarCandidate(candidate, relPath);
-  if (candidates.some(pathEntryExists)) {
+  const present = candidates.filter(pathEntryExists);
+  if (present.length > 0) {
+    // Say which road led here. "Rejected by artifact policy" about a file the
+    // reader never managed to look at sends the reader to rebuild the wrong
+    // thing; the reason below distinguishes a genuine policy verdict from an
+    // inspection that could not run.
     throw new Error(
-      `Binary exists but was rejected by artifact policy: ${relPath}\n` +
-        checked.map((p) => `  checked: ${p}`).join("\n"),
+      `Binary exists but was not accepted: ${relPath}\n`
+        + present
+          .map((candidate) =>
+            `  ${candidate}\n    ${
+              describeBinaryArtifactRejection(candidate, relPath)
+                ?? "refused, but re-inspection now reports no failure"
+            }`
+          )
+          .join("\n")
+        + "\n"
+        + checked.map((p) => `  checked: ${p}`).join("\n"),
     );
   }
   throw new BinaryNotFoundError(
@@ -3726,7 +3807,17 @@ function tryResolveBinarySetFromTiers(
         outcome.present.push(relPath);
       } else if (existing.length > 0) {
         outcome.present.push(relPath);
-        outcome.rejected.push(relPath);
+        const reason = existing
+          .map((candidate) =>
+            describeBinaryArtifactRejection(
+              candidate,
+              relPath,
+              closureMembers?.[index]?.forkInstrumentation,
+            )
+          )
+          .find((value) => value !== null)
+          ?? "refused, but re-inspection now reports no failure";
+        outcome.rejected.push(`${relPath} — ${reason}`);
       } else {
         outcome.missing.push(relPath);
       }
