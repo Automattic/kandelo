@@ -3382,6 +3382,26 @@ Owner named: the residual needs the module destination above, which collides
 with K5's in-flight `crates/dylink` module pipeline. See the
 NEEDS-DEFER-DECISION below.
 
+### The host import count is 76, not 75 — measured, not inherited
+
+`docs/plans/2026-09-10-rust-first-campaign-status.md` records **75** in one
+place and **84** in another, and briefs have been quoting 75. Measured on two
+kernels built from this worktree — one at `67912d81e`, one at this item's tip —
+the answer is **76 at both**, and the two import lists are byte-identical
+(`comm` reports nothing on either side).
+
+So this item's import delta is **zero**, which is the claim that matters. But
+the baseline it was measured against was wrong by one, and the discrepancy is
+explained by the campaign status' own note: K7's SysV cutover made
+`env.host_debug_log` reachable and took the count up by one. The "75" line
+predates that and was never corrected; the "84" line is a different, older
+measurement. `env.host_debug_log` is present in both lists here.
+
+**Fourteenth inherited number this campaign has had to re-measure.** The
+standing lesson applies unchanged: a cutover's import delta is not visible in a
+diff, so measure it on a built kernel before and after — and do not trust the
+recorded baseline either.
+
 ### NEEDS-DEFER-DECISION (NDD-CONST-1) — the destination for the remaining ~2,900 lines
 
 - **What.** Whether to build a second standalone Rust side-module pipeline for
