@@ -140,7 +140,6 @@ mod wasm_api_source_guards {
         // raw `checked_channel_pointer(args[..])` call.
         for context in [
             "fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {",
-            "let pointer = checked_channel_pointer(raw)?;",
             "checked_channel_pointer(channel_scalar::process_address_argument(",
             "match checked_channel_pointer(args[$index]) {",
         ] {
@@ -154,35 +153,30 @@ mod wasm_api_source_guards {
             channel_dispatch_source
                 .matches("checked_channel_pointer(")
                 .count(),
-            4,
+            3,
             "review every new direct widened-channel pointer conversion"
         );
-        // WHY: rustfmt may wrap the binding before `match`; normalize only
-        // whitespace so this still pins the exact binding and proof helper.
-        let normalized_channel_dispatch_source = channel_dispatch_source
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert_eq!(
-            normalized_channel_dispatch_source
-                .matches("let values_pointer = match checked_channel_scratch_start_range(")
-                .count(),
-            1,
-            "SEMCTL SETALL must prove the exact scratch allocation and range"
-        );
-        assert_eq!(
-            normalized_channel_dispatch_source
-                .matches("let output_pointer = match checked_channel_scratch_start_range(")
-                .count(),
-            2,
-            "SEMCTL STAT/GETALL must prove the exact scratch allocation and range"
-        );
+        // The SysV IPC control buffers used to be command-dependent SCRATCH
+        // ranges, each proved here against the allocation start. They are now
+        // kernel-dereferenced GUEST addresses, so the proof that matters moved
+        // with them: `guest_address!` never yields a kernel pointer, and the
+        // only thing it can be handed to is a cross-memory primitive that
+        // bounds the range against the target process's own memory. Pin that
+        // no command-dependent scratch-start proof remains, because no
+        // command-dependent scratch range does.
         assert_eq!(
             channel_dispatch_source
                 .matches("checked_channel_scratch_start_range(")
                 .count(),
-            4,
-            "review every command-dependent scratch-start proof"
+            0,
+            "a command-dependent scratch range came back; review its proof"
+        );
+        // A guest address borrowed as kernel memory would read or write the
+        // KERNEL's own address space at a caller-chosen offset.
+        assert!(
+            !channel_dispatch_source.contains("from_raw_parts(guest_address!(")
+                && !channel_dispatch_source.contains("from_raw_parts_mut(guest_address!("),
+            "a guest address was borrowed as kernel memory"
         );
 
         // WHY: a count alone lets a newly added raw pointer hide behind removal

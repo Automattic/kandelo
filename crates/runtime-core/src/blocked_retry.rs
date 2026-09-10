@@ -161,8 +161,30 @@ pub enum BlockingRetryTarget {
         ancillary: Vec<InFlightFd>,
     },
     Mqueue(PinnedMqueueDescriptor),
-    SysvMessage(PinnedMsgQueue),
+    SysvMessage {
+        queue: PinnedMsgQueue,
+        /// The `msgsnd` payload, captured on the FIRST dispatch and reused by
+        /// every EAGAIN retry.
+        ///
+        /// WHY this is retained rather than re-read: Linux's `do_msgsnd`
+        /// calls `load_msg()` BEFORE it enters the wait loop, so a blocked
+        /// `msgsnd` delivers the bytes the caller had at entry — not whatever
+        /// the buffer holds when the queue finally drains. The kernel reads
+        /// the caller's `struct msgbuf` directly now, so without this the
+        /// message would silently become copy-at-success and a peer thread
+        /// rewriting the buffer during the block would change what was sent.
+        ///
+        /// `None` for `msgrcv`, which has no caller input to preserve.
+        pending_send: Option<PendingSysvMessage>,
+    },
     SysvSemaphore(PinnedSemSet),
+}
+
+/// A `msgsnd` message held across EAGAIN retries.
+#[derive(Debug)]
+pub struct PendingSysvMessage {
+    pub mtype: i64,
+    pub data: alloc::vec::Vec<u8>,
 }
 
 impl BlockingRetryTarget {
@@ -177,7 +199,7 @@ impl BlockingRetryTarget {
                 operation,
                 BlockingRetryOperation::MqSend | BlockingRetryOperation::MqReceive
             ),
-            Self::SysvMessage(_) => matches!(
+            Self::SysvMessage { .. } => matches!(
                 operation,
                 BlockingRetryOperation::MsgSend | BlockingRetryOperation::MsgReceive
             ),
@@ -458,12 +480,15 @@ impl BlockingRetryState {
         &self,
         tid: u32,
         operation: BlockingRetryOperation,
-    ) -> Result<Option<&PinnedMsgQueue>, Errno> {
+    ) -> Result<Option<(&PinnedMsgQueue, Option<&PendingSysvMessage>)>, Errno> {
         let Some(binding) = self.active_binding(tid, operation)? else {
             return Ok(None);
         };
         match &binding.target {
-            BlockingRetryTarget::SysvMessage(pinned) => Ok(Some(pinned)),
+            BlockingRetryTarget::SysvMessage {
+                queue,
+                pending_send,
+            } => Ok(Some((queue, pending_send.as_ref()))),
             _ => Err(Errno::EINVAL),
         }
     }
@@ -873,7 +898,10 @@ mod tests {
             &mut state,
             51,
             BlockingRetryOperation::MsgReceive,
-            BlockingRetryTarget::SysvMessage(queue_pin),
+            BlockingRetryTarget::SysvMessage {
+                queue: queue_pin,
+                pending_send: None,
+            },
         );
         let sem_token = insert(
             &mut state,
@@ -887,10 +915,14 @@ mod tests {
         state
             .activate(51, queue_token, BlockingRetryOperation::MsgReceive)
             .unwrap();
-        let queue_pin = state
+        let (queue_pin, pending_send) = state
             .active_sysv_message(51, BlockingRetryOperation::MsgReceive)
             .unwrap()
             .unwrap();
+        assert!(
+            pending_send.is_none(),
+            "msgrcv has no caller input to retain across retries"
+        );
         assert_eq!(
             ipc.msgrcv_pinned(queue_pin, 8, 0, 0, 1, 0, 0)
                 .unwrap_err(),
@@ -914,7 +946,10 @@ mod tests {
         state.clear_active();
 
         let queue = state.take_exact(51, queue_token).unwrap();
-        let BlockingRetryTarget::SysvMessage(queue_pin) = queue.target else {
+        let BlockingRetryTarget::SysvMessage {
+            queue: queue_pin, ..
+        } = queue.target
+        else {
             panic!("expected SysV message binding");
         };
         ipc.release_msg_queue_pin(queue_pin).unwrap();

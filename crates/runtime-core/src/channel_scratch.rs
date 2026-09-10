@@ -189,6 +189,20 @@ unsafe fn read_u32(pointer: usize, region: ChannelScratchRegion) -> Result<u32, 
     ))
 }
 
+/// True when this syscall argument is declared
+/// [`SyscallArgSize::KernelDereferenced`] — the kernel reads and writes the
+/// caller's memory itself and the host stages nothing for it.
+fn descriptor_is_kernel_dereferenced(syscall: u16, arg_index: u8) -> bool {
+    wasm_posix_shared::host_abi::SYSCALL_ARG_DESCRIPTORS
+        .iter()
+        .find(|entry| entry.syscall_number == syscall as u32)
+        .is_some_and(|entry| {
+            entry.args.iter().any(|arg| {
+                arg.arg_index == arg_index && arg.size == SyscallArgSize::KernelDereferenced
+            })
+        })
+}
+
 unsafe fn descriptor_size(
     descriptor: &SyscallArgDesc,
     args: &[i64; 6],
@@ -1102,6 +1116,16 @@ pub unsafe fn prepare_channel_record(
     for span in &decoded.spans {
         let arg_index = span.arg_index as usize;
         if arg_index >= args.len() {
+            return Some(Err(Errno::EINVAL));
+        }
+
+        // A kernel-dereferenced argument carries the caller's own address and
+        // no staged bytes. A record offering a span for one is either stale or
+        // hostile: honouring it would replace the guest address with a scratch
+        // offset, and the dispatch arm would then read the caller's memory at
+        // an address the guest did not name. Refuse it rather than silently
+        // preferring one of the two.
+        if descriptor_is_kernel_dereferenced(decoded.syscall, span.arg_index) {
             return Some(Err(Errno::EINVAL));
         }
 
@@ -2474,8 +2498,8 @@ mod tests {
     // `prepare_channel_record` lays a scratch layout the UNCHANGED legacy
     // `validate_channel_scratch_arguments` / dispatch accept, including
     // copy-back for value-result buffers. fcntl-lock, prctl, epoll_ctl,
-    // epoll_pwait/epoll_wait, msgsnd/msgrcv, msgctl/shmctl reuse the generic
-    // flat-span placement (single/ordered spans at the allocation base);
+    // epoll_pwait/epoll_wait reuse the generic flat-span placement
+    // (single/ordered spans at the allocation base);
     // select/pselect6 use the dedicated fixed-offset `prepare_select_record`.
     // -----------------------------------------------------------------------
 
@@ -2492,6 +2516,23 @@ mod tests {
             other => panic!("expected prepared record, got {other:?}"),
         };
         (start, prep, data)
+    }
+
+    /// Build a flat-span record and return `prepare_channel_record`'s verdict
+    /// verbatim, including a refusal.
+    fn try_prep_record(
+        syscall: u32,
+        scalars: [i64; 6],
+        spans: &[RecSpan],
+    ) -> Option<Result<(), Errno>> {
+        let mut data = build_record(syscall as u16, RECORD_ABI, scalars, spans, REC_CAP);
+        let start = data.as_mut_ptr() as usize;
+        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+        match unsafe { prepare_channel_record(region) } {
+            Some(Ok(_)) => Some(Ok(())),
+            Some(Err(errno)) => Some(Err(errno)),
+            None => None,
+        }
     }
 
     #[test]
@@ -2603,81 +2644,74 @@ mod tests {
     }
 
     #[test]
-    fn record_msgsnd_wire_matches_legacy_validator() {
-        // msgsnd(qid, msgp, msgsz, flags): one IN span at arg 1 whose payload is
-        // the width-independent wire { i64 mtype; msgsz payload bytes }.
+    fn record_spans_for_kernel_dereferenced_arguments_are_refused() {
+        // msgsnd/msgrcv/msgctl/shmctl/semctl once carried their caller buffer
+        // as a record span: msgsnd built the width-independent
+        // { i64 mtype; payload } wire, msgctl staged a caller-width
+        // `msqid_ds`. Those arguments are now KernelDereferenced — the scalar
+        // slot holds the caller's own address and the kernel reads it through
+        // the cross-memory primitives.
+        //
+        // A record that still offers a span for one is stale or hostile.
+        // Honouring it would overwrite the guest address with a scratch
+        // offset, and the dispatch arm would then read the CALLER's memory at
+        // an address the caller never named. Refuse the record instead.
         let msgsz = 12usize;
         let wire_len = size_of::<WasmSysvMessageHeader>() + msgsz;
         let mut wire = alloc::vec![0u8; wire_len];
         wire[0..8].copy_from_slice(&7i64.to_le_bytes()); // mtype
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_MSGSND,
-            [9, 0, msgsz as i64, 0, 0, 4], // qid, msgp(overwritten), msgsz, flags, _, width=4
-            &[RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 1, payload: wire }],
+        assert_eq!(
+            try_prep_record(
+                extended_syscalls::SYS_MSGSND,
+                [9, 0, msgsz as i64, 0, 0, 4],
+                &[RecSpan { kind: SPAN_KIND_IN_PTR, arg_index: 1, payload: wire }],
+            ),
+            Some(Err(Errno::EINVAL)),
         );
-        assert_eq!(prep.args[1] as usize, start);
-        assert!(prep.copy_back.is_empty());
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
-                .expect("legacy validator accepts the reconstructed msgsnd layout");
-        assert_eq!(validated.pointer(1), Ok(start));
-    }
-
-    #[test]
-    fn record_msgrcv_wire_plans_copyback() {
-        // msgrcv reserves { i64 mtype; msgsz payload } as an OUT buffer.
-        let msgsz = 16usize;
-        let wire_len = size_of::<WasmSysvMessageHeader>() + msgsz;
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_MSGRCV,
-            [9, 0, msgsz as i64, 0, 0, 4],
-            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 1, payload: alloc::vec![0u8; wire_len] }],
+        assert_eq!(
+            try_prep_record(
+                extended_syscalls::SYS_MSGRCV,
+                [9, 0, msgsz as i64, 0, 0, 4],
+                &[RecSpan {
+                    kind: SPAN_KIND_OUT_PTR,
+                    arg_index: 1,
+                    payload: alloc::vec![0u8; wire_len],
+                }],
+            ),
+            Some(Err(Errno::EINVAL)),
         );
-        assert_eq!(prep.args[1] as usize, start);
-        assert_eq!(prep.copy_back.len(), 1);
-        assert_eq!(prep.copy_back[0].scratch_src, start);
-        assert_eq!(prep.copy_back[0].len, wire_len);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
-                .expect("legacy validator accepts the reconstructed msgrcv layout");
-        assert_eq!(validated.pointer(1), Ok(start));
-    }
-
-    #[test]
-    fn record_msgctl_stat_matches_legacy_validator() {
-        // msgctl(qid, IPC_STAT=2, buf): buf sized by msqid_ds width.
-        let size = crate::ipc_wire::msqid_ds_size(4).unwrap();
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_MSGCTL,
-            [9, 2, 0, 0, 0, 4],
-            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 2, payload: alloc::vec![0u8; size] }],
+        assert_eq!(
+            try_prep_record(
+                extended_syscalls::SYS_MSGCTL,
+                [9, 2, 0, 0, 0, 4],
+                &[RecSpan {
+                    kind: SPAN_KIND_OUT_PTR,
+                    arg_index: 2,
+                    payload: alloc::vec![0u8; crate::ipc_wire::msqid_ds_size(4).unwrap()],
+                }],
+            ),
+            Some(Err(Errno::EINVAL)),
         );
-        assert_eq!(prep.args[2] as usize, start);
-        assert_eq!(prep.copy_back.len(), 1);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
-                .expect("legacy validator accepts the reconstructed msgctl layout");
-        assert_eq!(validated.pointer(2), Ok(start));
-    }
-
-    #[test]
-    fn record_shmctl_stat_matches_legacy_validator() {
-        let size = crate::ipc_wire::shmid_ds_size(4).unwrap();
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_SHMCTL,
-            [9, 2, 0, 0, 0, 4],
-            &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 2, payload: alloc::vec![0u8; size] }],
+        assert_eq!(
+            try_prep_record(
+                extended_syscalls::SYS_SHMCTL,
+                [9, 2, 0, 0, 0, 4],
+                &[RecSpan {
+                    kind: SPAN_KIND_OUT_PTR,
+                    arg_index: 2,
+                    payload: alloc::vec![0u8; crate::ipc_wire::shmid_ds_size(4).unwrap()],
+                }],
+            ),
+            Some(Err(Errno::EINVAL)),
         );
-        assert_eq!(prep.args[2] as usize, start);
-        assert_eq!(prep.copy_back.len(), 1);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
-                .expect("legacy validator accepts the reconstructed shmctl layout");
-        assert_eq!(validated.pointer(2), Ok(start));
+        assert_eq!(
+            try_prep_record(
+                extended_syscalls::SYS_SEMCTL,
+                [9, 0, 13, 0, 0, 4], // semid, semnum, GETALL, arg
+                &[RecSpan { kind: SPAN_KIND_OUT_PTR, arg_index: 3, payload: alloc::vec![0u8; 8] }],
+            ),
+            Some(Err(Errno::EINVAL)),
+        );
     }
 
     #[test]
@@ -2816,40 +2850,4 @@ mod tests {
         assert_eq!(validated.pointer(1), Ok(start));
     }
 
-    #[test]
-    fn record_semctl_getall_lays_output_buffer_at_base() {
-        // semctl(semid, 0, GETALL, arg): the guest sizes the u16[] array via a
-        // preliminary IPC_STAT (nsems), then emits an OUT span at arg 3. The
-        // kernel semctl dispatch proves this buffer INLINE via
-        // `checked_channel_scratch_start_range` (arg 3 must equal the region
-        // base), not through a pre-dispatch special validator, so the golden
-        // asserts the base placement and the OUT copy-back directly.
-        const GETALL: i64 = 13;
-        let nsems = 3usize;
-        let bytes = nsems * core::mem::size_of::<u16>();
-        let (start, prep, _data) = prep_record(
-            extended_syscalls::SYS_SEMCTL,
-            // semid, semnum, cmd=GETALL, arg(overwritten), _, _
-            [9, 0, GETALL, 0, 0, 0],
-            &[RecSpan {
-                kind: SPAN_KIND_OUT_PTR,
-                arg_index: 3,
-                payload: alloc::vec![0u8; bytes],
-            }],
-        );
-        assert_eq!(prep.syscall_nr, extended_syscalls::SYS_SEMCTL);
-        assert_eq!(prep.args[2], GETALL);
-        // The array buffer is rewritten to the allocation base, which the kernel
-        // dispatch's `checked_channel_scratch_start_range(args[3], ...)` requires.
-        assert_eq!(prep.args[3] as usize, start);
-        // GETALL writes the semaphore values back -> one OUT copy-back to the
-        // record's original span offset.
-        assert_eq!(prep.copy_back.len(), 1);
-        assert_eq!(prep.copy_back[0].scratch_src, start);
-        assert_eq!(prep.copy_back[0].len, bytes);
-        assert_eq!(
-            prep.copy_back[0].channel_dest,
-            start + RECORD_HEADER_BYTES + SPAN_DESCRIPTOR_BYTES
-        );
-    }
 }

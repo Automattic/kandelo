@@ -677,21 +677,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, In, arg!(0, mul 4), required)]
     ),
     entry!(
-        Syscall::Sendmsg as u32,
-        // `struct msghdr` is caller-native and carries three further guest
-        // pointers — `msg_name`, the `msg_iov` array, and `msg_control` —
-        // each sized by one of its own fields. The kernel walks them through
-        // the cross-memory primitives.
-        [desc!(1, In, kernel_dereferenced!(), nullable)]
-    ),
-    entry!(
-        Syscall::Recvmsg as u32,
-        // InOut: the kernel reads the caller's iovec capacities and control
-        // buffer length, then writes the received bytes, the source address,
-        // any ancillary data, and `msg_flags` back through the same header.
-        [desc!(1, InOut, kernel_dereferenced!(), nullable)]
-    ),
-    entry!(
         Syscall::Wait4 as u32,
         [
             desc!(1, Out, fixed!(4), nullable),
@@ -1343,8 +1328,6 @@ mod tests {
             // Kernel-dereferenced arguments are nullable by construction: the
             // correct errno for a null pointer is per-syscall and, for the
             // IPC control calls, per-command, so the kernel decides it.
-            (Syscall::Sendmsg as u32, 1),
-            (Syscall::Recvmsg as u32, 1),
             (extra_syscalls::SYS_MQ_TIMEDSEND, 1),
             (extra_syscalls::SYS_MQ_TIMEDRECEIVE, 1),
             (extra_syscalls::SYS_MSGRCV, 1),

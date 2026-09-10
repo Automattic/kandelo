@@ -114,20 +114,42 @@ fn mqueue_zero_length_message_never_constructs_a_null_raw_slice() {
     let send = &source[send_start..receive_start];
     let receive = &source[receive_start..receive_end];
 
+    // The caller's message buffer is a GUEST address now, not kernel scratch,
+    // so what has to be pinned is the ORDER of two checks. The queue's own
+    // `mq_msgsize` must be resolved before anything is read or reserved for
+    // the caller's bytes: POSIX requires EMSGSIZE for an oversized `msg_len`,
+    // and sizing a buffer from `msg_len` first would report ENOMEM instead.
+    let send_msgsize = send
+        .find("let msgsize = match match pin {")
+        .expect("mq_timedsend must resolve the queue's mq_msgsize");
+    let send_length_check = send
+        .find("if data_len > msgsize {")
+        .expect("mq_timedsend must reject an oversized message with EMSGSIZE");
+    let send_read = send
+        .find("crate::guest_ptr::read_guest_bytes(")
+        .expect("mq_timedsend must read the caller's buffer through the cross-memory helper");
     assert!(
-        send.contains("let data = channel_const_slice!(1, data_len);"),
-        "mq_timedsend must use the checked slice helper with its actual length"
+        send_msgsize < send_length_check && send_length_check < send_read,
+        "mq_timedsend must check msg_len against mq_msgsize before reading caller memory"
+    );
+    assert!(
+        !send.contains("from_raw_parts"),
+        "mq_timedsend must not borrow a guest address as kernel memory"
     );
 
     let receive_empty_guard = receive
         .find("if !result.data.is_empty() {")
         .expect("empty received message must skip destination construction");
-    let receive_raw_slice = receive
-        .find("core::slice::from_raw_parts_mut(")
-        .expect("non-empty received message must retain the bounded slice");
+    let receive_write = receive
+        .find("crate::guest_ptr::write_guest_bytes(")
+        .expect("a non-empty received message must be published through the cross-memory helper");
     assert!(
-        receive_empty_guard < receive_raw_slice,
-        "the empty receive guard must precede raw-slice construction"
+        receive_empty_guard < receive_write,
+        "the empty receive guard must precede the cross-memory write"
+    );
+    assert!(
+        !receive.contains("from_raw_parts"),
+        "mq_timedreceive must not borrow a guest address as kernel memory"
     );
 }
 

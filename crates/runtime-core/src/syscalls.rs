@@ -4424,11 +4424,19 @@ pub fn ensure_blocking_retry_mqueue_binding(
     }
 }
 
+/// Bind a blocked `msgsnd`/`msgrcv` to the exact queue generation it observed.
+///
+/// `pending_send` carries the `msgsnd` payload the dispatch already copied out
+/// of the caller's memory, so every retry sends those bytes rather than
+/// re-reading a buffer the caller may have changed while it was blocked. It is
+/// `None` for `msgrcv`, and `None` when the binding is prepared after the fact
+/// by the host's retry preflight rather than by the dispatch itself.
 pub fn ensure_blocking_retry_sysv_message_binding(
     proc: &mut Process,
     tid: u32,
     syscall: u32,
     qid: i32,
+    pending_send: Option<crate::blocked_retry::PendingSysvMessage>,
 ) -> Result<i64, Errno> {
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     if !matches!(
@@ -4450,11 +4458,14 @@ pub fn ensure_blocking_retry_sysv_message_binding(
         token,
         tid,
         operation,
-        BlockingRetryTarget::SysvMessage(pinned),
+        BlockingRetryTarget::SysvMessage {
+            queue: pinned,
+            pending_send,
+        },
     ) {
         Ok(()) => Ok(token),
-        Err((error, BlockingRetryTarget::SysvMessage(pinned))) => {
-            let _ = ipc.release_msg_queue_pin(pinned);
+        Err((error, BlockingRetryTarget::SysvMessage { queue, .. })) => {
+            let _ = ipc.release_msg_queue_pin(queue);
             Err(error)
         }
         Err((_error, _)) => unreachable!("message insertion returned another target kind"),
@@ -4522,8 +4533,8 @@ fn release_blocking_retry_target(
         BlockingRetryTarget::Mqueue(pinned) => unsafe {
             crate::mqueue::global_mqueue_table().release_pinned_descriptor(pinned)
         },
-        BlockingRetryTarget::SysvMessage(pinned) => unsafe {
-            crate::ipc::global_ipc_table().release_msg_queue_pin(pinned)
+        BlockingRetryTarget::SysvMessage { queue, .. } => unsafe {
+            crate::ipc::global_ipc_table().release_msg_queue_pin(queue)
         },
         BlockingRetryTarget::SysvSemaphore(pinned) => unsafe {
             crate::ipc::global_ipc_table().release_sem_set_pin(pinned)
@@ -4612,8 +4623,8 @@ pub fn discard_blocking_retry_bindings_for_process_removal(proc: &mut Process) {
             BlockingRetryTarget::Mqueue(pinned) => unsafe {
                 let _ = crate::mqueue::global_mqueue_table().release_pinned_descriptor(pinned);
             },
-            BlockingRetryTarget::SysvMessage(pinned) => unsafe {
-                let _ = crate::ipc::global_ipc_table().release_msg_queue_pin(pinned);
+            BlockingRetryTarget::SysvMessage { queue, .. } => unsafe {
+                let _ = crate::ipc::global_ipc_table().release_msg_queue_pin(queue);
             },
             BlockingRetryTarget::SysvSemaphore(pinned) => unsafe {
                 let _ = crate::ipc::global_ipc_table().release_sem_set_pin(pinned);

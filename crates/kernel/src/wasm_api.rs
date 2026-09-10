@@ -3718,11 +3718,16 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         }
         crate::blocked_retry::BlockingRetryOperation::MsgSend
         | crate::blocked_retry::BlockingRetryOperation::MsgReceive => {
+            // A `msgsnd` that blocked has already bound itself, retaining the
+            // exact bytes it copied out of the caller. `ensure_*` returns that
+            // existing token untouched; a `msgrcv` has no caller input to
+            // preserve and binds here.
             syscalls::ensure_blocking_retry_sysv_message_binding(
                 proc,
                 tid,
                 syscall_nr,
                 args[0] as i32,
+                None,
             )?;
         }
         crate::blocked_retry::BlockingRetryOperation::Semop => {
@@ -3965,23 +3970,6 @@ fn checked_channel_pointer_bits(raw: i64, pointer_bits: u32) -> Result<u64, Errn
 fn checked_channel_pointer(raw: i64) -> Result<usize, Errno> {
     let pointer = checked_channel_pointer_bits(raw, usize::BITS)?;
     usize::try_from(pointer).map_err(|_| Errno::EFAULT)
-}
-
-/// Prove that a raw widened-channel pointer names the start of the current
-/// allocation and that the complete requested range belongs to it.
-///
-/// WHY: SEMCTL's command-dependent payload cannot use the generated fixed
-/// descriptor plan, but it must not regain a bare pointer conversion that
-/// proves only total Wasm addressability. The allocation start and capacity
-/// remain independent requirements.
-fn checked_channel_scratch_start_range(
-    raw: i64,
-    length: usize,
-    region: ChannelScratchRegion,
-) -> Result<usize, Errno> {
-    let pointer = checked_channel_pointer(raw)?;
-    region.checked_start_range(pointer, length)?;
-    Ok(pointer)
 }
 
 fn checked_channel_process_address(
@@ -5305,34 +5293,81 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 return -(Errno::EFAULT as i32);
             }
             let msgsz = process_size!(2);
-            let mut host = WasmHostIO;
-            // Copy the caller's `struct msgbuf` once and parse the copy: the
-            // `mtype` prefix and the text must be the same snapshot, or a peer
-            // thread could change the type between the two reads.
-            let (mtype, data) = match crate::ipc_wire::read_sysv_msgbuf_from_guest(
-                &mut host,
-                pid as i32,
-                msgp,
-                msgsz,
-                pointer_width,
-            ) {
-                Ok(message) => message,
-                Err(error) => return -(error as i32),
-            };
-            let data = data.as_slice();
-            let task = unsafe { &*PROCESS_TABLE.0.get() };
+            let task = unsafe { &mut *PROCESS_TABLE.0.get() };
             let tid = task.current_tid();
-            let active_pin = match task.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
+            let active = match task.get(pid).ok_or(Errno::ESRCH).and_then(|proc| {
                 proc.blocked_retries
                     .active_sysv_message(tid, crate::blocked_retry::BlockingRetryOperation::MsgSend)
             }) {
-                Ok(pin) => pin,
+                Ok(active) => active,
                 Err(error) => return -(error as i32),
             };
-            let send = if let Some(pin) = active_pin {
-                ipc.msgsnd_pinned(pin, mtype, data, args[3] as u32, pid, uid, gid)
-            } else {
-                ipc.msgsnd(a1, mtype, data, args[3] as u32, pid, uid, gid)
+            // WHY a retry must NOT re-read the caller's buffer: Linux's
+            // `do_msgsnd` calls `load_msg()` before it enters the wait loop, so
+            // a blocked `msgsnd` delivers the bytes the caller had at entry.
+            // The kernel now reads `struct msgbuf` out of caller memory
+            // directly, which would otherwise turn that into copy-at-success —
+            // a peer thread rewriting the buffer while this one blocks would
+            // change what eventually arrives on the queue.
+            let send = match active {
+                Some((pin, Some(pending))) => ipc.msgsnd_pinned(
+                    pin,
+                    pending.mtype,
+                    &pending.data,
+                    args[3] as u32,
+                    pid,
+                    uid,
+                    gid,
+                ),
+                other => {
+                    let mut host = WasmHostIO;
+                    // Copy the caller's `struct msgbuf` once and parse the
+                    // copy: the `mtype` prefix and the text must be the same
+                    // snapshot, or a peer thread could change the type between
+                    // the two reads.
+                    let (mtype, data) = match crate::ipc_wire::read_sysv_msgbuf_from_guest(
+                        &mut host,
+                        pid as i32,
+                        msgp,
+                        msgsz,
+                        pointer_width,
+                    ) {
+                        Ok(message) => message,
+                        Err(error) => return -(error as i32),
+                    };
+                    let result = match other {
+                        // A binding exists but carries no retained message.
+                        // That happens only when the host's retry preflight
+                        // created it, so this dispatch is the first to hold
+                        // the bytes; sending this copy is still copy-at-entry.
+                        Some((pin, None)) => ipc.msgsnd_pinned(
+                            pin,
+                            mtype,
+                            &data,
+                            args[3] as u32,
+                            pid,
+                            uid,
+                            gid,
+                        ),
+                        None => ipc.msgsnd(a1, mtype, &data, args[3] as u32, pid, uid, gid),
+                    };
+                    if result == Err(Errno::EAGAIN) && (args[3] as u32 & 0o4000) == 0 {
+                        // Bind before returning EAGAIN so the copy this
+                        // dispatch made — not a later re-read — is what every
+                        // retry sends. IPC_NOWAIT (04000) forbids a retry, so
+                        // it needs no binding.
+                        if let Some(proc) = task.get_mut(pid) {
+                            let _ = syscalls::ensure_blocking_retry_sysv_message_binding(
+                                proc,
+                                tid,
+                                339,
+                                a1,
+                                Some(crate::blocked_retry::PendingSysvMessage { mtype, data }),
+                            );
+                        }
+                    }
+                    result
+                }
             };
             match send {
                 Ok(()) => 0,
