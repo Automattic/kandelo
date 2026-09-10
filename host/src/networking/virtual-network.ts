@@ -7,7 +7,6 @@ import type {
   UdpReceiveTarget,
 } from "../types";
 import { EagainError } from "./fetch-backend";
-import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 const EADDRNOTAVAIL = 99;
 const ENETUNREACH = 101;
@@ -293,9 +292,8 @@ export class LocalVirtualNetwork {
   }
 
   resolve(hostname: string): Uint8Array | null {
-    const direct = parseNumericIpv4Hostname(hostname);
-    if (direct) return direct;
-    validateDnsHostname(hostname);
+    // Numeric addresses were already answered, and names that cannot be host
+    // names already refused, by `crates/runtime-core/src/hostname.rs`.
     const addr = this.hostnames.get(hostname);
     return addr ? copyAddr(addr) : null;
   }

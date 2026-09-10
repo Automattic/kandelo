@@ -1,8 +1,5 @@
 import type { NetworkIO } from "../types";
-import {
-  parseNumericIpv4Hostname,
-  validateSyntheticDnsHostname,
-} from "./hostname";
+import { validateSyntheticDnsHostname } from "./hostname";
 import {
   BrowserCorsProxy,
   type BrowserCorsProxyConfig,
@@ -233,8 +230,6 @@ export class FetchNetworkBackend implements NetworkIO {
   }
 
   getaddrinfo(hostname: string): Uint8Array {
-    const literalIp = parseNumericIpv4Hostname(hostname);
-    if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
     // In the browser, return a synthetic IP.

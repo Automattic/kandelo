@@ -2,7 +2,6 @@ import * as net from "net";
 import type { NetworkIO } from "../types";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
-import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
@@ -203,10 +202,9 @@ export class TcpNetworkBackend implements NetworkIO {
   }
 
   getaddrinfo(hostname: string): Uint8Array {
-    const literalIp = parseNumericIpv4Hostname(hostname);
-    if (literalIp) return literalIp;
-    validateDnsHostname(hostname);
-
+    // Numeric addresses were already answered, and names that cannot be host
+    // names already refused, by `crates/runtime-core/src/hostname.rs`.
+    //
     // Atomics.wait would deadlock libuv's dns.lookup callback on the kernel
     // thread — same shape as connect/recv. Kick off async, throw EAGAIN,
     // pick up the cached result on the worker's next retry.

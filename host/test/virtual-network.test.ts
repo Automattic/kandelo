@@ -13,7 +13,11 @@ const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
-  it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
+  // The numeric-address grammar and the DNS syntax check this test used to
+  // assert here are now the kernel's, in `crates/runtime-core/src/hostname.rs`
+  // and `sys_getaddrinfo`. What the virtual network still owns is its own
+  // machine-name table.
+  it("resolves the names its attached machines registered", () => {
     const net = new LocalVirtualNetwork();
     const backend = net.attachMachine({
       id: "server",
@@ -21,16 +25,9 @@ describe("LocalVirtualNetwork", () => {
       hostnames: ["example.test", "example.test."],
     });
 
-    expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
     expect(Array.from(backend.getaddrinfo("example.test"))).toEqual([10, 88, 0, 2]);
     expect(Array.from(backend.getaddrinfo("example.test."))).toEqual([10, 88, 0, 2]);
-
-    expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
-    expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
-    expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+    expect(() => backend.getaddrinfo("unregistered.test")).toThrow("ENOENT");
   });
 
   it("routes TCP streams between attached machines", () => {

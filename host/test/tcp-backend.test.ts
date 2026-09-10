@@ -59,29 +59,12 @@ async function waitForReadable(backend: TcpNetworkBackend, handle: number): Prom
   throw new Error("readable data timed out");
 }
 
-describe("TcpNetworkBackend hostname parsing", () => {
-  it.each([
-    ["2130706433", [127, 0, 0, 1]],
-    ["127.1", [127, 0, 0, 1]],
-    ["127.1.1", [127, 1, 0, 1]],
-    ["127.0.0.1", [127, 0, 0, 1]],
-  ])("resolves the decimal IPv4 form %s without DNS", (hostname, expected) => {
-    const backend = new TcpNetworkBackend();
-    expect(Array.from(backend.getaddrinfo(hostname))).toEqual(expected);
-  });
-
-  it.each([
-    "4294967296",
-    "1..2",
-    "1.2.3.256",
-    ".example.com",
-    "foo_bar.localhost",
-    `www.${"x".repeat(64)}.com`,
-  ])("rejects the invalid hostname %s before DNS", (hostname) => {
-    const backend = new TcpNetworkBackend();
-    expect(() => backend.getaddrinfo(hostname)).toThrow("ENOENT");
-  });
-});
+// The numeric-address grammar and the DNS syntax check this file used to assert
+// against `TcpNetworkBackend` are now the kernel's, in
+// `crates/runtime-core/src/hostname.rs` and `sys_getaddrinfo`: a numeric address
+// is answered before the host is consulted, and a name that cannot be a host
+// name never reaches a backend. See `test_getaddrinfo_answers_numeric_addresses
+// _without_the_host` and `test_getaddrinfo_refuses_names_that_cannot_name_a_host`.
 
 describe("TcpNetworkBackend", () => {
   const servers: net.Server[] = [];

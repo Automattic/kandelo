@@ -14046,10 +14046,17 @@ pub fn sys_connect(
     }
 }
 
-/// Resolve a hostname to an IP address via the host.
+/// Resolve a hostname to an IP address.
 ///
-/// `name` is the hostname bytes. `result_buf` receives the resolved address(es).
+/// `name` is the hostname bytes. `result_buf` receives the resolved address.
 /// Returns the number of bytes written to `result_buf`.
+///
+/// WHY the kernel interprets the name first: `inet_aton(3)`'s numeric forms and
+/// DNS host-name syntax are specified, so they are the kernel's to decide. The
+/// host used to own both — every network backend carried its own copy — which
+/// made a name's meaning depend on which backend happened to be attached, and
+/// let a syntactically impossible name reach a resolver. A numeric address is
+/// answered here and never reaches the host at all.
 pub fn sys_getaddrinfo(
     _proc: &mut Process,
     host: &mut dyn HostIO,
@@ -14058,6 +14065,10 @@ pub fn sys_getaddrinfo(
 ) -> Result<usize, Errno> {
     if result_buf.len() < 4 {
         return Err(Errno::EINVAL);
+    }
+    if let Some(addr) = crate::hostname::resolve_locally(name)? {
+        result_buf[..4].copy_from_slice(&addr);
+        return Ok(4);
     }
     let written = host.host_getaddrinfo(name, result_buf)?;
     // WHY: a host-reported producer count is not proof that those bytes fit
@@ -36732,6 +36743,58 @@ impl HostIO for TrackingHostIO {
         let mut result = [0u8; 16];
         let err = sys_getaddrinfo(&mut proc, &mut host, b"example.com", &mut result).unwrap_err();
         assert_eq!(err, Errno::ENOENT);
+    }
+
+    #[test]
+    fn test_getaddrinfo_answers_numeric_addresses_without_the_host() {
+        // The host has no address staged, so it answers ENOENT for anything it
+        // is asked. A numeric name that resolves proves it was never asked.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for (name, expected) in [
+            (&b"127.0.0.1"[..], [127u8, 0, 0, 1]),
+            (b"127.1", [127, 0, 0, 1]),
+            (b"127.1.1", [127, 1, 0, 1]),
+            (b"2130706433", [127, 0, 0, 1]),
+            // Octal and hexadecimal parts, which `inet_aton(3)` specifies and
+            // the superseded host TypeScript did not implement.
+            (b"0177.0.0.01", [127, 0, 0, 1]),
+            (b"0x7f.1", [127, 0, 0, 1]),
+        ] {
+            let mut result = [0u8; 4];
+            let written = sys_getaddrinfo(&mut proc, &mut host, name, &mut result)
+                .expect("numeric address resolves in the kernel");
+            assert_eq!(written, 4);
+            assert_eq!(result, expected, "{:?}", core::str::from_utf8(name));
+        }
+    }
+
+    #[test]
+    fn test_getaddrinfo_refuses_names_that_cannot_name_a_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // A staged address makes any host consultation succeed, so ENOENT here
+        // proves the kernel refused the name before reaching the host.
+        host.getaddrinfo_bytes = Some(vec![10, 88, 0, 7]);
+        host.getaddrinfo_reported = 4;
+        for name in [
+            &b"4294967296"[..],
+            b"1.2.3.256",
+            b"1..2",
+            b"256.1",
+            b"1.2.3.4.5",
+            b".example.com",
+            b"foo_bar.localhost",
+            b"-example.com",
+        ] {
+            let mut result = [0u8; 4];
+            assert_eq!(
+                sys_getaddrinfo(&mut proc, &mut host, name, &mut result),
+                Err(Errno::ENOENT),
+                "{:?}",
+                core::str::from_utf8(name)
+            );
+        }
     }
 
     #[test]

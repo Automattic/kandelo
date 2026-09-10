@@ -15,10 +15,7 @@
 
 import type { NetworkIO } from "../types";
 import { EagainError } from "./fetch-backend";
-import {
-  parseNumericIpv4Hostname,
-  validateSyntheticDnsHostname,
-} from "./hostname";
+import { validateSyntheticDnsHostname } from "./hostname";
 import {
   BrowserCorsProxy,
   type BrowserCorsProxyConfig,
@@ -375,8 +372,6 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- NetworkIO implementation ----
 
   getaddrinfo(hostname: string): Uint8Array {
-    const literalIp = parseNumericIpv4Hostname(hostname);
-    if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.dnsAliases);
 
     const ip = this.syntheticIp(hostname);
