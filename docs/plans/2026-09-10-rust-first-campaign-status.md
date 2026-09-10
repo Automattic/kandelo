@@ -8,7 +8,7 @@ Update it as work lands. The reasoning lives in
 `brandonpayton/epoll-kernel-route` (PR #1350). **Push forward-only. Never
 amend, never force-push. The maintainer is the sole merger.**
 
-**Last pushed:** `bb9fe63ec` (2026-09-10)
+**Last pushed:** `29eba8c72` (2026-09-10)
 
 ## Ledger — the number that judges this campaign
 
@@ -59,15 +59,16 @@ avoid a contested file. The coordinator resolves at merge.
 | K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
 | K10 | **PARTIAL** | I1/I2/I3/I7 landed; I6 (`wasi-shim.ts`, 1,649) owed; I4/I5 browser cutover owed |
 | K14 | **DONE** | |
-| K5 | **Rust landed 2026-09-10; NOT cut over** | See the correction below |
+| K5 | **Rust landed 2026-09-10; NOT cut over** | Placement adjudicated; re-cut as I6a + I6b. See the correction below |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
-| K7 | **Rust landed; cutover RUNNING** | `SharedMappingTable`, 11 TS containers to delete |
+| K7 | **Rust landed; cutover MIS-SCOPED — re-cut into 3** | See "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
-| K11 | **PARTIAL** | 1 of 4 pieces landed; 2/3/4 need a second pass |
+| K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
 | K4 | **RUNNING** | Worker entry unification |
-| K6, K13b | **NOT STARTED** | |
+| K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
+| K13b | **NOT STARTED** | Export cull |
 
 ## Host import surface
 
@@ -101,8 +102,54 @@ branch — not just that a docs commit describing it does.
 | K5 I6a/I6b | `dylink.ts` + `dylink-fork-archive.ts` | 6,340 |
 | K10 I6 | `wasi-shim.ts` | 1,649 |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
-| K7 cutover | 11 containers in `kernel-worker.ts` | ~4,500 |
+| K7 re-cut (1) | SysV half of `kernel-worker.ts` | ~263 |
+| K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
 | K3-7.7 | epoll mirror in `kernel-worker.ts` | unmeasured |
+
+## K7 cutover — mis-scoped, and the finding is worth more than the item
+
+The cutover agent could not delete the TypeScript, and this is **not** a
+deferral: the deletion is not performable as scoped.
+
+`SharedMappingTable` covers about two thirds of the ~3,600-line TypeScript
+subsystem. **~1,203 lines have no Rust counterpart at all:**
+`handleSharedMappingsAfterFileSyscall` and its per-syscall range policy, the
+pre-syscall flush, `findSharedMmapBackingForFd` + `sharedMmapFdCache`, the
+path-keyed lookups, the `reload*` family, and the mmap-from-file registration
+path. That code opens by reading the very containers the cutover was meant to
+delete, and it implements POSIX `MAP_SHARED` fd/mapping coherence, so it can be
+neither deleted nor dropped. **Wiring entry points could never have finished
+this cutover.**
+
+It is a **dispatch/policy gap, not a primitive gap** — `invalidate_range`,
+`flush_range`, `revalidate` and `ensure_range_loaded` all exist.
+
+**Why it was missed:** the cutover contract written on `SharedMappingTable` was
+accurate about what it did and *silent* about what it did not. **Silence in a
+work contract reads as completeness.** Three concrete errors were corrected in
+place: `process_memory_len` is a sixth host-sourced value but an *entry-point
+argument*, not an import (the host grows guest memory after the kernel returns
+from `mmap`, so it already holds the value); `retain_handle`/fd-writeback were
+described as existing and did not, and now refuse with `ENOSYS` rather than
+hand out a handle the kernel may close; and the perf note left the copy
+unbounded.
+
+**The performance doubt is narrower than filed.** Both Rust and TypeScript skip
+a mapping whose backing has `ref_count <= 1` and is not stale, so the copy is
+confined to a large writable `MAP_SHARED` **with a live peer**. A general
+syscall benchmark exercises only the early-out — a true result that says
+nothing about the copy. Closing this needs a *targeted* shared-mapping
+benchmark, not a general suite. **`host_proc_compare_bytes` was therefore not
+needed and not added**; the sanctioned import remains unspent.
+
+**Re-cut as three items:**
+1. **SysV half, now** — separable, complete, ~263 TypeScript lines, two
+   containers, and the one part with a performance *gain*. Design the boundary
+   early-out trap first: `shmMappings.size` is half a predicate the host would
+   otherwise lose.
+2. **Write the coherence layer in Rust**, sized as policy rather than as
+   plumbing.
+3. **Anon + file cutover**, gated on that targeted benchmark.
 
 ## Open decisions for the maintainer
 
