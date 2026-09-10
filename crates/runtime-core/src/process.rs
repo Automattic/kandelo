@@ -158,8 +158,6 @@ pub trait HostIO {
         value_ms: i64,
         interval_ms: i64,
     ) -> Result<(), Errno>;
-    /// Block until a signal is delivered. Returns the signal number.
-    fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
     /// Ask the host to invoke a user-space signal handler.
     /// `handler_index` is the Wasm function table index.
     /// `signum` is the signal number being delivered.
@@ -233,15 +231,6 @@ pub trait HostIO {
     fn host_network_local_address(&mut self) -> Option<[u8; 4]> {
         None
     }
-    /// Futex wait: block if `*addr == expected`, with optional timeout in nanoseconds.
-    /// timeout_ns < 0 means infinite wait.
-    /// Returns 0 on wake, negative errno on error.
-    fn host_futex_wait(
-        &mut self,
-        addr: usize,
-        expected: u32,
-        timeout_ns: i64,
-    ) -> Result<i32, Errno>;
     /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Notify the host that process `pid` has mapped its `/dev/fb0`
@@ -2506,9 +2495,6 @@ pub mod test_host {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            Err(Errno::EINTR)
-        }
         fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
             Ok(())
         }
@@ -2557,9 +2543,6 @@ pub mod test_host {
         }
         fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
         }
         fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
             Ok(0)

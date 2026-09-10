@@ -20152,13 +20152,6 @@ mod tests {
             Ok(())
         }
 
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            if self.sigsuspend_error {
-                return Err(Errno::EINTR);
-            }
-            Ok(self.sigsuspend_signal)
-        }
-
         fn host_call_signal_handler(
             &mut self,
             _handler_index: u32,
@@ -20255,14 +20248,6 @@ mod tests {
             let copied = bytes.len().min(result.len());
             result[..copied].copy_from_slice(&bytes[..copied]);
             Ok(self.getaddrinfo_reported)
-        }
-        fn host_futex_wait(
-            &mut self,
-            _addr: usize,
-            _expected: u32,
-            _timeout_ns: i64,
-        ) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
         }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
@@ -34839,9 +34824,6 @@ mod tests {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            Err(Errno::EINTR)
-        }
         fn host_call_signal_handler(
             &mut self,
             _handler_index: u32,
@@ -34905,14 +34887,6 @@ mod tests {
         }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wait(
-            &mut self,
-            _addr: usize,
-            _expected: u32,
-            _timeout_ns: i64,
-        ) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
         }
         fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
             Ok(0)
@@ -35993,9 +35967,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -36044,9 +36015,6 @@ mod tests {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-                Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
@@ -40202,9 +40170,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -40253,9 +40218,6 @@ mod tests {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-                Err(Errno::EAGAIN)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
@@ -40416,9 +40378,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -40466,9 +40425,6 @@ mod tests {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
@@ -40627,9 +40583,6 @@ mod tests {
             ) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-                Err(Errno::EINTR)
-            }
             fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
                 Ok(())
             }
@@ -40677,9 +40630,6 @@ mod tests {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {

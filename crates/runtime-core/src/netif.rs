@@ -298,9 +298,6 @@ mod tests {
         fn fb_write(&mut self, _: i32, _: usize, _: &[u8]) {
             unimplemented!()
         }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_call_signal_handler(&mut self, _: u32, _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }
@@ -346,9 +343,6 @@ mod tests {
             unimplemented!()
         }
         fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_futex_wait(&mut self, _: usize, _: u32, _: i64) -> Result<i32, wasm_posix_shared::Errno> {
             unimplemented!()
         }
         fn host_futex_wake(&mut self, _: usize, _: u32) -> Result<i32, wasm_posix_shared::Errno> {

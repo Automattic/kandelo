@@ -152,7 +152,6 @@ unsafe extern "C" {
         interval_ms_lo: u32,
         interval_ms_hi: u32,
     ) -> i32;
-    fn host_sigsuspend_wait() -> i32;
     fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_utimensat(
@@ -213,7 +212,6 @@ unsafe extern "C" {
     /// case (Workstream H4: the interface table, MAC, and struct layout are
     /// kernel-owned; this is the one fact only the host can know).
     fn host_network_local_address(buf_ptr: *mut u8) -> i32;
-    fn host_futex_wait(addr: usize, expected: u32, timeout_ns_lo: u32, timeout_ns_hi: u32) -> i32;
     fn host_futex_wake(addr: usize, count: u32) -> i32;
     fn host_bind_framebuffer(
         pid: i32,
@@ -772,17 +770,6 @@ impl HostIO for WasmHostIO {
         i32_to_result(result)
     }
 
-    fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-        gkl_release();
-        let result = unsafe { host_sigsuspend_wait() };
-        gkl_acquire();
-        if result < 0 {
-            Err(Errno::from_u32((-result) as u32).unwrap_or(Errno::EINTR))
-        } else {
-            Ok(result as u32)
-        }
-    }
-
     fn host_call_signal_handler(
         &mut self,
         handler_index: u32,
@@ -991,29 +978,6 @@ impl HostIO for WasmHostIO {
             Some(buf)
         } else {
             None
-        }
-    }
-
-    fn host_futex_wait(
-        &mut self,
-        addr: usize,
-        expected: u32,
-        timeout_ns: i64,
-    ) -> Result<i32, Errno> {
-        let lo = timeout_ns as u32;
-        let hi = (timeout_ns >> 32) as u32;
-        // Release the GKL before blocking — otherwise no other thread can make
-        // progress while this one waits.
-        gkl_release();
-        let result = unsafe { host_futex_wait(addr, expected, lo, hi) };
-        gkl_acquire();
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
         }
     }
 

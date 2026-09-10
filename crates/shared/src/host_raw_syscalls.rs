@@ -51,12 +51,15 @@
 //!
 //! Blocking is not one set. `GENERIC_BLOCKING_SNAPSHOT_SYSCALLS` covers the
 //! host EAGAIN park/retry *snapshot* family, but it is not the whole blocking
-//! surface: `sigsuspend` and `pause` block through the distinct
-//! `host_sigsuspend_wait` signal-wait park (see `sys_sigsuspend`) and appear in
-//! neither snapshot set. They must be RAW too — `sigsuspend` carries a mask
-//! pointer, so absent this entry the guest would marshal it onto the record
-//! fast-path, which performs no EAGAIN park and would leak the kernel's
-//! blocking EAGAIN straight to the caller.
+//! surface: `sigsuspend` and `pause` appear in neither snapshot set, and they
+//! do not park on the host at all — `sys_sigsuspend` registers a signal-mask
+//! wait on the process and returns `EAGAIN` for the blocked-retry machinery
+//! to drive. This text previously named a `host_sigsuspend_wait` signal-wait
+//! park; that import existed but nothing in the kernel ever called it, and it
+//! has been removed. These two must still be RAW — `sigsuspend` carries a
+//! mask pointer, so absent this entry the guest would marshal it onto the
+//! record fast-path, which performs no EAGAIN park and would leak the
+//! kernel's blocking EAGAIN straight to the caller.
 //!
 //! Every value here is drawn from [`crate::Syscall`],
 //! [`crate::abi::extended_syscalls`], or [`crate::abi::host_intercepted`], so
@@ -161,9 +164,9 @@ pub const HOST_RAW_SYSCALLS: &[u32] = &[
     Syscall::Poll as u32,
     ext::SYS_PPOLL,
     ext::SYS_RT_SIGTIMEDWAIT,
-    // --- BLK: signal-wait blockers parked via host_sigsuspend_wait (NOT in
-    // GENERIC_BLOCKING_SNAPSHOT_SYSCALLS; they block through a distinct host
-    // signal-wait park/retry rather than the generic snapshot machinery). The
+    // --- BLK: signal-wait blockers (NOT in GENERIC_BLOCKING_SNAPSHOT_SYSCALLS;
+    // they block by registering a signal-mask wait on the process and returning
+    // EAGAIN for blocked-retry, not through the generic snapshot machinery). The
     // record fast-path performs no EAGAIN park, so routing sigsuspend/pause
     // through it would leak the kernel's blocking EAGAIN straight to the guest.
     // sigsuspend carries a mask pointer (so it would otherwise take the record

@@ -98,9 +98,19 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// host stops resolving names on the kernel's behalf. Once the cutover deletes
 /// `emitRootfsManifest` and its `blobPaths` name map, base-file reads come from
 /// the image rather than from a host-resolved path, and `host_blob_read` leaves
-/// with them: 85 - 1 = 84. The increase is here first because a dormant import
+/// with them: 84 - 1 = 83. The increase is here first because a dormant import
 /// is the only way to land the two halves separately.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 85;
+///
+/// K3 increment 0b then removed **two** imports the kernel never called:
+/// `host_futex_wait` and `host_sigsuspend_wait`. Both were declared on `HostIO`
+/// and implemented in `host/src/kernel.ts`, but no Rust code anywhere invoked
+/// either method — every remaining mention was a trait declaration, a
+/// `#[cfg(test)]` mock, or prose. `sys_sigsuspend` does not park on the host at
+/// all; it registers a signal-mask wait and returns `EAGAIN` for blocked-retry
+/// to drive. Removing them takes the count to 85 - 2 = **83**, and the
+/// post-cutover figure to 82. This is the campaign's first import removal that
+/// shrinks the host contract outright rather than relocating work behind it.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 83;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]

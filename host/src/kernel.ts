@@ -846,7 +846,6 @@ export class WasmPosixKernel {
     | "initializing"
     | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
-  private signalWakeSab: SharedArrayBuffer | null = null;
   private programFuncTable: WebAssembly.Table | null = null;
   #kernelFuncTable: WebAssembly.Table | null = null;
   /**
@@ -1466,10 +1465,6 @@ export class WasmPosixKernel {
     return this.sharedPipes;
   }
 
-  registerSignalWakeSab(sab: SharedArrayBuffer): void {
-    this.signalWakeSab = sab;
-  }
-
   registerWaitpidSab(sab: SharedArrayBuffer): void {
     this.waitpidSab = sab;
   }
@@ -1936,9 +1931,6 @@ export class WasmPosixKernel {
           const intervalMs = (intervalMsHi >>> 0) * 0x100000000 + (intervalMsLo >>> 0);
           return this.#hostSetPosixTimer(timerId, signo, valueMs, intervalMs);
         },
-        host_sigsuspend_wait: (): number => {
-          return this.#hostSigsuspendWait();
-        },
         host_call_signal_handler: (handler_index: number, signum: number, sa_flags: number): number => {
           const SA_SIGINFO = 4;
           const table = this.programFuncTable
@@ -2102,9 +2094,6 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-        },
-        host_futex_wait: (addr: KernelPointer, expected: number, timeoutLo: number, timeoutHi: number): number => {
-          return this.#hostFutexWait(addr, expected, timeoutLo, timeoutHi);
         },
         host_futex_wake: (addr: KernelPointer, count: number): number => {
           return this.#hostFutexWake(addr, count);
@@ -4025,42 +4014,6 @@ export class WasmPosixKernel {
     return 0;
   }
 
-  #hostSigsuspendWait(): number {
-    if (!this.signalWakeSab) {
-      return -(4); // -EINTR, no SAB available
-    }
-    const view = new IntrinsicInt32Array(this.signalWakeSab);
-
-    // Check if already signaled (race-safe via CAS)
-    const old = intrinsicApply(
-      intrinsicAtomicsCompareExchange,
-      Atomics,
-      [view, 0, 1, 0],
-    ) as number;
-    if (old === 1) {
-      const sig = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 1],
-      ) as number;
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-      return sig;
-    }
-
-    // Block until notified
-    intrinsicApply(intrinsicAtomicsWait, Atomics, [view, 0, 0]);
-
-    // Read signal and reset
-    const sig = intrinsicApply(
-      intrinsicAtomicsLoad,
-      Atomics,
-      [view, 1],
-    ) as number;
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 0, 0]);
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-    return sig;
-  }
-
   // ---- Public API: Socket & Poll operations ----
 
   /**
@@ -4990,60 +4943,6 @@ export class WasmPosixKernel {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return negErrno(e);
     }
-  }
-
-  #hostFutexWait(
-    addr: KernelPointer,
-    expected: number,
-    timeoutLo: number,
-    timeoutHi: number,
-  ): number {
-    if (!this.#memory) return -22; // -EINVAL
-
-    let index: number;
-    try {
-      const range = checkedWasmImportMemoryRange(
-        this.#memory,
-        addr,
-        4,
-        this.#kernelPtrWidth,
-        "host_futex_wait word",
-      );
-      if (range.pointer % 4 !== 0) return -22; // EINVAL
-      index = range.pointer / 4;
-    } catch {
-      return -14; // EFAULT
-    }
-    const i32view = new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory));
-
-    // Reconstruct 64-bit timeout_ns from lo/hi
-    const timeoutNs = BigInt(timeoutHi >>> 0) * 0x100000000n + BigInt(timeoutLo >>> 0);
-    // Convert to signed
-    const signed = BigInt.asIntN(64, timeoutNs);
-
-    let timeoutMs: number | undefined;
-    if (signed >= 0n) {
-      // Convert ns → ms (rounding up to at least 1ms if nonzero)
-      timeoutMs = Number(signed / 1_000_000n);
-      if (timeoutMs === 0 && signed > 0n) timeoutMs = 1;
-    }
-    // signed < 0 → infinite wait (undefined timeout)
-
-    let result: "ok" | "not-equal" | "timed-out";
-    try {
-      result = intrinsicApply(
-        intrinsicAtomicsWait,
-        Atomics,
-        [i32view, index, expected, timeoutMs],
-      ) as "ok" | "not-equal" | "timed-out";
-    } catch {
-      return -22; // EINVAL: memory was not shared or became unusable
-    }
-    if (result === "timed-out") {
-      return -110; // -ETIMEDOUT
-    }
-    if (result === "not-equal") return -11;  // -EAGAIN
-    return 0; // "ok"
   }
 
   #hostFutexWake(addr: KernelPointer, count: number): number {
