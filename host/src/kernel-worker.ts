@@ -2774,6 +2774,32 @@ export class CentralizedKernelWorker {
    * does not) exactly like the host `/` mount. Defaults set-ID honoring.
    */
   #rootfsNosuid = false;
+  /**
+   * Raw bytes of the `/` VFS image, and a positioned window onto them.
+   *
+   * When present, `#maybeLoadKernelRootfs` asks the kernel to parse the image
+   * itself (`kernel_rootfs_load_image`) rather than loading the manifest this
+   * host walked the image to produce. The host then resolves no names: the
+   * kernel mounts the image's own filesystem, walks it, and reads the image's
+   * own kernel-lazy section.
+   *
+   * Null when the entry supplied no image, which is the dormant path: the boot
+   * manifest stays authoritative and nothing about the boot changes.
+   *
+   * NEITHER worker entry passes an image yet, and that is deliberate rather
+   * than unfinished. `MemoryFileSystem.fromImage` copies the image into a fresh
+   * buffer and the host then applies three mutations to that COPY, none of
+   * which the on-disk image carries: `normalizeLegacyRootfs`, whose `/etc/group`
+   * patch should be deleted and the affected images rebuilt;
+   * `ensureMountParentDirectories`, which belongs in the kernel where the
+   * namespace lives; and the browser's runtime MITM CA-certificate write, which
+   * is genuine per-session data and must move to `rootfsWriteFile` after `init`
+   * — a real browser boot-ordering change. Handing the kernel the raw image
+   * before those move would silently drop all three: a tree that looks right
+   * and is not. The shipped images also predate the kernel-lazy section the
+   * kernel requires, so they need rebuilding first.
+   */
+  #rootfsImage: Uint8Array | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5040,12 +5066,15 @@ export class CentralizedKernelWorker {
     ) => number,
     foreignMountPrefixes?: string[],
     rootNosuid?: boolean,
+    /** See `#rootfsImage`: no entry passes this yet, and why. */
+    image?: Uint8Array,
   ): void {
     this.#rootfsManifest = manifest;
     this.#rootfsBlobProvider = blobProvider;
     this.#rootfsArchiveProvider = archiveProvider ?? null;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
+    this.#rootfsImage = image ?? null;
   }
 
   /**
@@ -5085,6 +5114,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    const loadImage = instance.exports.kernel_rootfs_load_image as
+      | ((lenLo: number, lenHi: number) => number)
+      | undefined;
+
     const nowMs = Date.now();
     const nowSec = Math.floor(nowMs / 1000);
     // Hoist the clock control scalars so the kernel-export call site carries
@@ -5095,17 +5128,49 @@ export class CentralizedKernelWorker {
     const rootfsNowNsec = (nowMs % 1000) * 1_000_000;
     setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec);
 
-    const ptr = alloc(manifest.byteLength);
-    const ptrValue = Number(ptr);
-    if (ptrValue === 0) {
-      // Allocation failed; do not enable a rootfs with no tree.
-      return;
+    // Prefer the kernel parsing the image itself. The image source is installed
+    // FIRST, because `kernel_rootfs_load_image` calls straight back out through
+    // it; with no source installed the kernel gets ENOSYS and we fall back.
+    //
+    // The fallback is deliberately narrow. `-ENOSYS` means this host did not
+    // supply an image and `-EINVAL` means the image predates the kernel-lazy
+    // section — both are "the kernel was never given what it needs", and the
+    // host-walked manifest is the correct answer for them. Any OTHER error is a
+    // real image or transport defect, and silently walking the image host-side
+    // instead would hide exactly the defect the platform should surface, so it
+    // leaves `/` host-served rather than papering over it.
+    let loaded = -38; // ENOSYS
+    const image = this.#rootfsImage;
+    if (typeof loadImage === "function" && image !== null) {
+      this.#kernel.setRootfsImageProvider((offset, dest) => {
+        const start = Number(offset);
+        if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
+        if (start >= image.byteLength) return 0; // end of image
+        const n = Math.min(dest.byteLength, image.byteLength - start);
+        dest.set(image.subarray(start, start + n));
+        return n;
+      });
+      const imageLenLo = image.byteLength >>> 0;
+      const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
+      loaded = loadImage(imageLenLo, imageLenHi);
+      if (loaded < 0 && loaded !== -38 && loaded !== -22) {
+        return;
+      }
     }
-    new Uint8Array(memory.buffer, ptrValue, manifest.byteLength).set(manifest);
-    const loaded = load(ptr, manifest.byteLength);
+
     if (loaded < 0) {
-      // Malformed manifest; leave `/` host-served rather than a partial tree.
-      return;
+      const ptr = alloc(manifest.byteLength);
+      const ptrValue = Number(ptr);
+      if (ptrValue === 0) {
+        // Allocation failed; do not enable a rootfs with no tree.
+        return;
+      }
+      new Uint8Array(memory.buffer, ptrValue, manifest.byteLength).set(manifest);
+      loaded = load(ptr, manifest.byteLength);
+      if (loaded < 0) {
+        // Malformed manifest; leave `/` host-served rather than a partial tree.
+        return;
+      }
     }
     this.#kernel.setRootfsBlobProvider(provider);
     if (this.#rootfsArchiveProvider) {
