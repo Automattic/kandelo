@@ -394,6 +394,88 @@ NEEDS-DEFER-DECISION (D3, §10).
 `crates/dylink` as an **ordinary Rust library** — no wasm module, no queue, no
 JS. Native `dlopen` is deliverable before any browser decision is made (§9).
 
+### 4.3 D3 ADJUDICATED (2026-09-10, K5 I7): (β) is refuted, (α) is forced
+
+§4.2 offered two placements for the Rust core on the JavaScript hosts and
+called **(β) fold it into `crates/fork-module`** "cheaper and better-
+precedented". **That recommendation is wrong, and the reason is the
+generic-first rule (value plan §1, BINDING).**
+
+**(β) is REFUTED.** The co-resident fork-module is instantiated inside
+`if (hasForkInstrumentation) {` (`host/src/worker-main.ts:3473`, the module
+required-or-fatal at `:3566-3577`). The dlopen imports are **not** so gated:
+`buildDlopenImports` has three call sites, and the one at
+`host/src/worker-main.ts:5533` sits in the **non**-instrumented branch —
+directly after `kernel_fork` is stubbed to throw "reached without complete
+wasm-fork-instrument exports" (`:5525-5530`). So a process with no fork
+instrumentation has full `dlopen` today.
+
+Folding the planner into the fork-module would make `dlopen` reachable only
+from fork-instrumented processes. `dlopen`/`dlsym`/`dlclose` are POSIX
+interfaces with no relationship to `fork`, and coupling them to a Kandelo
+build-time instrumentation pass is exactly the "facility for the packages that
+happen to use it today" that generic-first forbids — PHP is fork-instrumented,
+so the regression would be invisible in the only artifact that exercises the
+path. Instantiating the fork-module unconditionally instead is not a repair:
+it charges every non-forking process the ~5.4 MiB co-resident region.
+
+**A third option was considered and is also refuted.** (ζ) link `crates/dylink`
+into the **kernel** and drive it from the process worker over the syscall
+channel — attractive because new kernel exports cost no host surface, no new
+build artifact exists to stage, and `PlanStep::Host`'s `SYS_MMAP` steps would
+become internal. It fails on memory access: the kernel reaches a process's
+linear memory only through `HostIO` (`crates/runtime-core/src/memory.rs:1515`
+`process_memory_len`) and channel scratch, never directly. Both of the
+linker's large inputs — the `.so` image and the KFLA archive — live in guest
+linear memory, so every `dlopen` would marshal them across the channel. It
+also puts `ld.so`, which is per-process userspace state, inside the shared
+kernel.
+
+**(α) is therefore forced**: a standalone wasm module the process worker
+instantiates. One property makes it cleaner than §4.2 assumed — it needs
+**zero imports**, not even `env.memory`. The driver already copies the `.so`
+bytes out of guest memory before calling in (`worker-main.ts:2009-2019`), so
+the module can own its linear memory outright and the driver reads results
+back out of it. That is a smaller host contract than fork-module's ten
+`env.*` imports.
+
+**(α)'s cost is now measured, and it is the part to plan around: 14
+integration points**, in four clusters —
+
+1. **Build (3):** workspace member, `crate-type = ["cdylib", "rlib"]`, and a
+   `build-wasm.sh` modeled on `crates/fork-module/build-wasm.sh` that stages to
+   **both** `local-binaries/` and `host/wasm/` and writes a `.build-key`.
+2. **Freshness (2):** `tools/xtask/src/cargo_closure.rs` `BUILD_TOOL_CRATES`
+   and a `verify_fresh_*` in `tools/xtask/src/local_build.rs:842`. The story is
+   two-layer: `build-wasm.sh --verify-fresh` checks the staged artifact against
+   its stamp, while `xtask verify-fresh` checks the **projected** copy against
+   the recomputed closure and the manifest's size/sha256. Implementing only the
+   first reproduces the failure recorded at `local_build.rs:818-826`.
+3. **Projection (4):** `ensure_*_built`, a projection node, node append plus
+   member staging, and the clean-no-op fast path (`local_build.rs:1794-1797`,
+   `:2302-2482`, `:2551-2573`, `:1984`).
+4. **Hosts (5):** `host/src/binary-resolver.ts:1730-1742` projection
+   admission; the Node compile site and `InitData` fields
+   (`host/src/node-kernel-worker-entry.ts:166-196`,
+   `host/src/worker-protocol.ts:49,179`); and **four** independent browser
+   registrations — the capability contract
+   (`apps/browser-demos/browser-module-contract.mjs:26-35`), the Vite alias
+   (`apps/browser-demos/vite.config.ts:363-386`), a `?url` artifact module plus
+   the fetch/transfer/compile chain (`host/src/browser-fork-module-artifact.ts`
+   as the model, `host/src/browser-kernel-host.ts:217-222,429,502,526`,
+   `host/src/browser-kernel-protocol.ts:76`,
+   `host/src/browser-kernel-worker-entry.ts:151-162,1391-1392` and the six init
+   spread sites). A miss in any browser registration fails **only** in a
+   SourceOnly browser build, never in Node tests.
+
+**`crates/wasi-module` is the negative example and should be read as one.** It
+has a correct `build-wasm.sh` with a correct freshness stamp and **zero**
+pipeline integration: no `ensure_*_built`, no projection node, no
+`binary-resolver` admission, no Vite alias, no host compile site. Its only
+consumers are `crates/host-native` and a manual `node` harness. Cluster 1 done
+and clusters 2-4 missing is not partial progress toward a browser cutover; it
+is the state K10 I6 is still owed from.
+
 ---
 
 ## 5. The fork seam
