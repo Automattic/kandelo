@@ -141,7 +141,6 @@ nix_develop=(
     --keep WASM_POSIX_LOCAL_BUILD_JOBS \
     --keep WASM_POSIX_LOCAL_INSTALL_SOURCE \
     --keep WASM_POSIX_LOCAL_INSTALL_SESSION \
-    --keep KANDELO_SOURCE_CACHE_ROOT \
     --accept-flake-config
 )
 
