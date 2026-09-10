@@ -2029,6 +2029,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_epoll_wake_indices",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_commit",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -7437,6 +7442,17 @@
           "maxBytes": 4096,
           "tooLongErrno": 36,
           "type": "cstring"
+        }
+      }
+    ],
+    "240": [
+      {
+        "argIndex": 3,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "size": 16,
+          "type": "fixed"
         }
       }
     ],

@@ -2062,6 +2062,9 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   238: [
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 }, required: true },
   ],
+  240: [
+    { argIndex: 3, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
+  ],
   244: [
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 }, required: true },
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 }, nullable: true },
