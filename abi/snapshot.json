@@ -1877,11 +1877,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_clear_argv",
-      "signature": "() -> ()"
-    },
-    {
-      "kind": "func",
       "name": "kernel_clear_fork_child",
       "signature": "(i32) -> (i32)"
     },
@@ -1929,11 +1924,6 @@
       "kind": "func",
       "name": "kernel_connect",
       "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_convert_pipe_to_host",
-      "signature": "(i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -2177,11 +2167,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_get_exit_status",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_get_fd_accept_wake_idx",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2222,16 +2207,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_get_fork_exec_path_pid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_fork_state",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_get_memory_pages",
       "signature": "() -> (i32)"
     },
@@ -2239,11 +2214,6 @@
       "kind": "func",
       "name": "kernel_get_parent_pid",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_pipe_ofds",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2332,11 +2302,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_getpgid_direct",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_getpgrp",
       "signature": "() -> (i32)"
     },
@@ -2394,11 +2359,6 @@
       "kind": "func",
       "name": "kernel_gettid",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gettimeofday",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2492,11 +2452,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_ipc_shmdt",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_ipc_shmdt_addr",
       "signature": "(i32) -> (i32)"
     },
@@ -2529,16 +2484,6 @@
       "kind": "func",
       "name": "kernel_is_fork_child",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_is_fork_child_pid",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_is_signal_blocked",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2607,11 +2552,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_mmap",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_mprotect",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2624,16 +2564,6 @@
       "kind": "func",
       "name": "kernel_mq_drain_notification",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mq_is_mqd",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mremap",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2782,18 +2712,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_posix_timer_interval_fire",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_ppoll",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_prctl",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2937,11 +2857,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rewinddir",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_rmdir",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2977,18 +2892,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rt_sigtimedwait",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_sched_getparam",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_seekdir",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3008,11 +2913,6 @@
     {
       "kind": "func",
       "name": "kernel_send",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sendfile",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
@@ -3043,16 +2943,6 @@
     {
       "kind": "func",
       "name": "kernel_set_cwd",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_fork_exec",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_fork_fd_action",
       "signature": "(i32,i32,i32) -> (i32)"
     },
     {
@@ -3309,16 +3199,6 @@
       "kind": "func",
       "name": "kernel_tcsetattr",
       "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_telldir",
-      "signature": "(i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_tgkill",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

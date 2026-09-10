@@ -704,7 +704,8 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 13c. **Phase 13c (Complete):** Cross-Process Pipes
 - SharedPipeBuffer class (SharedArrayBuffer ring buffer with atomics)
 - Host-delegated pipe support in kernel (host_handle >= 0 routes to host_read/host_write)
-- kernel_convert_pipe_to_host Wasm export
+- The `kernel_convert_pipe_to_host` Wasm export was removed in ABI 44: the
+  kernel owns pipe OFDs across fork, so nothing called it
 - Pipe detection and conversion on fork via ProcessManager
 13d. **Phase 13d (Complete):** Cross-Process Signals
 - Centralized kernel-owned target resolution, pending queues, and permission checks
