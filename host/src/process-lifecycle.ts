@@ -93,7 +93,11 @@ import type {
 } from "./process-generation-detach";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
-import { computeProcessMemoryLayout } from "./process-memory";
+import {
+  computeProcessMemoryLayout,
+  ProcessMemoryCapacityError,
+  ProcessMemoryRetirementBacklogError,
+} from "./process-memory";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
@@ -257,6 +261,7 @@ export type ProcessLifecycleOutboundMessage =
   | HostDiagnosticMessage
   | ForkModuleProofMessage
   | { type: "kernel_fatal"; error: string }
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
   | { type: "response"; requestId: number; result: unknown; error?: string };
 
 /**
@@ -451,6 +456,18 @@ export interface ProcessLifecycleHost<W extends LifecycleWorker> {
   createProcessWorker(init: CentralizedWorkerInitMessage): W;
 
   /**
+   * Construct a process worker whose backing Worker is built only when
+   * `start()` is called, so a job-control-stopped child can be published
+   * without being able to execute a single guest instruction.
+   *
+   * `DeferredWorkerHandle` is host-independent; the hook exists because the
+   * factory it wraps is the per-host `createWorker`.
+   */
+  createDeferredProcessWorker(
+    init: CentralizedWorkerInitMessage,
+  ): W & { start(): boolean };
+
+  /**
    * Init-message fields naming this host's co-resident side modules.
    *
    * A genuine artifact difference: Node reads the modules off disk, the
@@ -458,8 +475,17 @@ export interface ProcessLifecycleHost<W extends LifecycleWorker> {
    */
   sideModuleInitFields(ptrWidth: 4 | 8): Partial<CentralizedWorkerInitMessage>;
 
-  /** Attach this host's message/error listeners to a new process worker. */
-  installProcessWorkerListeners(worker: W, pid: number): void;
+  /**
+   * Attach this host's message/error listeners to a new process worker.
+   *
+   * `errorLabel` names the launch in a worker-error diagnostic, so a failure
+   * during a `posix_spawn` is distinguishable from an ordinary one.
+   */
+  installProcessWorkerListeners(
+    worker: W,
+    pid: number,
+    errorLabel?: string,
+  ): void;
 
   /**
    * The environment a launch actually runs with, given the requested one.
@@ -2020,10 +2046,237 @@ export function createProcessLifecycle<W extends LifecycleWorker>(
     }
   }
 
+  /**
+   * Launch a worker for a `SYS_SPAWN` child whose program is the exact target
+   * the kernel already committed.
+   *
+   * The earlier resolver was only side-effect-free candidate preflight; a
+   * changed child CWD, fd table or credential view selects and recompiles the
+   * final bytes before this callback. This phase allocates Memory, registers,
+   * and launches — nothing else.
+   *
+   * One drift closed, toward the browser: when the kernel reports the child
+   * already **dead**, the finalized signal is now passed to the teardown on
+   * both hosts. Node passed none, so `finishProcessExit` synthesized no reap
+   * at all on that path and a concurrent `waitpid` in the parent had nothing
+   * to observe until destroy. The kernel's `hostReaped` guard makes the call
+   * idempotent where it had already marked the child a zombie, so the correct
+   * half costs nothing where it was not needed.
+   */
+  async function handlePosixSpawn(
+    parentPid: number,
+    childPid: number,
+    program: ResolvedSpawnProgram,
+    envp: string[],
+  ): Promise<number> {
+    const kernelWorker = host.kernel();
+    const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
+    // The shared launcher invokes this callback only after Rust committed the
+    // exact pending child. Do not re-enter the kernel while that postcommit
+    // transaction is still draining; the first legal liveness fence follows
+    // the asynchronous memory allocation below, and owns any exit observed
+    // across the construction barrier as well.
+    host.post({
+      type: "proc_event",
+      kind: "spawn",
+      pid: childPid,
+      ppid: parentPid,
+    });
+    await host.awaitProcessConstructionBarrier();
+
+    const { programBytes, programModule, argv } = program;
+    const ptrWidth = detectPtrWidth(programBytes);
+    let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
+    try {
+      fresh = await createFreshProcessMemory(
+        childPid,
+        programBytes,
+        ptrWidth,
+        host.defaultMaxPages(),
+        { operation: "posix_spawn", path: argv[0], argv },
+      );
+    } catch (error) {
+      if (error instanceof ProcessMemoryRetirementBacklogError) {
+        return -11; // EAGAIN
+      }
+      if (error instanceof ProcessMemoryCapacityError) return -12; // ENOMEM
+      throw error;
+    }
+    const { memory, memoryLease, layout, threadAllocator } = fresh;
+    // Allocation admission yielded. Never attach a worker to a child that
+    // became a zombie while the short retirement admission gate drained.
+    if (!await retryKernelEntryResult(
+      () => kernelWorker.shouldLaunchPendingChild(childPid),
+    )) {
+      memoryLease.release();
+      return 0;
+    }
+    const channelOffset = layout.channelOffset;
+    let newWorker: (W & { start(): boolean }) | undefined;
+    let registered = false;
+    let workerStartAttempted = false;
+    let lifecycleTeardownStarted = false;
+    let childGeneration: Info | undefined;
+    let externrefGeneration: ForkExternrefGeneration | undefined;
+    let forkHostImports: ForkHostImportOwnerWorker | undefined;
+    try {
+      // The kernel already created the child Process via kernel_spawn_process.
+      // Treat every subsequent host attachment as one rollback-capable
+      // transaction.
+      kernelWorker.registerProcess(childPid, memory, [channelOffset], {
+        ptrWidth,
+        brkBase: layout.brkBase,
+        mmapBase: layout.mmapBase,
+        maxAddr: layout.maxAddr,
+      });
+      registered = true;
+
+      externrefGeneration = host.externrefProcessOwner.startGeneration(childPid);
+      const processExternrefGeneration = externrefGeneration;
+      const processForkHostImports = host.forkHostImportOwnerRuntime
+        .createWorker({
+          pid: childPid,
+          generationId: processExternrefGeneration.id,
+          authorizeSender: () => {
+            const current = host.processes.get(childPid);
+            if (
+              !newWorker
+              || !current
+              || current.worker !== newWorker
+              || current.externrefGeneration !== processExternrefGeneration
+            ) {
+              throw new Error(
+                `stale fork host-import sender for spawn pid=${childPid}`,
+              );
+            }
+          },
+        });
+      forkHostImports = processForkHostImports;
+      const initData: CentralizedWorkerInitMessage = {
+        type: "centralized_init",
+        pid: childPid,
+        programBytes,
+        programModule,
+        memory,
+        channelOffset,
+        secureExec,
+        externrefGenerationId: processExternrefGeneration.id,
+        forkHostImports: processForkHostImports.init,
+        argv,
+        env: envp,
+        ptrWidth,
+        kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest:
+          kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        ...host.sideModuleInitFields(ptrWidth),
+      };
+
+      newWorker = host.createDeferredProcessWorker(initData);
+      const worker = newWorker;
+      bindForkHostImports(worker, processForkHostImports);
+      childGeneration = {
+        generation: host.allocateProcessGeneration(),
+        memory,
+        memoryLease,
+        workerQuiescence: createWorkerQuiescence(),
+        execRetirement: createWorkerQuiescence(),
+        memoryRetirementSafe: true,
+        aliasExposed: false,
+        argv,
+        programBytes,
+        programModule,
+        worker,
+        channelOffset,
+        ptrWidth,
+        secureExec,
+        layout,
+        threadAllocator,
+        externrefGeneration: processExternrefGeneration,
+      };
+      host.processes.set(childPid, childGeneration);
+
+      host.installProcessWorkerListeners(
+        worker,
+        childPid,
+        "spawn worker error",
+      );
+      const startDisposition = await retryKernelEntryResult(() =>
+        kernelWorker.startProcessWorkerWhenRunnable(
+          childPid,
+          memory,
+          () => {
+            workerStartAttempted = true;
+            worker.start();
+          },
+          () => {
+            processForkHostImports.close();
+            void worker.terminate();
+          },
+        ),
+      );
+      if (startDisposition === "stale") {
+        throw new Error(
+          `Spawn child ${childPid} changed generation before Worker launch`,
+        );
+      }
+      if (startDisposition === "dead") {
+        processForkHostImports.close();
+        await terminateTrackedWorker(worker);
+        host.processes.get(childPid)?.workerQuiescence.settle();
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizePendingChildTermination(childPid),
+        );
+        lifecycleTeardownStarted = true;
+        await awaitFinalizedProcessTeardown(
+          childPid,
+          signal > 0 ? signalExitStatus(signal) : 0,
+          worker,
+          signal > 0 ? signal : undefined,
+        );
+        return 0;
+      }
+    } catch (error) {
+      if (lifecycleTeardownStarted) throw error;
+      if (newWorker) await terminateTrackedWorker(newWorker);
+      forkHostImports?.close();
+      if (externrefGeneration) {
+        host.externrefProcessOwner.releaseGeneration(externrefGeneration);
+      }
+      const generation = childGeneration ?? { memory, memoryLease };
+      const detachResult = await detachExactProcessGeneration({
+        pid: childPid,
+        generation,
+        operation: registered ? "deactivate" : "none",
+        retire: async (commit) => {
+          const aliasReleased = childGeneration
+            ? await host.releaseGenerationAliases(childPid, childGeneration)
+            : true;
+          if (workerStartAttempted || !aliasReleased) {
+            memoryLease.releaseAfterForcedTermination();
+          } else {
+            memoryLease.release();
+          }
+          commit();
+        },
+      });
+      if (detachResult.status !== "released") {
+        reportRetainedProcessGeneration(
+          childPid,
+          "posix_spawn rollback",
+          detachResult,
+        );
+      }
+      throw error;
+    }
+
+    return 0;
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
     handleSpawn,
+    handlePosixSpawn,
     awaitFinalizedProcessTeardown,
     createFreshProcessMemory,
     detachExactProcessGeneration,

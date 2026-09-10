@@ -432,9 +432,10 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   allocateProcessGeneration,
   forkHostImportOwnerRuntime,
   createProcessWorker: (init) => workerAdapter.createWorker(init),
+  createDeferredProcessWorker: (init) =>
+    new DeferredWorkerHandle(() => workerAdapter.createWorker(init)),
   sideModuleInitFields,
-  installProcessWorkerListeners: (worker, pid) =>
-    installProcessWorkerListeners(worker, pid),
+  installProcessWorkerListeners,
   // Guest TLS verifies through the host's proxied egress, so a launch needs
   // the MITM CA on its path.
   decorateLaunchEnv: withBrowserMitmCaEnv,
@@ -460,6 +461,7 @@ const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
   handleSpawn,
+  handlePosixSpawn,
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
@@ -2646,217 +2648,6 @@ async function handleExec(
  * contents from the VFS, follows shebangs, and compiles the final Wasm
  * module. Safe to call before the kernel applies spawn file actions.
  */
-
-/**
- * Launch a worker for a SYS_SPAWN child whose program is derived from the
- * exact target already committed by the shared worker. Preflight is only a
- * side-effect-free candidate; child-state divergence is resolved and compiled
- * before this callback. Mirrors the Node entry's `handlePosixSpawn`.
- */
-async function handlePosixSpawn(
-  parentPid: number,
-  childPid: number,
-  program: ResolvedSpawnProgram,
-  envp: string[],
-): Promise<number> {
-  const secureExec = kernelWorker.takeCommittedExecSecureExec(childPid);
-  await waitForProcessTeardowns();
-
-  // The shared launcher already committed the exact pending child. The
-  // post-allocation fence below owns any exit observed across this teardown
-  // wait or allocation yield; do not add a separate kernel entry while the
-  // postcommit transaction is still draining.
-  post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-
-  const { programBytes, programModule, argv } = program;
-  const ptrWidth = detectPtrWidth(programBytes);
-  let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
-  try {
-    fresh = await createFreshProcessMemory(
-      childPid,
-      programBytes,
-      ptrWidth,
-      maxPages,
-      {
-        operation: "posix_spawn",
-        path: argv[0],
-        argv,
-      },
-    );
-  } catch (error) {
-    if (error instanceof ProcessMemoryRetirementBacklogError) {
-      return -11; // EAGAIN
-    }
-    if (error instanceof ProcessMemoryCapacityError) return -12; // ENOMEM
-    throw error;
-  }
-  const {
-    memory: newMemory,
-    memoryLease,
-    layout: newLayout,
-    threadAllocator,
-  } = fresh;
-  // Allocation admission yielded. Do not resurrect a child that exited or was
-  // killed while the short retirement admission gate drained.
-  if (!await retryKernelEntryResult(
-    () => kernelWorker.shouldLaunchPendingChild(childPid),
-  )) {
-    memoryLease.release();
-    return 0;
-  }
-  const newChannelOffset = newLayout.channelOffset;
-  let newWorker: DeferredWorkerHandle | undefined;
-  let registered = false;
-  let workerStartAttempted = false;
-  let lifecycleTeardownStarted = false;
-  let childGeneration: ProcessInfo | undefined;
-  let externrefGeneration: ForkExternrefGeneration | undefined;
-  let forkHostImports: ForkHostImportOwnerWorker | undefined;
-  try {
-    // Kernel already created the child via kernel_spawn_process. Treat every
-    // subsequent host attachment as one rollback-capable transaction.
-    kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
-      ptrWidth,
-      brkBase: newLayout.brkBase,
-      mmapBase: newLayout.mmapBase,
-      maxAddr: newLayout.maxAddr,
-    });
-    registered = true;
-
-    externrefGeneration = externrefProcessOwner.startGeneration(childPid);
-    const processExternrefGeneration = externrefGeneration;
-    const processForkHostImports = forkHostImportOwnerRuntime.createWorker({
-      pid: childPid,
-      generationId: processExternrefGeneration.id,
-      authorizeSender: () => {
-        const current = processes.get(childPid);
-        if (
-          !newWorker
-          || !current
-          || current.worker !== newWorker
-          || current.externrefGeneration !== processExternrefGeneration
-        ) {
-          throw new Error(
-            `stale fork host-import sender for spawn pid=${childPid}`,
-          );
-        }
-      },
-    });
-    forkHostImports = processForkHostImports;
-    const initData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
-      pid: childPid,
-      programBytes,
-      programModule,
-      memory: newMemory,
-      channelOffset: newChannelOffset,
-      secureExec,
-      externrefGenerationId: processExternrefGeneration.id,
-      forkHostImports: processForkHostImports.init,
-      argv,
-      env: envp,
-      ptrWidth,
-      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...sideModuleInitFields(ptrWidth),
-    };
-
-    newWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(initData),
-    );
-    const worker = newWorker;
-    bindForkHostImports(worker, processForkHostImports);
-    childGeneration = {
-      generation: allocateProcessGeneration(),
-      memory: newMemory,
-      memoryLease,
-      workerQuiescence: createWorkerQuiescence(),
-      execRetirement: createWorkerQuiescence(),
-      memoryRetirementSafe: true,
-      aliasExposed: false,
-      programBytes,
-      programModule,
-      worker,
-      argv,
-      channelOffset: newChannelOffset,
-      ptrWidth,
-      secureExec,
-      layout: newLayout,
-      threadAllocator,
-      externrefGeneration: processExternrefGeneration,
-    };
-    processes.set(childPid, childGeneration);
-
-    installProcessWorkerListeners(worker, childPid);
-    const startDisposition = await retryKernelEntryResult(() =>
-      kernelWorker.startProcessWorkerWhenRunnable(
-        childPid,
-        newMemory,
-        () => {
-          workerStartAttempted = true;
-          worker.start();
-        },
-        () => {
-          processForkHostImports.close();
-          void worker.terminate();
-        },
-      ),
-    );
-    if (startDisposition === "stale") {
-      throw new Error(`Spawn child ${childPid} changed generation before Worker launch`);
-    }
-    if (startDisposition === "dead") {
-      processForkHostImports.close();
-      await terminateTrackedWorker(worker);
-      processes.get(childPid)?.workerQuiescence.settle();
-      const signal = await retryKernelEntryResult(
-        () => kernelWorker.finalizePendingChildTermination(childPid),
-      );
-      lifecycleTeardownStarted = true;
-      await awaitFinalizedProcessTeardown(
-        childPid,
-        signal > 0 ? signalExitStatus(signal) : 0,
-        worker,
-        signal > 0 ? signal : undefined,
-      );
-      return 0;
-    }
-  } catch (error) {
-    if (lifecycleTeardownStarted) throw error;
-    if (newWorker) await terminateTrackedWorker(newWorker);
-    forkHostImports?.close();
-    if (externrefGeneration) {
-      externrefProcessOwner.releaseGeneration(externrefGeneration);
-    }
-    const generation = childGeneration ?? { memory: newMemory, memoryLease };
-    const detachResult = await detachExactProcessGeneration({
-      pid: childPid,
-      generation,
-      operation: registered ? "deactivate" : "none",
-      retire: async (commit) => {
-        const aliasReleased = childGeneration
-          ? await releaseMainFramebufferGeneration(childPid, childGeneration)
-          : true;
-        if (workerStartAttempted || !aliasReleased) {
-          memoryLease.releaseAfterForcedTermination();
-        } else {
-          memoryLease.release();
-        }
-        commit();
-      },
-    });
-    if (detachResult.status !== "released") {
-      reportRetainedProcessGeneration(
-        childPid,
-        "posix_spawn rollback",
-        detachResult,
-      );
-    }
-    throw error;
-  }
-
-  return 0;
-}
 
 async function handleClone(
   attachment: ThreadChannelAttachment,
