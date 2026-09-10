@@ -572,10 +572,17 @@ fn with_plan(body: impl FnOnce(&LinkPlan) -> i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn dl_sym(handle: u32, len: u32) -> i32 {
     with_session(|state| {
+        // Copied out of the input buffer rather than borrowed from it. The
+        // answer is written into the OUTPUT buffer further down, and holding a
+        // borrow of one field of `Buffers` across a write to another means two
+        // live `&mut` to the same struct — which works in practice and is still
+        // the kind of aliasing that has no business being in code an optimizer
+        // is free to reason about.
         let name = match core::str::from_utf8(request(len)?) {
-            Ok(name) => name,
+            Ok(name) => name.to_string(),
             Err(_) => return Err(DylinkError::MalformedModule("dlsym name is not UTF-8")),
         };
+        let name = name.as_str();
         let symbol = if handle == MAIN_PROGRAM_HANDLE {
             state.linker.scope.global_symbol(name).cloned()
         } else {
