@@ -71,7 +71,10 @@ import {
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { FileSystemBackend, MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
-import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
+import {
+  BROWSER_MITM_CA_BUNDLE_PATH,
+  withBrowserMitmCaEnv,
+} from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -1279,6 +1282,34 @@ async function createFreshProcessMemory(
   }
 }
 
+/**
+ * This page's MITM CA, waiting for the machine to become this page's own.
+ *
+ * A machine booted as a replica keeps the primary's trust store; the CA of
+ * the replica's own TLS backend is provisioned only at promotion, when live
+ * TLS starts terminating against it.
+ */
+let pendingReplicaCaBundlePem: string | null = null;
+
+function installMitmCaBundle(caCertPem: string): void {
+  try {
+    // Demo images don't always include /etc — create the full chain.
+    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
+      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
+    }
+    const certBytes = new TextEncoder().encode(caCertPem);
+    const certFd = memfs.open(
+      BROWSER_MITM_CA_BUNDLE_PATH,
+      O_WRONLY_CREAT_TRUNC,
+      0o644,
+    );
+    memfs.write(certFd, certBytes, 0, certBytes.length);
+    memfs.close(certFd);
+  } catch (e) {
+    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
+  }
+}
+
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
@@ -1429,23 +1460,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
-  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
-  const caCertPem = tlsBackend.getCACertPEM();
-  try {
-    // Demo images don't always include /etc — create the full chain.
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
-    const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open(
-      "/etc/ssl/certs/ca-certificates.crt",
-      O_WRONLY_CREAT_TRUNC,
-      0o644,
-    );
-    memfs.write(certFd, certBytes, 0, certBytes.length);
-    memfs.close(certFd);
-  } catch (e) {
-    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
+  // Install the MITM CA certificate in the VFS so OpenSSL trusts it — but
+  // only on a machine that runs live under this page's TLS backend. A
+  // replica's rootfs is the primary's state: overwriting the bundle here
+  // would be an unrecorded write with this host's CA and clock, and the
+  // take-over promotion gate would refuse on the filesystem digest every
+  // time. The bundle waits until promotion makes the machine this page's
+  // own (`replication_replay_stop`).
+  if (msg.replicationReplay) {
+    pendingReplicaCaBundlePem = tlsBackend.getCACertPEM();
+  } else {
+    pendingReplicaCaBundlePem = null;
+    installMitmCaBundle(tlsBackend.getCACertPEM());
   }
 
   // Create worker adapter for spawning sub-workers
@@ -5614,6 +5640,12 @@ sw.onmessage = (e: MessageEvent) => {
       kernelWorker?.setReplicationAheadProbe(null);
       kernelWorker?.setHttpExchangeTap(null);
       replayedHttpExchanges.drop();
+      // The machine is this page's own from here, so live TLS terminates
+      // against this page's backend: the guest must trust its CA now.
+      if (pendingReplicaCaBundlePem !== null) {
+        installMitmCaBundle(pendingReplicaCaBundlePem);
+        pendingReplicaCaBundlePem = null;
+      }
       respond(msg.requestId, {
         consumed: replay?.reader.consumed ?? 0,
         total: replay?.reader.known ?? 0,
