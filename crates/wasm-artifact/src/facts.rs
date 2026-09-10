@@ -145,6 +145,199 @@ fn value_type_family(ty: ValType, func_type_indices: &[bool]) -> ValueType {
     }
 }
 
+/// One value type in its **binary** encoding, retained beside the contract
+/// family.
+///
+/// [`ValueType`] deliberately collapses every GC reference into the family the
+/// fork contract compares, which is the right granularity for judging an
+/// artifact. It is the wrong granularity for a host that must decide how to
+/// *route a value across the JavaScript boundary*: `externref` can be handed to
+/// JavaScript and `exnref`/`contref`/`v128` cannot, and those distinctions live
+/// in the encoding, not in the family.
+///
+/// # Canonical, not verbatim
+///
+/// A single reference type has two legal spellings — the one-byte shorthand
+/// (`externref` = `0x6F`) and the long form (`ref null extern` =
+/// `0x63 -0x11`) — and `wasmparser` normalizes them, so the *original* spelling
+/// is not recoverable. This encoder therefore emits a **canonical** spelling:
+/// the shorthand whenever the type has one (nullable, abstract, unshared), and
+/// the long form otherwise. Every consumer predicate accepts both spellings of
+/// the same type, so canonicalizing preserves meaning; a consumer that ever
+/// distinguished them would be reading a property of the *producer*, not of the
+/// artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinaryValueType {
+    /// The leading binary opcode: a numeric type, a reference shorthand, or
+    /// `0x63`/`0x64` (`ref null ht` / `ref ht`) for the long form.
+    pub code: u8,
+    /// The signed heap type of a long-form reference. `None` for the numeric
+    /// types and for every shorthand, which encodes its heap type in `code`.
+    pub heap_type: Option<i64>,
+    /// Whether a long-form reference carries the shared heap-type prefix.
+    pub shared: bool,
+}
+
+/// Long-form `ref null ht`.
+const REF_NULL_CODE: u8 = 0x63;
+/// Long-form `ref ht`.
+const REF_CODE: u8 = 0x64;
+
+/// The signed heap-type code for an abstract heap type, per the binary format.
+fn abstract_heap_type_code(ty: wasmparser::AbstractHeapType) -> i64 {
+    use wasmparser::AbstractHeapType as A;
+    match ty {
+        A::Func => -0x10,
+        A::Extern => -0x11,
+        A::Any => -0x12,
+        A::Eq => -0x13,
+        A::I31 => -0x14,
+        A::Struct => -0x15,
+        A::Array => -0x16,
+        A::None => -0x0F,
+        A::NoExtern => -0x0E,
+        A::NoFunc => -0x0D,
+        A::Exn => -0x17,
+        A::NoExn => -0x0C,
+        A::Cont => -0x18,
+        A::NoCont => -0x0B,
+    }
+}
+
+/// The one-byte shorthand for a *nullable, unshared* abstract heap type.
+fn abstract_shorthand_code(ty: wasmparser::AbstractHeapType) -> u8 {
+    use wasmparser::AbstractHeapType as A;
+    match ty {
+        A::Func => 0x70,
+        A::Extern => 0x6F,
+        A::Any => 0x6E,
+        A::Eq => 0x6D,
+        A::I31 => 0x6C,
+        A::Struct => 0x6B,
+        A::Array => 0x6A,
+        A::Exn => 0x69,
+        A::None => 0x71,
+        A::NoExtern => 0x72,
+        A::NoFunc => 0x73,
+        A::NoExn => 0x74,
+        A::Cont => 0x68,
+        A::NoCont => 0x75,
+    }
+}
+
+/// Encode `ty` canonically. See [`BinaryValueType`] for why this is canonical
+/// rather than verbatim.
+pub fn binary_value_type(ty: ValType) -> BinaryValueType {
+    let plain = |code: u8| BinaryValueType {
+        code,
+        heap_type: None,
+        shared: false,
+    };
+    match ty {
+        ValType::I32 => plain(0x7F),
+        ValType::I64 => plain(0x7E),
+        ValType::F32 => plain(0x7D),
+        ValType::F64 => plain(0x7C),
+        ValType::V128 => plain(0x7B),
+        ValType::Ref(r) => match r.heap_type() {
+            HeapType::Abstract { shared, ty } if r.is_nullable() && !shared => {
+                plain(abstract_shorthand_code(ty))
+            }
+            HeapType::Abstract { shared, ty } => BinaryValueType {
+                code: if r.is_nullable() { REF_NULL_CODE } else { REF_CODE },
+                heap_type: Some(abstract_heap_type_code(ty)),
+                shared,
+            },
+            // A concrete reference names a type index, which the binary format
+            // writes as a NON-negative signed LEB. `Exact` is a refinement of
+            // the same index; it constrains subtyping, not identity, so it
+            // encodes here as the index it names.
+            HeapType::Concrete(index) | HeapType::Exact(index) => BinaryValueType {
+                code: if r.is_nullable() { REF_NULL_CODE } else { REF_CODE },
+                heap_type: Some(i64::from(index.as_module_index().unwrap_or(0))),
+                shared: false,
+            },
+        },
+    }
+}
+
+/// One import entry, in declaration order, reduced to identity and kind.
+///
+/// The keyed maps above answer "what is imported under this name"; this answers
+/// "what does the import section say, in order", which is a different question
+/// and the one a descriptor ordinal is defined against.
+#[derive(Debug, Clone)]
+pub struct ImportDescriptor {
+    pub module: String,
+    pub name: String,
+    pub kind: DescriptorKind,
+}
+
+/// One export entry, in declaration order.
+#[derive(Debug, Clone)]
+pub struct ExportDescriptor {
+    pub name: String,
+    pub kind: DescriptorKind,
+}
+
+/// The five external kinds an import or export can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorKind {
+    Function,
+    Table,
+    Memory,
+    Global,
+    Tag,
+}
+
+impl DescriptorKind {
+    /// The binary-format kind byte, which is also the host wire value.
+    pub fn code(self) -> u8 {
+        match self {
+            DescriptorKind::Function => 0,
+            DescriptorKind::Table => 1,
+            DescriptorKind::Memory => 2,
+            DescriptorKind::Global => 3,
+            DescriptorKind::Tag => 4,
+        }
+    }
+
+    fn from_external(kind: ExternalKind) -> DescriptorKind {
+        match kind {
+            // `FuncExact` is the exact-reference refinement of a function
+            // export. The exactness bound constrains subtyping, not the
+            // external kind, so it names a function here exactly as `Func`
+            // does — the same rule the import walk applies to
+            // `TypeRef::FuncExact`.
+            ExternalKind::Func | ExternalKind::FuncExact => DescriptorKind::Function,
+            ExternalKind::Table => DescriptorKind::Table,
+            ExternalKind::Memory => DescriptorKind::Memory,
+            ExternalKind::Global => DescriptorKind::Global,
+            ExternalKind::Tag => DescriptorKind::Tag,
+        }
+    }
+}
+
+/// One imported function with everything a fork-safe import router needs: the
+/// two join keys a descriptor can refer to, and the artifact-declared signature
+/// in its binary encoding.
+///
+/// WHY the binary encoding rather than the family: `WebAssembly.Module.imports()`
+/// omits function types entirely, so a host that routes imports by name alone
+/// can bind a provider whose scalar words mean something else. The signature
+/// has to come from the artifact.
+#[derive(Debug, Clone)]
+pub struct FunctionImport {
+    pub module: String,
+    pub name: String,
+    /// Ordinal among *every* import entry, regardless of kind.
+    pub import_ordinal: u32,
+    /// Index in the core function index space.
+    pub function_index: u32,
+    pub params: Vec<BinaryValueType>,
+    pub results: Vec<BinaryValueType>,
+}
+
 /// A function signature reduced to contract families.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Signature {
@@ -318,6 +511,22 @@ pub struct ArtifactFacts {
     /// Whether any export name begins with `asyncify_`, the legacy transform
     /// this epoch does not support.
     pub contains_legacy_asyncify: bool,
+    /// Every import entry in declaration order.
+    ///
+    /// The keyed maps answer "what is imported under this name". This answers
+    /// "what does the import section say, in order" — a different question, and
+    /// the one an ordinal is defined against.
+    pub import_descriptors: Vec<ImportDescriptor>,
+    /// Every export entry in declaration order, including duplicates.
+    pub export_descriptors: Vec<ExportDescriptor>,
+    /// Imported functions in declaration order, with both join keys and the
+    /// artifact-declared signature in its binary encoding.
+    pub function_import_entries: Vec<FunctionImport>,
+    /// Type index of each function in the function index space, imports first.
+    pub function_type_indices: Vec<u32>,
+    /// `(parameter count, result count)` per type index; `None` where the type
+    /// index does not name a function type.
+    pub type_arities: Vec<Option<(u32, u32)>>,
 }
 
 /// Why a container could not be read.
@@ -375,6 +584,11 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
     let mut func_type_indices: Vec<bool> = Vec::new();
     // Signatures by type index, for resolving function imports/exports.
     let mut type_signatures: Vec<Option<Signature>> = Vec::new();
+    // The same signatures in their binary encoding, for the host consumers that
+    // must route a value across the JavaScript boundary by its exact reference
+    // form rather than by its contract family.
+    let mut type_binary_signatures: Vec<Option<(Vec<BinaryValueType>, Vec<BinaryValueType>)>> =
+        Vec::new();
     // Type index of each function in the function index space, imports first.
     let mut function_type_indices: Vec<u32> = Vec::new();
     // Export entries naming a function, resolved after the whole module is
@@ -416,8 +630,20 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
                                         .collect(),
                                 };
                                 type_signatures.push(Some(signature));
+                                type_binary_signatures.push(Some((
+                                    func.params().iter().copied().map(binary_value_type).collect(),
+                                    func.results().iter().copied().map(binary_value_type).collect(),
+                                )));
+                                facts.type_arities.push(Some((
+                                    func.params().len() as u32,
+                                    func.results().len() as u32,
+                                )));
                             }
-                            _ => type_signatures.push(None),
+                            _ => {
+                                type_signatures.push(None);
+                                type_binary_signatures.push(None);
+                                facts.type_arities.push(None);
+                            }
                         }
                     }
                 }
@@ -452,7 +678,21 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
                                         "imported function {identity} refers to unknown type {type_index}"
                                     ))
                                 })?;
+                            let function_index = function_type_indices.len() as u32;
                             function_type_indices.push(type_index);
+                            let (params, results) = type_binary_signatures
+                                .get(type_index as usize)
+                                .cloned()
+                                .flatten()
+                                .unwrap_or_default();
+                            facts.function_import_entries.push(FunctionImport {
+                                module: import.module.to_string(),
+                                name: import.name.to_string(),
+                                import_ordinal,
+                                function_index,
+                                params,
+                                results,
+                            });
                             facts
                                 .function_imports
                                 .entry(identity.clone())
@@ -523,6 +763,19 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
                                 .push(signature);
                         }
                     }
+                        facts.import_descriptors.push(ImportDescriptor {
+                            module: import.module.to_string(),
+                            name: import.name.to_string(),
+                            kind: match import.ty {
+                                TypeRef::Func(_) | TypeRef::FuncExact(_) => {
+                                    DescriptorKind::Function
+                                }
+                                TypeRef::Table(_) => DescriptorKind::Table,
+                                TypeRef::Memory(_) => DescriptorKind::Memory,
+                                TypeRef::Global(_) => DescriptorKind::Global,
+                                TypeRef::Tag(_) => DescriptorKind::Tag,
+                            },
+                        });
                         import_ordinal += 1;
                     }
                 }
@@ -558,6 +811,10 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
                     if export.name.starts_with("asyncify_") {
                         facts.contains_legacy_asyncify = true;
                     }
+                    facts.export_descriptors.push(ExportDescriptor {
+                        name: export.name.to_string(),
+                        kind: DescriptorKind::from_external(export.kind),
+                    });
                     facts
                         .exports
                         .entry(export.name.to_string())
@@ -635,6 +892,8 @@ pub fn read_artifact_facts(bytes: &[u8]) -> Result<ArtifactFacts, FactsError> {
             .or_default()
             .push(signature);
     }
+
+    facts.function_type_indices = function_type_indices;
 
     Ok(facts)
 }
@@ -946,5 +1205,118 @@ mod tests {
         assert!(!facts.has_mixed_memory_widths());
         facts.memory_pointer_widths = vec![4, 8];
         assert!(facts.has_mixed_memory_widths());
+    }
+
+    /// The two spellings of one reference type must reduce to a form every
+    /// consumer predicate accepts. `wasmparser` normalizes the spelling away,
+    /// so this pins the canonical output rather than the input.
+    #[test]
+    fn reference_shorthands_encode_canonically() {
+        use wasmparser::{AbstractHeapType, RefType};
+
+        let externref = binary_value_type(ValType::Ref(RefType::EXTERNREF));
+        assert_eq!(externref.code, 0x6F);
+        assert_eq!(externref.heap_type, None);
+        assert!(!externref.shared);
+
+        let funcref = binary_value_type(ValType::Ref(RefType::FUNCREF));
+        assert_eq!(funcref.code, 0x70);
+
+        // A NON-nullable abstract reference has no shorthand, so it takes the
+        // long form and carries its heap type explicitly. -0x11 is `extern`.
+        let non_null_extern = RefType::new(false, HeapType::Abstract {
+            shared: false,
+            ty: AbstractHeapType::Extern,
+        })
+        .expect("extern is a valid heap type");
+        let encoded = binary_value_type(ValType::Ref(non_null_extern));
+        assert_eq!(encoded.code, REF_CODE);
+        assert_eq!(encoded.heap_type, Some(-0x11));
+    }
+
+    /// Numeric types keep the one-byte opcodes the binary format assigns them.
+    #[test]
+    fn numeric_types_encode_as_their_opcodes() {
+        assert_eq!(binary_value_type(ValType::I32).code, 0x7F);
+        assert_eq!(binary_value_type(ValType::I64).code, 0x7E);
+        assert_eq!(binary_value_type(ValType::F32).code, 0x7D);
+        assert_eq!(binary_value_type(ValType::F64).code, 0x7C);
+        assert_eq!(binary_value_type(ValType::V128).code, 0x7B);
+    }
+
+    /// `exnref` and `contref` must stay distinguishable from `externref` after
+    /// canonicalization: the host routes the first two straight through the
+    /// wasm boundary and hands the third to JavaScript, and it decides which
+    /// from this encoding.
+    #[test]
+    fn boundary_sensitive_references_stay_distinguishable() {
+        use wasmparser::{AbstractHeapType, RefType};
+        let of = |ty| {
+            binary_value_type(ValType::Ref(
+                RefType::new(true, HeapType::Abstract { shared: false, ty })
+                    .expect("valid heap type"),
+            ))
+            .code
+        };
+        assert_eq!(of(AbstractHeapType::Exn), 0x69);
+        assert_eq!(of(AbstractHeapType::Cont), 0x68);
+        assert_eq!(of(AbstractHeapType::Extern), 0x6F);
+        assert_eq!(of(AbstractHeapType::NoExn), 0x74);
+        assert_eq!(of(AbstractHeapType::NoCont), 0x75);
+    }
+
+    /// Declaration order is the whole point of the descriptor lists: the keyed
+    /// maps are sorted by name and cannot answer an ordinal question.
+    #[test]
+    fn descriptors_and_arities_follow_declaration_order() {
+        // (module "m")
+        //   (import "b" "two" (func (param i32) (result i64)))
+        //   (import "a" "one" (global i32))
+        //   (func (export "z"))
+        //   (memory (export "mem") 1)
+        let wat = r#"(module
+            (import "b" "two" (func (param i32) (result i64)))
+            (import "a" "one" (global i32))
+            (func (export "z"))
+            (memory (export "mem") 1)
+        )"#;
+        let bytes = wat::parse_str(wat).expect("valid wat");
+        let facts = read_artifact_facts(&bytes).expect("valid module");
+
+        // Import order is "b.two" then "a.one" -- the opposite of the sorted
+        // map order, which is what makes this a real check.
+        let names: Vec<String> = facts
+            .import_descriptors
+            .iter()
+            .map(|d| format!("{}.{}", d.module, d.name))
+            .collect();
+        assert_eq!(names, vec!["b.two", "a.one"]);
+        assert_eq!(facts.import_descriptors[0].kind, DescriptorKind::Function);
+        assert_eq!(facts.import_descriptors[1].kind, DescriptorKind::Global);
+
+        // The imported function is ordinal 0 and function index 0; its
+        // signature comes from the artifact, not from a name lookup.
+        assert_eq!(facts.function_import_entries.len(), 1);
+        let imported = &facts.function_import_entries[0];
+        assert_eq!(imported.import_ordinal, 0);
+        assert_eq!(imported.function_index, 0);
+        assert_eq!(imported.params.len(), 1);
+        assert_eq!(imported.params[0].code, 0x7F);
+        assert_eq!(imported.results[0].code, 0x7E);
+
+        let exports: Vec<(&str, DescriptorKind)> = facts
+            .export_descriptors
+            .iter()
+            .map(|d| (d.name.as_str(), d.kind))
+            .collect();
+        assert_eq!(
+            exports,
+            vec![("z", DescriptorKind::Function), ("mem", DescriptorKind::Memory)]
+        );
+
+        // Function index 1 is the defined function; its type has no params and
+        // no results.
+        let type_index = facts.function_type_indices[1] as usize;
+        assert_eq!(facts.type_arities[type_index], Some((0, 0)));
     }
 }

@@ -34,3 +34,10 @@ fork-codec = { path = "../fork-codec" }
 # to exist today, and a maintained spec parser is how that stays true as the
 # GC, exception-handling and memory64 proposals move.
 wasmparser = { version = "0.247", default-features = false }
+
+[dev-dependencies]
+# Test modules are written as WAT so the input to a walker test is readable as
+# the module it describes, rather than as a byte array whose meaning has to be
+# reconstructed by whoever next reads the test. Host-only: this crate itself
+# stays `no_std + alloc`.
+wat = "1"
