@@ -10,6 +10,72 @@ amend, never force-push. The maintainer is the sole merger.**
 
 **Last pushed:** `b5db3ca38` (2026-09-10)
 
+## THE LEDGER, MEASURED PROPERLY (2026-09-10) — and what it exposes
+
+Measured against the campaign merge-base `9195dedd1`, with rename detection
+on. Earlier figures in this document quoted a *session* delta or an unsplit
+total and read far better than the truth.
+
+**Production TypeScript — every `*.test.ts` / `*.spec.ts` and test directory
+excluded — is net −2,460 for the whole campaign.**
+
+| | files | lines |
+|---|---|---|
+| Deleted outright | 13 | **−12,254** |
+| Modified | 51 | +9,889 / −15,208 → **−5,319** |
+| Newly created | 38 | **+15,113** |
+| | | **net −2,460** |
+
+Including tests, the totals are 107 new files (+25,899), 37 deleted (−22,307),
+125 modified (net −7,572) → **net −3,980**. Rust over the same range is
+**+96,855**.
+
+### Where the new production TypeScript went
+
+| family | lines |
+|---|---|
+| fork-module host driver (15 files) | 4,957 |
+| dylink host driver (5 files) | 3,666 |
+| worker/process unification (`process-lifecycle.ts`, `worker-protocol.ts`) | 3,840 |
+| side-module drivers (`wasi-module-instance`, `wasm-artifact-driver`) | 1,243 |
+| other | ~1,400 |
+
+**One of these is fine and the rest are the finding.** The 3,840 for the
+worker/process unification is a *dedupe*: it collapsed two duplicated worker
+entries into one, and the two files it replaced shrank by 4,741 lines. That
+family is net negative and did exactly what the campaign intended.
+
+**The other ~9,900 lines are host-side glue written to drive the Rust
+modules,** and they are the campaign arguing against itself. The clearest
+single case: the TypeScript `ld.so` (`dylink.ts`, 4,188 lines) was deleted and
+a TypeScript dylink **driver** (3,666 lines across 5 files) was added.
+
+That is not the trade this campaign was for. **V4 — minimize the host API
+surface so a new host is cheap to write — is the maintainer's stated primary
+goal, and every one of those ~9,900 lines is surface a wasmtime host must
+reimplement.** Some of it is the declared irreducible floor: worker spawn, the
+`fork()` syscall and syscall-channel transport, `resolve_externref` identity
+materialization, anyref-transit `Table.grow` sizing, PIC placement globals, the
+resume `WebAssembly.Table`, and the Node/browser platform bridges. But the
+floor was scoped as a handful of capabilities, and this is three orders of
+magnitude larger than that.
+
+### What this changes about what to do next
+
+The register has been ordering work by "deletes TypeScript". On this
+measurement that ordering is incomplete: an item that deletes 2,000 lines and
+adds 1,800 lines of driver glue scores well on the ledger and **loses** on V4.
+
+**Proposed, needs the maintainer:** make the next major target the driver glue
+itself — audit those ~9,900 lines against the declared floor, and for each
+capability ask whether the host is *deciding* something (must move) or merely
+*performing an engine operation only a host can perform* (genuine floor). The
+`fork-module` and `dylink` driver families are where to start, being 8,623 of
+the 9,900.
+
+This is recorded rather than acted on because it changes the campaign's
+priority order, which is the maintainer's call, not an agent's.
+
 ## Ledger — the number that judges this campaign
 
 `9638a2023..bb9fe63ec`: in-scope TS **+474** (890 added / 416 removed),
