@@ -221,10 +221,16 @@ pub const fn poll_events_for_eventtype(tag: u8) -> Result<Option<u16>, WasiErrno
 /// Split a signed 64-bit value into the low unsigned word and the high signed
 /// word, the way `splitSignedI64Words` (`host/src/wasi-shim.ts:126`) must.
 ///
-/// Rust does not need this: an `i64` argument is simply an `i64`. It exists so
-/// the differential harness can *prove* the TypeScript's BigInt word-splitting
-/// was correct across the i64 boundaries before that code is retired. It is
-/// not called by any entry point.
+/// This survives the port for a reason the TypeScript's own helper does not:
+/// Kandelo's `lseek` ABI genuinely carries the offset as a low-u32/high-i32
+/// pair, so `fd_seek` and `fd_readdir`'s cookie seek both need it. What
+/// disappears is the *other* helper, `checkedSignedI64Scalar` — that one
+/// exists purely because a JavaScript number is a double and cannot hold an
+/// i64, a problem Rust does not have.
+///
+/// The differential harness also uses this to prove the TypeScript's BigInt
+/// word-splitting was correct across the i64 boundaries before that code is
+/// retired.
 pub const fn split_signed_i64_words(value: i64) -> (u32, i32) {
     (value as u64 as u32, (value >> 32) as i32)
 }
