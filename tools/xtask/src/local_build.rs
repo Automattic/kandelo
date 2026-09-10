@@ -811,10 +811,36 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// forces a rebuild through the normal engine path, not a silent-staleness
 /// hazard this freshness check needs to duplicate.
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
-    let kernel_path = repo
-        .join("local-binaries")
-        .join("source-only-v1")
-        .join("kernel.wasm");
+    // Every projected kernel artifact, not just the SourceOnlyV1 one.
+    //
+    // WHY BOTH: this gate used to check only `source-only-v1/kernel.wasm`, on
+    // the premise (recorded above) that the ambient `local-binaries/kernel.wasm`
+    // was a dead `build.sh`-era name. That premise is false — the ambient path
+    // is alive and load-bearing: `crates/host-native/src/lib.rs:290` loads it
+    // directly, and `build-deps install-local-artifact` still writes it. On
+    // 2026-09-09 a `./run.sh rebuild kernel` refreshed the SourceOnlyV1
+    // projection and left the ambient one three days stale, so `verify-fresh`
+    // reported green while every host-native test failed to instantiate on an
+    // import-type mismatch. A freshness gate that passes over the artifact a
+    // consumer actually loads is worse than no gate: it converts "never
+    // checked" into "checked and fine".
+    for relative in ["source-only-v1/kernel.wasm", "kernel.wasm"] {
+        verify_fresh_kernel_artifact(repo, relative)?;
+    }
+    snapshot_drift_check(repo, false)?;
+    verify_fresh_coresident_fork_module(repo)?;
+    Ok(())
+}
+
+/// One projected `kernel.wasm`: ABI-version match, then same-ABI build-key
+/// match. A missing artifact is not staleness — nothing can be stale before
+/// `./run.sh setup`/`bootstrap` has produced that tier, and the resolver's own
+/// "binary not found" error already reports absence plainly.
+fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<(), String> {
+    let mut kernel_path = repo.join("local-binaries");
+    for segment in relative.split('/') {
+        kernel_path.push(segment);
+    }
     let bytes = match fs::read(&kernel_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -871,21 +897,9 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
             crate::util::hex(&expected_key),
         ));
     }
-    // B3: the ABI-version check and the build-key backstop above both prove
-    // the staged kernel.wasm matches the current source tree. Neither one
-    // proves the committed abi/snapshot.json (a separate tracked artifact,
-    // consumed by CI's structural-compat gate) still matches those same
-    // sources -- so run that check too, gated to keep the local no-op path
-    // fast.
-    snapshot_drift_check(repo, false)?;
-    // L5: the kernel is not the only artifact projected into the SourceOnlyV1
-    // root and served to the browser by the pinned-projection resolver. The
-    // co-resident fork-module (`fork_module{32,64}.wasm`) is built out-of-band
-    // and projected too, and a fork-module source change can leave the
-    // published projection stale while `kernel.wasm` stays fresh. Gate it here
-    // so `verify-fresh` fails loud instead of green-lighting a boot the
-    // resolver will 500.
-    verify_fresh_coresident_fork_module(repo)?;
+    // B3 and L5 (the committed abi/snapshot.json, and the projected
+    // co-resident fork-module) are machine-wide rather than per-artifact, so
+    // they run once in `verify_fresh_report` instead of per kernel copy.
     Ok(())
 }
 
