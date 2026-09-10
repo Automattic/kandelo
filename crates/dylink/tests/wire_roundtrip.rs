@@ -421,6 +421,11 @@ fn every_config() -> Vec<LinkerConfig> {
             memory_bytes: 1 << 32,
             shared_memory: true,
             heap_pointer: Some(0xdead_beef),
+            library_search_paths: vec![
+                String::from("/lib"),
+                String::from("/usr/lib"),
+                String::from("/usr/local/lib"),
+            ],
         },
     ]
 }
@@ -444,6 +449,7 @@ fn every_linker_config_round_trips() {
         assert_eq!(decoded.memory_bytes, config.memory_bytes);
         assert_eq!(decoded.shared_memory, config.shared_memory);
         assert_eq!(decoded.heap_pointer, config.heap_pointer);
+        assert_eq!(decoded.library_search_paths, config.library_search_paths);
     }
 }
 

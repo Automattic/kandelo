@@ -2,16 +2,14 @@
 //!
 //! # Why this crate exists
 //!
-//! [`dylink`] is a pure Rust library with a Rust-native `step`/`resume` API.
+//! [`dylink`] is a pure Rust library with a Rust-native session API.
 //! `crates/host-native` links it directly and matches on the enums, so on a
 //! native host the planner needs nothing else. On the two JavaScript hosts it
 //! needs one thing it does not have: **a wasm entry point**. Without one,
-//! nothing on Node or in the browser can call the planner at all, and
-//! `host/src/dylink.ts` (4,188 lines) plus `host/src/dylink-fork-archive.ts`
-//! (2,152) keep driving every load on every host.
+//! nothing on Node or in the browser can call the planner at all.
 //!
-//! This crate is that entry point. It is deliberately thin: session state, two
-//! byte buffers, and a `dl_*` export per planner method. Every decision the
+//! This crate is that entry point. It is deliberately thin: one session, two
+//! byte buffers, and a `dl_*` export per session method. Every decision the
 //! linker makes lives in [`dylink`], where it is testable with plain
 //! `cargo test` and shared with the native executor.
 //!
@@ -50,66 +48,53 @@
 //! allocate, so reading them after a call is safe — but the view used to READ
 //! those bytes must still be freshly acquired.
 //!
-//! # The drive loop
+//! # One drive loop, four kinds of transaction
 //!
 //! ```text
 //!   dl_configure(config)            once per process
 //!   dl_publish_main_image(image)    once per process, before any dlopen
 //!
-//!   dl_open_begin(request)          per dlopen
+//!   token = dl_open_begin(request)  |  dl_sym_begin(handle, name)
+//!                                   |  dl_close_begin(handle)
 //!   loop {
-//!       dl_step()                   -> encoded PlanStep in the output buffer
+//!       dl_step(token)              -> encoded PlanStep in the output buffer
 //!       match step {
-//!           Act | Host | Call  => execute it, dl_resume(encoded ActResult)
+//!           Act | Host | Call  => execute it, dl_resume(token, ActResult)
 //!           Finished           => break
 //!       }
 //!   }
-//!   dl_open_finish()                -> the dlopen handle
+//!   dl_open_finish(token, replay)   |  dl_sym_address(token)
+//!                                   |  dl_close_result(token)
 //! ```
 //!
-//! A failed load calls [`dl_open_abort`] instead of [`dl_open_finish`]. Abort
-//! does not end the drive loop: it re-arms it with the rollback work, so the
-//! SAME loop drains the release requests and then sees `Finished`. There is one
-//! drive loop, not two.
+//! The fork half — reading the process archive, publishing it, and reconciling
+//! a child against it — is the same loop over the same session and lands with
+//! `crates/dylink`'s archive planner.
 //!
-//! # Scope of this crate, and what is NOT here
+//! A failed transaction calls [`dl_abort`] instead. Abort does not end the
+//! drive loop: it re-arms it with the rollback work, so the SAME loop drains
+//! the release requests and then sees `Finished`. There is one drive loop, not
+//! two, and it is the same loop for every transaction kind.
 //!
-//! This crate is the entry points and the session state, and the surrounding
-//! commit wires the module through the build pipeline so both hosts resolve,
-//! compile, and hand it to every process worker.
+//! # Transactions are concurrent on purpose
 //!
-//! Nothing DRIVES it. `host/src/dylink.ts` still performs every load on every
-//! host. The JavaScript act executor, the KFLA fork-archive encoder, and the
-//! `worker-main.ts` rewire that retires that file are the next increment.
-//!
-//! Two things a caller might expect and will not find, so that their absence is
-//! a stated boundary rather than a surprise:
-//!
-//! - **Nested loader transactions.** [`dylink::PendingTransaction`] models a
-//!   `dlopen` the parent had open when it forked. The planner carries it; this
-//!   module has no entry point that begins or resumes one, and
-//!   [`dl_open_begin`] refuses a second concurrent load rather than nesting.
-//! - **Scope snapshot/restore.** `LinkerScope::snapshot`/`restore` exist for
-//!   transaction rollback inside the planner. [`dl_open_abort`] uses the plan's
-//!   own rollback, which is the whole-load case; a partial-scope rewind has no
-//!   entry point.
-//!
-//! Neither is needed to drive a `dlopen` to completion or to unwind a failed
-//! one, which is why they are omitted rather than stubbed.
+//! A constructor calling `dlopen` is legal POSIX, and
+//! [`dylink::scope::LoadState::Initializing`] exists for it. Tokens are
+//! allocated from a counter that is not the handle counter, they are private to
+//! libc's prepare/next/commit protocol, and a second `dl_open_begin` while one
+//! is in flight is an ordinary nested load rather than a refusal.
 
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
 
-use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
-use dylink::{
-    DylinkError, HandleTable, HostRequest, LinkPlan, Linker, PlanStep, MAIN_PROGRAM_HANDLE,
-};
+use dylink::session::Session;
+use dylink::{DylinkError, PlanStep};
 
 /// The call succeeded. Any payload is in the output buffer.
 pub const DL_OK: i32 = 0;
@@ -119,36 +104,6 @@ pub const DL_ERROR: i32 = -1;
 // ---------------------------------------------------------------------------
 // Session state
 // ---------------------------------------------------------------------------
-
-/// What the session is currently driving.
-enum Phase {
-    /// No load in flight.
-    Idle,
-    /// A `dlopen` is being planned.
-    Loading(LinkPlan),
-    /// A failed load is being rolled back. The queue is drained by the same
-    /// `dl_step` loop that drove the load, so a driver has one loop, not two.
-    RollingBack(VecDeque<HostRequest>),
-}
-
-struct Session {
-    linker: Linker,
-    handles: HandleTable,
-    phase: Phase,
-    /// `dlerror`'s pending message.
-    error: Option<String>,
-}
-
-impl Session {
-    fn new(linker: Linker) -> Self {
-        Session {
-            linker,
-            handles: HandleTable::new(),
-            phase: Phase::Idle,
-            error: None,
-        }
-    }
-}
 
 /// The two byte buffers, deliberately OUTSIDE the session.
 ///
@@ -161,9 +116,8 @@ struct Buffers {
     input: Vec<u8>,
     /// The module writes answer bytes here; the driver reads them.
     output: Vec<u8>,
-    /// A message from a call made with no session, which has nowhere else to
-    /// go.
-    detached_error: Option<String>,
+    /// The pending `dlerror` message.
+    error: Option<String>,
 }
 
 /// The process's single session.
@@ -188,7 +142,7 @@ unsafe impl Sync for BufferCell {}
 static BUFFERS: BufferCell = BufferCell(UnsafeCell::new(Buffers {
     input: Vec::new(),
     output: Vec::new(),
-    detached_error: None,
+    error: None,
 }));
 
 /// The session, or `None` before [`dl_configure`].
@@ -231,37 +185,45 @@ fn request(len: u32) -> Result<&'static [u8], DylinkError> {
 fn with_session(body: impl FnOnce(&mut Session) -> Result<(), DylinkError>) -> i32 {
     buffers().output.clear();
     let Some(state) = session().as_mut() else {
-        return detached_failure("no linker session; call dl_configure first");
+        return fail("no linker session; call dl_configure first");
     };
     match body(state) {
         Ok(()) => {
-            state.error = None;
+            buffers().error = None;
             DL_OK
         }
         Err(error) => {
             buffers().output.clear();
-            state.error = Some(error.to_string());
+            buffers().error = Some(error.to_string());
             DL_ERROR
+        }
+    }
+}
+
+/// The same, for an entry point whose answer is a scalar rather than bytes.
+/// `-1` is the failure value for every one of them.
+fn with_session_i64(body: impl FnOnce(&mut Session) -> Result<i64, DylinkError>) -> i64 {
+    buffers().output.clear();
+    let Some(state) = session().as_mut() else {
+        fail("no linker session; call dl_configure first");
+        return -1;
+    };
+    match body(state) {
+        Ok(value) => {
+            buffers().error = None;
+            value
+        }
+        Err(error) => {
+            buffers().output.clear();
+            buffers().error = Some(error.to_string());
+            -1
         }
     }
 }
 
 fn fail(message: &str) -> i32 {
     buffers().output.clear();
-    match session().as_mut() {
-        Some(state) => {
-            state.error = Some(message.to_string());
-            DL_ERROR
-        }
-        None => detached_failure(message),
-    }
-}
-
-/// A failure with no session to record it against. [`dl_error`] still renders
-/// it: a call made before `dl_configure` must be diagnosable, not just a bare
-/// status code.
-fn detached_failure(message: &str) -> i32 {
-    buffers().detached_error = Some(message.to_string());
+    buffers().error = Some(message.to_string());
     DL_ERROR
 }
 
@@ -298,11 +260,15 @@ pub extern "C" fn dl_output_len() -> u32 {
 ///
 /// Returns the message length, or 0 when there is no pending error. POSIX
 /// `dlerror` clears the message it reports, and so does this.
+///
+/// A message set by the loader itself — a failed load, an invalid handle —
+/// takes precedence over one the session recorded for a `dlsym` miss, because
+/// the failure the caller is asking about is the one that just happened.
 #[unsafe(no_mangle)]
 pub extern "C" fn dl_error() -> u32 {
-    let message = match session().as_mut().and_then(|state| state.error.take()) {
+    let message = match buffers().error.take() {
         Some(message) => Some(message),
-        None => buffers().detached_error.take(),
+        None => session().as_mut().and_then(|state| state.handles.take_error()),
     };
     let output = &mut buffers().output;
     output.clear();
@@ -321,7 +287,7 @@ pub extern "C" fn dl_error() -> u32 {
 
 /// Configure the process's linker from an encoded `LinkerConfig`.
 ///
-/// Called once per process. Calling it again replaces the linker wholesale,
+/// Called once per process. Calling it again replaces the session wholesale,
 /// which is what `exec` needs: the new image shares no loader state with the
 /// old one.
 #[unsafe(no_mangle)]
@@ -330,15 +296,16 @@ pub extern "C" fn dl_configure(len: u32) -> i32 {
     let config = match request(len).and_then(dylink::wire::decode_linker_config) {
         Ok(config) => config,
         Err(error) => {
-            // A malformed config leaves NO session, so the message goes to the
-            // detached slot. Creating a default-configured session here would
-            // be the silent-success shape this project treats as a defect: the
-            // process would link against a pointer width nobody chose.
+            // A malformed config leaves NO session. Creating a
+            // default-configured one here would be the silent-success shape
+            // this project treats as a defect: the process would link against a
+            // pointer width nobody chose.
             *session() = None;
-            return detached_failure(&error.to_string());
+            return fail(&error.to_string());
         }
     };
-    *session() = Some(Session::new(Linker::new(config)));
+    *session() = Some(Session::new(config));
+    buffers().error = None;
     DL_OK
 }
 
@@ -368,48 +335,15 @@ pub extern "C" fn dl_publish_main_image(len: u32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// dlopen
+// The drive loop
 // ---------------------------------------------------------------------------
 
-/// Begin a `dlopen` from an encoded `LoadRequest`.
+/// Ask what the driver must do next for `token`. The encoded `PlanStep` lands
+/// in the output buffer.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_open_begin(len: u32) -> i32 {
+pub extern "C" fn dl_step(token: u32) -> i32 {
     with_session(|state| {
-        if !matches!(state.phase, Phase::Idle) {
-            // A nested begin would silently abandon the in-flight plan's
-            // allocations and activation, so it is refused rather than
-            // accommodated.
-            return Err(DylinkError::UnexpectedActSequence);
-        }
-        let load_request = dylink::wire::decode_load_request(request(len)?)?;
-        let plan = LinkPlan::begin(&mut state.linker, load_request)?;
-        state.phase = Phase::Loading(plan);
-        Ok(())
-    })
-}
-
-/// Ask what the driver must do next. The encoded `PlanStep` lands in the
-/// output buffer.
-#[unsafe(no_mangle)]
-pub extern "C" fn dl_step() -> i32 {
-    with_session(|state| {
-        let mut drained = false;
-        let step = match &mut state.phase {
-            Phase::Loading(plan) => plan.step(&mut state.linker)?,
-            Phase::RollingBack(queue) => match queue.pop_front() {
-                Some(host_request) => PlanStep::Host(host_request),
-                None => {
-                    drained = true;
-                    PlanStep::Finished
-                }
-            },
-            Phase::Idle => return Err(DylinkError::UnexpectedActSequence),
-        };
-        if drained {
-            // The rollback is complete. Return to Idle so the next dlopen is a
-            // fresh session rather than an endless run of `Finished`.
-            state.phase = Phase::Idle;
-        }
+        let step = state.step(token)?;
         buffers().output = dylink::wire::encode_plan_step(&step)?;
         Ok(())
     })
@@ -417,17 +351,70 @@ pub extern "C" fn dl_step() -> i32 {
 
 /// Answer the last step with an encoded `ActResult`.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_resume(len: u32) -> i32 {
+pub extern "C" fn dl_resume(token: u32, len: u32) -> i32 {
     with_session(|state| {
         let result = dylink::wire::decode_act_result(request(len)?)?;
-        match &mut state.phase {
-            Phase::Loading(plan) => plan.resume(&mut state.linker, result),
-            // A rollback request is answered with `Done`; there is nothing to
-            // feed back into the planner.
-            Phase::RollingBack(_) => Ok(()),
-            Phase::Idle => Err(DylinkError::UnexpectedActSequence),
-        }
+        state.resume(token, result)
     })
+}
+
+/// Abandon the transaction in flight and re-arm its drive loop with the
+/// rollback.
+///
+/// The output buffer carries the table range to reclaim, when there is one:
+/// `[1][u64 first][u64 length]`, or `[0]`. A `WebAssembly.Table` cannot shrink,
+/// so the length stays and the driver nulls the slots.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_abort(token: u32) -> i32 {
+    with_session(|state| {
+        let range = state.abort(token)?;
+        let output = &mut buffers().output;
+        match range {
+            Some((first, length)) => {
+                output.push(1);
+                output.extend_from_slice(&first.to_le_bytes());
+                output.extend_from_slice(&length.to_le_bytes());
+            }
+            None => output.push(0),
+        }
+        Ok(())
+    })
+}
+
+/// Forget a transaction whose rollback has drained.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_discard(token: u32) {
+    if let Some(state) = session().as_mut() {
+        state.discard(token);
+    }
+}
+
+/// Is `token` a live transaction?
+///
+/// The driver's own `Map` of pending tokens is gone: this is the authority, and
+/// asking it costs one call rather than a second copy of the state that can
+/// disagree with the first.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_pending(token: u32) -> i32 {
+    match session().as_ref() {
+        Some(state) => i32::from(state.contains(token)),
+        None => 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dlopen
+// ---------------------------------------------------------------------------
+
+/// Begin a `dlopen` from an encoded `LoadRequest`. Returns the transaction
+/// token, or [`DL_ERROR`].
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_open_begin(len: u32) -> i32 {
+    with_session_i64(|state| {
+        let load_request = dylink::wire::decode_load_request(request(len)?)?;
+        let token = state.open_begin(load_request)?;
+        Ok(i64::from(token))
+    }) as i32
 }
 
 /// Complete the load and return its `dlopen` handle, or [`DL_ERROR`].
@@ -435,212 +422,142 @@ pub extern "C" fn dl_resume(len: u32) -> i32 {
 /// `replay_handle` pins the parent's exact handle during fork replay; pass -1
 /// for an ordinary load. The guest holds the parent's handle values in its own
 /// memory, so a child that renumbered them would hand back a handle the program
-/// has never seen — which is why the planner treats a mismatch as an error
-/// rather than silently reassigning.
+/// has never seen.
 ///
 /// `i32` rather than `i64` deliberately: handles are allocated from 2 upwards,
 /// one per live `dlopen`, so they cannot approach `i32::MAX`, and an `i64`
 /// parameter would force every JavaScript caller to pass a `BigInt` for a small
 /// counter.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_open_finish(replay_handle: i32) -> i32 {
-    buffers().output.clear();
-    let replay_handle = match replay_handle {
-        -1 => None,
-        handle if handle >= 0 => Some(handle as u32),
-        _ => return fail("replay handle must be -1 (none) or a non-negative handle"),
-    };
-    let Some(state) = session().as_mut() else {
-        return detached_failure("no linker session; call dl_configure first");
-    };
-    let Phase::Loading(plan) = core::mem::replace(&mut state.phase, Phase::Idle) else {
-        return fail("dl_open_finish without a load in flight");
-    };
-    let library = match plan.finish(&state.linker) {
-        Ok(library) => library,
-        Err(error) => return fail(&error.to_string()),
-    };
-    let handle = match state.handles.open(&library.name, replay_handle) {
-        Ok(handle) => handle,
-        Err(error) => return fail(&error.to_string()),
-    };
-    // Record the lifetime edges `dlclose` needs. Without them a dependency
-    // retained only by another object would look unloadable.
-    let dependencies = library.runtime_dependency_names();
-    if let Err(error) = state
-        .handles
-        .register_dependency_edges([(library.name.clone(), dependencies)])
-    {
-        return fail(&error.to_string());
-    }
-    state.error = None;
-    handle as i32
+pub extern "C" fn dl_open_finish(token: u32, replay_handle: i32) -> i32 {
+    with_session_i64(|state| {
+        let replay = match replay_handle {
+            -1 => None,
+            handle if handle >= 0 => Some(handle as u32),
+            _ => {
+                return Err(DylinkError::HandleOutOfRange {
+                    handle: replay_handle as u32,
+                })
+            }
+        };
+        Ok(i64::from(state.open_finish(token, replay)?))
+    }) as i32
 }
 
-/// Abandon the load in flight and re-arm the drive loop with its rollback.
+/// Record where the driver published the staged `() -> ()` entry the last
+/// [`PlanStep::Call`] named.
 ///
-/// The rollback requests are drained by [`dl_step`], so a driver that already
-/// has a step loop needs no second one. The output buffer carries the table
-/// range to reclaim, when there is one: `[1][u64 first][u64 length]`, or `[0]`.
+/// The slot is an engine fact only the driver has, and a fork child needs it to
+/// resume an interrupted `dlopen` at the exact continuation point.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_open_abort() -> i32 {
-    buffers().output.clear();
-    let Some(state) = session().as_mut() else {
-        return detached_failure("no linker session; call dl_configure first");
-    };
-    let Phase::Loading(plan) = core::mem::replace(&mut state.phase, Phase::Idle) else {
-        return fail("dl_open_abort without a load in flight");
-    };
-    let table_range = plan.rollback_table_range(&state.linker);
-    let requests = plan.rollback(&mut state.linker);
-    let output = &mut buffers().output;
-    match table_range {
-        Some((first, length)) => {
-            output.push(1);
-            output.extend_from_slice(&first.to_le_bytes());
-            output.extend_from_slice(&length.to_le_bytes());
-        }
-        None => output.push(0),
-    }
-    state.phase = Phase::RollingBack(requests.into_iter().collect());
-    state.error = None;
-    DL_OK
+pub extern "C" fn dl_note_staged_slot(token: u32, table_index: u64) -> i32 {
+    with_session(|state| state.note_staged_slot(token, table_index))
 }
 
 // ---------------------------------------------------------------------------
 // Plan accessors
 // ---------------------------------------------------------------------------
-//
-// The layout the planner chose, for the caller that has to record it: the fork
-// archive writes exactly these fields. Each returns -1 for "absent" rather than
-// zero, because zero is a legal value for every one of them.
 
-/// The instance id the plan assigned, or -1.
+/// The layout the planner chose for the object currently being linked, for the
+/// caller that has to record it. Each field returns -1 for "absent" rather than
+/// zero, because zero is a legal value for every one of them.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_plan_instance() -> i64 {
-    with_plan(|plan| plan.instance().index() as i64)
+pub extern "C" fn dl_plan_instance(token: u32) -> i64 {
+    with_plan(token, |plan| plan.instance().index() as i64)
 }
 
 /// The plan's `__memory_base`, or -1.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_plan_memory_base() -> i64 {
-    with_plan(|plan| plan.memory_base() as i64)
+pub extern "C" fn dl_plan_memory_base(token: u32) -> i64 {
+    with_plan(token, |plan| plan.memory_base() as i64)
 }
 
 /// The plan's `__table_base`, or -1.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_plan_table_base() -> i64 {
-    with_plan(|plan| plan.table_base() as i64)
+pub extern "C" fn dl_plan_table_base(token: u32) -> i64 {
+    with_plan(token, |plan| plan.table_base() as i64)
 }
 
 /// The plan's TLS base, or -1 when the object has no TLS.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_plan_tls_base() -> i64 {
-    with_plan(|plan| plan.tls_base().map(|base| base as i64).unwrap_or(-1))
+pub extern "C" fn dl_plan_tls_base(token: u32) -> i64 {
+    with_plan(token, |plan| plan.tls_base().map(|base| base as i64).unwrap_or(-1))
 }
 
 /// The fork activation the plan reserved, or -1 when it reserved none.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_plan_activation() -> i64 {
-    with_plan(|plan| {
+pub extern "C" fn dl_plan_activation(token: u32) -> i64 {
+    with_plan(token, |plan| {
         plan.activation_id()
             .map(|activation| activation as i64)
             .unwrap_or(-1)
     })
 }
 
-fn with_plan(body: impl FnOnce(&LinkPlan) -> i64) -> i64 {
-    match session().as_ref() {
-        Some(Session {
-            phase: Phase::Loading(plan),
-            ..
-        }) => body(plan),
-        _ => -1,
+fn with_plan(token: u32, body: impl FnOnce(&dylink::LinkPlan) -> i64) -> i64 {
+    match session().as_ref().and_then(|state| state.active_plan(token)) {
+        Some(plan) => body(plan),
+        None => -1,
     }
 }
 
 // ---------------------------------------------------------------------------
-// dlsym / dlclose
+// dlsym
 // ---------------------------------------------------------------------------
 
-/// Resolve a symbol for `handle`. The input buffer holds the symbol name; the
-/// output buffer receives an encoded `Option<ResolvedSymbol>`.
+/// Begin a `dlsym`. The input buffer holds the symbol name. Returns the
+/// transaction token to drive, or [`DL_ERROR`].
 ///
-/// A miss is a successful call carrying `None`, not an error: POSIX reports it
-/// through `dlerror`, and conflating the two would make a legitimately absent
-/// weak symbol indistinguishable from a broken lookup.
+/// This is a transaction rather than a plain call because a resolved function
+/// may have no indirect-function-table slot yet, and taking one is a table
+/// mutation only the driver can perform. A C function pointer IS that index.
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_sym(handle: u32, len: u32) -> i32 {
-    with_session(|state| {
-        // Copied out of the input buffer rather than borrowed from it. The
-        // answer is written into the OUTPUT buffer further down, and holding a
-        // borrow of one field of `Buffers` across a write to another means two
-        // live `&mut` to the same struct — which works in practice and is still
-        // the kind of aliasing that has no business being in code an optimizer
-        // is free to reason about.
-        let name = match core::str::from_utf8(request(len)?) {
-            Ok(name) => name.to_string(),
-            Err(_) => return Err(DylinkError::MalformedModule("dlsym name is not UTF-8")),
-        };
-        let name = name.as_str();
-        let symbol = if handle == MAIN_PROGRAM_HANDLE {
-            state.linker.scope.global_symbol(name).cloned()
-        } else {
-            let library = state
-                .handles
-                .library_for(handle)
-                .ok_or(DylinkError::InvalidHandle { handle })?
-                .to_string();
-            let roots = [library.clone()];
-            let scope = state.linker.scope.dependency_scope(&library, &roots)?;
-            state.linker.scope.scoped_symbol(&scope, name)
-        };
-        buffers().output = dylink::wire::encode_resolved_symbol(symbol.as_ref())?;
-        Ok(())
+pub extern "C" fn dl_sym_begin(handle: u32, len: u32) -> i32 {
+    with_session_i64(|state| {
+        let name = core::str::from_utf8(request(len)?)
+            .map_err(|_| DylinkError::MalformedModule("dlsym name is not UTF-8"))?;
+        // Copied out of the input buffer: the session may write the output
+        // buffer while this borrow is live, and two live `&mut` into `Buffers`
+        // have no business in code an optimizer is free to reason about.
+        let name = name.to_string();
+        Ok(i64::from(state.sym_begin(handle, &name)?))
+    }) as i32
+}
+
+/// The resolved address, or -1 for a miss.
+///
+/// A miss is a successful call: POSIX reports it through `dlerror`, and
+/// conflating the two would make a legitimately absent weak symbol
+/// indistinguishable from a broken lookup. -1 rather than 0 because address
+/// zero is a legal data address.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_sym_address(token: u32) -> i64 {
+    with_session_i64(|state| {
+        Ok(match state.sym_result(token)? {
+            Some(address) => i64::try_from(address)
+                .map_err(|_| DylinkError::MalformedModule("symbol address exceeds i64"))?,
+            None => -1,
+        })
     })
 }
 
-/// Release one reference to `handle`. The output buffer receives an encoded
-/// `CloseOutcome` describing what actually happened.
+// ---------------------------------------------------------------------------
+// dlclose
+// ---------------------------------------------------------------------------
+
+/// Begin a `dlclose`. Returns the transaction token to drive, or [`DL_ERROR`].
 #[unsafe(no_mangle)]
-pub extern "C" fn dl_close(handle: u32) -> i32 {
+pub extern "C" fn dl_close_begin(handle: u32) -> i32 {
+    with_session_i64(|state| Ok(i64::from(state.close_begin(handle)?))) as i32
+}
+
+/// What the `dlclose` did. The output buffer receives an encoded
+/// `CloseOutcome`.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_close_result(token: u32) -> i32 {
     with_session(|state| {
-        let outcome = state.handles.close(handle)?;
+        let outcome = state.close_result(token)?;
         buffers().output = dylink::wire::encode_close_outcome(&outcome)?;
-        Ok(())
-    })
-}
-
-/// Whether the library released by the last [`dl_close`] is safe to unload —
-/// that is, no other loaded object still retains it.
-///
-/// `dlclose` releasing the last HANDLE reference does not by itself authorize
-/// unloading: a dependency edge from another object keeps the image alive.
-/// Returns 1 for unloadable, 0 for retained, and [`DL_ERROR`] on a bad handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn dl_is_unloadable(len: u32) -> i32 {
-    buffers().output.clear();
-    let Ok(bytes) = request(len) else {
-        return fail("library name exceeds the reserved input buffer");
-    };
-    let Ok(library) = core::str::from_utf8(bytes) else {
-        return fail("library name is not UTF-8");
-    };
-    match session().as_ref() {
-        Some(state) => i32::from(state.handles.is_unloadable(library)),
-        None => detached_failure("no linker session; call dl_configure first"),
-    }
-}
-
-/// Forget a library that has been unloaded, so its name and table slots are
-/// available again.
-#[unsafe(no_mangle)]
-pub extern "C" fn dl_forget(len: u32) -> i32 {
-    with_session(|state| {
-        let library = core::str::from_utf8(request(len)?)
-            .map_err(|_| DylinkError::MalformedModule("library name is not UTF-8"))?
-            .to_string();
-        let _ = state.linker.scope.remove(&library);
         Ok(())
     })
 }
@@ -714,3 +631,8 @@ mod wasm {
         unreachable!()
     }
 }
+
+// A `PlanStep` reference keeps the doc link above resolvable without pulling
+// the enum into the entry points, which deal only in encoded bytes.
+#[allow(dead_code)]
+type DocPlanStep = PlanStep;

@@ -19,6 +19,11 @@ use dylink::wire::{
 };
 use dylink_module::*;
 
+/// A token no session ever allocated. Tokens start at 1, so zero can never be
+/// one — which is what lets a driver test a returned token without a second
+/// call.
+const NO_SUCH_TOKEN: u32 = 0;
+
 /// Copy `bytes` into the module's input buffer the way a driver would, and
 /// return the length to hand the entry point.
 fn write_input(bytes: &[u8]) -> u32 {
@@ -140,7 +145,7 @@ fn the_configured_pointer_width_reaches_the_planner() {
 fn stepping_with_nothing_in_flight_is_an_error_not_an_empty_step() {
     dl_reset();
     assert_eq!(configure(&LinkerConfig::default()), DL_OK);
-    assert_eq!(dl_step(), DL_ERROR);
+    assert_eq!(dl_step(NO_SUCH_TOKEN), DL_ERROR);
     // Checked BEFORE `dl_error`, which renders its message into this same
     // buffer: a failed step must not leave a decodable `PlanStep` behind for a
     // driver that forgot to check the status.
@@ -151,15 +156,28 @@ fn stepping_with_nothing_in_flight_is_an_error_not_an_empty_step() {
     assert!(!take_error().is_empty());
 }
 
-/// Finishing or aborting with no load in flight names the problem.
+/// Finishing or aborting a token nothing allocated names the problem.
 #[test]
-fn finishing_without_a_load_in_flight_is_refused() {
+fn finishing_an_unknown_transaction_is_refused() {
     dl_reset();
     assert_eq!(configure(&LinkerConfig::default()), DL_OK);
-    assert_eq!(dl_open_finish(-1), DL_ERROR);
-    assert!(take_error().contains("without a load in flight"));
-    assert_eq!(dl_open_abort(), DL_ERROR);
-    assert!(take_error().contains("without a load in flight"));
+    assert_eq!(dl_open_finish(NO_SUCH_TOKEN, -1), DL_ERROR);
+    assert!(take_error().contains("unknown dlopen transaction"));
+    assert_eq!(dl_abort(NO_SUCH_TOKEN), DL_ERROR);
+    assert!(take_error().contains("unknown dlopen transaction"));
+}
+
+/// `dl_pending` is the authority on which tokens are live.
+///
+/// The driver's own `Map` of pending transactions is gone. This is what
+/// replaces it, and it must answer "no" for a token nothing allocated rather
+/// than assuming the caller knows.
+#[test]
+fn pending_answers_for_a_token_nothing_allocated() {
+    dl_reset();
+    assert_eq!(configure(&LinkerConfig::default()), DL_OK);
+    assert_eq!(dl_pending(NO_SUCH_TOKEN), 0);
+    assert_eq!(dl_pending(1), 0);
 }
 
 /// A length larger than what was reserved must be refused rather than reading
@@ -180,7 +198,7 @@ fn a_request_longer_than_the_reservation_is_refused() {
 fn dlerror_clears_the_message_it_reports() {
     dl_reset();
     assert_eq!(configure(&LinkerConfig::default()), DL_OK);
-    assert_eq!(dl_step(), DL_ERROR);
+    assert_eq!(dl_step(NO_SUCH_TOKEN), DL_ERROR);
     assert!(!take_error().is_empty(), "the first read reports it");
     assert_eq!(take_error(), "", "the second read finds it cleared");
 }
@@ -191,11 +209,11 @@ fn dlerror_clears_the_message_it_reports() {
 fn plan_accessors_report_absent_as_minus_one() {
     dl_reset();
     assert_eq!(configure(&LinkerConfig::default()), DL_OK);
-    assert_eq!(dl_plan_instance(), -1);
-    assert_eq!(dl_plan_memory_base(), -1);
-    assert_eq!(dl_plan_table_base(), -1);
-    assert_eq!(dl_plan_tls_base(), -1);
-    assert_eq!(dl_plan_activation(), -1);
+    assert_eq!(dl_plan_instance(NO_SUCH_TOKEN), -1);
+    assert_eq!(dl_plan_memory_base(NO_SUCH_TOKEN), -1);
+    assert_eq!(dl_plan_table_base(NO_SUCH_TOKEN), -1);
+    assert_eq!(dl_plan_tls_base(NO_SUCH_TOKEN), -1);
+    assert_eq!(dl_plan_activation(NO_SUCH_TOKEN), -1);
 }
 
 /// `dl_reset` is what `exec` needs: the new image shares no loader state.
@@ -204,6 +222,6 @@ fn reset_drops_the_session() {
     dl_reset();
     assert_eq!(configure(&LinkerConfig::default()), DL_OK);
     dl_reset();
-    assert_eq!(dl_step(), DL_ERROR);
+    assert_eq!(dl_step(NO_SUCH_TOKEN), DL_ERROR);
     assert!(take_error().contains("dl_configure"));
 }

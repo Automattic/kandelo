@@ -204,6 +204,18 @@ impl Session {
         self.transactions.keys().copied().collect()
     }
 
+    /// The plan currently linking an object inside `token`, if any.
+    ///
+    /// This is the layout a caller has to record: the innermost frame is the
+    /// object being placed right now, which for a load with dependencies is the
+    /// dependency, not the root.
+    pub fn active_plan(&self, token: u32) -> Option<&LinkPlan> {
+        match &self.transactions.get(&token)?.flow {
+            Flow::Load(load) => load.frames.last()?.plan.as_ref(),
+            _ => None,
+        }
+    }
+
     fn allocate_token(&mut self) -> DylinkResult<u32> {
         let token = self.next_token;
         self.next_token = token
@@ -237,18 +249,21 @@ impl Session {
             // the second would allocate a second layout for the same object.
             return Err(DylinkError::DuplicateLibrary { library: request.name });
         }
+        let root = request.name.clone();
+        let global_visibility = request
+            .replay
+            .as_ref()
+            .map(|replay| replay.global_visibility)
+            .unwrap_or(request.global_visibility);
+        let frames = if already_loaded {
+            Vec::new()
+        } else {
+            alloc::vec![Frame::new(request)?]
+        };
         let flow = LoadFlow {
-            root: request.name.clone(),
-            global_visibility: request
-                .replay
-                .as_ref()
-                .map(|replay| replay.global_visibility)
-                .unwrap_or(request.global_visibility),
-            frames: if already_loaded {
-                Vec::new()
-            } else {
-                alloc::vec![Frame::new(request)]
-            },
+            root,
+            global_visibility,
+            frames,
             pending_roots: VecDeque::new(),
             completed: Vec::new(),
             queue: VecDeque::new(),
@@ -678,7 +693,7 @@ impl Session {
                     // reconcile was admitted.
                     return Ok(Advance::Again);
                 }
-                load.frames.push(Frame::new(request));
+                load.frames.push(Frame::new(request)?);
                 return Ok(Advance::Again);
             }
             if !load.commit_planned {
@@ -724,7 +739,7 @@ impl Session {
                     // layout, so no search happens at all.
                     let borrowed = load.frames[last].request.borrowed_memory;
                     let request = replay_request(&dependency, replay, borrowed);
-                    load.frames.push(Frame::new(request));
+                    load.frames.push(Frame::new(request)?);
                     return Ok(Advance::Again);
                 }
                 let requester = load.frames[last].request.name.clone();
@@ -847,7 +862,7 @@ impl Session {
                 // providers into the process-global scope.
                 let visibility = load.frames[last].request.global_visibility;
                 let request = LoadRequest::new(dependency, bytes).visibility(visibility);
-                load.frames.push(Frame::new(request));
+                load.frames.push(Frame::new(request)?);
                 Ok(())
             }
         }
@@ -1149,18 +1164,23 @@ enum Advance {
 }
 
 impl Frame {
-    fn new(request: LoadRequest) -> Self {
-        let needed = parse_dylink_section(&request.module_bytes)
-            .map(|metadata| metadata.needed_dynlibs.iter().cloned().collect())
-            .unwrap_or_default();
-        Frame {
+    /// Parse the image's `DT_NEEDED` list up front.
+    ///
+    /// Eager rather than deferred to the first `step`, so an artifact that is
+    /// not a shared library at all is refused by `dlopen` itself. Swallowing
+    /// the parse error here and letting `LinkPlan::begin` raise it later would
+    /// hand back a live transaction token for a load that can never start.
+    fn new(request: LoadRequest) -> DylinkResult<Self> {
+        let metadata = parse_dylink_section(&request.module_bytes)?;
+        let needed = metadata.needed_dynlibs.iter().cloned().collect();
+        Ok(Frame {
             request,
             needed,
             current: None,
             current_path: None,
             candidates: VecDeque::new(),
             plan: None,
-        }
+        })
     }
 }
 
