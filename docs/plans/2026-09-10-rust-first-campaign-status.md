@@ -2420,6 +2420,58 @@ The gate is therefore:
 - `xtask verify-fresh` exit 0,
 - the maintainer's own manual browser check.
 
+## THE TEST-FAILURE PLAN (maintainer-directed 2026-09-10)
+
+**"Please go ahead and plan to fix these tests as part of this campaign."**
+So the pre-existing failures are in scope, not just the ones this campaign
+caused. The ship gate is a green host suite, not a green *delta*.
+
+### The measurement that this plan rests on, and the hypothesis it killed
+
+Two full runs, both correct (from `host/`, inside `scripts/dev-shell.sh`):
+
+| kernel | result |
+|---|---|
+| stale (`verify-fresh` complaining) | 213 failed / 3,946 |
+| freshly built **and** properly installed, `verify-fresh` exit 0 | **212 failed / 3,946** |
+
+**One test.** The rebuild changed essentially nothing, which disproves the
+attribution written earlier in this document — that the 81
+`void kernel ingress kernel initialization completion failed` errors were
+kernel staleness. They are not. They are downstream of the *same* artifact
+closure refusal as the 42 explicit `Package artifact closure is incomplete`
+errors: a worker that cannot resolve its artifacts cannot initialise a kernel,
+whatever the kernel's age.
+
+Recorded because it was my hypothesis, it was specific, it was wrong, and the
+only reason it did not become an accepted fact is that the re-run was done
+instead of assumed.
+
+### The four roots, and who owns each
+
+| # | root | failures | owner |
+|---|---|---|---|
+| T1 | artifact tier identity — closure refused, kernel init fails, timeouts cascade | ~167 | B19/B23 agent |
+| T2 | `browser-kernel.test.ts` — one `?url` stub for every alias | ~60 | dispatched 2026-09-10 |
+| T3 | missing VFS image products (`shell`, `nginx-vfs`, `node-vfs`, `lamp`, `nginx-php-vfs`) and `examples/mqueue_test.wasm` | ~13 | dispatched 2026-09-10 (B21) |
+| T4 | residue — 7 `vi.fn` never called, 5 `unreachable`, assorted | ~20 | **after T1–T3 land**, because most should vanish with them |
+
+T4 is deliberately not dispatched. Most of that residue sits in suites whose
+kernel never initialised, so triaging it now would be triaging cascades.
+
+### T3's brief carries a disagreement on purpose
+
+B21 was reported as "`gzip` and `xz` fail to build". In the coordinator's
+worktree, after a `./run.sh setup` that exited 0, `gzip.wasm`, `xz.wasm`,
+`nginx.wasm`, `php` and `dash.wasm` are all present — and gzip/xz are dated
+*before* the run that reported them failing. Three readings survive: the build
+really fails and those are stale leftovers; the build works and the *products*
+are simply never built by `setup`; or it is the shared build-cache race, whose
+isolation flag `nix develop --ignore-environment` silently strips. The agent
+was told to decide which before fixing anything, because the three have
+different fixes and "did not reproduce in one worktree" is weaker evidence than
+a failure someone watched happen in another.
+
 ### Host suite triage, measured 2026-09-10 — what is ours and what is not
 
 Run correctly (from `host/`, inside `scripts/dev-shell.sh`) against a kernel
