@@ -66,6 +66,72 @@ avoid a contested file. The coordinator resolves at merge.
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
+| K4 | **RUNNING** | Worker entry unification |
+| K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
+| K13b | **NOT STARTED** | |
+
+## K6 — marshalling into Rust (2026-09-10)
+
+**All four families are cut over, and the TypeScript is deleted.** The item's
+ledger step is **TS −1,880 / Rust +1,813**, the first strongly net-negative
+step in the campaign.
+
+The mechanism is one new descriptor form,
+`SyscallArgSize::KernelDereferenced`: the host copies nothing, passes the
+caller's raw guest address, and stamps the caller's pointer width into the
+private sixth channel slot. The kernel reads and writes the caller's structure
+itself through `host_proc_read_bytes` / `host_proc_write_bytes` — the route
+`SIOCGIFCONF` already took. **No new host import.**
+
+| family | state |
+|---|---|
+| SysV `msgsnd`/`msgrcv`/`msgctl`/`shmctl`/`semctl` | cut over; 4 sizing exports deleted |
+| POSIX `mq_timedsend`/`mq_timedreceive` | cut over; 1 sizing export deleted |
+| `sendmsg`/`recvmsg` | cut over; both exports changed signature |
+| `ifconf` | **was already done by K2**; verified, no TS remained |
+
+### Three POSIX defects found and fixed on the way
+
+1. **`semctl(SETALL)` could fail EACCES on a call POSIX permits.** The
+   guest-side record encoder sized the `unsigned short` array with a
+   preliminary `semctl(IPC_STAT)`, because `nsems` appears nowhere in the
+   syscall arguments. IPC_STAT requires READ permission; SETALL requires only
+   WRITE. This was the recorded "semctl GETALL/SETALL" pre-flip gap — closed
+   from the other direction, by letting the kernel size the array from its own
+   state.
+2. **A blocked `msgsnd` would have become copy-at-success.** Linux's
+   `do_msgsnd` calls `load_msg()` before the wait loop. The host had preserved
+   that with a retry snapshot; reading caller memory at each dispatch would
+   silently change it. The message is now retained in
+   `BlockingRetryTarget::SysvMessage::pending_send`.
+3. **`SCM_RIGHTS` receive capacity used one header size for both widths.** It
+   is now derived from the CALLER's `cmsghdr`: 32 control bytes hold five
+   descriptors for a wasm32 receiver and four for a wasm64 one.
+
+`sendmsg`/`recvmsg` also gain native multi-buffer scatter/gather — the fixed
+kernel wire held at most one iovec, so the host had to flatten — and their
+transfers are now bounded by `SSIZE_MAX` rather than by a staging capacity.
+
+### ABI — reported, not silenced
+
+Two changes move `abi/snapshot.json` without an `ABI_VERSION` bump, which the
+epoch decision permits, but neither is additive and both are recorded in
+`docs/abi-versioning.md`:
+
+- **five kernel exports removed** (`kernel_semid_ds_bytes`,
+  `kernel_msqid_ds_bytes`, `kernel_shmid_ds_bytes`,
+  `kernel_semctl_array_bytes`, `kernel_mq_descriptor_msgsize`);
+- **`kernel_sendmsg`/`kernel_recvmsg` change signature**, from
+  `(i32,i32,i32,i64)` to `(i32,i64,i32,i32,i64)`. An ABI 43 guest calling the
+  four-argument form would trap.
+
+### Gap this item did NOT close
+
+**POSIX mqueue has no end-to-end test anywhere in the repo.** `mqueue.rs` has
+Rust unit tests and the EMSGSIZE ordering is pinned by a source-shape contract
+test, but no guest program exercises `mq_send`/`mq_receive` under the kernel.
+The three Vitest cases that touched mqueue only ever exercised the host
+preflight this item deleted. Worth an `examples/` program.
 | K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
 | K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
