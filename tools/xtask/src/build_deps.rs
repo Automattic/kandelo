@@ -28685,11 +28685,34 @@ ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
     #[test]
     fn program_output_validation_rejects_legacy_asyncify_wasm() {
         let out = tempdir("prog-out-asyncify");
-        fs::write(
-            out.join("bad.wasm"),
-            b"\0asm\x01\0\0\0 exported asyncify_start_unwind",
-        )
-        .unwrap();
+        // A real module that *exports* `asyncify_start_unwind`, rather than a
+        // header followed by that text.
+        //
+        // WHY the fixture changed: the old one was
+        // `b"\0asm\x01\0\0\0 exported asyncify_start_unwind"` — a valid
+        // header and then loose bytes, with no export section at all. It only
+        // ever tripped the gate because the gate was a substring scan, and a
+        // substring scan cannot tell a property of an artifact from a mention
+        // of it. That scan began rejecting the kernel itself once
+        // `crates/wasm-artifact`, which carries the literal in order to
+        // *detect* legacy instrumentation, was linked in. The gate now reads
+        // export names, so the fixture has to actually have one.
+        let name = b"asyncify_start_unwind";
+        let mut wasm: Vec<u8> = b"\0asm\x01\0\0\0".to_vec();
+        // Type section: one `() -> ()`.
+        wasm.extend_from_slice(&[0x01, 0x04, 0x01, 0x60, 0x00, 0x00]);
+        // Function section: one function of type 0.
+        wasm.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]);
+        // Export section: that function, under the asyncify name.
+        let mut exports: Vec<u8> = vec![0x01, name.len() as u8];
+        exports.extend_from_slice(name);
+        exports.extend_from_slice(&[0x00, 0x00]);
+        wasm.push(0x07);
+        wasm.push(exports.len() as u8);
+        wasm.extend_from_slice(&exports);
+        // Code section: one empty body.
+        wasm.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
+        fs::write(out.join("bad.wasm"), &wasm).unwrap();
         let m = DepsManifest::parse(
             r#"kind = "program"
 name = "bad"
