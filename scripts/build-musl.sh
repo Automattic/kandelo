@@ -351,8 +351,46 @@ if [ "$ARCH" = "wasm32posix" ]; then
     bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
 fi
 
+# ---------------------------------------------------------------
+# 11. Postcondition: do not announce a sysroot this script did not produce
+# ---------------------------------------------------------------
+# WHY: this script's tail used to end with
+#   ls -la "$SYSROOT/lib/libc.a" || echo "    WARNING: libc.a not found!"
+# which printed a warning and exited 0 -- the other half of the silent-success
+# defect the precondition block above closed. Preconditions became truthful,
+# but the postcondition still allowed "musl build complete!" over an absent
+# libc.a, and callers keyed on this script's exit status.
+#
+# An incomplete sysroot does not announce itself; it surfaces much later, in an
+# unrelated package, as an error naming neither this script nor the sysroot.
+# The recorded instance is `tar/wasm32` failing with
+# `gnu/readdir.c:38: incomplete definition of type 'DIR'`. Nothing is wrong
+# with `DIR` there -- it is the POSIX-correct opaque `struct __dirstream`,
+# exactly as upstream musl declares it, and Kandelo's overlay declares it the
+# same way. `gnu/readdir.c` is gnulib's *replacement* readdir: gnulib compiles
+# it only when its configure probe concluded the C library has no `readdir` at
+# all, and it dereferences a `DIR` that only gnulib's own `dirent-private.h`
+# defines (under `GNULIB_defined_DIR`, which gnulib sets only when it is also
+# replacing `opendir`/`closedir`). A probe reaches that conclusion by failing
+# to compile or link against the sysroot. So the tar error was a truthful
+# report of a broken sysroot wearing a package's clothes, and the layer that
+# owed the fix was this script -- not the overlay, and not a tar patch.
+#
+# See `bootstrap_sysroot_step` in tools/xtask/src/local_build.rs: it treats a
+# present `lib/libc.a` as "sysroot exists" and only resyncs headers thereafter,
+# so a libc.a that never appeared must fail here rather than be re-observed as
+# a missing-sysroot error somewhere else.
+if [ ! -s "$SYSROOT/lib/libc.a" ]; then
+    echo "Error: the musl build did not produce $SYSROOT/lib/libc.a." >&2
+    echo "       This sysroot is INCOMPLETE. Package builds that configure" >&2
+    echo "       against it will conclude the C library is missing functions it" >&2
+    echo "       should have, and will fail with errors naming their own sources" >&2
+    echo "       rather than this script." >&2
+    exit 1
+fi
+
 echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"
 echo "    libc.a:  $SYSROOT/lib/libc.a"
-ls -la "$SYSROOT/lib/libc.a" 2>/dev/null || echo "    WARNING: libc.a not found!"
+ls -la "$SYSROOT/lib/libc.a"
