@@ -1,4 +1,5 @@
 import {
+  ABI_VERSION,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
@@ -2577,7 +2578,15 @@ export function describeWasmArtifactPolicyFailures(
     );
   }
   if (options.forbidForkInstrumentation && hasForkArtifactSurface) {
-    failures.push("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
+    // The epoch is read from ABI_VERSION rather than written as a literal.
+    // This message names the epoch whose fork contract the artifact was
+    // measured against; a hardcoded number silently keeps naming the old one
+    // after a bump, telling whoever reads the failure that a stale artifact
+    // belongs to an epoch nobody is running.
+    failures.push(
+      `contains ABI ${ABI_VERSION} wasm-fork-instrument metadata, imports, ` +
+        "or exports",
+    );
   }
 
   const requireForkInstrumentation =

@@ -1712,7 +1712,10 @@ describe("wasm artifact policy helpers", () => {
       expectedAbi: 12,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
-    })).toContain("contains ABI 43 wasm-fork-instrument metadata, imports, or exports");
+    })).toContain(
+      `contains ABI ${ABI_VERSION} wasm-fork-instrument metadata, imports, ` +
+        "or exports",
+    );
   });
 });
 

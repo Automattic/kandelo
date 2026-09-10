@@ -159,7 +159,7 @@ needed and not added**; the sanctioned import remains unspent.
 | `kernel-scratch-contract` — pointer-role | **FIXED** — `kernel_spawn_blob_decode` used `buf_cap`; the repo uses `_capacity` 13× and `_len` 74×, so the guard was right and the code had drifted |
 | `kernel-scratch-contract` — spawn symbols | **FIXED** — the guard demanded the host reference spawn limits the kernel owns under ABI 44; satisfying it would have pushed an authority back out of the kernel to make a test pass |
 | `kernel-scratch-contract` — unreviewed memory authority | **53 → 16**, see below |
-| `vfs-image-wasm-policy` | **NOT STARTED** |
+| `vfs-image-wasm-policy` | **FIXED** — the rejection message hardcoded "ABI 43" while `ABI_VERSION` is 44; the test was right and the message was stale. 13/13 |
 
 ### The unreviewed-memory-authority guard: 53 → 16, and why the rest waits
 
@@ -190,6 +190,39 @@ created by this campaign, and the guard is correctly demanding review of each.
 sites live in `kernel-worker.ts` and `kernel.ts`, which K9, K4 and K8-i2 are
 actively rewriting. Reviewing and allowlisting them now guarantees doing it
 twice. **Owner: coordinator, at the end of Tier 2.**
+
+## Stale ABI epochs in user-facing messages — 30 sites, partially swept
+
+Fixing `vfs-image-wasm-policy` exposed a class defect: **`host/src` contains 30
+error-message strings that name "ABI 43" as a literal**, plus 13 comments. The
+ABI is 44. A stale-artifact rejection therefore tells whoever reads it that the
+artifact belongs to an epoch nobody is running — the opposite of the
+truthful-failure contract, in the very message whose whole job is to be
+truthful about staleness.
+
+**Fixed so far:** `constants.ts`'s
+`contains ABI <n> wasm-fork-instrument metadata, imports, or exports` now reads
+the epoch from `ABI_VERSION`, and its one test dependent in
+`wasm-binary-parse.test.ts` follows.
+
+**Not a mechanical sweep, deliberately.** Some of the remaining occurrences
+genuinely describe what **ABI 43** did — e.g. "ABI 43 instrumentation lowers
+every valid occurrence to the trampoline" is a historical statement and is
+still true. Replacing those with the live version would *introduce* falsehoods
+while claiming to remove them. Each site needs a judgment about whether it
+names the epoch being validated (dynamic) or the epoch that introduced a
+behaviour (historical).
+
+**Owner: coordinator, tier-end reconciliation**, alongside the 16
+memory-authority sites — and for the same reason: the files
+(`constants.ts`, `dylink.ts`, `kernel-worker.ts`, `worker-main.ts`) are being
+rewritten by five agents right now.
+
+**Unverified here:** `host/test/wasm-binary-parse.test.ts` could not be run in
+this worktree — it fails at *collection*, before reaching any assertion,
+because `programs/wasm32/spidermonkey-node.wasm` is not built. That is
+fresh-worktree provisioning, not a result. The production-side change is proven
+by `vfs-image-wasm-policy` at 13/13.
 
 ## Open decisions for the maintainer
 
