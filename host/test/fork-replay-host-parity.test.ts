@@ -6,22 +6,55 @@ import { describe, expect, it } from "vitest";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, "..", "..");
 
-function ordinaryForkHandlerSource(relativePath: string): string {
-  const path = join(repoRoot, relativePath);
-  const source = readFileSync(path, "utf8");
-  const start = source.indexOf("async function handleOrdinaryFork(");
-  const end = source.indexOf("\nasync function handleExec(", start);
-  expect(start, `${relativePath} must define handleOrdinaryFork`)
+/**
+ * Slice `handleOrdinaryFork` out of `host/src/process-lifecycle.ts`.
+ *
+ * It is one implementation serving both hosts now, so the replay-gate
+ * transaction is checked once. That is stronger than checking two copies: the
+ * gate can no longer be committed in the right order on one host and the
+ * wrong order on the other. `expectEntryProvides` below keeps each entry on
+ * the hook for actually binding it, so sharing cannot read as deleting.
+ *
+ * Bounded by the next declaration at the module's own two-space indent,
+ * rather than by naming whichever function happens to follow.
+ */
+function ordinaryForkHandlerSource(_relativePath: string): string {
+  const source = readFileSync(
+    join(repoRoot, "host/src/process-lifecycle.ts"),
+    "utf8",
+  );
+  const startName = "  async function handleOrdinaryFork(";
+  const start = source.indexOf(startName);
+  expect(start, "process-lifecycle.ts must define handleOrdinaryFork")
     .toBeGreaterThanOrEqual(0);
-  expect(end, `${relativePath} must define handleExec after handleOrdinaryFork`)
+  const bodyStart = start + startName.length;
+  const next = source.slice(bodyStart).search(
+    /\n  (?:async )?(?:function|const|let|class|interface|type) /,
+  );
+  const end = next === -1 ? source.length : bodyStart + next;
+  expect(end, "a declaration must follow handleOrdinaryFork")
     .toBeGreaterThan(start);
   return source.slice(start, end);
+}
+
+/** Each entry must still bind the shared handler it delegates forks to. */
+function expectEntryProvides(relativePath: string): void {
+  const entry = readFileSync(join(repoRoot, relativePath), "utf8");
+  expect(
+    entry.includes("  handleOrdinaryFork,\n")
+    && entry.includes("} = lifecycle;"),
+    `${relativePath} must bind handleOrdinaryFork from ./process-lifecycle`,
+  ).toBe(true);
 }
 
 describe.each([
   ["Node", "host/src/node-kernel-worker-entry.ts"],
   ["browser", "host/src/browser-kernel-worker-entry.ts"],
 ])("%s fork replay launch transaction", (_host, relativePath) => {
+  it("binds the shared ordinary-fork launch", () => {
+    expectEntryProvides(relativePath);
+  });
+
   it("waits for the exact child generation before committing and resolving", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
     const wait = handler.indexOf("await forkReplay.waitUntilReady()");
@@ -62,8 +95,10 @@ describe.each([
 
   it("grants the exact copied externref graph before launch and retires rollback", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
+    // `host.` prefixed: the shared module reaches the owner registry through
+    // the declared host record rather than a module-level binding.
     const grant = handler.indexOf(
-      "externrefProcessOwner.forkGenerationFromContinuation(",
+      "host.externrefProcessOwner\n        .forkGenerationFromContinuation(",
     );
     const childInit = handler.indexOf(
       "const childInitData: CentralizedWorkerInitMessage",
@@ -76,7 +111,7 @@ describe.each([
       rollback,
     );
     const release = handler.indexOf(
-      "externrefProcessOwner.releaseGeneration(childExternrefGeneration)",
+      "host.externrefProcessOwner.releaseGeneration(childExternrefGeneration)",
       rollback,
     );
 
