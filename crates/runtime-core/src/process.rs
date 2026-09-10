@@ -78,6 +78,20 @@ pub trait HostIO {
     fn fetch_archive(&mut self, _archive_id: u32, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
         Err(Errno::ENOSYS)
     }
+    /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
+    /// image this kernel booted from. This is the seam that lets the kernel
+    /// parse its own image (`rootfs::load_image`) rather than consume a tree the
+    /// host walked and re-encoded for it: the host stops resolving names and
+    /// becomes a positioned byte window over one container it already holds.
+    /// There is exactly one image per kernel, so no id is carried.
+    ///
+    /// Returns the number of bytes read (0 at end of image). Defaults to
+    /// unsupported so mock hosts and hosts that still drive the boot manifest
+    /// compile and behave unchanged — that default is what keeps the image path
+    /// dormant until a host installs an image source.
+    fn image_read(&mut self, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_pwrite(&mut self, _handle: i64, _buf: &[u8], _offset: i64) -> Result<usize, Errno> {
         // See host_pread: unsupported is truthful; cursor emulation is not.
         Err(Errno::ENOSYS)

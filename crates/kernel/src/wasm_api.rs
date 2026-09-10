@@ -95,6 +95,14 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: u32,
     ) -> i32;
+    // Positioned read of the VFS image's own container bytes, so the kernel can
+    // parse the image it booted from instead of consuming a tree the host
+    // walked for it (`rootfs::load_image`). There is exactly one image per
+    // kernel, so no id is carried; only `offset` splits into 32-bit words for
+    // the JS boundary. Every host supplies this import; a host with no image
+    // source installed answers `-ENOSYS`, which is what keeps the image path
+    // dormant until it is wired.
+    fn host_image_read(buf_ptr: *mut u8, buf_len: u32, offset_lo: u32, offset_hi: u32) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -394,6 +402,19 @@ impl HostIO for WasmHostIO {
         let result = unsafe {
             host_fetch_archive(
                 archive_id,
+                buf.as_mut_ptr(),
+                capacity,
+                offset as u32,
+                (offset >> 32) as u32,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
+    }
+
+    fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_image_read(
                 buf.as_mut_ptr(),
                 capacity,
                 offset as u32,
@@ -1612,6 +1633,7 @@ pub extern "C" fn kernel_rootfs_read_file(
         crate::rootfs::ByteReq::Archive { archive_id, offset } => {
             host.fetch_archive(archive_id, b, offset)
         }
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
@@ -1662,6 +1684,7 @@ pub extern "C" fn kernel_rootfs_write_file(
             crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                 host.fetch_archive(archive_id, b, offset)
             }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         },
     ) {
         Ok(written) => written as i32,

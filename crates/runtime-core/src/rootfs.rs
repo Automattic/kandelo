@@ -1205,6 +1205,16 @@ pub enum ByteReq {
     /// A whole-archive raw-byte fetch for a `LazyMember`'s backing archive
     /// (`archive_id` at `offset`).
     Archive { archive_id: u32, offset: u64 },
+    /// A positioned read of the VFS image's own container bytes at `offset`.
+    ///
+    /// This is how the kernel parses its own `/` image ([`load_image`]) instead
+    /// of being handed a host-walked manifest. It is a distinct variant rather
+    /// than a reserved `Base { blob_id }` sentinel on purpose: `blob_id` means
+    /// "the file's inode number" everywhere else, and making one opaque id mean
+    /// two things is a semantic-surface increase wearing a no-change disguise
+    /// (`docs/plans/2026-09-09-rust-first-value-plan.md` §2c item 2). There is
+    /// exactly one image per kernel, so the variant carries no id at all.
+    Image { offset: u64 },
 }
 
 /// Fetch, decode, and cache one member's inflated bytes from a lazy archive
@@ -2526,6 +2536,12 @@ mod tests {
                     buf[..n].copy_from_slice(&data[start..start + n]);
                     Ok(n)
                 }
+                // This fixture host serves blob and archive bytes only; a test
+                // that reaches for image bytes through it is asking for a
+                // capability it never installed, and ENOSYS is the truthful
+                // answer (the same one a real host gives before an image source
+                // is wired).
+                ByteReq::Image { .. } => Err(Errno::ENOSYS),
             }
         };
         (source, calls)

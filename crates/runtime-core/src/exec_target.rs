@@ -559,6 +559,7 @@ fn target_pread(
             crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                 host.fetch_archive(archive_id, b, offset)
             }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         })
     } else {
         host.host_pread(host_handle, buf, offset)

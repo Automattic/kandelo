@@ -5074,6 +5074,7 @@ pub fn sys_read(
                     crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                         host.fetch_archive(archive_id, b, offset)
                     }
+                    crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                 })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
@@ -5338,6 +5339,7 @@ pub fn sys_write(
                         crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                             host.fetch_archive(archive_id, b, offset)
                         }
+                        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                     })?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
                 proc.ofd_table
@@ -5868,6 +5870,7 @@ pub fn sys_pread(
             crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                 host.fetch_archive(archive_id, b, offset)
             }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
 
@@ -6319,6 +6322,7 @@ pub fn sys_pwrite(
             crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                 host.fetch_archive(archive_id, b, offset)
             }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
 
@@ -17170,6 +17174,7 @@ pub fn sys_ftruncate(
             crate::rootfs::ByteReq::Archive { archive_id, offset } => {
                 host.fetch_archive(archive_id, b, offset)
             }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
 
