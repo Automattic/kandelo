@@ -2354,29 +2354,88 @@ Two findings the batch produced that are not items:
   `bind(fd, "/dev/null")` **succeeded**, registering an endpoint at a path
   `unlink` refuses to remove (EROFS). Fixed in the kernel before deletion.
 
-### How the next item is chosen
+### How the next item is chosen — REVISED 2026-09-10
 
 The original Tier 1/2/3 structure was built around the K-items and they are all
-done or in flight. What follows is not tiered; it is ordered by this rule,
-which comes from the maintainer's four goals plus the one lesson this campaign
-paid for — **deletion is what counts, not migration.**
+done. What follows is ordered by the rule below, which comes from the
+maintainer's four goals and from the two lessons this campaign has paid for.
 
-1. **Unblockers.** B7 gates B6. B3 is gated on a benchmark that does not exist.
-   Nothing downstream moves until these do.
-2. **Force multipliers.** B17, B18, B19 serve none of the four goals directly
-   and have each cost hours of agent time, repeatedly. Every one produces a
-   failure that names something other than its cause. **Highest value per line
-   changed on this list.**
-3. **Deletes TypeScript *and* shrinks the host surface** — B1 (completes V3), B9.
-4. **Deletes TypeScript** — B5, B2, B12.
-5. **Correctness found along the way** — B15, B16, B11.
+**Lesson one: deletion is what counts, not migration.** An item that moves
+logic to Rust and leaves the TypeScript in place scores zero.
+
+**Lesson two, added 2026-09-10 after the ledger was measured properly:
+deleting TypeScript is not sufficient either.** Production TypeScript is net
+−2,460 for the whole campaign because ~9,900 lines of *new host driver glue*
+offset the deletions. A TypeScript `ld.so` of 4,188 lines was deleted and a
+TypeScript dylink **driver** of 3,666 lines was added. On the old ordering that
+item scored well. Against V4 — minimize the host API surface so a new host is
+cheap to write — it barely moved, because every one of those lines is surface a
+wasmtime host must reimplement.
+
+**So every item is now ranked by net host-surface change, not by lines
+deleted**, and every agent must report three numbers, not one:
+
+1. production TypeScript delta,
+2. host import count before and after,
+3. **driver-glue delta** — lines added to `host/src` that exist to instantiate,
+   drive, or marshal for a Rust module.
+
+An item that deletes 2,000 lines while adding 1,800 lines of glue is now
+ranked below one that deletes 400 and adds none.
+
+**The order:**
+
+1. **Ship blockers.** Anything failing the test suite or the build. B19/B23 is
+   here and is currently gating the entire host suite.
+2. **Unblockers.** B7 gated B6 and is done. B3 is gated on a benchmark that
+   does not exist.
+3. **Force multipliers.** Items that keep costing agent hours repeatedly and
+   produce failures naming something other than their cause.
+4. **Shrinks host surface** — B9, and any item that retires driver glue.
+5. **Deletes TypeScript without adding glue** — B1 (completes V3), B12 (done),
+   B5, B2.
+6. **Correctness found along the way** — B11, B14.
 
 **Parallelism is bounded by two things, neither of which is agent count:**
 shared foundation files (`local_build.rs`, `rootfs.rs`, `wasm_api.rs`,
 `kernel-worker.ts` — where *both* design collisions landed, not in the leaf
 files agents were assigned), and the coordinator's serial merge throughput.
-Batch by file locality, and do not start two items that restructure one
+Batch by file locality, and never start two items that restructure one
 foundation file.
+
+### The ship gate (2026-09-10)
+
+The maintainer's stated plan: **finish this campaign, ship it as PR #1350 once
+bugs and test failures are addressed, then open a separate campaign to
+minimize the driver glue.** The glue audit wants evidence that does not exist
+yet — a second real host built against a stable baseline — so shipping first is
+what makes that audit empirical rather than theoretical.
+
+The gate is therefore:
+
+- host Vitest suite green, **run from `host/` so `host/vitest.config.ts`
+  loads** (see the trap below),
+- `cargo test -p runtime-core -p kandelo -p host-native` green,
+- typecheck 0 (held),
+- `xtask verify-fresh` exit 0,
+- the maintainer's own manual browser check.
+
+### Trap: `vitest run host/test` from the repo root is not the host suite
+
+Measured 2026-09-10 and recorded before it costs anyone else a day. Running
+`npx vitest run host/test` from the repository root reported **269 failed of
+3,447**, including ~89 failures in `browser-kernel.test.ts` alone
+(`Cannot find package '@fork-module32-wasm?url'`, `simulateMessage` undefined).
+
+None of those were real. `host/vitest.config.ts` carries a plugin,
+`vitest-stub-vite-url-imports`, that stubs `?url` and `?worker&url` imports so
+browser-origin modules load without a Vite environment. Invoking vitest from
+the repo root never loads that config, so every Vite-aliased import fails.
+
+**Run it as the repo does: from `host/`.** This is the same family as the
+earlier trap where a full Vitest run outside `scripts/dev-shell.sh` produced
+about eighty bogus failures — a wrong invocation that produces confident,
+specific, entirely fictional results.
 
 ### B. Owed, no agent — each needs dispatching or an explicit decision
 
