@@ -3241,9 +3241,18 @@ export class CentralizedKernelWorker {
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
-   *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
-   *  to convert epoll_pwait to poll without calling kernel_handle_channel
-   *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
+   *  Maintained by intercepting epoll_ctl results.
+   *
+   *  This is a SECOND AUTHORITY for state the kernel already owns
+   *  (`Process::epolls[].interests`). It exists because epoll_pwait was once
+   *  routed around `kernel_handle_channel`, on the belief that call crashed
+   *  Chrome through a V8 shared-memory Wasm bug. That belief is DISPROVED
+   *  (`docs/plans/probes/2026-09-09-k0c-epoll/`) and the routing is already
+   *  gone — `handleEpollPwait` dispatches SYS_EPOLL_PWAIT through
+   *  `kernel_handle_channel`. The mirror now survives only to resolve
+   *  readiness wake indices for the host-owned blocking wait, and is
+   *  scheduled for deletion with the epoll family of the K3 scheduler
+   *  migration. Do not add new readers. */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   /**
    * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
@@ -12234,9 +12243,13 @@ export class CentralizedKernelWorker {
     }
 
     // --- epoll: intercept all epoll syscalls on host side ---
-    // kernel_handle_channel crashes in Chrome (V8 shared-memory Wasm bug) for
-    // epoll_pwait.  Handle epoll_create1/ctl on the kernel but mirror the
-    // interest list, and convert epoll_pwait to poll entirely on the host.
+    // These arms all dispatch to the kernel; the host adds only the blocking
+    // wait and a mirror of the interest list used to resolve wake indices.
+    // The original reason for intercepting — "kernel_handle_channel crashes
+    // in Chrome for epoll_pwait" — is DISPROVED
+    // (`docs/plans/probes/2026-09-09-k0c-epoll/`); the bypass it justified was
+    // already removed. The interception is scheduled to go with the epoll
+    // family of the K3 scheduler migration.
     if (syscallNr === SYS_EPOLL_CREATE1 || syscallNr === SYS_EPOLL_CREATE) {
       this.handleEpollCreate(channel, syscallNr, origArgs, entry);
       return;
@@ -18026,7 +18039,8 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // (epoll_pwait is now handled entirely on the host side by handleEpollPwait)
+    // (epoll_pwait parks in handleEpollPwait, which owns its own retry loop;
+    //  it never reaches this generic blocking-retry path.)
 
     // sigtimedwait: kernel returned EAGAIN because no signal is pending.
     // Instead of busy-retrying, delay for the requested timeout then complete
@@ -19613,11 +19627,21 @@ export class CentralizedKernelWorker {
   }
 
   // ---- epoll host-side implementation ----
-  // kernel_handle_channel crashes in Chrome for epoll_pwait (suspected V8
-  // shared-memory Wasm bug).  We handle all epoll syscalls on the host:
-  //   epoll_create1/create → still call kernel (works fine), mirror result
-  //   epoll_ctl → still call kernel (works fine), mirror interest list
-  //   epoll_pwait → convert to poll entirely on host, no kernel_handle_channel
+  // Every arm calls the kernel; the host contributes the blocking wait and a
+  // mirror of the interest list:
+  //   epoll_create1/create → kernel creates the fd, host mirrors the result
+  //   epoll_ctl → kernel owns the interest, host mirrors it
+  //   epoll_pwait → dispatched through kernel_handle_channel with timeout 0;
+  //                  the host loops on readiness until the deadline
+  //
+  // The historical justification for this section — that
+  // kernel_handle_channel crashed Chrome for epoll_pwait via a suspected V8
+  // shared-memory Wasm bug — is DISPROVED. The claim was re-tested on the
+  // real ABI-44 kernel across Node, Chromium and WebKit, on the main thread
+  // and in a dedicated worker with a peer sharing the memory, and it did not
+  // reproduce: `docs/plans/probes/2026-09-09-k0c-epoll/`. The bypass is
+  // already gone; this host-side wait is what remains, and it is scheduled
+  // for deletion with the epoll family of the K3 scheduler migration.
 
   /**
    * Handle epoll_create1 / epoll_create: let the kernel create the fd,
