@@ -988,3 +988,32 @@ itself, the way it already bootstraps `host/` and `tools/mkrootfs/` in the
 non-sealed path. It is the one provisioning step a fresh worktree needs that
 `setup` does not perform, which makes it the odd one out rather than a
 deliberate boundary.
+
+### epoll fork inheritance and OFD keying are ONE change, not two
+
+The K3 grounding lists these as D2 ("serialize `epolls` across fork") and D3
+("re-key `EpollInterest` on OFD identity"), and calls D3 "separable". Measured:
+they are the same change.
+
+`Process.epolls` is a per-process `Vec<Option<EpollInstance>>`. `fork.rs` does
+`child.epolls.clear()`, so a child's inherited epoll fd resolves to nothing and
+`epoll_ctl`/`epoll_pwait` return `EBADF`. On Linux an epoll fd names an open
+file description: the child's duplicated descriptor refers to the **same**
+instance, and `epoll_ctl` through either descriptor is visible to both.
+
+Implementing that sharing means the instance cannot live in `Process`. It has to
+move to an OFD-keyed machine-wide table — which *is* D3. Doing D2 without D3
+would mean copying the instance into the child, and a copy gets the common case
+right (child forks, then uses its own epoll) while being **silently wrong** on
+shared mutation.
+
+**That is why the copy shortcut is not taken.** The platform-values contract
+says a POSIX gap stays visible as a gap rather than becoming silent success.
+`EBADF` on a valid inherited descriptor is wrong, but it is *loud*; a copy would
+be wrong and *quiet*. Trading the first for the second to make a fork/epoll test
+pass would be the worse outcome by this project's own standard.
+
+Estimated shape when taken: relocate `EpollInstance` ownership to an OFD-keyed
+table alongside the socket table's model, then key `EpollInterest` on OFD
+identity and prune on close/exec. `docs/posix-status.md` now records both gaps
+against the three epoll entries, which previously read "Full".
