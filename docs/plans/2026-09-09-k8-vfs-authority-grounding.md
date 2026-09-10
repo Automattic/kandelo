@@ -71,6 +71,19 @@ default boot is:**
 
 (`browser-kernel-worker-entry.ts:1129-1133`; `node-kernel-worker-entry.ts:1190-1195`.)
 
+**One VERIFIED exception, and it matters for the browser claim.**
+`apps/browser-demos/pages/network/network-demo-worker.ts` builds a
+`CentralizedKernelWorker` directly (`:206`, `init` at `:245`) over mounts it
+assembles itself (`:156-173`) and **never calls `configureRootfsOverlay`** —
+no hit for it anywhere in the file. So in that demo the `/` image
+`MemoryFileSystem` from `resolveForBrowser` **stays mounted and serves every
+guest `/` syscall per-syscall**. It is the one live-kernel consumer still
+running fully on System A. It is a demo, so it is a *consumer* and out of the
+migration's scope (value plan §3.6) — but it is also the thing most likely to
+break loudly at K8's cutover, and `docs/agent-guidance/browser-and-user.md`
+says a demo must not be an alternate runtime implementation. It needs an
+explicit decision (D-K8-7), not silent breakage.
+
 So the honest question is not "what still makes `memory-fs.ts` the runtime FS
 authority for `/`" — nothing does — but **"which runtime paths still read bytes
 or metadata through it."** There are exactly four, enumerated next.
@@ -164,19 +177,40 @@ entire `SharedFS` mutation stack — `mkfs`, `blockAlloc`, `grow`, `inodeAlloc`,
 `dirAddEntry`, `write` (`sharedfs-vendor.ts:353`, `:887`, `:922`, `:950`,
 `:998`, `:1889`, `:2836`). None of that is deletable by K8.
 
-### 1.6 A live defect this pass found: a stale-authority diagnostic
+### 1.6 Two live defects this pass found: stale-authority reads
 
-`host/src/browser-kernel-worker-entry.ts:424-432` —
-`readServiceLogForProcess` reads `/var/log/nginx.log` through
+**(a) The nginx diagnostic.** `host/src/browser-kernel-worker-entry.ts:424-432`
+— `readServiceLogForProcess` reads `/var/log/nginx.log` through
 `readFileFromFs` (`:4522-4540`), which opens it on **`memfs`**. `/var/log` has
 been kernel tmpfs since Phase 5 (`default-mounts.ts:26-34`), and the host `/`
 mount is dropped anyway, so this read can never find the file: it returns
-`null`, and the process-failure context silently omits the nginx log.
+`null`, and the process-failure context silently omits the nginx log. It is the
+only remaining caller of `readFileFromFs`.
 
-This is a truthful-failure violation of the quiet kind — a diagnostic that
-reports nothing because it queries a retired authority — and it is the only
-remaining caller of `readFileFromFs`. K8 should delete it or repoint it at
-`kernelWorker.rootfsReadFile`. Recorded as **D-K8-6**.
+**(b) `unlink_vfs_file`'s existence probe.**
+`host/src/browser-kernel-worker-entry.ts:3995` still calls `io.lstat(msg.path)`
+against a mount table that no longer contains `/`. The write peer was already
+fixed — `handleWriteVfsFile` (`:3969-3991`) routes through
+`kernelWorker.rootfsWriteFile` (`kernel-worker.ts:5321`) and keeps `memfs` only
+as a null-check sentinel (`:3974`; Node the same at `:4018`) — but the unlink
+probe was not.
+
+Both are truthful-failure violations of the quiet kind: they query a retired
+authority and report nothing rather than failing. Recorded as **D-K8-6**.
+
+**A third, and it is a host-parity gap.** The browser accepts
+`register_lazy_files` / `register_lazy_archives` **after `init`**
+(`browser-kernel-worker-entry.ts:837-844`, dispatched `:4707-4708`;
+`handleLazyRegistration:896-912` executes immediately once `initReady`, `:909`)
+and mutates `memfs` at that point. **Node has no such RPC** — no
+`register_lazy` anywhere in `node-kernel-worker-entry.ts` or
+`node-kernel-protocol.ts`. INFERRED (high confidence): entries registered after
+`init` cannot reach the kernel's already-loaded RTFS tree, so they can only take
+effect through the `blob_read` / archive providers. Under K8's cutover the
+kernel owns the tree from the image, so this RPC needs an explicit answer —
+either a kernel-side registration entry point on both hosts, or removal. It is
+exactly the "shared files are cross-host changes by default" case the
+host-runtime contract names.
 
 ### 1.7 What must SURVIVE in `memory-fs.ts`, and for whom
 
@@ -487,71 +521,214 @@ section, per §2c decision 7 (D-B2).
 
 ### 3.2 Part B — what enforces `--kernel-abi` / `--abi-snapshot-sha256` at load
 
-**Written** at `scripts/build-rootfs.sh:197` →
-`tools/mkrootfs/src/cli/build.ts:132-137` → `:254-262` →
-`tools/mkrootfs/src/builder.ts:70,123` → `MemoryFileSystem` metadata JSON
-section (`memory-fs.ts:7029+`, flag `1<<2`).
-K1b §7.1 VERIFIED that **`--abi-snapshot-sha256` is not present in any image in
-this worktree** — only `--kernel-abi` is actually stamped.
+> **Correction to two prior groundings.** `2026-09-09-k1b-image-format-grounding.md`
+> §7.4 and `2026-09-09-k1-sffs-wiring-grounding.md` §7.2 both state that
+> `MemoryFileSystem.assertImageKernelAbi` has **no caller**. That is **REFUTED**.
+> It has a live production caller on the browser demo boot path, and it is the
+> **only load-time enforcement of the stamp anywhere in the repo**. This is the
+> **sixth** inherited claim to fail re-test in this campaign, and the second in
+> this document (§2.6 is the fifth). Both prior groundings should be annotated.
 
-**Read** by four sites, and **none of them is the runtime load path**:
+**Written by two producers, not one.**
 
-| site | what it does | live? |
+*Producer A — `mkrootfs` (`rootfs.vfs`).* `scripts/build-rootfs.sh:45-56`
+resolves `ABI_VERSION` (env override, else `sed` out of
+`crates/shared/src/lib.rs`); `:197` passes `--kernel-abi` unconditionally;
+`:198-200` passes `--abi-snapshot-sha256` only when
+`ROOTFS_ABI_SNAPSHOT_SHA256` is set (validated `:61-65`). Parsed at
+`tools/mkrootfs/src/cli/build.ts:132-139` / `:148-158`, with
+`--abi-snapshot-sha256 requires --kernel-abi` at `:174-176`, emitted at
+`:254-263` — where **no `--kernel-abi` means no metadata section at all**, not
+merely a missing field. VERIFIED: nothing in the repo ever sets
+`ROOTFS_ABI_SNAPSHOT_SHA256`, so `rootfs.vfs` carries `kernelAbi` only.
+
+*Producer B — the product-image builders (`images/vfs/scripts/**`), which K1b
+did not cover.* `exactVfsImageMetadata` (`vfs-image-helpers.ts:147-166`)
+emits **both** `kernelAbi` and `abiSnapshotSha256`, validating the digest as
+64 lowercase hex (`:151-159`). Eight builders call it
+(`build-{erlang,kandelo-sdk,mariadb,mariadb-test,python,redis,perl,sqlite-test}-vfs-image.ts`),
+and the default path `serializeImage` (`:432,441-445`) stamps
+`kernelAbi = options.kernelAbi ?? ABI_VERSION`. Derived images inherit and
+re-stamp with a refusal on drift: `package-shell-vfs-build.ts:200-231`,
+`shell-vfs-build.ts:258-290`, `build-source-rootfs-shell-image.ts:637-642,708-716,722-725`.
+
+**So K1b §7.1's "not present in any image in this worktree" is true of
+`rootfs.vfs` and false of the product images.** `abiSnapshotSha256` is a real,
+separate field with its own lifecycle: it is undeclared in `VfsImageMetadata`
+(it rides the open index signature, `memory-fs.ts:470`), gets **no validation
+in `memory-fs.ts` at all**, and is compared at three **build-time** sites —
+`vfs-product-builder-contract.ts:281-285`, `staged-product-inputs.ts:194-199`,
+`build-php-test-vfs-image.ts:333-340`. Those are build-time provenance
+assertions binding a product to its resolved `target_abi`; they are a separate
+concern from load-time safety and should be judged on their own.
+
+**Read by four kinds of site:**
+
+| site | what it does | when |
 |---|---|---|
-| `host/src/binary-resolver.ts:2911-2926` (`hasVfsArtifactPolicyFailuresForBytes`) | `readImageMetadata(bytes)?.kernelAbi !== ABI_VERSION` → the artifact is a policy failure; fail-closed on inspection error | **yes** — artifact resolution / build-cache invalidation |
-| `host/src/vfs/memory-fs.ts:7229` (`assertImageKernelAbi`) | throws on mismatch, tolerates an absent declaration | **no caller** anywhere outside tests |
-| `scripts/vfs-has-stale-abi.mjs` | standalone re-implementation of the container framing + `JSON.parse` | **no caller** — only its own usage string and two CI path-scope lists |
-| `tools/mkrootfs/src/cli/inspect.ts:226` | display only | n/a |
+| `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1167-1171` → `memory-fs.ts:7229` `assertImageKernelAbi` | **throws** `"<profile>.vfs.zst requires kernel ABI D, but the running kernel is ABI K"`, before `fromImage` at `:1180` | **LOAD time — the only one** |
+| `host/src/binary-resolver.ts:2911-2928` | `readImageMetadata(bytes)?.kernelAbi !== ABI_VERSION` → the candidate is **dropped from selection** (no throw, no warn); fail-closed on inspection error | artifact resolution |
+| `images/vfs/scripts/{vfs-product-builder-contract.ts:273-286, staged-product-inputs.ts:193-201, build-php-test-vfs-image.ts:332-341, build-source-rootfs-shell-image.ts:637-642,722-725, package-shell-vfs-build.ts:200-215, shell-vfs-build.ts:264-290}` | throw on mismatch | build time |
+| `scripts/vfs-has-stale-abi.mjs`; `tools/mkrootfs/src/cli/inspect.ts:226` | dead CLI; display only | — |
 
-**So the answer to "what enforces it at load" is: nothing. There is no load-time
-enforcement to remove.** The stamp's only live job is build-cache freshness in
-`binary-resolver.ts`.
+`scripts/vfs-has-stale-abi.mjs` **is** genuinely dead (VERIFIED: the only
+repo-wide references are its own usage string at `:100` and two CI path-scope
+lists, `.github/actions/detect-change-scope/ci-scope-paths.sh:77` and
+`test-ci-scope-paths.sh:190-191`) — that half of K1b §7.4 holds.
+
+Note the **host asymmetry**: the browser demo enforces the stamp at load; the
+Node kernel host does not check it at all. That is a Node/browser parity
+divergence in a platform safety check, and it exists today.
+
+**One further consequence K1b did not record:** `binary-resolver.ts`'s
+comparison is also shipped as the committed prebuilt bundle
+`scripts/resolve-binary.bundle.mjs`, executed by `scripts/resolve-binary.sh:65`
+from at least eleven test/build scripts, with source/bundle parity enforced by
+`scripts/test-resolve-binary-bundle.sh`. **Removing the stamp requires
+regenerating that bundle in the same change.**
 
 ### 3.3 Part C — what breaks for an OLD image when the stamp goes
 
-**Nothing at load time, because nothing checked it at load time.** The real
-guard is per-Wasm-program and is independent: `verifyProgramAbi` in
-`host/src/worker-main.ts:4827` and `:5577`, and
-`describeWasmArtifactPolicyFailures` + `extractAbiVersion` in
-`node-kernel-worker-entry.ts:1109-1122`, which fail `ENOEXEC` on mismatch. An
-ABI-43 image loaded by an ABI-44 kernel still fails loudly the first time it
-execs a stale program — at the right layer, naming the right artifact.
+**Today**, an ABI-43 image under an ABI-44 kernel fails twice and loudly:
+`binary-resolver.ts:2921` drops it from every candidate tier (and, if nothing
+survives, `:3343` throws *"Binary exists but was rejected by artifact
+policy"*), and the browser demo throws at `live-setup.ts:1168` before the image
+is ever handed to a kernel.
 
-What *does* break is **build-cache freshness**: an ABI bump would stop
-invalidating stamped `.vfs`/`.vfs.zst` entries in the binary index, so a stale
-image could be resolved and served. That signal must be replaced, not dropped.
-The right replacement is the mechanism the repo already prefers — a
-closure-derived cache key (`build.toml` `inputs` / `cacheKeys` /
-`crates/*/build_deps.rs`, the `build-freshness: closure-derived cache-keys`
-pattern), because the image's real freshness input is the *kernel build closure*,
-not a hand-written integer. Removing the stamp without replacing the signal
-would recreate exactly the "silently served a STALE kernel despite green unit
-tests" failure of PR #1328.
+**With the stamp removed, the image loads.** The catch moves to per-program
+`exec`, which is independent of the stamp and already exists:
+`node-kernel-worker-entry.ts:1109-1123` → `ENOEXEC`;
+`browser-kernel-worker-entry.ts:325-340` → `ENOEXEC` (byte-for-byte the same
+logic — good parity); `exec-target.ts:363-371` and `:459-470` →
+`PreparedExecTargetError(..., ENOEXEC)`; `worker-main.ts:3228-3259`
+`verifyProgramAbi` **throws** at `:4827`/`:5577`; `dylink.ts:1306-1318` throws
+for side modules. Independently, the **ABI contract digest**
+(`ABI_CONTRACT_SECTION = "kandelo.abi.contract"`, `host/src/constants.ts:2384`,
+enforced `:2490-2505`) fails hard on any stamped guest whose digest differs —
+a strictly stronger guest-safety net than a version integer, because
+`abi/snapshot.json` can change structurally without the number moving.
+
+*Correction to my own earlier reading and to the doc comment at
+`crates/shared/src/lib.rs:10-13`:* the host does **not** read the
+`wasm-posix-abi` custom section. `extractAbiVersion`
+(`host/src/constants.ts:2936-2938`) constant-folds the **function export**
+`__abi_version`, which guests emit from `libc/glue/channel_syscall.c:65`.
+`ABI_CUSTOM_SECTION` has zero consumers in `host/src`.
+
+**Two real silent-degradation paths, and they must be in the removal plan:**
+
+1. **`ENOEXEC` is quiet.** The exec sites return a bare errno — no message, no
+   ABI text. The user sees `cannot execute`, with nothing naming an epoch
+   mismatch. Today the stamp converts that into one accurate image-level
+   failure. **Mitigation at zero new cost:** emit a warn-once line alongside the
+   `ENOEXEC` naming declared-vs-expected, mirroring `verifyProgramAbi`'s
+   message. Do this in the same change, or the removal trades a loud failure for
+   a confusing one — a truthful-failure regression.
+2. **Programs with no `__abi_version` pass everything.** `verifyProgramAbi`
+   warn-and-continues on a missing marker (`worker-main.ts:3239-3249`), and
+   every `ENOEXEC` site short-circuits on `declaredAbi === null`. The contract
+   digest has the same warn-on-unstamped rollout posture
+   (`constants.ts:2494-2504`). The image stamp is currently the only thing that
+   catches that class. **This is the one genuine capability the stamp provides**,
+   and the removal must either accept it or replace it (e.g. by requiring the
+   marker once every image is rebuilt in this epoch — which the campaign
+   permits).
+
+**The image format itself is not ABI-versioned and will not catch it.**
+`VFS_IMAGE_VERSION = 1` (`memory-fs.ts:491`, checked `:923-926`) and the Rust
+`VFSI_VERSION`/`SFFS_VERSION = 1` (`sffs.rs:20,105,189,249`) were unchanged
+across 43→44. An ABI-43 image parses cleanly.
+
+### 3.3b Build-cache freshness — K1b §7.4's other half is also REFUTED
+
+K1b §7.4 says *"The stamp's live job is build-cache freshness, not load-time
+safety."* **Both halves are wrong, in opposite directions.** §3.2 shows the
+load-time check is real and unique. And nothing consumes the stamp for cache
+freshness:
+
+- `scripts/build-rootfs.sh:79-90` already hashes
+  **`"literal:ABI_VERSION=$ABI_VERSION"`** *and* `crates/shared/src/lib.rs`
+  into `ROOTFS_INPUT_HASH`, compared by `build_step_is_current`
+  (`:92-96`, stamp written only on success, `:213`). Its own comment (`:74-78`)
+  says the literal entry *"is what actually captures the RESOLVED ABI value"*.
+- `packages/registry/rootfs/build.toml:16` lists
+  **`host/src/generated/abi.ts`** (which is literally
+  `export const ABI_VERSION = 44 as const;`) in the package `inputs` — so an ABI
+  bump moves the package cache key too. (That same list already includes
+  `memory-fs.ts:22` and `sharedfs-vendor.ts:23`, which is why
+  `tests/package-system/build-input-import-closure.test.ts:44` asserts that
+  `memory-fs.ts` affects **every** package — a hard blast-radius fact for K8.)
+- `cargo xtask verify-fresh` (`tools/xtask/src/local_build.rs:813-889`) checks
+  `kernel.wasm`'s own `__abi_version`, the SourceOnlyV1 build-key stamp, and
+  snapshot drift. VERIFIED it never reads VFS image metadata
+  (`grep kernelAbi tools/xtask` → nothing).
+
+**So the ABI already reaches the build cache twice over, and removing the stamp
+requires building nothing to replace that signal.** What it does remove is
+`binary-resolver.ts`'s *candidate rejection* — a stale hand-copied `.vfs` in
+`local-binaries/` would stop being skipped in favour of a fresh one. That is a
+narrower loss than "cache freshness", and it is a design choice, not an
+automatic requirement. My earlier draft of this section overstated it; the
+correction is recorded rather than quietly fixed.
 
 ### 3.4 Concrete scope of "remove the stamp"
 
-1. Drop `--kernel-abi` (and the unused `--abi-snapshot-sha256`) from
-   `scripts/build-rootfs.sh:197` and `tools/mkrootfs/src/cli/build.ts:132-137,254-262`.
-   *(This is a mkrootfs CLI change — see STRONG DOUBT SD-K8-3 on the D-B4
-   carve-out.)*
-2. Delete `hasVfsArtifactPolicyFailuresForBytes`'s ABI comparison
-   (`binary-resolver.ts:2911-2926`) **and land its replacement freshness signal in
-   the same change.**
-3. Delete the two dead readers: `assertImageKernelAbi` (`memory-fs.ts:7229`) and
-   `scripts/vfs-has-stale-abi.mjs`, plus the two CI path-scope list entries that
-   name the latter.
-4. Keep `kernelAbi` out of the metadata type, or keep the field as pure
-   provenance with no comparison — decide explicitly, do not leave it half-read.
-5. Record the ruling in `docs/abi-versioning.md` under the ABI 44 section, per
-   §2e's D2 decision that later K items append there.
+1. Drop `--kernel-abi` and `--abi-snapshot-sha256` from
+   `scripts/build-rootfs.sh:197-200` (validator `:61-65`) and
+   `tools/mkrootfs/src/cli/build.ts:24-27,43-44,70-72,132-139,148-158,174-176,254-263`.
+   *(mkrootfs CLI — see STRONG DOUBT SD-K8-3.)*
+2. Delete the ABI comparison in `binary-resolver.ts:2911-2928`, **decide
+   explicitly** whether candidate rejection is replaced or accepted as lost
+   (§3.3b), and **regenerate `scripts/resolve-binary.bundle.mjs`** (parity test
+   `scripts/test-resolve-binary-bundle.sh`).
+3. Delete `assertImageKernelAbi` (`memory-fs.ts:7223-7243`) **and its live
+   caller** (`live-setup.ts:1167-1171`) — and land §3.3's mitigation 1
+   (warn-once alongside `ENOEXEC`) in the same change, so the loud failure is
+   replaced rather than deleted.
+4. Delete `scripts/vfs-has-stale-abi.mjs` and its two CI path-scope entries.
+5. Drop `kernelAbi` from `VfsImageMetadata` and its validator
+   (`memory-fs.ts:462-466`, `:696-702`).
+6. **Decide the fate of the build-time product contracts separately**
+   (`vfs-product-builder-contract.ts:273-286` et al.). Recommendation: keep
+   them. They bind a product artifact to its resolved `target_abi` at build
+   time, which is provenance, not a runtime guest-ABI stamp, and V3 says
+   nothing about it.
+7. Update `docs-site/guide/publish-software.md:134`, which tells third-party
+   image publishers to declare `kernelAbi`. That is a published external
+   contract.
+8. Record the ruling in `docs/abi-versioning.md`'s ABI 44 section (§2e D2).
+9. Test fallout: `host/test/binary-resolver.test.ts:1221-1283`,
+   `host/test/vfs-image.test.ts:576-681`, `host/test/shell-vfs-build.test.ts`,
+   `host/test/dinit-image-helpers.test.ts:302-310`,
+   `host/test/vfs-product-builder-contract.test.ts:408-409`,
+   `tools/mkrootfs/test/{cli.test.ts:481-525,939-972, builder.test.ts:949-961}`,
+   `tests/package-system/source-rootfs-shell-bridge.test.ts:104,178,289,459`,
+   `apps/browser-demos/test/{package-deferred-tree-browser.spec.ts:122,164,242,
+   lazy-archive-runtime.spec.ts:87,132}`.
 
 **ABI ruling needed (not mine to make): D-K8-3.** `docs/agent-guidance/abi.md`
 lists *"VFS image metadata that binds Wasm programs to a kernel ABI"* as ABI
-surface. Removing that binding is a **withdrawal** of ABI surface, not an
-addition — and §3.3 shows it withdraws nothing that was enforced. My reading is
-that it is an amendment inside the unreleased ABI-44 epoch
-(`abi-versioning.md:790-794`, the rule K13a used), not a bump. But it is a
-judgement about the ABI contract's *meaning* and belongs to the maintainer.
+surface. Removing it withdraws surface rather than adding it, and §3.3 shows
+what it actually withdraws is one browser-only load-time check plus the
+unmarked-program safety net. My reading is that this is an amendment inside the
+unreleased ABI-44 epoch (`abi-versioning.md:790-794`, the rule K13a used), not a
+bump — but it is a judgement about the ABI contract's *meaning* and belongs to
+the maintainer, and it is materially less trivial than K1b §7.4 implied.
+
+### 3.5 An adjacent stale-literal defect, and the test it already breaks
+
+`host/src/constants.ts:2580` hardcodes `"contains ABI 43
+wasm-fork-instrument metadata, imports, or exports"` while `ABI_VERSION` is 44
+(`crates/shared/src/lib.rs:120`). `host/test/vfs-image-wasm-policy.test.ts:72-91`
+matches that sentence with an **interpolated** `` `contains ABI ${ABI_VERSION} ` ``,
+so the test looks for "ABI 44" against a message saying "ABI 43".
+**INFERRED (not run, per the no-builds constraint; textually unambiguous):
+that assertion currently fails** — which corroborates value plan §2f's third
+pre-existing failure. The fix is one line: interpolate `options.expectedAbi` as
+`:2572-2576` already does. Roughly seventeen sibling literals in the same file
+(`:786,1854,1858,1870,1957,1970,1987,2004,2014,2065,2072,2080,2085,2100,2120,2146,2249`)
+plus `worker-main.ts:3201` and `dylink.ts:1297,1309,1322` have the same drift.
+Independent of K8; recorded so it is not miscounted as K8 fallout.
 
 **This is the actual V3 completion.** After step 4 and this removal, an image
 contains: an SFFS block filesystem the kernel parses, a `KLZY` linkage section

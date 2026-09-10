@@ -60,12 +60,24 @@ Five findings change what K3 *is*:
    (c) re-enter the kernel at a deadline. All three already exist. K3 can be
    done with **zero new host imports** (§5).
 
-5. **The 4,500-line figure is low and the keystone framing is 80% right.**
-   `kernel-worker.ts` scheduler surface measures larger (§1.4), it is **≥24
-   state containers, not 21** (§1), and ~29,700 lines of `host/test` are bound
-   to it (§9). Two pieces the brief attributes to K3 — stopped-process worker
-   deferral, and epoll fork/exec inheritance — belong to K4 and to a POSIX gap
-   respectively (§10).
+5. **The 4,500-line figure is low; the 21 containers are exactly right; the
+   keystone framing is 80% right.** Measured by brace-matched spans, the
+   scheduler is **5,794 lines across 82 methods** counting only methods that
+   directly reference one of the 21 containers, and **7,793 lines across 128
+   methods** counting their family helpers. The census's 4,532 reproduces only
+   if you exclude stopped-process parking, waitpid/waitid deferral, futex and
+   signal-wait — all of which are the scheduler by the brief's own definition
+   (§10.2). Add ~1,278 lines of signal *routing* (§6) and ~29,700 lines of
+   `host/test` (§9). Two pieces the brief attributes to K3 — the stopped-process
+   Worker deferral, and epoll fork inheritance — belong to K4 and to a
+   pre-existing POSIX gap respectively (§10.3).
+
+6. **K3 and K7 do not collide.** Measured: **zero line-range overlap** between
+   the 31 contiguous scheduler blocks and the 6 shared-mapping blocks, and only
+   **5 methods** touch both state sets — with roughly **45 lines** of genuinely
+   dual-touch text between them. K3 is also the stabler target: the mapping
+   region gained +668 lines three days ago; the scheduler region has had no
+   direct edit in the last 20 commits (§10.1).
 
 **No ABI bump is required and none should be requested.** The guest parks in
 `memory.atomic.wait32` on `CH_STATUS` until it is not `CH_PENDING`
@@ -78,9 +90,25 @@ ABI-44 amendment rule already recorded for K13a and K2.
 
 ## 1. The state containers — the actual inventory
 
-The census says "21 of the 68 state containers". The measured count is **24
-containers plus one boolean flag plus two per-channel fields**. All
-declarations verified at the cited lines.
+**The census's "21" is exactly reproducible and correct.** An independent
+mechanical pass over the class body (2732–34696; 647 members = 536 methods +
+111 fields) recovers precisely these 21 by searching each method span for a
+direct container reference: `pendingSleeps`, `pendingSignalWaits`,
+`signalWaitDeadlines`, `waitingForChild`, `parkedChannelCompletions`,
+`deferredStoppedChannels`, `pendingPollRetries`, `blockingRetrySnapshots`,
+`blockingRetryWakeTargets`, `pendingAdvisoryLockRetries`,
+`pendingSelectRetries`, `wakeScheduled`, `pendingPipeReaders`,
+`pendingPipeWriters`, `socketTimeoutTimers`, `pendingFutexWaits`,
+`pendingCancels`, `epollInterests`, `stoppedPids`, `pendingResumePids`,
+`resumePreparedSignals`.
+
+K3 additionally **touches** five more that the census's 21 does not name —
+`alarmTimers`, `posixTimers`, `deferredProcessWorkerStarts`, `hostReaped`, and
+`activeChannelRequests` — plus two per-channel fields. They are listed below
+and marked, because three of them (the two timer registries and the Worker
+deferral) carry real sequencing consequences.
+
+All declarations verified at the cited lines.
 
 `ChannelInfo` **object identity** is the key for most of them: exec can reuse
 both pid and mailbox offset, so a numeric key would let a stale timer complete
@@ -99,45 +127,48 @@ object rather than a number, and it is stated at `kernel-worker.ts:3086-3090`.
 | 6 | `pendingPipeWriters` | `:3147` | send-pipe index | same shape | `handleBlockingRetry` `:18386-18398` | wake drain `:16074`, `:16387`, `cleanupPendingPipeWriters` `:16414` | same |
 | 7 | `pendingAdvisoryLockRetries` | `:3109` | `ChannelInfo` | cancellation identity, timer | `parkAdvisoryLockRetry` `:17033` | `wakeBlockedAdvisoryLockRetries` `:16173`, `clearReadinessWait` `:16461` | `WakeSource::AdvisoryLock`; the container's own doc already says "the host owns only channel parking and the short retry safety timer; it never inspects advisory-lock state" |
 | 8 | `socketTimeoutTimers` | `:3160` | `ChannelInfo` | timer handle | `handleBlockingRetry` `:18307` | `clearSocketTimeout` `:16428` | a **deadline on the sleeper**. `SO_RCVTIMEO`/`SO_SNDTIMEO` are kernel state already |
-| 9 | `epollInterests` | `:3247` | `"pid:epfd"` string | `Array<{fd, events, data: bigint}>` | 6 sites (§4) | 8 sites (§4) | **ELIMINATE** — duplicates `Process::epolls[].interests` (`process.rs:894`) |
+| 9 | `pendingFutexWaits` | `:3165` | `ChannelInfo` | `futexIndex`, `hasTimeout`, an `interrupt(retVal, errVal)` closure, a `retire()` closure, cancellation identity | `handleFutex` `:25903` | `handleThreadCancel` `:16650`, `interruptPendingFutexForCaughtSignal` `:26420` | `WakeSource::Futex(pid, addr)` — **but see §11.1**, the kernel may be able to own futex outright |
+| 10 | `epollInterests` | `:3247` | `"pid:epfd"` string | `Array<{fd, events, data: bigint}>` | 6 sites (§4) | 8 sites (§4) | **ELIMINATE** — duplicates `Process::epolls[].interests` (`process.rs:894`, interest record at `process.rs:647-651`) |
 
 ### 1.2 Timers and sleeps
 
 | # | container | decl | keys on | holds | Rust home |
 |---|---|---|---|---|---|
-| 10 | `pendingSleeps` | `:2974` | `ChannelInfo` | timer, `syscallNr`, `origArgs`, staged `retVal`/`errVal`/`outputWrites` | deadline-only sleeper. Note the *result is computed before the sleep* and staged in JS |
-| 11 | `alarmTimers` | `:2963` | pid | `setTimeout` handle | kernel timer registry; `host_set_alarm` becomes one arm-at-deadline |
-| 12 | `posixTimers` | `:2965` | `"pid:timerId"` | `{timeout, interval?, signo}` | same; `host_set_posix_timer` collapses in |
-| 13 | `pendingSignalWaits` | `:2989` | `"pid:channelOffset"` | timer, `origArgs`, `signalMask: bigint` | `WaitKind::SigTimedWait` sleeper with the mask; the mask is *already* Rust-owned per-task state (`PerThreadSignalState`, `process.rs:565`) |
-| 14 | `signalWaitDeadlines` | `:3001` | `"pid:channelOffset"` | `{pid, deadline}` — retained *across* wake-driven retries | folds into #13. It exists **only** because a retry loses the deadline; a sleeper does not |
+| 11 | `pendingSleeps` | `:2974` | `ChannelInfo` | timer, `syscallNr`, `origArgs`, staged `retVal`/`errVal`/`outputWrites` | deadline-only sleeper. Note the *result is computed before the sleep* and staged in JS |
+| 12 | `pendingSignalWaits` | `:2989` | `"pid:channelOffset"` | timer, `origArgs`, `signalMask: bigint` | `WaitKind::SigTimedWait` sleeper with the mask; the mask is *already* Rust-owned per-task state (`PerThreadSignalState`, `signal.rs:344`, attached at `process.rs:565`) |
+| 13 | `signalWaitDeadlines` | `:3001` | `"pid:channelOffset"` | `{pid, deadline}` — retained *across* wake-driven retries | folds into #12. It exists **only** because a retry loses the deadline; a sleeper does not |
+| 14* | `alarmTimers` | `:2963` | pid | `setTimeout` handle | *(beyond the census 21)* kernel timer registry; `host_set_alarm` becomes one arm-at-deadline |
+| 15* | `posixTimers` | `:2965` | `"pid:timerId"` | `{timeout, interval?, signo}` | *(beyond the census 21)* same; `host_set_posix_timer` collapses in |
 
 ### 1.3 Process wait and job control
 
 | # | container | decl | keys on | holds | Rust home |
 |---|---|---|---|---|---|
-| 15 | `waitingForChild` | `:3021` (array) | linear scan | `{parentPid, channel, origArgs, pid, options, syscallNr, cancellation identity}` | `WakeSource::ChildEvent(parent)`. `kernel_wait_child_poll` (`wasm_api.rs`) already computes the answer |
-| 16 | `stoppedPids` | `:3036` | pid set | — | **already Rust-authoritative** (`ProcessState::Stopped`, `process.rs:441`); this is a cache fed by the wake stream |
-| 17 | `pendingResumePids` | `:3042` | pid set | — | kernel resume-preflight state |
-| 18 | `parkedChannelCompletions` | `:3044` | `ChannelInfo` | a completed result withheld until SIGCONT | sleeper with `WaitKind::StoppedPublication` |
-| 19 | `resumePreparedSignals` | `:3054` (`WeakSet`) | `ChannelInfo` | marker | kernel signal-delivery state |
-| 20 | `deferredStoppedChannels` | `:3056` | `ChannelInfo` | marker | kernel |
-| 21 | `deferredProcessWorkerStarts` | `:3059` | pid | `Set<DeferredProcessWorkerStart>` — **JS Worker constructors** | **STAYS (K4 boundary).** The gating decision is kernel; the held closure is a host act (§10.2) |
-| 22 | `hostReaped` | `:25125` | pid set | — | kernel reap state |
+| 16 | `waitingForChild` | `:3021` (array) | linear scan | `{parentPid, channel, origArgs, pid, options, syscallNr, cancellation identity}` | `WakeSource::ChildEvent(parent)`. `kernel_wait_child_poll` already computes the answer |
+| 17 | `stoppedPids` | `:3036` | pid set | — | **already Rust-authoritative** (`ProcessState::Stopped`, `process.rs:441`); this is a cache fed by the wake stream |
+| 18 | `pendingResumePids` | `:3042` | pid set | — | kernel resume-preflight state |
+| 19 | `parkedChannelCompletions` | `:3044` | `ChannelInfo` | a completed result withheld until SIGCONT | sleeper with `WaitKind::StoppedPublication` |
+| 20 | `resumePreparedSignals` | `:3054` (`WeakSet`) | `ChannelInfo` | marker | kernel signal-delivery state |
+| 21 | `deferredStoppedChannels` | `:3056` | `ChannelInfo` | marker | kernel |
+| 22* | `deferredProcessWorkerStarts` | `:3059` | pid | `Set<DeferredProcessWorkerStart>` — **JS Worker constructors** | *(beyond the census 21)* **STAYS (K4 boundary).** The gating decision is kernel; the held closure is a host act (§10.3) |
+| 23* | `hostReaped` | `:25125` | pid set | — | *(beyond the census 21)* kernel reap state |
 
-### 1.4 Cancellation, transport, coalescing
+### 1.4 Cancellation, coalescing, transport
 
 | # | container | decl | notes |
 |---|---|---|---|
-| 23 | `pendingCancels` | `:3185` | `Set<ChannelInfo>` — the pre-enqueue race guard for `SYS_THREAD_CANCEL`. Collapses into one kernel `cancel_task_wait(pid, tid)` (§6.3) |
-| 24 | `activeChannelRequests` | `:3029` | frozen request identity; **partly transport** (it detaches the guest mailbox flag). SPLIT |
-| — | `wakeScheduled` | `:3130` (bool) | coalesces the broad-wake microtask. Disappears with the broad wake |
+| 24 | `pendingCancels` | `:3185` | `Set<ChannelInfo>` — the pre-enqueue race guard for `SYS_THREAD_CANCEL`. Collapses into one kernel `cancel_task_wait(pid, tid)` (§6.3) |
+| 25 | `wakeScheduled` | `:3130` (bool) | coalesces the broad-wake microtask. Disappears with the broad wake. *(Counted as one of the census 21.)* |
+| 26* | `activeChannelRequests` | `:3029` | *(beyond the census 21)* frozen request identity; **partly transport** — it detaches the guest mailbox flag as it captures. SPLIT |
 | — | `channel.readinessDeadline` | `:1530` | per-channel deadline memo, set by `getReadinessDeadline` `:16437` |
 | — | `channel.readinessFinalCheck` | `:1532` | "run the kernel once more at the deadline" flag, consumed at `:13210` |
 
-**Count check.** 24 containers (9 readiness + 5 timer + 8 lifecycle + 2
-cancellation/transport) + 1 flag + 2 channel fields. The census's "21" is an
-undercount; nothing in the migration plan turns on the difference, but the
-container inventory in the ledger should be corrected.
+**Count reconciliation.** Entries 1–13, 16–21 and 24–25 are the census's 21,
+reproduced exactly. Entries marked `*` (14, 15, 22, 23, 26) are five further
+containers K3 touches. Of those, `alarmTimers`/`posixTimers` fold into the
+deadline heap, `hostReaped` is kernel state, `activeChannelRequests` splits,
+and `deferredProcessWorkerStarts` is the K4 boundary (§10.3). The census figure
+is correct as stated; it is the *scope* of what K3 must edit that is wider.
 
 ---
 

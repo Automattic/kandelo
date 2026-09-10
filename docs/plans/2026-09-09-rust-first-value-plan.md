@@ -769,6 +769,82 @@ Any of those would shrink the count while worsening the contract.
 - Two items still need detail before deciding: wasm64 recording in the snapshot,
   and the mount-handle payload shape.
 
+## 2l. K4 grounding — outcomes and decisions (2026-09-09)
+
+`docs/plans/2026-09-09-k4-worker-entry-unification-grounding.md` (1,023 lines).
+
+### Corrections to this plan set
+
+- **Duplicated volume is 6,718 lines (74% of each file), not 9,100.** The 9,100
+  was the two files' combined size, not the duplicated algorithm.
+- **K3 is NOT a prerequisite.** The coupling is **two lines** (`usePolling`,
+  `relistenBatchSize`). The census asserted a dependency that does not exist;
+  **K4 can go first, and is cheaper first.**
+- The "54 duplicated functions" count was **conservative, not inflated**:
+  `handleTerminate`/`handleTerminateProcess` are one function renamed, plus four
+  more renamed twins, so the real figure is **≥55**.
+
+### The duplication is real, and it is already costing
+
+Of the 54 named pairs: **13 byte-identical**, 17 cosmetic-only, 8 a justified
+host difference, and **16 substantively drifted** (22 named drifts in total).
+Four are bug-shaped:
+
+| drift | node | browser |
+|---|---|---|
+| **D1** | frees a thread's address-space slot with **no quiescence proof** | guards it |
+| **D2** | reports a duplicate exit | silently drops it |
+| **D10** | exactly-releases an exec-replacement lease | force-retires after a start attempt |
+| **D17** | clears `vmInterruptTimers` on destroy | does not |
+
+`memoryRetirementSafe` has **7 browser sites and 0 node sites** — the browser's
+entire retirement-safety model has no node counterpart.
+
+Maintenance evidence: **105 commits since 2026-06-01 touched an entry file, and
+73 of them (70%) had to touch both.**
+
+### `parseShebang` — a POSIX gap the duplication was hiding
+
+Parsing agrees across all three (the Rust is a documented port). **Chain depth
+does not:** Rust/`exec-target.ts` allow 1 level then `ENOEXEC`; both TS entries
+allow 4 then return null → **`ENOENT`**. But `kernel-worker.ts:22427` discards
+the preflight argv, so **observable depth is 1 everywhere** — the TS copies'
+extra depth is dead code masking a real POSIX gap. Both copies are deletable
+**today** via the existing `kernel_exec_target_shebang`: no host surface, no ABI.
+
+### Architecture — my assumption was wrong
+
+I assumed K4 meant "move it to Rust". The grounding argues otherwise and the
+evidence is strong: **`crates/host-native` runs the same lifecycle with ZERO
+generations, against 221/251 in the TS entries**, because its dispatch is
+synchronous. Most of the duplicated TS is **Worker-ownership complexity, not
+POSIX decision-making** — and Rust does not dissolve that. host-native also
+cannot become the shared implementation: it does not compile for wasm32 and
+shares nothing with `runtime-core`.
+
+**DECIDED: stage it. K4a = one shared TypeScript module; K4b = Rust.**
+
+**GUARD — K4a must not silently become the terminus.** It delivers **V1 only**
+(one implementation, no more 70% double-touch rate) and buys **nothing for V2 or
+V4**, while removing the pain that motivates K4b. That is exactly how a
+migration stalls at "good enough". So K4b gets a **named gate, not a someday**:
+the async/one-import probe in the grounding's defer list runs *before* K4a is
+called done, and its result is recorded here. `fork-module` hides 5,362 lines
+behind one import, but its opcodes are **synchronous** and this transaction is
+not — so the probe is the thing that decides whether K4b is affordable at all.
+
+### Decisions
+
+- **K4 moves ahead of K3** in the sequence — no dependency, cheaper first.
+- **The four bug-shaped drifts are adjudicated on POSIX, not normalized to
+  whichever host we unify toward.** Each gets a documented verdict; unification
+  must not silently pick a behaviour.
+- **Delete both `parseShebang` copies now** via `kernel_exec_target_shebang`.
+- **The observable-depth-1 shebang gap gets its own item** — it is a real POSIX
+  gap, not K4 scope, and must not be quietly fixed or quietly kept.
+- Still needing detail: whether the three incomplete kernel seams get their own
+  K-number, and the browser conformance runners that are wired into nothing.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.

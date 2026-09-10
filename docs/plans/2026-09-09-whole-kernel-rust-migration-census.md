@@ -519,7 +519,7 @@ is out of the syscall dispatch path."
 | **K1** | **Wire `sffs.rs`** — kernel parses images; host supplies bytes. Unblocks the bundle architecture. | ~500 Rust | — |
 | **K2** | **Cross-memory access.** Generalize `proc_read_bytes`/`proc_write_bytes`, add wasm64 width, implement on host-native. | ABI-adjacent | — |
 | **K3** | **Blocking scheduler → Rust** (keystone). Sleeper table, deadlines, wake routing, retry replay. Removes 21 state containers, the epoll mirror and its 6 lifecycle touchpoints. | ~4,500 | K0, K2 |
-| **K4** | **Unify the two worker entries → Rust** (F1). One process-lifecycle implementation; hosts keep Worker/Memory construction. Delete both `parseShebang` copies in favor of `exec_target.rs`. | ~9,100 | K3 |
+| **K4** | **Unify the two worker entries** (F1). Delete both `parseShebang` copies in favour of `exec_target.rs`. **Corrected 2026-09-09 by the K4 grounding:** duplicated-algorithm volume is **6,718 lines (74% of each file)**, not 9,100 — that figure was the two files' total size. And **K3 is NOT a dependency**: the coupling is *two lines* (`usePolling`, `relistenBatchSize`), so K4 can go first and is cheaper first. Destination is *not* automatically Rust — see the value plan §2l. | ~6,718 | none |
 | **K5** | **Dynamic linker → Rust** (F2). Also gains `dlopen` on host-native. Includes `worker-main.ts`'s dlopen lock, `patchWasmForThread`, startup-metadata wire. | ~9,000 | — |
 | **K6** | **Marshalling → Rust.** SysV msg/sem/ctl, mqueue, sendmsg/recvmsg, ifconf residue. | ~2,100 | K2 |
 | **K7** | **Shared-mapping table → Rust.** Page cache, coherence, inheritance. **Unblocks H5.** | ~3,000 | — |
