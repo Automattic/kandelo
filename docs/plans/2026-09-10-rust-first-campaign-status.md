@@ -972,8 +972,8 @@ coordinator.** Reclassify: **MIGRATE**.
 | # | Path | Lines | Goal served, concretely |
 |---|---|---|---|
 | 1 | `host/src/constants.ts` | 3,031 | **V2/V3** — the code deciding whether an artifact matches the ABI epoch, parsing bytes in the language with no types over them. **V1** — `worker-main.ts` and `binary-resolver.ts` already carry their own partial copies |
-| 2 | `pathconf.ts` + `statfs.ts` | 115 + 23 | **V4, directly** — four host imports (`host_pathconf`, `host_fpathconf`, `host_statfs`, `host_fstatfs`) exist only to ask the host for constants the kernel already computes. ~5% of the 83-import surface, and **K9 cannot take them** (two are handle-taking) |
-| 3 | `trap-signals.ts` | 139 | **V1** — `crates/host-native` has **no** trap→signal mapping (verified: zero hits for SIGSEGV/SIGILL/SIGFPE in `host-native/src`). A guest divide-by-zero yields SIGFPE on Node and browser and **nothing** native |
+| 2 | `pathconf.ts` + `statfs.ts` | 115 + 23 | ~~V4~~ **DONE 2026-09-10, and this row was wrong** — see value plan §2y. Two of the four imports no longer exist (K9 took them; the census read a stale doc comment at `host/src/kernel.ts:16`), and the surviving two are **real host capabilities**: host-native answers `host_fstatfs` with `fstatvfs(2)` and `host_fpathconf` with `fpathconf(3)`. The genuine defect was the JavaScript hosts answering `host_fpathconf` from a *copy* of the kernel's table — deleted; and `_PC_PIPE_BUF`, which **both** copies got wrong |
+| 3 | `trap-signals.ts` | 139 | **V1 — DONE 2026-09-10.** Confirmed exactly as stated. Policy now in `wasm_posix_shared::trap_signal`; host-native maps wasmtime's typed `Trap` structurally and posts a real process exit, the JavaScript hosts pass the engine message to `kernel_classify_wasm_trap_signal`. Two residual host-native limits logged in `docs/future-improvements.md` |
 | 4 | `thread-allocator.ts` | 186 | **V2/V4** — pthread slot arena, growth direction, and the `pthread_create` EAGAIN quota: address-space allocation and a POSIX resource limit, in TS, over ABI constants Rust already owns |
 | 5 | `vfs/device-fs.ts` | 339 | **V4** — ELIMINATE; see duplicated authority #2 below |
 | 6 | `shell-runtime-layout.ts` | 60 | **None — it is toolchain**, mis-located. Its only callers are `images/vfs/scripts/*`, explicitly out of scope, but it sits in `host/src` so `migration-ledger.sh` counts it as in-scope runtime TS. **Moving it corrects the headline metric.** |
@@ -998,12 +998,14 @@ capacity-carrying views. Their errno *choice* should still be stated by Rust.
 
 ### Duplicated authority — three more, bringing the campaign total to SEVEN
 
-1. **The `pathconf` limit table.** `pathconf.ts:54 filesystemPathconf` vs
-   `syscalls.rs:16925 filesystem_pathconf_value` — both verified present, same
-   ~20 names. **They already disagree:** `_PC_PIPE_BUF` on a FIFO or directory
-   returns `null` (success, indeterminate) in TS and `Err(EINVAL)` in Rust.
-   Which one a guest sees depends only on whether the path routed through
-   `host_pathconf`. That is a live POSIX divergence, not a latent one.
+1. **The `pathconf` limit table — RESOLVED 2026-09-10.** `pathconf.ts:54
+   filesystemPathconf` vs `syscalls.rs:16925 filesystem_pathconf_value`, same
+   ~20 names, disagreeing on `_PC_PIPE_BUF`. The host copy is gone. **Note for
+   the pattern:** the previous six duplicated authorities were all resolved by
+   deleting the host copy, and doing only that here would have shipped a POSIX
+   bug — POSIX makes `_PC_PIPE_BUF` mandatory for a FIFO and a directory and
+   gives `{PIPE_BUF}` a `<limits.h>` minimum, so TypeScript's -1 and Rust's
+   EINVAL were **both** non-conforming. The surviving answer is neither side's.
 2. **The `/dev` node table.** `vfs/device-fs.ts` vs `syscalls.rs:218
    match_virtual_device` + `devfs.rs`. Rust has `/dev/full` and TS does not; TS
    maps `/dev/console` to a device that throws `ENXIO` while Rust aliases it to
@@ -1446,5 +1448,6 @@ whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 - **A base reproduction shows authorship, not innocence** — a defect may have
   entered hours earlier. One of the coordinator's own was caught this way.
 - **Never `git add -A docs/plans/`** — it sweeps other agents' in-progress files.
-- **Twelve inherited "floors" have been disproved, six of them the
-  coordinator's.** Measure rather than inherit.
+- **Fourteen inherited claims have now been disproved, eight of them the
+  coordinator's.** The newest is this census's own row 2 — see value plan §2y.
+  Measure rather than inherit, *including* what was measured yesterday.
