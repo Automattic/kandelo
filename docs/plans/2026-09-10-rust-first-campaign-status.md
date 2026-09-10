@@ -2432,6 +2432,73 @@ The gate is therefore:
 - `xtask verify-fresh` exit 0,
 - the maintainer's own manual browser check.
 
+## B22 CLOSED — it was never a repository defect
+
+Reported as "libc-test's submodule URL is `git@github.com:` and ssh is
+unavailable in the dev shell", and recorded here as a second independent reason
+no conformance suite had run this campaign. **Both halves were wrong.**
+
+`.gitmodules` has always said
+`url = https://github.com/PocketCluster/libc-test.git`. What this *checkout*
+had was two pieces of broken local state:
+
+1. `.git/config` carried a stale override,
+   `submodule.libc-test.url git@github.com:PocketCluster/libc-test.git`,
+   which `git submodule sync` clears.
+2. The submodule's own `.git` had been renamed to `.git.disabled`, so the
+   directory was not a git repository at all, and `git submodule update` then
+   failed with *"destination path already exists and is not an empty
+   directory"* — a message about the wrong thing entirely. Restoring it also
+   required repointing the gitfile: it held the relative path
+   `../../../.git/modules/libc-test`, which is correct in a normal clone and
+   wrong inside a `git worktree`, where `.git` is a file rather than a
+   directory.
+
+After repair: **925 tracked files, 0 missing, HEAD exactly the
+`790f94c7b6feb8ade25868c10fba46233f783a0b` the parent expects.**
+
+**The lesson is the one this day keeps teaching.** An agent looked at a real
+symptom, formed a specific and plausible diagnosis — an ssh-only submodule URL
+committed to the repository — and was wrong, because the environment was
+broken in a way the error message misdescribed. That is the fourth such case
+today, after vitest from the wrong directory (269 fictional failures), xtask
+outside the dev shell (fictional ABI drift), and two agents working from the
+campaign merge-base. **A broken environment does not report itself as a broken
+environment; it reports as a defect in whatever it was pointed at.**
+
+## The eleventh silent-success defect — `host-native` scores no-kernel as green
+
+Found by the resolver agent while proving its own work.
+
+`cargo test -p host-native` reports **54 passed, 0 failed** in a worktree with
+**no `kernel.wasm` in any tier**. `kernel_path_or_skip()` returns `None`, and
+every kernel smoke test then returns `Ok(())`. A tree with no kernel at all is
+indistinguishable from a fully working one.
+
+This matters beyond the usual, because `host-native`'s suite is the campaign's
+only executable check that the kernel *loads* — and the maintainer intends to
+ship on the strength of these gates. It was left unchanged deliberately:
+making the skip fail turns ~53 tests red in any worktree without a kernel,
+which is a maintainer decision, not an agent's. The skip message now prints
+every tier it searched.
+
+**This session's own `host-native` numbers are unaffected and were checked:**
+the 39 failures before the kernel was rebuilt were
+`failed to find function export kernel_thread_parent_tid_target`, which only a
+loaded kernel can produce, and `local-binaries/kernel.wasm` resolves to a real
+generation now. The measurement was real. The gate is still blind.
+
+## Merge wave 2 landed (2026-09-10)
+
+| item | result |
+|---|---|
+| T1 — resolver, one tier order | the source-only tier was never given its own arm; every path refused. Now routed through the projection authority it already carries |
+| T2 — `browser-kernel.test.ts` | 33 failed → **43 passed**; the vitest stub now emits a distinct URL per import source |
+| B5/K11 — devices | **−3,584 TypeScript**, +626 Rust; GL cmdbuf validation cut over; a 3,556-line dead TLS backend deleted |
+
+**Ledger after this wave: production TypeScript −3,129** (from −2,460), host
+imports **75**, typecheck **0**, Rust 1,944 + 54 + 6 passing.
+
 ## MERGE ORDER FOR THE SIX IN-FLIGHT AGENTS (planned 2026-09-10)
 
 Written before anything lands, because the maintainer's instruction was
