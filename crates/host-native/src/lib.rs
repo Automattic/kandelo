@@ -62,7 +62,7 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// **The count is of DECLARED imports, not implemented ones.** Implementing an
 /// import moves it from the trapped bucket to the implemented bucket without
 /// moving this number, so the coverage change has to be recorded in prose.
-/// The native host implements 33 of the 75 as of K9 below; it was 21 of 83
+/// The native host implements 32 of the 75 as of K9 below; it was 21 of 83
 /// before, and 19 before `host_proc_read_bytes` / `host_proc_write_bytes` were
 /// implemented in `guest.rs` (`define_kernel_host_imports`). Those two are the
 /// kernel's general mechanism for reading and writing a guest process's linear

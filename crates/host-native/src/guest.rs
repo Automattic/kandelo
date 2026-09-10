@@ -347,6 +347,16 @@ impl DirHandle {
 /// pre-K9 lexical one and is enforced by the type rather than by code this
 /// host has to keep correct.
 ///
+/// KNOWN DIVERGENCE FROM NODE, and it is this host being stricter: a symlink
+/// stored INSIDE a mounted tree whose target escapes that tree is followed by
+/// Node's `HostFileSystem.safePath` (`host/src/vfs/host-fs.ts`) and refused
+/// here. Kandelo's own mount contract says a mount is a subtree, so refusing is
+/// the behaviour that matches the contract and Node is the host that is loose —
+/// but the two hosts do differ today, and that is recorded here rather than
+/// papered over. Nothing shipped exercises it: the kernel resolves every
+/// intermediate symlink itself, so only a FINAL component that is an escaping
+/// symlink reaches this difference at all.
+///
 /// Unix-only (`std::os::unix::fs::*`): this workspace has no Windows CI
 /// target for the native host.
 struct HostFs {
