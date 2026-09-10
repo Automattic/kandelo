@@ -79,6 +79,13 @@ use wasm_posix_shared::Errno;
 #[path = "dylink_archive_encode.rs"]
 pub mod encode;
 
+/// The resumable chain WALKER. Also a child module, for the same reason: it
+/// decides which byte ranges the archive image occupies using the very
+/// constants and padding rules the decoder enforces, so the two cannot
+/// disagree about where a record ends.
+#[path = "dylink_archive_walk.rs"]
+pub mod walk;
+
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -225,6 +232,76 @@ pub struct DylinkArchive {
     pub table_patches: Vec<DylinkTablePatch>,
 }
 
+/// Random-access archive storage.
+///
+/// The archive's records live in GUEST linear memory and every stored pointer
+/// is an absolute offset into it, so the natural argument to the decoder is the
+/// whole memory as one flat slice. The standalone planner module cannot produce
+/// that argument: it imports nothing at all, so it can neither read nor map the
+/// process memory the records occupy. Its only way in is to ask its host for
+/// one byte range at a time and decode over the sparse view those answers
+/// build up (see [`walk`]).
+///
+/// Making the decoder storage-agnostic is what keeps that possible without a
+/// second decoder. A second decoder is the failure mode this trait exists to
+/// prevent: two readers of the same wire format drift, and the drift surfaces
+/// as a fork child silently disagreeing with its parent about loader state.
+// `is_empty` would be meaningless here: an archive storage reports the geometry
+// of the memory the records were written into, not how much of it was fetched.
+#[allow(clippy::len_without_is_empty)]
+pub trait ArchiveBytes {
+    /// Total addressable length, for the physical-plausibility bounds the
+    /// decoder applies to declared record counts.
+    fn len(&self) -> u64;
+
+    /// The bytes at `[offset, offset + len)`, or `Err(Errno::EINVAL)` when that
+    /// range is not backed by storage.
+    fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno>;
+}
+
+impl ArchiveBytes for [u8] {
+    fn len(&self) -> u64 {
+        <[u8]>::len(self) as u64
+    }
+
+    fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno> {
+        let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+        let end = offset.checked_add(len).ok_or(Errno::EINVAL)?;
+        self.get(offset..end).ok_or(Errno::EINVAL)
+    }
+}
+
+/// The flat whole-memory caller usually holds an owned image rather than a
+/// borrowed slice; this is the same implementation reached through `Deref`,
+/// spelled out because a generic parameter does not deref-coerce.
+impl ArchiveBytes for Vec<u8> {
+    fn len(&self) -> u64 {
+        ArchiveBytes::len(self.as_slice())
+    }
+
+    fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno> {
+        ArchiveBytes::slice(self.as_slice(), offset, len)
+    }
+}
+
+/// A borrowed storage is itself a storage.
+///
+/// This is what lets the flat `&[u8]` caller reach the single `&dyn`-based
+/// decoder body. `[u8]` is unsized, and Rust can only build a trait object
+/// from a `Sized` value, so `&[u8]` cannot become `&dyn ArchiveBytes` directly
+/// -- but `&&[u8]` can, because the inner reference is a sized value that this
+/// impl gives the trait to.
+impl<A: ArchiveBytes + ?Sized> ArchiveBytes for &A {
+    fn len(&self) -> u64 {
+        (**self).len()
+    }
+
+    fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno> {
+        (**self).slice(offset, len)
+    }
+}
+
 /// A half-open `[start, end)` byte interval of archive storage.
 #[derive(Clone, Copy)]
 struct Interval {
@@ -233,33 +310,26 @@ struct Interval {
 }
 
 /// Bounds-checked little-endian `u8` read.
-fn r_u8(mem: &[u8], off: u64) -> Result<u8, Errno> {
-    let off = usize::try_from(off).map_err(|_| Errno::EINVAL)?;
-    mem.get(off).copied().ok_or(Errno::EINVAL)
+fn r_u8(mem: &dyn ArchiveBytes, off: u64) -> Result<u8, Errno> {
+    Ok(mem.slice(off, 1)?[0])
 }
 
 /// Bounds-checked little-endian `u16` read.
-fn r_u16(mem: &[u8], off: u64) -> Result<u16, Errno> {
-    let off = usize::try_from(off).map_err(|_| Errno::EINVAL)?;
-    let end = off.checked_add(2).ok_or(Errno::EINVAL)?;
-    let slice = mem.get(off..end).ok_or(Errno::EINVAL)?;
+fn r_u16(mem: &dyn ArchiveBytes, off: u64) -> Result<u16, Errno> {
+    let slice = mem.slice(off, 2)?;
     Ok(u16::from_le_bytes([slice[0], slice[1]]))
 }
 
 /// Bounds-checked little-endian `u32` read.
-fn r_u32(mem: &[u8], off: u64) -> Result<u32, Errno> {
-    let off = usize::try_from(off).map_err(|_| Errno::EINVAL)?;
-    let end = off.checked_add(4).ok_or(Errno::EINVAL)?;
-    let slice = mem.get(off..end).ok_or(Errno::EINVAL)?;
+fn r_u32(mem: &dyn ArchiveBytes, off: u64) -> Result<u32, Errno> {
+    let slice = mem.slice(off, 4)?;
     Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 /// Bounds-checked little-endian `u64` read that rejects values above the host's
 /// exact-integer ceiling. Mirrors the TS `readU64`.
-fn r_u64(mem: &[u8], off: u64) -> Result<u64, Errno> {
-    let off = usize::try_from(off).map_err(|_| Errno::EINVAL)?;
-    let end = off.checked_add(8).ok_or(Errno::EINVAL)?;
-    let slice = mem.get(off..end).ok_or(Errno::EINVAL)?;
+fn r_u64(mem: &dyn ArchiveBytes, off: u64) -> Result<u64, Errno> {
+    let slice = mem.slice(off, 8)?;
     let value = u64::from_le_bytes([
         slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
     ]);
@@ -270,11 +340,8 @@ fn r_u64(mem: &[u8], off: u64) -> Result<u64, Errno> {
 }
 
 /// Read a fixed byte range, bounds-checked.
-fn r_bytes(mem: &[u8], off: u64, len: u64) -> Result<&[u8], Errno> {
-    let off = usize::try_from(off).map_err(|_| Errno::EINVAL)?;
-    let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
-    let end = off.checked_add(len).ok_or(Errno::EINVAL)?;
-    mem.get(off..end).ok_or(Errno::EINVAL)
+fn r_bytes(mem: &dyn ArchiveBytes, off: u64, len: u64) -> Result<&[u8], Errno> {
+    mem.slice(off, len)
 }
 
 /// `Math.ceil(value / 8) * 8`, checked. Mirrors the TS `align8`.
@@ -306,7 +373,7 @@ fn checked_range(addr: u64, size: u64, mem_len: u64) -> Result<(), Errno> {
 }
 
 /// Decode a UTF-8 string of `len` bytes at `off`, rejecting invalid UTF-8.
-fn decode_utf8(mem: &[u8], off: u64, len: u64) -> Result<String, Errno> {
+fn decode_utf8(mem: &dyn ArchiveBytes, off: u64, len: u64) -> Result<String, Errno> {
     let bytes = r_bytes(mem, off, len)?;
     core::str::from_utf8(bytes)
         .map(String::from)
@@ -328,7 +395,7 @@ fn push_interval(intervals: &mut Vec<Interval>, start: u64, end: u64) -> Result<
 /// Decode the strictly-ascending provider-dependency blob. Mirrors the TS
 /// `decodeProviderDependencies`.
 fn decode_provider_dependencies(
-    mem: &[u8],
+    mem: &dyn ArchiveBytes,
     base: u64,
     byte_len: u64,
     count: u32,
@@ -372,26 +439,40 @@ fn decode_stage(code: u32) -> Result<DylinkInitializationStage, Errno> {
 
 /// Decode the dylink-fork archive rooted at `head`.
 ///
-/// `memory` is the guest linear memory; `head` is the absolute byte offset of
-/// the KFLA archive header (the value the process stores in its dylink fork
-/// state slot, i.e. what the TS `readHead` returns). `pointer_width` is the
-/// process pointer width (4 or 8) and must match the width byte the archive
-/// records. Returns the validated header scalars and every record chain in
-/// publication order. Malformed input yields `Err(Errno::EINVAL)`; the function
+/// `memory` is the archive storage -- the guest linear memory as a flat
+/// `&[u8]`, or a sparse view assembled by [`walk::ArchiveWalk`] for a caller
+/// that can only fetch it a range at a time. `head` is the absolute byte
+/// offset of the KFLA archive header (the value the process stores in its
+/// dylink fork state slot, i.e. what the TS `readHead` returns). Both views
+/// report the same geometry, so the same bounds are enforced either way.
+/// `pointer_width` is the process pointer width (4 or 8) and must match the
+/// width byte the archive records. Returns the validated header scalars and
+/// every record chain in publication order. Malformed input yields `Err(Errno::EINVAL)`; the function
 /// never panics.
 ///
 /// The archive must be PUBLISHED: `head` names a real header whose generation
 /// is nonzero. An unpublished/empty slot (`head == 0`) is out of scope for this
 /// image decoder and rejected.
-pub fn decode_dylink_archive(
-    memory: &[u8],
+pub fn decode_dylink_archive<A: ArchiveBytes + ?Sized>(
+    memory: &A,
+    head: u64,
+    pointer_width: u8,
+) -> Result<DylinkArchive, Errno> {
+    // Erased immediately: the decoder body is one non-generic function no
+    // matter how many storages a caller has, which matters for a codec that
+    // ships inside a wasm module.
+    decode_archive_bytes(&memory, head, pointer_width)
+}
+
+fn decode_archive_bytes(
+    memory: &dyn ArchiveBytes,
     head: u64,
     pointer_width: u8,
 ) -> Result<DylinkArchive, Errno> {
     if pointer_width != 4 && pointer_width != 8 {
         return Err(Errno::EINVAL);
     }
-    let mem_len = memory.len() as u64;
+    let mem_len = memory.len();
     checked_range(head, ARCHIVE_HEADER_SIZE, mem_len)?;
 
     if r_u32(memory, head)? != ARCHIVE_MAGIC
@@ -613,7 +694,7 @@ pub fn decode_dylink_archive(
 /// Decode and validate one KFLM module record. Mirrors the TS `readModule`
 /// plus the structural half of `validateLibrary` / `canonicalMemoryAllocations`.
 fn read_module(
-    memory: &[u8],
+    memory: &dyn ArchiveBytes,
     address: u64,
     mem_len: u64,
     next_handle: u64,
@@ -781,7 +862,7 @@ fn read_module(
 /// Decode and validate one KFLT transaction record. Mirrors the TS
 /// `readTransaction`.
 fn read_transaction(
-    memory: &[u8],
+    memory: &dyn ArchiveBytes,
     address: u64,
     mem_len: u64,
     intervals: &mut Vec<Interval>,
@@ -840,7 +921,7 @@ fn read_transaction(
 /// `readTablePatch` plus `validateTablePatch`. Returns the patch and its total
 /// record byte size.
 fn read_table_patch(
-    memory: &[u8],
+    memory: &dyn ArchiveBytes,
     address: u64,
     mem_len: u64,
     intervals: &mut Vec<Interval>,
@@ -969,7 +1050,9 @@ mod tests {
 
     /// Absolute address of the first module record (header `+32`).
     fn first_module_addr(mem: &[u8]) -> u64 {
-        r_u64(mem, FIXTURE_HEAD + 32).unwrap()
+        // `&&[u8]`, not `&[u8]`: the read helpers take an erased storage, and
+        // an unsized `[u8]` cannot itself be a trait object.
+        r_u64(&mem, FIXTURE_HEAD + 32).unwrap()
     }
 
     // --- Cross-language fixture, field-for-field --------------------------
