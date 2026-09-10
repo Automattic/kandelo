@@ -53,7 +53,6 @@ use crate::syscalls;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn host_debug_log(ptr: *const u8, len: u32);
     fn host_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i64;
     fn host_close(handle: i64) -> i32;
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
@@ -133,7 +132,6 @@ unsafe extern "C" {
     fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
     fn host_lchown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
-    fn host_access(path_ptr: *const u8, path_len: u32, amode: u32) -> i32;
     fn host_opendir(path_ptr: *const u8, path_len: u32) -> i64;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
     fn host_closedir(dir_handle: i64) -> i32;
@@ -649,11 +647,6 @@ impl HostIO for WasmHostIO {
 
     fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
         let result = unsafe { host_lchown(path.as_ptr(), path.len() as u32, uid, gid) };
-        i32_to_result(result)
-    }
-
-    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno> {
-        let result = unsafe { host_access(path.as_ptr(), path.len() as u32, amode) };
         i32_to_result(result)
     }
 
@@ -3557,8 +3550,12 @@ pub extern "C" fn kernel_spawn_exec_commit(
 /// Given an EAGAIN result from mq_timedsend/mq_timedreceive, decide the errno
 /// to surface based on the optional absolute-timeout pointer and the
 /// descriptor's non-blocking flag. POSIX rules:
-///   * NULL timeout → EAGAIN (host retries forever for blocking mode, returns
-///     immediately for non-blocking mode via host_is_mq_nonblock check).
+///   * NULL timeout → EAGAIN. The host's blocked-retry loop re-invokes the
+///     syscall for a blocking descriptor; for a non-blocking one the caller
+///     never reaches here, because `nonblock` is decided in-kernel from the
+///     mqueue table (`pinned_is_nonblock` / `is_nonblock`, see the SYS_MQ_*
+///     dispatch arms) and short-circuits to EAGAIN. No host import answers
+///     this question.
 ///   * Invalid tv_nsec (negative or >= 1e9) AND the call would have blocked
 ///     → EINVAL (checked only when queue is full/empty).
 ///   * Non-blocking descriptor → EAGAIN.
@@ -6422,8 +6419,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
 
         // ───── PTHREAD_PROCESS_SHARED primitives ─────
-        // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
-        // the host retry loop re-invokes them.
+        // See crates/runtime-core/src/pshared.rs (the module lives in
+        // runtime-core, not this crate). Blocking ops return EAGAIN so the
+        // host retry loop re-invokes them; there is no host park primitive
+        // behind them — pshared blocking is timer polling, as that module's
+        // GAP note records.
         400 => {
             // SYS_PSHARED_MUTEX_INIT: (mtype)
             let t = unsafe { crate::pshared::global_pshared_table() };

@@ -288,10 +288,6 @@ export class DeviceFileSystem implements FileSystemBackend {
 
   lchown(_path: string, _uid: number, _gid: number): void {}
 
-  access(path: string, _mode: number): void {
-    this.stat(path); // throws ENOENT if not found
-  }
-
   utimensat(_path: string, _atimeSec: number, _atimeNsec: number, _mtimeSec: number, _mtimeNsec: number): void {
     // No-op for device files
   }

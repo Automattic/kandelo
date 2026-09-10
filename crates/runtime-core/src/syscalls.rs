@@ -20031,10 +20031,6 @@ mod tests {
             self.file_owners.insert(path.to_vec(), (uid, gid));
             Ok(())
         }
-        fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> {
-            Ok(())
-        }
-
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
             if let Some(err) = self.dir_opendir_error {
                 return Err(err);
@@ -34604,7 +34600,6 @@ mod tests {
         last_rename_new: Vec<u8>,
         last_chmod_path: Vec<u8>,
         last_chown_path: Vec<u8>,
-        last_access_path: Vec<u8>,
         last_link_old: Vec<u8>,
         last_link_new: Vec<u8>,
         last_symlink_target: Vec<u8>,
@@ -34629,7 +34624,6 @@ mod tests {
                 last_rename_new: Vec::new(),
                 last_chmod_path: Vec::new(),
                 last_chown_path: Vec::new(),
-                last_access_path: Vec::new(),
                 last_link_old: Vec::new(),
                 last_link_new: Vec::new(),
                 last_symlink_target: Vec::new(),
@@ -34775,10 +34769,6 @@ mod tests {
         }
         fn host_chown(&mut self, path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
             self.last_chown_path = path.to_vec();
-            Ok(())
-        }
-        fn host_access(&mut self, path: &[u8], _amode: u32) -> Result<(), Errno> {
-            self.last_access_path = path.to_vec();
             Ok(())
         }
         fn host_opendir(&mut self, _path: &[u8]) -> Result<i64, Errno> {
@@ -35919,9 +35909,6 @@ mod tests {
                 Ok(())
             }
             fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
@@ -40124,9 +40111,6 @@ mod tests {
             fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
                 Ok(200)
             }
@@ -40332,9 +40316,6 @@ mod tests {
             fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
                 Ok(())
             }
-            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
                 Ok(200)
             }
@@ -40535,9 +40516,6 @@ mod tests {
                 Ok(())
             }
             fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
-                Ok(())
-            }
-            fn host_access(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
                 Ok(())
             }
             fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {

@@ -685,13 +685,6 @@ export class HostFileSystem implements FileSystemBackend {
     );
   }
 
-  access(path: string, mode: number): void {
-    this.metadata.access(
-      fs.statSync(this.safePath(path), { bigint: true }),
-      mode,
-    );
-  }
-
   utimensat(
     path: string,
     atimeSec: number,

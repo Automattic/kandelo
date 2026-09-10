@@ -74,7 +74,6 @@ interface MetadataBackend {
   fchown(handle: number, uid: number, gid: number): void;
   ftruncate(handle: number, length: number): void;
   mkdir(path: string, mode: number): void;
-  access(path: string, mode: number): void;
   link(existingPath: string, newPath: string): void;
   rename(oldPath: string, newPath: string): void;
   unlink(path: string): void;
@@ -529,25 +528,6 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expectNativeMetadataUnchanged(native, before);
   });
 
-  it("answers access from VFS mode metadata instead of native mode", () => {
-    const c = makeCase();
-    const native = c.nativePath("access-file");
-    writeFileSync(native, "data");
-    chmodSync(native, 0o777);
-    const before = statSync(native);
-
-    c.backend.chmod(c.vfsPath("access-file"), 0o000);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0)).not.toThrow();
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).toThrow(/EACCES/);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o1)).toThrow(/EACCES/);
-    expectNativeMetadataUnchanged(native, before);
-
-    c.backend.chmod(c.vfsPath("access-file"), 0o400);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).not.toThrow();
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
-  });
-
   it("shares virtual metadata across hard links without changing native metadata", () => {
     const c = makeCase();
     const source = c.nativePath("source");
@@ -699,26 +679,6 @@ describe("VirtualPlatformIO on Node host mounts", () => {
     } finally {
       io.close(fd);
     }
-    expectNativeMetadataUnchanged(native, before);
-  });
-
-  it("routes access through VFS metadata", () => {
-    const root = makeTempRoot("wasm-posix-virtual-platform-access-");
-    const native = join(root, "access-file");
-    writeFileSync(native, "data");
-    chmodSync(native, 0o777);
-    const before = statSync(native);
-
-    const io = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: new HostFileSystem(root) }],
-      new NodeTimeProvider(),
-    );
-    io.chmod("/access-file", 0o000);
-
-    expect(() => io.access("/access-file", 0)).not.toThrow();
-    expect(() => io.access("/access-file", 0o4)).toThrow(/EACCES/);
-    expect(() => io.access("/access-file", 0o2)).toThrow(/EACCES/);
-    expect(() => io.access("/access-file", 0o1)).toThrow(/EACCES/);
     expectNativeMetadataUnchanged(native, before);
   });
 

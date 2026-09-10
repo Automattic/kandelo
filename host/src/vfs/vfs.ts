@@ -408,11 +408,6 @@ export class VirtualPlatformIO implements PlatformIO {
     backend.lchown(relativePath, uid, gid);
   }
 
-  access(path: string, mode: number): void {
-    const { backend, relativePath } = this.resolve(path);
-    backend.access(relativePath, mode);
-  }
-
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const { backend, relativePath } = this.resolve(path);
     backend.utimensat(relativePath, atimeSec, atimeNsec, mtimeSec, mtimeNsec);

@@ -1861,9 +1861,6 @@ export class WasmPosixKernel {
         host_lchown: (pathPtr: KernelPointer, pathLen: number, uid: number, gid: number): number => {
           return this.#hostLchown(pathPtr, pathLen, uid, gid);
         },
-        host_access: (pathPtr: KernelPointer, pathLen: number, amode: number): number => {
-          return this.#hostAccess(pathPtr, pathLen, amode);
-        },
         host_opendir: (pathPtr: KernelPointer, pathLen: number): bigint => {
           return this.#hostOpendir(pathPtr, pathLen);
         },
@@ -3671,23 +3668,6 @@ export class WasmPosixKernel {
     try {
       const path = this.#readPathFromMemory(pathPtr, pathLen);
       this.io.lchown(path, uid, gid);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_access(path_ptr, path_len, amode) -> i32
-   */
-  #hostAccess(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    amode: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.access(path, amode);
       return 0;
     } catch (e) {
       return negErrno(e);

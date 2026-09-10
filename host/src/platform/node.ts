@@ -387,13 +387,6 @@ export class NodePlatformIO implements PlatformIO {
     );
   }
 
-  access(path: string, mode: number): void {
-    this.metadata.access(
-      fs.statSync(this.rewritePath(path), { bigint: true }),
-      mode,
-    );
-  }
-
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const nativePath = this.rewritePath(path);
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;

@@ -500,7 +500,6 @@ const O_RDONLY = OPEN_FLAGS.O_RDONLY;
 const IMMUTABLE_PRODUCT_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
 const IMMUTABLE_PRODUCT_O_CREAT = OPEN_FLAGS.O_CREAT;
 const IMMUTABLE_PRODUCT_O_TRUNC = OPEN_FLAGS.O_TRUNC;
-const IMMUTABLE_PRODUCT_W_OK = ACCESS_MODES.W_OK;
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 const COPY_CHUNK_BYTES = 1024 * 1024;
@@ -7945,11 +7944,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     fs.utimensat(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
-  // access: check if path exists by stat'ing it (stat throws on error)
-  access(path: string, _mode: number): void {
-    this.fs.stat(path);
-  }
-
   utimensat(
     path: string,
     atimeSec: number,
@@ -8084,7 +8078,6 @@ const intrinsicImmutableProductSnapshot = (
   MemoryFileSystem.prototype as unknown as ImmutableProductSnapshotSource
 ).snapshotForImmutableProduct;
 const intrinsicMemoryFileSystemOpen = MemoryFileSystem.prototype.open;
-const intrinsicMemoryFileSystemAccess = MemoryFileSystem.prototype.access;
 
 function immutableProductReadonlyFailure(): never {
   throw new SFSError(EROFS, "EROFS: Read-only file system");
@@ -8172,22 +8165,6 @@ export function createImmutableProductBackend(
             snapshot,
             [path, normalizedFlags, mode],
           ) as number;
-        };
-      }
-      if (property === "access") {
-        return (path: string, mode: number): void => {
-          const normalizedMode = normalizeImmutableProductInteger(
-            mode,
-            "immutable product access mode",
-          );
-          if ((normalizedMode & IMMUTABLE_PRODUCT_W_OK) !== 0) {
-            immutableProductReadonlyFailure();
-          }
-          intrinsicApply(
-            intrinsicMemoryFileSystemAccess,
-            snapshot,
-            [path, normalizedMode],
-          );
         };
       }
       const operation = intrinsicApply(

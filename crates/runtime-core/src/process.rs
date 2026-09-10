@@ -126,7 +126,6 @@ pub trait HostIO {
     fn host_lchown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
     /// Read and consume the next directory entry.
     ///
@@ -2448,9 +2447,6 @@ pub mod test_host {
         }
         fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
             Err(Errno::ENOSYS)
-        }
-        fn host_access(&mut self, _p: &[u8], _a: u32) -> Result<(), Errno> {
-            Err(Errno::ENOENT)
         }
         fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
             Err(Errno::ENOSYS)

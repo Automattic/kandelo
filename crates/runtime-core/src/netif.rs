@@ -243,9 +243,6 @@ mod tests {
         fn host_chown(&mut self, _: &[u8], _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }
-        fn host_access(&mut self, _: &[u8], _: u32) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_opendir(&mut self, _: &[u8]) -> Result<i64, wasm_posix_shared::Errno> {
             unimplemented!()
         }

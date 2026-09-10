@@ -326,13 +326,6 @@ export class OpfsFileSystem implements FileSystemBackend {
     // existing no-op boundary as chown.
   }
 
-  access(path: string, mode: number): void {
-    this.channel.setArg(0, mode);
-    const pathLen = this.channel.writeString(path);
-    this.channel.setArg(1, pathLen);
-    this.call(OpfsOpcode.ACCESS);
-  }
-
   utimensat(_path: string, _atimeSec: number, _atimeNsec: number, _mtimeSec: number, _mtimeNsec: number): void {
     // OPFS doesn't support setting timestamps — no-op
   }
