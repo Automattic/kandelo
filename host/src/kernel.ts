@@ -2808,6 +2808,14 @@ export class WasmPosixKernel {
       return this.io.close(h);
     } catch (e) {
       return negErrno(e);
+    } finally {
+      // One import closes both files and directories now, so this is where a
+      // directory's staged entry must be dropped. Backends reuse numeric
+      // handles after close: leaving an entry staged would let the next
+      // directory opened at the same number serve a record from the previous
+      // one. The `finally` matters — a backend close that throws must still
+      // clear the staged entry, or a failed close would strand it.
+      this.pendingDirectoryEntries.delete(h);
     }
   }
 

@@ -344,12 +344,29 @@ export class VirtualPlatformIO implements PlatformIO {
     return info.backend.seek(info.localHandle, offset, whence);
   }
 
+  // Handle-taking operations that a *directory* handle must also answer.
+  //
+  // A directory handle is an anchor — a backend plus a path — with no backend
+  // local handle behind it until something iterates it. So these resolve the
+  // directory case through the backend's path form. Everything else
+  // (`read`/`write`/`append`/`seek`/`ftruncate`) is meaningless on a directory
+  // and keeps failing `EBADF` through `getFileHandle`, which is the truthful
+  // answer for a handle that has no byte stream.
+
   fstat(handle: number): StatResult {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      return this.qualifyStat(dir.backend, dir.backend.stat(dir.path));
+    }
     const info = this.getFileHandle(handle);
     return this.qualifyStat(info.backend, info.backend.fstat(info.localHandle));
   }
 
   fstatfs(handle: number): StatfsResult {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      return { ...dir.statfs };
+    }
     const info = this.getFileHandle(handle);
     if (info.statfs === undefined) {
       throw new Error(`EBADF: file handle ${handle} has no mount route`);
@@ -358,6 +375,10 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      return dir.backend.pathconf(dir.path, name);
+    }
     const info = this.getFileHandle(handle);
     return info.backend.fpathconf(info.localHandle, name);
   }
@@ -368,16 +389,33 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   fsync(handle: number): void {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      // A directory has no dirty byte stream of its own to flush, and the
+      // backend has no handle for it until something iterates. Reaching a
+      // consistent directory is the backend's own guarantee.
+      return;
+    }
     const info = this.getFileHandle(handle);
     info.backend.fsync(info.localHandle);
   }
 
   fchmod(handle: number, mode: number): void {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      dir.backend.chmod(dir.path, mode);
+      return;
+    }
     const info = this.getFileHandle(handle);
     info.backend.fchmod(info.localHandle, mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      dir.backend.chown(dir.path, uid, gid);
+      return;
+    }
     const info = this.getFileHandle(handle);
     info.backend.fchown(info.localHandle, uid, gid);
   }

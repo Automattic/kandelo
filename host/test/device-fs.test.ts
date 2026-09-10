@@ -174,29 +174,31 @@ describe("DeviceFileSystem", () => {
     expect(io.read(h3, rbuf, null, 32)).toBe(32);
     io.close(h3);
 
-    // Open /dev as directory (O_RDONLY|O_DIRECTORY) — the scenario that was broken
+    // The rest exercises the handle-only contract the kernel actually uses:
+    // one directory anchor per mount, then one path component at a time.
+    const roots = io.foreignMountRoots();
+    const devRoot = roots.find((r) => r.prefix === "/dev")?.handle;
+    expect(devRoot).toBeDefined();
+
+    // The mount root describes itself as a directory.
+    expect(io.fstatat(devRoot!, ".", 0).mode & 0o170000).toBe(0o040000);
+    // ...and so does a directory one component below it.
+    expect(io.fstatat(devRoot!, "pts", 0).mode & 0o170000).toBe(0o040000);
+
+    // Open the mount root as a directory handle — the scenario that was
+    // broken — and confirm the same handle answers `fstat`.
     const O_DIRECTORY = 0o200000;
-    const dh = io.open("/dev", O_DIRECTORY, 0);
-    const st = io.fstat(dh);
-    expect(st.mode & 0o170000).toBe(0o040000); // S_IFDIR
-    io.close(dh);
+    const dh = io.openat(devRoot!, ".", O_DIRECTORY, 0);
+    expect(io.fstat(dh).mode & 0o170000).toBe(0o040000); // S_IFDIR
 
-    // stat /dev returns directory
-    const devStat = io.stat("/dev");
-    expect(devStat.mode & 0o170000).toBe(0o040000);
-
-    // stat /dev/pts returns directory
-    const ptsStat = io.stat("/dev/pts");
-    expect(ptsStat.mode & 0o170000).toBe(0o040000);
-
-    // opendir/readdir through VFS
-    const dirH = io.opendir("/dev");
+    // The same handle iterates: there is no separate directory-cursor
+    // namespace, and `close` releases it like any other handle.
     const entries: string[] = [];
     let ent;
-    while ((ent = io.readdir(dirH)) !== null) {
+    while ((ent = io.readdir(dh)) !== null) {
       entries.push(ent.name);
     }
-    io.closedir(dirH);
+    io.close(dh);
     expect(entries).toContain("null");
     expect(entries).toContain("ptmx");
     expect(entries).toContain("pts");

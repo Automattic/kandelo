@@ -280,7 +280,21 @@ export class NodePlatformIO implements PlatformIO {
   // tools that compare ownership against their own euid (git's
   // "dubious ownership" check, nginx config ownership, etc.) see a
   // match. Same policy as HostFileSystem.
+  // Handle-taking operations that a *directory* handle must also answer.
+  //
+  // A directory handle here is an anchor — a guest path — not an OS
+  // descriptor, so `fstatSync` would reject it. These resolve the directory
+  // case through the path form. `read`/`write`/`seek`/`ftruncate` are
+  // meaningless on a directory and keep rejecting it, which is truthful for a
+  // handle with no byte stream.
+
   fstat(handle: number): StatResult {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      return this.metadata.toStatResult(
+        fs.statSync(this.rewritePath(anchor), { bigint: true }),
+      );
+    }
     return this.metadata.toStatResult(fs.fstatSync(handle, { bigint: true }));
   }
 
@@ -601,14 +615,26 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   fsync(handle: number): void {
+    // A directory anchor holds no dirty byte stream of its own to flush.
+    if (this.dirAnchors.has(handle)) return;
     fs.fsyncSync(handle);
   }
 
   fchmod(handle: number, mode: number): void {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      this.chmod(anchor, mode);
+      return;
+    }
     this.metadata.chmod(fs.fstatSync(handle, { bigint: true }), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      this.chown(anchor, uid, gid);
+      return;
+    }
     this.metadata.chown(fs.fstatSync(handle, { bigint: true }), uid, gid);
   }
 

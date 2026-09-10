@@ -350,6 +350,7 @@ function isKernelScratchExportName(
     case "kernel_recv":
     case "kernel_rootfs_export_tree":
     case "kernel_rootfs_read_file":
+    case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_write_file":
     case "kernel_select":
