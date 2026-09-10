@@ -309,6 +309,35 @@ Any follow-up should:
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
 
+### RESOLVED 2026-09-09: the `bc` source URL was malformed, not mirror roulette
+
+The `bc@1.07.1` fetch failure recorded elsewhere in this file was diagnosed as
+`ftpmirror.gnu.org` handing out a mirror that emits a doubled `/gnu/` path, and
+therefore as depending on which mirror a machine happened to be given. That is
+not what was happening.
+
+`bc` was **the only one of the 14 GNU packages in this registry whose declared
+URL carried a `/gnu/` path prefix**. Every sibling uses
+`https://ftpmirror.gnu.org/<package>/…`; `bc` used
+`https://ftpmirror.gnu.org/gnu/bc/…`. The redirector prepends its own `/gnu/`,
+so `bc` alone resolved to `…/gnu//gnu/bc/…` and 404'd. Measured:
+
+| URL | result |
+|---|---|
+| `ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz` (as declared) | **404** → `mirror.ihost.md/gnu//gnu/bc/…` |
+| `ftpmirror.gnu.org/bc/bc-1.07.1.tar.gz` (sibling convention) | **200** → `mirrors.ustc.edu.cn/gnu//bc/…` |
+| `ftpmirror.gnu.org/sed/sed-4.9.tar.xz` (control) | **200** |
+
+So it was deterministic and repo-local, not environmental — which matters,
+because "flaky mirror" invites a retry loop while the actual fix is one
+character class of path. Fixed by dropping the redundant prefix; the recorded
+`sha256` (`62adfca8…`) verifies bit-identically against the bytes the corrected
+URL returns, so the artifact is unchanged.
+
+This unblocks building `rootfs.vfs` in a fresh checkout, and with it
+`KANDELO_SOURCE_CACHE_ROOT`-isolated build caches — which were unusable while a
+cold cache could not fetch `bc`.
+
 ## Build freshness
 
 ### `./run.sh rebuild kernel` leaves the consumed artifact stale
