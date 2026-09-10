@@ -428,6 +428,35 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### `crates/host-native` reports a faulting guest without `WIFSIGNALED`
+
+A guest that traps under `crates/host-native` now ends with the same wait
+status a JavaScript host records — `128 + signum`, with the signal chosen by
+`wasm_posix_shared::trap_signal` from wasmtime's typed `Trap`. Two pieces of
+fidelity are still missing, and both are recorded here rather than papered
+over in the host.
+
+- **The signal flag.** Node and the browser additionally call the kernel's
+  `kernel_mark_process_signaled(pid, signum)` export, which is what makes
+  `WIFSIGNALED(status)` true and `WTERMSIG(status)` name the signal. That
+  export must be called on the kernel `Store`, which belongs to the pump
+  thread; the fault is detected on the guest's own OS thread, which has no
+  access to it. Closing this needs the guest thread to hand the classified
+  signal to the pump — a small shared slot the pump drains beside the exit it
+  already processes — rather than a new export.
+- **A guest's own `unreachable` is swallowed.** `run_fork_capable_entry`
+  treats `Trap::UnreachableCodeReached` as a clean return, because this host's
+  exit path unwinds the guest with exactly that trap once the kernel has
+  committed the exit status. A guest that genuinely executes `unreachable`
+  therefore ends silently where a JavaScript host reports SIGILL. Separating
+  the two needs a committed-exit flag the guest OS thread can read; the
+  coordinator's information is already there in the kernel, so this is
+  plumbing rather than a new decision.
+
+Every other trap kind — memory, table/array bounds, stack overflow, integer
+division and conversion faults, null and mistyped indirect calls — is
+classified and reported.
+
 ### WASI modules that define their own memory cannot be run (proven boundary)
 
 `host/src/worker-main.ts:3292` refuses any WASI module that defines and

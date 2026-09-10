@@ -138,7 +138,10 @@ rather than migrating.
 | file | lines | verdict | reason |
 |---|---|---|---|
 | `generated/abi.ts` (563 constants) | 2,168 | **ELIMINATE (shrinks)** | already correctly generated from Rust by `cargo xtask dump-abi` with CI drift-checking. The *pattern* is right; the volume is the symptom. It shrinks toward near-zero as TS leaves the dispatch path, and is a good progress readout |
-| `constants.ts` | 3,005 | **KEEP** | a re-export shim over the generated ABI with only 7 own declarations. Not duplication |
+| `constants.ts` | 3,005 | **MIGRATE (corrected 2026-09-10)** | the KEEP reason was false and is the campaign's 13th disproved claim: it is a complete WebAssembly binary reader (LEB128, type/section decode, custom-section descriptors) plus the fork-artifact validators, with **26 exported declarations**, not "7 own". Its input is an `ArrayBuffer`; it touches no host object. See the campaign-status census |
+| `trap-signals.ts` | 139 → 79 | **DONE 2026-09-10 (SPLIT)** | the trap→signal table was one host's private copy of platform policy, and `crates/host-native` had **no** mapping at all — a guest divide-by-zero was SIGFPE on Node and in the browser and nothing natively. Policy moved to `wasm_posix_shared::trap_signal`; host-native reads wasmtime's typed `Trap` structurally, and the JavaScript hosts pass the engine's `RuntimeError` message — bytes, not a host object — to `kernel_classify_wasm_trap_signal`. What stays is capturing the text, which only a JavaScript host can do |
+| `pathconf.ts` | 115 → 56 | **DONE 2026-09-10 (SPLIT)** | carried a second copy of `filesystem_pathconf_value`'s ~20 names, and the two disagreed on `_PC_PIPE_BUF`. **Both were wrong** — POSIX makes it mandatory for a FIFO and a directory and gives `{PIPE_BUF}` a `<limits.h>` minimum — so the fix was neither side's answer. The host now answers only what a JavaScript backend genuinely owns (symlink support, timestamp resolution) and says `ENOSYS` to the rest |
+| `statfs.ts` | 23 | **KEEP (measured 2026-09-10)** | the census called `host_fstatfs` a constant the kernel computes. It is not: host-native answers with a real `fstatvfs(2)`, and `memory-fs.ts` with the SFFS image's live free blocks. Capacity changes over time and no kernel derives it |
 
 ### Transport and proxies
 

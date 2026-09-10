@@ -3075,6 +3075,129 @@ The browser still has foreign mounts after K8 (`/dev/shm` over a
 implements *zero* of the family is not yet true — it becomes true when the
 in-kernel shmfs lands and `/dev/shm` stops being a host mount.
 
+## 2y. Census items 2 + 3 — pathconf's duplicate table is gone, host-native has signals (2026-09-10)
+
+Worktree `.claude/worktrees/agent-a14b3f3c60c0af346`, base `aab5314c0`.
+No `ABI_VERSION` change. **No new `env.host_*`; the host import count is
+unchanged at 75.**
+
+### The census was wrong about the import surface, in three ways
+
+The item was framed as "four host imports — `host_pathconf`, `host_fpathconf`,
+`host_statfs`, `host_fstatfs` — exist only to ask the host for constants the
+kernel already computes … ~5% of the 75-import surface". Measured:
+
+1. **Two of the four no longer exist.** K9 already converted the path-taking
+   pair away; `host/src/kernel.ts` has no `host_pathconf` or `host_statfs`
+   member, and `crates/kernel/src/wasm_api.rs`'s extern block declares only
+   `host_fstatfs` and `host_fpathconf`. The census read a **stale doc comment**
+   at `host/src/kernel.ts:16`, which still describes the removed signature.
+   So the candidate was ~2.7% of the surface, not ~5%.
+2. **`host_fstatfs` is not "a constant the kernel already computes".** It
+   returns a foreign filesystem's live capacity. `crates/host-native` answers
+   it with a real `fstatvfs(2)`; `memory-fs.ts` answers with the SFFS image's
+   actual free blocks and inodes; Node's `nativeStatfs` reads `fs.statfsSync`.
+   Free blocks change over time and no kernel can derive them. Deleting this
+   import would mean reporting `default_statfs()` — zero blocks free — for a
+   real disk, which is the "convenient illusion" the values contract forbids.
+   **KEEP**, and `host/src/statfs.ts` (23 lines) stays with it: it is the
+   devfs/Node zero-capacity constructor and two superblock magics.
+3. **`host_fpathconf` is not one either — for the host that can answer it.**
+   `crates/host-native` calls the real `fpathconf(3)` on the live descriptor,
+   so a host mount over ext4 or APFS reports *that* filesystem's `{NAME_MAX}`
+   and `{LINK_MAX}`. That is a genuine host capability and passes §2's KEEP
+   test. **KEEP the import.**
+
+**Fourteenth disproved claim in this campaign, eighth authored by the
+coordinator.** Measure rather than inherit.
+
+### What WAS wrong was real, and worse than the census said
+
+The duplication was never the import; it was that **the JavaScript hosts
+answered `host_fpathconf` from a hardcoded copy of the kernel's own table**.
+All five VFS backends called one helper,
+`host/src/pathconf.ts:54 filesystemPathconf`, which reimplemented the same ~20
+`_PC_*` names as `filesystem_pathconf_value`
+(`crates/runtime-core/src/syscalls.rs`). Node has no `fpathconf(3)` binding at
+all, so for `host-fs.ts` and `platform/node.ts` those answers were not even
+the host's filesystem's — they were Kandelo's, returned to Kandelo through an
+import.
+
+**And both copies were wrong about `_PC_PIPE_BUF`, not just different.** POSIX
+XSH `pathconf` makes it mandatory for a FIFO (the value applies to it) and for
+a **directory** (it applies to FIFOs creatable within it), and `{PIPE_BUF}` is
+a `<limits.h>` pathname variable with a guaranteed minimum of
+`{_POSIX_PIPE_BUF}` = 512. So it is never "no limit": TypeScript's `null`
+(-1, indeterminate) and Rust's `EINVAL` ("no such association") are both
+non-conforming for exactly the two cases POSIX requires. For any other file
+type POSIX leaves it unspecified, and glibc and musl both return `{PIPE_BUF}`
+unconditionally — so the resolution is `Ok(Some(crate::pipe::PIPE_BUF))`
+everywhere the filesystem table answers, per the standing guidance to prefer
+Linux-observable behaviour where POSIX is neutral. A pipe descriptor likewise
+reports a definite limit rather than -1 for a host-backed pipe.
+
+This is the point the item's own brief insisted on and it is worth restating:
+**the surviving behaviour was neither side's.** The previous six duplicated
+authorities were resolved by deleting the host copy; here deleting the host
+copy would have shipped the Rust bug.
+
+### The split that replaced it
+
+`host/src/pathconf.ts` drops from 115 lines to the two answers a JavaScript
+backend genuinely owns — whether it can create symbolic links, and the
+resolution of the timestamps it reports — and refuses every other name with
+`ENOSYS`. `host_pathconf_or_default` in `syscalls.rs` then answers those from
+the kernel's own table, mirroring the `host_fstatfs_or_default` pattern that
+already existed. A real host error is still propagated; only `ENOSYS` falls
+back. Keeping those two bits host-side is deliberate: OPFS genuinely has no
+symlinks and devfs genuinely has no sub-millisecond timestamps, and inventing
+either in the kernel would be a fabrication.
+
+### Item 3 — `trap-signals.ts` was a capability gap, not a tidy-up
+
+Confirmed as stated: `crates/host-native/src` contained zero occurrences of
+SIGSEGV, SIGILL or SIGFPE. Its trap arm printed the wasmtime error and ended
+the guest's OS thread, so the kernel never learned the process had died and a
+parent in `wait(2)` would park forever.
+
+The line was drawn on **what each host can actually observe**, not on where the
+code happened to live:
+
+- wasmtime returns a typed `wasmtime::Trap`. host-native maps it structurally
+  through `WasmTrapKind` — **no string is involved on that host at all** — and
+  then posts a real process exit carrying the fault's status.
+- `WebAssembly` gives a JavaScript host only a `RuntimeError` whose `message`
+  is engine-defined prose. Capturing that text is irreducibly host-side; a
+  string is bytes, so *reading* it is not. It travels to the new
+  `kernel_classify_wasm_trap_signal` export.
+
+`wasm_posix_shared::trap_signal` holds both layers, with the phrase table
+marked as a compatibility boundary (§3) — V8, SpiderMonkey and JavaScriptCore
+word these differently, and a new wording is added there rather than in a host.
+`wasm_posix_shared::signal` was **missing SIGSEGV entirely**; added.
+
+Two host-native limits are logged in `docs/future-improvements.md` rather than
+hidden: no `WIFSIGNALED` (that needs `kernel_mark_process_signaled`, which is
+callable only on the pump thread's kernel store), and a guest's own
+`unreachable` still swallowed (this host's clean-exit path unwinds with the
+same trap).
+
+### Tests moved with the primitives
+
+`host/test/trap-signals.test.ts` and `apps/browser-demos/test/
+wasm-trap-signal.spec.ts` are deleted. Their subject was the TypeScript table;
+a harness cannot outlive the implementation it tested (§2x's finding, applied
+again). Every case they asserted is now a Rust test beside the table, and
+`host/test/wasm-trap.test.ts` proves the whole path with real trapping guests.
+`examples/pathconf_test.c` gained `_PC_PIPE_BUF` coverage on a directory, a
+FIFO by name and by descriptor, and a pipe — because a change to an observable
+POSIX return value is not settled by unit tests.
+
+**What is unproven:** no automated *browser* test now exercises trap
+classification. The path it takes in a browser (kernel worker → scratch lease →
+`kernel_classify_wasm_trap_signal`) is the same code Node runs, but the
+browser-specific claim rests on the consolidated browser pass, not on a spec.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
