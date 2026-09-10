@@ -1333,11 +1333,48 @@ truthful failure, not a silent wrong answer. Kernel and hosts ship
 together from this repository, and `verify-fresh` catches a stale
 pairing.
 
-The import is expected to be temporary as a NET addition:
-`EXPECTED_HOST_IMPORT_COUNT` (`crates/host-native/src/lib.rs`) rises from
-84 to 85 here, and the cutover that deletes `emitRootfsManifest` and its
-host-side inode-to-path map retires `host_blob_read` with it, returning
-the count to 84.
+The import was expected to be temporary as a NET addition:
+`EXPECTED_HOST_IMPORT_COUNT` (`crates/host-native/src/lib.rs`) rose from
+84 to 85 here, and the cutover that deletes `emitRootfsManifest` was
+expected to retire `host_blob_read` with it.
+
+**Corrected 2026-09-10, after the cutover landed.** `emitRootfsManifest`
+is gone from `host/src` and both worker entries now hand the kernel the
+raw image, but `host_blob_read` did NOT go with it. `rootfs::load_image`
+records an image-backed regular file as a base file whose `blob_id` is its
+inode number, and the host still serves those bytes — so the host-side
+inode-to-path map survives in `host/src/vfs/rootfs-blob-store.ts`. It is
+still needed because the byte store is addressed by path and a lazy
+leaf's materialization is keyed by path (`open` starts the fetch and
+throws `EAGAIN` until it lands). Retiring the import needs the kernel to
+serve an image-backed file's bytes from the image through the SFFS reader
+`load_image` already mounts; that is the work item that collects it.
+The count is 83 today (K3's increment 0b removed two dead imports).
+
+#### `kernel_rootfs_mkdir_parents` (ABI 44 epoch)
+
+Additive, and recorded for the same auditability.
+
+`kernel_rootfs_mkdir_parents(path_ptr, path_len, mode)` creates the
+missing ancestor directories of a path in the kernel-owned rootfs, so a
+following `kernel_rootfs_write_file` can create the path itself. It is a
+NEW export; every existing export keeps its kind, signature, and
+semantics, and a host that never calls it behaves exactly as before.
+Snapshot regenerated, no `ABI_VERSION` bump.
+
+It exists because the boot cutover made `/` the kernel's, and a host that
+must place genuine per-session runtime data there cannot assume the image
+carries the directories leading to it. The live case is the browser's
+TLS-MITM CA certificate at `/etc/ssl/certs/ca-certificates.crt`, which can
+never be baked into an image and which a demo image need not have a
+directory for.
+
+It is deliberately a separate export rather than implicit `mkdir -p`
+inside `kernel_rootfs_write_file`. That export opens with `O_CREAT`, which
+returns `ENOENT` on a missing parent exactly as POSIX requires; giving it
+implicit parent creation would be a silent semantic change to the live
+`write_vfs_file` contract for every existing caller, which the rule above
+says an additive change must not do.
 
 **Image compatibility is NOT additive, and is deliberately strict.**
 `kernel_rootfs_load_image` requires the image to declare a `KLZY`
