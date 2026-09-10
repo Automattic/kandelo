@@ -1722,20 +1722,37 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
-    // The co-resident fork-module side modules (`fork_module32.wasm` /
-    // `fork_module64.wasm`) are projected at the root by the local-build engine,
-    // built out-of-band by `crates/fork-module/build-wasm.sh` (they are not a
-    // registry package, so they never appear in the v2 `projection.packages`
-    // map). Admit them as their own single root-level member nodes so the V8
-    // browser host resolves the co-resident module through the same pinned
-    // projection as `kernel.wasm`.
-    const isCoresidentForkModuleNode =
+    // Modules the local-build engine projects at the root but the package
+    // resolver does not model: the co-resident fork-module side modules
+    // (`fork_module32.wasm` / `fork_module64.wasm`), the co-resident WASI
+    // module, and the standalone dynamic-linking planner. Each is built
+    // out-of-band by its own `build-wasm.sh` and carries no
+    // `packages/registry/<name>/build.toml`, so none appears in the v2
+    // `projection.packages` map. Admit each as its own single root-level member
+    // node so every host resolves it through the same pinned projection as
+    // `kernel.wasm`.
+    //
+    // This must list every module in `CORESIDENT_SIDE_MODULES`
+    // (`tools/xtask/src/local_build.rs`). A module the engine projects but this
+    // table omits makes the WHOLE manifest unreadable — the parse throws before
+    // any binary resolves — so adding a row there without adding it here breaks
+    // every SourceOnly boot, not just that module's.
+    //
+    // Kept as an explicit allowlist rather than "any single root-level member":
+    // this check is what stops an arbitrary node in an untrusted projection
+    // from claiming a root path, so it must enumerate what is permitted.
+    const standaloneModuleArtifacts: Record<string, readonly string[]> = {
+      "fork-module": ["fork_module32.wasm", "fork_module64.wasm"],
+      "wasi-module": ["wasi_module32.wasm"],
+      "dylink-module": ["dylink_module32.wasm"],
+    };
+    const isStandaloneModuleNode =
       !projection.packages.has(packageName)
-      && packageName === "fork-module"
       && members.length === 1
-      && (members[0]!.mirrorPath === "fork_module32.wasm"
-        || members[0]!.mirrorPath === "fork_module64.wasm");
-    if (!isExactProgramNode && !isRootMirrorNode && !isCoresidentForkModuleNode) {
+      && (standaloneModuleArtifacts[packageName]?.includes(
+        members[0]!.mirrorPath,
+      ) ?? false);
+    if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,
         `node ${JSON.stringify(packageName)} (${targetArch}) is neither an exact v2 program node nor a root-mirror package`,

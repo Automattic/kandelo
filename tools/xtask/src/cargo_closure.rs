@@ -255,6 +255,58 @@ mod tests {
         assert_eq!(first, second, "must be deterministic for an unchanged tree");
     }
 
+    // The same guard for the other two entries in `CORESIDENT_SIDE_MODULES`.
+    // Each build script stamps `local-binaries/<artifact>.build-key` with this
+    // digest and `xtask verify-fresh` re-derives it, so a crate missing from a
+    // module's closure is a module that goes silently stale: its source can
+    // change and the staged wasm is still reported fresh.
+    //
+    // Neither has a hand-list to drift, but the assertions pin the crates each
+    // digest MUST cover, so a dependency edge removed by refactoring shows up
+    // here as a named path rather than only as a digest that quietly stopped
+    // moving.
+    #[test]
+    fn wasi_module_closure_covers_its_full_build_graph() {
+        let repo = crate::repo_root();
+        let names = vec!["wasi-module".to_string(), "wasi-abi".to_string()];
+        let mut union: BTreeSet<String> = BTreeSet::new();
+        for name in &names {
+            for rel in cargo_closure_paths(&repo, name).expect("closure") {
+                union.insert(rel);
+            }
+        }
+        assert!(union.contains("crates/wasi-module"), "{union:?}");
+        assert!(union.contains("crates/wasi-abi"), "{union:?}");
+        assert!(union.contains("crates/shared"), "{union:?}");
+
+        let first = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        let second = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        assert_eq!(first, second, "must be deterministic for an unchanged tree");
+    }
+
+    #[test]
+    fn dylink_module_closure_covers_its_full_build_graph() {
+        let repo = crate::repo_root();
+        let names = vec!["dylink-module".to_string(), "dylink".to_string()];
+        let mut union: BTreeSet<String> = BTreeSet::new();
+        for name in &names {
+            for rel in cargo_closure_paths(&repo, name).expect("closure") {
+                union.insert(rel);
+            }
+        }
+        assert!(union.contains("crates/dylink-module"), "{union:?}");
+        assert!(union.contains("crates/dylink"), "{union:?}");
+        // Reached through `dylink`: the planner consumes fork-codec's KFLA
+        // records and shared's fork-export contract, so a change to either
+        // changes the module's behaviour and must move the digest.
+        assert!(union.contains("crates/fork-codec"), "{union:?}");
+        assert!(union.contains("crates/shared"), "{union:?}");
+
+        let first = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        let second = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        assert_eq!(first, second, "must be deterministic for an unchanged tree");
+    }
+
     #[test]
     fn workspace_crates_closure_sha_requires_at_least_one_crate() {
         let repo = crate::repo_root();

@@ -2326,16 +2326,28 @@ const CORESIDENT_FORK_MODULE_NODE_NAME: &str = "fork-module";
 /// the fork-module's: `crates/wasi-module` carries no `build.toml` either.
 const CORESIDENT_WASI_MODULE_NODE_NAME: &str = "wasi-module";
 
-/// A co-resident PIC wasm side module the local-build engine builds and
-/// projects, but the package resolver does not model.
+/// The name every dynamic-linking-planner projection node carries. Same rule
+/// again: `crates/dylink-module` carries no `build.toml`.
+const DYLINK_MODULE_NODE_NAME: &str = "dylink-module";
+
+/// A wasm module the local-build engine builds and projects, but the package
+/// resolver does not model.
 ///
-/// There are two: `crates/fork-module` (fork capture/replay) and
-/// `crates/wasi-module` (WASI Preview 1). Both are built out-of-band by their
-/// own `build-wasm.sh`, both stage a closure-derived build-key stamp next to
-/// the artifact, and both must reach the SourceOnly projection as owned
-/// root-level members or the browser's pinned-projection resolver refuses to
-/// serve them. Describing them rather than duplicating the machinery means a
-/// third side module is one entry here.
+/// There are three: `crates/fork-module` (fork capture/replay),
+/// `crates/wasi-module` (WASI Preview 1), and `crates/dylink-module` (the
+/// dynamic-linking planner). What they share is the pipeline, not the shape —
+/// each is built out-of-band by its own `build-wasm.sh`, each stages a
+/// closure-derived build-key stamp next to its artifact, and each must reach
+/// the SourceOnly projection as an owned root-level member or the browser's
+/// pinned-projection resolver refuses to serve it. Describing them rather than
+/// duplicating the machinery means a fourth module is one entry here.
+///
+/// **They are not all co-resident, despite the name.** The first two are PIC
+/// (`--pie`) SIDE modules placed inside the guest's linear memory. The planner
+/// is not: it imports nothing at all, not even `env.memory`, and owns its own
+/// memory. Do not infer PIC build flags or guest-memory placement from
+/// membership in this table; that is per-module, and each module's
+/// `build-wasm.sh` owns it.
 struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
@@ -2375,6 +2387,18 @@ const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
         // WASI Preview 1 is a wasm32 ABI, so there is no wasm64 counterpart.
         artifacts: &[("wasi_module32.wasm", "wasm32", true)],
         closure_description: "crates/wasi-module, crates/wasi-abi, crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: DYLINK_MODULE_NODE_NAME,
+        script: "crates/dylink-module/build-wasm.sh",
+        closure_crates: &["dylink-module", "dylink"],
+        // The planner is not compiled per pointer width. It narrows its
+        // arithmetic at its own boundary and carries the process's pointer
+        // width in its configuration record, so one wasm32 module serves
+        // wasm32 and wasm64 guests alike.
+        artifacts: &[("dylink_module32.wasm", "wasm32", true)],
+        closure_description: "crates/dylink-module, crates/dylink, crates/fork-codec, \
+                              crates/shared",
     },
 ];
 
