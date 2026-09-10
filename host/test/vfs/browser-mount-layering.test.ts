@@ -113,7 +113,6 @@ describe("browser host mount layering", () => {
     expect(points).toEqual(
       [
         "/",
-        "/dev",
         "/dev/shm",
         "/home/dev",
         "/opt/admin",
@@ -126,12 +125,20 @@ describe("browser host mount layering", () => {
     );
   });
 
-  it("/dev/shm wins over /dev via longest-prefix match", async () => {
-    const { io } = await buildBrowserMounts(image);
+  // `/dev` is no longer a host mount: the kernel owns that namespace and
+  // `/dev/shm` is the only host-backed subtree in it. So the router's job here
+  // is to claim `/dev/shm` and to claim nothing else under `/dev` — a path the
+  // kernel never routes to a host filesystem in the first place.
+  it("claims /dev/shm and leaves the rest of /dev to the kernel", async () => {
+    const { io, rootfs } = await buildBrowserMounts(image);
     const shm = io.resolve("/dev/shm/sem.x");
     expect(shm.relativePath).toBe("/sem.x");
+    // No device mount claims it, so the router hands it to `/` unchanged. The
+    // worker entries then drop `/` from the guest-facing mounts, which is why
+    // no `/dev` path reaches a host filesystem at runtime.
     const dev = io.resolve("/dev/null");
-    expect(dev.relativePath).toBe("/null");
+    expect(dev.backend).toBe(rootfs);
+    expect(dev.relativePath).toBe("/dev/null");
   });
 
   it("rootfs files reach the image backend through the router", async () => {
