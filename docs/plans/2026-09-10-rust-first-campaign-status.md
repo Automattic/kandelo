@@ -3044,8 +3044,37 @@ export that calls it. Not chased further.
 **Conformance: still none, for the reason B19 names.** `tests/posix` and
 `tests/libc` hold no epoll behaviour test, and B7's first case
 (`tests/sortix/os-test-local/basic/sys_epoll/epoll-fork-shares-instance.c`)
-still cannot execute. This item rests on unit and Vitest evidence, and it
-inherits B7's caveat rather than clearing it.
+still cannot execute. `scripts/run-sortix-tests.sh` stops at
+`Binary not found: kernel.wasm`, and a full `./run.sh setup` does not produce
+one: the `kernel` package builds green and stages its artifact, but the
+install never lands it in `local-binaries/`. This item rests on unit and
+Vitest evidence, and it inherits B7's caveat rather than clearing it.
+
+**The Vitest evidence is a comparison, not a pass.** A locally built worktree
+cannot boot a kernel, so most of the suite fails for B19's reasons either way.
+The full 428-file suite was therefore run twice against the same artifact set —
+once at this branch's tip, once at the campaign tip `3773ce32a` in a worktree
+sharing the same `local-binaries`, `sysroot` and `node_modules`:
+
+| | failed | passed | skipped |
+|---|---|---|---|
+| campaign tip `3773ce32a` | 146 | 255 | 27 |
+| this branch | **144** | **261** | 23 |
+
+Every one-sided difference was chased rather than assumed. Four suites fail
+here and not at the tip — `accept-signal-guest`, `mmap-file`, `sigpending`,
+`node-lazy-archive-runtime` — and all four were *skipped* at the tip, not
+passed, because that worktree lacks the `examples/*.wasm` fixtures. Linking
+the fixtures in and re-running them there reproduces three of the four
+failures identically; the fourth still skips for want of a different artifact,
+and its failure here is the same `exit -1` never-booted signature as the other
+twenty-nine. **No suite regressed.**
+
+The failures are dominated by two errors, both raised by
+`host/src/binary-resolver.ts` — untouched by this item —
+before any guest starts: `Package artifact closure is incomplete: no single
+provenance tier contains every accepted...` and `Could not find repo root`.
+That is B19.
 
 ### B17/B18/B19 closed — three build-environment defects, one shape
 
