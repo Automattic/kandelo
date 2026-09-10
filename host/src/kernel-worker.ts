@@ -71,6 +71,8 @@ import {
 import {
   compileSpawnCandidateSnapshot,
   decodePreparedExecShebang,
+  decodeExecTargetArtifactPolicy,
+  EXEC_TARGET_POLICY_HEADER_BYTES,
   launchPreparedExecTarget,
   PreparedExecTargetError,
   type ExecLaunchCallback,
@@ -8409,6 +8411,73 @@ export class CentralizedKernelWorker {
       );
     }
     return decoded;
+  }
+
+  /**
+   * Judge a retained exec target against the kernel's ABI-epoch artifact
+   * policy. Returns null when acceptable, or the kernel's diagnostic.
+   *
+   * The kernel answers over the bytes it already holds for this token, so this
+   * neither copies the program into kernel memory nor re-parses it host-side.
+   */
+  execTargetArtifactPolicy(
+    ownerPid: number,
+    target: number,
+    expectedAbi: number,
+  ): string | null {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const region = this.#requireMainScratchRegion();
+    let diagnostic: string | null = null;
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target artifact policy pid=${ownerPid} target=${target}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = ownerPid;
+        try {
+          region.withLease((lease) => {
+            result = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_artifact_policy",
+              [
+                ownerPid,
+                target,
+                expectedAbi,
+                lease.exportPointer(0, region.capacity),
+                region.capacity,
+              ],
+            );
+            if (result >= EXEC_TARGET_POLICY_HEADER_BYTES) {
+              const byteLength = this.#checkedScratchProducerByteLength(
+                result,
+                region.capacity,
+                "kernel_exec_target_artifact_policy",
+              );
+              const record = new Uint8Array(byteLength);
+              lease.copyTo(record, 0, 0, byteLength);
+              diagnostic = decodeExecTargetArtifactPolicy(record);
+            }
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target artifact policy");
+    }
+    if (result < 0) {
+      const errno = -result;
+      throw new PreparedExecTargetError(
+        "prepared exec target artifact policy failed",
+        errno > 0 && errno <= 4095 ? errno : EIO,
+      );
+    }
+    return diagnostic;
   }
 
   execTargetCancel(ownerPid: number, target: number): number {
@@ -21171,7 +21240,6 @@ export class CentralizedKernelWorker {
       try {
         const candidate = await compileSpawnCandidateSnapshot(
           selected.programBytes,
-          this.getKernelAbiVersion(),
         );
         return {
           programBytes: candidate.targetBytes,

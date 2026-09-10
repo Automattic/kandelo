@@ -93,6 +93,7 @@ describe("opaque prepared exec target launch", () => {
       },
       execTargetCancel: cancel,
       execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 11)).resolves.toEqual(
@@ -129,6 +130,7 @@ describe("opaque prepared exec target launch", () => {
         },
         execTargetCancel: cancel,
         execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       };
 
       const read = readPreparedExecTarget(kernel, 7, 21);
@@ -150,6 +152,7 @@ describe("opaque prepared exec target launch", () => {
         execTargetRead: () => -11, // EAGAIN forever: a hypothetical stuck fetch
         execTargetCancel: cancel,
         execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       };
 
       const read = readPreparedExecTarget(kernel, 7, 22);
@@ -176,6 +179,7 @@ describe("opaque prepared exec target launch", () => {
       execTargetRead: read,
       execTargetCancel: cancel,
       execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 23)).rejects.toEqual(
@@ -223,6 +227,7 @@ describe("opaque prepared exec target launch", () => {
         target === 31
           ? { interpreter: "/bin/exact-interpreter", argument: "--flag" }
           : null,
+      execTargetArtifactPolicy: () => null,
     };
 
     const result = await launchPreparedExecTarget({
@@ -289,6 +294,7 @@ describe("opaque prepared exec target launch", () => {
       },
       execTargetCancel: cancel,
       execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
     const options = () => ({
       kernel,
@@ -347,6 +353,7 @@ describe("opaque prepared exec target launch", () => {
       },
       execTargetCancel: cancel,
       execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
     const launch = (
       target: number,
@@ -415,6 +422,7 @@ describe("opaque prepared exec target launch", () => {
         },
         execTargetCancel: cancel,
         execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -483,6 +491,7 @@ describe("opaque prepared exec target launch", () => {
         },
         execTargetCancel: cancel,
         execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -533,6 +542,7 @@ describe("opaque prepared exec target launch", () => {
         },
         execTargetCancel: cancel,
         execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,

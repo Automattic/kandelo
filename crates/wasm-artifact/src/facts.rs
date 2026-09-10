@@ -901,8 +901,8 @@ mod tests {
         assert!(!is_wasm_module(&[0x00, 0x61, 0x73, 0x6d, 0x02, 0x00, 0x00, 0x00]));
         assert!(is_wasm_module(&empty_module()));
         assert_eq!(
-            read_artifact_facts(b"not wasm at all"),
-            Err(FactsError::new("not a WebAssembly module"))
+            read_artifact_facts(b"not wasm at all").unwrap_err(),
+            FactsError::new("not a WebAssembly module")
         );
     }
 

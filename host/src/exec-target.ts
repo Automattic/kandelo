@@ -1,9 +1,4 @@
 import {
-  describeWasmArtifactPolicyFailures,
-  extractAbiVersion,
-  isWasmModuleBytes,
-} from "./constants";
-import {
   CH_DATA_SIZE,
   MAX_REPORTABLE_TRANSFER_BYTES,
 } from "./generated/abi";
@@ -60,6 +55,19 @@ export interface PreparedExecKernel {
     ownerPid: number,
     target: number,
   ): PreparedExecShebang | null;
+  /**
+   * Judge the retained target against the kernel's ABI-epoch artifact policy.
+   *
+   * Returns null when the artifact is acceptable, or a human-readable
+   * diagnostic naming what is wrong. The host never parses the artifact to make
+   * this decision: the kernel already holds the exact bytes the target
+   * committed to, and it owns the ABI these bytes are judged against.
+   */
+  execTargetArtifactPolicy(
+    ownerPid: number,
+    target: number,
+    expectedAbi: number,
+  ): string | null;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -296,6 +304,45 @@ export function decodePreparedExecShebang(
   };
 }
 
+/** Byte length of the fixed header on an artifact-policy record. */
+export const EXEC_TARGET_POLICY_HEADER_BYTES = 5;
+
+/**
+ * Decode the record the kernel's `kernel_exec_target_artifact_policy` export
+ * writes into scratch:
+ *
+ *   `[failure_count: u32 LE][truncated: u8][text]`
+ *
+ * Returns null when the artifact is acceptable, or the diagnostic text.
+ *
+ * WHY the count is authoritative and the text is not: a diagnostic can be
+ * longer than the scratch region, and truncating it must never turn a refusal
+ * into an acceptance. So the verdict is read from the count, and a truncated
+ * explanation is marked as such rather than silently shortened.
+ */
+export function decodeExecTargetArtifactPolicy(
+  record: Uint8Array,
+): string | null {
+  if (record.byteLength < EXEC_TARGET_POLICY_HEADER_BYTES) {
+    throw new PreparedExecTargetError(
+      "kernel returned a truncated artifact-policy record",
+      EIO,
+    );
+  }
+  const view = new DataView(
+    record.buffer,
+    record.byteOffset,
+    record.byteLength,
+  );
+  const failureCount = view.getUint32(0, true);
+  if (failureCount === 0) return null;
+  const truncated = record[4] === 1;
+  const text = new TextDecoder().decode(
+    record.subarray(EXEC_TARGET_POLICY_HEADER_BYTES),
+  );
+  return truncated ? `${text} … (${failureCount} failures, truncated)` : text;
+}
+
 function preparedTargetToken(result: number): number {
   if (Number.isSafeInteger(result) && result > 0) return result;
   throw new PreparedExecTargetError(
@@ -328,7 +375,6 @@ function exactlyMatchesPreflightCandidate(
  */
 export async function compileSpawnCandidateSnapshot(
   programBytes: ArrayBuffer,
-  expectedAbi: number,
 ): Promise<Readonly<{
   targetBytes: ArrayBuffer;
   targetModule: WebAssembly.Module;
@@ -354,23 +400,20 @@ export async function compileSpawnCandidateSnapshot(
   }
 
   const targetBytes = exactArrayBuffer(snapshot);
-  if (!isWasmModuleBytes(targetBytes)) {
-    throw new PreparedExecTargetError(
-      "spawn candidate is not a WebAssembly module",
-      ENOEXEC,
-    );
-  }
-  const targetAbi = extractAbiVersion(targetBytes);
-  if (
-    describeWasmArtifactPolicyFailures(targetBytes, { expectedAbi }).length > 0
-    || (targetAbi !== null && targetAbi !== expectedAbi)
-  ) {
-    throw new PreparedExecTargetError(
-      "spawn candidate violates the artifact ABI policy",
-      ENOEXEC,
-    );
-  }
-
+  // This preflight deliberately does NOT judge the artifact policy.
+  //
+  // POSIX requires a spawn's `file_actions` to run exactly once, so the
+  // preflight exists to be side-effect-free: it holds no prepared target and
+  // therefore has nothing for the kernel to judge. What it produces is a
+  // *candidate* module, and `launchPreparedExecTarget` reuses that module only
+  // when the authoritative target's bytes are byte-identical to this snapshot
+  // — after judging those authoritative bytes in the kernel. So nothing can
+  // launch without passing the real check, and duplicating a weaker,
+  // host-parsed copy of it here would be a second authority over the same
+  // question that could disagree with the first.
+  //
+  // A non-WebAssembly candidate is caught below: `WebAssembly.compile` rejects
+  // it and this throws ENOEXEC, which is the same errno the removed check gave.
   let targetModule: WebAssembly.Module;
   try {
     targetModule = await WebAssembly.compile(targetBytes);
@@ -450,21 +493,18 @@ export async function launchPreparedExecTarget(
     }
 
     const targetBytes = exactArrayBuffer(bytes);
-    if (!isWasmModuleBytes(targetBytes)) {
+    // The kernel owns the artifact judgement, over the bytes it already holds
+    // for this token. The host does not re-parse the program: a host-side copy
+    // could be substituted between the read above and the launch below, and
+    // the kernel's copy is the one the target actually committed to.
+    const policyFailure = options.kernel.execTargetArtifactPolicy(
+      options.ownerPid,
+      target,
+      options.expectedAbi,
+    );
+    if (policyFailure !== null) {
       throw new PreparedExecTargetError(
-        "prepared exec target is not a WebAssembly module",
-        ENOEXEC,
-      );
-    }
-    const targetAbi = extractAbiVersion(targetBytes);
-    if (
-      describeWasmArtifactPolicyFailures(targetBytes, {
-        expectedAbi: options.expectedAbi,
-      }).length > 0
-      || (targetAbi !== null && targetAbi !== options.expectedAbi)
-    ) {
-      throw new PreparedExecTargetError(
-        "prepared exec target violates the artifact ABI policy",
+        `prepared exec target violates the artifact ABI policy: ${policyFailure}`,
         ENOEXEC,
       );
     }

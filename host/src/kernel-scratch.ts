@@ -122,10 +122,13 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * borrow before it writes the argv/envp framing back into the same range; and
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
- * the path before returning. The transfer execute export names no raw pointer,
- * but its token authorizes Rust to borrow the allocation represented by this
- * exact lease. Adding a name requires the same lifetime review and a pointer-
- * position update below.
+ * the path before returning. `kernel_exec_target_artifact_policy` only ever
+ * WRITES its borrowed range — it judges the target's own kernel-owned bytes
+ * and then serializes the verdict into scratch, so the lease is never read
+ * from and no reference to it survives the call. The transfer execute export
+ * names no raw pointer, but its token authorizes Rust to borrow the
+ * allocation represented by this exact lease. Adding a name requires the same
+ * lifetime review and a pointer-position update below.
  */
 /** @internal Exported only for the Rust/host semantic-role drift contract. */
 export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
@@ -133,6 +136,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
+  "kernel_exec_target_artifact_policy",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_exec_target_shebang",
@@ -272,6 +276,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
     case "kernel_setsockopt":
+    case "kernel_exec_target_artifact_policy":
     case "kernel_socketpair":
       return REQUIRED_POINTER_3;
     case "kernel_exec_target_read":
@@ -324,6 +329,7 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_exec_target_artifact_policy":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_exec_target_shebang":
