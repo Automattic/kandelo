@@ -1,8 +1,7 @@
 // Orchestration migration increment C — the module-owned decoded-graph
 // STRUCTURE readout, proven end to end in a real WebAssembly engine (Node/V8).
 //
-// `fm_decoded_node_kind` / `fm_decoded_node_module_activation` /
-// `fm_decoded_node_ordinal` are additive scalar accessors over the SAME resident
+// `fm_decoded_node_field(index, field)` is an additive scalar accessor over the SAME resident
 // decoded graph `fm_decode_reference_graph` produces (the shared
 // `fork_codec::reference_segments` decode). They expose exactly the decoded
 // structure the host's fork wiring (`worker-main.ts`) still consumes from its
@@ -153,9 +152,7 @@ interface StructureExports {
   fm_set_format: (pw: number, fixedPrefix: number) => void;
   fm_decode_reference_graph: (root: number) => number;
   fm_decoded_node_count: () => number;
-  fm_decoded_node_kind: (index: number) => number;
-  fm_decoded_node_module_activation: (index: number) => number;
-  fm_decoded_node_ordinal: (index: number) => number;
+  fm_decoded_node_field: (index: number, field: number) => number;
   fm_last_errno: () => number;
 }
 
@@ -230,22 +227,22 @@ describe("fork-module decoded-graph structure readout (orchestration migration i
     for (const entry of jsNodes) {
       const index = entry.id;
       const expectedKind = WIRE_KIND[entry.node.kind];
-      expect(x.fm_decoded_node_kind(index)).toBe(expectedKind);
+      expect(x.fm_decoded_node_field(index, 0)).toBe(expectedKind);
       expect(x.fm_last_errno()).toBe(0);
 
       const fields = expectedFields(entry.node);
       if (fields === null) {
         // A kind without an activation/ordinal is a truthful EINVAL.
-        expect(x.fm_decoded_node_module_activation(index)).toBe(-1);
+        expect(x.fm_decoded_node_field(index, 1)).toBe(-1);
         expect(x.fm_last_errno()).toBe(EINVAL);
-        expect(x.fm_decoded_node_ordinal(index)).toBe(-1);
+        expect(x.fm_decoded_node_field(index, 2)).toBe(-1);
         expect(x.fm_last_errno()).toBe(EINVAL);
       } else {
-        expect(x.fm_decoded_node_module_activation(index)).toBe(
+        expect(x.fm_decoded_node_field(index, 1)).toBe(
           fields.moduleActivation,
         );
         expect(x.fm_last_errno()).toBe(0);
-        expect(x.fm_decoded_node_ordinal(index)).toBe(fields.ordinal);
+        expect(x.fm_decoded_node_field(index, 2)).toBe(fields.ordinal);
         expect(x.fm_last_errno()).toBe(0);
       }
     }
@@ -270,16 +267,16 @@ describe("fork-module decoded-graph structure readout (orchestration migration i
       staticRootOrdinal: number;
     }[] = [];
     for (let i = 0; i < x.fm_decoded_node_count(); i++) {
-      const kind = x.fm_decoded_node_kind(i);
+      const kind = x.fm_decoded_node_field(i, 0);
       if (kind === WIRE_KIND.exnref) {
         exnrefFromModule.push({
-          moduleActivation: x.fm_decoded_node_module_activation(i),
-          tagOrdinal: x.fm_decoded_node_ordinal(i),
+          moduleActivation: x.fm_decoded_node_field(i, 1),
+          tagOrdinal: x.fm_decoded_node_field(i, 2),
         });
       } else if (kind === WIRE_KIND["static-root"]) {
         staticRootFromModule.push({
-          moduleActivation: x.fm_decoded_node_module_activation(i),
-          staticRootOrdinal: x.fm_decoded_node_ordinal(i),
+          moduleActivation: x.fm_decoded_node_field(i, 1),
+          staticRootOrdinal: x.fm_decoded_node_field(i, 2),
         });
       }
     }
@@ -300,20 +297,20 @@ describe("fork-module decoded-graph structure readout (orchestration migration i
     const { x } = instantiate(memory);
 
     // No resident graph yet.
-    expect(x.fm_decoded_node_kind(0)).toBe(-1);
+    expect(x.fm_decoded_node_field(0, 0)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_module_activation(0)).toBe(-1);
+    expect(x.fm_decoded_node_field(0, 1)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_ordinal(0)).toBe(-1);
+    expect(x.fm_decoded_node_field(0, 2)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
 
     // After decode, an out-of-range index is a truthful EINVAL.
     expect(x.fm_decode_reference_graph(root)).toBe(NODES.length);
-    expect(x.fm_decoded_node_kind(NODES.length)).toBe(-1);
+    expect(x.fm_decoded_node_field(NODES.length, 0)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_module_activation(NODES.length)).toBe(-1);
+    expect(x.fm_decoded_node_field(NODES.length, 1)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_ordinal(NODES.length)).toBe(-1);
+    expect(x.fm_decoded_node_field(NODES.length, 2)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
   });
 });

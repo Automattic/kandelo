@@ -38,6 +38,19 @@ export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
  * `crates/host-native/src/guest.rs`, and `FM_STAT` in
  * `crates/fork-module/tests/harness.mjs`; all ship in lockstep.
  */
+/**
+ * Field selector for `fm_decoded_node_field(index, field) -> i32`, which
+ * replaced the former `fm_decoded_node_kind`,
+ * `fm_decoded_node_module_activation` and `fm_decoded_node_ordinal` exports.
+ * MUST match `fm_decoded_node_field`'s match arms in
+ * `crates/fork-module/src/lib.rs`; they ship in lockstep.
+ */
+export enum FmDecodedNodeField {
+  Kind = 0,
+  ModuleActivation = 1,
+  Ordinal = 2,
+}
+
 export enum FmStatField {
   FramesCommitted = 0,
   FramesReplayed = 1,
@@ -539,12 +552,7 @@ export class ForkModuleContinuationBackend {
    * resident or `index` is out of range.
    */
   decodedNodeKind(index: number): number {
-    this.requireSetup("decoded node kind");
-    // `index` is a `usize` module argument, so it takes the same guest-word
-    // conversion as a pointer (i64 on wasm64, i32 on wasm32).
-    const kind = this.toNum(this.exports.fm_decoded_node_kind(this.wptr(index)));
-    this.requireOk("fm_decoded_node_kind");
-    return kind;
+    return this.decodedNodeField(index, FmDecodedNodeField.Kind, "kind");
   }
 
   /**
@@ -554,12 +562,11 @@ export class ForkModuleContinuationBackend {
    * activation (null/externref/i31) — callers must gate on `decodedNodeKind`.
    */
   decodedNodeModuleActivation(index: number): number {
-    this.requireSetup("decoded node module activation");
-    const value = this.toNum(
-      this.exports.fm_decoded_node_module_activation(this.wptr(index)),
+    return this.decodedNodeField(
+      index,
+      FmDecodedNodeField.ModuleActivation,
+      "module activation",
     );
-    this.requireOk("fm_decoded_node_module_activation");
-    return value;
   }
 
   /**
@@ -570,11 +577,27 @@ export class ForkModuleContinuationBackend {
    * (null/externref/i31) — callers must gate on `decodedNodeKind`.
    */
   decodedNodeOrdinal(index: number): number {
-    this.requireSetup("decoded node ordinal");
+    return this.decodedNodeField(index, FmDecodedNodeField.Ordinal, "ordinal");
+  }
+
+  /**
+   * Shared body for the three typed decoded-node readers above. They keep their
+   * distinct names and doc comments — the host-side API stays as specific as it
+   * was — while sharing the single `fm_decoded_node_field` module export.
+   */
+  private decodedNodeField(
+    index: number,
+    field: FmDecodedNodeField,
+    label: string,
+  ): number {
+    this.requireSetup(`decoded node ${label}`);
+    // `index` is a `usize` module argument, so it takes the same guest-word
+    // conversion as a pointer (i64 on wasm64, i32 on wasm32). `field` is a
+    // plain `u32` selector and is passed as-is.
     const value = this.toNum(
-      this.exports.fm_decoded_node_ordinal(this.wptr(index)),
+      this.exports.fm_decoded_node_field(this.wptr(index), field),
     );
-    this.requireOk("fm_decoded_node_ordinal");
+    this.requireOk(`fm_decoded_node_field (${label})`);
     return value;
   }
 

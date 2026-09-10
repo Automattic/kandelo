@@ -5158,62 +5158,66 @@ mod wasm {
         }
     }
 
-    /// The wire node-kind discriminant (`0..=7`: null 0, funcref 1, externref 2,
-    /// exnref 3, i31 4, struct 5, array 6, static-root 7) of the resident decoded
-    /// graph's node at `index`, or `-1` (reason in `fm_last_errno`) if no graph is
-    /// resident or `index` is out of range. Mirrors the JS decode's
-    /// `entry.node.kind` so the host can filter the graph by kind. See
-    /// `decoded_node_kind_impl` / `wire_node_kind`.
+    /// One field of the resident decoded graph's node at `index`, selected by
+    /// `field`, or `-1` (reason in `fm_last_errno`) if no graph is resident,
+    /// `index` is out of range, the node's kind does not carry the requested
+    /// field, the value exceeds `i32::MAX`, or `field` is unknown.
+    ///
+    /// - 0 `KIND`              — the wire node-kind discriminant (`0..=7`: null 0,
+    ///   funcref 1, externref 2, exnref 3, i31 4, struct 5, array 6,
+    ///   static-root 7). Mirrors the JS decode's `entry.node.kind` so the host
+    ///   can filter the graph by kind. See `decoded_node_kind_impl` /
+    ///   `wire_node_kind`.
+    /// - 1 `MODULE_ACTIVATION` — the `module_activation` coordinate
+    ///   (funcref/exnref/struct/array/static-root; absent for null/externref/i31).
+    ///   This is the host's `moduleActivation` for the exnref admission gate and
+    ///   the static-root catalog mirror seeding. See
+    ///   `decoded_node_module_activation_impl`.
+    /// - 2 `ORDINAL`           — the kind-specific ordinal (funcref
+    ///   `function_ordinal`, exnref `tag_ordinal`, struct/array `type_ordinal`,
+    ///   static-root `static_root_ordinal`; absent for null/externref/i31). This
+    ///   is the host's `tagOrdinal` (exnref admission gate) and
+    ///   `staticRootOrdinal` (static-root catalog mirror seeding). See
+    ///   `decoded_node_ordinal_impl`.
+    ///
+    /// Replaces the former `fm_decoded_node_kind`,
+    /// `fm_decoded_node_module_activation` and `fm_decoded_node_ordinal`
+    /// exports, which shared one concept ("read a field of a decoded node") and
+    /// one signature `(usize) -> i32`. Because the operand types were already
+    /// identical, folding them costs no type checking at the boundary — unlike
+    /// an opaque fold over exports whose operands mean different things. Keep
+    /// the selectors in lockstep with `FmDecodedNodeField` in
+    /// `host/src/fork-module-backend.ts`.
+    ///
+    /// Unlike `fm_stats`, a `match` is safe here: the arms dispatch to distinct
+    /// *functions* rather than loading from distinct statics, so it does not
+    /// reproduce the post-injection `br_table` miscompile documented there.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_kind(index: usize) -> i32 {
-        match decoded_node_kind_impl(index) {
-            Ok(kind) => {
-                set_ok();
-                kind as i32
-            }
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// The `module_activation` coordinate of the resident decoded graph's node at
-    /// `index` (funcref/exnref/struct/array/static-root), or `-1` (reason in
-    /// `fm_last_errno`) if no graph is resident, `index` is out of range, the
-    /// node's kind carries no activation (null/externref/i31), or the value
-    /// exceeds `i32::MAX`. This is the host's `moduleActivation` for the exnref
-    /// admission gate and the static-root catalog mirror seeding. See
-    /// `decoded_node_module_activation_impl`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_module_activation(index: usize) -> i32 {
-        match decoded_node_module_activation_impl(index) {
-            Ok(value) if value <= i32::MAX as u32 => {
-                set_ok();
-                value as i32
-            }
-            Ok(_) => {
+    pub extern "C" fn fm_decoded_node_field(index: usize, field: u32) -> i32 {
+        match field {
+            0 => match decoded_node_kind_impl(index) {
+                Ok(kind) => {
+                    set_ok();
+                    kind as i32
+                }
+                Err(e) => {
+                    set_err(e);
+                    -1
+                }
+            },
+            1 => clamp_decoded_u32(decoded_node_module_activation_impl(index)),
+            2 => clamp_decoded_u32(decoded_node_ordinal_impl(index)),
+            _ => {
                 set_err(Errno::EINVAL);
                 -1
             }
-            Err(e) => {
-                set_err(e);
-                -1
-            }
         }
     }
 
-    /// The kind-specific ordinal of the resident decoded graph's node at `index`
-    /// (funcref `function_ordinal`, exnref `tag_ordinal`, struct/array
-    /// `type_ordinal`, static-root `static_root_ordinal`), or `-1` (reason in
-    /// `fm_last_errno`) if no graph is resident, `index` is out of range, the
-    /// node's kind carries no ordinal (null/externref/i31), or the value exceeds
-    /// `i32::MAX`. This is the host's `tagOrdinal` (exnref admission gate) and
-    /// `staticRootOrdinal` (static-root catalog mirror seeding). See
-    /// `decoded_node_ordinal_impl`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_ordinal(index: usize) -> i32 {
-        match decoded_node_ordinal_impl(index) {
+    /// Shared tail for the `u32`-valued `fm_decoded_node_field` selectors: a
+    /// value above `i32::MAX` is `EINVAL` rather than a negative sentinel.
+    fn clamp_decoded_u32(result: Result<u32, Errno>) -> i32 {
+        match result {
             Ok(value) if value <= i32::MAX as u32 => {
                 set_ok();
                 value as i32

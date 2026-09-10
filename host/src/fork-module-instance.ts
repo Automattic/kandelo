@@ -256,14 +256,13 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   //    driver `fm_restore_from_arena`/`fm_attach_child` seed; it survives a later
   //    attach, which does not touch this graph).
   //  - `fm_decoded_node_count` re-reads that resident node count.
-  //  - `fm_decoded_node_kind` / `fm_decoded_node_module_activation` /
-  //    `fm_decoded_node_ordinal` are the per-node structural accessors (node
-  //    index == canonical node id).
+  //  - `fm_decoded_node_field(index, field)` is the per-node structural accessor
+  //    (node index == canonical node id), selecting kind 0 / module activation 1
+  //    / ordinal 2. It replaced three same-signature `(usize) -> i32` exports
+  //    that expressed the one concept "read a field of a decoded node".
   "fm_decode_reference_graph",
   "fm_decoded_node_count",
-  "fm_decoded_node_kind",
-  "fm_decoded_node_module_activation",
-  "fm_decoded_node_ordinal",
+  "fm_decoded_node_field",
   // Static-root binder: admit static-root WasmGC graphs through the module. A
   // DRIVE_OP_STATIC_ROOT drive step publishes each immutable static root into the
   // anyref transit at slot `recipe + 1` via a wasm `table.get(static_root_catalog,

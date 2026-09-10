@@ -196,16 +196,17 @@ describe("fork peer-table snapshot round-trip (Path-A A3/A4)", () => {
 
       const oracle = {
         kind: (i: number) =>
-          Number((fm.exports.fm_decoded_node_kind as (x: number) => number)(i)),
+          Number((fm.exports.fm_decoded_node_field as (x: number, f: number) => number)(i, 0)),
         moduleActivation: (i: number) =>
           Number(
-            (fm.exports.fm_decoded_node_module_activation as (
+            (fm.exports.fm_decoded_node_field as (
               x: number,
-            ) => number)(i),
+              f: number,
+            ) => number)(i, 1),
           ),
         ordinal: (i: number) =>
           Number(
-            (fm.exports.fm_decoded_node_ordinal as (x: number) => number)(i),
+            (fm.exports.fm_decoded_node_field as (x: number, f: number) => number)(i, 2),
           ),
       };
       const recon = new ForkTableReconstruction(
@@ -440,23 +441,25 @@ describe("fork peer-table snapshot round-trip (Path-A A3/A4)", () => {
       // funcref (kind 1) — the decode surface must route it through the transit,
       // not the funcref catalog.
       expect(
-        Number((fm.exports.fm_decoded_node_kind as (x: number) => number)(
+        Number((fm.exports.fm_decoded_node_field as (x: number, f: number) => number)(
           externrefRecipe,
+          0,
         )),
       ).toBe(2);
 
       const oracle = {
         kind: (i: number) =>
-          Number((fm.exports.fm_decoded_node_kind as (x: number) => number)(i)),
+          Number((fm.exports.fm_decoded_node_field as (x: number, f: number) => number)(i, 0)),
         moduleActivation: (i: number) =>
           Number(
-            (fm.exports.fm_decoded_node_module_activation as (
+            (fm.exports.fm_decoded_node_field as (
               x: number,
-            ) => number)(i),
+              f: number,
+            ) => number)(i, 1),
           ),
         ordinal: (i: number) =>
           Number(
-            (fm.exports.fm_decoded_node_ordinal as (x: number) => number)(i),
+            (fm.exports.fm_decoded_node_field as (x: number, f: number) => number)(i, 2),
           ),
       };
       const recon = new ForkTableReconstruction(

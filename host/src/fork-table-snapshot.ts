@@ -48,7 +48,7 @@ import type {
 
 /**
  * Wire node-kind discriminants of the module's resident decoded reference graph
- * (`fm_decoded_node_kind`): null 0, funcref 1, externref 2, exnref 3, i31 4,
+ * (`fm_decoded_node_field(i, 0)`): null 0, funcref 1, externref 2, exnref 3, i31 4,
  * struct 5, array 6, static-root 7.
  */
 const WIRE_NODE_KIND_NULL = 0;
@@ -56,8 +56,8 @@ const WIRE_NODE_KIND_FUNCREF = 1;
 
 /**
  * Read the module's RESIDENT decoded reference graph by canonical node id (==
- * recipe id). Backed by `fm_decoded_node_kind` / `_module_activation` /
- * `_ordinal` once `decodeReferenceGraph` has made the graph resident.
+ * recipe id). Backed by `fm_decoded_node_field`'s kind / module-activation /
+ * ordinal selectors once `decodeReferenceGraph` has made the graph resident.
  */
 export interface ForkTableDecodedGraphOracle {
   kind(recipeId: number): number;
