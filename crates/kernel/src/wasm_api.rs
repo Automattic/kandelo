@@ -7375,8 +7375,12 @@ pub extern "C" fn kernel_shared_mapping_sysv_drop_mapping(
 /// `exec` passes 0 because its commit already drained them, and repeating the
 /// detach would release a different same-segment attachment.
 ///
-/// Teardown continues past a failed detach and reports the first errno, so one
-/// missing record cannot strand the remaining attachments.
+/// A failed detach stops the release and leaves the mirror intact, reporting
+/// the errno. Dropping the mirror after a detach that could not be proven
+/// would discard the only record of an attachment the kernel still holds, and
+/// nothing could reclaim it afterwards. The caller treats the refusal as
+/// fatal, which is what it is: a process is being torn down and its attachment
+/// accounting cannot be settled.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shared_mapping_sysv_release_process(
     pid: u32,
@@ -7389,18 +7393,49 @@ pub extern "C" fn kernel_shared_mapping_sysv_release_process(
     if publish != 0 {
         table.sync_sysv_from_process(pid, true, &mut io);
     }
-    let mut failure = 0i32;
     if detach != 0 {
         for (addr, _, _, _) in table.sysv_attachments_for(pid) {
             if let Err(e) = ipc_shmdt_addr(pid, addr as usize, false) {
-                if failure == 0 {
-                    failure = -(e as i32);
-                }
+                return -(e as i32);
             }
         }
     }
     table.release_all_sysv_for_process(pid, false, &mut io);
-    failure
+    0
+}
+
+/// The kernel's live SysV attachment accounting, for the inheritance
+/// transaction in [`crate::memory::SharedMappingTable`].
+///
+/// Everything here is an existing in-kernel operation; the trait exists so the
+/// transaction and its rollback live where they can be unit-tested.
+struct WasmSysvAttachmentOps;
+
+impl crate::memory::SysvAttachmentOps for WasmSysvAttachmentOps {
+    fn attach(&mut self, pid: u32, seg_id: i32, read_only: bool) -> Result<usize, Errno> {
+        let flags = if read_only { SHM_RDONLY_FLAG } else { 0 };
+        let size = kernel_ipc_shmat_for_process(pid, seg_id, 0, flags);
+        if size < 0 {
+            return Err(Errno::from_u32(size.unsigned_abs()).unwrap_or(Errno::EIO));
+        }
+        Ok(size as usize)
+    }
+
+    fn record(&mut self, pid: u32, addr: u64, seg_id: i32, size: usize) -> Result<(), Errno> {
+        let size = u32::try_from(size).map_err(|_| Errno::EOVERFLOW)?;
+        let addr = usize::try_from(addr).map_err(|_| Errno::EOVERFLOW)?;
+        ipc_record_shm_mapping(pid, addr, seg_id, size, true)
+    }
+
+    fn detach_segment(&mut self, pid: u32, seg_id: i32) {
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let _ = ipc.shmdt(seg_id, pid);
+    }
+
+    fn detach_addr(&mut self, pid: u32, addr: u64) -> Result<(), Errno> {
+        let addr = usize::try_from(addr).map_err(|_| Errno::EOVERFLOW)?;
+        ipc_shmdt_addr(pid, addr, false)
+    }
 }
 
 /// Give a forked child its parent's SysV attachments, atomically.
@@ -7410,6 +7445,11 @@ pub extern "C" fn kernel_shared_mapping_sysv_release_process(
 /// or roll back together, and the parent's attachment list now lives in the
 /// kernel, so splitting this across host calls would mean exporting that
 /// container back to the host to drive a transaction the kernel can run itself.
+///
+/// The transaction and its rollback live in
+/// [`crate::memory::SharedMappingTable::inherit_sysv_attachments`], not here:
+/// this file has no unit-test seam, and the rollback is the part no ordinary
+/// run exercises.
 ///
 /// `child_memory_len` is the child's committed linear-memory length. It is an
 /// argument rather than an import because guest memory length belongs to a
@@ -7422,62 +7462,18 @@ pub extern "C" fn kernel_shared_mapping_sysv_inherit(
     child_memory_len: u64,
 ) -> i32 {
     let _gkl = GklGuard::acquire();
-    if parent_pid == child_pid {
-        return -(Errno::EINVAL as i32);
-    }
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    if table.sysv_mapping_count_for(child_pid) != 0 {
-        return -(Errno::EEXIST as i32);
+    let mut io = WasmSharedMappingIo::new();
+    io.set_process_memory_len(child_pid, child_memory_len);
+    match table.inherit_sysv_attachments(
+        parent_pid,
+        child_pid,
+        &mut WasmSysvAttachmentOps,
+        &mut io,
+    ) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
     }
-    let parent = table.sysv_attachments_for(parent_pid);
-
-    // Attach the child to every parent segment first. Each nonnegative shmat
-    // has already incremented nattch, so a failing step releases its own
-    // attachment by segment identity before the successful ones are unwound by
-    // address.
-    let mut attached: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
-    let mut failure: Option<Errno> = None;
-    for (addr, seg_id, size, read_only) in &parent {
-        let addr = *addr as usize;
-        let flags = if *read_only { SHM_RDONLY_FLAG } else { 0 };
-        let attached_size = kernel_ipc_shmat_for_process(child_pid, *seg_id, 0, flags);
-        let size32 = u32::try_from(*size).ok();
-        if attached_size < 0 || attached_size as usize != *size || size32.is_none() {
-            if attached_size >= 0 {
-                let ipc = unsafe { crate::ipc::global_ipc_table() };
-                let _ = ipc.shmdt(*seg_id, child_pid);
-            }
-            failure = Some(if size32.is_none() {
-                Errno::EOVERFLOW
-            } else {
-                Errno::EIO
-            });
-            break;
-        }
-        if let Err(e) = ipc_record_shm_mapping(child_pid, addr, *seg_id, size32.unwrap(), true) {
-            let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let _ = ipc.shmdt(*seg_id, child_pid);
-            failure = Some(e);
-            break;
-        }
-        attached.push(addr);
-    }
-
-    if failure.is_none() {
-        let mut io = WasmSharedMappingIo::new();
-        io.set_process_memory_len(child_pid, child_memory_len);
-        if let Err(e) = table.inherit_process_mappings(parent_pid, child_pid, &mut io) {
-            failure = Some(e);
-        }
-    }
-
-    if let Some(e) = failure {
-        for addr in attached.iter().rev() {
-            let _ = ipc_shmdt_addr(child_pid, *addr, false);
-        }
-        return -(e as i32);
-    }
-    0
 }
 
 /// Byte size of the target musl `struct semid_ds`.

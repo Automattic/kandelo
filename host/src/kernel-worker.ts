@@ -3130,8 +3130,12 @@ export class CentralizedKernelWorker {
    * It is a cached predicate refreshed from the authority, never a second
    * authority. Nothing here increments or decrements it independently, so it
    * cannot drift from the kernel's table.
+   *
+   * Declared `private` rather than `#private` so tests can seed and observe
+   * the predicate the same way they seeded `shmMappings` before it, without
+   * needing a kernel that actually holds attachments.
    */
-  #sysvActivePidCount = 0;
+  private sysvActivePidCount = 0;
 
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results.
@@ -9118,10 +9122,11 @@ export class CentralizedKernelWorker {
     const channel = registration?.channels[0];
     if (!channel) {
       const hasShared = (this.sharedMappings.get(pid)?.size ?? 0) > 0;
-      const hasSysv = this.#requireSysvMirrorExport<(pid: number) => number>(
-        "kernel_shared_mapping_sysv_process_count",
-        entry,
-      )(pid) > 0;
+      const hasSysv = this.#machineOwnsSysvState()
+        && this.#requireSysvMirrorExport<(pid: number) => number>(
+          "kernel_shared_mapping_sysv_process_count",
+          entry,
+        )(pid) > 0;
       return hasShared || hasSysv ? -EIO : 0;
     }
 
@@ -9168,6 +9173,7 @@ export class CentralizedKernelWorker {
           )) return -EIO;
         }
       }
+      if (!this.#machineOwnsSysvState()) return 0;
       return this.#syncSysvMirrorForProcess(pid, true, entry) ? 0 : -EIO;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
@@ -9216,11 +9222,13 @@ export class CentralizedKernelWorker {
     // kernelExecCommit is the irreversible Rust commit. It has already drained
     // the authoritative attachment records and decremented nattch; repeating
     // detach here would release a different same-segment attachment.
-    this.#releaseSysvMirrorForProcess(
-      pid,
-      { publish: false, detach: false },
-      entry,
-    );
+    if (this.#machineOwnsSysvState()) {
+      this.#releaseSysvMirrorForProcess(
+        pid,
+        { publish: false, detach: false },
+        entry,
+      );
+    }
     return 0;
   }
 
@@ -20696,7 +20704,10 @@ export class CentralizedKernelWorker {
       { force: true },
       entry,
     );
-    if (!this.#syncSysvMirrorForProcess(parentPid, true, entry)) {
+    if (
+      this.#machineOwnsSysvState()
+      && !this.#syncSysvMirrorForProcess(parentPid, true, entry)
+    ) {
       this.#completeForkWithinKernelEntry(
         channel, _origArgs, -1, EIO, entry,
       );
@@ -25604,6 +25615,21 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Whether any process on this machine owns SysV shared-memory state.
+   *
+   * Every host path into the Rust mirror is gated on this, not just the
+   * syscall boundary. When it is false the kernel's mirror is empty, so the
+   * call would be a proven no-op — and a machine that never uses SysV IPC
+   * pays nothing for the subsystem at fork, exec or teardown either.
+   *
+   * The predicate can only be false when the kernel genuinely holds nothing,
+   * because it is re-read from the kernel at every site that can change it.
+   */
+  #machineOwnsSysvState(): boolean {
+    return this.sysvActivePidCount > 0;
+  }
+
+  /**
    * Resolve one of the kernel's SysV shared-memory mirror entry points.
    *
    * A missing export is a kernel/host ABI mismatch, not a runtime condition:
@@ -25636,7 +25662,7 @@ export class CentralizedKernelWorker {
         `Invalid SysV attachment population from the kernel: ${count}`,
       );
     }
-    this.#sysvActivePidCount = count;
+    this.sysvActivePidCount = count;
   }
 
   /**
@@ -25746,7 +25772,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes?.get(process.pid);
     if (registration && registration.memory !== process.memory) return;
     if (this.processes && !registration) return;
-    const machineOwnsSysvState = this.#sysvActivePidCount > 0;
+    const machineOwnsSysvState = this.#machineOwnsSysvState();
     if (
       (this.sharedMappings?.size ?? 0) === 0
       && !machineOwnsSysvState
@@ -28676,14 +28702,18 @@ export class CentralizedKernelWorker {
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (validationError !== null) return validationError;
 
-    const inheritResult = this.#requireSysvMirrorExport<
-      (parentPid: number, childPid: number, childMemoryLen: bigint) => number
-    >("kernel_shared_mapping_sysv_inherit", entry)(
-      prepared.parentPid,
-      prepared.childPid,
-      BigInt(prepared.childMemory.buffer.byteLength),
-    );
-    this.#refreshSysvActivePidCount(entry);
+    // Nothing to inherit when the machine owns no SysV state; the kernel's
+    // mirror is empty, so the transaction would be a proven no-op.
+    const inheritResult = this.#machineOwnsSysvState()
+      ? this.#requireSysvMirrorExport<
+        (parentPid: number, childPid: number, childMemoryLen: bigint) => number
+      >("kernel_shared_mapping_sysv_inherit", entry)(
+        prepared.parentPid,
+        prepared.childPid,
+        BigInt(prepared.childMemory.buffer.byteLength),
+      )
+      : 0;
+    if (this.#machineOwnsSysvState()) this.#refreshSysvActivePidCount(entry);
     if (!Number.isSafeInteger(inheritResult) || inheritResult > 0) {
       // A positive or imprecise response violates the additive ABI's 0/-errno
       // contract, so attachment state is no longer provable.
@@ -28701,11 +28731,13 @@ export class CentralizedKernelWorker {
     const postExportValidation =
       this.#validatePreparedSharedMappingInheritance(prepared);
     if (postExportValidation !== null) {
-      this.#releaseSysvMirrorForProcess(
-        prepared.childPid,
-        { publish: false, detach: true },
-        entry,
-      );
+      if (this.#machineOwnsSysvState()) {
+        this.#releaseSysvMirrorForProcess(
+          prepared.childPid,
+          { publish: false, detach: true },
+          entry,
+        );
+      }
       return postExportValidation;
     }
 
@@ -28842,7 +28874,9 @@ export class CentralizedKernelWorker {
           this.#rethrowKernelEntryFatal(error);
         }
         try {
-          this.#syncSysvMirrorForProcess(pid, true, entry);
+          if (this.#machineOwnsSysvState()) {
+            this.#syncSysvMirrorForProcess(pid, true, entry);
+          }
         } catch (error) {
           this.#rethrowKernelEntryFatal(error);
         }
@@ -28897,11 +28931,13 @@ export class CentralizedKernelWorker {
       // dups vanish with it; drop their bookkeeping without issuing closes.
       this.fdWritebackFdRefs.delete(pid);
       this.invalidateSharedMmapFdCacheForPid(pid);
-      this.#releaseSysvMirrorForProcess(
-        pid,
-        { publish: false, detach: true },
-        entry,
-      );
+      if (this.#machineOwnsSysvState()) {
+        this.#releaseSysvMirrorForProcess(
+          pid,
+          { publish: false, detach: true },
+          entry,
+        );
+      }
     } finally {
       releasing.delete(pid);
     }

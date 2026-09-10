@@ -1546,6 +1546,26 @@ pub trait SharedMappingIo {
     fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str);
 }
 
+/// The kernel's own SysV attachment accounting, as the inheritance
+/// transaction needs to drive it.
+///
+/// This is deliberately not part of [`SharedMappingIo`]: none of it is I/O.
+/// These are `IpcTable` and per-process records the kernel already owns, and
+/// they appear as a trait only so
+/// [`SharedMappingTable::inherit_sysv_attachments`] and its rollback can be
+/// tested without a kernel instance.
+pub trait SysvAttachmentOps {
+    /// Attach `pid` to `seg_id`, returning the segment's size.
+    fn attach(&mut self, pid: u32, seg_id: i32, read_only: bool) -> Result<usize, Errno>;
+    /// Record a materialized attachment address for `pid`.
+    fn record(&mut self, pid: u32, addr: u64, seg_id: i32, size: usize) -> Result<(), Errno>;
+    /// Release an attachment that has no address record yet, by segment
+    /// identity. Best-effort: it runs while a failure is already unwinding.
+    fn detach_segment(&mut self, pid: u32, seg_id: i32);
+    /// Release a recorded attachment at an exact address.
+    fn detach_addr(&mut self, pid: u32, addr: u64) -> Result<(), Errno>;
+}
+
 /// Which authoritative store a mapping publishes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackingKind {
@@ -3096,6 +3116,77 @@ impl SharedMappingTable {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Give a forked child its parent's SysV attachments, atomically.
+    ///
+    /// Two authorities have to move together: the kernel's own attachment
+    /// accounting (`nattch` and the per-process address records, reached
+    /// through `ops`) and this byte mirror. Each is separately fallible, so
+    /// this owns the whole transaction and its rollback rather than leaving a
+    /// caller to interleave them.
+    ///
+    /// Failure unwinds in the order the steps committed: an `attach` that
+    /// returned an unusable size, or a `record` that refused, is released by
+    /// segment identity because it has no address record yet; everything
+    /// already recorded is released by exact address, newest first. A child
+    /// therefore never keeps a partial set of attachments.
+    ///
+    /// `ops` is a trait rather than a direct `IpcTable` reference so this
+    /// transaction is unit-testable without a kernel instance. That matters:
+    /// it is the rollback path, which is the part no ordinary run exercises.
+    pub fn inherit_sysv_attachments(
+        &mut self,
+        parent_pid: u32,
+        child_pid: u32,
+        ops: &mut dyn SysvAttachmentOps,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if parent_pid == child_pid {
+            return Err(Errno::EINVAL);
+        }
+        if !self.sysv_attachments_for(child_pid).is_empty() {
+            return Err(Errno::EEXIST);
+        }
+
+        let mut recorded: Vec<u64> = Vec::new();
+        let mut failure: Option<Errno> = None;
+        for (map_addr, seg_id, size, read_only) in self.sysv_attachments_for(parent_pid) {
+            match ops.attach(child_pid, seg_id, read_only) {
+                // An attachment whose size does not match the parent's record
+                // still incremented nattch, so it is released before unwinding.
+                Ok(attached) if attached == size => {}
+                Ok(_) => {
+                    ops.detach_segment(child_pid, seg_id);
+                    failure = Some(Errno::EIO);
+                    break;
+                }
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            }
+            if let Err(err) = ops.record(child_pid, map_addr, seg_id, size) {
+                ops.detach_segment(child_pid, seg_id);
+                failure = Some(err);
+                break;
+            }
+            recorded.push(map_addr);
+        }
+
+        if failure.is_none() {
+            if let Err(err) = self.inherit_process_mappings(parent_pid, child_pid, io) {
+                failure = Some(err);
+            }
+        }
+
+        if let Some(err) = failure {
+            for map_addr in recorded.iter().rev() {
+                let _ = ops.detach_addr(child_pid, *map_addr);
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Reconcile exactly one attachment. Returns whether every publication
@@ -4740,6 +4831,199 @@ mod shared_mapping_tests {
             vec![(0u64, 7i32, 8usize, false), (16u64, 9i32, 4usize, true)],
         );
         assert!(table.sysv_attachments_for(2).is_empty());
+    }
+
+    /// Recording stand-in for the kernel's own attachment accounting.
+    struct MockAttachmentOps {
+        /// seg_id -> size the attach reports, or `Err` to refuse.
+        attach: BTreeMap<i32, Result<usize, Errno>>,
+        /// seg_ids whose `record` refuses.
+        refuse_record: BTreeSet<i32>,
+        calls: Vec<String>,
+    }
+
+    impl MockAttachmentOps {
+        fn new(sizes: &[(i32, usize)]) -> Self {
+            Self {
+                attach: sizes.iter().map(|(id, size)| (*id, Ok(*size))).collect(),
+                refuse_record: BTreeSet::new(),
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl SysvAttachmentOps for MockAttachmentOps {
+        fn attach(&mut self, pid: u32, seg_id: i32, _read_only: bool) -> Result<usize, Errno> {
+            self.calls.push(alloc::format!("attach({pid},{seg_id})"));
+            self.attach.get(&seg_id).copied().unwrap_or(Err(Errno::EINVAL))
+        }
+
+        fn record(&mut self, pid: u32, addr: u64, seg_id: i32, _size: usize) -> Result<(), Errno> {
+            self.calls.push(alloc::format!("record({pid},{addr},{seg_id})"));
+            if self.refuse_record.contains(&seg_id) {
+                return Err(Errno::ESRCH);
+            }
+            Ok(())
+        }
+
+        fn detach_segment(&mut self, pid: u32, seg_id: i32) {
+            self.calls.push(alloc::format!("detach_segment({pid},{seg_id})"));
+        }
+
+        fn detach_addr(&mut self, pid: u32, addr: u64) -> Result<(), Errno> {
+            self.calls.push(alloc::format!("detach_addr({pid},{addr})"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sysv_inheritance_attaches_records_and_mirrors_every_parent_segment() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEVENSEG".to_vec());
+        io.shm.insert(9, b"NINE".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        table.track_sysv_mapping(1, 16, 9, 4, true, &mut io).unwrap();
+        let mut ops = MockAttachmentOps::new(&[(7, 8), (9, 4)]);
+
+        table.inherit_sysv_attachments(1, 2, &mut ops, &mut io).unwrap();
+
+        assert_eq!(
+            ops.calls,
+            alloc::vec![
+                "attach(2,7)".to_string(),
+                "record(2,0,7)".to_string(),
+                "attach(2,9)".to_string(),
+                "record(2,16,9)".to_string(),
+            ],
+        );
+        assert_eq!(table.sysv_mapping_count_for(2), 2);
+        // The read-only flag rides along, so a child cannot publish through an
+        // attachment its parent could only read.
+        assert!(table.sysv_mapping(2, 16).unwrap().read_only);
+        assert_eq!(io.peek(2, 0, 8), b"SEVENSEG".to_vec());
+        assert_eq!(io.peek(2, 16, 4), b"NINE".to_vec());
+    }
+
+    #[test]
+    fn a_refused_attach_unwinds_the_attachments_that_already_committed() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEVENSEG".to_vec());
+        io.shm.insert(9, b"NINE".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        table.track_sysv_mapping(1, 16, 9, 4, false, &mut io).unwrap();
+        let mut ops = MockAttachmentOps::new(&[(7, 8)]);
+        ops.attach.insert(9, Err(Errno::ENOMEM));
+
+        assert_eq!(
+            table.inherit_sysv_attachments(1, 2, &mut ops, &mut io),
+            Err(Errno::ENOMEM),
+        );
+
+        // The refused attach never incremented anything, so only the recorded
+        // one is released -- by exact address, never by segment identity,
+        // which would release an unrelated same-segment attachment.
+        assert_eq!(
+            ops.calls,
+            alloc::vec![
+                "attach(2,7)".to_string(),
+                "record(2,0,7)".to_string(),
+                "attach(2,9)".to_string(),
+                "detach_addr(2,0)".to_string(),
+            ],
+        );
+        assert_eq!(table.sysv_mapping_count_for(2), 0);
+        assert_eq!(io.peek(2, 0, 8), vec![0u8; 8]);
+    }
+
+    #[test]
+    fn an_attach_reporting_the_wrong_size_releases_its_own_attachment_first() {
+        // A nonnegative attach already incremented nattch even when the size
+        // disagrees with the parent's record, so it must be released by
+        // segment identity: it has no address record to release it by.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEVENSEG".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        let mut ops = MockAttachmentOps::new(&[(7, 4)]);
+
+        assert_eq!(
+            table.inherit_sysv_attachments(1, 2, &mut ops, &mut io),
+            Err(Errno::EIO),
+        );
+        assert_eq!(
+            ops.calls,
+            alloc::vec!["attach(2,7)".to_string(), "detach_segment(2,7)".to_string()],
+        );
+        assert_eq!(table.sysv_mapping_count_for(2), 0);
+    }
+
+    #[test]
+    fn a_refused_record_releases_the_attachment_it_could_not_name() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEVENSEG".to_vec());
+        io.shm.insert(9, b"NINE".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        table.track_sysv_mapping(1, 16, 9, 4, false, &mut io).unwrap();
+        let mut ops = MockAttachmentOps::new(&[(7, 8), (9, 4)]);
+        ops.refuse_record.insert(9);
+
+        assert_eq!(
+            table.inherit_sysv_attachments(1, 2, &mut ops, &mut io),
+            Err(Errno::ESRCH),
+        );
+        assert_eq!(
+            ops.calls,
+            alloc::vec![
+                "attach(2,7)".to_string(),
+                "record(2,0,7)".to_string(),
+                "attach(2,9)".to_string(),
+                "record(2,16,9)".to_string(),
+                "detach_segment(2,9)".to_string(),
+                "detach_addr(2,0)".to_string(),
+            ],
+        );
+        assert_eq!(table.sysv_mapping_count_for(2), 0);
+    }
+
+    #[test]
+    fn a_child_that_cannot_hold_the_mirror_releases_every_attachment() {
+        // The mirror is the last step. When it refuses -- here because the
+        // child's memory is too small -- the attachments it was going to
+        // describe must not survive it.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 4);
+        io.shm.insert(7, b"SEVENSEG".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        let mut ops = MockAttachmentOps::new(&[(7, 8)]);
+
+        assert_eq!(
+            table.inherit_sysv_attachments(1, 2, &mut ops, &mut io),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            ops.calls,
+            alloc::vec![
+                "attach(2,7)".to_string(),
+                "record(2,0,7)".to_string(),
+                "detach_addr(2,0)".to_string(),
+            ],
+        );
+        assert_eq!(table.sysv_mapping_count_for(2), 0);
+    }
+
+    #[test]
+    fn inheriting_from_a_parent_with_no_attachments_touches_nothing() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = SharedMappingTable::new();
+        let mut ops = MockAttachmentOps::new(&[]);
+
+        table.inherit_sysv_attachments(1, 2, &mut ops, &mut io).unwrap();
+
+        assert!(ops.calls.is_empty());
+        assert_eq!(table.sysv_pid_count(), 0);
     }
 
     #[test]
