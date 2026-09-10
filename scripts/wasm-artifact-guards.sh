@@ -876,7 +876,8 @@ _wasm_structural_loader_identity() {
 
 # Print `executable` or `side-module` for a structurally decoded Wasm module.
 # A valid Kandelo side module carries exactly one `dylink.0` custom section as
-# its first section, matching the runtime loader contract in host/src/dylink.ts.
+# its first section, matching the runtime loader contract now owned by
+# `crates/dylink` (the TypeScript `host/src/dylink.ts` was deleted with K5 I6c).
 # Return a status greater than 1 for a decoder failure or a misplaced/duplicate
 # marker so callers cannot reinterpret malformed side-module input as a process
 # executable.
@@ -936,7 +937,8 @@ wasm_artifact_role() {
 
 # Validate the import shape that the Kandelo dynamic linker can instantiate.
 # Side modules share the process memory and may import only from the namespaces
-# that host/src/dylink.ts supplies. Print the detected memory architecture.
+# that the linker supplies -- now `crates/dylink` plus the engine-act executor
+# in `host/src/dylink-planner.ts`. Print the detected memory architecture.
 wasm_validate_side_module_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2
