@@ -10266,8 +10266,7 @@ pub fn kernel_recvmsg(
 
 /// wait4 — wait for child process. Writes status to wstatus_ptr, ignores rusage.
 /// Returns child pid on success, negative errno on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait4(
+pub fn kernel_wait4(
     pid: i32,
     wstatus_ptr: *mut i32,
     options: u32,
