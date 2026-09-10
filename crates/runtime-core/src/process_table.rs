@@ -212,7 +212,7 @@ pub fn bump_inherited_resource_refcounts(
     // fail without requiring rollback of unrelated inherited resources.
     let owned_socket_indices = socket_indices_named_by_live_ofds(child)?;
 
-    // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
+    // Backings for eventfd/timerfd/signalfd/memfd/epoll/procfs are indexed by the
     // inherited OFD's stable negative handle. Add these fallible references
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
@@ -565,8 +565,11 @@ impl ProcessTable {
             }
         }
 
-        // Drop kernel-global eventfd/timerfd/signalfd/memfd/procfs backing
-        // references for every OFD the process still owns. Normal exit closes
+        // Drop kernel-global eventfd/timerfd/signalfd/memfd/epoll/procfs
+        // backing references for every OFD the process still owns. A shared
+        // epoll instance therefore outlives a process that exits while a fork
+        // peer still holds a descriptor for the same open file description.
+        // Normal exit closes
         // fds first; this also covers crash removal and spawn rollback.
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
             crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
