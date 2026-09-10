@@ -1619,6 +1619,21 @@ impl Session {
         self.fork_reconcile_finish(token, &archive)
     }
 
+    /// Report the process's CURRENT linear-memory size.
+    ///
+    /// The bound an allocation is checked against is not a constant: guest code
+    /// grows its own memory between one `dlopen` and the next, and the size
+    /// captured when the session was created goes stale the first time it does.
+    /// A driver reporting what it observes is not a linker decision — the
+    /// planner still decides what fits — but the planner cannot observe it.
+    /// Memory never shrinks, so a smaller report is ignored rather than
+    /// believed.
+    pub fn note_memory_bytes(&mut self, bytes: u64) {
+        if bytes > self.linker.config.memory_bytes {
+            self.linker.config.memory_bytes = bytes;
+        }
+    }
+
     /// Hand the activation coordinator's funcref table patches to the archive.
     ///
     /// They are not loader state, but they ride in the same record chain and

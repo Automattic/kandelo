@@ -315,6 +315,7 @@ export class DylinkLoader {
    */
   nextInitialization(token: number): number {
     try {
+      this.#noteMemory();
       if (this.#outstandingCall.delete(token)) {
         // The guest ran it between the two calls. Only now may the planner be
         // told the stage completed.
@@ -629,8 +630,23 @@ export class DylinkLoader {
   // Internals
   // -------------------------------------------------------------------------
 
+  /**
+   * Tell the planner how big linear memory is NOW.
+   *
+   * The bound an allocation is checked against is not a constant: guest code
+   * grows its own memory between one `dlopen` and the next — a constructor that
+   * calls `malloc`, a `fork` replay, anything at all — and the size captured
+   * when the loader was built goes stale the first time it does. Reporting an
+   * observation is not a linker decision; the planner still decides what fits,
+   * it just cannot see the memory to measure it.
+   */
+  #noteMemory(): void {
+    this.#session.noteMemoryBytes(BigInt(this.#options.memory.buffer.byteLength));
+  }
+
   /** Run a transaction's loop to `finished`. */
   #drive(token: number, onStagedCall?: (call: StagedCallStep) => void): void {
+    this.#noteMemory();
     for (;;) {
       const step = this.#session.step(token);
       if (step.step === "finished") return;
@@ -650,9 +666,17 @@ export class DylinkLoader {
   }
 
   #perform(step: Extract<PlanStep, { step: "act" } | { step: "host" }>) {
-    return step.step === "act"
-      ? this.#executor.perform(step.act)
-      : this.#executor.performHost(step.request);
+    const result =
+      step.step === "act"
+        ? this.#executor.perform(step.act)
+        : this.#executor.performHost(step.request);
+    // Performing the step may itself have grown linear memory — the process
+    // allocator grows it to satisfy a mapping, and a staged initializer runs
+    // guest code that can grow it for any reason at all. The planner checks the
+    // answer against the size it was last told, so it is told again here,
+    // BEFORE the answer reaches it.
+    this.#noteMemory();
+    return result;
   }
 
   #recordImage(library: string, bytes: Uint8Array): void {

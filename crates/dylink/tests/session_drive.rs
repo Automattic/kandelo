@@ -1339,3 +1339,56 @@ fn an_unassigned_funcref_patch_is_numbered_by_the_publication() {
     );
     assert!(patches[1].generation <= fence, "and never above the header's fence");
 }
+
+// ---------------------------------------------------------------------------
+// Linear memory is observed, not configured
+// ---------------------------------------------------------------------------
+
+/// The bound an allocation is checked against is what memory measures NOW.
+///
+/// Guest code grows its own memory between one `dlopen` and the next — a
+/// constructor that calls `malloc`, a fork replay, anything at all — so a size
+/// captured when the session was created goes stale the first time it does.
+/// A load whose allocator answer sat past that stale bound was refused as
+/// "allocation escapes linear memory", which is the planner reporting the
+/// driver's staleness as the module's fault.
+#[test]
+fn an_allocation_is_bounded_by_the_memory_size_the_driver_last_reported() {
+    let config = |memory_bytes: u64| LinkerConfig {
+        memory_bytes,
+        library_search_paths: vec![],
+        ..LinkerConfig::default()
+    };
+
+    // The allocator answers at 0x8000, past a session created when memory was
+    // half that size.
+    let mut session = Session::new(config(0x4000));
+    let mut executor = Executor::new(4, 0x8000);
+    session.linker.scope.set_table_length(4);
+    executor.exports.insert(1, vec![InstanceExport::func("leaf_value")]);
+    let token = session
+        .open_begin(LoadRequest::new("libleaf.so", leaf("leaf_value")))
+        .expect("begin");
+    let refused = executor.drive(&mut session, token).expect_err("out of bounds");
+    assert!(
+        matches!(refused, DylinkError::AllocationEscapesMemory { .. }),
+        "unexpected error: {refused:?}",
+    );
+
+    // The same load, with the same allocator, after the driver reports what
+    // memory actually measures.
+    let mut session = Session::new(config(0x4000));
+    let mut executor = Executor::new(4, 0x8000);
+    session.linker.scope.set_table_length(4);
+    executor.exports.insert(1, vec![InstanceExport::func("leaf_value")]);
+    session.note_memory_bytes(1 << 20);
+    let token = session
+        .open_begin(LoadRequest::new("libleaf.so", leaf("leaf_value")))
+        .expect("begin");
+    executor.drive(&mut session, token).expect("the load fits the grown memory");
+    assert!(session.open_finish(token, None).expect("finish") > 0);
+
+    // Memory never shrinks, so a smaller report is ignored rather than believed.
+    session.note_memory_bytes(16);
+    assert!(session.linker.config.memory_bytes >= 1 << 20);
+}

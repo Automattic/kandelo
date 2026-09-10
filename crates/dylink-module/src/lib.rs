@@ -739,6 +739,19 @@ pub extern "C" fn dl_archive_set_table_patches(len: u32) -> i32 {
     })
 }
 
+/// Report the process's current linear-memory size, in bytes.
+///
+/// Guest code grows its own memory between loads, so the bound an allocation is
+/// checked against is observed rather than configured. The planner still
+/// decides what fits; it just cannot see the memory to measure it.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_note_memory_bytes(bytes: u64) -> i32 {
+    with_session(|state| {
+        state.note_memory_bytes(bytes);
+        Ok(())
+    })
+}
+
 /// Seal a typed table snapshot at `root`. Patches published before a checkpoint
 /// are superseded by it, so they are dropped rather than carried forward.
 #[unsafe(no_mangle)]

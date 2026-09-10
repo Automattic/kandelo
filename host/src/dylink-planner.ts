@@ -118,6 +118,7 @@ interface PlannerExports {
   readonly dl_archive_generation: (token: number) => bigint;
   readonly dl_archive_set_table_patches: (len: number) => number;
   readonly dl_archive_set_table_state_root: (root: bigint) => number;
+  readonly dl_note_memory_bytes: (bytes: bigint) => number;
   readonly dl_archive_append_table_patch: (len: number) => number;
   readonly dl_archive_can_append_table_patch: (len: number) => number;
   readonly dl_archive_table_state: () => number;
@@ -522,6 +523,16 @@ export class PlannerSession {
       throw new DylinkPlannerError("dl_archive_append_table_patch", this.takeError() ?? "");
     }
     return status === 1;
+  }
+
+  /**
+   * Report the process's current linear-memory size.
+   *
+   * Guest code grows memory between loads, so the bound an allocation is
+   * checked against is observed, not configured.
+   */
+  noteMemoryBytes(bytes: bigint): void {
+    this.#require(this.#exports.dl_note_memory_bytes(bytes), "dl_note_memory_bytes");
   }
 
   /** Seal a typed table snapshot; patches before a checkpoint are superseded. */
