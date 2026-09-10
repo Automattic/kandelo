@@ -1371,6 +1371,32 @@ WebCrypto, and `fetch()` are the device.
 And the honest end state is larger than a port: the kernel should own the HTTP
 proxy and call the host only for `fetch()`.
 
+### The handle-keyed registries in `kernel-worker.ts` — noted, not touched
+
+`kernel-worker.ts` is owned by K3 and K7 this round, so this is a note for
+whoever holds it next.
+
+- **`kmsCanvases` / `kmsContexts` / `kmsStatsViews`** are three parallel
+  `Map`s keyed by the same crtc identity, each holding a real host object
+  (an `OffscreenCanvas`, a rendering context, an `Int32Array` over a
+  `SharedArrayBuffer`). The objects are genuine KEEP under §2.4. The
+  *three-map-one-key* shape is not: it is one record per attached CRTC, and
+  three maps that can disagree about which CRTCs exist. Collapse them into a
+  single `Map<crtcId, KmsAttachment>` so a partial attach or a missed detach
+  cannot leave two of three populated. That is a host-side tidy, not a
+  migration — the kernel already owns `kernel_kms_commit_count` and
+  `kernel_kms_last_frame_us`.
+- **The PTY output-callback and index maps** are the same shape: a callback
+  is a host object, but *which pid owns which pty index* is state `pty.rs`
+  already holds. The callback map should be keyed by the kernel's pty index
+  alone, with the ownership question asked of the kernel rather than
+  mirrored beside it.
+
+Neither is large. Both are the same class of defect this item found in the
+virtual network — host-side bookkeeping shadowing kernel-owned identity —
+and both should be folded into whichever item next opens that file rather
+than becoming a separate pass.
+
 ### The shared blocker, stated once
 
 Three of the four pieces need the same thing and none of them can have it this
