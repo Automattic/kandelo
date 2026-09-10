@@ -34,6 +34,15 @@ export const browserWasiModule32ModuleSpecifier = "@wasi-module32-wasm";
 // the planner is not compiled per pointer width, it carries the process's width
 // in its configuration record.
 export const browserDylinkModule32ModuleSpecifier = "@dylink-module32-wasm";
+// The standalone WebAssembly artifact reader (`crates/wasm-artifact-module`),
+// supplied as URL bytes. wasm32 only: the reader answers questions ABOUT an
+// artifact's data model rather than sharing it, so one module serves wasm32 and
+// wasm64 artifacts alike. Unlike the three above this is not optional for any
+// browser build -- every host validates an artifact before running it, and the
+// kernel host reads the kernel's own pointer width through this module BEFORE
+// the kernel is compiled.
+export const browserWasmArtifactModule32ModuleSpecifier =
+  "@wasm-artifact-module32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 
@@ -42,6 +51,7 @@ export const browserVirtualModuleCapabilities = Object.freeze({
   [browserForkModule32ModuleSpecifier]: "fork-module32-wasm",
   [browserWasiModule32ModuleSpecifier]: "wasi-module32-wasm",
   [browserDylinkModule32ModuleSpecifier]: "dylink-module32-wasm",
+  [browserWasmArtifactModule32ModuleSpecifier]: "wasm-artifact-module32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

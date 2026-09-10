@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(first, second, "must be deterministic for an unchanged tree");
     }
 
-    // The same guard for the other two entries in `CORESIDENT_SIDE_MODULES`.
+    // The same guard for the other three entries in `CORESIDENT_SIDE_MODULES`.
     // Each build script stamps `local-binaries/<artifact>.build-key` with this
     // digest and `xtask verify-fresh` re-derives it, so a crate missing from a
     // module's closure is a module that goes silently stale: its source can
@@ -299,6 +299,33 @@ mod tests {
         // Reached through `dylink`: the planner consumes fork-codec's KFLA
         // records and shared's fork-export contract, so a change to either
         // changes the module's behaviour and must move the digest.
+        assert!(union.contains("crates/fork-codec"), "{union:?}");
+        assert!(union.contains("crates/shared"), "{union:?}");
+
+        let first = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        let second = workspace_crates_closure_sha(&repo, &names).expect("sha");
+        assert_eq!(first, second, "must be deterministic for an unchanged tree");
+    }
+
+    #[test]
+    fn wasm_artifact_module_closure_covers_its_full_build_graph() {
+        let repo = crate::repo_root();
+        let names = vec![
+            "wasm-artifact-module".to_string(),
+            "wasm-artifact".to_string(),
+        ];
+        let mut union: BTreeSet<String> = BTreeSet::new();
+        for name in &names {
+            for rel in cargo_closure_paths(&repo, name).expect("closure") {
+                union.insert(rel);
+            }
+        }
+        assert!(union.contains("crates/wasm-artifact-module"), "{union:?}");
+        assert!(union.contains("crates/wasm-artifact"), "{union:?}");
+        // Reached through `wasm-artifact`: every `wpk_fork` descriptor is
+        // decoded by the fork-codec module that owns it, and the ABI epoch plus
+        // the required import/export tables come from shared. A change to
+        // either changes what this module ACCEPTS, so it must move the digest.
         assert!(union.contains("crates/fork-codec"), "{union:?}");
         assert!(union.contains("crates/shared"), "{union:?}");
 

@@ -25,6 +25,7 @@ import {
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
   browserWasiModule32ModuleSpecifier,
+  browserWasmArtifactModule32ModuleSpecifier,
 } from "./browser-module-contract.mjs";
 import {
   createBinaryDevAccess,
@@ -340,6 +341,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const FORK_MODULE32 = browserForkModule32ModuleSpecifier;
   const WASI_MODULE32 = browserWasiModule32ModuleSpecifier;
   const DYLINK_MODULE32 = browserDylinkModule32ModuleSpecifier;
+  const WASM_ARTIFACT_MODULE32 = browserWasmArtifactModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -415,6 +417,32 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         this.error(
           "dylink_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/dylink-module/build-wasm.sh`.\n" +
+            `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === WASM_ARTIFACT_MODULE32) {
+        // The standalone artifact reader, staged next to the kernel by
+        // `crates/wasm-artifact-module/build-wasm.sh`. NOT lazy, unlike the
+        // three above: every boot validates an artifact, and the kernel host
+        // reads the kernel's own pointer width through this module before the
+        // kernel is compiled. A browser build without it cannot boot at all,
+        // so a missing artifact is an error here rather than at first use.
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("wasm_artifact_module32.wasm");
+        }
+        const resolved = tryResolveBinary("wasm_artifact_module32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        const local = path.resolve(
+          repoRoot,
+          "local-binaries/wasm_artifact_module32.wasm",
+        );
+        const hosted = path.resolve(
+          repoRoot,
+          "host/wasm/wasm_artifact_module32.wasm",
+        );
+        this.error(
+          "wasm_artifact_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/wasm-artifact-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
         );
       }

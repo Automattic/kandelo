@@ -2330,12 +2330,18 @@ const CORESIDENT_WASI_MODULE_NODE_NAME: &str = "wasi-module";
 /// again: `crates/dylink-module` carries no `build.toml`.
 const DYLINK_MODULE_NODE_NAME: &str = "dylink-module";
 
+/// The name every artifact-reader projection node carries. Same rule again:
+/// `crates/wasm-artifact-module` carries no `build.toml`.
+const WASM_ARTIFACT_MODULE_NODE_NAME: &str = "wasm-artifact-module";
+
 /// A wasm module the local-build engine builds and projects, but the package
 /// resolver does not model.
 ///
-/// There are three: `crates/fork-module` (fork capture/replay),
-/// `crates/wasi-module` (WASI Preview 1), and `crates/dylink-module` (the
-/// dynamic-linking planner). What they share is the pipeline, not the shape —
+/// There are four: `crates/fork-module` (fork capture/replay),
+/// `crates/wasi-module` (WASI Preview 1), `crates/dylink-module` (the
+/// dynamic-linking planner), and `crates/wasm-artifact-module` (the
+/// WebAssembly artifact reader). What they share is the pipeline, not the
+/// shape —
 /// each is built out-of-band by its own `build-wasm.sh`, each stages a
 /// closure-derived build-key stamp next to its artifact, and each must reach
 /// the SourceOnly projection as an owned root-level member or the browser's
@@ -2399,6 +2405,19 @@ const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
         artifacts: &[("dylink_module32.wasm", "wasm32", true)],
         closure_description: "crates/dylink-module, crates/dylink, crates/fork-codec, \
                               crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: WASM_ARTIFACT_MODULE_NODE_NAME,
+        script: "crates/wasm-artifact-module/build-wasm.sh",
+        closure_crates: &["wasm-artifact-module", "wasm-artifact"],
+        // The reader is not compiled per pointer width. It answers questions
+        // ABOUT an artifact's data model rather than sharing it -- which is the
+        // whole reason `kernel.ts` can ask this module which width a kernel
+        // uses before compiling that kernel -- so one wasm32 module serves
+        // wasm32 and wasm64 artifacts alike.
+        artifacts: &[("wasm_artifact_module32.wasm", "wasm32", true)],
+        closure_description: "crates/wasm-artifact-module, crates/wasm-artifact, \
+                              crates/fork-codec, crates/shared",
     },
 ];
 
