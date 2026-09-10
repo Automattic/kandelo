@@ -1132,6 +1132,180 @@ impl HostIO for WasmHostIO {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. WasmSharedMappingIo -- bridges SharedMappingIo to host and kernel state
+// ---------------------------------------------------------------------------
+
+/// Production environment for [`crate::memory::SharedMappingTable`].
+///
+/// Three sources answer the trait, and which one answers is the whole point of
+/// the split:
+///
+/// * **the host**, for the two operations that genuinely cross an address-space
+///   boundary — `host_proc_read_bytes` / `host_proc_write_bytes` — and for
+///   positional byte access on a stable handle;
+/// * **the kernel's own SysV segments**, read directly out of
+///   [`crate::ipc::IpcTable`] rather than pulled back through the
+///   `kernel_ipc_shm_*_chunk` round trip the TypeScript mirror needed;
+/// * **the caller**, for each process's committed memory length, which is
+///   supplied as an entry-point argument (see [`Self::set_process_memory_len`]).
+///
+/// # Why the memory length is an argument and not an import
+///
+/// The kernel cannot read it. Guest memory length is a property of a
+/// `WebAssembly.Memory` the kernel has no handle to, and the host grows a
+/// process's memory *after* the kernel returns from `mmap`
+/// (`host/src/kernel-worker.ts`, the `growMemoryToCover` call that follows the
+/// syscall). The host therefore knows the post-growth length at exactly the
+/// boundaries that drive this table, and passes it in. That keeps the
+/// cross-memory host contract at the two byte-copy members it already has
+/// instead of adding a third for a value the caller is holding anyway.
+struct WasmSharedMappingIo {
+    /// pid → committed linear-memory length, seeded per entry point.
+    ///
+    /// A pid that was never seeded answers `None`, which the table treats as
+    /// "process gone" and skips. Entry points must therefore seed every pid
+    /// they can reach, or a live mapping would be silently skipped.
+    memory_lens: alloc::collections::BTreeMap<u32, u64>,
+}
+
+impl WasmSharedMappingIo {
+    fn new() -> Self {
+        Self {
+            memory_lens: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    fn set_process_memory_len(&mut self, pid: u32, len: u64) {
+        self.memory_lens.insert(pid, len);
+    }
+}
+
+impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
+    fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let len = checked_host_buffer_len(dst.len())?;
+        let result =
+            unsafe { host_proc_read_bytes(pid as i32, addr, dst.as_mut_ptr(), len) };
+        i32_to_result(result)
+    }
+
+    fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        let len = checked_host_buffer_len(src.len())?;
+        let result = unsafe { host_proc_write_bytes(pid as i32, addr, src.as_ptr(), len) };
+        i32_to_result(result)
+    }
+
+    fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
+        self.memory_lens.get(&pid).copied()
+    }
+
+    fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        HostIO::host_pread(&mut WasmHostIO, handle, dst, offset)
+    }
+
+    fn pwrite(&mut self, handle: i64, offset: u64, src: &[u8]) -> Result<usize, Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        HostIO::host_pwrite(&mut WasmHostIO, handle, src, offset)
+    }
+
+    fn fstat_handle(&mut self, handle: i64) -> Result<crate::memory::SharedMappingStat, Errno> {
+        let stat = HostIO::host_fstat(&mut WasmHostIO, handle)?;
+        Ok(crate::memory::SharedMappingStat {
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+            size: u64::try_from(stat.st_size).unwrap_or(0),
+            mode: stat.st_mode,
+            host_handle: Some(handle),
+        })
+    }
+
+    fn handle_identity(&mut self, _handle: i64, dev: u64, ino: u64) -> Option<String> {
+        // Identity is derived from the live handle's backing object, never from
+        // a pathname, so a rename or a second fd onto the same object resolves
+        // to the same backing.
+        if dev == 0 && ino == 0 {
+            // The backend cannot name this object stably, which makes it
+            // ineligible for a shared backing rather than merely unlucky.
+            return None;
+        }
+        Some(alloc::format!("dev:{dev}:ino:{ino}"))
+    }
+
+    fn retain_handle(&mut self, _handle: i64) -> Result<(), Errno> {
+        // Refuse rather than pretend. A retained handle must outlive the guest
+        // descriptor that opened it, which requires deferring the kernel's own
+        // `host_close` until the last mapping reference drops. That coordination
+        // lands with the file-backing half of the cutover; until then a caller
+        // that reached here would be handed a handle the kernel may close
+        // underneath it. Failing loudly keeps that impossible.
+        Err(Errno::ENOSYS)
+    }
+
+    fn release_handle(&mut self, _handle: i64) {
+        // Nothing is ever retained (see `retain_handle`), so nothing to release.
+    }
+
+    fn fd_stat(&mut self, _pid: u32, _fd: i32) -> Result<crate::memory::SharedMappingStat, Errno> {
+        // Guest-descriptor access serves only the fd-writeback bridge, which is
+        // part of the file-backing half. See `retain_handle`.
+        Err(Errno::ENOSYS)
+    }
+
+    fn fd_pwrite(
+        &mut self,
+        _pid: u32,
+        _fd: i32,
+        _offset: u64,
+        _src: &[u8],
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn close_fd(&mut self, _pid: u32, _fd: i32) {}
+
+    fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let offset = u32::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let read = ipc.shm_read_chunk(seg_id, offset, dst)?;
+        // A short read means the request ran past the segment. Zero-filling the
+        // remainder would manufacture bytes no writer produced.
+        if read as usize != dst.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        let offset = u32::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        let written = ipc.shm_write_chunk(seg_id, offset, src)?;
+        if written as usize != src.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    }
+
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+        let message = alloc::format!(
+            "shared-mapping writeback lost: pid={pid} addr={map_addr:#x} reason={reason}"
+        );
+        unsafe { host_debug_log(message.as_ptr(), message.len() as u32) };
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3. Global kernel state
 // ---------------------------------------------------------------------------
 
