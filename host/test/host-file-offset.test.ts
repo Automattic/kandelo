@@ -15,7 +15,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { NativePositionedWriteHandles } from "../src/native-positioned-write";
 import { NodePlatformIO } from "../src/platform/node";
 import type { HostFileOffset } from "../src/types";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { OPFS_CHANNEL_SIZE } from "../src/vfs/opfs-channel";
@@ -423,16 +422,3 @@ describe("number-only VFS backends", () => {
   });
 });
 
-describe("DeviceFileSystem exact offsets", () => {
-  it("validates signed i64 input without narrowing ignored device offsets", () => {
-    const io = new DeviceFileSystem();
-    const handle = io.open("/null", O_RDWR, 0);
-    const byte = new Uint8Array(1);
-
-    expect(io.read(handle, byte, MAX_I64, 1)).toBe(0);
-    expect(io.write(handle, byte, MAX_I64, 1)).toBe(1);
-    expect(io.seek(handle, MIN_I64, SEEK_SET)).toBe(0);
-    expect(() => io.read(handle, byte, MAX_I64 + 1n, 1))
-      .toThrow(/EOVERFLOW/);
-  });
-});

@@ -2102,11 +2102,11 @@ fn is_procfs_namespace_path(path: &[u8]) -> bool {
 }
 
 fn is_devfs_namespace_path(path: &[u8]) -> bool {
-    path == b"/dev" || path.starts_with(b"/dev/")
+    crate::devfs::is_namespace_path(path)
 }
 
 fn is_host_backed_devfs_path(path: &[u8]) -> bool {
-    path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
+    crate::devfs::is_host_backed_path(path)
 }
 
 /// Inspect one canonical namespace path without following its final symlink.
@@ -2638,13 +2638,6 @@ pub fn open_prepared_exec_target(
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     check_search_path(proc, host, &resolved)?;
 
-    if crate::rootfs::claims_path(&resolved) {
-        // The overlay owns `/`: prepare the target from it (bytes served by the
-        // blob provider / overlay copy-on-writes) instead of a host file. This
-        // also loads guest-written `/` executables, which the host mount lacks.
-        return open_prepared_exec_target_rootfs(proc, &resolved, flags);
-    }
-
     // Kernel devfs owns its namespace. Every node it holds is a character
     // device, a directory, or a `/dev/fd` entry, and POSIX gives EACCES for
     // executing any of them — a devfs path can never be the regular file
@@ -2658,6 +2651,13 @@ pub fn open_prepared_exec_target(
     // reports the truthful EACCES rather than pretending the name is unknown.
     if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
         return Err(Errno::EACCES);
+    }
+
+    if crate::rootfs::claims_path(&resolved) {
+        // The overlay owns `/`: prepare the target from it (bytes served by the
+        // blob provider / overlay copy-on-writes) instead of a host file. This
+        // also loads guest-written `/` executables, which the host mount lacks.
+        return open_prepared_exec_target_rootfs(proc, &resolved, flags);
     }
 
     let open_flags = O_RDONLY

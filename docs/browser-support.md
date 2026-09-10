@@ -193,7 +193,6 @@ pipe pair.
   `fsync()` succeeds after already-completed directory operations because the
   File System API exposes no directory flush primitive; it is not an
   additional crash-durability barrier.
-- `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
 - Stable-identity regular files, including OPFS regular files on supported
   browsers, can be shared across process memories through the host mapping
   cache, but updates become visible at syscall boundaries rather than
@@ -668,10 +667,11 @@ the package-built main shell uses
 `packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
 source.
 
-VFS images do not need to serialize placeholder device nodes. Both Node and
-browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
-shared memory at `/dev/shm`; image acceptance should exercise devices such as
-`/dev/null` only after those runtime mounts exist.
+VFS images do not need to serialize placeholder device nodes. `/dev` is a
+kernel namespace on both hosts — `crates/runtime-core/src/devfs.rs` and
+`match_virtual_device` answer every path under it, and the rootfs overlay
+excludes it — so an image entry under `/dev` is never reachable. The one
+exception is `/dev/shm`, which both hosts mount for POSIX shared memory.
 
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and provide an `autoCommand` such as

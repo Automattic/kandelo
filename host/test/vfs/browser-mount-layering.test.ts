@@ -19,7 +19,6 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
-import { DeviceFileSystem } from "../../src/vfs/device-fs";
 import { VirtualPlatformIO } from "../../src/vfs/vfs";
 import { BrowserTimeProvider } from "../../src/vfs/time";
 import {
@@ -84,7 +83,6 @@ async function buildBrowserMounts(image: Uint8Array): Promise<{
 }> {
   const shmSab = new SharedArrayBuffer(64 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);
-  const devfs = new DeviceFileSystem();
   const specMounts = await resolveForBrowser(BROWSER_SCRATCH_MOUNT_SPEC, image, {
     scratchSabBytes: TINY_SCRATCH,
   });
@@ -92,7 +90,6 @@ async function buildBrowserMounts(image: Uint8Array): Promise<{
   if (!rootMount) throw new Error("BROWSER_SCRATCH_MOUNT_SPEC missing / mount");
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs },
-    { mountPoint: "/dev", backend: devfs },
     ...specMounts,
   ];
   return {
@@ -109,9 +106,9 @@ describe("browser host mount layering", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces 10 mounts: 8 from spec + /dev/shm + /dev", async () => {
+  it("produces 9 mounts: 8 from spec + /dev/shm", async () => {
     const { mounts } = await buildBrowserMounts(image);
-    expect(mounts).toHaveLength(BROWSER_SCRATCH_MOUNT_SPEC.length + 2);
+    expect(mounts).toHaveLength(BROWSER_SCRATCH_MOUNT_SPEC.length + 1);
     const points = mounts.map((m) => m.mountPoint).sort();
     expect(points).toEqual(
       [

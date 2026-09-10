@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
@@ -39,7 +38,6 @@ function createProbeIo(honorsSetId: boolean): VirtualPlatformIO {
 
   return new VirtualPlatformIO([
     { mountPoint: "/", backend: root, nosuid: !honorsSetId },
-    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
   ], new NodeTimeProvider());
 }
 

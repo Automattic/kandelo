@@ -175,7 +175,6 @@ Key host components:
 | VirtualPlatformIO | `vfs/vfs.ts` | Mount-table router — used by both Node and browser hosts |
 | MemoryFileSystem | `vfs/memory-fs.ts` | SharedArrayBuffer-backed in-memory filesystem |
 | HostFileSystem | `vfs/host-fs.ts` | Backend that proxies to a Node host directory |
-| DeviceFileSystem | `vfs/device-fs.ts` | /dev/null, /dev/zero, /dev/urandom, /dev/ptmx |
 | OpfsFileSystem | `vfs/opfs.ts` | Origin Private File System (browser persistence) |
 | NetworkIO backends | `networking/*.ts` | Host-side external TCP/HTTP bridges and local virtual UDP/TCP networking |
 | Default mount spec | `vfs/default-mounts.ts` (+ `default-mounts-node.ts`) | Canonical mount layout + per-host resolvers |
@@ -1772,11 +1771,11 @@ operations require a lifecycle-owned backing, not merely a reachable one.
 | `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
 
 The writable root image honors set-ID on both hosts. Default scratch mounts,
-`/dev`, and `/dev/shm` explicitly use `nosuid`; this is an ordinary mount
+`/dev/shm` explicitly uses `nosuid`; this is an ordinary mount
 choice, not a trust classification for the image. Custom mount specifications
 may make the same choice. The browser and Node hosts apply the same rules.
 
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+The browser host layers one additional, host-specific mount on top: `/dev/shm`, the POSIX-semaphore SAB shared with main-thread surfaces. `/dev` itself is not a mount on either host — the kernel owns that namespace (`crates/runtime-core/src/devfs.rs` and `match_virtual_device`), and `crates/runtime-core/src/rootfs.rs` excludes it from the overlay the same way it excludes tmpfs. Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
 
 ### rootfs image as the source of truth
 

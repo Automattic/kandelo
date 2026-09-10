@@ -37,6 +37,31 @@ pub enum DevfsEntry {
     DriDir,
 }
 
+/// Whether `path` is inside the `/dev` namespace at all.
+pub fn is_namespace_path(path: &[u8]) -> bool {
+    path == b"/dev" || path.starts_with(b"/dev/")
+}
+
+/// Whether `path` is in the one `/dev` subtree a host filesystem backs.
+///
+/// `/dev/shm` is POSIX shared memory, served by a host mount on both hosts
+/// rather than by this module. It is the sole exception to kernel ownership of
+/// the `/dev` namespace.
+pub fn is_host_backed_path(path: &[u8]) -> bool {
+    path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
+}
+
+/// Whether the kernel's devfs — not a host mount and not the rootfs overlay —
+/// is the authority for `path`.
+///
+/// `rootfs::owns_path` consults this the same way it consults `tmpfs::owns_path`.
+/// It used to rely instead on the host declaring `/dev` as a foreign prefix,
+/// which made the overlay's view of a kernel-owned namespace depend on the
+/// host's mount list.
+pub fn owns_path(path: &[u8]) -> bool {
+    is_namespace_path(path) && !is_host_backed_path(path)
+}
+
 /// Match a resolved path to a devfs directory entry.
 pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
     match path {

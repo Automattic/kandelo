@@ -40,7 +40,6 @@ import {
   VirtualPlatformIO,
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
-  DeviceFileSystem,
   HostFileSystem,
   MemoryFileSystem,
 } from "./vfs";
@@ -890,7 +889,6 @@ async function buildVirtualPlatformIO(
   }));
   const mounts = [
     { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ...specMounts,
     ...extras,
   ];

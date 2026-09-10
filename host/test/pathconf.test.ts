@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PATHCONF_NAMES } from "../src/generated/abi";
 import { backendPathconf } from "../src/pathconf";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
@@ -125,20 +124,6 @@ describe("pathconf VFS routing", () => {
     io.close(fd);
   });
 
-  it("validates device paths and live device handles", () => {
-    const device = new DeviceFileSystem();
-    // devfs has no symlinks and no better-than-ms timestamps; both are facts
-    // about this backend, which is why they stay host-side.
-    expect(device.pathconf("/null", PATHCONF_NAMES.POSIX2_SYMLINKS)).toBeNull();
-    const fd = device.open("/null", O_RDONLY, 0);
-    expect(device.fpathconf(fd, PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
-      .toBeNull();
-    device.close(fd);
-    // The live-descriptor validation still runs before the name is judged, so
-    // a stale handle is EBADF rather than ENOSYS.
-    expect(() => device.fpathconf(fd, PATHCONF_NAMES.POSIX2_SYMLINKS))
-      .toThrow(/EBADF/);
-  });
 });
 
 describe("HostFileSystem fpathconf", () => {

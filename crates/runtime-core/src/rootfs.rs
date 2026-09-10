@@ -862,6 +862,7 @@ fn now() -> (u64, u32) {
 pub fn owns_path(path: &[u8]) -> bool {
     path.first() == Some(&b'/')
         && !crate::tmpfs::owns_path(path)
+        && !crate::devfs::owns_path(path)
         && !path_under_foreign(path)
 }
 

@@ -79,7 +79,6 @@ export type {
   TarHardlinkEntry,
   TarSymlinkEntry,
 } from "./tar";
-export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";

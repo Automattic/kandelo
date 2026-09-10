@@ -46,7 +46,6 @@ import {
   createRootfsBlobProvider,
 } from "./vfs/rootfs-blob-store";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
-import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
@@ -766,7 +765,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // controls the rootfs contents directly via kernel.fs and would lose
   // control if the spec dictated additional scratch mounts.
   const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
-  const devfs = new DeviceFileSystem();
   // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
@@ -800,7 +798,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    { mountPoint: "/dev", backend: devfs, nosuid: true },
     ...specMounts,
   ];
   memfs.subscribeLazyDownloads((event) => {
