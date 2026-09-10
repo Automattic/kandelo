@@ -2930,8 +2930,10 @@ is too short for a first kernel boot on a loaded machine: two known-good
 control cases (`unistd/fsync-directory`,
 `spawn/posix_spawn_large_environment`) also timed out at 30s and needed 120s.
 
-**What B6 must know.** The host mirror (`kernel-worker.ts`, `epollInterests`)
-is now not merely a second authority but a **weaker model** of the kernel's:
+**What B6 must know.** *(Answered: B6 deleted the mirror on 2026-09-10 —
+see "B6 — epoll mirror deleted" below. Kept as the reasoning that scoped it.)*
+The host mirror (`kernel-worker.ts`, `epollInterests`)
+was not merely a second authority but a **weaker model** of the kernel's:
 keyed `pid:epfd` on numeric fds and copied per process at fork, where the
 kernel keys `(fd, OfdId)` and shares one instance. Its comments have been
 corrected to say so. Any divergence is the mirror being wrong. Its one
@@ -2948,6 +2950,7 @@ evaluation against an OFD the caller does not hold, which `sys_poll`'s
 `&mut Process` shape cannot express today. `epoll_ctl()` and `epoll_pwait()`
 therefore stay **Partial** in `posix-status.md`; `epoll_create1()` becomes
 **Full**, and the `exec()` row's epoll numeric-fd gap is gone.
+
 ### B6 — epoll mirror deleted (DONE 2026-09-10)
 
 **Ledger.** `host/src/kernel-worker.ts` -423 / +112, net **-311 lines**,
