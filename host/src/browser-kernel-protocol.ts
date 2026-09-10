@@ -82,6 +82,16 @@ export interface InitMessage {
    */
   wasiModuleBytes?: ArrayBuffer;
   /**
+   * The standalone dynamic-linking planner's wasm bytes. The kernel worker
+   * compiles them once and ships the compiled module to EVERY process worker,
+   * not only fork-instrumented ones: `dlopen` is a generic POSIX interface and
+   * an uninstrumented process may call it.
+   *
+   * Optional because nothing drives the planner yet; a build that has not
+   * staged `dylink_module32.wasm` still boots.
+   */
+  dylinkModuleBytes?: ArrayBuffer;
+  /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
    * restores and authenticates an owned memfs through the verified image-mount
    * resolver — no VFS SAB is shared with the main thread. Demos that need

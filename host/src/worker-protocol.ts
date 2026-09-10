@@ -55,6 +55,18 @@ export interface CentralizedWorkerInitMessage {
    * fails loud rather than silently losing WASI.
    */
   wasiModuleModule?: WebAssembly.Module;
+  /**
+   * The pre-compiled standalone dynamic-linking planner
+   * (`crates/dylink-module`), shipped to EVERY process worker rather than only
+   * fork-instrumented ones.
+   *
+   * `dlopen` is a generic POSIX interface, and the planner is a pure function
+   * of module bytes: it imports nothing, owns its own linear memory, and is not
+   * pointer-width-specific (the process's pointer width travels in its
+   * configuration record), so a wasm64 worker gets it too. Absent when the tree
+   * has not built the module yet, which is not fatal until something drives it.
+   */
+  dylinkModuleModule?: WebAssembly.Module;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
@@ -193,6 +205,13 @@ export interface CentralizedThreadInitMessage {
    * fails loud rather than silently losing WASI.
    */
   wasiModuleModule?: WebAssembly.Module;
+  /**
+   * The dynamic-linking planner, forwarded exactly as for the process worker.
+   * A `dlopen` issued from a pthread is an ordinary `dlopen`, so the pthread
+   * worker receives the same module rather than reaching across to the process
+   * worker's copy.
+   */
+  dylinkModuleModule?: WebAssembly.Module;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;

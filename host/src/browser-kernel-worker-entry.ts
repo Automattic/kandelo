@@ -156,23 +156,40 @@ let forkModuleModule32Browser: WebAssembly.Module | null = null;
  */
 let wasiModuleModule32Browser: WebAssembly.Module | null = null;
 /**
- * The pre-compiled co-resident side modules a process worker may need.
+ * The standalone dynamic-linking planner, compiled once at kernel init from
+ * the bytes the main thread ships.
  *
- * Both the fork module and the WASI module are wasm32-only PIC side modules
- * placed into the guest's address space by the process worker. They travel
- * together because they are supplied the same way and consumed at the same
- * point, so a third side module is one field here rather than a new spread at
- * every worker-launch site.
+ * Unlike the two above it is NOT co-resident and NOT position-independent: it
+ * imports nothing and owns its own linear memory. It is also not gated on fork
+ * instrumentation, because `dlopen` is a generic POSIX interface an
+ * uninstrumented process may call.
+ */
+let dylinkModuleModuleBrowser: WebAssembly.Module | null = null;
+/**
+ * The pre-compiled modules a process worker may need.
+ *
+ * The fork module and the WASI module are wasm32-only PIC side modules placed
+ * into the guest's address space by the process worker. The dynamic-linking
+ * planner is not, but it is supplied the same way and consumed at the same
+ * point, so it travels here too. A fourth module is one field here rather than
+ * a new spread at every worker-launch site.
  */
 function sideModuleInitFields(ptrWidth: 4 | 8): {
   forkModuleModule?: WebAssembly.Module;
   wasiModuleModule?: WebAssembly.Module;
+  dylinkModuleModule?: WebAssembly.Module;
 } {
-  // Only the wasm32 modules ship in the browser; wasm32 is the guest width. A
-  // wasm64 guest gets no module and a fork-instrumented wasm64 worker fails loud
-  // (browser guests are wasm32).
+  // The planner is width-independent — it carries the process's pointer width
+  // in its configuration record — so it is attached even for a wasm64 guest,
+  // which can `dlopen` like any other.
+  const dylinkField = dylinkModuleModuleBrowser
+    ? { dylinkModuleModule: dylinkModuleModuleBrowser }
+    : {};
+  // Only the wasm32 side modules ship in the browser; wasm32 is the guest
+  // width. A wasm64 guest gets no side module and a fork-instrumented wasm64
+  // worker fails loud (browser guests are wasm32).
   if (ptrWidth !== 4) {
-    return {};
+    return { ...dylinkField };
   }
   return {
     ...(forkModuleModule32Browser
@@ -181,6 +198,7 @@ function sideModuleInitFields(ptrWidth: 4 | 8): {
     ...(wasiModuleModule32Browser
       ? { wasiModuleModule: wasiModuleModule32Browser }
       : {}),
+    ...dylinkField,
   };
 }
 let workerAdapter: BrowserWorkerAdapter;
@@ -1038,6 +1056,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // a pre-compiled module rather than recompiling per process.
   if (msg.wasiModuleBytes) {
     wasiModuleModule32Browser = await WebAssembly.compile(msg.wasiModuleBytes);
+  }
+  // The dynamic-linking planner, compiled the same way and shipped to every
+  // process worker regardless of instrumentation.
+  if (msg.dylinkModuleBytes) {
+    dylinkModuleModuleBrowser = await WebAssembly.compile(msg.dylinkModuleBytes);
   }
 
   // /dev/fb0 forwarding: the registry lives in this worker, but the canvas

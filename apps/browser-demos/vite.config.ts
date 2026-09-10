@@ -19,6 +19,7 @@ import {
 } from "../../host/src/binary-resolver";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
+  browserDylinkModule32ModuleSpecifier,
   browserForkModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
@@ -338,6 +339,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const ROOTFS = browserRootfsModuleSpecifier;
   const FORK_MODULE32 = browserForkModule32ModuleSpecifier;
   const WASI_MODULE32 = browserWasiModule32ModuleSpecifier;
+  const DYLINK_MODULE32 = browserDylinkModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -395,6 +397,24 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         this.error(
           "wasi_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/wasi-module/build-wasm.sh`.\n" +
+            `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === DYLINK_MODULE32) {
+        // The standalone dynamic-linking planner, staged next to the kernel by
+        // `crates/dylink-module/build-wasm.sh`. Resolved lazily, like the two
+        // above: only a boot that actually loads a shared object imports it, so
+        // a demo build that never calls `dlopen` does not require the artifact.
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("dylink_module32.wasm");
+        }
+        const resolved = tryResolveBinary("dylink_module32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        const local = path.resolve(repoRoot, "local-binaries/dylink_module32.wasm");
+        const hosted = path.resolve(repoRoot, "host/wasm/dylink_module32.wasm");
+        this.error(
+          "dylink_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/dylink-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
         );
       }

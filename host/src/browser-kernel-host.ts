@@ -241,6 +241,29 @@ async function fetchDefaultBrowserWasiModule32(): Promise<ArrayBuffer> {
   );
 }
 
+/**
+ * Fetch the standalone dynamic-linking planner bytes from its optional bundler
+ * URL, or `null` when this build did not stage the artifact.
+ *
+ * Behind its own dynamic import for the same reason as the two above. Unlike
+ * them this resolves to `null` rather than throwing: nothing drives the planner
+ * yet, so a tree that has not built it must still boot. Once something does
+ * drive it, its absence has to surface as a loud `dlopen` failure at the call
+ * site — not as a quiet substitution here.
+ */
+async function fetchDefaultBrowserDylinkModule32(): Promise<ArrayBuffer | null> {
+  try {
+    const { browserDylinkModule32ArtifactUrl } = await import(
+      "./browser-dylink-module-artifact"
+    );
+    const response = await fetch(browserDylinkModule32ArtifactUrl);
+    if (!response.ok) return null;
+    return await response.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -450,6 +473,10 @@ export class BrowserKernel {
     // worker can hand a compiled module to any process worker that turns out
     // to be running a WASI guest.
     const wasiModuleBytes = await fetchDefaultBrowserWasiModule32();
+    // The dynamic-linking planner travels the same route: fetched here,
+    // transferred to the kernel worker, compiled once there, and handed to
+    // every process worker. Optional for now because nothing drives it yet.
+    const dylinkModuleBytes = await fetchDefaultBrowserDylinkModule32();
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     this.workerStarted = true;
@@ -524,6 +551,7 @@ export class BrowserKernel {
           kernelWasmBytes: transferBuf,
           ...(forkModuleBytes ? { forkModuleBytes } : {}),
           ...(wasiModuleBytes ? { wasiModuleBytes } : {}),
+          ...(dylinkModuleBytes ? { dylinkModuleBytes } : {}),
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
@@ -552,6 +580,9 @@ export class BrowserKernel {
         }
         if (wasiModuleBytes) {
           transfer.push(wasiModuleBytes);
+        }
+        if (dylinkModuleBytes) {
+          transfer.push(dylinkModuleBytes);
         }
         if (opts.takeVfsImageOwnership) {
           // WHY: this API is used at durable reboot boundaries where the main

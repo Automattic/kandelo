@@ -29,6 +29,11 @@ export const browserForkModule32ModuleSpecifier = "@fork-module32-wasm";
 // demo opt-in: it IS the browser's WASI Preview 1 support, so a browser build
 // that cannot supply it cannot run a WASI guest at all.
 export const browserWasiModule32ModuleSpecifier = "@wasi-module32-wasm";
+// The standalone dynamic-linking planner (`crates/dylink-module`), supplied as
+// URL bytes so the kernel host can ship it to every process worker. wasm32 only:
+// the planner is not compiled per pointer width, it carries the process's width
+// in its configuration record.
+export const browserDylinkModule32ModuleSpecifier = "@dylink-module32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 
@@ -36,6 +41,7 @@ export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
   [browserForkModule32ModuleSpecifier]: "fork-module32-wasm",
   [browserWasiModule32ModuleSpecifier]: "wasi-module32-wasm",
+  [browserDylinkModule32ModuleSpecifier]: "dylink-module32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

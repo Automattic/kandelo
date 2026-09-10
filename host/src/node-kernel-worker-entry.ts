@@ -197,17 +197,51 @@ function wasiModuleModule(): WebAssembly.Module {
 }
 
 /**
- * The pre-compiled co-resident side modules a process worker may need.
+ * The standalone dynamic-linking planner (`crates/dylink-module`).
  *
- * Both the fork module and the WASI module are PIC side modules placed into
- * the guest's address space by the process worker. They travel together
- * because they are supplied the same way and consumed at the same point, so a
- * third side module is one field here rather than a new spread at every
- * worker-launch site.
+ * Shipped to EVERY process worker, not only fork-instrumented ones. `dlopen`
+ * is a generic POSIX interface: an uninstrumented process may call it, and the
+ * only in-tree runtime-`dlopen` consumer today happens to be instrumented, so
+ * gating this on instrumentation would leave a gap no artifact here would
+ * catch.
+ *
+ * Unlike the two modules above it is NOT co-resident and NOT position-
+ * independent: it imports nothing at all and owns its own linear memory, so it
+ * is never placed inside the guest's address space. It is also not
+ * pointer-width-specific — the planner narrows its arithmetic at its own
+ * boundary and carries the process's pointer width in its configuration
+ * record — so one wasm32 module serves wasm32 and wasm64 guests alike.
+ */
+let dylinkModuleModuleCache: WebAssembly.Module | null = null;
+function dylinkModuleModule(): WebAssembly.Module | undefined {
+  if (dylinkModuleModuleCache) return dylinkModuleModuleCache;
+  try {
+    dylinkModuleModuleCache = new WebAssembly.Module(
+      readFileSync(resolveBinary("dylink_module32.wasm")),
+    );
+  } catch {
+    // A tree that has not built the module yet must still boot: nothing
+    // consumes it until the loader is cut over. When it IS consumed, its
+    // absence has to be a loud `dlopen` failure at the call site rather than a
+    // silent substitution here.
+    return undefined;
+  }
+  return dylinkModuleModuleCache;
+}
+
+/**
+ * The pre-compiled modules a process worker may need.
+ *
+ * The fork module and the WASI module are PIC side modules placed into the
+ * guest's address space by the process worker. The dynamic-linking planner is
+ * not — it imports nothing and owns its memory — but it is supplied the same
+ * way and consumed at the same point, so it travels here too. A fourth module
+ * is one field here rather than a new spread at every worker-launch site.
  */
 function sideModuleInitFields(ptrWidth: 4 | 8): {
   forkModuleModule: WebAssembly.Module;
   wasiModuleModule?: WebAssembly.Module;
+  dylinkModuleModule?: WebAssembly.Module;
 } {
   let mod = forkModuleModuleByWidth.get(ptrWidth);
   if (!mod) {
@@ -220,10 +254,14 @@ function sideModuleInitFields(ptrWidth: 4 | 8): {
     }
     forkModuleModuleByWidth.set(ptrWidth, mod);
   }
+  // The planner is width-independent, so it is attached on BOTH the wasm64
+  // early return below and the wasm32 path. A wasm64 process can `dlopen` too.
+  const dylinkModule = dylinkModuleModule();
+  const dylinkField = dylinkModule ? { dylinkModuleModule: dylinkModule } : {};
   // WASI Preview 1 is wasm32-only. A wasm64 worker gets no module, and a
   // wasm64 WASI guest fails loud in the worker rather than here.
   if (ptrWidth !== 4) {
-    return { forkModuleModule: mod };
+    return { forkModuleModule: mod, ...dylinkField };
   }
   // Resolving the artifact must not fail a worker launch for the overwhelming
   // majority of programs, which are not WASI guests. The worker reports the
@@ -237,6 +275,7 @@ function sideModuleInitFields(ptrWidth: 4 | 8): {
   return {
     forkModuleModule: mod,
     ...(wasiModule ? { wasiModuleModule: wasiModule } : {}),
+    ...dylinkField,
   };
 }
 
