@@ -8,11 +8,17 @@
  * call ordering and is not proven by a test." A paged cursor re-reads blocks
  * after boot, so it widens whatever window that ordering closes.
  *
+ * `normalizeLegacyRootfs` is gone: it patched a `nobody` line into `/etc/group`
+ * for already-published demo images, every image builder emits that line, and
+ * re-implementing a demo-image patch inside the kernel is exactly the
+ * package-specific platform behaviour the values contract forbids. The
+ * remaining two are covered here.
+ *
  * This file answers a stronger question than the ordering one, at runtime,
- * with the real functions: **the three mutations do not touch the image buffer
+ * with the real functions: **the mutations do not touch the image buffer
  * at all.** `MemoryFileSystem.fromImage` copies the image into a freshly
- * allocated SharedArrayBuffer, and all three mutations are ordinary
- * `mkdir`/`open`/`write` calls against that restored filesystem. The image
+ * allocated SharedArrayBuffer, and each mutation is an ordinary
+ * `mkdir`/`open`/`write` call against that restored filesystem. The image
  * bytes the kernel would read are a different buffer, and the host never
  * writes to it.
  *
@@ -65,15 +71,12 @@ function readText(fs: MemoryFileSystem, path: string): string {
 }
 
 /**
- * An image shaped so all three host mutations actually fire: `/etc/group`
- * without a `nobody` line (so `normalizeLegacyRootfs` rewrites it), no
- * `/usr/local/lib` (so `ensureMountParentDirectories` creates it), and no
+ * An image shaped so both remaining host mutations actually fire: no
+ * `/usr/local/lib` (so `ensureMountParentDirectories` creates it) and no
  * `/etc/ssl/certs` (so the browser certificate write creates the chain).
  */
 async function buildImage(): Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
-  fs.mkdir("/etc", 0o755);
-  writeText(fs, "/etc/group", "root:x:0:\n");
   fs.mkdir("/usr", 0o755);
   return await fs.saveImage();
 }
@@ -100,16 +103,11 @@ describe("host mutations and the image bytes a kernel cursor would read", () => 
     const memfs = restored.get(spec[0]);
     expect(memfs, "the `/` image mount was restored").toBeDefined();
 
-    // Mutation 1 has already happened: `restoreVerifiedImageMounts` applies
-    // `normalizeLegacyRootfs` to every image mount BEFORE it returns, so no
-    // caller can observe or interleave with a half-normalized filesystem.
-    expect(readText(memfs!, "/etc/group")).toContain("nobody:");
-
-    // Mutation 2.
+    // Mutation 1.
     ensureMountParentDirectories(memfs!, ["/usr/local/lib/kandelo"]);
     expect(memfs!.stat("/usr/local/lib").mode & 0xf000).toBe(0x4000);
 
-    // Mutation 3.
+    // Mutation 2.
     writeBrowserCaCertificate(memfs!);
     expect(readText(memfs!, "/etc/ssl/certs/ca-certificates.crt")).toContain(
       "BEGIN CERT",
@@ -138,13 +136,19 @@ describe("host mutations and the image bytes a kernel cursor would read", () => 
     );
   });
 
-  it("records D-B5: a reader of the raw image sees none of the three mutations", async () => {
+  it("records D-B5: a reader of the raw image sees neither remaining mutation", async () => {
     // The truthful consequence of the property above, asserted rather than
-    // assumed. A kernel that parses the image directly gets the image's
-    // `/etc/group`, not the normalized one, and no `/usr/local/lib` and no CA
-    // certificate. Closing that gap is the cutover's problem (the host must
-    // either stop mutating or the mutations must move into the image); until
-    // it is closed, this test says exactly what the gap is.
+    // assumed. A kernel that parses the image directly sees no
+    // `/usr/local/lib` and no CA certificate in the IMAGE.
+    //
+    // The parent-directory half is no longer a gap in the running system: the
+    // kernel now synthesises a foreign mount's ancestors itself when the host
+    // registers the prefix (`rootfs::ensure_foreign_mount_parents`), so a
+    // kernel that parses the raw image ends up with `/usr/local/lib` anyway —
+    // just not from the image bytes, which is what this test reads. The CA
+    // certificate is genuine per-session runtime data that can never be in an
+    // image and must become a post-`init` write. Until that lands, this test
+    // says exactly what the raw image does and does not carry.
     const image = await buildImage();
     const spec: MountSpec[] = [{ path: "/", source: "image" }];
     const restored = await restoreVerifiedImageMounts(spec, image);
@@ -153,9 +157,6 @@ describe("host mutations and the image bytes a kernel cursor would read", () => 
     writeBrowserCaCertificate(memfs);
 
     const asTheKernelWouldSeeIt = MemoryFileSystem.fromImage(image);
-    expect(readText(asTheKernelWouldSeeIt, "/etc/group")).not.toContain(
-      "nobody:",
-    );
     expect(() => asTheKernelWouldSeeIt.stat("/usr/local/lib")).toThrow();
     expect(() =>
       asTheKernelWouldSeeIt.stat("/etc/ssl/certs/ca-certificates.crt"),

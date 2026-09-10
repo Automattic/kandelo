@@ -11,7 +11,7 @@
  */
 
 import type { MountConfig } from "./types";
-import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
+import { FILE_MODES } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
 
@@ -37,9 +37,6 @@ export const KERNEL_TMPFS_OWNED_PREFIXES: readonly string[] = [
 export function kernelTmpfsOwnsMountPath(mountPath: string): boolean {
   return KERNEL_TMPFS_OWNED_PREFIXES.includes(mountPath);
 }
-
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
@@ -124,48 +121,6 @@ export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
  * once a demo needs more than the default — none do today.
  */
 export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
-
-function readTextFile(fs: MemoryFileSystem, path: string): string | null {
-  let fd: number | null = null;
-  try {
-    const st = fs.stat(path);
-    fd = fs.open(path, 0, 0);
-    const bytes = new Uint8Array(st.size);
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const n = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    return new TextDecoder().decode(bytes.subarray(0, offset));
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try { fs.close(fd); } catch {}
-    }
-  }
-}
-
-function writeTextFile(fs: MemoryFileSystem, path: string, text: string): void {
-  const bytes = new TextEncoder().encode(text);
-  const fd = fs.open(path, O_WRONLY_CREAT_TRUNC, 0o644);
-  try {
-    if (bytes.byteLength > 0) fs.write(fd, bytes, null, bytes.byteLength);
-  } finally {
-    fs.close(fd);
-  }
-}
-
-export function normalizeLegacyRootfs(fs: MemoryFileSystem): void {
-  // Compatibility for already-published dinit demo images that contain a
-  // nobody user but not the matching nobody group. php-fpm validates
-  // `group = nobody` during pool startup and exits EX_CONFIG (78) without it.
-  const group = readTextFile(fs, "/etc/group");
-  if (group !== null && !/^nobody:/m.test(group)) {
-    writeTextFile(fs, "/etc/group", `${group.replace(/\n?$/, "\n")}nobody:x:65534:\n`);
-  }
-}
 
 function normalizeMountPoint(path: string): string {
   return path === "/" ? path : path.replace(/\/+$/, "");
@@ -252,7 +207,7 @@ export function validateSpec(spec: MountSpec[]): void {
 
 /**
  * Restore and authenticate every image-backed mount before any caller is
- * allowed to normalize an image or construct scratch mounts around it.
+ * allowed to construct scratch mounts around it.
  *
  * @internal Shared by the Node and browser resolvers so both hosts enforce the
  * same imported-seal trust boundary.
@@ -274,11 +229,6 @@ export async function restoreVerifiedImageMounts(
     ),
   );
 
-  // WHY: restore/verify the complete image set before normalization or scratch
-  // setup.
-  // A later forged mount must not leave an earlier mount or host directory
-  // partially mutated when the resolver rejects the boot.
-  for (const fs of restored.values()) normalizeLegacyRootfs(fs);
   return restored;
 }
 
