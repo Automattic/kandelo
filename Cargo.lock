@@ -1922,6 +1922,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
+name = "wasi-abi"
+version = "0.1.0"
+dependencies = [
+ "wasm-posix-shared",
+]
+
+[[package]]
+name = "wasi-module"
+version = "0.1.0"
+dependencies = [
+ "wasi-abi",
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "wasip2"
 version = "1.0.3+wasi-0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2740,6 +2755,7 @@ dependencies = [
  "toml 0.8.23",
  "toml_edit",
  "ureq",
+ "wasi-abi",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
  "xz2",

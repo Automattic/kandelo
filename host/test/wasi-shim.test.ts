@@ -124,6 +124,42 @@ describe("WASI shim", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
   });
+
+  // The three fixtures above cover fd_write to stdout, args_get, and i64
+  // scalar fidelity. None of them opens a file or reads a directory, so
+  // path_open, fd_read, fd_seek, fd_tell and fd_readdir had no end-to-end
+  // coverage at all. These two close that gap against a REAL kernel, which
+  // makes them the regression baseline any replacement of this shim has to
+  // keep green.
+  it("reads, seeks, and tells against a real file via path_open", async () => {
+    const result = await runCentralizedProgram({
+      programPath: join(fixturesDir, "wasi-file-io.wasm"),
+      timeout: 10_000,
+    });
+    // "abcd" from the first read, "4" from fd_tell, "ghi" after a relative
+    // seek. A failing call inside the fixture prints "E" and exits 1, so a
+    // regression is visible in BOTH the exit code and stdout.
+    expect(result.stdout).toBe("abcd4ghi\n");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("lists a real directory via fd_readdir", async () => {
+    const result = await runCentralizedProgram({
+      programPath: join(fixturesDir, "wasi-readdir.wasm"),
+      timeout: 10_000,
+    });
+    // Two five-character names ("alpha", "bravo"). "." and ".." are 1 and 2
+    // characters, so the count is stable whether or not the kernel reports
+    // them.
+    //
+    // This stays inside the single-batch case on purpose: that is the case
+    // the TypeScript gets right, so the fixture is a clean baseline for both
+    // implementations. The multi-batch case that separates them is pinned in
+    // Rust, where the batch size can be controlled --
+    // crates/wasi-module/tests/entry_points.rs, `defect_5_*`.
+    expect(result.stdout).toBe("2\n");
+    expect(result.exitCode).toBe(0);
+  });
 });
 
 describe("WASI shim scalar channel ABI", () => {

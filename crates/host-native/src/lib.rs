@@ -300,6 +300,19 @@ pub fn fork_module_path() -> PathBuf {
     repo_root().join("local-binaries").join("fork_module32.wasm")
 }
 
+/// The co-resident WASI Preview 1 side module (`crates/wasi-module`).
+///
+/// The SAME artifact Node resolves through `resolveBinary` and the browser
+/// resolves through its Vite `?url` alias. That is the point: WASI support is
+/// one wasm module rather than one implementation per host, so this crate
+/// gains a capability it has never had -- `grep -rn wasi crates/host-native`
+/// found nothing before K10 -- without reimplementing anything.
+///
+/// Build it with `bash crates/wasi-module/build-wasm.sh`.
+pub fn wasi_module_path() -> PathBuf {
+    repo_root().join("local-binaries").join("wasi_module32.wasm")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
