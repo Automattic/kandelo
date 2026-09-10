@@ -1437,7 +1437,7 @@ fn handle_dri_ioctl(
             }
             let info: gl::GlSubmitInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let (offset, length);
+            let (offset, length, cmdbuf_addr);
             {
                 let dri = dri_state_mut(proc, ofd_idx)?;
                 let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
@@ -1450,7 +1450,14 @@ fn handle_dri_ioctl(
                 }
                 offset = info.offset as usize;
                 length = info.length as usize;
+                cmdbuf_addr = cmdbuf.addr;
             }
+            // Whether the submitted bytes are a well-formed command stream is
+            // kernel computation, and it is decided here — before any host
+            // adapter sees the span — so a malformed buffer cannot leave a
+            // GL context half-advanced by a submission that then fails. See
+            // `crate::dri::cmdbuf`.
+            crate::dri::cmdbuf::validate_submission(host, pid, cmdbuf_addr, offset, length)?;
             let submit_rc = host.gl_submit(pid, offset, length);
             if submit_rc < 0 {
                 return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
@@ -46065,6 +46072,38 @@ impl HostIO for RelSymlinkMock {
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
     }
 
+    /// Stage `count` well-formed `OP_CLEAR` records (8 bytes each) at the
+    /// process's cmdbuf so a `GLIO_SUBMIT` over them survives the kernel's
+    /// structural validation (`crate::dri::cmdbuf`). Before that validation
+    /// existed the submitted bytes were never read, so these tests could leave
+    /// the cmdbuf zeroed; opcode 0 is not a command, so they cannot now.
+    fn stage_gl_clear_records(proc: &Process, host: &mut MockHostIO, fd: i32, count: usize) {
+        use wasm_posix_shared::gl;
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let addr = proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .cmdbuf
+            .unwrap()
+            .addr;
+        let mut stream = Vec::with_capacity(count * 8);
+        for _ in 0..count {
+            stream.extend_from_slice(&gl::OP_CLEAR.to_le_bytes());
+            stream.extend_from_slice(&4u16.to_le_bytes());
+            stream.extend_from_slice(&0u32.to_le_bytes());
+        }
+        if host.proc_memory.len() < addr + stream.len() {
+            host.proc_memory.resize(addr + stream.len(), 0);
+        }
+        host.proc_memory[addr..addr + stream.len()].copy_from_slice(&stream);
+    }
+
     #[test]
     fn glio_submit_rejects_out_of_range_range() {
         use wasm_posix_shared::gl;
@@ -46102,7 +46141,10 @@ impl HostIO for RelSymlinkMock {
             Errno::EINVAL,
         );
 
-        // A valid sub-range succeeds and bumps the submit counter.
+        // A valid sub-range succeeds and bumps the submit counter. The span
+        // has to hold real records: the kernel validates the command stream
+        // before the host sees it.
+        stage_gl_clear_records(&proc, &mut host, fd, 8);
         let info_ok = gl::GlSubmitInfo {
             offset: 0,
             length: 64,
@@ -46145,6 +46187,9 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
 
+        // Real records, so the submission reaches the host and the errno under
+        // test is the host's rather than the kernel's structural rejection.
+        stage_gl_clear_records(&proc, &mut host, fd, 8);
         host.gl_submit_rc = -(Errno::EINVAL as i32);
         let info = gl::GlSubmitInfo {
             offset: 0,
@@ -46158,6 +46203,77 @@ impl HostIO for RelSymlinkMock {
         );
 
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap();
+        assert_eq!(gls.cmdbuf.unwrap().submit_seq, 0);
+    }
+
+    /// A malformed command stream is rejected by the kernel, and the host is
+    /// never called. Before `crate::dri::cmdbuf` existed this rule lived only
+    /// in the browser's `webgl/bridge.ts`, so Node and host-native forwarded
+    /// whatever the guest wrote, and even the browser dispatched the leading
+    /// valid records into a live GL context before failing the submission.
+    #[test]
+    fn glio_submit_rejects_a_malformed_command_stream_without_calling_the_host() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        // One good record, then an opcode no bridge can issue.
+        stage_gl_clear_records(&proc, &mut host, fd, 2);
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let addr = proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .cmdbuf
+            .unwrap()
+            .addr;
+        host.proc_memory[addr + 8..addr + 10].copy_from_slice(&0xBEEFu16.to_le_bytes());
+        host.proc_memory[addr + 10..addr + 12].copy_from_slice(&4u16.to_le_bytes());
+
+        // `gl_submit` would have succeeded had it been reached.
+        host.gl_submit_rc = 0;
+        let info = gl::GlSubmitInfo {
+            offset: 0,
+            length: 16,
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlSubmitInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
         let gls = proc
             .ofd_table
             .get(ofd_idx)

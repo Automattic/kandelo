@@ -34,7 +34,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
-import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
+import { decodeAndDispatch } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
@@ -2364,12 +2364,9 @@ export class WasmPosixKernel {
             }
           }
           if (b.forward) {
-            const rc = validateCommandBuffer(
-              b.cmdbufView,
-              submission.offset,
-              submission.length,
-            );
-            if (rc < 0) return rc;
+            // No structural check here: the kernel validated this span in
+            // `GLIO_SUBMIT` (`dri::cmdbuf`) before calling us, so the
+            // multiplex target receives bytes the kernel has already accepted.
             b.forward.onSubmit(
               sliceUint8Array(
                 b.cmdbufView,

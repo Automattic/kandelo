@@ -2660,6 +2660,13 @@ pub mod test_host {
     pub struct GuestMemoryHost {
         pub base: u64,
         pub memory: alloc::vec::Vec<u8>,
+        /// Number of `proc_read_bytes` calls served, and the total bytes they
+        /// asked for. Kernel-side walkers that are supposed to read *part* of a
+        /// guest region — `dri::cmdbuf`'s command-stream validator skips over
+        /// payload bodies it never inspects — can assert on the cost of the
+        /// walk rather than only on its answer.
+        pub reads: usize,
+        pub bytes_read: usize,
     }
 
     impl GuestMemoryHost {
@@ -2667,6 +2674,8 @@ pub mod test_host {
             Self {
                 base,
                 memory: alloc::vec![0u8; len],
+                reads: 0,
+                bytes_read: 0,
             }
         }
 
@@ -2697,6 +2706,8 @@ pub mod test_host {
         fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
             match self.range(addr, dst.len()) {
                 Some(range) => {
+                    self.reads += 1;
+                    self.bytes_read += dst.len();
                     dst.copy_from_slice(&self.memory[range]);
                     0
                 }
