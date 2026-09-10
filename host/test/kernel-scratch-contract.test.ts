@@ -1185,6 +1185,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "This ordinary memory32 factory creates caller-owned process memory.",
   },
   {
+    key: "host/src/wasi-module-instance.ts::instantiateWasiModule::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The co-resident WASI side module is instantiated against the guest process's own memory and three placement globals the host mints for it; it imports no kernel memory and no kernel export.",
+  },
+  {
     key: "host/src/worker-main.ts::centralizedThreadWorkerMain::wasm-instance-authority::new WebAssembly.Instance(module, threadInstanceImports)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
