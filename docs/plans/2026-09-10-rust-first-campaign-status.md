@@ -68,7 +68,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
 | K4 | **K4a tranches 1-2 merged; continuation RUNNING** | 39 pairs / ~3,430 lines left; K4b probe PASS |
 | K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
-| K13b | **NOT STARTED — held deliberately** | Export cull. Seven agents already contend on the build cache; an eighth costs more than it gains |
+| K13b | **ANALYSIS DONE; execution held** | 116 of 309 exports removable; surface 309 → ~193. See below |
 
 ## Host import surface
 
@@ -399,6 +399,53 @@ reuse — a prepare/cancel pair would also have been POSIX-defensible but
 introduces lifecycle state that can leak, and a new bytes-oriented export would
 add a second way to do something the kernel can already do. Reuse wins on both
 counts.
+
+## K13b analysis — done, and the item is now mechanical (2026-09-10)
+
+Measured on the branch, no builds contended.
+
+**The kernel exports 309 `kernel_*` symbols**, matching 309
+`pub extern "C" fn kernel_` declarations in `crates/kernel/src/wasm_api.rs`.
+
+**118 of them have zero references in `host/src` and `host/test`.** That does
+**not** mean dead — it means **dispatch-only**, and the distinction is one this
+campaign already got wrong once: `kernel_brk` and `kernel_time` were called
+"dead" on exactly this evidence and were live, reached from inside
+`wasm_api.rs` by the dispatch path rather than from the host.
+
+**They are removable because dispatch does not use the export.**
+`dispatch_channel_syscall` calls them as **plain Rust function calls** —
+`wasm_api.rs:4267` is `kernel_close(a1)`, not a re-entry through the wasm
+export table. So `#[unsafe(no_mangle)] pub extern "C"` is vestigial for these:
+drop the export attribute, keep the body and whatever Rust visibility the
+callers need, and the symbol leaves the wasm while dispatch keeps working.
+
+**Consumers that must keep their export — the check that matters.** Only **2**
+of the 118 are named by `crates/host-native`:
+`kernel_exec_target_resolve_shebang` and `kernel_wait4`. Everything else is
+referenced only from Rust that links against the crate:
+- `crates/kernel/src/lib.rs` (internal) — plain `fn` suffices
+- `crates/kernel/tests/wasm_api_channel_pointer_contract.rs` — integration
+  tests see only the public API, so `pub fn`, but no `extern "C"`
+- `crates/runtime-core/src/syscalls.rs` — cross-crate, so `pub fn`
+
+**Result: 116 of 309 exports can go. Surface 309 → ~193.**
+
+**What this is worth, stated honestly.** Kernel exports are **free under V4** —
+that goal counts host *imports*, and this changes none. The value is **V3**:
+`docs/agent-guidance/abi.md` lists kernel Wasm exports as part of the ABI
+contract, so a smaller export surface is a smaller contract for a VFS image to
+depend on, and fewer things that can break image compatibility across an epoch.
+Secondarily V2/maintainability: 116 fewer `extern "C"` boundaries where a
+signature can drift from its Rust caller.
+
+**It is ABI-adjacent and stays under ABI 44.** `abi/snapshot.json` regenerates;
+no `ABI_VERSION` bump, per the maintainer's ruling that the whole campaign is
+one epoch.
+
+**Held, not blocked.** Seven agents already contend on the shared build cache
+and one lost four provisioning attempts to it; an eighth costs more than it
+gains. Dispatch when a slot frees — the analysis above is the item.
 
 ## Open decisions for the maintainer
 
