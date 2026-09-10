@@ -1805,6 +1805,106 @@ the allocated newMemory identity" was browser-only because only the browser's
 copy had named its allocation `newMemory` and awaited the alias release. With
 one implementation it covers both hosts.
 
+### Validation actually run
+
+All inside `./scripts/dev-shell.sh`, with `host/node_modules/.bin/vitest` —
+**not** `npx vitest`, which resolves a different vitest out of `~/.npm/_npx`
+and fails at startup on a reporter it cannot load. That is a twelfth "the gate
+did not run what you think" shape, and it announces itself loudly rather than
+passing, so it cost minutes rather than hours.
+
+- **6 structural parity suites: 43 passed of 43.** The primary gate. All six
+  were red before the assertions were repointed — 14 failures, every one a
+  slice of a function that had moved, none of them a changed subject.
+- **23 worker-lifecycle/entry suites: 215 executed, 200 passed / 15 failed,
+  no skips.**
+- **9 host-parity/contract suites: 62 executed, 59 passed / 3 failed.** All
+  three failures are `kernel-scratch-contract`, the documented
+  unreviewed-memory-authority case.
+- **`npm --prefix host run typecheck`: 9 errors, the baseline**, with the only
+  `host/src` one being the known TLS `BodyInit` case.
+- Ledger `--step e93167651 HEAD`: **−919 in-scope TS**, 0 Rust.
+
+**The 15 worker-lifecycle failures are pre-existing, and that is measured
+rather than asserted.** They sit in five files — `environment-lifecycle`,
+`ordinary-process-exit`, `process-wait-lifecycle`, `spawn-credential-order`,
+`spawn-pid-authority`. Those five were re-run against the campaign base's
+`host/src` and `host/test`, restored into this fully provisioned worktree, and
+produced **15 failed / 85 passed of 100 — the same files, the same cases**.
+The tip produces the same 15 of the same 100. One tip-only failure existed
+before that comparison and was a structural assertion, now repointed.
+
+**This does not match the previous pass's "236/236 across 23 files."** Two
+explanations are consistent with the evidence and I cannot separate them from
+here: the 23 files are probably not the same 23 (this set was chosen by
+subject, not inherited), and the ABI-marker gap below fails suites in any
+worktree provisioned by the documented steps. Reporting the number I measured
+against a base I measured, rather than reconciling to a number I could not
+reproduce.
+
+**Browser: NOT run**, and this is the first of the two kinds the brief
+distinguishes. Everything shared here constructs or tears down a process
+generation — fork, vfork, clone, spawn, exec-adjacent exit — so it needs the
+app booted, real Workers, and real guest programs. An engine-only check would
+prove nothing about it. The browser-half changes needing that pass are: the
+construction barrier now reached through `awaitProcessConstructionBarrier`, the
+alias release through `releaseGenerationAliases`, the vfork fault-injection
+seam's new `purpose` gate, and the `framebufferExposed`/`framebufferRelease`
+rename. The Node suites cannot reach any of them.
+
+### Three concurrent agents, three worktrees, one disk
+
+Three vitest runs were in flight during this pass, in
+`agent-a547ca4cce7d17e0a`, `agent-a4fa57a74a2c1712a` and here. File isolation
+held — each worktree has its own `local-binaries` and `host/wasm` — but they
+share the machine and `~/.cache/kandelo`. The plan's "otherwise-idle tree"
+rule is about the tree; it is worth adding that a busy *machine* stretches the
+kernel-booting guest suites enough to matter, and that the shared cache is
+where the disk goes.
+
+### NEEDS-DEFER-DECISION (NDD-K4-3) — what the launch family left behind
+
+Twenty differing declarations remain. They are **not** one item, and the
+"cannot be split" framing should not be inherited a third time. They fall into
+three groups with genuinely different costs:
+
+**1. `handleExec` (459 node / 494 browser).** The last member of the launch
+family proper, and it should follow the others: it constructs a replacement
+generation, so the hooks are already paid for. It was left out of this pass for
+schedule, not for difficulty. *Cost now:* comparable to `handleVfork` — a
+careful session. *Cost later:* it is the one remaining place a construction
+drift can reappear, and this pass found three such drifts in its siblings.
+*Recommendation:* take it next, on its own.
+
+**2. `handleInit` (267 / 504) and `handleHttpRequest` (15 / 53).** These are
+**not** the same shape. The browser's init compiles side modules shipped from
+main, wires a service-worker bridge and a CORS proxy; Node reads files and
+opens a session directory. The size ratio is a real host difference, not
+drift. *Recommendation:* extract the genuinely common middle — kernel
+construction, the callback record, the rootfs/overlay wiring — and leave the
+artifact acquisition on each side. Do not force the whole function.
+
+**3. `installProcessWorkerListeners` (98 / 187) and `performDestroy`
+(133 / 143).** Both tear down generations, so both are within reach of the
+existing hooks, and `performDestroy`'s two halves are close. The listener
+installer's 89-line gap is where the browser fabricates the `exit` event its
+`terminate()` never delivers, which is the terminate-fence boundary again and
+may be partly irreducible. *Recommendation:* `performDestroy` with `handleExec`;
+`installProcessWorkerListeners` after, once the fence-derived shape from
+`handleClone` has been exercised.
+
+**And the group nobody has counted: the state declarations.** Sixteen
+byte-identical `const`/`let` declarations the two entries both write —
+`processes`, `vforkLifetimes`, `externrefProcessOwner`, `processTeardowns`,
+`processMemoryCreators`, `forkHostImportOwnerRuntime`, `nextProcessGeneration`
+and the rest. Each is passed straight back to `createProcessLifecycle` through
+the host record, so moving them means constructing them inside the module and
+returning them — which also **shrinks `ProcessLifecycleHost`**, the campaign's
+actual north star, rather than only shrinking line counts. `threadModuleCache`
+and `threadedProcessPids` moved that way in this pass and cost nothing.
+*Recommendation:* do this before group 2. It is the cheapest remaining
+reduction and the only one that narrows the host contract.
+
 ### Two environment findings that change how a baseline should be read
 
 **`KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache.** With it
