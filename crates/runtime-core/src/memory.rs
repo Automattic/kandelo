@@ -2949,13 +2949,15 @@ impl SharedMappingTable {
             let flush_len = flush_end - flush_start;
             let file_offset_base = file_offset + (flush_start - map_addr);
 
-            if kind == Some(BackingKind::File) {
+            if kind == Some(BackingKind::File) && key.is_some() {
                 match key.as_deref().and_then(|k| self.file_backings.get_mut(k)) {
                     Some(backing) => {
                         if !backing.flush_range(file_offset_base, flush_len, io) {
                             success = false;
                         }
                     }
+                    // A file mapping whose backing has vanished cannot publish
+                    // its bytes; report the failure rather than dropping it.
                     None => success = false,
                 }
                 continue;
@@ -3317,7 +3319,7 @@ impl SharedMappingTable {
                 if !writable {
                     continue;
                 }
-                if kind == Some(BackingKind::File) {
+                if kind == Some(BackingKind::File) && key.is_some() {
                     if let Some(backing) = key.as_deref().and_then(|k| self.file_backings.get_mut(k))
                     {
                         backing.flush_range(file_offset, len as u64, io);
