@@ -2392,6 +2392,71 @@ counting this module's surface from that list will over-count it by two, and
 this campaign has repeatedly been wrong about scope by trusting a list instead
 of the symbols. Recorded so the next reader does not.
 
+### B23 — two consumers of one artifact tree disagree on which tier wins
+
+**Measured 2026-09-10, after a `./run.sh setup` that exited 0.**
+
+| artifact | kind | built | has `kernel_thread_parent_tid_target` |
+|---|---|---|---|
+| `local-binaries/source-only-v1/kernel.wasm` | regular file | 13:24 today | **yes** |
+| `local-binaries/kernel.wasm` | symlink into `.kandelo-local-generations` | 06:39, stale | no |
+
+`crates/host-native/src/lib.rs:374` reads `local-binaries/` **only**.
+`host/src/binary-resolver.ts` reads `local-binaries/source-only-v1/` **first**.
+So a successful build wrote a kernel that the Rust host never looks at, and
+`cargo test -p host-native` failed **39 of 53** with `failed to find function
+export kernel_thread_parent_tid_target` on a tree where setup had just
+succeeded.
+
+This is B19 seen from the other side. B19 is the resolver refusing a tier;
+this is a second consumer silently preferring a stale one. Same root: **no
+single authority over which local tier is real.**
+
+**Maintainer's decision (2026-09-10): choose one clear winner tier and retire
+the legacy tier.** Not reconcile the two. Assigned to the agent holding B19,
+with `kernel_wasm_path()` explicitly in scope — after the change there must be
+one tier order used by every consumer, TypeScript and Rust alike.
+
+**Merge-wave validation, unblocked by pointing `local-binaries/kernel.wasm` at
+the fresh artifact by hand:** `cargo test -p host-native` **53 passed, 0
+failed**. So the 39 failures were the tier defect, not the merged work. That
+hand-placement is local provisioning and is recorded here rather than left
+implicit; it is not a fix, and B23 is what fixes it.
+
+### The asyncify byte-scan, third copy
+
+`scripts/install-local-binary.sh` refuses a freshly built kernel:
+
+    ERROR: refusing legacy Asyncify wasm artifact: local-binaries/source-only-v1/kernel.wasm
+
+False positive, known cause. `scripts/wasm-artifact-guards.sh` detects Asyncify
+by scanning the file's bytes for the literal `asyncify_`, and
+`crates/wasm-artifact` is linked into the kernel and puts that literal in its
+data section. **A mention is not a property.**
+
+The same defect was fixed twice already this campaign by checking **export
+names** instead — `tools/xtask/src/build_deps.rs` and `host/src/constants.ts`.
+The shell guard is the third copy and still byte-scans. Assigned alongside B23,
+because it sits on that same install path.
+
+Worth noticing as a pattern: three independent implementations of one check,
+two fixed, one missed, and the miss was invisible until an install was actually
+attempted. The census counted implementations of *authority*; it did not count
+implementations of *guards*.
+
+### B21 — not reproducible here
+
+Reported as "`gzip` and `xz` fail to build, `nginx` and `php` blocked behind
+them". In the coordinator worktree after a setup exiting 0, `gzip.wasm`,
+`xz.wasm`, `nginx.wasm`, `php` and `dash.wasm` are all present, and gzip/xz are
+dated **Sep 9 21:09** — *before* the run that reported them failing.
+
+Most likely the shared build-cache race, which is a recorded trap of this
+campaign, rather than a package defect. **Kept open** rather than closed: "did
+not reproduce in one worktree" is weaker evidence than the failure that was
+observed in another. Anyone picking it up should first confirm an isolated
+`KANDELO_SOURCE_CACHE_ROOT` actually took effect.
+
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
 A6 scoped it and stopped, correctly. Its only production caller runs on the
