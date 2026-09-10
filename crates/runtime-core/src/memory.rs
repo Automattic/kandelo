@@ -2696,4 +2696,837 @@ impl SharedMappingTable {
         }
         success
     }
+
+    // -- SysV shared-memory byte-coherence mirror -------------------------
+
+    /// Track a new SysV attachment. The kernel owns the segment's identity,
+    /// lifetime and bytes; this records what the attachment last observed.
+    pub fn track_sysv_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        seg_id: i32,
+        size: usize,
+        read_only: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let mut snapshot = vec![0u8; size];
+        io.shm_read(seg_id, 0, &mut snapshot)?;
+        io.write_process(pid, map_addr, &snapshot)?;
+        let seen_version = self.sysv_segment_version(seg_id);
+        self.sysv.entry(pid).or_default().insert(
+            map_addr,
+            SysvShmMapping {
+                seg_id,
+                size,
+                read_only,
+                snapshot,
+                seen_version,
+            },
+        );
+        Ok(())
+    }
+
+    /// Whether any *other* attachment observes the same segment. A sole
+    /// observer can defer scanning its private memory every boundary.
+    fn has_peer_sysv_mapping(&self, pid: u32, map_addr: u64, seg_id: i32) -> bool {
+        self.sysv.iter().any(|(other_pid, mappings)| {
+            mappings.iter().any(|(other_addr, mapping)| {
+                mapping.seg_id == seg_id && !(*other_pid == pid && *other_addr == map_addr)
+            })
+        })
+    }
+
+    /// Publish this attachment's changed runs into the kernel-owned segment,
+    /// then import the authoritative result. Returns whether every write
+    /// succeeded; the import happens either way so the process never keeps a
+    /// view that is neither its own nor the segment's.
+    fn merge_and_refresh_sysv_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        let Some(mapping) = self.sysv.get(&pid).and_then(|m| m.get(&map_addr)) else {
+            return true;
+        };
+        let seg_id = mapping.seg_id;
+        let size = mapping.size;
+        let read_only = mapping.read_only;
+        let seen_version = mapping.seen_version;
+        let current_version = self.sysv_segment_version(seg_id);
+
+        let mut current = vec![0u8; size];
+        if io.read_process(pid, map_addr, &mut current).is_err() {
+            return false;
+        }
+        let locally_changed = {
+            let mapping = self.sysv.get(&pid).and_then(|m| m.get(&map_addr)).expect("checked");
+            !read_only && range_differs_from_snapshot(&current, &mapping.snapshot)
+        };
+        if !locally_changed && seen_version == current_version {
+            return true;
+        }
+
+        let mut authoritative = vec![0u8; size];
+        if io.shm_read(seg_id, 0, &mut authoritative).is_err() {
+            return false;
+        }
+
+        let mut published = false;
+        let mut success = true;
+        if locally_changed {
+            let snapshot = self
+                .sysv
+                .get(&pid)
+                .and_then(|m| m.get(&map_addr))
+                .expect("checked")
+                .snapshot
+                .clone();
+            'outer: for offset in (0..size).step_by(FILE_PAGE_SIZE) {
+                let chunk = FILE_PAGE_SIZE.min(size - offset);
+                let src = &current[offset..offset + chunk];
+                let snap = &snapshot[offset..offset + chunk];
+                if !range_differs_from_snapshot(src, snap) {
+                    continue;
+                }
+                for (start, end) in changed_runs(src, snap) {
+                    let bytes = &src[start..end];
+                    if io
+                        .shm_write(seg_id, (offset + start) as u64, bytes)
+                        .is_err()
+                    {
+                        success = false;
+                        break 'outer;
+                    }
+                    authoritative[offset + start..offset + end].copy_from_slice(bytes);
+                    published = true;
+                }
+            }
+        }
+
+        if published {
+            self.sysv_versions.insert(seg_id, current_version + 1);
+        }
+        if io.write_process(pid, map_addr, &authoritative).is_err() {
+            return false;
+        }
+        let new_version = self.sysv_segment_version(seg_id);
+        if let Some(mapping) = self.sysv.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
+            mapping.snapshot = authoritative;
+            mapping.seen_version = new_version;
+        }
+        success
+    }
+
+    /// Reconcile every SysV attachment of one process.
+    pub fn sync_sysv_from_process(
+        &mut self,
+        pid: u32,
+        force: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        let Some(pid_map) = self.sysv.get(&pid) else {
+            return true;
+        };
+        let targets: Vec<(u64, i32)> = pid_map.iter().map(|(a, m)| (*a, m.seg_id)).collect();
+        let mut success = true;
+        for (map_addr, seg_id) in targets {
+            if !force && !self.has_peer_sysv_mapping(pid, map_addr, seg_id) {
+                continue;
+            }
+            if !self.merge_and_refresh_sysv_mapping(pid, map_addr, io) {
+                success = false;
+            }
+        }
+        success
+    }
+
+    /// Publish every current attachment of a segment before a new observer
+    /// joins it, so the newcomer starts from the latest shared state.
+    pub fn sync_sysv_segment_from_attached(&mut self, seg_id: i32, io: &mut dyn SharedMappingIo) {
+        let targets: Vec<(u32, u64)> = self
+            .sysv
+            .iter()
+            .flat_map(|(pid, mappings)| {
+                mappings
+                    .iter()
+                    .filter(|(_, m)| m.seg_id == seg_id)
+                    .map(move |(addr, _)| (*pid, *addr))
+            })
+            .collect();
+        for (pid, map_addr) in targets {
+            self.merge_and_refresh_sysv_mapping(pid, map_addr, io);
+        }
+    }
+
+    /// Drop every SysV attachment of a process, optionally publishing first.
+    pub fn release_all_sysv_for_process(
+        &mut self,
+        pid: u32,
+        publish: bool,
+        io: &mut dyn SharedMappingIo,
+    ) {
+        if publish {
+            self.sync_sysv_from_process(pid, true, io);
+        }
+        self.sysv.remove(&pid);
+    }
+
+    // -- boundary synchronization ----------------------------------------
+
+    /// Run the full publish/refresh protocol for one process at a syscall
+    /// boundary. Cheap when the process owns no shared state.
+    pub fn synchronize_for_boundary(
+        &mut self,
+        pid: u32,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        self.sync_anonymous_from_process(pid, false, io)?;
+        self.sync_file_from_process(pid, false, io)?;
+        self.sync_sysv_from_process(pid, false, io);
+        Ok(())
+    }
+
+    // -- explicit publication points (msync / munmap / MAP_FIXED) ---------
+
+    /// Flush every mapping overlapping `[sync_addr, sync_addr + sync_len)`.
+    ///
+    /// `msync`, `munmap` and a `MAP_FIXED` replacement are explicit
+    /// publication points for anonymous mappings too, including the
+    /// single-observer-before-fork case, so both syncs run forced first.
+    pub fn flush_mappings(
+        &mut self,
+        pid: u32,
+        sync_addr: u64,
+        sync_len: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        if self.sync_anonymous_from_process(pid, true, io).is_err() {
+            return false;
+        }
+        if self.sync_file_from_process(pid, true, io).is_err() {
+            return false;
+        }
+        let Some(pid_map) = self.mappings.get(&pid) else {
+            return true;
+        };
+        if pid_map.is_empty() {
+            return true;
+        }
+        let sync_end = sync_addr.saturating_add(sync_len);
+        let targets: Vec<(u64, usize, u64, Option<BackingKind>, Option<String>, bool, bool, i32)> =
+            pid_map
+                .iter()
+                .map(|(addr, m)| {
+                    (
+                        *addr,
+                        m.len,
+                        m.file_offset,
+                        m.backing_kind,
+                        m.backing_key.clone(),
+                        m.writable,
+                        m.fd_writeback,
+                        m.fd,
+                    )
+                })
+                .collect();
+
+        let mut success = true;
+        for (map_addr, len, file_offset, kind, key, writable, fd_writeback, fd) in targets {
+            let map_end = map_addr.saturating_add(len as u64);
+            if map_addr >= sync_end || map_end <= sync_addr {
+                continue;
+            }
+            let flush_start = sync_addr.max(map_addr);
+            let flush_end = sync_end.min(map_end);
+            if flush_end <= flush_start {
+                continue;
+            }
+            let flush_len = flush_end - flush_start;
+            let file_offset_base = file_offset + (flush_start - map_addr);
+
+            if kind == Some(BackingKind::File) {
+                match key.as_deref().and_then(|k| self.file_backings.get_mut(k)) {
+                    Some(backing) => {
+                        if !backing.flush_range(file_offset_base, flush_len, io) {
+                            success = false;
+                        }
+                    }
+                    None => success = false,
+                }
+                continue;
+            }
+            // Anonymous mappings publish through the forced sync above; their
+            // authoritative store needs no separate flush.
+            if !writable || key.is_some() {
+                continue;
+            }
+            if fd_writeback {
+                if !self.flush_fd_writeback_mapping(pid, map_addr, flush_start, flush_len, io) {
+                    success = false;
+                }
+                continue;
+            }
+            // Pre-page-cache tracking: write straight through the guest fd.
+            let mut bytes = vec![0u8; flush_len as usize];
+            if io.read_process(pid, flush_start, &mut bytes).is_err() {
+                success = false;
+                continue;
+            }
+            let mut written = 0usize;
+            while written < bytes.len() {
+                match io.fd_pwrite(
+                    pid,
+                    fd,
+                    file_offset_base + written as u64,
+                    &bytes[written..],
+                ) {
+                    Ok(count) if count > 0 && count <= bytes.len() - written => written += count,
+                    _ => {
+                        success = false;
+                        break;
+                    }
+                }
+            }
+        }
+        success
+    }
+
+    // -- address-space lifecycle ------------------------------------------
+
+    fn release_mapping(&mut self, mapping: &SharedMapping, io: &mut dyn SharedMappingIo) {
+        match (mapping.backing_kind, mapping.backing_key.as_deref()) {
+            (Some(BackingKind::File), Some(key)) => {
+                self.release_file_backing_reference(key, io);
+            }
+            (Some(BackingKind::Anonymous), Some(key)) => {
+                self.release_anonymous_reference(key);
+            }
+            _ => {}
+        }
+    }
+
+    /// Drop or trim every mapping overlapping an unmapped interval, splitting a
+    /// mapping whose middle is removed.
+    ///
+    /// A middle split produces a second sub-mapping that shares the original's
+    /// backing reference and writeback dup, so both are refcounted up: the dup
+    /// is closed only after both halves are released.
+    pub fn cleanup_mappings(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        len: u64,
+        io: &mut dyn SharedMappingIo,
+    ) {
+        let Some(pid_map) = self.mappings.get(&pid) else {
+            return;
+        };
+        let unmap_end = addr.saturating_add(len);
+        let entries: Vec<u64> = pid_map.keys().copied().collect();
+
+        for map_addr in entries {
+            let Some(mapping) = self.mappings.get(&pid).and_then(|m| m.get(&map_addr)) else {
+                continue;
+            };
+            let map_end = map_addr.saturating_add(mapping.len as u64);
+            let overlap_start = addr.max(map_addr);
+            let overlap_end = unmap_end.min(map_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            // Whole mapping removed.
+            if overlap_start <= map_addr && overlap_end >= map_end {
+                let mapping = self
+                    .mappings
+                    .get_mut(&pid)
+                    .and_then(|m| m.remove(&map_addr))
+                    .expect("checked above");
+                self.release_mapping(&mapping, io);
+                self.release_writeback_fd(pid, &mapping, io);
+                continue;
+            }
+
+            // Head removed: the tail slides up.
+            if overlap_start <= map_addr {
+                let trim = (overlap_end - map_addr) as usize;
+                let mut mapping = self
+                    .mappings
+                    .get_mut(&pid)
+                    .and_then(|m| m.remove(&map_addr))
+                    .expect("checked above");
+                mapping.file_offset += trim as u64;
+                mapping.len = (map_end - overlap_end) as usize;
+                if let Some(snapshot) = mapping.snapshot.as_mut() {
+                    let trim = trim.min(snapshot.len());
+                    snapshot.drain(..trim);
+                }
+                if mapping.len > 0 {
+                    self.mappings.entry(pid).or_default().insert(overlap_end, mapping);
+                } else {
+                    self.release_mapping(&mapping, io);
+                    self.release_writeback_fd(pid, &mapping, io);
+                }
+                continue;
+            }
+
+            // Tail removed: the head shrinks in place.
+            if overlap_end >= map_end {
+                let mapping = self
+                    .mappings
+                    .get_mut(&pid)
+                    .and_then(|m| m.get_mut(&map_addr))
+                    .expect("checked above");
+                mapping.len = (overlap_start - map_addr) as usize;
+                if let Some(snapshot) = mapping.snapshot.as_mut() {
+                    snapshot.truncate(mapping.len);
+                }
+                continue;
+            }
+
+            // Middle removed: split into two sub-mappings.
+            let left_len = (overlap_start - map_addr) as usize;
+            let right_skip = (overlap_end - map_addr) as usize;
+            let mut right = {
+                let mapping = self
+                    .mappings
+                    .get_mut(&pid)
+                    .and_then(|m| m.get_mut(&map_addr))
+                    .expect("checked above");
+                let mut right = mapping.clone();
+                right.file_offset = mapping.file_offset + right_skip as u64;
+                right.len = (map_end - overlap_end) as usize;
+                if let Some(snapshot) = right.snapshot.as_mut() {
+                    let skip = right_skip.min(snapshot.len());
+                    snapshot.drain(..skip);
+                }
+                mapping.len = left_len;
+                if let Some(snapshot) = mapping.snapshot.as_mut() {
+                    snapshot.truncate(left_len);
+                }
+                right
+            };
+            match (right.backing_kind, right.backing_key.as_deref()) {
+                (Some(BackingKind::File), Some(key)) => {
+                    if let Some(backing) = self.file_backings.get_mut(key) {
+                        backing.ref_count += 1;
+                    }
+                }
+                (Some(BackingKind::Anonymous), Some(key)) => {
+                    if let Some(backing) = self.anon_backings.get_mut(key) {
+                        backing.ref_count += 1;
+                    }
+                }
+                _ => {}
+            }
+            self.retain_writeback_fd(pid, &right);
+            self.mappings.entry(pid).or_default().insert(overlap_end, right);
+        }
+
+        if self.mappings.get(&pid).is_some_and(|m| m.is_empty()) {
+            self.mappings.remove(&pid);
+        }
+    }
+
+    /// Move (and possibly grow) a mapping for `mremap`, re-seeding the moved
+    /// interval from the authoritative store so the new address observes the
+    /// same shared object rather than stale copied bytes.
+    pub fn remap_mapping(
+        &mut self,
+        pid: u32,
+        old_addr: u64,
+        new_addr: u64,
+        new_len: usize,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mut mapping) = self.mappings.get_mut(&pid).and_then(|m| m.remove(&old_addr))
+        else {
+            return Ok(());
+        };
+        if mapping.backing_key.is_some() && mapping.snapshot.is_some() {
+            let key = mapping.backing_key.clone().expect("checked");
+            match mapping.backing_kind {
+                Some(BackingKind::File) => {
+                    if let Some(backing) = self.file_backings.get_mut(&key) {
+                        backing.ensure_range_loaded(mapping.file_offset, new_len, io)?;
+                        let latest = backing.read_range(mapping.file_offset, new_len, io)?;
+                        let version = backing.version;
+                        io.write_process(pid, new_addr, &latest)?;
+                        mapping.snapshot = Some(latest);
+                        mapping.seen_version = version;
+                    }
+                }
+                Some(BackingKind::Anonymous) => {
+                    if let Some(backing) = self.anon_backings.get_mut(&key) {
+                        let required = mapping.file_offset as usize + new_len;
+                        if required > backing.bytes.len() {
+                            let old_len = backing.bytes.len();
+                            backing.bytes.resize(required, 0);
+                            // A grow-in-place mremap exposes bytes the guest may
+                            // already have written; seed them from the process
+                            // rather than publishing zeros over them.
+                            if new_len > mapping.len {
+                                let extra = new_len - mapping.len;
+                                let mut tail = vec![0u8; extra];
+                                if io
+                                    .read_process(pid, new_addr + mapping.len as u64, &mut tail)
+                                    .is_ok()
+                                {
+                                    let base = mapping.file_offset as usize + mapping.len;
+                                    let end = (base + extra).min(backing.bytes.len());
+                                    if base < end {
+                                        backing.bytes[base..end]
+                                            .copy_from_slice(&tail[..end - base]);
+                                    }
+                                }
+                            }
+                            let _ = old_len;
+                            backing.version += 1;
+                        }
+                        let base = mapping.file_offset as usize;
+                        let latest = backing.bytes[base..base + new_len].to_vec();
+                        let version = backing.version;
+                        io.write_process(pid, new_addr, &latest)?;
+                        mapping.snapshot = Some(latest);
+                        mapping.seen_version = version;
+                    }
+                }
+                None => {}
+            }
+        } else if let Some(snapshot) = mapping.snapshot.as_mut() {
+            snapshot.truncate(new_len);
+        }
+        mapping.len = new_len;
+        self.mappings.entry(pid).or_default().insert(new_addr, mapping);
+        Ok(())
+    }
+
+    /// Validate a `PROT_WRITE` upgrade before the kernel reports `mprotect`
+    /// success. A read-only file mapping may be upgraded only when the original
+    /// description was a writable regular-file description; mmap preflight
+    /// retains that `O_RDWR` handle even for an initially read-only mapping, so
+    /// this never has to recover capability by reopening a pathname.
+    pub fn prepare_file_mappings_for_write(
+        &self,
+        pid: u32,
+        addr: u64,
+        len: u64,
+    ) -> Result<(), Errno> {
+        if len == 0 {
+            return Ok(());
+        }
+        let Some(pid_map) = self.mappings.get(&pid) else {
+            return Ok(());
+        };
+        let protect_end = addr.saturating_add(len);
+        for (map_addr, mapping) in pid_map.iter() {
+            if mapping.backing_kind != Some(BackingKind::File) {
+                continue;
+            }
+            let map_end = map_addr.saturating_add(mapping.len as u64);
+            if map_end <= addr || *map_addr >= protect_end {
+                continue;
+            }
+            if !mapping.write_allowed {
+                return Err(Errno::EACCES);
+            }
+            let Some(key) = mapping.backing_key.as_deref() else {
+                return Err(Errno::EIO);
+            };
+            let Some(backing) = self.file_backings.get(key) else {
+                return Err(Errno::EIO);
+            };
+            if !backing.writable {
+                return Err(Errno::EIO);
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep writeback eligibility aligned with a successful `mprotect` range.
+    ///
+    /// Eligibility is monotonic: bytes dirtied while writable still need
+    /// flushing after a later read-only downgrade, so only upgrades are
+    /// recorded, at mapping granularity so `mremap` still moves one coherent
+    /// interval.
+    pub fn update_mapping_protection(&mut self, pid: u32, addr: u64, len: u64, writable: bool) {
+        if len == 0 || !writable {
+            return;
+        }
+        let Some(pid_map) = self.mappings.get_mut(&pid) else {
+            return;
+        };
+        let protect_end = addr.saturating_add(len);
+        for (map_addr, mapping) in pid_map.iter_mut() {
+            let map_end = map_addr.saturating_add(mapping.len as u64);
+            if map_end <= addr || *map_addr >= protect_end {
+                continue;
+            }
+            mapping.writable = true;
+        }
+    }
+
+    /// Publish and drop every shared mapping of a process that is going away.
+    ///
+    /// Teardown continues even when one backing is no longer readable or
+    /// writable: a file backing retains its dirty pages on a failed final
+    /// writeback, and anonymous/SysV cleanup must not be skipped because of
+    /// that failure.
+    pub fn release_all_for_process(
+        &mut self,
+        pid: u32,
+        publish: bool,
+        io: &mut dyn SharedMappingIo,
+    ) {
+        if self.releasing_pids.contains(&pid) {
+            return;
+        }
+        self.releasing_pids.insert(pid);
+
+        if publish && io.process_memory_len(pid).is_some() {
+            let _ = self.sync_anonymous_from_process(pid, true, io);
+            let _ = self.sync_file_from_process(pid, true, io);
+            self.sync_sysv_from_process(pid, true, io);
+
+            let targets: Vec<(u64, usize, u64, Option<BackingKind>, Option<String>, bool, bool, i32)> =
+                self.mappings
+                    .get(&pid)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(addr, mapping)| {
+                                (
+                                    *addr,
+                                    mapping.len,
+                                    mapping.file_offset,
+                                    mapping.backing_kind,
+                                    mapping.backing_key.clone(),
+                                    mapping.writable,
+                                    mapping.fd_writeback,
+                                    mapping.fd,
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            for (addr, len, file_offset, kind, key, writable, fd_writeback, fd) in targets {
+                if !writable {
+                    continue;
+                }
+                if kind == Some(BackingKind::File) {
+                    if let Some(backing) = key.as_deref().and_then(|k| self.file_backings.get_mut(k))
+                    {
+                        backing.flush_range(file_offset, len as u64, io);
+                    }
+                    continue;
+                }
+                if key.is_some() {
+                    continue;
+                }
+                if fd_writeback {
+                    self.flush_fd_writeback_mapping(pid, addr, addr, len as u64, io);
+                    continue;
+                }
+                let mut bytes = vec![0u8; len];
+                if io.read_process(pid, addr, &mut bytes).is_err() {
+                    continue;
+                }
+                let mut written = 0usize;
+                while written < bytes.len() {
+                    match io.fd_pwrite(pid, fd, file_offset + written as u64, &bytes[written..]) {
+                        Ok(count) if count > 0 && count <= bytes.len() - written => written += count,
+                        _ => break,
+                    }
+                }
+            }
+        }
+
+        if let Some(mappings) = self.mappings.remove(&pid) {
+            for mapping in mappings.values() {
+                self.release_mapping(mapping, io);
+            }
+        }
+        // The kernel destroys the whole fd table on teardown, so the writeback
+        // dups vanish with it; drop their bookkeeping without issuing closes.
+        self.writeback_refs.remove(&pid);
+        self.release_all_sysv_for_process(pid, false, io);
+
+        self.releasing_pids.remove(&pid);
+    }
+
+    // -- fork inheritance -------------------------------------------------
+
+    /// Give a freshly forked child its parent's shared mappings.
+    ///
+    /// Everything that can fail is staged first: every authoritative range is
+    /// read, and every address and length revalidated against the child's real
+    /// memory size, before any child state is published. If the commit phase
+    /// still fails, the child's memory and every backing refcount are rolled
+    /// back, so a child never starts with a partially inherited address space.
+    pub fn inherit_process_mappings(
+        &mut self,
+        parent_pid: u32,
+        child_pid: u32,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if parent_pid == child_pid {
+            return Err(Errno::EINVAL);
+        }
+        if self.mappings.contains_key(&child_pid) || self.sysv.contains_key(&child_pid) {
+            return Err(Errno::EEXIST);
+        }
+        let child_bytes = io.process_memory_len(child_pid).ok_or(Errno::ESRCH)?;
+
+        // --- stage -------------------------------------------------------
+        let parent_entries: Vec<(u64, SharedMapping)> = self
+            .mappings
+            .get(&parent_pid)
+            .map(|m| m.iter().map(|(a, v)| (*a, v.clone())).collect())
+            .unwrap_or_default();
+
+        // (map_addr, inherited mapping, backing version)
+        let mut staged: Vec<(u64, SharedMapping, Vec<u8>)> = Vec::new();
+        let mut staged_fd_writeback: Vec<(u64, SharedMapping)> = Vec::new();
+        for (map_addr, mapping) in parent_entries {
+            if map_addr.saturating_add(mapping.len as u64) > child_bytes {
+                return Err(Errno::EINVAL);
+            }
+            // A bare fd-writeback mapping carries no backing: the child's
+            // memory is already a full fork copy and its fd table inherits the
+            // same stable writeback descriptor, so it needs only a registered
+            // child entry to flush its own later writes.
+            if mapping.backing_key.is_none() {
+                if mapping.fd_writeback {
+                    staged_fd_writeback.push((map_addr, mapping));
+                }
+                continue;
+            }
+            let key = mapping.backing_key.clone().expect("checked above");
+            let (latest, version) = match mapping.backing_kind {
+                Some(BackingKind::File) => {
+                    let Some(backing) = self.file_backings.get_mut(&key) else {
+                        return Err(Errno::EINVAL);
+                    };
+                    let version = backing.version;
+                    (backing.read_range(mapping.file_offset, mapping.len, io)?, version)
+                }
+                _ => {
+                    let Some(backing) = self.anon_backings.get(&key) else {
+                        return Err(Errno::EINVAL);
+                    };
+                    let base = mapping.file_offset as usize;
+                    if base.saturating_add(mapping.len) > backing.bytes.len() {
+                        return Err(Errno::EINVAL);
+                    }
+                    (backing.bytes[base..base + mapping.len].to_vec(), backing.version)
+                }
+            };
+            let mut inherited = mapping.clone();
+            inherited.seen_version = version;
+            staged.push((map_addr, inherited, latest));
+        }
+
+        let parent_sysv: Vec<(u64, SysvShmMapping)> = self
+            .sysv
+            .get(&parent_pid)
+            .map(|m| m.iter().map(|(a, v)| (*a, v.clone())).collect())
+            .unwrap_or_default();
+        let mut staged_sysv: Vec<(u64, SysvShmMapping, Vec<u8>)> = Vec::new();
+        for (map_addr, mapping) in parent_sysv {
+            if mapping.size == 0
+                || mapping.seg_id < 0
+                || map_addr.saturating_add(mapping.size as u64) > child_bytes
+            {
+                return Err(Errno::EINVAL);
+            }
+            let mut latest = vec![0u8; mapping.size];
+            io.shm_read(mapping.seg_id, 0, &mut latest)?;
+            let mut inherited = mapping.clone();
+            inherited.seen_version = self.sysv_segment_version(mapping.seg_id);
+            staged_sysv.push((map_addr, inherited, latest));
+        }
+
+        // Snapshot the child bytes each publication overwrites, so a failed
+        // commit can put the child's address space back as it was.
+        let mut originals: Vec<(u64, Vec<u8>)> = Vec::new();
+        for (map_addr, mapping, _) in &staged {
+            let mut bytes = vec![0u8; mapping.len];
+            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            originals.push((*map_addr, bytes));
+        }
+        for (map_addr, mapping, _) in &staged_sysv {
+            let mut bytes = vec![0u8; mapping.size];
+            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            originals.push((*map_addr, bytes));
+        }
+        // An fd-writeback child mapping's snapshot is the fork-time content, so
+        // the child's later writes flush as dirty runs through its inherited
+        // descriptor.
+        for (map_addr, mapping) in staged_fd_writeback.iter_mut() {
+            let mut bytes = vec![0u8; mapping.len];
+            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            mapping.snapshot = Some(bytes);
+        }
+
+        // --- commit ------------------------------------------------------
+        let mut published: Vec<(u64, usize)> = Vec::new();
+        let mut failure: Option<Errno> = None;
+        for (map_addr, _, latest) in &staged {
+            if let Err(err) = io.write_process(child_pid, *map_addr, latest) {
+                failure = Some(err);
+                break;
+            }
+            published.push((*map_addr, latest.len()));
+        }
+        if failure.is_none() {
+            for (map_addr, _, latest) in &staged_sysv {
+                if let Err(err) = io.write_process(child_pid, *map_addr, latest) {
+                    failure = Some(err);
+                    break;
+                }
+                published.push((*map_addr, latest.len()));
+            }
+        }
+        if let Some(err) = failure {
+            let _ = published;
+            for (map_addr, bytes) in originals {
+                let _ = io.write_process(child_pid, map_addr, &bytes);
+            }
+            return Err(err);
+        }
+
+        for (map_addr, mut mapping, latest) in staged {
+            match (mapping.backing_kind, mapping.backing_key.as_deref()) {
+                (Some(BackingKind::File), Some(key)) => {
+                    if let Some(backing) = self.file_backings.get_mut(key) {
+                        backing.ref_count += 1;
+                    }
+                }
+                (Some(BackingKind::Anonymous), Some(key)) => {
+                    if let Some(backing) = self.anon_backings.get_mut(key) {
+                        backing.ref_count += 1;
+                    }
+                }
+                _ => {}
+            }
+            mapping.snapshot = Some(latest);
+            self.mappings.entry(child_pid).or_default().insert(map_addr, mapping);
+        }
+        for (map_addr, mapping) in staged_fd_writeback {
+            // The child's inherited writeback descriptors are independent fd
+            // table entries; count them under the child pid so they are closed
+            // on the child's own munmap and dropped on child teardown.
+            self.retain_writeback_fd(child_pid, &mapping);
+            self.mappings.entry(child_pid).or_default().insert(map_addr, mapping);
+        }
+        for (map_addr, mut mapping, latest) in staged_sysv {
+            mapping.snapshot = latest;
+            self.sysv.entry(child_pid).or_default().insert(map_addr, mapping);
+        }
+        Ok(())
+    }
 }
