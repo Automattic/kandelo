@@ -46,7 +46,6 @@ disabled_software_vitest_excludes=(
     "--exclude=../**/*tap*"
     "--exclude=test/abi-staging-mini-vfs.test.ts"
     "--exclude=test/abi-staging-product-builders.test.ts"
-    "--exclude=test/privileged-projection.test.ts"
     "--exclude=test/shell-vfs-build.test.ts"
     "--exclude=test/vfs-product-builder-contract.test.ts"
 )
