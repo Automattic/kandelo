@@ -206,8 +206,15 @@ async function decodeContentEncodingBody(
     ? "deflate"
     : null;
   if (format === null) return null;
+  // `Response` takes a `BodyInit`, which excludes a `SharedArrayBuffer`-backed
+  // view — and this body came out of guest process memory, which is exactly
+  // that. Every engine this platform targets throws rather than reading one,
+  // so copy at the boundary and only when the copy is actually needed.
+  const bodyBytes: Uint8Array<ArrayBuffer> = body.buffer instanceof ArrayBuffer
+    ? body as Uint8Array<ArrayBuffer>
+    : new Uint8Array(body) as Uint8Array<ArrayBuffer>;
   const decoded = new Response(
-    new Response(body).body!.pipeThrough(new DecompressionStream(format)),
+    new Response(bodyBytes).body!.pipeThrough(new DecompressionStream(format)),
   );
   return new Uint8Array(await decoded.arrayBuffer()) as Uint8Array<ArrayBuffer>;
 }
