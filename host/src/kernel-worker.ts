@@ -2573,13 +2573,13 @@ export class CentralizedKernelWorker {
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
   /**
-   * Rootfs overlay boot state (Phase 5 Increment 2). The worker entry (which
-   * holds the `/` image `MemoryFileSystem`) builds the manifest + byte provider
-   * and hands them here before `init()`; `#maybeLoadKernelRootfs` applies them
-   * once the kernel instance exists. Null until configured / when the rootfs
-   * gate is off.
+   * Rootfs base-file byte provider. The worker entry (which holds the
+   * `MemoryFileSystem` restored from the `/` image) hands this in via
+   * {@link configureRootfsOverlay} before `init()`; `#maybeLoadKernelRootfs`
+   * installs it once the kernel instance exists. It resolves a `blob_id` — the
+   * file's inode number, which the kernel takes from the image — to bytes. Null
+   * until configured.
    */
-  #rootfsManifest: Uint8Array | null = null;
   #rootfsBlobProvider:
     | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
     | null = null;
@@ -2612,42 +2612,21 @@ export class CentralizedKernelWorker {
    */
   #rootfsNosuid = false;
   /**
-   * Raw bytes of the `/` VFS image, and a positioned window onto them.
+   * Raw bytes of the `/` VFS image, and the source of the whole `/` tree.
    *
-   * When present, `#maybeLoadKernelRootfs` asks the kernel to parse the image
-   * itself (`kernel_rootfs_load_image`) rather than loading the manifest this
-   * host walked the image to produce. The host then resolves no names: the
-   * kernel mounts the image's own filesystem, walks it, and reads the image's
-   * own kernel-lazy section.
+   * `#maybeLoadKernelRootfs` installs a positioned window onto these bytes and
+   * asks the kernel to parse the image itself (`kernel_rootfs_load_image`). The
+   * host resolves no names: the kernel mounts the image's own filesystem, walks
+   * it, and reads the image's own kernel-lazy (`KLZY`) section. What the host
+   * still supplies is bytes — a base file's contents through
+   * `#rootfsBlobProvider`, a lazy archive's through `#rootfsArchiveProvider`.
    *
-   * Null when the entry supplied no image, which is the dormant path: the boot
-   * manifest stays authoritative and nothing about the boot changes.
+   * An image built before the `KLZY` section is refused by the kernel, which
+   * cannot tell "no lazy files" from "lazy files recorded only in the host-side
+   * JSON I cannot read". That failure is loud and the fix is to rebuild the
+   * image; there is no host-walked fallback to absorb it.
    *
-   * NEITHER worker entry passes an image yet, and that is deliberate rather
-   * than unfinished. `MemoryFileSystem.fromImage` copies the image into a fresh
-   * buffer and the host then mutates that COPY in ways the on-disk image does
-   * not carry. Handing the kernel the raw image before those mutations move
-   * would silently drop them: a tree that looks right and is not.
-   *
-   * Two of the three are now dealt with. `normalizeLegacyRootfs` is gone — it
-   * patched a `nobody` line into `/etc/group` for already-published demo
-   * images, every builder emits that line, and re-implementing a demo-image
-   * patch inside the kernel is the package-specific platform behaviour the
-   * values contract forbids. `ensureMountParentDirectories` has moved into the
-   * kernel: `rootfs::set_foreign_prefixes` now synthesises the directories
-   * leading to each registered foreign mount point, so the prefixes this class
-   * already hands over carry the reachability with them, on every host.
-   *
-   * What remains is the browser's runtime MITM CA-certificate write. It is
-   * genuine per-session data that can never be in an image, so it must become a
-   * `rootfsWriteFile` after `init` — a real browser boot-ordering change. It
-   * also creates `/etc`, `/etc/ssl` and `/etc/ssl/certs` first, and there is no
-   * host-facing mkdir on the kernel-owned rootfs: `rootfs::mkdir_parents`
-   * exists and is tested, but has no `kernel_rootfs_*` export yet. Until it
-   * does, the cert write cannot move and the flip cannot land.
-   *
-   * The shipped images also predate the kernel-lazy section the kernel
-   * requires, so they need rebuilding first.
+   * Null when the entry supplied no image, which is the no-`/` boot.
    */
   #rootfsImage: Uint8Array | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
@@ -4942,45 +4921,47 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Hand the rootfs overlay its boot manifest and byte provider (Phase 5
-   * Increment 2). Called by the worker entry — which holds the `/` image
-   * `MemoryFileSystem` — before {@link init}. `#maybeLoadKernelRootfs` applies
-   * them once the kernel instance exists. A no-op path when the rootfs gate is
-   * off (the entry simply never calls this).
+   * Hand the rootfs overlay the `/` image and its byte provider. Called by the
+   * worker entry — which holds the image and the `MemoryFileSystem` restored
+   * from it — before {@link init}. `#maybeLoadKernelRootfs` applies them once
+   * the kernel instance exists. A no-op path when there is no `/` image (the
+   * entry simply never calls this).
+   *
+   * The kernel parses `image` itself. The host supplies bytes, not a tree.
    */
   configureRootfsOverlay(
-    manifest: Uint8Array,
     blobProvider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
-    archiveProvider?: (
+    archiveProvider: ((
       archiveId: number,
       offset: bigint,
       dest: Uint8Array,
-    ) => number,
-    foreignMountPrefixes?: string[],
-    rootNosuid?: boolean,
-    /** See `#rootfsImage`: no entry passes this yet, and why. */
-    image?: Uint8Array,
+    ) => number) | undefined,
+    foreignMountPrefixes: string[] | undefined,
+    rootNosuid: boolean | undefined,
+    image: Uint8Array,
   ): void {
-    this.#rootfsManifest = manifest;
     this.#rootfsBlobProvider = blobProvider;
     this.#rootfsArchiveProvider = archiveProvider ?? null;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
-    this.#rootfsImage = image ?? null;
+    this.#rootfsImage = image;
   }
 
   /**
-   * If a rootfs overlay manifest was configured, hand the tree to the kernel and
+   * If a rootfs overlay image was configured, have the kernel parse it and
    * install the byte provider before any guest filesystem op runs: publish the
-   * wall clock (so base entries are not epoch-stamped), copy the manifest into
-   * kernel memory and load it, wire the provider, then enable rootfs authority.
-   * Any failure leaves rootfs disabled (the host keeps serving `/`), which is the
-   * safe fallback.
+   * wall clock (so base entries are not epoch-stamped), install the image byte
+   * window, ask the kernel to load the image, wire the provider, then enable
+   * rootfs authority.
+   *
+   * There is no host-walked fallback. The host no longer builds a tree, so a
+   * failure here has no second opinion to fall back to and must not silently
+   * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
-    const manifest = this.#rootfsManifest;
+    const image = this.#rootfsImage;
     const provider = this.#rootfsBlobProvider;
-    if (manifest === null || provider === null) return;
+    if (image === null || provider === null) return;
     const memory = this.#kernelMemory;
     if (memory === null) return;
 
@@ -4990,25 +4971,22 @@ export class CentralizedKernelWorker {
     const alloc = instance.exports.kernel_alloc_scratch as
       | ((size: number) => KernelPointer)
       | undefined;
-    const load = instance.exports.kernel_rootfs_load_manifest as
-      | ((ptr: KernelPointer, len: number) => number)
-      | undefined;
     const enable = instance.exports.kernel_set_rootfs_enabled as
       | ((enabled: number) => number)
+      | undefined;
+    const loadImage = instance.exports.kernel_rootfs_load_image as
+      | ((lenLo: number, lenHi: number) => number)
       | undefined;
     if (
       typeof setNow !== "function" ||
       typeof alloc !== "function" ||
-      typeof load !== "function" ||
-      typeof enable !== "function"
+      typeof enable !== "function" ||
+      typeof loadImage !== "function"
     ) {
-      // Kernel predates the rootfs overlay exports; keep host-served `/`.
-      return;
+      throw new Error(
+        "kernel wasm is missing the rootfs overlay exports required to own `/`",
+      );
     }
-
-    const loadImage = instance.exports.kernel_rootfs_load_image as
-      | ((lenLo: number, lenHi: number) => number)
-      | undefined;
 
     const nowMs = Date.now();
     const nowSec = Math.floor(nowMs / 1000);
@@ -5020,49 +4998,29 @@ export class CentralizedKernelWorker {
     const rootfsNowNsec = (nowMs % 1000) * 1_000_000;
     setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec);
 
-    // Prefer the kernel parsing the image itself. The image source is installed
-    // FIRST, because `kernel_rootfs_load_image` calls straight back out through
-    // it; with no source installed the kernel gets ENOSYS and we fall back.
-    //
-    // The fallback is deliberately narrow. `-ENOSYS` means this host did not
-    // supply an image and `-EINVAL` means the image predates the kernel-lazy
-    // section — both are "the kernel was never given what it needs", and the
-    // host-walked manifest is the correct answer for them. Any OTHER error is a
-    // real image or transport defect, and silently walking the image host-side
-    // instead would hide exactly the defect the platform should surface, so it
-    // leaves `/` host-served rather than papering over it.
-    let loaded = -38; // ENOSYS
-    const image = this.#rootfsImage;
-    if (typeof loadImage === "function" && image !== null) {
-      this.#kernel.setRootfsImageProvider((offset, dest) => {
-        const start = Number(offset);
-        if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
-        if (start >= image.byteLength) return 0; // end of image
-        const n = Math.min(dest.byteLength, image.byteLength - start);
-        dest.set(image.subarray(start, start + n));
-        return n;
-      });
-      const imageLenLo = image.byteLength >>> 0;
-      const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
-      loaded = loadImage(imageLenLo, imageLenHi);
-      if (loaded < 0 && loaded !== -38 && loaded !== -22) {
-        return;
-      }
-    }
-
+    // The image byte window is installed FIRST, because
+    // `kernel_rootfs_load_image` calls straight back out through it.
+    this.#kernel.setRootfsImageProvider((offset, dest) => {
+      const start = Number(offset);
+      if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
+      if (start >= image.byteLength) return 0; // end of image
+      const n = Math.min(dest.byteLength, image.byteLength - start);
+      dest.set(image.subarray(start, start + n));
+      return n;
+    });
+    const imageLenLo = image.byteLength >>> 0;
+    const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
+    const loaded = loadImage(imageLenLo, imageLenHi);
     if (loaded < 0) {
-      const ptr = alloc(manifest.byteLength);
-      const ptrValue = Number(ptr);
-      if (ptrValue === 0) {
-        // Allocation failed; do not enable a rootfs with no tree.
-        return;
-      }
-      new Uint8Array(memory.buffer, ptrValue, manifest.byteLength).set(manifest);
-      loaded = load(ptr, manifest.byteLength);
-      if (loaded < 0) {
-        // Malformed manifest; leave `/` host-served rather than a partial tree.
-        return;
-      }
+      // `-EINVAL` here is most often an image that predates the kernel-lazy
+      // (`KLZY`) section, which the kernel refuses rather than reading
+      // best-effort into a tree where every deferred file reports size 0. Say
+      // so, because "rebuild the image" is the fix and a bare errno is not a
+      // hint. Every other code is a real image or transport defect.
+      throw new Error(
+        `kernel refused the \`/\` VFS image (errno ${-loaded}); `
+        + "an image built before the kernel-lazy section must be rebuilt",
+      );
     }
     this.#kernel.setRootfsBlobProvider(provider);
     if (this.#rootfsArchiveProvider) {
@@ -5433,6 +5391,68 @@ export class CentralizedKernelWorker {
     if (failErrno !== 0) {
       throw new KernelScratchError("rootfs write failed", failErrno);
     }
+  }
+
+  /**
+   * Create the missing ancestor directories of `path` in the kernel-owned
+   * rootfs, so a following {@link rootfsWriteFile} can create `path` itself.
+   * `path`'s final component is never created.
+   *
+   * The host needs this because it places genuine per-session runtime data into
+   * `/` — the browser's TLS-MITM CA certificate at
+   * `/etc/ssl/certs/ca-certificates.crt` — and cannot assume the boot image
+   * carries the directories leading to it. `kernel_rootfs_write_file` opens
+   * with `O_CREAT`, which is `ENOENT` on a missing parent exactly as POSIX
+   * requires, so the directory half is a separate, explicit act rather than an
+   * implicit `mkdir -p` bolted onto every `write_vfs_file`.
+   *
+   * Returns the number of directories created. Throws `KernelScratchError`
+   * (POSIX errno) if the kernel predates the export, or
+   * `KernelReentrantEntryError` if a kernel entry is already active.
+   */
+  rootfsMkdirParents(path: string, mode = 0o755): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs mkdir path too long", ENAMETOOLONG);
+    }
+    let created = 0;
+    let failErrno = 0;
+    this.#runImmediateKernelEntry("kernel rootfs mkdir parents", (entry) => {
+      if (
+        typeof entry.instance.exports.kernel_rootfs_mkdir_parents !== "function"
+      ) {
+        failErrno = ENOSYS;
+        return undefined;
+      }
+      const region = this.#requireMainScratchRegion();
+      if (pathLen > region.capacity) {
+        failErrno = ENAMETOOLONG;
+        return undefined;
+      }
+      const mkdirMode = mode & 0o7777;
+      const result = region.withLease((lease) => {
+        lease.copyFrom(encodedPath, 0, 0, pathLen);
+        const pathPtr = lease.exportPointer(0, pathLen);
+        return this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_rootfs_mkdir_parents",
+          [pathPtr, pathLen, mkdirMode],
+        );
+      });
+      if (!Number.isSafeInteger(result) || result < 0) {
+        failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+      } else {
+        created = result;
+      }
+      return undefined;
+    });
+    if (failErrno !== 0) {
+      throw new KernelScratchError("rootfs mkdir failed", failErrno);
+    }
+    return created;
   }
 
   /**

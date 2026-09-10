@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   emitRootfsManifest,
-  createRootfsBlobProvider,
   RTFS_VERSION,
-} from "../src/vfs/rootfs-manifest";
+} from "./support/rootfs-manifest-oracle";
+import { createRootfsBlobProvider } from "../src/vfs/rootfs-blob-store";
 import type { FileSystemBackend } from "../src/vfs/types";
-import type { RootfsLazyInput } from "../src/vfs/rootfs-manifest";
+import type { RootfsLazyInput } from "../src/vfs/rootfs-lazy-archives";
 import {
   decodeRootfsManifest as decode,
   RTFS_KIND_LAZY_FILE as KIND_LAZY_FILE,

@@ -50,7 +50,7 @@ import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
-import { emitRootfsManifest } from "../src/vfs/rootfs-manifest";
+import { emitRootfsManifest } from "./support/rootfs-manifest-oracle";
 import { VFS_IMAGE_FLAG_HAS_KERNEL_LAZY } from "../src/vfs/kernel-lazy-section";
 
 const here = dirname(fileURLToPath(import.meta.url));

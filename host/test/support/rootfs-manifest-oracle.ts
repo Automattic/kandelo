@@ -1,11 +1,24 @@
 /**
- * Rootfs overlay boot manifest (Phase 5 Increment 2).
+ * The RTFS boot-manifest encoder, kept as a TEST ORACLE.
  *
- * The in-kernel rootfs overlay owns the `/` tree in Rust; the host is demoted to
- * a byte-leaf provider. At boot the host walks the `/` image backend once and
- * emits the whole tree as a single compact binary buffer (the "RTFS" manifest)
- * that the kernel parses via `rootfs::load_manifest` — one host->kernel crossing
- * for the entire tree, not one call per file.
+ * This was production code until the boot cutover: the host walked the `/` image
+ * once and handed the kernel the whole tree as one compact buffer for
+ * `rootfs::load_manifest`. The kernel now parses the image itself
+ * (`rootfs::load_image`), so nothing in `host/src` builds a manifest any more.
+ *
+ * It is kept, out of the production tree, because it is the oracle two gates
+ * depend on and neither is replaceable by reasoning:
+ *
+ *  - `vfs-image-kernel-lazy.test.ts` checks, on every production image in the
+ *    worktree, that the image's own binary `KLZY` section says exactly what the
+ *    host used to reconstruct by walking the restored filesystem.
+ *  - `rootfs-image-tree-parity.test.ts` builds the in-kernel tree twice — once
+ *    from this manifest, once from the kernel's own image parse — and asserts
+ *    the two `kernel_rootfs_export_tree` buffers are byte-identical.
+ *
+ * Both are differential tests, and a differential test needs the other
+ * implementation to survive. Deleting this would not remove a maintenance
+ * burden; it would remove the evidence.
  *
  * Wire format (little-endian) — must match `crates/runtime-core/src/rootfs.rs`:
  *   header: magic u32 = "RTFS" | version u32 = 3 | entry_count u32
@@ -20,17 +33,19 @@
  *
  * After the entry stream, a trailing archive table (always present in v3, even
  * when empty): archive_count u32, then per archive archive_id u32 | archive_size
- * u64. It records the total byte size of every lazy archive referenced by a
- * kind=4 entry's `archive_id`; materializing those bytes is a later increment
- * (3b-wiring.2) — this module only emits the table.
+ * u64.
  *
- * `blob_id` is the file's inode number (see the decision record in
- * docs/plans/2026-08-28-phase5-vfs-to-rust.md): opaque to the kernel, mapped
- * host-side back to a byte source. Hard links (one inode, many names) therefore
- * share a single leaf automatically.
+ * `blob_id` is the file's inode number: opaque to the kernel, mapped host-side
+ * back to a byte source. Hard links (one inode, many names) therefore share a
+ * single leaf automatically.
  */
 
-import type { FileSystemBackend } from "./types";
+import type { FileSystemBackend } from "../../src/vfs/types";
+import type { ToBackendPath } from "../../src/vfs/rootfs-blob-store";
+import type {
+  RootfsLazyFile,
+  RootfsLazyInput,
+} from "../../src/vfs/rootfs-lazy-archives";
 
 export const RTFS_MAGIC = 0x5346_5452; // "RTFS" little-endian
 export const RTFS_VERSION = 3;
@@ -111,11 +126,6 @@ class ByteWriter {
   }
 }
 
-/** Convert a kernel-facing absolute path (e.g. "/usr/bin") to the string the
- * backend's own methods expect (mount-relative). The `/` mount's convention is
- * injected so this module stays backend-agnostic and unit-testable. */
-export type ToBackendPath = (absolutePath: string) => string;
-
 export interface EmittedRootfsManifest {
   /** The RTFS buffer to hand to `kernel_rootfs_load_manifest`. */
   readonly buffer: Uint8Array;
@@ -126,34 +136,6 @@ export interface EmittedRootfsManifest {
   /** Paths skipped because they were neither dir/file/symlink (e.g. sockets or
    * device nodes that should not appear in a `/` image). Surfaced, not hidden. */
   readonly skipped: readonly string[];
-}
-
-/** Where a lazy (archive-backed) file's bytes live: `archive_id` identifies
- * the archive in the trailing archive table, `sourcePath` is the member's
- * path within it. Materializing those bytes is a later increment; this
- * module only records the mapping in the manifest (`KIND_LAZY_FILE`). */
-export interface RootfsLazyFile {
-  readonly archiveId: number;
-  readonly sourcePath: string;
-}
-
-/** Total byte size of a lazy archive, recorded in the trailing archive table
- * so the kernel can validate/plan reads before the archive is fetched. */
-export interface RootfsLazyArchive {
-  readonly archiveId: number;
-  readonly size: number | bigint;
-}
-
-/**
- * Optional description of lazy (archive-backed) files to emit as
- * `KIND_LAZY_FILE` instead of `KIND_FILE`. Keyed by the kernel-facing
- * absolute VFS path (the same `absPath` the walker already computes), so a
- * caller can mark a subset of otherwise-ordinary regular files as lazy
- * without changing how the backend tree is walked.
- */
-export interface RootfsLazyInput {
-  readonly files: ReadonlyMap<string, RootfsLazyFile>;
-  readonly archives: readonly RootfsLazyArchive[];
 }
 
 const encoder = new TextEncoder();
@@ -294,61 +276,3 @@ export function emitRootfsManifest(
 
 const EMPTY = new Uint8Array(0);
 
-const EAGAIN = -11;
-const EIO = -5;
-
-/**
- * Map a backend exception to a negative errno for the blob provider. A lazy
- * (not-yet-materialized) base file makes the backend's `open`/`read` throw an
- * error tagged `code === "EAGAIN"` (see `MemoryFileSystem.guardSynchronousLazyAccess`,
- * which also kicks off the async fetch). We propagate that as EAGAIN so the
- * kernel parks the read and retries — the same park/retry the host-served path
- * uses — instead of surfacing a spurious EIO. Every other failure is EIO.
- */
-function blobErrno(error: unknown): number {
-  return (error as { code?: unknown })?.code === "EAGAIN" ? EAGAIN : EIO;
-}
-
-/**
- * Build the byte provider installed via `WasmPosixKernel.setRootfsBlobProvider`.
- * It resolves a `blob_id` (inode number) to the backend path and reads the bytes
- * with a positioned read. Returns bytes read (0 at EOF), or a negative errno —
- * `-EAGAIN` when the leaf is lazy and still materializing (the kernel parks and
- * retries), `-EIO` on a real failure.
- *
- * Opens per call for now; an fd cache keyed by blob id is a deliberate later
- * optimization (called out, not silently adopted) once the read hot path is
- * measured.
- */
-export function createRootfsBlobProvider(
-  backend: FileSystemBackend,
-  blobPaths: Map<number, string>,
-): (blobId: bigint, offset: bigint, dest: Uint8Array) => number {
-  return (blobId, offset, dest) => {
-    const path = blobPaths.get(Number(blobId));
-    if (path === undefined) {
-      return -2; // ENOENT: unknown blob id
-    }
-    let handle: number;
-    try {
-      // A lazy leaf throws EAGAIN here (open kicks off materialization).
-      handle = backend.open(path, O_RDONLY, 0);
-    } catch (error) {
-      return blobErrno(error);
-    }
-    if (handle < 0) {
-      return handle;
-    }
-    try {
-      return backend.read(handle, dest, Number(offset), dest.length);
-    } catch (error) {
-      return blobErrno(error);
-    } finally {
-      try {
-        backend.close(handle);
-      } catch {
-        // A close failure does not change the bytes already read.
-      }
-    }
-  };
-}

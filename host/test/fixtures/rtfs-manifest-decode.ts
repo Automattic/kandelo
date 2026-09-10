@@ -13,7 +13,7 @@
  * host-walked manifest carries.
  */
 
-import { RTFS_MAGIC } from "../../src/vfs/rootfs-manifest";
+import { RTFS_MAGIC } from "../support/rootfs-manifest-oracle";
 
 export const RTFS_KIND_DIR = 1;
 export const RTFS_KIND_FILE = 2;

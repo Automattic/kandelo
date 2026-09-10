@@ -41,16 +41,19 @@ import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-a
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import {
-  emitRootfsManifest,
+  collectRootfsBlobPaths,
   createRootfsBlobProvider,
-} from "./vfs/rootfs-manifest";
+} from "./vfs/rootfs-blob-store";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
-import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
+import {
+  BROWSER_MITM_CA_BUNDLE_PATH,
+  withBrowserMitmCaEnv,
+} from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -842,24 +845,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
-  // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
+  // The MITM CA certificate is installed after `init`, not here — see the
+  // `rootfsMkdirParents`/`rootfsWriteFile` pair below. It is per-session runtime
+  // data that can never be in an image, and `/` is the kernel's, so it has to be
+  // a kernel write and the kernel has to exist first.
   const caCertPem = tlsBackend.getCACertPEM();
-  try {
-    // Demo images don't always include /etc — create the full chain.
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
-    const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open(
-      "/etc/ssl/certs/ca-certificates.crt",
-      O_WRONLY_CREAT_TRUNC,
-      0o644,
-    );
-    memfs.write(certFd, certBytes, 0, certBytes.length);
-    memfs.close(certFd);
-  } catch (e) {
-    console.error("[kernel-worker] Failed to write CA cert to VFS:", e);
-  }
 
   // Create worker adapter for spawning sub-workers
   workerAdapter = new BrowserWorkerAdapter(msg.workerEntryUrl);
@@ -1053,17 +1043,47 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       memfs.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
     );
-    const { buffer, blobPaths } = emitRootfsManifest(memfs, (p) => p, lazyInput);
     kernelWorker.configureRootfsOverlay(
-      buffer,
-      createRootfsBlobProvider(memfs, blobPaths),
+      createRootfsBlobProvider(memfs, collectRootfsBlobPaths(memfs, (p) => p)),
       archiveProvider,
       rootfsForeignPrefixes,
       rootMount?.nosuid === true,
+      msg.vfsImage,
     );
   }
 
   await kernelWorker.init(msg.kernelWasmBytes);
+
+  // Install the TLS-MITM CA certificate so guest OpenSSL trusts it.
+  //
+  // This runs AFTER `init` because the in-kernel overlay is the sole `/`
+  // authority and the kernel parses the boot image itself: a write into the
+  // host's restored `MemoryFileSystem` would land in a tree nothing reads. It
+  // runs BEFORE any guest process is launched, which is what the trust actually
+  // requires. The directory chain is a separate, explicit act because
+  // `rootfsWriteFile` opens with `O_CREAT` and a demo image need not carry
+  // `/etc/ssl/certs`.
+  //
+  // A failure here is reported and not swallowed: every outbound HTTPS
+  // connection in this session is terminated by the MITM, so a guest that does
+  // not trust the CA fails later with a confusing certificate error instead of
+  // the real cause.
+  if (memfs) {
+    try {
+      kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
+      kernelWorker.rootfsWriteFile(
+        BROWSER_MITM_CA_BUNDLE_PATH,
+        new TextEncoder().encode(caCertPem),
+        0o644,
+      );
+    } catch (e) {
+      console.error(
+        `[kernel-worker] Failed to install the MITM CA certificate at ${BROWSER_MITM_CA_BUNDLE_PATH};`
+        + " guest TLS clients will reject every HTTPS connection this session:",
+        e,
+      );
+    }
+  }
 
   // Phase 6 D5: compile the fork-module once here, at the kernel host, so each
   // process worker instantiates from a pre-compiled module. The module is the

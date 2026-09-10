@@ -54,9 +54,9 @@ import {
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import {
-  emitRootfsManifest,
+  collectRootfsBlobPaths,
   createRootfsBlobProvider,
-} from "./vfs/rootfs-manifest";
+} from "./vfs/rootfs-blob-store";
 import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
@@ -1184,17 +1184,15 @@ async function handleInit(msg: InitMessage) {
       rootfsMemfs.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
     );
-    const { buffer, blobPaths } = emitRootfsManifest(
-      rootfsMemfs,
-      (p) => p,
-      lazyInput,
-    );
     kernelWorker.configureRootfsOverlay(
-      buffer,
-      createRootfsBlobProvider(rootfsMemfs, blobPaths),
+      createRootfsBlobProvider(
+        rootfsMemfs,
+        collectRootfsBlobPaths(rootfsMemfs, (p) => p),
+      ),
       archiveProvider,
       rootfsForeignPrefixes,
       rootfsNosuid,
+      new Uint8Array(msg.rootfsImage!),
     );
   }
 

@@ -25,11 +25,33 @@
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
 import type { SerializedLazyArchiveEntry } from "./memory-fs";
-import type {
-  RootfsLazyArchive,
-  RootfsLazyFile,
-  RootfsLazyInput,
-} from "./rootfs-manifest";
+/** Where a lazy (archive-backed) file's bytes live: `archive_id` identifies
+ * the archive in the trailing archive table, `sourcePath` is the member's
+ * path within it. Materializing those bytes is a later increment; this
+ * module only records the mapping in the manifest (`KIND_LAZY_FILE`). */
+export interface RootfsLazyFile {
+  readonly archiveId: number;
+  readonly sourcePath: string;
+}
+
+/** Total byte size of a lazy archive, recorded in the trailing archive table
+ * so the kernel can validate/plan reads before the archive is fetched. */
+export interface RootfsLazyArchive {
+  readonly archiveId: number;
+  readonly size: number | bigint;
+}
+
+/**
+ * Optional description of lazy (archive-backed) files to emit as
+ * `KIND_LAZY_FILE` instead of `KIND_FILE`. Keyed by the kernel-facing
+ * absolute VFS path (the same `absPath` the walker already computes), so a
+ * caller can mark a subset of otherwise-ordinary regular files as lazy
+ * without changing how the backend tree is walked.
+ */
+export interface RootfsLazyInput {
+  readonly files: ReadonlyMap<string, RootfsLazyFile>;
+  readonly archives: readonly RootfsLazyArchive[];
+}
 
 const EAGAIN = -11;
 const EIO = -5;

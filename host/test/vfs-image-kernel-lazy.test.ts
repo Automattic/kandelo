@@ -44,7 +44,7 @@ import {
   VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
 } from "../src/vfs/kernel-lazy-section";
 import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
-import { emitRootfsManifest } from "../src/vfs/rootfs-manifest";
+import { emitRootfsManifest } from "./support/rootfs-manifest-oracle";
 import {
   decodeRootfsManifest,
   RTFS_KIND_FILE,
