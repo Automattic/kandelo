@@ -915,3 +915,42 @@ it is gated on the nightly-only `per-package-target` feature, and re-testing it
 on this repo's current pinned toolchain (2026-09-10) still panics the cargo
 resolver rather than erroring cleanly. Revisit when that lands; the wrapper can
 then be deleted.
+
+### The shared source cache captures absolute paths from the worktree that filled it
+
+`$HOME/.cache/kandelo/source-only` is shared by every worktree on a machine,
+and a cache entry records the **absolute source path** of whichever worktree
+populated it first. A later `./run.sh setup` in a *different* worktree can then
+execute that other tree's build script against that other tree.
+
+Observed 2026-09-10: `setup` in worktree B ran worktree A's
+`build-kandelo-sdk.sh` against A, which failed on a missing `fzstd` because A
+had no `node_modules`. The failure names neither worktree and looks like a
+dependency problem in the tree you are standing in.
+
+This is **distinct from** the resolved cache-key drift investigated in 2026-08,
+and distinct from ordinary contention (two agents mutating
+`program-packages.json` concurrently, which cost one agent three consecutive
+`prepare-browser` attempts and made several suites appear flaky).
+
+Two things follow:
+
+1. **Workaround, available today:** set `KANDELO_SOURCE_CACHE_ROOT` to an
+   absolute path unique to the worktree (`run.sh:25`,
+   `tools/xtask/src/local_build.rs:406`). Costs a cold first build.
+2. **Real fix:** a cache entry should either key on, or be independent of, the
+   populating worktree's absolute path. Silently running another checkout's
+   build script is the kind of cross-tree action the build contract otherwise
+   forbids, and it produces failures that are indistinguishable from real
+   defects in the current tree — the property that makes it dangerous rather
+   than merely annoying.
+
+### Check `no_std` targets, not just the host
+
+`cargo check -p runtime-core --target aarch64-apple-darwin` passing does not
+mean the crate builds. On 2026-09-10 a `String` reference that resolves through
+`std` on the host failed on wasm32/wasm64, where the crate is `no_std` and must
+name it through `alloc`. A native-only check called that code green.
+
+Runtime-core and the kernel ship to wasm. Check **wasm32 and wasm64** before
+claiming a Rust change builds.
