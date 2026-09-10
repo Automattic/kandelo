@@ -543,8 +543,13 @@ export class DylinkActExecutor {
         return { result: "done" };
       }
       case "readGlobal": {
-        const global = this.#requireGlobal(act.global);
-        const raw: unknown = global.value;
+        // The act carries no type, because the planner only ever reads
+        // POINTER-WIDTH globals — `__memory_base`, `__table_base`, a GOT cell —
+        // and the JS API reports i64 as a bigint and i32 as a number. That is
+        // the same discrimination `dylink.ts` makes. A float global would read
+        // back as a number and be reported as i32; the planner never asks for
+        // one, and `jsToWasmValue` refuses anything that is neither.
+        const raw: unknown = this.#requireGlobal(act.global).value;
         return {
           result: "value",
           value: jsToWasmValue(raw, typeof raw === "bigint" ? { kind: "i64" } : { kind: "i32" }),
@@ -555,8 +560,10 @@ export class DylinkActExecutor {
         return { result: "done" };
       }
       case "growTable": {
-        const before = this.#environment.table.length;
-        this.#environment.table.grow(Number(act.delta));
+        // `Table.prototype.grow` returns the PREVIOUS length, which is what the
+        // planner asked for. Reading `table.length` separately would be a
+        // second observation of a value the call already reported.
+        const before = this.#environment.table.grow(Number(act.delta));
         return { result: "index", index: BigInt(before) };
       }
       case "writeTable": {

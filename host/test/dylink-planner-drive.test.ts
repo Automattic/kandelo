@@ -328,3 +328,128 @@ describe("the wire format agrees with crates/dylink/src/wire.rs", () => {
     expect(() => r.vecLen(4)).toThrow(/exceeds record/);
   });
 });
+
+/**
+ * What the module surface does NOT yet let a driver do.
+ *
+ * These are not aspirational tests. Each one pins a gap standing between this
+ * executor and the deletion of `host/src/dylink.ts`, and each is written so
+ * that CLOSING the gap makes the test fail — at which point it becomes the
+ * positive test for the new behaviour. Recording them as executed assertions
+ * rather than as prose in a plan is the difference between a measured boundary
+ * and a remembered one.
+ *
+ * See NDD-K5-1 in `docs/plans/2026-09-10-rust-first-campaign-status.md`.
+ */
+describe("the gaps between this executor and the dlopen cutover", () => {
+  let plannerModule: WebAssembly.Module | undefined;
+
+  beforeAll(() => {
+    if (PLANNER_WASM) plannerModule = new WebAssembly.Module(readFileSync(PLANNER_WASM));
+  });
+
+  function standaloneSession(): { session: PlannerSession; memory: WebAssembly.Memory } {
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true });
+    const session = PlannerSession.instantiate(plannerModule!);
+    session.configure({
+      pointerWidth: 4,
+      hasAllocator: false,
+      forkActivationAvailable: false,
+      forkActivationUnavailableReason: "standalone",
+      unresolvedPolicy: "elfStrict",
+      memoryBytes: BigInt(memory.buffer.byteLength),
+      sharedMemory: true,
+      heapPointer: BigInt(memory.buffer.byteLength),
+    });
+    session.publishMainImage({ tableLength: 8n, exports: [], elementSlots: [] });
+    return { session, memory };
+  }
+
+  function bareExecutor(memory: WebAssembly.Memory): DylinkActExecutor {
+    return new DylinkActExecutor(
+      {
+        memory,
+        table: new WebAssembly.Table({ initial: 8, element: "anyfunc" }),
+        stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 4 * PAGE),
+        mainInstance: () => undefined,
+        activationEnv: (name) => {
+          throw new Error(`unexpected activation import ${name}`);
+        },
+      },
+      {
+        allocateMemory: () => {
+          throw new Error("no allocator on the standalone path");
+        },
+        adoptMapping: () => {},
+        releaseMapping: () => {},
+        prepareActivation: () => 0,
+        registerActivation: () => {},
+        unregisterActivation: () => {},
+        journalTableMutation: () => {},
+      },
+    );
+  }
+
+  function buildSo(dir: string, name: string, body: string, extra: string[] = []): Uint8Array {
+    const source = join(dir, `${name}.c`);
+    const object = join(dir, `${name}.so`);
+    writeFileSync(source, body);
+    execFileSync(
+      "wasm32posix-cc",
+      ["-shared", "-fPIC", "-O2", source, ...extra, "-o", object],
+      { stdio: "pipe" },
+    );
+    return new Uint8Array(readFileSync(object));
+  }
+
+  it("refuses a second concurrent dlopen instead of nesting it", () => {
+    if (!plannerModule || !CAN_BUILD) return;
+    const build = mkdtempSync(join(tmpdir(), "dylink-planner-nest-"));
+    const image = buildSo(build, "leaf", "static int v = 1;\nint leaf(void) { return ++v; }\n");
+
+    const { session } = standaloneSession();
+    const request = {
+      name: "leaf.so",
+      moduleBytes: image,
+      globalVisibility: true,
+      borrowedMemory: false,
+    };
+    session.openBegin(request);
+    // A constructor that calls `dlopen` is legal POSIX, and
+    // `LoadState::Initializing` exists for exactly that case.
+    // `worker-main.ts` keeps a MAP of pending transaction tokens; this module
+    // has one slot.
+    expect(() => session.openBegin({ ...request, name: "other.so" })).toThrow();
+  });
+
+  it("has no way to resolve a DT_NEEDED dependency for the driver", () => {
+    if (!plannerModule || !CAN_BUILD) return;
+    const build = mkdtempSync(join(tmpdir(), "dylink-planner-needed-"));
+    buildSo(build, "libleaf", "int leaf_value(void) { return 5; }\n");
+    const top = buildSo(
+      build,
+      "libtop",
+      "extern int leaf_value(void);\nint top(void) { return leaf_value() + 1; }\n",
+      [join(build, "libleaf.so")],
+    );
+
+    const { session, memory } = standaloneSession();
+    const executor = bareExecutor(memory);
+    executor.setCurrentImage(top);
+
+    // The planner requires every `DT_NEEDED` object already in scope. No
+    // `HostRequest` asks the driver to fetch one, and no entry point reports an
+    // image's NEEDED list, so a driver cannot satisfy this without parsing
+    // `dylink.0` itself -- which would put linker policy back into TypeScript.
+    expect(() => {
+      session.openBegin({
+        name: "libtop.so",
+        moduleBytes: top,
+        globalVisibility: true,
+        borrowedMemory: false,
+      });
+      drivePlan(session, executor, () => {});
+      session.openFinish();
+    }).toThrow();
+  });
+});

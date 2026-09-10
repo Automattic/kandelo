@@ -30,6 +30,10 @@ fn metadata(needed: &[&str]) -> DylinkMetadata {
 fn library(name: &str, instance: u32, needed: &[&str], global: bool) -> LoadedLibrary {
     LoadedLibrary {
         name: name.into(),
+        // These scope/placement cases never re-link, so the image they were
+        // linked from is not part of what they exercise. A real load carries
+        // the bytes a fork child needs to rebuild the object.
+        module_bytes: Vec::new(),
         instance: InstanceId(instance),
         metadata: metadata(needed),
         memory_base: 0x1000 * u64::from(instance),
