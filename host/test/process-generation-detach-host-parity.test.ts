@@ -69,6 +69,19 @@ const sharedLifecycle = readFileSync(
   "utf8",
 );
 
+/** `asyncFunction` for the shared module, whose functions are indented. */
+function indentedAsyncFunction(
+  source: string,
+  name: string,
+  nextName: string,
+): string {
+  const start = source.indexOf(`  async function ${name}(`);
+  const end = source.indexOf(`\n  async function ${nextName}(`, start);
+  expect(start, `${name} must exist`).toBeGreaterThanOrEqual(0);
+  expect(end, `${nextName} must follow ${name}`).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe("process generation detach host parity", () => {
   for (const { host, source, terminate } of entries) {
     it(`${host} routes every process-generation terminal path through the shared ledger`, () => {
@@ -83,7 +96,14 @@ describe("process generation detach host parity", () => {
         spawn,
         fork,
         posixSpawn,
-        asyncFunction(source, "finishProcessExit", terminate),
+        // `finishProcessExit` is one implementation in the shared lifecycle
+        // module now; slicing it from there means the ledger route cannot be
+        // present on one host's exit path and missing on the other's.
+        indentedAsyncFunction(
+          sharedLifecycle,
+          "finishProcessExit",
+          "awaitFinalizedProcessTeardown",
+        ),
         asyncFunction(source, terminate, "performDestroy"),
       ];
 

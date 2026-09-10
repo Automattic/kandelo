@@ -355,19 +355,6 @@ async function waitForProcessTeardowns(): Promise<void> {
   }
 }
 
-async function awaitFinalizedProcessTeardown(
-  pid: number,
-  exitStatus: number,
-  expectedWorker: ProcessInfo["worker"],
-  crashSignum?: number,
-  reason: VforkExactCompletionReason =
-    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
-): Promise<void> {
-  if (!processTeardowns.has(expectedWorker)) {
-    handleExit(pid, exitStatus, crashSignum, expectedWorker, reason);
-  }
-  await processTeardowns.get(expectedWorker);
-}
 
 
 const ptyByPid = new Map<number, number>();
@@ -413,6 +400,25 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => memfs,
+  externrefProcessOwner,
+  defaultExitCrashSignum: (exitStatus) =>
+    signalFromExitStatus(exitStatus) ?? SIGSEGV,
+  threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
+  reportProcessExit: (pid, info, status) =>
+    reportProcessExit(pid, info.generation, status),
+  processExitSettleMs: (pid, info) => {
+    const threadedSettleMs = threadedProcessPids.has(pid)
+      ? THREADED_WORKER_TERMINATION_SETTLE_MS
+      : 0;
+    threadedProcessPids.delete(pid);
+    return Math.max(
+      threadedSettleMs,
+      processWorkerTerminationSettleMs(info.argv),
+    );
+  },
+  exitRetirementFences: async (pid, info) =>
+    info.memoryRetirementSafe
+    && await releaseMainFramebufferGeneration(pid, info),
   processMemoryAllocator: () => processMemoryAllocator,
   defaultMaxPages: () => maxPages,
   defaultThreadSlots: () => defaultThreadSlots,
@@ -430,9 +436,11 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  finishProcessExit,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -3382,134 +3390,6 @@ function handleExit(
   );
 }
 
-async function finishProcessExit(
-  pid: number,
-  exitStatus: number,
-  crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
-  expectedWorker = processes.get(pid)?.worker,
-  vforkReason: VforkExactCompletionReason =
-    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
-): Promise<void> {
-  if (!expectedWorker) return;
-  const info = processes.get(pid);
-  if (!info || info.worker !== expectedWorker) return;
-  if (processTeardowns.has(expectedWorker)) return;
-  vmInterruptTimers.clear(pid, info);
-
-  const threadedSettleMs = threadedProcessPids.has(pid)
-    ? THREADED_WORKER_TERMINATION_SETTLE_MS
-    : 0;
-  const settleMs = Math.max(
-    threadedSettleMs,
-    processWorkerTerminationSettleMs(info?.argv),
-  );
-  threadedProcessPids.delete(pid);
-
-  const teardown = (async () => {
-    // Synthesize a signal-style reap *before* `deactivateProcess` in
-    // case the worker died without sending SYS_EXIT_GROUP (uncaught
-    // wasm trap -> onerror, worker-main `{type:"error"}` -> finalize(-1),
-    // externally terminated Worker -> "exit" event). Without this, a
-    // concurrent waitpid in the parent blocks until destroy because
-    // the kernel never marked the child as a zombie. Idempotent via
-    // `hostReaped`: when the kernel already processed a clean
-    // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
-    // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-
-    // Keep the pid registered until the process worker is gone. musl's
-    // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
-    // termination is in flight those duplicate exits still need channel
-    // completions, otherwise the worker can park in Atomics.wait with no
-    // registered listener left to wake it.
-    const workerQuiescent = await waitForWorkerQuiescence(
-      info.workerQuiescence,
-    );
-    const threadsQuiescent = await terminateThreadWorkers(
-      pid,
-      false,
-      THREADED_WORKER_TERMINATION_SETTLE_MS,
-    );
-    await terminateTrackedWorker(expectedWorker, settleMs);
-
-    // Check if this is a "top-level" process or a fork child. For now,
-    // always deactivate after worker termination; the main thread tracks
-    // exit promises, and no further guest syscalls can arrive on this
-    // channel once the worker is gone.
-    let exactMemoryTeardown = false;
-    const detachResult = await detachExactProcessGeneration({
-      pid,
-      generation: info,
-      operation: "deactivate",
-      retire: async (commit) => {
-        const mainFramebufferReleased =
-          await releaseMainFramebufferGeneration(pid, info);
-        exactMemoryTeardown =
-          workerQuiescent
-          && threadsQuiescent
-          && info.memoryRetirementSafe
-          && mainFramebufferReleased;
-        if (exactMemoryTeardown) {
-          info.memoryLease.release();
-        } else {
-          // Browser Worker.terminate() returns before the underlying Worker
-          // has necessarily stopped. A missing terminal fence uses forced
-          // retirement; the backing is never handed to another process.
-          info.memoryLease.releaseAfterForcedTermination();
-        }
-        commit();
-      },
-    });
-    if (detachResult.status !== "released") {
-      completeVforkGenerationTeardown(
-        info,
-        false,
-        vforkReason,
-        detachResult.error,
-      );
-      reportRetainedProcessGeneration(
-        pid,
-        "process channel teardown",
-        detachResult,
-        exitStatus,
-      );
-      return;
-    }
-
-    externrefProcessOwner.releaseGeneration(info.externrefGeneration);
-    completeVforkGenerationTeardown(
-      info,
-      exactMemoryTeardown,
-      vforkReason,
-      new Error(
-        `vfork child ${pid} exited without exact browser ownership fences`,
-      ),
-    );
-
-    if (!detachResult.mayReapPid) return;
-    try {
-      kernelWorker.reapHostOwnedExitedProcess(pid);
-    } catch (error) {
-      reportHostDiagnostic({
-        pid,
-        status: exitStatus,
-        source: "host-owned process reap",
-        message:
-          `[browser-kernel-worker] failed to reap completed host-owned pid ${pid}: ` +
-          formatError(error),
-      });
-    }
-  })();
-  processTeardowns.set(expectedWorker, teardown);
-
-  reportProcessExit(pid, info.generation, exitStatus);
-
-  try {
-    await teardown;
-  } finally {
-    processTeardowns.delete(expectedWorker);
-  }
-}
 
 // ── Terminate ──
 

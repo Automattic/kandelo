@@ -545,6 +545,16 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => rootfsMemfs,
+  externrefProcessOwner,
+  // Node's worker-'exit' handler and vfork containment path synthesize the
+  // crash reap themselves before entering the shared teardown.
+  defaultExitCrashSignum: () => undefined,
+  threadWorkerSettleMs: 0,
+  reportProcessExit: (pid, _info, status) => reportProcessExit(pid, status),
+  // `await worker.terminate()` joins the thread on Node, so nothing has
+  // to settle afterwards and there are no extra ownership fences to check.
+  processExitSettleMs: () => 0,
+  exitRetirementFences: () => true,
   processMemoryAllocator: () => processMemoryAllocator,
   defaultMaxPages: () => maxPages,
   defaultThreadSlots: () => defaultThreadSlots,
@@ -559,9 +569,11 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  finishProcessExit,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -649,7 +661,7 @@ async function finalizeProcessWorker(
   // WHY: ordinary exits and crashes must share one teardown funnel. Keeping a
   // second cleanup sequence here previously let their Worker/channel ordering
   // drift and made it possible to reap Rust state before all Workers stopped.
-  await finishProcessExit(pid, exitStatus, worker, "trap");
+  await finishProcessExit(pid, exitStatus, undefined, worker, "trap");
 }
 
 function processWorkerErrorDisposition(reason: string | undefined): {
@@ -1426,6 +1438,7 @@ async function containVforkAddressSpace(
     await finishProcessExit(
       disposition.childPid,
       status,
+      undefined,
       childGeneration.worker,
       "trap",
     );
@@ -1440,6 +1453,7 @@ async function containVforkAddressSpace(
     await finishProcessExit(
       parentPid,
       status,
+      undefined,
       disposition.parentGeneration.worker,
       "trap",
     );
@@ -1779,6 +1793,7 @@ async function handleVfork(
         childPid,
         signal > 0 ? signalExitStatus(signal) : 0,
         childWorker,
+        undefined,
         signal > 0 ? "signal" : "exit",
       );
       return finishVforkDisposition(
@@ -1801,6 +1816,7 @@ async function handleVfork(
           childPid,
           signal > 0 ? signalExitStatus(signal) : 0,
           childWorker,
+          undefined,
           signal > 0 ? "signal" : "exit",
         );
       } else if (phase === "borrowing" && startFailure === undefined) {
@@ -2334,6 +2350,7 @@ async function handleExec(
           pid,
           signalExitStatus(handoffExitSignal),
           initiatingInfo.worker,
+          undefined,
           "signal",
         );
         return 0;
@@ -2521,6 +2538,7 @@ async function handleExec(
           pid,
           signal > 0 ? signalExitStatus(signal) : 0,
           replacementWorker,
+          undefined,
           signal > 0 ? "signal" : "exit",
         );
         return 0;
@@ -3019,7 +3037,12 @@ async function handleClone(
     if (!awaitQuiescence) void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
       try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
-      void finishProcessExit(pid, disposition.exitStatus);
+      void finishProcessExit(
+        pid,
+        disposition.exitStatus,
+        undefined,
+        processes.get(pid)?.worker,
+      );
     }
   };
   threadWorker.on("message", (msg: unknown) => {
@@ -3097,126 +3120,13 @@ function handleExit(pid: number, exitStatus: number): void {
   void finishProcessExit(
     pid,
     exitStatus,
+    undefined,
     processes.get(pid)?.worker,
     reason,
   );
 }
 
-async function awaitFinalizedProcessTeardown(
-  pid: number,
-  exitStatus: number,
-  expectedWorker: ProcessInfo["worker"],
-  reason: VforkExactCompletionReason =
-    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
-): Promise<void> {
-  if (!processTeardowns.has(expectedWorker)) {
-    void finishProcessExit(pid, exitStatus, expectedWorker, reason);
-  }
-  await processTeardowns.get(expectedWorker);
-}
 
-async function finishProcessExit(
-  pid: number,
-  exitStatus: number,
-  expectedWorker = processes.get(pid)?.worker,
-  vforkReason: VforkExactCompletionReason =
-    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
-): Promise<void> {
-  if (!expectedWorker) return;
-  const info = processes.get(pid);
-  if (!info || info.worker !== expectedWorker) return;
-  vmInterruptTimers.clear(pid, info);
-
-  const existingTeardown = processTeardowns.get(expectedWorker);
-  if (existingTeardown) {
-    reportProcessExit(pid, exitStatus);
-    return;
-  }
-
-  const teardown = (async () => {
-    // Keep the pid registered until the process worker is gone. musl's
-    // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
-    // termination is in flight those duplicate exits still need channel
-    // completions, otherwise the worker can park in Atomics.wait with no
-    // registered listener left to wake it.
-    const [workerQuiescent, threadsQuiescent] = await Promise.all([
-      waitForWorkerQuiescence(info.workerQuiescence),
-      terminateThreadWorkers(pid),
-    ]);
-    const exactMemoryTeardown = workerQuiescent && threadsQuiescent;
-    await terminateTrackedWorker(expectedWorker);
-
-    // Deactivate process (zombie until reaped or destroy) after worker
-    // termination so no further guest syscalls can arrive on its channel.
-    const detachResult = await detachExactProcessGeneration({
-      pid,
-      generation: info,
-      operation: "deactivate",
-      retire: (commit) => {
-        if (exactMemoryTeardown) {
-          info.memoryLease.release();
-        } else {
-          info.memoryLease.releaseAfterForcedTermination();
-        }
-        commit();
-      },
-    });
-    if (detachResult.status !== "released") {
-      completeVforkGenerationTeardown(
-        info,
-        false,
-        vforkReason,
-        detachResult.error,
-      );
-      reportRetainedProcessGeneration(
-        pid,
-        "process channel teardown",
-        detachResult,
-        exitStatus,
-      );
-      return;
-    }
-
-    externrefProcessOwner.releaseGeneration(info.externrefGeneration);
-    completeVforkGenerationTeardown(
-      info,
-      exactMemoryTeardown,
-      vforkReason,
-      new Error(
-        `vfork child ${pid} exited without an exact Worker quiescence fence`,
-      ),
-    );
-
-    // A superseded old image must not reap the persistent PID that now belongs
-    // to its exec successor.
-    if (!detachResult.mayReapPid) return;
-    try {
-      kernelWorker.reapHostOwnedExitedProcess(pid);
-    } catch (error) {
-      reportHostDiagnostic({
-        pid,
-        status: exitStatus,
-        source: "host-owned process reap",
-        message:
-          `[node-kernel-worker] failed to reap completed host-owned pid ${pid}: ` +
-          (error instanceof Error ? error.message : String(error)),
-      });
-    }
-  })();
-  processTeardowns.set(expectedWorker, teardown);
-
-  // The process is already a kernel-side zombie at this point. Report the
-  // exit before worker-thread teardown so a slow termination cannot make
-  // NodeKernelHost.spawn() look like the guest process never exited. The
-  // teardown promise remains tracked so destroy() still waits for cleanup.
-  reportProcessExit(pid, exitStatus);
-
-  try {
-    await teardown;
-  } finally {
-    processTeardowns.delete(expectedWorker);
-  }
-}
 
 // --- Terminate ---
 

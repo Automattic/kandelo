@@ -10,6 +10,9 @@ function source(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), "utf8");
 }
 
+/** The single implementation both entries call for shared lifecycle logic. */
+const sharedLifecycle = source("host/src/process-lifecycle.ts");
+
 /**
  * Slice one top-level function's body out of an entry file.
  *
@@ -84,10 +87,14 @@ describe.each([
     const terminateStart = relativePath.includes("browser")
       ? "async function handleTerminateProcess("
       : "async function handleTerminate(";
+    // `finishProcessExit` is one implementation in
+    // `host/src/process-lifecycle.ts` serving both hosts, so it is sliced from
+    // there. That makes this assertion stronger, not weaker: the release can no
+    // longer be present on one host's exit path and missing on the other's.
     const exit = functionSource(
-      entry,
-      "async function finishProcessExit(",
-      terminateStart,
+      sharedLifecycle,
+      "  async function finishProcessExit(",
+      "  async function awaitFinalizedProcessTeardown(",
     );
     const destroyStart = "async function handleDestroy(";
     const terminate = functionSource(entry, terminateStart, destroyStart);

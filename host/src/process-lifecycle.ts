@@ -58,6 +58,8 @@ import {
 import { FILE_MODES } from "./generated/abi";
 import type { ForkExternrefImportWake } from "./fork-externref-import-mailbox";
 import type { ForkHostImportOwnerWorker } from "./fork-host-import-runtime";
+import type { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
+import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import type {
   ForkModuleProofMessage,
   HostDiagnostic,
@@ -114,6 +116,8 @@ export interface ProcessLifecycleInfo extends ProcessGenerationOwnership {
   worker: LifecycleWorker;
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
+  workerQuiescence: WorkerQuiescence;
+  externrefGeneration: ForkExternrefGeneration;
   /** The image's argument vector, where the host records one. */
   argv?: readonly string[];
 }
@@ -249,6 +253,64 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
 
   /** Default number of thread slots to reserve in a new address space. */
   defaultThreadSlots(): number;
+
+  /** Exact broker authority for each PID's current Wasm image. */
+  readonly externrefProcessOwner: ForkExternrefProcessOwner;
+
+  /**
+   * Report a process exit to the main thread, exactly once per PID.
+   *
+   * Host-owned only because the two hosts' `exit` message carries different
+   * fields: the browser names the execution generation that ended, Node names
+   * the PID alone.
+   */
+  reportProcessExit(pid: number, info: Info, status: number): void;
+
+  /**
+   * The signal to synthesize a crash reap with when a caller of
+   * `finishProcessExit` does not name one.
+   *
+   * The browser always synthesizes — `signalFromExitStatus(status) ?? SIGSEGV`
+   * — relying on the kernel's `hostReaped` guard to make it a no-op after a
+   * clean SYS_EXIT_GROUP. Node returns undefined because its worker-'exit'
+   * handler and vfork containment path call `notifyHostProcessCrashed`
+   * themselves before entering the shared teardown. Same kernel call, two call
+   * graphs; declaring the default keeps both exact.
+   */
+  defaultExitCrashSignum(exitStatus: number): number | undefined;
+
+  /**
+   * Settle delay applied when terminating a process's thread workers.
+   *
+   * Separate from `processExitSettleMs` because a process worker running a
+   * wasm JS engine needs a much longer compatibility delay than a pthread
+   * worker does, and charging the longer one to every thread would slow every
+   * threaded teardown for no gain.
+   */
+  readonly threadWorkerSettleMs: number;
+
+  /**
+   * How long a terminated process worker needs to settle before its address
+   * space may be reused, over and above the ownership fence.
+   *
+   * Zero where `terminate()` is itself a fence. A nonzero value is a
+   * compatibility delay and never proves retirement safe on its own — only
+   * the worker's `memory_quiescent` fence does that. Called once per exit, so
+   * a host may also retire per-PID exit bookkeeping here.
+   */
+  processExitSettleMs(pid: number, info: Info): number;
+
+  /**
+   * Extra host-side ownership fences that must hold before a process's memory
+   * backing can be released exactly rather than force-retired.
+   *
+   * The browser has two — its `memoryRetirementSafe` flag, and the release of
+   * any main-thread framebuffer alias cloned from this generation's Memory.
+   * Node has none, because `await worker.terminate()` already proves the
+   * ownership this is protecting. Node is the host where the predicate always
+   * holds, not the host that is missing a safety model.
+   */
+  exitRetirementFences(pid: number, info: Info): boolean | Promise<boolean>;
 
   /**
    * Stop this kernel realm after a fatal kernel-instance failure.
@@ -905,6 +967,173 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     }
   }
 
+  /**
+   * Complete one process's exit: fence its workers, retire its address space,
+   * deactivate the PID, and report the exit to main exactly once.
+   *
+   * `crashSignum` synthesizes a signal-style reap before `deactivateProcess`,
+   * for the case where a worker died without sending SYS_EXIT_GROUP (an
+   * uncaught wasm trap, or a Worker terminated from outside). Without it a
+   * concurrent `waitpid` in the parent blocks until destroy, because the
+   * kernel never marked the child a zombie. It is idempotent — the kernel's
+   * `hostReaped` guard makes it a no-op when a clean SYS_EXIT_GROUP was
+   * already processed.
+   *
+   * BOUNDARY, deliberately preserved rather than unified: the synthesis is a
+   * *callee* responsibility in the browser, which passes a `crashSignum` on
+   * every exit, and a *caller* responsibility on Node, whose worker-'exit'
+   * handler (`finalizeProcessWorker`) and vfork containment path call
+   * `notifyHostProcessCrashed` themselves and pass none. Both reach the same
+   * kernel call; only the call graph differs. Collapsing that is a change to
+   * Node's worker-'exit' path, which cannot be proven from the Node suites
+   * alone, so it stays a declared difference here rather than an unvalidated
+   * behaviour change.
+   */
+  async function finishProcessExit(
+    pid: number,
+    exitStatus: number,
+    crashSignum: number | undefined,
+    expectedWorker: Info["worker"] | undefined,
+    vforkReason: VforkExactCompletionReason =
+      signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  ): Promise<void> {
+    if (!expectedWorker) return;
+    const info = host.processes.get(pid);
+    if (!info || info.worker !== expectedWorker) return;
+    host.vmInterruptTimers.clear(pid, info);
+
+    if (host.processTeardowns.has(expectedWorker)) {
+      // A second notification for the same teardown still has to reach main:
+      // the browser used to drop it silently while Node re-reported it, so the
+      // same double exit was observable on one host and invisible on the
+      // other. `reportProcessExit` is once-only per PID, so re-reporting is
+      // idempotent and the Node shape is the safe one to adopt.
+      host.reportProcessExit(pid, info, exitStatus);
+      return;
+    }
+
+    const settleMs = host.processExitSettleMs(pid, info);
+    const reapSignum = crashSignum ?? host.defaultExitCrashSignum(exitStatus);
+
+    const teardown = (async () => {
+      if (reapSignum !== undefined) {
+        try {
+          host.kernel().notifyHostProcessCrashed(pid, reapSignum);
+        } catch {
+          // Best effort; continue to the exact-generation teardown funnel.
+        }
+      }
+
+      // Keep the pid registered until the process worker is gone. musl's
+      // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
+      // termination is in flight those duplicate exits still need channel
+      // completions, otherwise the worker can park in Atomics.wait with no
+      // registered listener left to wake it.
+      //
+      // The two fences are independent, so they are awaited concurrently. The
+      // browser awaited them in sequence, which delayed thread teardown by the
+      // whole main-worker fence timeout for no stated reason.
+      const [workerQuiescent, threadsQuiescent] = await Promise.all([
+        waitForWorkerQuiescence(info.workerQuiescence),
+        terminateThreadWorkers(pid, false, host.threadWorkerSettleMs),
+      ]);
+      await terminateTrackedWorker(expectedWorker, settleMs);
+
+      // Deactivate the process (a zombie until reaped or destroy) after worker
+      // termination, so no further guest syscalls can arrive on its channel.
+      let exactMemoryTeardown = false;
+      const detachResult = await detachExactProcessGeneration({
+        pid,
+        generation: info,
+        operation: "deactivate",
+        retire: async (commit) => {
+          const hostFences = await host.exitRetirementFences(pid, info);
+          exactMemoryTeardown = workerQuiescent && threadsQuiescent
+            && hostFences;
+          if (exactMemoryTeardown) {
+            info.memoryLease.release();
+          } else {
+            // Without a terminal fence the backing is force-retired; it is
+            // never handed to another process on a maybe.
+            info.memoryLease.releaseAfterForcedTermination();
+          }
+          commit();
+        },
+      });
+      if (detachResult.status !== "released") {
+        completeVforkGenerationTeardown(
+          info,
+          false,
+          vforkReason,
+          detachResult.error,
+        );
+        reportRetainedProcessGeneration(
+          pid,
+          "process channel teardown",
+          detachResult,
+          exitStatus,
+        );
+        return;
+      }
+
+      host.externrefProcessOwner.releaseGeneration(info.externrefGeneration);
+      completeVforkGenerationTeardown(
+        info,
+        exactMemoryTeardown,
+        vforkReason,
+        new Error(
+          `vfork child ${pid} exited without exact ownership fences`,
+        ),
+      );
+
+      // A superseded old image must not reap the persistent PID that now
+      // belongs to its exec successor.
+      if (!detachResult.mayReapPid) return;
+      try {
+        host.kernel().reapHostOwnedExitedProcess(pid);
+      } catch (error) {
+        reportHostDiagnostic({
+          pid,
+          status: exitStatus,
+          source: "host-owned process reap",
+          message:
+            `${host.diagnosticPrefix} failed to reap completed host-owned ` +
+            `pid ${pid}: ${formatError(error)}`,
+        });
+      }
+    })();
+    host.processTeardowns.set(expectedWorker, teardown);
+
+    // The process is already a kernel-side zombie here. Report the exit before
+    // worker teardown so a slow termination cannot make a host's spawn() look
+    // like the guest process never exited. The teardown promise stays tracked
+    // so destroy() still waits for cleanup.
+    host.reportProcessExit(pid, info, exitStatus);
+
+    try {
+      await teardown;
+    } finally {
+      host.processTeardowns.delete(expectedWorker);
+    }
+  }
+
+  /**
+   * Wait for `pid`'s teardown, starting one if the exit has not been seen.
+   */
+  async function awaitFinalizedProcessTeardown(
+    pid: number,
+    exitStatus: number,
+    expectedWorker: Info["worker"],
+    crashSignum?: number,
+    reason: VforkExactCompletionReason =
+      signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
+  ): Promise<void> {
+    if (!host.processTeardowns.has(expectedWorker)) {
+      void finishProcessExit(pid, exitStatus, crashSignum, expectedWorker, reason);
+    }
+    await host.processTeardowns.get(expectedWorker);
+  }
+
   function respondTransferredBytes(requestId: number, result: Uint8Array): void {
     host.post(
       { type: "response", requestId, result },
@@ -1260,9 +1489,11 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
+    awaitFinalizedProcessTeardown,
     createFreshProcessMemory,
     detachExactProcessGeneration,
     dispatchForkHostImport,
+    finishProcessExit,
     handleExportRootfsImage,
     handleInjectConnection,
     handlePipeRead,
