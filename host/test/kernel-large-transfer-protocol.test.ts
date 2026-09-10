@@ -1268,51 +1268,36 @@ describe("kernel transfer fatal latch", () => {
   );
 });
 
-describe("large vector validation precedes reservation", () => {
+describe("vector I/O never reserves host transfer scratch", () => {
+  // Vector I/O used to be flattened by the host: it walked the caller's iovec
+  // table, bounded the count, proved every nested range, and staged the whole
+  // payload into a reserved kernel allocation. That reservation is what these
+  // cases guarded -- "reject before reserving" mattered because a reservation
+  // had already been taken out on the caller's word.
+  //
+  // The kernel walks the caller's table itself now, into memory it owns, so
+  // there is no host reservation to protect and no host-side count or range
+  // bound to run early. `IOV_MAX`, aggregate SSIZE_MAX and per-buffer EFAULT
+  // are proven where they are now enforced: `msghdr::read_iovecs` and
+  // `syscalls::sys_vector_io` in `runtime-core`, and end to end on both caller
+  // widths by `examples/kernel_scratch_browser_test.c` via
+  // `test/kernel-scratch-runtime.test.ts`.
+  //
+  // What is worth pinning here is the property those cases were really about,
+  // stated positively: a vector syscall must reach `kernel_handle_channel`
+  // without touching the reserved-transfer protocol at all, however large or
+  // however malformed its table.
   it.each([
     ["wasm32 writev", 4, ABI_SYSCALLS.Writev],
     ["wasm32 readv", 4, ABI_SYSCALLS.Readv],
     ["wasm64 writev", 8, ABI_SYSCALLS.Writev],
     ["wasm64 readv", 8, ABI_SYSCALLS.Readv],
   ] as const)(
-    "%s rejects IOV_MAX + 1 without beginning a reservation",
+    "%s dispatches through the ordinary channel, reserving nothing",
     (_name, pointerWidth, syscall) => {
       const harness = makeTransferHarness(pointerWidth);
-      const tablePointer = 256;
-
-      writeSyscall(
-        harness.channel,
-        syscall,
-        [
-          7n,
-          BigInt(tablePointer),
-          BigInt(POSIX_IOV_MAX + 1),
-          0n,
-          0n,
-          0n,
-        ],
-      );
-      harness.worker.handleSyscall(harness.channel);
-
-      expect(harness.begin).not.toHaveBeenCalled();
-      expect(harness.execute).not.toHaveBeenCalled();
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: EINVAL,
-      });
-    },
-  );
-
-  it.each([
-    ["wasm32 writev", 4, ABI_SYSCALLS.Writev],
-    ["wasm32 readv", 4, ABI_SYSCALLS.Readv],
-    ["wasm64 writev", 8, ABI_SYSCALLS.Writev],
-    ["wasm64 readv", 8, ABI_SYSCALLS.Readv],
-  ] as const)(
-    "%s rejects a later invalid nested range without beginning a reservation",
-    (_name, pointerWidth, syscall) => {
-      const harness = makeTransferHarness(pointerWidth);
+      const handleChannel = vi.fn(() => 0);
+      harness.kernelExports.kernel_handle_channel = handleChannel;
       const tablePointer = 256;
       writeIovec(
         harness.channel.memory,
@@ -1322,29 +1307,42 @@ describe("large vector validation precedes reservation", () => {
         4096,
         LARGE_LENGTH,
       );
-      writeIovec(
-        harness.channel.memory,
-        pointerWidth,
-        tablePointer,
-        1,
-        harness.processBytes.byteLength - 1,
-        2,
-      );
 
       writeSyscall(
         harness.channel,
         syscall,
-        [7n, BigInt(tablePointer), 2n, 0n, 0n, 0n],
+        [7n, BigInt(tablePointer), 1n, 0n, 0n, 0n],
       );
       harness.worker.handleSyscall(harness.channel);
 
       expect(harness.begin).not.toHaveBeenCalled();
       expect(harness.execute).not.toHaveBeenCalled();
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: EFAULT,
-      });
+      expect(harness.channelExecute).not.toHaveBeenCalled();
+      expect(handleChannel).toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["wasm32 writev", 4, ABI_SYSCALLS.Writev],
+    ["wasm32 readv", 4, ABI_SYSCALLS.Readv],
+    ["wasm64 writev", 8, ABI_SYSCALLS.Writev],
+    ["wasm64 readv", 8, ABI_SYSCALLS.Readv],
+  ] as const)(
+    "%s reserves nothing even for a count past IOV_MAX",
+    (_name, pointerWidth, syscall) => {
+      const harness = makeTransferHarness(pointerWidth);
+      const handleChannel = vi.fn(() => 0);
+      harness.kernelExports.kernel_handle_channel = handleChannel;
+      writeSyscall(
+        harness.channel,
+        syscall,
+        [7n, 256n, BigInt(POSIX_IOV_MAX + 1), 0n, 0n, 0n],
+      );
+      harness.worker.handleSyscall(harness.channel);
+
+      expect(harness.begin).not.toHaveBeenCalled();
+      expect(harness.execute).not.toHaveBeenCalled();
+      expect(handleChannel).toHaveBeenCalled();
     },
   );
 });
@@ -1354,35 +1352,28 @@ describe("ignored vector and message pointers", () => {
     ["wasm32", 4, 0xffff_ffffn],
     ["wasm64", 8, 1n << 60n],
   ] as const)(
-    "%s validates iovcnt before the pointer and canonicalizes zero-count iov",
+    "%s canonicalizes an iovec pointer a zero count makes meaningless",
     (_name, pointerWidth, ignoredPointer) => {
+      // POSIX does not inspect `iov` when `iovcnt` is zero, so the caller may
+      // leave bits there that no pointer of its data model could hold. The
+      // host normalizes them away before the generated process-address
+      // contract can reject a value that names nothing. The count itself is no
+      // longer the host's to bound: the kernel owns the table walk, so IOV_MAX
+      // is its EINVAL to report.
       const harness = makeTransferHarness(pointerWidth);
-      const zeroArgs = [7, Number(ignoredPointer), 0, 0, 0, 0];
-      expect(() => harness.worker.checkHandwrittenProcessAddressArguments(
-        harness.channel,
+      const rawArgs = [7n, ignoredPointer, 0n, 0n, 0n, 0n];
+      harness.worker.normalizeIgnoredVectorTablePointer(
         ABI_SYSCALLS.Writev,
-        zeroArgs,
-        [7n, ignoredPointer, 0n, 0n, 0n, 0n],
-        [7n, ignoredPointer, 0n, 0n, 0n, 0n],
-      )).not.toThrow();
-      expect(zeroArgs[1]).toBe(0);
-      expect(zeroArgs[2]).toBe(0);
+        rawArgs,
+      );
+      expect(rawArgs[1]).toBe(0n);
 
-      const invalidCountArgs = [7, 0, 0, 0, 0, 0];
-      expect(() => harness.worker.checkHandwrittenProcessAddressArguments(
-        harness.channel,
+      const keptArgs = [7n, ignoredPointer, 1n, 0n, 0n, 0n];
+      harness.worker.normalizeIgnoredVectorTablePointer(
         ABI_SYSCALLS.Readv,
-        invalidCountArgs,
-        [7n, ignoredPointer, BigInt(POSIX_IOV_MAX + 1), 0n, 0n, 0n],
-        [
-          7n,
-          ignoredPointer,
-          BigInt(POSIX_IOV_MAX + 1),
-          0n,
-          0n,
-          0n,
-        ],
-      )).toThrow(/iovec count/);
+        keptArgs,
+      );
+      expect(keptArgs[1]).toBe(ignoredPointer);
     },
   );
 

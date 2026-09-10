@@ -1074,6 +1074,20 @@ export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.CopyFileRange,
   ABI_SYSCALLS.Splice,
   ABI_SYSCALLS.Accept4,
+  // Every syscall whose argument is `SyscallArgSize::KernelDereferenced` and
+  // which can block. They reach the kernel through the ordinary descriptor
+  // path, so a blocked one takes an ordinary generic-channel snapshot; without
+  // an entry here it would arrive at `handleBlockingRetry` with no frozen
+  // disposition, and a syscall that names a descriptor treats that as a fatal
+  // protocol error rather than a retry.
+  ABI_SYSCALLS.Writev,
+  ABI_SYSCALLS.Readv,
+  ABI_SYSCALLS.Preadv,
+  ABI_SYSCALLS.Pwritev,
+  ABI_SYSCALLS.Preadv2,
+  ABI_SYSCALLS.Pwritev2,
+  ABI_SYSCALLS.Sendmsg,
+  ABI_SYSCALLS.Recvmsg,
 ]);
 
 /**
@@ -1152,33 +1166,6 @@ function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
       return false;
   }
   return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
-}
-
-/**
- * Canonicalize the scatter/gather table pointer a zero count makes meaningless.
- *
- * POSIX does not inspect `iov` when `iovcnt` is zero, so a caller may leave
- * anything at all in that slot -- including bits no pointer of its data model
- * could hold. Normalize it to the null the kernel will ignore before the
- * generated process-address contract can reject a value that names nothing.
- * `examples/kernel_scratch_browser_test.c` pins this with `UINTPTR_MAX - 15`.
- */
-function normalizeIgnoredVectorTablePointer(
-  syscallNr: number,
-  rawArgs: bigint[],
-): void {
-  switch (syscallNr) {
-    case SYS_WRITEV:
-    case SYS_READV:
-    case SYS_PREADV:
-    case SYS_PWRITEV:
-    case SYS_PREADV2:
-    case SYS_PWRITEV2:
-      if ((rawArgs[2] ?? 0n) === 0n) rawArgs[1] = 0n;
-      return;
-    default:
-      return;
-  }
 }
 
 function vectorRequestForbidsEagainRetry(
@@ -5921,6 +5908,38 @@ export class CentralizedKernelWorker {
    * slots keeps signed scalar arguments signed while preventing a wasm64
    * address from being rounded or narrowed to a low wasm32 address.
    */
+  /**
+   * Canonicalize the scatter/gather table pointer a zero count makes
+   * meaningless.
+   *
+   * POSIX does not inspect `iov` when `iovcnt` is zero, so a caller may leave
+   * anything at all in that slot -- including bits no pointer of its data
+   * model could hold. Normalize it to the null the kernel will ignore, before
+   * the generated process-address contract can reject a value that names
+   * nothing. `examples/kernel_scratch_browser_test.c` pins this with
+   * `UINTPTR_MAX - 15` across all six vector syscalls and both caller widths.
+   *
+   * The count itself is deliberately NOT checked here: the kernel owns the
+   * table walk, so `IOV_MAX` is its bound to enforce and its EINVAL to report.
+   */
+  private normalizeIgnoredVectorTablePointer(
+    syscallNr: number,
+    rawArgs: bigint[],
+  ): void {
+    switch (syscallNr) {
+      case SYS_WRITEV:
+      case SYS_READV:
+      case SYS_PREADV:
+      case SYS_PWRITEV:
+      case SYS_PREADV2:
+      case SYS_PWRITEV2:
+        if ((rawArgs[2] ?? 0n) === 0n) rawArgs[1] = 0n;
+        return;
+      default:
+        return;
+    }
+  }
+
   private checkHandwrittenProcessAddressArguments(
     channel: ChannelInfo,
     syscallNr: number,
@@ -11500,7 +11519,7 @@ export class CentralizedKernelWorker {
     // addresses stay bigint in adjustedArgs; ProcessSize is first normalized
     // to the guest width, then projected to Number only after an exact safe-
     // integer proof because planner arithmetic consumes it.
-    normalizeIgnoredVectorTablePointer(syscallNr, rawArgs);
+    this.normalizeIgnoredVectorTablePointer(syscallNr, rawArgs);
     const adjustedArgs = normalizeChannelScalarArguments(syscallNr, rawArgs);
     const origArgs: number[] = adjustedArgs.map((value, index) =>
       typeof value === "number"

@@ -1270,27 +1270,29 @@ describe("blocking retry request snapshots", () => {
         2n,
       ]);
 
+      // The host no longer flattens anything: it publishes the caller's own
+      // table address and count, and the kernel walks them. So what a retry
+      // must preserve, and what this observes, is the ADDRESS and COUNT of the
+      // request as first made -- never the guest's replacement mailbox.
       const attempts: Array<{
         syscall: number;
         fd: number;
-        payload: number[];
+        iovAddr: number;
+        iovCount: number;
       }> = [];
       harness.kernelExports.kernel_handle_channel = vi.fn(
         (rawPointer: number | bigint) => {
           const view = kernelView(harness, rawPointer);
-          const length = Number(kernelArg(view, 2));
-          const dataPointer = Number(kernelArg(view, 1));
           attempts.push({
             syscall: view.getUint32(CH_SYSCALL, true),
             fd: Number(kernelArg(view, 0)),
-            payload: Array.from(
-              harness.kernelBytes.slice(dataPointer, dataPointer + length),
-            ),
+            iovAddr: Number(kernelArg(view, 1)),
+            iovCount: Number(kernelArg(view, 2)),
           });
           if (attempts.length === 1) {
             publishKernelResult(view, -1, EAGAIN);
           } else {
-            publishKernelResult(view, length, 0);
+            publishKernelResult(view, 5, 0);
           }
           return 0;
         },
@@ -1314,16 +1316,29 @@ describe("blocking retry request snapshots", () => {
       harness.processBytes.fill(0xee, originalSecond, originalSecond + 3);
       await retryAfterDefaultDelay(harness);
 
+      // Both attempts carry the request as first made: writev under its own
+      // number (no scalar rewrite), the original descriptor, the original
+      // table address, and the original count -- although the guest rewrote
+      // its mailbox to fd 88, table 0x1400, count 1, repointed the original
+      // table's first entry, and scribbled over both original buffers.
+      //
+      // The BYTES the second attempt writes are the kernel's to preserve, not
+      // the host's: `BlockingRetryTarget::Vector` holds what was gathered at
+      // entry, so the payload cannot become copy-at-success. That half is
+      // proven in `crates/runtime-core/src/blocked_retry.rs` and end to end,
+      // not against this fake kernel.
       expect(attempts).toEqual([
         {
-          syscall: ABI_SYSCALLS.Write,
+          syscall: ABI_SYSCALLS.Writev,
           fd: 7,
-          payload: [1, 2, 3, 4, 5],
+          iovAddr: originalTable,
+          iovCount: 2,
         },
         {
-          syscall: ABI_SYSCALLS.Write,
+          syscall: ABI_SYSCALLS.Writev,
           fd: 7,
-          payload: [1, 2, 3, 4, 5],
+          iovAddr: originalTable,
+          iovCount: 2,
         },
       ]);
       expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Writev);
