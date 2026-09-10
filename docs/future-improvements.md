@@ -309,6 +309,49 @@ Any follow-up should:
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
 
+## Build freshness
+
+### `./run.sh rebuild kernel` leaves the consumed artifact stale
+
+`./run.sh rebuild kernel` compiles the kernel and installs it into the
+SourceOnly cache, then exits reporting success — **without repointing
+`local-binaries/kernel.wasm`**, which is the artifact every host actually
+loads. `./run.sh local-build` does not repair it either: it trusts the cache
+and skips the finalizer when the graph is otherwise clean.
+
+Observed 2026-09-09 while validating the rust-first Tier-1 batch. The kernel's
+`host_proc_read_bytes` import had been widened from a 32-bit to a 64-bit
+address. The rebuild produced a correct artifact
+(`kernel-…-d9828ad327e06ac0…`, verified with `wasm-tools print` to import
+`(func (param i32 i64 i32 i32) (result i32))`), while
+`local-binaries/kernel.wasm` still resolved to a generation built three days
+earlier with the `i32` signature. Every `crates/host-native` smoke test failed
+with `incompatible import type for env::host_proc_read_bytes`, and two full
+rebuild cycles were spent before the projection — rather than the code — was
+identified as stale.
+
+The mismatch itself failed loudly, which is the stale-artifact contract working
+as intended. The defect is one layer up: a command named `rebuild` reported
+success while the consumed artifact did not change. A build step that cannot
+refresh what it claims to rebuild should either do so or fail.
+
+The declared installer repoints it correctly and takes seconds:
+
+```
+WASM_POSIX_LOCAL_INSTALL_SOURCE=<cache path>/kandelo-kernel.wasm \
+WASM_POSIX_LOCAL_INSTALL_SESSION=<session> \
+  xtask build-deps --arch wasm32 --binaries-dir local-binaries \
+    install-local-artifact kernel kandelo-kernel.wasm
+```
+
+Fixes to consider, in preference order: have `cmd_rebuild` finish with that
+install step; or have the freshness check compare the projection target against
+the cache key it just produced and fail loudly on divergence, rather than
+letting a stale symlink survive a successful rebuild.
+
+**Files:** `run.sh` (`cmd_rebuild`, `cmd_local_build`),
+`tools/xtask/src/local_build.rs`, `tools/xtask/src/build_deps.rs`.
+
 ## Kernel — regressions
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
