@@ -679,6 +679,51 @@ capacity-carrying views. Their errno *choice* should still be stated by Rust.
    decoders of one format, one hand-rolled — and the TS side runs on **every
    exec**.
 
+## Validation traps this campaign has paid for — read before claiming a green
+
+**Seven silent-success defects, each found by someone about to cite it as evidence.**
+The pattern is consistent enough to be a standing suspicion rather than a run of
+accidents: **when a gate reports success, check that it ran.**
+
+1. A rebuild that did not rebuild (`./run.sh rebuild kernel` leaves ambient
+   `local-binaries/kernel.wasm` stale).
+2. `vfs-image-kernel-lazy`'s KLZY equivalence gate scoring a skip as a pass.
+3. `build-musl.sh` exiting 0 on failure.
+4. **All 18 real-`dlopen` e2e tests skip unless `local-binaries/kernel.wasm`
+   exists**, which `./run.sh setup` never creates — a fresh worktree reports
+   `3 passed | 3 skipped`, exit 0, beside 100 green unit tests. The gate
+   guarding a 6,340-line deletion was armed to pass by default. True baseline:
+   **116 passed / 2 failed of 118**.
+5. **`cargo test -p wasi-module` ran 0 tests, exit 0** — `#![cfg(feature = "testing")]`
+   with nothing enabling it. Those 60 tests were the only coverage of 40 of the
+   46 WASI entry points.
+6. `host/test/pthread.test.ts` dying wholesale on a missing `rootfs.vfs`, hiding
+   a genuinely red thread-exit test for an unknown length of time.
+7. **`ci-check-browser-assets` asking only three hardcoded questions.** It does
+   `process.exit(1)` on failure, so it is not swallowing errors — its *spec
+   list* was hardcoded, so it could never fail on a missing co-resident side
+   module. Green for `@fork-module32-wasm` for as long as that alias existed.
+   Now sourced from `browser-module-contract.mjs`.
+
+### Two more that cost whole test runs
+
+**The full Vitest suite needs an otherwise-idle tree.** Two agents discarded
+complete runs they had destroyed themselves — one with a concurrent
+`./run.sh rebuild kernel` (which removes the ambient kernel), one with
+`check-abi-version.sh` (which rebuilds the kernel wasm and republishes the
+program index). The tell is identical in both: suites that pass in isolation
+appear in the failing set, with errors naming *provisioning* rather than
+behaviour. **Do the builds first, then run the suite and touch nothing.**
+
+**Run Vitest inside `./scripts/dev-shell.sh`.** Outside it the SDK is not on
+PATH and ~80 unrelated failures appear (`wasm32posix-cc ENOENT`, "no
+wasm32-capable clang"). The coordinator made this mistake once and reported
+real-looking failures from it.
+
+**And a native-only `cargo check` is not evidence a crate builds.** A `String`
+resolving through `std` on the host failed on wasm32/wasm64 twice this week,
+where `runtime-core` is `no_std` and must name it through `alloc`.
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
