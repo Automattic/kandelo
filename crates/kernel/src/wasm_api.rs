@@ -1544,6 +1544,36 @@ pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
     }
 }
 
+/// Load the in-kernel rootfs overlay's base tree by parsing the `/` VFS image
+/// itself, instead of consuming a tree the host walked and re-encoded.
+///
+/// `image_len` is the byte length of the whole VFSI container; the kernel pulls
+/// the bytes it needs through `env.host_image_read` as it walks. It reads far
+/// less than the whole image (a superblock, the inode-table blocks it touches,
+/// directory data blocks, indirect blocks, and the `KLZY` section), so a large
+/// image is never made resident in kernel memory.
+///
+/// This is the image-authoritative alternative to `kernel_rootfs_load_manifest`;
+/// a host calls exactly one of the two. Returns the number of entries loaded
+/// (>=0) or a negative errno — in particular `-ENOSYS` when the host has not
+/// installed an image source, which is what keeps the path dormant. See
+/// `rootfs::load_image`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32) -> i32 {
+    let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::load_image(image_len, |req, b| match req {
+        crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
+        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
+            host.fetch_archive(archive_id, b, offset)
+        }
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
 /// host calls this at boot once it hands `/` ownership to the kernel and demotes
 /// its image backend to a byte-leaf provider. Returns the previous state (0/1).

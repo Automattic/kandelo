@@ -1056,6 +1056,328 @@ fn set_base_times(path: &[u8], mtime_sec: u64, mtime_nsec: u32) {
 }
 
 // ---------------------------------------------------------------------------
+// Image-authoritative base-tree load: the kernel parses its own `/` image.
+// ---------------------------------------------------------------------------
+
+/// A [`crate::sffs::BlockSource`] backed by the host's raw image window.
+///
+/// `BlockSource::read_exact_at` takes `&self` because a resident `[u8]` image
+/// needs no mutation to serve a block; a host-backed source needs `&mut` on the
+/// byte-source closure, so the closure lives behind a `RefCell`. The kernel is
+/// single-threaded through this path (the whole tree build runs inside one
+/// `kernel_rootfs_load_image` call), so a borrow conflict is a bug rather than
+/// contention, and `try_borrow_mut` reports it as `EIO` instead of panicking.
+///
+/// No block cache. A cache here would be an unmeasured optimisation on a boot
+/// path, and `docs/agent-guidance/performance.md` governs: the cost of this
+/// shape is deliberately left visible until it is measured.
+struct HostImageSource<F> {
+    byte_source: core::cell::RefCell<F>,
+    len: u64,
+}
+
+impl<F> crate::sffs::BlockSource for HostImageSource<F>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        // Bound the range against the image the host declared before asking for
+        // any of it, so an out-of-range read is `EIO` here rather than a
+        // silently short host answer that a caller could mistake for data.
+        let end = offset.checked_add(dst.len() as u64).ok_or(Errno::EIO)?;
+        if end > self.len {
+            return Err(Errno::EIO);
+        }
+        let mut byte_source = self.byte_source.try_borrow_mut().map_err(|_| Errno::EIO)?;
+        let mut done = 0usize;
+        while done < dst.len() {
+            let at = offset.checked_add(done as u64).ok_or(Errno::EIO)?;
+            let read = (*byte_source)(ByteReq::Image { offset: at }, &mut dst[done..])?;
+            if read == 0 {
+                // The range was validated above, so end-of-image inside it means
+                // the host and the declared length disagree. Truthful failure.
+                return Err(Errno::EIO);
+            }
+            done = done.checked_add(read).ok_or(Errno::EIO)?;
+            if done > dst.len() {
+                return Err(Errno::EIO); // host overran the buffer it was lent
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A window onto part of a [`crate::sffs::BlockSource`].
+///
+/// The VFSI container wraps the SFFS filesystem at a non-zero offset, and
+/// `Sffs::mount` addresses blocks from the filesystem's own byte 0. Rebasing
+/// here keeps that offset out of every `Sffs` call site.
+struct SubSource<'a, S> {
+    inner: &'a S,
+    offset: u64,
+    len: u64,
+}
+
+impl<S: crate::sffs::BlockSource> crate::sffs::BlockSource for SubSource<'_, S> {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let end = offset.checked_add(dst.len() as u64).ok_or(Errno::EIO)?;
+        if end > self.len {
+            return Err(Errno::EIO);
+        }
+        let base = self.offset.checked_add(offset).ok_or(Errno::EIO)?;
+        self.inner.read_exact_at(base, dst)
+    }
+}
+
+/// A directory whose children still have to be walked, plus the absolute path
+/// they hang off. The walk uses an explicit stack rather than recursion: image
+/// depth is untrusted input in a browser (a shared boot descriptor can name an
+/// image), and the kernel has no guard page under its shadow stack.
+struct PendingDir {
+    path: Vec<u8>,
+    ino: u32,
+}
+
+/// Ceiling on directories visited, so a corrupt image whose cycle escapes the
+/// visited-set check still terminates. The nine production images have at most
+/// tens of thousands of directories; a million is far above any real image and
+/// far below anything that could hang a boot.
+const MAX_IMAGE_DIRS: usize = 1_000_000;
+
+/// Replace the base layer by parsing the `/` VFS image itself, pulling its bytes
+/// from the host through [`ByteReq::Image`].
+///
+/// This is the image-authoritative counterpart to [`load_manifest`]: instead of
+/// consuming a tree the host walked and re-encoded (RTFS), the kernel mounts the
+/// image's SFFS filesystem, walks it, and applies the image's own kernel-facing
+/// lazy-linkage section (`KLZY`, [`crate::klzy`]) to learn which inodes are
+/// deferred. The host stops resolving names entirely; it becomes a positioned
+/// byte window over one container it already holds.
+///
+/// `image_len` is the length of the whole VFSI container, which the host knows
+/// and the container header does not carry. Returns the number of entries
+/// inserted. A malformed image or a rejected insert yields `EINVAL`/`EIO` with
+/// the store reset to empty — a partial tree is never left behind, matching
+/// [`load_manifest`].
+///
+/// Equivalence with [`load_manifest`] is deliberate and tested: the walk visits
+/// the root first and then each directory's children in sorted name order,
+/// skipping `.`/`..` and anything that is not a directory, regular file, or
+/// symlink, exactly as `emitRootfsManifest` does host-side.
+pub fn load_image<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    reset();
+    let result = load_image_inner(image_len, byte_source);
+    if result.is_err() {
+        reset();
+    }
+    result
+}
+
+fn load_image_inner<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    use crate::sffs::{file_type, BlockSource, Sffs, ROOT_INO};
+
+    let source = HostImageSource {
+        byte_source: core::cell::RefCell::new(byte_source),
+        len: image_len,
+    };
+
+    // The lazy-linkage section is read from the container BEFORE the inner
+    // filesystem is mounted, because both spans come from the same container
+    // header and a missing section must stay distinguishable from a corrupt one
+    // (`kernel_lazy_span` returns `None` vs `EINVAL`).
+    let linkage = match crate::sffs::kernel_lazy_span(&source)? {
+        None => crate::klzy::KernelLazyLinkage::default(),
+        Some((offset, len)) => {
+            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(len, 0u8);
+            source.read_exact_at(offset, &mut bytes)?;
+            crate::klzy::decode_kernel_lazy_linkage(&bytes)?
+        }
+    };
+
+    // `ino -> record`. A `KLZY` file record with `archive_id == 0` is a
+    // URL-backed single lazy file whose transport the host owns; the kernel
+    // still needs its real size, because the image's inode holds a zero-length
+    // stub. `decode_kernel_lazy_linkage` already rejects duplicate inodes.
+    let mut lazy_files: BTreeMap<u32, &crate::klzy::KernelLazyFile> = BTreeMap::new();
+    for file in &linkage.files {
+        lazy_files.insert(file.ino, file);
+    }
+
+    let (sffs_offset, sffs_len) = crate::sffs::sffs_span(&source)?;
+    let filesystem = Sffs::mount(SubSource {
+        inner: &source,
+        offset: sffs_offset,
+        len: sffs_len,
+    })?;
+
+    let root_stat = filesystem.stat_ino(ROOT_INO)?;
+    if file_type(root_stat.mode) != S_IFDIR {
+        return Err(Errno::EINVAL); // `/` is not a directory in the image
+    }
+    insert_base_dir(
+        b"/",
+        root_stat.mode,
+        root_stat.uid,
+        root_stat.gid,
+        u64::from(ROOT_INO),
+    )?;
+    set_base_times_from_ms(b"/", root_stat.mtime_ms);
+    let mut count = 1usize;
+
+    let mut visited: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+    visited.insert(ROOT_INO);
+    let mut stack: Vec<PendingDir> = Vec::new();
+    stack.push(PendingDir {
+        path: b"/".to_vec(),
+        ino: ROOT_INO,
+    });
+    let mut dirs_visited = 0usize;
+
+    while let Some(PendingDir {
+        path: dir_path,
+        ino: dir_ino,
+    }) = stack.pop()
+    {
+        dirs_visited += 1;
+        if dirs_visited > MAX_IMAGE_DIRS {
+            return Err(Errno::EINVAL);
+        }
+        let mut entries = filesystem.read_dir(dir_ino)?;
+        // Deterministic order, matching the host walk this replaces. The tree is
+        // a `BTreeMap` either way, so order does not change the result; it keeps
+        // the two loaders comparable step for step.
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Children are pushed in reverse so they pop in sorted order and each
+        // directory is fully expanded before its next sibling — the same
+        // pre-order the host's recursive walk produces.
+        let mut subdirectories: Vec<PendingDir> = Vec::new();
+        for entry in entries {
+            if entry.name == b"." || entry.name == b".." {
+                continue;
+            }
+            let mut abs = Vec::new();
+            abs.extend_from_slice(&dir_path);
+            if dir_path != b"/" {
+                abs.push(b'/');
+            }
+            abs.extend_from_slice(&entry.name);
+
+            let stat = filesystem.stat_ino(entry.ino)?;
+            let ino = u64::from(entry.ino);
+            match file_type(stat.mode) {
+                S_IFDIR => {
+                    if !visited.insert(entry.ino) {
+                        // A directory reachable by two names is not a legal POSIX
+                        // tree and would make this walk non-terminating.
+                        return Err(Errno::EINVAL);
+                    }
+                    insert_base_dir(&abs, stat.mode, stat.uid, stat.gid, ino)?;
+                    set_base_times_from_ms(&abs, stat.mtime_ms);
+                    count += 1;
+                    subdirectories.push(PendingDir {
+                        path: abs,
+                        ino: entry.ino,
+                    });
+                }
+                S_IFREG => {
+                    match lazy_files.get(&entry.ino) {
+                        Some(lazy) if lazy.archive_id != 0 => {
+                            insert_lazy_file(
+                                &abs,
+                                lazy.archive_id,
+                                lazy.source_path.as_bytes(),
+                                lazy.size,
+                                stat.mode,
+                                stat.uid,
+                                stat.gid,
+                                ino,
+                            )?;
+                        }
+                        // A URL-backed lazy file (`archive_id == 0`) is a base
+                        // file whose bytes the host still fetches on demand; only
+                        // its size comes from the linkage.
+                        Some(lazy) => {
+                            insert_base_file(
+                                &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
+                            )?;
+                        }
+                        None => {
+                            insert_base_file(
+                                &abs, ino, stat.size, stat.mode, stat.uid, stat.gid, ino,
+                            )?;
+                        }
+                    }
+                    set_base_times_from_ms(&abs, stat.mtime_ms);
+                    count += 1;
+                }
+                S_IFLNK => {
+                    let target = filesystem.read_link(entry.ino)?;
+                    insert_base_symlink(&abs, &target, stat.mode, stat.uid, stat.gid, ino)?;
+                    set_base_times_from_ms(&abs, stat.mtime_ms);
+                    count += 1;
+                }
+                _ => {
+                    // Sockets/FIFOs/device nodes have no place in a `/` image; a
+                    // real one is a build defect. Skipped, exactly as the host
+                    // walk skips it, rather than absorbed as another type.
+                }
+            }
+        }
+        for subdirectory in subdirectories.into_iter().rev() {
+            stack.push(subdirectory);
+        }
+    }
+
+    // Archive table: every lazy archive the image declares, with the total byte
+    // length `ensure_archive_member` needs to bound its whole-archive fetch.
+    ROOTFS.with(|state| {
+        for archive in &linkage.archives {
+            state.archives.insert(
+                archive.archive_id,
+                ArchiveEntry {
+                    size: archive.archive_bytes,
+                    raw: None,
+                    directory: None,
+                    members: BTreeMap::new(),
+                },
+            );
+        }
+    });
+
+    Ok(count)
+}
+
+/// [`set_base_times`] for a source that reports one millisecond timestamp, which
+/// is what an SFFS inode carries. Split the same way `emitRootfsManifest` splits
+/// it host-side, so the two loaders agree to the nanosecond.
+fn set_base_times_from_ms(path: &[u8], mtime_ms: u64) {
+    let sec = mtime_ms / 1000;
+    let nsec = ((mtime_ms % 1000) * 1_000_000) as u32;
+    set_base_times(path, sec, nsec);
+}
+
+// ---------------------------------------------------------------------------
 // Read-path operations (Increment 2a).
 // ---------------------------------------------------------------------------
 
@@ -3710,5 +4032,242 @@ mod tests {
         assert_eq!(size(h).unwrap(), 0);
         assert_eq!(lstat(b"/lazy/f").unwrap().st_size, 0);
         release_handle(h);
+    }
+
+    // -----------------------------------------------------------------------
+    // load_image: the kernel parsing its own `/` image.
+    // -----------------------------------------------------------------------
+
+    /// A real VFSI container emitted by the production image writer. Six inodes:
+    /// `/` (dir), `/big.txt` (45,000 B), `/dir` (dir), `/dir/*` , `/hello.txt`,
+    /// `/link` (symlink). It carries no `KLZY` section, which is exactly the
+    /// "older image" case `kernel_lazy_span` must read as `None` rather than as
+    /// corruption.
+    const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+
+    /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
+    /// archive requests are `ENOSYS`, so a test that accidentally reaches for
+    /// them fails loudly instead of reading image bytes by another name.
+    fn image_host(image: &[u8]) -> impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno> + '_ {
+        move |req, buf| match req {
+            ByteReq::Image { offset } => {
+                let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+                if start >= image.len() {
+                    return Ok(0);
+                }
+                let n = core::cmp::min(buf.len(), image.len() - start);
+                buf[..n].copy_from_slice(&image[start..start + n]);
+                Ok(n)
+            }
+            _ => Err(Errno::ENOSYS),
+        }
+    }
+
+    /// Encode a `KLZY` section the way the TypeScript writer does. Kept local to
+    /// this module rather than shared with `klzy`'s own tests: this one exists to
+    /// drive `load_image`, and a shared builder would let a change to the encoder
+    /// silently move both sides of the assertion at once.
+    fn klzy_section(groups: &[(u32, u64, &str)], files: &[(u32, u64, u32, &str)]) -> Vec<u8> {
+        use wasm_posix_shared::abi;
+        let mut out = Vec::new();
+        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_MAGIC);
+        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_VERSION.to_le_bytes());
+        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE.to_le_bytes());
+        out.extend_from_slice(&(groups.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        for (archive_id, archive_bytes, mount_prefix) in groups {
+            let name = mount_prefix.as_bytes();
+            let size = u32::from(abi::VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE) + name.len() as u32;
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&archive_id.to_le_bytes());
+            out.extend_from_slice(&archive_bytes.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // flags
+            out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name);
+        }
+        for (ino, size, archive_id, source_path) in files {
+            let name = source_path.as_bytes();
+            let record = u32::from(abi::VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE) + name.len() as u32;
+            out.extend_from_slice(&record.to_le_bytes());
+            out.extend_from_slice(&ino.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(&archive_id.to_le_bytes());
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name);
+        }
+        out
+    }
+
+    /// `TINY_VFS` with a `KLZY` section appended and its container flag set.
+    /// The section goes after the existing (empty) lazy-JSON section, which is
+    /// where `kernel_lazy_span` walks to find it, so this exercises the real
+    /// section-walk rather than a shortcut.
+    fn tiny_vfs_with_kernel_lazy(section: &[u8]) -> Vec<u8> {
+        let mut image = TINY_VFS.to_vec();
+        let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
+        let flagged = flags | wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;
+        image[8..12].copy_from_slice(&flagged.to_le_bytes());
+        image.extend_from_slice(&(section.len() as u32).to_le_bytes());
+        image.extend_from_slice(section);
+        image
+    }
+
+    #[test]
+    fn load_image_builds_the_base_tree_from_a_real_vfs_image() {
+        let _guard = TestGuard::acquire();
+        let count = load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).expect("load image");
+        assert_eq!(count, 6, "root + 4 root entries + 1 file under /dir");
+
+        let root = lstat(b"/").expect("/ stat");
+        assert_eq!(root.st_mode & 0xf000, S_IFDIR);
+        assert_eq!(root.st_mode & 0o7777, 0o755);
+        assert_eq!(root.st_ino, 1);
+
+        let big = lstat(b"/big.txt").expect("/big.txt stat");
+        assert_eq!(big.st_mode & 0xf000, S_IFREG);
+        assert_eq!(big.st_mode & 0o7777, 0o644);
+        assert_eq!(big.st_size, 45_000);
+        assert_eq!(big.st_ino, 6);
+        // The image's own mtime, in whole seconds plus nanoseconds — not the
+        // store's create-time stamp, which `TestGuard` pinned at 1,000s.
+        assert_eq!(big.st_mtime_sec, 1_788_130_661);
+        assert_eq!(big.st_mtime_nsec, 647_000_000);
+
+        assert_eq!(lstat(b"/hello.txt").expect("hello").st_size, 11);
+        assert_eq!(lstat(b"/dir").expect("dir").st_mode & 0xf000, S_IFDIR);
+
+        let link = lstat(b"/link").expect("/link stat");
+        assert_eq!(link.st_mode & 0xf000, S_IFLNK);
+        let mut target = [0u8; 64];
+        let n = readlink(b"/link", &mut target).expect("readlink");
+        assert_eq!(n, link.st_size as usize);
+        assert!(!target[..n].is_empty());
+    }
+
+    #[test]
+    fn load_image_applies_the_images_own_kernel_lazy_section() {
+        let _guard = TestGuard::acquire();
+        // ino 6 is `/big.txt`; back it with an archive member instead, and give
+        // ino 2 (`/hello.txt`) a URL-backed lazy size the image inode does not
+        // carry. Both kinds must be honored, not just the one every shipped
+        // image happens to use today.
+        let section = klzy_section(
+            &[(1, 4_096, "/")],
+            &[(6, 99_999, 1, "members/big.txt"), (2, 4_242, 0, "")],
+        );
+        let image = tiny_vfs_with_kernel_lazy(&section);
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(count, 6);
+
+        // The archive-backed file is a lazy member with the section's size, not
+        // the image inode's 45,000.
+        assert_eq!(lstat(b"/big.txt").expect("big").st_size, 99_999);
+        let (archive_id, source_path) = lazy_member_source(b"/big.txt").expect("lazy member");
+        assert_eq!(archive_id, 1);
+        assert_eq!(source_path, b"members/big.txt");
+
+        // The URL-backed file stays a plain base file (the host owns its
+        // transport) but takes its real size from the section.
+        assert_eq!(lstat(b"/hello.txt").expect("hello").st_size, 4_242);
+        assert!(lazy_member_source(b"/hello.txt").is_err());
+
+        // The archive table the whole-archive fetch needs was registered.
+        ROOTFS.with(|state| {
+            assert_eq!(state.archives.get(&1).expect("archive 1").size, 4_096);
+        });
+    }
+
+    #[test]
+    fn load_image_reads_an_image_without_a_kernel_lazy_section_as_older_not_corrupt() {
+        let _guard = TestGuard::acquire();
+        // `TINY_VFS` has the flag clear. That is a legitimate older image.
+        assert!(load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).is_ok());
+        assert!(lazy_member_source(b"/big.txt").is_err());
+    }
+
+    #[test]
+    fn load_image_rejects_a_flagged_but_corrupt_kernel_lazy_section() {
+        let _guard = TestGuard::acquire();
+        let mut section = klzy_section(&[(1, 4_096, "/")], &[(6, 1, 1, "m")]);
+        section[0] ^= 0xff; // break the section magic
+        let image = tiny_vfs_with_kernel_lazy(&section);
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EINVAL
+        );
+        // A rejected load leaves no partial tree behind.
+        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn load_image_rejects_a_malformed_container_and_resets_the_store() {
+        let _guard = TestGuard::acquire();
+        build_sample_tree();
+        assert!(lstat(b"/").is_ok());
+
+        let mut bad = TINY_VFS.to_vec();
+        bad[0] ^= 0xff; // break the VFSI magic
+        assert_eq!(
+            load_image(bad.len() as u64, image_host(&bad)).unwrap_err(),
+            Errno::EINVAL
+        );
+        // Not just "the new tree is absent": the PREVIOUS tree is gone too, so a
+        // failed load can never leave a caller reading a half-replaced base.
+        assert_eq!(lstat(b"/a").unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn load_image_reports_an_image_shorter_than_the_host_declared_as_eio() {
+        let _guard = TestGuard::acquire();
+        // The host claims a longer image than it can serve, and the missing
+        // bytes are ones the walk needs (the inode table starts at block 3, so
+        // 13,000 bytes stops inside it). The walk must fail rather than treat
+        // end-of-image as zero-filled data.
+        let truncated = &TINY_VFS[..13_000];
+        assert_eq!(
+            load_image(TINY_VFS.len() as u64, image_host(truncated)).unwrap_err(),
+            Errno::EIO
+        );
+        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn load_image_propagates_enosys_when_no_image_source_is_installed() {
+        let _guard = TestGuard::acquire();
+        // This is the dormant case: every host declares `host_image_read`, and a
+        // host with no image source answers ENOSYS. It must surface as ENOSYS,
+        // not as a corrupt-image EINVAL, so a misconfigured host is legible.
+        let mut none = |_req: ByteReq, _buf: &mut [u8]| -> Result<usize, Errno> { Err(Errno::ENOSYS) };
+        assert_eq!(
+            load_image(1_024, &mut none).unwrap_err(),
+            Errno::ENOSYS
+        );
+    }
+
+    #[test]
+    fn load_image_never_asks_the_host_beyond_the_declared_image_length() {
+        let _guard = TestGuard::acquire();
+        let limit = TINY_VFS.len() as u64;
+        let mut highest = 0u64;
+        let mut source = |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
+            let ByteReq::Image { offset } = req else {
+                return Err(Errno::ENOSYS);
+            };
+            let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+            if start >= TINY_VFS.len() {
+                return Ok(0);
+            }
+            let n = core::cmp::min(buf.len(), TINY_VFS.len() - start);
+            highest = highest.max(offset + n as u64);
+            buf[..n].copy_from_slice(&TINY_VFS[start..start + n]);
+            Ok(n)
+        };
+        load_image(limit, &mut source).expect("load image");
+        assert!(highest <= limit, "read past the declared image length");
+        // And it reads far less than the whole image: the point of the cursor is
+        // that a 16-256 MiB image is never made resident in kernel memory.
+        assert!(highest > 0);
     }
 }

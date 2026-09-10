@@ -86,7 +86,21 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// genuinely irreducible host import for the one host-owned fact the kernel
 /// cannot compute itself: the machine's real assigned IPv4 address
 /// (`host_network_local_address`). Net: 83 - 0 + 1 = 84.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 84;
+///
+/// K8 increment 1 then added `host_image_read`, taking the count to 85. This is
+/// deliberately recorded as a temporary increase, not a permanent one. The
+/// kernel cannot parse the `/` VFS image it booted from without a way to read
+/// that image's bytes, and the image is a host-owned resource — fetched,
+/// decompressed, and held by the host — so the byte window is irreducible in the
+/// same way `host_blob_read` is. What it buys is the removal of a whole *host
+/// authority*: with it, the kernel walks the image itself
+/// (`rootfs::load_image`) instead of consuming a tree the host walked, and the
+/// host stops resolving names on the kernel's behalf. Once the cutover deletes
+/// `emitRootfsManifest` and its `blobPaths` name map, base-file reads come from
+/// the image rather than from a host-resolved path, and `host_blob_read` leaves
+/// with them: 85 - 1 = 84. The increase is here first because a dormant import
+/// is the only way to land the two halves separately.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 85;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
