@@ -1701,6 +1701,43 @@ above as its scope rather than a line count. The KFLA writer means the archive
 half is no longer the harder one: a driver that can capture fork state in Rust
 gets `dylink-fork-archive.ts` for a few hundred lines of allocate-and-copy,
 which is why 4 and 5 should land together with the rewire rather than after it.
+
+### K5 I6a's browser registrations — three of four closed, measured (2026-09-10)
+
+Run against a real SourceOnly Vite dev server in this worktree, with the
+planner module rebuilt from the current tree and the projection re-finalized
+(`verify-fresh` exit 0).
+
+| registration | state | evidence |
+|---|---|---|
+| capability contract (`browser-module-contract.mjs`) | closed by I6a | it supplies the alias name that resolved below |
+| **Vite alias `@dylink-module32-wasm`** | **CLOSED** | resolves to `local-binaries/source-only-v1/dylink_module32.wasm`, the SourceOnly projection path |
+| **`?url` artifact module** | **CLOSED** | `browser-dylink-module-artifact.ts` transforms 200 and exports the URL |
+| fetch/transfer/compile chain | **fetch closed, transfer NOT** | see below |
+
+The **fetch** half is closed at the dev server: `HTTP 200`,
+`content-type: application/wasm`, 233,525 bytes, `cmp`-identical to the staged
+artifact — and those exact served bytes compile to **0 imports and 21 `dl_*`
+exports** and instantiate. The **transfer** half (the `dylinkModuleBytes`
+protocol field crossing `postMessage` into `browser-kernel-worker-entry.ts`,
+and the `WebAssembly.compile` there) is still unproven, because the app never
+boots in this worktree.
+
+**Why it does not boot, and why that is not this item's:** `run.sh
+prepare-browser` exited 1 with **`php/wasm32`** (the documented ICU
+`pkg-config` failure) and **`wget/wasm32`** (`curl: (35) TLS connect error`
+fetching upstream source — a network failure, not a platform one). Those
+blocked 12 downstream nodes, `coreutils-docs` among them, and the artifact
+resolver then refuses the whole closure rather than mixing provenance tiers:
+`Package artifact closure is incomplete: no single provenance tier contains
+every accepted artifact`. The page 500s on `lazy-archives.ts` long before any
+kernel worker starts.
+
+Two things worth keeping from the attempt: the dev server's COOP/COEP headers
+are right (`crossOriginIsolated=true`, `SharedArrayBuffer` available), and the
+failure is a *provisioning* message rather than a behavioural one — the same
+tell the campaign's contaminated-run note describes, here reported honestly
+instead of read as a broken feature.
 - **Fourteen inherited claims have now been disproved, eight of them the
   coordinator's.** The newest is this census's own row 2 — see value plan §2y.
   Measure rather than inherit, *including* what was measured yesterday.
