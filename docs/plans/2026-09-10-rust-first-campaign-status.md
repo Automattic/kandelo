@@ -142,6 +142,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K4 | **RUNNING** | Worker entry unification |
 | K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
 | K13b | **NOT STARTED** | |
+| K6 follow-ons | **DONE — cut over, TS −212 / Rust −180** | Scatter/gather in the kernel; the msghdr/iovec wires retired. See below |
 | K6 follow-ons | **DONE — cut over, TS −258 / Rust −240** | Scatter/gather in the kernel; the msghdr/iovec wires retired. See below |
 | K13b | **DONE** | 121 dispatch-only exports withdrawn; artifact 320 → 199. See below |
 
@@ -1145,10 +1146,14 @@ capacity-carrying views. Their errno *choice* should still be stated by Rust.
 ## K6's two follow-ons — scatter/gather cut over, the wires retired (2026-09-10)
 
 Worktree `.claude/worktrees/agent-afc1b42a208645bd5`, base `020d1dbfa`.
-**Ledger: in-scope TS −258, Rust −240.** Net-negative in both, because the
-work removed more than it added on each side: the TypeScript iovec marshaller,
-and — on the Rust side — a whole parallel implementation plus the fixed wire
-format nothing produced any more. No `ABI_VERSION` bump; no new `env.host_*`.
+**Ledger `020d1dbfa..05ff2a59e`: in-scope TS −212, Rust −180**, over 17
+commits. Net-negative in both, because the work removed more than it added on
+each side: the TypeScript iovec marshaller, and — on the Rust side — a whole
+parallel implementation plus the fixed wire format nothing produced any more.
+No `ABI_VERSION` bump. **Host imports measured on the built artifact:
+`WebAssembly.Module.imports` reports 77 imports, 76 of them `env.host_*` —
+unchanged, and no `fn host_*` extern declaration is added or removed by the
+diff.**
 
 ### 1. `writev`/`readv`/`preadv`/`pwritev`/`preadv2`/`pwritev2` — cut over
 
@@ -1244,6 +1249,61 @@ SysV control calls and the mqueue transfers had been broken since K6 — and the
 six vector syscalls would have joined them. Nothing needed staging: leave the
 guest address alone and stamp width 4. Four lines.
 
+### A POSIX fidelity defect the cutover surfaced, and the fixture that proved it
+
+`guest_ptr::read_guest_bytes` / `write_guest_bytes` refuse guest address zero.
+For a C pointer that is right — Kandelo's SDK never places an object at 0, so a
+null `struct msghdr *` is a bug and EFAULT is what Linux reports. It is wrong
+for an argument that is a raw memory OFFSET, and the deleted TypeScript
+marshaller said so at the site: byte 0 of a guest's linear memory is an
+ordinary addressable byte, and the range proof — not a null-pointer convention
+— is what establishes that the caller owns it.
+
+`host/test/fixtures/wasi-hello.wat` relies on exactly that, in as many words:
+`;; Set up iovec at address 0`. A hand-written module has no C runtime holding
+low memory back, and WASI's `ciovec.buf` is a wasm offset rather than a C
+pointer. Moving the six vector syscalls onto the cross-memory primitives turned
+that fixture's `fd_write` into EFAULT and took `test/wasi-module.test.ts` from
+5/5 to **2/5**.
+
+Resolved by splitting the policy rather than picking a side: `guest_ptr` gains
+an `_at_any_address` pair — documented as its fourth rule — used only by the
+iovec table and the buffers it names, while `read_msghdr`, the IPC control
+paths and every other structure pointer keep the C convention. The host's
+`host_proc_read_bytes`/`host_proc_write_bytes` allow address zero on the
+PROCESS side for the same reason and stay strict on the kernel side, where zero
+really does mean allocator failure.
+
+**Worth noting how nearly this went the other way.** The first reading was that
+the refusal was correct — Linux returns EFAULT for a null `iov`, and
+`test/kernel-public-scratch.test.ts` had a case named "rejects null
+positive-length process transfer ranges" pinning it deliberately. That reading
+was reverted on principle and then reinstated on evidence, once a real in-repo
+guest turned out to depend on the permissive behaviour. Principle and pinned
+test both pointed the wrong way; the guest decided it.
+
+### The blocked-retry defect, and K6's latent twin
+
+`GENERIC_BLOCKING_SNAPSHOT_SYSCALLS` names the syscalls whose EAGAIN records
+the frozen plan a retry replays. It listed **none** of the kernel-dereferenced
+syscalls. The six vector ones used to take a `flattened-transfer` snapshot from
+the host marshaller, and moving them to the descriptor path left them with
+none: a blocked `writev` reached `handleBlockingRetry` with no frozen
+disposition, which for a syscall that names a descriptor is a **fatal protocol
+error, not a retry**.
+
+`sendmsg` and `recvmsg` were in the same state and had been since K6 moved
+their `msghdr` to the same form. Nothing in that item's suites blocks, so it
+never fired. All eight are added.
+
+### `EXPECTED_HOST_IMPORT_COUNT` still said 75
+
+`crates/host-native` pins the kernel's `env.host_*` import count. The campaign
+has been at 76 since K7 gave `host_debug_log` a live caller; the pin was never
+updated. It survived because the test that reads it **skips when no kernel
+artifact exists** — every fresh worktree. Building a kernel is what makes it
+fire, and this item built one.
+
 ### The eighth silent-success defect: 20 tests that run on no target
 
 **Every `#[test]` in `crates/kernel/src/wasm_api.rs` is unreachable.** The
@@ -1254,11 +1314,76 @@ kandelo` runs 3 source-shape guards from `lib.rs` and 4 from `tests/`; the 20
 was the iovec-count boundary test this item inherited. Coverage that needs to
 run belongs in `runtime-core`.
 
+### The tenth, and the expensive one: guest tests resolve a DIFFERENT kernel
+
+`local-binaries/kernel.wasm` is the ambient path the campaign's notes name, and
+`install-local-artifact` is how you refresh it. But the resolver checks
+**`local-binaries/source-only-v1/` first**, so a stale kernel there wins over a
+freshly installed ambient one, silently.
+
+`scripts/xtask.sh verify-fresh` reports this precisely — "…/source-only-v1/
+kernel.wasm is stale: it was built for key …, but the current source tree
+resolves to key …". It was read as being about a tier nothing used, and every
+Vitest result for the next two hours ran against a kernel two hours older than
+the tree. The tell was a kernel-side probe that produced no output at all: an
+`ENOTTY` planted in the dispatch arm never came back, for the *passing* cases
+as well as the failing ones.
+
+`./run.sh rebuild kernel` is what refreshes that tier. Do it, then re-run
+everything measured before it.
+
 ### The ninth: `npx tsc` exits 0 without compiling
 
 In a worktree with no `node_modules`, `npx tsc --noEmit -p host` prints
 "This is not the tsc command you are looking for" and **exits 0**. Read as
 "0 errors" for about a minute. Use `host/node_modules/.bin/tsc`.
+
+### Validation actually run
+
+Everything below is against a kernel rebuilt through `./run.sh rebuild kernel`
+into `local-binaries/source-only-v1/` — the tier guest tests resolve — after
+musl was rebuilt for both widths from the regenerated headers.
+
+| evidence | result |
+|---|---|
+| `cargo test -p runtime-core -p kandelo -p wasm-posix-shared -p host-native` | green (1,895 + 3 + 4 + 64 + 52 + 1) |
+| `cargo test --workspace --exclude xtask` | green, 0 failures |
+| `cargo test -p xtask` | 605 + 1 + 2, green |
+| `cargo check` **wasm32** and **wasm64** (`-Z build-std`) | 0 errors each |
+| **`kernel-scratch-runtime` (the vector conformance program)** | **2/2, wasm32 AND wasm64** |
+| `wasi-module` (fd_write / path_open+fd_read / fd_readdir) | 5/5 |
+| `rlimit-fsize`, `sysv-ipc`, `mqueue`, `scm-rights-semantics`, `scm-rights-pipe-lifetime` | 31/31 together with the two above |
+| `ifhwaddr` | 2/2 **run alone**, as K6 recorded |
+| contract + boundary set (8 files) | **454 passed / 5 failed**, every failure proven pre-existing |
+| POSIX I/O + signal suites (9 files) | 47/48; the one failure identical at base |
+| process/fork/exec/spawn/wait/clone (75 files) | 580 passed / 45 failed; base has **46** in the same five files |
+| `host/node_modules/.bin/tsc --noEmit -p host` | 33 errors, identical count at `020d1dbfa` measured the same way |
+| `scripts/check-abi-version.sh` | snapshot in sync; ABI_VERSION and snapshot consistent |
+| `scripts/xtask.sh verify-fresh` | clean |
+
+The five pre-existing failures, each proven rather than assumed:
+
+- 3 × `kernel-scratch-contract` — byte-identical messages at `020d1dbfa` from a
+  detached checkout, including the 30-entry unreviewed-memory-authority list.
+- `kernel-large-transfer-protocol` "fatal latch" — the harness stubs
+  `kernel_commit_process_exit` while the host uses
+  `kernel_commit_process_group_exit` for `exit_group`, introduced by `7e7a010c8`
+  which `git merge-base --is-ancestor` confirms predates this base.
+- `kernel-scratch-transfer-boundaries` epoll padding — reproduced with the base
+  `host/src/kernel-worker.ts` restored over this tree.
+
+**No full-suite number is claimed.** This worktree is not fully provisioned:
+the musl-level change invalidated every package, and the 97-package rebuild was
+stopped at 12 after ~20 minutes. A full run reports 43 failing files whose
+causes are dominated by that — `Package artifact closure is incomplete`,
+`dash.wasm` ENOENT, `fork-instrumented worker requires the co-resident fork
+module`, `BrowserKernel test should not fetch`, and 54 timeouts on a loaded
+machine. None of them names a vector syscall: a search of the complete log for
+`writev|readv|preadv|pwritev|iovec` finds only passing cases and live syscall
+traces such as `[100] writev(1, 9537856, 2) = 46`.
+
+**Browser: not run.** The consolidated tier-end pass and the maintainer's own
+manual check still owe this change.
 
 ## Validation traps this campaign has paid for — read before claiming a green
 
@@ -1768,6 +1893,11 @@ whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 - **Never `git add -A docs/plans/`** — it sweeps other agents' in-progress files.
 - **Twelve inherited "floors" have been disproved, six of them the
   coordinator's.** Measure rather than inherit.
+- **Guest tests resolve `local-binaries/source-only-v1/kernel.wasm` BEFORE the
+  ambient `local-binaries/kernel.wasm`.** `install-local-artifact` refreshes
+  only the latter, so a stale source-only tier wins silently.
+  `scripts/xtask.sh verify-fresh` names it exactly; believe it.
+  `./run.sh rebuild kernel` is the fix. Tenth silent success.
 - **`npx tsc` without `node_modules` prints a friendly message and exits 0.**
   Use `host/node_modules/.bin/tsc`. Ninth silent success.
 - **Every `#[test]` in `crates/kernel/src/wasm_api.rs` runs on no target.** The
