@@ -490,9 +490,10 @@ fn read_elements(bytes: &[u8], span: &SectionSpan, shape: &mut ModuleShape) -> D
 fn read_i32_const_expr(reader: &mut Reader<'_>) -> DylinkResult<u32> {
     let opcode = reader.byte()?;
     let value = match opcode {
-        0x41 => u32::try_from(reader.varint64()? as i64 as u32)
-            .map_err(|_| DylinkError::MalformedModule("element offset out of range"))?,
-        0x42 => u32::try_from(reader.varint64()?)
+        // A negative offset is rejected rather than wrapped: a table index is
+        // unsigned, and silently reinterpreting -1 as 4294967295 would place
+        // element entries at an address no engine would accept.
+        0x41 | 0x42 => u32::try_from(reader.varint64()?)
             .map_err(|_| DylinkError::MalformedModule("element offset out of range"))?,
         0x23 => {
             // global.get: not statically known. Consume the index and report
