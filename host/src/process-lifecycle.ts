@@ -2816,6 +2816,10 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     try {
       alloc = materializeThreadSlot(memory, slotAddr, processInfo.ptrWidth);
     } catch (e) {
+      // The thread never started, so the range the kernel set aside for it is
+      // free again. Without this the reservation would sit in the address
+      // space for the life of the process, for a thread that does not exist.
+      releaseThreadSlot(pid, slotAddr);
       const message = e instanceof Error ? e.message : String(e);
       reportHostDiagnostic({
         pid,

@@ -1248,6 +1248,41 @@ child inherits no host reservations, and both exec paths replace
 `examples/pthread-concurrent-slots.c` is the evidence, run on both hosts: 20
 threads live at once, where the native arena stopped at 16.
 
+### A Node guest process cannot find the repo when `TMPDIR` is outside it
+
+Measured 2026-09-10. Running the host Vitest suites from a worktree checkout,
+every guest process died with:
+
+    [process-worker] Kernel worker failed: Could not find repo root
+    (expected workspace Cargo.toml + package.json)
+
+The chain: running from source, `NodeWorkerAdapter` bundles the worker entry
+with esbuild into `mkdtempSync(join(tmpdir(), "kandelo-worker-entry-"))`
+(`host/src/worker-adapter.ts`) rather than spawning a `tsx` loader per worker.
+Inside that bundle every module is inlined, so `currentModuleDir()` is the
+temporary directory. `useNodeWasmArtifactModule` then calls `findRepoRoot()`
+with no starting point (`host/src/wasm-artifact-module-node.ts`), which walks
+up from there looking for the workspace `Cargo.toml` plus a `package.json`
+named `kandelo` -- and under the default `TMPDIR`
+(`/private/tmp/nix-shell.*` inside `scripts/dev-shell.sh`) there is nothing to
+find. The artifact reader is never installed, so the worker cannot judge a
+single `.wasm`.
+
+Pointing `TMPDIR` at a directory inside the checkout makes the same suites pass
+unchanged, which is what this session did to run them. That is a workaround,
+not a fix: nothing about a guest process should depend on where the operating
+system puts temporary files.
+
+`WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` does not help -- it is read by
+`resolverRepoRoot()`, not by the artifact-module loader's bare `findRepoRoot()`
+call. The fix is for the worker to be *told* where its artifacts live rather
+than deducing it from its own file path: the parent host already knows, and
+already sends the worker its program bytes, memory and channel offsets.
+
+How this passes in continuous integration is unclear, and that question is
+worth answering before a fix is chosen -- a bundling path that silently differs
+between CI and a developer's checkout is its own problem.
+
 ### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
 
 Measured 2026-09-10 while a machine filled its disk: with the flag set, the
