@@ -1010,6 +1010,64 @@ mirror present — and interests carry **no OFD identity**. Both need owners.
 - **Run the futex-as-floor probe** (STRONG DOUBT: the kernel may be able to own
   futex outright). If it can, that is the tenth disproved floor.
 
+## 2o. Tier-1 group validation — results (2026-09-09)
+
+Branch `integration/k-tier1-20260909`, 86 files, +19,704/−1,408. **Not pushed.**
+
+| check | result |
+|---|---|
+| Rust workspace (host triple) | green |
+| `cargo test -p host-native` | **52 passed, 0 failed** |
+| K1 nine-image KLZY equivalence | **21 passed** |
+| K10 suites (wasi-abi, wasi-module, 1,358-input differential) | green |
+| ABI snapshot regenerate + verify | consistent, **no bump** |
+| `verify-fresh` | exit 0 |
+| Full Vitest | **60 files / 122 tests failed — none traced to the merge** |
+| Browser (Chromium, targeted) | **8 passed, 2 skipped** |
+| Browser (full suite) | running |
+
+### Two false greens I caught, both worth remembering
+
+1. **A pipeline laundered a failure into a pass.** The first Vitest run was
+   `npx vitest run 2>&1 | tail -30`, so the reported exit status came from
+   `tail`, not Vitest — it said `0` while Vitest had actually exited **1**.
+   Re-run without the pipe: `VITEST_EXIT=1`. **Never take an exit code through
+   a pipe**; capture it directly or use `PIPESTATUS`.
+2. **A truncated grep nearly "refuted" a true claim.** Checking whether
+   `assertImageKernelAbi` had callers, `head -4` cut the real hit and the output
+   looked like tests-only. Same shape as the earlier `wasm_api.rs` exclusion
+   that hid two live exports. **Truncation is not evidence of absence.**
+
+### Vitest: every failure checked, not assumed
+
+- **~40 files** in `packages/registry/**` and `tests/package-system/**` fail on
+  missing program binaries (`php-fpm.wasm`, `intl.so`, `curl.so`,
+  `spidermonkey-node.wasm`, `dinitctl.wasm`). **The merge touched neither
+  directory.** Provisioning.
+- `abi-version`, `wasm64`, `wasm-binary-parse` — same cause (`Package artifact
+  closure is incomplete … (missing)`), plus timeouts waiting on absent binaries.
+- **`kernel-reservation-export-contract`** — looked like a K13a regression
+  (2 required exports "missing"). It reads only `packages/registry/kernel/build-kernel.sh`
+  and `run.sh`, and **the merge changed neither**; both exports are present in
+  source, artifact *and* snapshot. Its two guard lists disagree with each other:
+  a **stale guard list**, pre-existing, and its own follow-up.
+- **`kernel-export-failure-audit`** — the strongest regression candidate, since
+  it audits `kernel-worker.ts`, from which K2 cut 173 lines. **Disproved by
+  running the audit against the base file**: identical `#handleSpawn` finding,
+  same catch, only the line number moved. Pre-existing.
+
+**Honest caveat:** with 60 files unable to run, this suite currently proves much
+less than its size suggests. That is its own gap, independent of this work.
+
+### Browser gap worth naming
+
+`SIOCGIFCONF` has **no browser coverage at all**. K2 deleted its host intercept
+and serves it from the kernel; that is proven on Node (`ifhwaddr.test.ts`, 2
+passed, wasm32 + wasm64) and, in the browser, only indirectly. The Chromium
+`kernel-scratch-runtime` specs do exercise the widened `u64` path on **both
+pointer widths**, which is the riskier half — but an ifconf browser test does
+not exist and should.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
