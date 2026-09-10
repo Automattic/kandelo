@@ -902,5 +902,16 @@ therefore unreachable by its obvious invocation. Correct form:
 ./scripts/dev-shell.sh cargo run -p xtask --target aarch64-apple-darwin -- verify-fresh
 ```
 
-Worth fixing properly: either give xtask its own workspace/`.cargo/config.toml`
-so it defaults to the host triple, or have `run.sh` wrap the verb.
+**Fixed (2026-09-10) by `scripts/xtask.sh`**, which derives the host triple and
+passes `--target`. Use it for any direct xtask verb:
+
+```
+./scripts/dev-shell.sh scripts/xtask.sh verify-fresh
+```
+
+The properly-declarative fix is `forced-target` in `tools/xtask/Cargo.toml`,
+which is what the manifest's own comment recommends. It is still unavailable:
+it is gated on the nightly-only `per-package-target` feature, and re-testing it
+on this repo's current pinned toolchain (2026-09-10) still panics the cargo
+resolver rather than erroring cleanly. Revisit when that lands; the wrapper can
+then be deleted.
