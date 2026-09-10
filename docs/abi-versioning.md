@@ -726,6 +726,46 @@ may have permission to write a semaphore set without permission to read its
 metadata, so the array length comes from the requested command's own
 permission-checked query, never from a read-only `IPC_STAT`.
 
+**ABI 44 also withdraws 121 dispatch-only kernel exports**, taking
+`kernel_exports` from 322 entries to 201 (320 `kernel_*` symbols to 199,
+alongside the unchanged `__abi_version` and `memory`). These are the functions
+nothing outside the kernel module could ever call. `dispatch_channel_syscall`
+reaches them as plain Rust function calls — `SYS_CLOSE` dispatches as
+`kernel_close(a1)`, not as a re-entry through the export table — so
+`#[unsafe(no_mangle)] pub extern "C"` published a symbol with no consumer. The
+bodies and every caller are unchanged; only the export attribute is gone.
+
+Dispatch-only is not the same as dead, and the difference is worth stating
+because this epoch already got it wrong once: `kernel_brk` and `kernel_time`
+were called dead on the evidence of zero host references and were live, reached
+from inside `wasm_api.rs`. Zero host references means the host does not call
+it, not that nothing does.
+
+Removal was verified against every consumer of the export table, not just the
+hosts: `host/src` and `host/test`; `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS` and
+its OPTIONAL sibling; the `wasm_require_exports` list in
+`packages/registry/kernel/build-kernel.sh` and `KERNEL_REQUIRED_EXPORTS` in
+`run.sh`; and every `get_typed_func` lookup in `crates/host-native`, which runs
+the kernel under wasmtime and is therefore the one consumer that reads exports
+by name. Guests cannot reach them either: a guest's `kernel.*` import namespace
+is `buildKernelImports` in `host/src/worker-main.ts`, a closed set of
+hand-written JavaScript, and `assertSupportedKernelFunctionImports` rejects any
+module importing a name outside it.
+
+One function that looked like a consumer is not. `crates/host-native` mentions
+`kernel_wait4`, but only as `linker.func_wrap("kernel", "kernel_wait4", ...)`
+— supplying that import to a GUEST, never reading the kernel's export.
+Supplying an import and consuming an export share a name and nothing else.
+`kernel_exec_target_resolve_shebang`, the other host-native mention, is a real
+`kernel.get_typed_func` lookup and keeps its export.
+
+As with the five sizing exports above, this is a snapshot change without an
+`ABI_VERSION` bump, which the ABI-44 epoch decision permits, and as with those
+it is an export REMOVAL rather than an additive change: a host validating a
+required-export list built against ABI 43 will see 121 fewer entries. Nothing
+else in the snapshot moved — the regeneration diff is 0 lines added and 605
+removed, and the kernel's 76 `env.host_*` imports are unchanged.
+
 **`kernel_sendmsg` and `kernel_recvmsg` change signature in ABI 44**, from
 `(i32, i32, i32, i64) -> i32` to `(i32, i64, i32, i32, i64) -> i32`. The second
 argument was a kernel-scratch pointer to a fixed `KernelMsghdrWire` the host
