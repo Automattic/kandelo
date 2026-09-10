@@ -1,0 +1,32 @@
+{
+  "engine": "node 24.15.0",
+  "rows": [
+    {
+      "name": "control_plain_digest",
+      "outcome": "accepted"
+    },
+    {
+      "name": "control_plain_importKey",
+      "outcome": "accepted"
+    },
+    {
+      "name": "sab_digest",
+      "outcome": "threw",
+      "error": "TypeError: Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is a view on a SharedArrayBuffer, which is not allowed."
+    },
+    {
+      "name": "sab_importKey",
+      "outcome": "threw",
+      "error": "TypeError: Failed to execute 'importKey' on 'SubtleCrypto': 2nd argument is a view on a SharedArrayBuffer, which is not allowed."
+    },
+    {
+      "name": "sab_copied_then_importKey",
+      "outcome": "accepted"
+    },
+    {
+      "name": "sab_sign",
+      "outcome": "threw",
+      "error": "TypeError: Failed to execute 'sign' on 'SubtleCrypto': 3rd argument is a view on a SharedArrayBuffer, which is not allowed."
+    }
+  ]
+}
