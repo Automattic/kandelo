@@ -3206,62 +3206,6 @@ function hasCompleteForkInstrumentation(
 }
 
 /**
- * Verify that a user program was built against an ABI compatible with the
- * running kernel.
- *
- * Three outcomes:
- *   - Program exports `__abi_version` matching the kernel: silent pass.
- *   - Program exports `__abi_version` with a different value: hard error.
- *     A known mismatch is always worse than silent misbehavior — we would
- *     rather refuse to run.
- *   - Program doesn't export `__abi_version` at all: warn and continue.
- *     This is for rolling out the marker: legacy binaries built before
- *     channel_syscall.c gained the export don't have it. Once all
- *     published binaries carry the marker, this path can be flipped to
- *     a hard error — see docs/abi-versioning.md.
- *
- * Reads the marker directly from the Wasm bytes instead of calling the
- * `__abi_version` export. LLVM/lld may wrap exported functions with
- * `__wasm_call_ctors`; invoking the export here would run C++ constructors
- * before `_start`, which breaks runtimes such as SpiderMonkey.
- */
-function verifyProgramAbi(
-  programBytes: ArrayBuffer,
-  expected: number | undefined,
-  pid: number,
-): void {
-  if (expected === undefined) {
-    // Older host driver didn't populate the field — skip silently.
-    // Will be removed once all callers are updated.
-    return;
-  }
-  const actual = extractAbiVersion(programBytes);
-  if (actual === null) {
-    if (!abiMissingWarned) {
-      abiMissingWarned = true;
-      console.warn(
-        `[worker] pid=${pid}: user program lacks __abi_version export — ` +
-          "legacy binary predates ABI marker rollout. Rebuild against the " +
-          "current glue (channel_syscall.c) to pick up the check. " +
-          "See docs/abi-versioning.md.",
-      );
-    }
-    return;
-  }
-  if (actual !== expected) {
-    throw new Error(
-      `pid=${pid}: ABI version mismatch — kernel advertises ${expected}, ` +
-        `user program built against ${actual}. Rebuild the program against the ` +
-        "current kernel, or roll back the kernel to the matching version. " +
-        "See docs/abi-versioning.md.",
-    );
-  }
-}
-
-/** Warn once per worker process, not once per program load. */
-let abiMissingWarned = false;
-
-/**
  * Main process worker entry point.
  */
 export async function centralizedWorkerMain(
@@ -4824,8 +4768,6 @@ export async function centralizedWorkerMain(
           throw error;
         }
       }
-      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
-
       if (!initData.isForkChild) {
         setupChannelBase(
           instance,
@@ -5574,8 +5516,6 @@ export async function centralizedWorkerMain(
       );
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
-
       setupChannelBase(
         instance,
         module,

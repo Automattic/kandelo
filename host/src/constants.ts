@@ -2455,9 +2455,12 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
 
 /**
  * Warn once per worker process when a guest lacks the ABI-contract stamp,
- * not once per program load (mirrors `abiMissingWarned` in worker-main.ts).
+ * not once per program load.
  */
 let abiContractMissingWarned = false;
+
+/** As above, for a guest with no `__abi_version` export at all. */
+let abiMissingWarned = false;
 
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
@@ -2478,7 +2481,21 @@ export function describeWasmArtifactPolicyFailures(
 
   if (options.expectedAbi !== undefined && options.expectedAbi !== null) {
     declaredAbi = extractAbiVersion(programBytes);
-    if (declaredAbi !== null && declaredAbi !== options.expectedAbi) {
+    if (declaredAbi === null) {
+      // Legacy binary predating the `__abi_version` marker rollout. Warn and
+      // continue: this is the marker's documented rollout path
+      // (docs/abi-versioning.md), not a policy failure. Once every published
+      // binary carries the marker this becomes a hard failure.
+      if (!abiMissingWarned) {
+        abiMissingWarned = true;
+        console.warn(
+          "[worker] user program lacks __abi_version export — legacy binary " +
+            "predates the ABI marker rollout. Rebuild against the current " +
+            "glue (channel_syscall.c) to pick up the check. " +
+            "See docs/abi-versioning.md.",
+        );
+      }
+    } else if (declaredAbi !== options.expectedAbi) {
       failures.push(`ABI ${declaredAbi}, expected ${options.expectedAbi}`);
     }
   }
