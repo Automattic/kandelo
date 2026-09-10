@@ -572,6 +572,26 @@ pub fn size(proc: &Process, owner_pid: u32, token: u32) -> Result<i64, Errno> {
     i64::try_from(target.size()).map_err(|_| Errno::EOVERFLOW)
 }
 
+/// The retained target's complete bytes, for a caller that must inspect the
+/// artifact itself rather than hand it to an engine.
+///
+/// WHY this is free rather than a second copy: `PreparedExecTarget::new`
+/// already reserves a full-size buffer at prepare time, and the host fills it
+/// by reading the target *through* the kernel. So by the time an exec has read
+/// the artifact it intends to launch, the kernel is holding those exact bytes
+/// with drift already accounted for. Inspecting them here costs nothing and is
+/// strictly stronger than inspecting a host-side copy, which could have been
+/// substituted after the read.
+///
+/// Fails `EINVAL` when the host has not read the whole target, and `ETXTBSY`
+/// when a re-read observed different bytes — both from `observed_bytes`, whose
+/// contract this simply exposes under an owner check.
+pub fn artifact_bytes(proc: &Process, owner_pid: u32, token: u32) -> Result<&[u8], Errno> {
+    let target = proc.prepared_exec_targets.get(token)?;
+    owner_matches_ledger_pid(target.owner(), owner_pid)?;
+    target.observed_bytes()
+}
+
 pub fn read(
     proc: &mut Process,
     host: &mut dyn HostIO,

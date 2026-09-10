@@ -12,5 +12,11 @@ runtime-core = { path = "../runtime-core" }
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
 
+# The artifact policy the kernel applies to an exec target. It lives beside the
+# ABI definition it enforces rather than in the host, because the host had a
+# hand-rolled second implementation of it and the two could disagree about
+# whether a given binary was runnable.
+wasm-artifact = { path = "../wasm-artifact" }
+
 [target.'cfg(any(target_arch = "wasm32", target_arch = "wasm64"))'.dependencies]
 dlmalloc = { version = "0.2.14", default-features = false }

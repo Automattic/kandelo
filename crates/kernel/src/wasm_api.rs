@@ -3386,6 +3386,112 @@ pub extern "C" fn kernel_exec_target_shebang(
     total as i32
 }
 
+/// Judge the retained exec target against this kernel's ABI-epoch artifact
+/// policy, in the kernel, over the bytes the kernel already holds.
+///
+/// # Why the kernel and not the host
+///
+/// The host used to answer this in TypeScript, with its own hand-rolled
+/// WebAssembly binary reader (`host/src/constants.ts`). That reader was one of
+/// three implementations of the same contract in this repository, and it ran on
+/// **every `exec`**. Moving the judgement here removes a duplicated authority
+/// and puts the decision beside the ABI definition it enforces.
+///
+/// It also costs nothing. `PreparedExecTarget::new` already reserves the whole
+/// artifact at prepare time and the host fills it by reading *through* the
+/// kernel, so these are bytes the kernel is holding regardless. The former
+/// arrangement was strictly more expensive: the host read the same bytes back
+/// out of the kernel and parsed them a second time in JavaScript.
+///
+/// And it is stronger. The host's copy could be substituted between the read
+/// and the launch; the bytes judged here are the ones the target committed to,
+/// with `observed_bytes`' drift detection already applied — a target whose
+/// content changed under it reports `ETXTBSY` rather than being judged at all.
+///
+/// # Record format
+///
+/// Writes `[failure_count: u32 LE][truncated: u8][text]` to `out_ptr`, where
+/// `text` is the failures joined by `"; "`. Returns the record byte length, or
+/// a negative errno. An acceptable artifact writes a 5-byte record with a zero
+/// count.
+///
+/// `truncated` is 1 when `out_len` could not hold the whole diagnostic. The
+/// *count* is always exact, so the verdict never depends on whether the
+/// explanation fit — a refusal that fits in less space is still a refusal, and
+/// silently dropping failures would let a short buffer read as acceptance.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_artifact_policy(
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    const HEADER: usize = 5;
+    if out_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if out_len < HEADER || out_ptr == 0 || out_ptr.checked_add(out_len).is_none() {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let bytes = match crate::exec_target::artifact_bytes(proc, owner_pid, token) {
+        Ok(bytes) => bytes,
+        Err(error) => return -(error as i32),
+    };
+
+    let policy = wasm_artifact::ArtifactPolicy {
+        expected_abi: Some(expected_abi),
+        ..wasm_artifact::ArtifactPolicy::default()
+    };
+    let report = wasm_artifact::describe_artifact_policy_failures(bytes, &policy);
+
+    let count = u32::try_from(report.failures.len()).unwrap_or(u32::MAX);
+    out[0..4].copy_from_slice(&count.to_le_bytes());
+
+    let capacity = out_len - HEADER;
+    let mut written = 0usize;
+    let mut truncated = false;
+    for (index, failure) in report.failures.iter().enumerate() {
+        if index > 0 {
+            truncated |= !append_bytes(&mut out[HEADER..], &mut written, capacity, b"; ");
+        }
+        truncated |= !append_bytes(
+            &mut out[HEADER..],
+            &mut written,
+            capacity,
+            failure.as_bytes(),
+        );
+    }
+    out[4] = u8::from(truncated);
+    (HEADER + written) as i32
+}
+
+/// Append as much of `src` as fits, reporting whether all of it did.
+///
+/// Truncation stops on a UTF-8 boundary so the host never has to decode a
+/// partial code point out of a diagnostic.
+fn append_bytes(out: &mut [u8], written: &mut usize, capacity: usize, src: &[u8]) -> bool {
+    let remaining = capacity.saturating_sub(*written);
+    if remaining >= src.len() {
+        out[*written..*written + src.len()].copy_from_slice(src);
+        *written += src.len();
+        return true;
+    }
+    // Back off to the last byte that does not split a multi-byte sequence.
+    let mut take = remaining;
+    while take > 0 && (src[take] & 0xC0) == 0x80 {
+        take -= 1;
+    }
+    out[*written..*written + take].copy_from_slice(&src[..take]);
+    *written += take;
+    false
+}
+
 /// Resolve the retained target's `#!` chain end-to-end: a non-script target
 /// passes through unchanged, and exactly one level of `#!` script is resolved
 /// by preparing the decoded interpreter under the same owner (the script's
