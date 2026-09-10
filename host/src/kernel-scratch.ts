@@ -329,6 +329,7 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_classify_wasm_trap_signal":
     case "kernel_dequeue_signal":
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
