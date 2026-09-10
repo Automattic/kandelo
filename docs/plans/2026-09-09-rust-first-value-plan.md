@@ -2795,9 +2795,24 @@ TypeScript answered incorrectly rather than not at all.
 
 ### Honestly unproven
 
-- **Browser.** Not run. The Vite alias, the artifact module, the protocol field
-  and the `wasi_module32.wasm` asset are code-reviewed only. Per §2w item 8 this
-  goes to the consolidated tier-end pass and the maintainer's manual check.
+- **Browser.** No browser was booted. One positive check did run: the browser
+  input scanner, driven from the three real HTML entries, reports capabilities
+  `["fork-module32-wasm", "kernel-wasm", "pages-vfs-products", "rootfs-vfs",
+  "wasi-module32-wasm"]` — so `browser-wasi-module-artifact.ts` IS reachable
+  from the browser entry graph through the dynamic import in
+  `browser-kernel-host.ts`, and the alias is recognized. That proves the
+  dependency edge exists, not that a WASI guest runs in a browser. Per §2w item
+  8 the rest goes to the consolidated tier-end pass and the maintainer's manual
+  check.
+
+  **Do not cite `scripts/ci-check-browser-assets.sh` as evidence for this.**
+  It exited 0, but reading it shows `browserAssetImportsForPolicy` hardcodes
+  `@kernel-wasm` + `@rootfs-vfs` + `@binaries/*` and `resolveAssetImport`
+  throws "unsupported browser asset import" for anything else — so it has never
+  covered `@fork-module32-wasm` either. Its green says nothing about either
+  side module. It also reports "Package artifacts not found" for a dozen
+  unbuilt packages and still exits 0, which is worth knowing before quoting it
+  for anything.
 - **The three rootfs-dependent guest fixtures** (`wasi-hello`, `wasi-args`,
   `wasi-scalar-abi`) — provisioning, not a result; see the report.
 - **Performance.** Not measured. Each WASI call loses a JavaScript frame and
