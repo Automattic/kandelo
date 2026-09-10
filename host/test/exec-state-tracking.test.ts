@@ -74,6 +74,24 @@ function preparedExecExports(memory: WebAssembly.Memory) {
       _outPtr: number,
       _outLen: number,
     ) => 0),
+    // The kernel judges the artifact policy over the bytes it already holds
+    // for the token. The exec-child fixture is a real, current-ABI module, so
+    // the verdict is "acceptable": a five-byte record whose failure count is
+    // zero. The count is what decides the verdict — the host never infers
+    // acceptance from an empty diagnostic — so a stub returning only a length
+    // without writing the count would read as acceptance by accident rather
+    // than by contract.
+    kernel_exec_target_artifact_policy: vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _expectedAbi: number,
+      outPtr: number,
+      _outLen: number,
+    ) => {
+      new DataView(memory.buffer).setUint32(outPtr, 0, true);
+      new Uint8Array(memory.buffer)[outPtr + 4] = 0;
+      return 5;
+    }),
   };
 }
 
@@ -1101,18 +1119,33 @@ describe("exec host-state transition", () => {
     const removeProcess = vi.fn();
     const onSpawn = vi.fn(() => spawned);
     const program = resolvedProgram();
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(async () => program),
         onSpawn,
       },
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
+      kernelMemory,
       kernelInstance: {
         exports: {
           kernel_spawn_process: kernelSpawn,
           kernel_publish_spawn_child: publishSpawnChild,
           kernel_remove_process: removeProcess,
+          // The kernel judges the artifact policy for the spawn's
+          // authoritative target. This candidate is acceptable: failure
+          // count zero.
+          kernel_exec_target_artifact_policy: (
+            _ownerPid: number,
+            _target: number,
+            _expectedAbi: number,
+            outPtr: number,
+            _outLen: number,
+          ) => {
+            new DataView(kernelMemory.buffer).setUint32(outPtr, 0, true);
+            new Uint8Array(kernelMemory.buffer)[outPtr + 4] = 0;
+            return 5;
+          },
         },
       },
     });
@@ -1175,6 +1208,20 @@ describe("exec host-state transition", () => {
         exports: {
           kernel_spawn_process: () => 100,
           kernel_remove_process: vi.fn(),
+          // The kernel judges the artifact policy for the spawn's
+          // authoritative target. This candidate is acceptable: failure
+          // count zero.
+          kernel_exec_target_artifact_policy: (
+            _ownerPid: number,
+            _target: number,
+            _expectedAbi: number,
+            outPtr: number,
+            _outLen: number,
+          ) => {
+            new DataView(kernelMemory.buffer).setUint32(outPtr, 0, true);
+            new Uint8Array(kernelMemory.buffer)[outPtr + 4] = 0;
+            return 5;
+          },
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:

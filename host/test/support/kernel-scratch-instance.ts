@@ -68,6 +68,11 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i32,
     },
+    kernel_exec_target_artifact_policy: {
+      // (owner_pid, token, expected_abi, out_ptr, out_len) -> record length
+      parameters: [i32, i32, i32, pointer, pointer],
+      result: i32,
+    },
     kernel_exec_target_cancel: {
       parameters: [i32, i32],
       result: i32,
