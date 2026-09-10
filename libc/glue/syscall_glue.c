@@ -1267,17 +1267,18 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* Message-based socket I/O                                        */
     /* ============================================================== */
 
-    /* sendmsg — (fd, msg_ptr, flags) */
+    /* sendmsg — (fd, msg_ptr, flags). The kernel dereferences msg_ptr in this
+     * process's own memory, so pass the address and this process's width. */
     case SYS_SENDMSG:
-        return (long)kernel_sendmsg((int32_t)a1,
-                                    (const uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3, (int64_t)0);
+        return (long)kernel_sendmsg((int32_t)a1, (int64_t)(uintptr_t)a2,
+                                    (uint32_t)a3, (uint32_t)sizeof(void *),
+                                    (int64_t)0);
 
     /* recvmsg — (fd, msg_ptr, flags) */
     case SYS_RECVMSG:
-        return (long)kernel_recvmsg((int32_t)a1,
-                                    (uint8_t *)(uintptr_t)a2,
-                                    (uint32_t)a3, (int64_t)0);
+        return (long)kernel_recvmsg((int32_t)a1, (int64_t)(uintptr_t)a2,
+                                    (uint32_t)a3, (uint32_t)sizeof(void *),
+                                    (int64_t)0);
 
     /* getaddrinfo — (name, result_ptr) */
     case SYS_GETADDRINFO: {

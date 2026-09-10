@@ -413,14 +413,12 @@ fn render_marshal_header() -> String {
             args: vec![(1, SPAN_IOVEC, 0, 0, 2, 0, 0)],
         });
     }
-    // Nested msghdr syscalls: a single MSGHDR span at arg 1 (fd, msg, flags).
-    for number in [Syscall::Sendmsg as u32, Syscall::Recvmsg as u32] {
-        entries.push(Entry {
-            number,
-            nested: NESTED_MSGHDR,
-            args: vec![(1, SPAN_MSGHDR, 0, 0, 0, 0, 0)],
-        });
-    }
+    // sendmsg/recvmsg deliberately have NO nested entry. Their `msghdr` is
+    // declared `KernelDereferenced` in `SYSCALL_ARG_DESCRIPTORS` above, so the
+    // record carries only the caller's raw address in its scalar slot and the
+    // kernel walks the header, the iovec table and the CMSG chain itself. A
+    // MSGHDR span here would replace that address with a scratch offset and
+    // make the kernel read caller memory the caller never named.
 
     entries.sort_by_key(|entry| entry.number);
 

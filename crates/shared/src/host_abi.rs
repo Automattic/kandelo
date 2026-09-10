@@ -677,6 +677,22 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, In, arg!(0, mul 4), required)]
     ),
     entry!(
+        Syscall::Sendmsg as u32,
+        // `struct msghdr` is caller-native and carries three further guest
+        // pointers — `msg_name`, the `msg_iov` array, and `msg_control` —
+        // each sized by one of its own fields. The kernel walks them through
+        // the cross-memory primitives.
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        Syscall::Recvmsg as u32,
+        // InOut: the kernel reads the caller's iovec capacities and control
+        // buffer length, then writes the received bytes, the source address,
+        // any ancillary data, `msg_namelen`, `msg_controllen` and `msg_flags`
+        // back through the same header.
+        [desc!(1, InOut, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
         Syscall::Wait4 as u32,
         [
             desc!(1, Out, fixed!(4), nullable),
@@ -1335,6 +1351,8 @@ mod tests {
             (extra_syscalls::SYS_MSGCTL, 2),
             (extra_syscalls::SYS_SEMCTL, 3),
             (extra_syscalls::SYS_SHMCTL, 2),
+            (Syscall::Sendmsg as u32, 1),
+            (Syscall::Recvmsg as u32, 1),
         ];
         actual_nullable.sort_unstable();
         expected_nullable.sort_unstable();

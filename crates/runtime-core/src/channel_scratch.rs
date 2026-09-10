@@ -2161,124 +2161,44 @@ mod tests {
     }
 
     #[test]
-    fn record_msghdr_sendmsg_reconstructs_wire_and_rewrites_arg() {
-        let iov: [&[u8]; 1] = [b"hello"];
-        let (region, struct_len) =
-            encode_msghdr_region(SINGLE_SPAN_REGION_OFF, b"addr", &iov, b"cm", 0x55);
-        let mut data = build_single_span_record(
+    fn a_record_msghdr_span_is_refused_now_that_the_kernel_walks_the_header() {
+        // sendmsg/recvmsg used to arrive as a MSGHDR span: the guest flattened
+        // its scatter/gather list into the fixed `KernelMsghdrWire` the kernel
+        // then read out of scratch. `struct msghdr` is KernelDereferenced now
+        // — the record carries only the caller's raw address, and the kernel
+        // walks the header, the iovec table and the CMSG chain itself, in the
+        // caller's data model.
+        //
+        // A record still offering a span for it is stale or hostile. Honouring
+        // it would overwrite the guest address with a scratch offset, and the
+        // kernel would then read the CALLER's memory at an address the caller
+        // never named.
+        for syscall in [
             wasm_posix_shared::Syscall::Sendmsg as u16,
-            [9, 0, 0, 0, 0, 0], // fd, msg(overwritten), flags, ...
-            SPAN_KIND_MSGHDR,
-            1,
-            &region,
-            struct_len as u32,
-            REC_CAP,
-        );
-        let start = data.as_mut_ptr() as usize;
-        let scratch = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-
-        let prep = match unsafe { prepare_channel_record(scratch) } {
-            Some(Ok(prep)) => prep,
-            other => panic!("expected prepared record, got {other:?}"),
-        };
-        assert_eq!(prep.syscall_nr, wasm_posix_shared::Syscall::Sendmsg as u32);
-        assert_eq!(prep.args[0], 9);
-        // The msghdr pointer arg is rewritten to the KernelMsghdrWire base.
-        assert_eq!(prep.args[1] as usize, start);
-        // sendmsg only reads; no output copy-back.
-        assert!(prep.copy_back.is_empty());
-
-        // KernelMsghdrWire { name, name_len, iov, iov_len, control, control_len,
-        // flags } laid at the allocation base; referenced blocks follow in the
-        // validator's order: name, control, iov table, iov buffer.
-        let name_addr = start + 28; // after the 28-byte wire
-        let control_addr = (name_addr + 4 + 3) & !3; // align_up(name + 4, 4)
-        let iov_table_addr = (control_addr + 2 + 3) & !3; // align_up(control + 2, 4)
-        let iov_buf_addr = iov_table_addr + 8; // after the 1-entry table
-
-        assert_eq!(read_scratch_u32(&data, 0), name_addr as u32, "name");
-        assert_eq!(read_scratch_u32(&data, 4), 4, "name_len");
-        assert_eq!(read_scratch_u32(&data, 8), iov_table_addr as u32, "iov");
-        assert_eq!(read_scratch_u32(&data, 12), 1, "iov_len");
-        assert_eq!(read_scratch_u32(&data, 16), control_addr as u32, "control");
-        assert_eq!(read_scratch_u32(&data, 20), 2, "control_len");
-        assert_eq!(read_scratch_u32(&data, 24), 0x55, "flags");
-
-        assert_eq!(&data[name_addr - start..name_addr - start + 4], b"addr");
-        assert_eq!(&data[control_addr - start..control_addr - start + 2], b"cm");
-        // The single iovec entry points at the flattened data buffer.
-        assert_eq!(
-            read_scratch_u32(&data, iov_table_addr - start),
-            iov_buf_addr as u32
-        );
-        assert_eq!(read_scratch_u32(&data, iov_table_addr - start + 4), 5);
-        assert_eq!(&data[iov_buf_addr - start..iov_buf_addr - start + 5], b"hello");
-    }
-
-    #[test]
-    fn record_msghdr_recvmsg_plans_output_and_value_result_copyback() {
-        let iov: [&[u8]; 1] = [&[0u8; 5]];
-        let (region, struct_len) =
-            encode_msghdr_region(SINGLE_SPAN_REGION_OFF, &[0u8; 4], &iov, &[0u8; 2], 0);
-        let mut data = build_single_span_record(
             wasm_posix_shared::Syscall::Recvmsg as u16,
-            [9, 0, 0, 0, 0, 0],
-            SPAN_KIND_MSGHDR,
-            1,
-            &region,
-            struct_len as u32,
-            REC_CAP,
-        );
-        let start = data.as_mut_ptr() as usize;
-        let scratch = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-
-        let prep = match unsafe { prepare_channel_record(scratch) } {
-            Some(Ok(prep)) => prep,
-            other => panic!("expected prepared record, got {other:?}"),
-        };
-        assert_eq!(prep.args[1] as usize, start);
-
-        // recvmsg output copy-backs: the name, control, and iov data buffers,
-        // then the three value-result fields (name_len, control_len, flags)
-        // reflected from the KernelMsghdrWire into the record msghdr region.
-        assert_eq!(prep.copy_back.len(), 6);
-
-        let name_addr = start + 28;
-        let control_addr = (name_addr + 4 + 3) & !3;
-        let iov_buf_addr = ((control_addr + 2 + 3) & !3) + 8;
-
-        // Data-buffer copy-backs (name, control, iov) to their record offsets.
-        let name_record_off = SINGLE_SPAN_REGION_OFF + struct_len; // ref bytes start
-        let iov_record_off = name_record_off + 4;
-        let control_record_off = iov_record_off + 5;
-        assert_eq!(prep.copy_back[0].scratch_src, name_addr);
-        assert_eq!(prep.copy_back[0].channel_dest, start + name_record_off);
-        assert_eq!(prep.copy_back[0].len, 4);
-        assert_eq!(prep.copy_back[1].scratch_src, control_addr);
-        assert_eq!(prep.copy_back[1].channel_dest, start + control_record_off);
-        assert_eq!(prep.copy_back[1].len, 2);
-        assert_eq!(prep.copy_back[2].scratch_src, iov_buf_addr);
-        assert_eq!(prep.copy_back[2].channel_dest, start + iov_record_off);
-        assert_eq!(prep.copy_back[2].len, 5);
-
-        // Value-result fields: name_len at record offset +4; control_len/flags
-        // are the final two u32s of the 32-byte structural prefix.
-        assert_eq!(prep.copy_back[3].scratch_src, start + 4); // wire name_len
-        assert_eq!(
-            prep.copy_back[3].channel_dest,
-            start + SINGLE_SPAN_REGION_OFF + 4
-        );
-        assert_eq!(prep.copy_back[3].len, 4);
-        assert_eq!(prep.copy_back[4].scratch_src, start + 20); // wire control_len
-        assert_eq!(
-            prep.copy_back[4].channel_dest,
-            start + SINGLE_SPAN_REGION_OFF + struct_len - 8
-        );
-        assert_eq!(prep.copy_back[5].scratch_src, start + 24); // wire flags
-        assert_eq!(
-            prep.copy_back[5].channel_dest,
-            start + SINGLE_SPAN_REGION_OFF + struct_len - 4
-        );
+        ] {
+            let iov: [&[u8]; 1] = [b"hello"];
+            let (region, struct_len) =
+                encode_msghdr_region(SINGLE_SPAN_REGION_OFF, b"addr", &iov, b"cm", 0);
+            let mut data = build_single_span_record(
+                syscall,
+                [9, 0, 0, 0, 0, 0],
+                SPAN_KIND_MSGHDR,
+                1,
+                &region,
+                struct_len as u32,
+                REC_CAP,
+            );
+            let start = data.as_mut_ptr() as usize;
+            let scratch = ChannelScratchRegion::new(start, REC_CAP).unwrap();
+            assert!(
+                matches!(
+                    unsafe { prepare_channel_record(scratch) },
+                    Some(Err(Errno::EINVAL))
+                ),
+                "syscall {syscall} must refuse a span for its kernel-dereferenced msghdr"
+            );
+        }
     }
 
     #[test]

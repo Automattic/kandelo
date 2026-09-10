@@ -566,11 +566,9 @@ static const struct kandelo_marshal_arg kandelo_marshal_args_136[] = {
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_137[] = {
-    { 1u, 6u, 0u, 0u, 0u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_138[] = {
-    { 1u, 6u, 0u, 0u, 0u, 0u, 0u },
 };
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_139[] = {
@@ -885,8 +883,8 @@ static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {
     { 134u, 0u, 3u, kandelo_marshal_args_134 },
     { 135u, 0u, 1u, kandelo_marshal_args_135 },
     { 136u, 0u, 1u, kandelo_marshal_args_136 },
-    { 137u, 2u, 1u, kandelo_marshal_args_137 },
-    { 138u, 2u, 1u, kandelo_marshal_args_138 },
+    { 137u, 0u, 0u, kandelo_marshal_args_137 },
+    { 138u, 0u, 0u, kandelo_marshal_args_138 },
     { 139u, 0u, 2u, kandelo_marshal_args_139 },
     { 140u, 0u, 2u, kandelo_marshal_args_140 },
     { 205u, 0u, 1u, kandelo_marshal_args_205 },

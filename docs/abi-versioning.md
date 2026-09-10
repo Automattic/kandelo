@@ -726,6 +726,21 @@ may have permission to write a semaphore set without permission to read its
 metadata, so the array length comes from the requested command's own
 permission-checked query, never from a read-only `IPC_STAT`.
 
+**`kernel_sendmsg` and `kernel_recvmsg` change signature in ABI 44**, from
+`(i32, i32, i32, i64) -> i32` to `(i32, i64, i32, i32, i64) -> i32`. The second
+argument was a kernel-scratch pointer to a fixed `KernelMsghdrWire` the host
+built; it is now the caller's own `struct msghdr *` as an `i64`, and the new
+fourth argument names the caller's pointer width. The kernel walks the header,
+the `msg_iov` table and the `cmsghdr` chain in the caller's memory, in the
+caller's data model.
+
+This is an **incompatible change to an existing export**, not an additive one:
+an ABI 43 guest calling the four-argument form would trap on the arity
+mismatch. It stays under ABI 44 because the whole epoch is unreleased and
+in-development, and because guest re-instrumentation and package rebuilds are
+available — but it is recorded here rather than left to the structural snapshot
+check, which sees a signature change without knowing it is breaking.
+
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
 (16/32), `mq_attr` (32/64), `sigevent` (64/64), `statfs` (88/120), and

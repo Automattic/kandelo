@@ -41,26 +41,40 @@ fn dispatcher_does_not_cast_narrowed_scalar_aliases_as_pointers() {
 }
 
 #[test]
-fn sendmsg_zero_length_null_iovec_never_constructs_a_raw_slice() {
+fn message_exports_never_borrow_a_guest_address_as_kernel_memory() {
+    // `msg` used to be a kernel-scratch pointer, so this pinned the
+    // zero-length guard that kept `slice::from_raw_parts` off a null base. It
+    // is a GUEST address now: the kernel reads and writes the caller's
+    // `msghdr`, iovec table and CMSG chain through the cross-memory
+    // primitives, which bound every range against the target process's own
+    // memory. Borrowing one of those addresses as a raw slice would read or
+    // write the KERNEL's address space at a caller-chosen offset, so what has
+    // to be pinned now is that neither export does it.
     let source = include_str!("../src/wasm_api.rs");
-    let start = source
-        .find("pub extern \"C\" fn kernel_sendmsg(")
-        .expect("kernel_sendmsg start");
-    let end = source[start..]
-        .find("\n/// recvmsg")
-        .expect("kernel_sendmsg end");
-    let sendmsg = &source[start..start + end];
-
-    let empty_guard = sendmsg
-        .find("let buf = if len == 0 {\n        &[]")
-        .expect("zero-length iovec must select a valid empty slice");
-    let raw_slice = sendmsg
-        .find("slice::from_raw_parts(base as *const u8, len)")
-        .expect("positive-length iovec must retain the bounded slice");
-    assert!(
-        empty_guard < raw_slice,
-        "the zero-length guard must precede raw-slice construction"
-    );
+    for (name, start_marker, end_marker) in [
+        (
+            "kernel_sendmsg",
+            "pub extern \"C\" fn kernel_sendmsg(",
+            "\n/// recvmsg",
+        ),
+        (
+            "kernel_recvmsg",
+            "pub extern \"C\" fn kernel_recvmsg(",
+            "\n/// wait4 —",
+        ),
+    ] {
+        let start = source.find(start_marker).expect("export start");
+        let end = source[start..].find(end_marker).expect("export end");
+        let body = &source[start..start + end];
+        assert!(
+            !body.contains("from_raw_parts"),
+            "{name} must not borrow a guest address as kernel memory"
+        );
+        assert!(
+            body.contains("crate::msghdr::read_msghdr("),
+            "{name} must decode the caller's msghdr through the shared reader"
+        );
+    }
 }
 
 #[test]

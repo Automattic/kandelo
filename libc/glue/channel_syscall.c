@@ -781,7 +781,7 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 /* Returns the encoded record byte length on success, or a negative    */
 /* value when the syscall cannot be faithfully marshalled inline (the   */
 /* caller must fall back to the raw-arg path). Coverage is the flat      */
-/* descriptor-table syscalls, the nested iovec/msghdr shapes, and the    */
+/* descriptor-table syscalls, the nested iovec shape, and the           */
 /* bespoke special-layout families (ioctl, select/pselect6, epoll,       */
 /* prctl, fcntl-lock). ioctl sizing uses the generated ioctl contract     */
 /* table, and select converts its timeout to the kernel's millisecond    */
@@ -1308,106 +1308,12 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
         return (int)cursor;
     }
 
-    /* ----- Nested msghdr syscalls (sendmsg/recvmsg) ----- */
-    if (entry->nested == KANDELO_MARSHAL_NESTED_MSGHDR) {
-        const struct kandelo_marshal_arg *ma = &entry->args[0];
-        uintptr_t msg_ptr = (uintptr_t)(unsigned long long)args[ma->arg_index];
-        if (msg_ptr == 0) {
-            KANDELO_WRITE_HEADER(0);
-            return (int)KANDELO_RECORD_HEADER_BYTES;
-        }
-        const struct msghdr *m = (const struct msghdr *)msg_ptr;
-        uint32_t name_len = (uint32_t)m->msg_namelen;
-        uint32_t control_len = (uint32_t)m->msg_controllen;
-        uint32_t flags = (uint32_t)m->msg_flags;
-
-        /* The canonical wire the kernel reconstructs holds at most one iovec
-         * (KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT == 1), so flatten the
-         * scatter/gather list into a single contiguous buffer. */
-        const struct iovec *iov = (const struct iovec *)(uintptr_t)m->msg_iov;
-        long iovlen = (long)m->msg_iovlen;
-        uint32_t total = 0;
-        for (long i = 0; i < iovlen; i++)
-            total += (uint32_t)iov[i].iov_len;
-        uint32_t iov_count = (iovlen > 0) ? 1u : 0u;
-
-        uint32_t desc_end =
-            KANDELO_RECORD_HEADER_BYTES + KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES;
-        uint32_t region_off = desc_end;
-        uint32_t struct_len =
-            KANDELO_RECORD_MSGHDR_IOVEC_BLOCK_OFFSET /* name_off + name_len */
-            + 4u + iov_count * KANDELO_RECORD_IOVEC_ENTRY_BYTES /* iovec block */
-            + 12u; /* control_off + control_len + flags */
-        uint32_t ref_base = region_off + struct_len;
-        if (ref_base > budget)
-            return KANDELO_MARSHAL_FALLBACK;
-
-        /* Referenced payloads laid in the order the decoder walks them: name,
-         * flattened iovec buffer, control. */
-        uint32_t cursor = ref_base;
-        uint32_t name_off = 0;
-        if (name_len > 0) {
-            if ((size_t)cursor + name_len > budget)
-                return KANDELO_MARSHAL_FALLBACK;
-            name_off = cursor;
-            __builtin_memcpy(data + cursor, (const void *)(uintptr_t)m->msg_name,
-                             name_len);
-            cursor += name_len;
-        }
-
-        uint32_t iov_buf_off = cursor;
-        if (iov_count == 1) {
-            if ((size_t)cursor + total > budget)
-                return KANDELO_MARSHAL_FALLBACK;
-            uint32_t w = cursor;
-            for (long i = 0; i < iovlen; i++) {
-                uint32_t seg = (uint32_t)iov[i].iov_len;
-                if (seg > 0) {
-                    __builtin_memcpy(data + w, iov[i].iov_base, seg);
-                    w += seg;
-                }
-            }
-            cursor += total;
-        }
-
-        uint32_t control_off = 0;
-        if (control_len > 0) {
-            if ((size_t)cursor + control_len > budget)
-                return KANDELO_MARSHAL_FALLBACK;
-            control_off = cursor;
-            __builtin_memcpy(data + cursor,
-                             (const void *)(uintptr_t)m->msg_control, control_len);
-            cursor += control_len;
-        }
-
-        /* Structural prefix. */
-        kandelo_store_u32(data + region_off + KANDELO_RECORD_MSGHDR_NAME_OFF_OFFSET,
-                          name_off);
-        kandelo_store_u32(data + region_off + KANDELO_RECORD_MSGHDR_NAME_LEN_OFFSET,
-                          name_len);
-        uint32_t block_off = region_off + KANDELO_RECORD_MSGHDR_IOVEC_BLOCK_OFFSET;
-        kandelo_store_u32(data + block_off + KANDELO_RECORD_IOVEC_COUNT_OFFSET,
-                          iov_count);
-        if (iov_count == 1) {
-            uint32_t ep = block_off + KANDELO_RECORD_IOVEC_ENTRIES_OFFSET;
-            kandelo_store_u32(data + ep, iov_buf_off);
-            kandelo_store_u32(data + ep + 4u, total);
-        }
-        uint32_t tail = block_off + 4u + iov_count * KANDELO_RECORD_IOVEC_ENTRY_BYTES;
-        kandelo_store_u32(data + tail, control_off);
-        kandelo_store_u32(data + tail + 4u, control_len);
-        kandelo_store_u32(data + tail + 8u, flags);
-
-        /* descriptor: len is the structural prefix only (not the payloads). */
-        uint8_t *d = data + KANDELO_RECORD_HEADER_BYTES;
-        d[KANDELO_RECORD_D_KIND] = KANDELO_MARSHAL_SPAN_MSGHDR;
-        d[KANDELO_RECORD_D_ARG_INDEX] = ma->arg_index;
-        kandelo_store_u16(d + 2u, 0);
-        kandelo_store_u32(d + KANDELO_RECORD_D_OFFSET, region_off);
-        kandelo_store_u32(d + KANDELO_RECORD_D_LEN, struct_len);
-        KANDELO_WRITE_HEADER(1);
-        return (int)cursor;
-    }
+    /* sendmsg/recvmsg are deliberately absent. Their `struct msghdr` is
+     * declared KernelDereferenced, so the record carries only the caller's raw
+     * address in its scalar slot and the kernel walks the header, the iovec
+     * table and the CMSG chain itself, in the caller's data model. Flattening
+     * the scatter/gather list here would replace that address with a scratch
+     * offset and make the kernel read caller memory the caller never named. */
 
     /* ----- Flat descriptor-table syscalls ----- */
     struct {
@@ -1492,7 +1398,7 @@ static int kandelo_syscall_is_raw(long n) {
  * and read the results from the live data buffer at those saved offsets — it can
  * never re-read the (overwritten) descriptors from the buffer.
  *
- * FLAT ONLY: the nested iovec/msghdr syscalls are all in the RAW set, so a live
+ * FLAT ONLY: the nested iovec syscalls are all in the RAW set, so a live
  * record never carries a nested span. IN_PTR / PATH_STR spans are guest->kernel
  * only and are skipped here. `data` points at the data buffer base (channel base
  * + CH_DATA); saved span offsets are relative to that base. `saved_descriptors`

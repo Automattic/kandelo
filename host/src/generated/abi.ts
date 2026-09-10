@@ -2010,6 +2010,12 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   136: [
     { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 0, multiplier: 4 }, required: true },
   ],
+  137: [
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  138: [
+    { argIndex: 1, direction: "inout", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
   139: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },

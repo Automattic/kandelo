@@ -647,13 +647,17 @@ int32_t kernel_setgroups(uint32_t size, const uint32_t *list_ptr);
 /* Message-based socket I/O                                            */
 /* ------------------------------------------------------------------ */
 
+/* `msg_addr` is the caller's own `struct msghdr *` as an integer, and
+ * `pointer_width` names the caller's data model in bytes. The kernel reads and
+ * writes the header, its iovec table and its CMSG chain directly in the
+ * caller's memory; nothing is staged in kernel scratch. */
 KERNEL_IMPORT(kernel_sendmsg)
-int32_t kernel_sendmsg(int32_t fd, const uint8_t *msg_ptr, uint32_t flags,
-                       int64_t retry_token);
+int32_t kernel_sendmsg(int32_t fd, int64_t msg_addr, uint32_t flags,
+                       uint32_t pointer_width, int64_t retry_token);
 
 KERNEL_IMPORT(kernel_recvmsg)
-int32_t kernel_recvmsg(int32_t fd, uint8_t *msg_ptr, uint32_t flags,
-                       int64_t retry_token);
+int32_t kernel_recvmsg(int32_t fd, int64_t msg_addr, uint32_t flags,
+                       uint32_t pointer_width, int64_t retry_token);
 
 KERNEL_IMPORT(kernel_getaddrinfo)
 int32_t kernel_getaddrinfo(const uint8_t *name_ptr, uint32_t name_len,

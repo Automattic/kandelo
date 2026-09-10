@@ -17,7 +17,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::mem::{align_of, offset_of, size_of};
+use core::mem::{offset_of, size_of};
 use core::slice;
 
 use wasm_posix_shared::{
@@ -44,7 +44,6 @@ use crate::signal::{
     deliver_pending_signals_with_locks, dequeue_signal_for, terminate_process_by_signal_with_locks,
     DefaultSignalOutcome,
 };
-use crate::socket_wire::validate_canonical_message_iov_len;
 use crate::syscalls;
 
 // ---------------------------------------------------------------------------
@@ -4777,8 +4776,24 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let len = channel_cstr_len!(p);
             kernel_getaddrinfo(p, len, channel_mut_ptr!(1, u8))
         }
-        137 => kernel_sendmsg(a1, channel_const_ptr!(1, u8), a3 as u32, 0), // SYS_SENDMSG
-        138 => kernel_recvmsg(a1, channel_mut_ptr!(1, u8), a3 as u32, 0),   // SYS_RECVMSG
+        // SYS_SENDMSG / SYS_RECVMSG: `msghdr` is a raw guest address. The
+        // kernel walks the caller's header, iovec table and CMSG chain
+        // itself, in the caller's data model, which the private sixth
+        // channel slot names.
+        137 => kernel_sendmsg(
+            a1,
+            guest_address!(1) as i64,
+            a3 as u32,
+            caller_pointer_width!(),
+            0,
+        ),
+        138 => kernel_recvmsg(
+            a1,
+            guest_address!(1) as i64,
+            a3 as u32,
+            caller_pointer_width!(),
+            0,
+        ),
         62 => kernel_sendto(
             a1,
             channel_const_ptr!(1, u8),
@@ -9320,10 +9335,6 @@ fn read_wire_u32(bytes: &[u8], offset: usize) -> u32 {
     )
 }
 
-fn write_wire_u32(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
-}
-
 fn finish_direct_blocking_retry_dispatch(
     proc: &mut Process,
     owns_active: bool,
@@ -9354,41 +9365,57 @@ fn deliver_pending_signals_for_known_tid(
 ///
 /// Malformed records and invalid descriptors are errors. Silently skipping
 /// either would let the queued message disagree with the sender's request.
+/// Snapshot every descriptor named by the caller's `SCM_RIGHTS` records.
+///
+/// WHY this only serializes non-owning entries: the caller retains their
+/// resources until the complete control chain validates, so a malformed later
+/// record cannot leave an earlier descriptor partially transferred.
+///
+/// `crate::msghdr::read_control` has already proved each record's length and
+/// alignment against the caller's own `msg_controllen`, and refused a partial
+/// `SCM_RIGHTS` payload, so the chunks below are whole descriptors.
 fn extract_scm_rights(
     proc: &crate::process::Process,
-    control_ptr: usize,
-    control_len: usize,
+    records: &[crate::msghdr::NativeCmsg],
 ) -> Result<Vec<crate::pipe::InFlightFd>, Errno> {
+    use wasm_posix_shared::socket::{SCM_RIGHTS, SCM_RIGHTS_FD_BYTES, SOL_SOCKET};
+
     let mut result = Vec::new();
-    if control_len == 0 {
-        return Ok(result);
+    for record in records {
+        if record.level != SOL_SOCKET || record.cmsg_type != SCM_RIGHTS {
+            continue;
+        }
+        if record.data.is_empty() {
+            return Err(Errno::EINVAL);
+        }
+        for encoded in record.data.chunks_exact(SCM_RIGHTS_FD_BYTES) {
+            let fd = i32::from_le_bytes(
+                encoded
+                    .try_into()
+                    .expect("validated SCM_RIGHTS descriptor width"),
+            );
+            result.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            result.push(crate::syscalls::snapshot_scm_rights_fd(proc, fd)?);
+        }
     }
-    if control_ptr == 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    let control = unsafe { slice::from_raw_parts(control_ptr as *const u8, control_len) };
-    // WHY: this visitor only serializes non-owning entries. The caller retains
-    // their resources after the complete wire validates, so a malformed later
-    // record cannot leave an earlier descriptor partially transferred.
-    crate::socket_wire::for_each_canonical_scm_rights_fd(control, |fd_num| {
-        result.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-        result.push(crate::syscalls::snapshot_scm_rights_fd(proc, fd_num)?);
-        Ok(())
-    })?;
-
     Ok(result)
 }
 
-/// sendmsg — send one canonical host-staged message on a socket.
+/// sendmsg — send one message on a socket, read from the caller's `msghdr`.
 ///
-/// The host flattens every caller-native iovec into one contiguous leased
-/// buffer. Keeping the fixed wire at zero or one iovec preserves datagram
-/// atomicity without a second kernel allocation and payload copy.
+/// `msg_addr` is a raw GUEST address. The kernel decodes the caller-native
+/// `struct msghdr`, walks its `msg_iov` table, and gathers the payload into one
+/// contiguous kernel-owned buffer itself — datagram atomicity requires the
+/// whole message in one piece, and only the kernel can bound that buffer by
+/// `SSIZE_MAX` rather than by a transport's capacity.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_token: i64) -> i32 {
-    use wasm_posix_shared::{KernelIovecWire, KernelMsghdrWire};
-
+pub extern "C" fn kernel_sendmsg(
+    fd: i32,
+    msg_addr: i64,
+    flags: u32,
+    pointer_width: u32,
+    retry_token: i64,
+) -> i32 {
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
     let operation = crate::blocked_retry::BlockingRetryOperation::Sendmsg;
@@ -9413,19 +9440,64 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
         }
     };
 
-    let msg = unsafe { slice::from_raw_parts(msg_ptr, size_of::<KernelMsghdrWire>()) };
-    let name_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name)) as usize;
-    let name_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name_len)) as usize;
-    let iov_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, iov)) as usize;
-    let iov_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, iov_len));
-    let control_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control)) as usize;
-    let control_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control_len)) as usize;
-
-    if let Err(err) = validate_canonical_message_iov_len(iov_len) {
-        finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-        deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
-        return -(err as i32);
+    // Decode the caller's message before anything else can fail, so a
+    // malformed header never leaves a retry binding half-established.
+    macro_rules! bail {
+        ($error:expr) => {{
+            finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -($error as i32);
+        }};
     }
+    let width = match pointer_width {
+        4 => 4u8,
+        8 => 8u8,
+        _ => bail!(Errno::EINVAL),
+    };
+    let pid = proc.pid as i32;
+    let header = match crate::msghdr::read_msghdr(&mut host, pid, msg_addr as u64, width) {
+        Ok(header) => header,
+        Err(error) => bail!(error),
+    };
+    let iovecs = match crate::msghdr::read_iovecs(
+        &mut host,
+        pid,
+        header.iov_addr,
+        header.iov_count,
+        width,
+    ) {
+        Ok(iovecs) => iovecs,
+        Err(error) => bail!(error),
+    };
+    let payload = match crate::msghdr::gather(&mut host, pid, &iovecs) {
+        Ok(payload) => payload,
+        Err(error) => bail!(error),
+    };
+    // POSIX ignores `msg_name` when `msg_namelen` is zero.
+    let addr_bytes = if header.name_addr != 0 && header.name_len > 0 {
+        match crate::guest_ptr::read_guest_bytes(
+            &mut host,
+            pid,
+            header.name_addr,
+            header.name_len as usize,
+            wasm_posix_shared::kernel_scratch_wire::SOCKADDR_STORAGE_BYTES as usize,
+        ) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => bail!(error),
+        }
+    } else {
+        None
+    };
+    let control_records = match crate::msghdr::read_control(
+        &mut host,
+        pid,
+        header.control_addr,
+        header.control_len,
+        width,
+    ) {
+        Ok(records) => records,
+        Err(error) => bail!(error),
+    };
 
     let active_ancillary = match syscalls::clone_active_sendmsg_ancillary(proc, tid) {
         Ok(ancillary) => ancillary,
@@ -9442,7 +9514,7 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
     let (ancillary_fds, binding_template) = if let Some(ancillary) = active_ancillary {
         (ancillary, None)
     } else {
-        let ancillary = match extract_scm_rights(proc, control_ptr, control_len) {
+        let ancillary = match extract_scm_rights(proc, &control_records) {
             Ok(fds) => fds,
             Err(err) => {
                 finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
@@ -9471,30 +9543,8 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
         (ancillary, Some(template))
     };
 
-    let (base, len) = if iov_len == 0 {
-        (0, 0)
-    } else {
-        let iov =
-            unsafe { slice::from_raw_parts(iov_ptr as *const u8, size_of::<KernelIovecWire>()) };
-        (
-            read_wire_u32(iov, offset_of!(KernelIovecWire, base)) as usize,
-            read_wire_u32(iov, offset_of!(KernelIovecWire, len)) as usize,
-        )
-    };
-
-    let buf = if len == 0 {
-        &[]
-    } else {
-        // SAFETY: the host copied the complete positive-length iovec into the
-        // live kernel-owned channel allocation before this synchronous call.
-        unsafe { slice::from_raw_parts(base as *const u8, len) }
-    };
-
-    let addr = if name_ptr != 0 && name_len > 0 {
-        Some(unsafe { slice::from_raw_parts(name_ptr as *const u8, name_len) })
-    } else {
-        None
-    };
+    let buf = payload.as_slice();
+    let addr = addr_bytes.as_deref();
     let mut result =
         match syscalls::sys_sendmsg(proc, &mut host, fd, buf, flags, addr, ancillary_fds) {
             Ok(n) => n as i32,
@@ -9524,14 +9574,22 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
     result
 }
 
-/// recvmsg — receive into one canonical host-staged contiguous buffer.
+/// recvmsg — receive one message into the caller's `msghdr`.
+///
+/// `msg_addr` is a raw GUEST address. The kernel receives into one contiguous
+/// kernel-owned buffer sized by the caller's whole iovec table, then scatters
+/// the result back across those buffers — a datagram must be delivered or
+/// truncated as a unit, which a per-iovec receive could not guarantee.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_token: i64) -> i32 {
+pub extern "C" fn kernel_recvmsg(
+    fd: i32,
+    msg_addr: i64,
+    flags: u32,
+    pointer_width: u32,
+    retry_token: i64,
+) -> i32 {
     use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-    use wasm_posix_shared::socket::{
-        MSG_CMSG_CLOEXEC, MSG_CTRUNC, SCM_RIGHTS, SCM_RIGHTS_FD_BYTES, SOL_SOCKET,
-    };
-    use wasm_posix_shared::{KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire};
+    use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_CTRUNC};
 
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
@@ -9557,48 +9615,67 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_to
         }
     };
 
-    let msg = unsafe { slice::from_raw_parts(msg_ptr, size_of::<KernelMsghdrWire>()) };
-    let name_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name)) as usize;
-    let name_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, name_len)) as usize;
-    let iov_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, iov)) as usize;
-    let iov_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, iov_len));
-    let control_ptr = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control)) as usize;
-    let control_len = read_wire_u32(msg, offset_of!(KernelMsghdrWire, control_len)) as usize;
-
-    if let Err(err) = validate_canonical_message_iov_len(iov_len) {
-        finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-        deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
-        return -(err as i32);
+    macro_rules! bail {
+        ($error:expr) => {{
+            finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+            return -($error as i32);
+        }};
     }
-
-    let (base, len) = if iov_len == 0 {
-        (0, 0)
-    } else {
-        let iov =
-            unsafe { slice::from_raw_parts(iov_ptr as *const u8, size_of::<KernelIovecWire>()) };
-        (
-            read_wire_u32(iov, offset_of!(KernelIovecWire, base)) as usize,
-            read_wire_u32(iov, offset_of!(KernelIovecWire, len)) as usize,
-        )
+    let width = match pointer_width {
+        4 => 4u8,
+        8 => 8u8,
+        _ => bail!(Errno::EINVAL),
     };
-
-    let buf = if len == 0 {
-        &mut []
-    } else {
-        unsafe { slice::from_raw_parts_mut(base as *mut u8, len) }
+    let pid = proc.pid as i32;
+    let header = match crate::msghdr::read_msghdr(&mut host, pid, msg_addr as u64, width) {
+        Ok(header) => header,
+        Err(error) => bail!(error),
     };
-
-    let addr_buf = if name_ptr != 0 && name_len > 0 {
-        unsafe { slice::from_raw_parts_mut(name_ptr as *mut u8, name_len) }
-    } else {
-        &mut []
+    let iovecs = match crate::msghdr::read_iovecs(
+        &mut host,
+        pid,
+        header.iov_addr,
+        header.iov_count,
+        width,
+    ) {
+        Ok(iovecs) => iovecs,
+        Err(error) => bail!(error),
     };
-
-    let (mut result, mut received) =
-        match syscalls::sys_recvmsg(proc, &mut host, fd, buf, flags, addr_buf) {
-            Ok(received) => (received.return_len as i32, Some(received)),
-            Err(err) => (-(err as i32), None),
+    let capacity = match crate::msghdr::iovec_total(&iovecs) {
+        Ok(capacity) => capacity,
+        Err(error) => bail!(error),
+    };
+    let mut payload = match crate::guest_ptr::zeroed_staging(
+        capacity,
+        wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES,
+    ) {
+        Ok(payload) => payload,
+        Err(error) => bail!(error),
+    };
+    // A receive address buffer can be larger than the widest address the
+    // kernel can produce. Reserve only `sockaddr_storage`; validating the
+    // unused tail would conflate the caller's capacity with its use.
+    let addr_capacity = (header.name_len as usize).min(
+        wasm_posix_shared::kernel_scratch_wire::SOCKADDR_STORAGE_BYTES as usize,
+    );
+    let mut addr_staging =
+        match crate::guest_ptr::zeroed_staging(addr_capacity, addr_capacity.max(1)) {
+            Ok(staging) => staging,
+            Err(error) => bail!(error),
         };
+
+    let (mut result, mut received) = match syscalls::sys_recvmsg(
+        proc,
+        &mut host,
+        fd,
+        &mut payload,
+        flags,
+        &mut addr_staging,
+    ) {
+        Ok(received) => (received.return_len as i32, Some(received)),
+        Err(err) => (-(err as i32), None),
+    };
     if result == -(Errno::EAGAIN as i32) {
         if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
             proc,
@@ -9616,32 +9693,52 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_to
 
     // Publish all result metadata even for a zero-byte datagram: a zero-length
     // message can still carry descriptors and output flags.
-    let mut ancillary_delivered = false;
+    let mut published_control_len = 0u32;
+    let mut published_name_len: Option<u32> = None;
     let mut output_msg_flags = received
         .as_ref()
         .map_or(0, |received| received.output_flags);
     if let Some(received) = received.as_mut() {
-        let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, size_of::<KernelMsghdrWire>()) };
-        if name_ptr != 0 {
-            // msg_name presence, not its capacity, controls whether
-            // msg_namelen is a value-result field. A canonical non-null
-            // zero-capacity pointer still receives the complete length.
-            write_wire_u32(
-                msg_mut,
-                offset_of!(KernelMsghdrWire, name_len),
-                received.addr_len as u32,
-            );
+        // Scatter the received bytes back across the caller's iovecs. The
+        // receive was bounded by their total, so this cannot overrun; a short
+        // result simply leaves the trailing buffers untouched.
+        let delivered = received.return_len.min(payload.len());
+        if let Err(error) =
+            crate::msghdr::scatter(&mut host, pid, &iovecs, &payload[..delivered])
+        {
+            result = -(error as i32);
+        }
+
+        if header.name_addr != 0 {
+            let addr_bytes = received.addr_len.min(addr_staging.len());
+            if addr_bytes > 0 {
+                if let Err(error) = crate::guest_ptr::write_guest_bytes(
+                    &mut host,
+                    pid,
+                    header.name_addr,
+                    &addr_staging[..addr_bytes],
+                ) {
+                    result = -(error as i32);
+                }
+            }
+            // msg_name PRESENCE, not its capacity, controls whether
+            // msg_namelen is a value-result field. A non-null zero-capacity
+            // pointer still receives the complete length -- that is how a
+            // caller learns its address buffer was too small.
+            published_name_len = Some(received.addr_len as u32);
         }
 
         if !received.ancillary_fds.is_empty() {
             let mut in_flight = core::mem::take(&mut received.ancillary_fds);
-            let control_header_size = size_of::<KernelCmsghdrWire>();
-            let control_fd_capacity =
-                if control_ptr != 0 && control_len >= control_header_size + SCM_RIGHTS_FD_BYTES {
-                    (control_len - control_header_size) / SCM_RIGHTS_FD_BYTES
-                } else {
-                    0
-                };
+            // Capacity is derived from the CALLER's cmsghdr size, so a wasm64
+            // receiver is not credited with the extra room a wasm32 header
+            // would have left. Installing a descriptor that cannot be
+            // reported would leak it: the receiver could never close it.
+            let control_fd_capacity = if header.control_addr != 0 {
+                crate::msghdr::control_fd_capacity(width, header.control_len).unwrap_or(0)
+            } else {
+                0
+            };
             let install_count = control_fd_capacity.min(in_flight.len());
             let excess = in_flight.split_off(install_count);
             let had_excess = !excess.is_empty();
@@ -9669,47 +9766,35 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32, retry_to
             }
 
             if !new_fds.is_empty() {
-                let cmsg_data_len = new_fds.len() * SCM_RIGHTS_FD_BYTES;
-                let cmsg_len = control_header_size + cmsg_data_len;
-                let alignment = align_of::<KernelCmsghdrWire>();
-                let cmsg_space = (cmsg_len + alignment - 1) & !(alignment - 1);
-                debug_assert!(cmsg_space <= control_len);
-                let ctrl =
-                    unsafe { slice::from_raw_parts_mut(control_ptr as *mut u8, control_len) };
-                ctrl[..cmsg_space].fill(0);
-                write_wire_u32(
-                    ctrl,
-                    offset_of!(KernelCmsghdrWire, cmsg_len),
-                    cmsg_len as u32,
-                );
-                write_wire_u32(ctrl, offset_of!(KernelCmsghdrWire, cmsg_level), SOL_SOCKET);
-                write_wire_u32(ctrl, offset_of!(KernelCmsghdrWire, cmsg_type), SCM_RIGHTS);
-                for (i, &new_fd) in new_fds.iter().enumerate() {
-                    let off = control_header_size + i * SCM_RIGHTS_FD_BYTES;
-                    ctrl[off..off + SCM_RIGHTS_FD_BYTES].copy_from_slice(&new_fd.to_le_bytes());
+                match crate::msghdr::write_scm_rights(
+                    &mut host,
+                    pid,
+                    header.control_addr,
+                    header.control_len,
+                    width,
+                    &new_fds,
+                ) {
+                    Ok(span) => published_control_len = span,
+                    Err(error) => result = -(error as i32),
                 }
-                let msg_mut =
-                    unsafe { slice::from_raw_parts_mut(msg_ptr, size_of::<KernelMsghdrWire>()) };
-                write_wire_u32(
-                    msg_mut,
-                    offset_of!(KernelMsghdrWire, control_len),
-                    cmsg_space as u32,
-                );
-                ancillary_delivered = true;
             }
         }
     }
 
-    if !ancillary_delivered {
-        let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, size_of::<KernelMsghdrWire>()) };
-        write_wire_u32(msg_mut, offset_of!(KernelMsghdrWire, control_len), 0);
-    }
-    let msg_mut = unsafe { slice::from_raw_parts_mut(msg_ptr, size_of::<KernelMsghdrWire>()) };
-    write_wire_u32(
-        msg_mut,
-        offset_of!(KernelMsghdrWire, flags),
+    // `msg_controllen` and `msg_flags` are published unconditionally, even
+    // when nothing was received: a caller must be able to tell "no ancillary
+    // data" from a stale length it set before the call.
+    if let Err(error) = crate::msghdr::write_msghdr_results(
+        &mut host,
+        pid,
+        msg_addr as u64,
+        width,
+        published_name_len,
+        published_control_len,
         output_msg_flags,
-    );
+    ) {
+        result = -(error as i32);
+    }
 
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
 
