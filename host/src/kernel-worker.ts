@@ -3131,6 +3131,11 @@ export class CentralizedKernelWorker {
    * authority. Nothing here increments or decrements it independently, so it
    * cannot drift from the kernel's table.
    *
+   * The initial 0 is not an assumption about the kernel: a kernel instance
+   * boots with an empty mapping table, and this worker is constructed with it.
+   * A worker that could ever be attached to a kernel with live attachments
+   * would have to refresh once before its first boundary.
+   *
    * Declared `private` rather than `#private` so tests can seed and observe
    * the predicate the same way they seeded `shmMappings` before it, without
    * needing a kernel that actually holds attachments.
@@ -9123,10 +9128,7 @@ export class CentralizedKernelWorker {
     if (!channel) {
       const hasShared = (this.sharedMappings.get(pid)?.size ?? 0) > 0;
       const hasSysv = this.#machineOwnsSysvState()
-        && this.#requireSysvMirrorExport<(pid: number) => number>(
-          "kernel_shared_mapping_sysv_process_count",
-          entry,
-        )(pid) > 0;
+        && this.#sysvMirrorExports(entry).processCount(pid) > 0;
       return hasShared || hasSysv ? -EIO : 0;
     }
 
@@ -25630,21 +25632,110 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Resolve one of the kernel's SysV shared-memory mirror entry points.
+   * The kernel's SysV shared-memory mirror entry points, each resolved by its
+   * literal name with its exact signature.
+   *
+   * WHY NOT ONE GENERIC `require(name)` HELPER. A helper indexing
+   * `exports[name]` with a computed string and casting the result cannot be
+   * checked: it erases which export is being called and what its arguments
+   * mean, so a `KernelPointer` parameter could be handed a plain `number` and
+   * silently truncate for a wasm64 process. `host/test/kernel-scratch-contract`
+   * enforces that as `kernel-pointer-export-bypass`, and it is right to. Each
+   * accessor below names one export and types it, so the pointer arguments are
+   * `KernelPointer` at every call site.
    *
    * A missing export is a kernel/host ABI mismatch, not a runtime condition:
    * the mirror has no host-side implementation left to fall back to, so
    * failing loudly is the only truthful outcome.
    */
-  #requireSysvMirrorExport<T>(
-    name: string,
-    entry?: KernelWorkerEntryContext,
-  ): T {
-    const exported = this.#kernelInstanceForEntry(entry).exports[name];
-    if (typeof exported !== "function") {
-      throw new Error(`Kernel lacks SysV shared-memory export ${name}`);
+  #sysvMirrorExports(entry?: KernelWorkerEntryContext): {
+    activePidCount: () => number;
+    processCount: (pid: number) => number;
+    track: (
+      pid: number,
+      addr: KernelPointer,
+      segId: number,
+      size: number,
+      readOnly: number,
+    ) => number;
+    syncProcess: (pid: number, force: number) => number;
+    syncSegment: (segId: number) => number;
+    publishMapping: (
+      pid: number,
+      addr: KernelPointer,
+      segId: number,
+      size: number,
+    ) => number;
+    dropMapping: (
+      pid: number,
+      addr: KernelPointer,
+      segId: number,
+      size: number,
+    ) => number;
+    releaseProcess: (pid: number, publish: number, detach: number) => number;
+    inherit: (
+      parentPid: number,
+      childPid: number,
+      childMemoryLen: bigint,
+    ) => number;
+  } {
+    const exports = this.#kernelInstanceForEntry(entry).exports;
+    const activePidCount = exports.kernel_shared_mapping_sysv_active_pid_count as
+      (() => number) | undefined;
+    const processCount = exports.kernel_shared_mapping_sysv_process_count as
+      ((pid: number) => number) | undefined;
+    const track = exports.kernel_shared_mapping_sysv_track as
+      ((
+        pid: number,
+        addr: KernelPointer,
+        segId: number,
+        size: number,
+        readOnly: number,
+      ) => number) | undefined;
+    const syncProcess = exports.kernel_shared_mapping_sysv_sync_process as
+      ((pid: number, force: number) => number) | undefined;
+    const syncSegment = exports.kernel_shared_mapping_sysv_sync_segment as
+      ((segId: number) => number) | undefined;
+    const publishMapping = exports.kernel_shared_mapping_sysv_publish_mapping as
+      ((
+        pid: number,
+        addr: KernelPointer,
+        segId: number,
+        size: number,
+      ) => number) | undefined;
+    const dropMapping = exports.kernel_shared_mapping_sysv_drop_mapping as
+      ((
+        pid: number,
+        addr: KernelPointer,
+        segId: number,
+        size: number,
+      ) => number) | undefined;
+    const releaseProcess = exports.kernel_shared_mapping_sysv_release_process as
+      ((pid: number, publish: number, detach: number) => number) | undefined;
+    const inherit = exports.kernel_shared_mapping_sysv_inherit as
+      ((
+        parentPid: number,
+        childPid: number,
+        childMemoryLen: bigint,
+      ) => number) | undefined;
+    if (
+      !activePidCount || !processCount || !track || !syncProcess
+      || !syncSegment || !publishMapping || !dropMapping || !releaseProcess
+      || !inherit
+    ) {
+      throw new Error("Kernel lacks the SysV shared-memory mirror exports");
     }
-    return exported as unknown as T;
+    return {
+      activePidCount,
+      processCount,
+      track,
+      syncProcess,
+      syncSegment,
+      publishMapping,
+      dropMapping,
+      releaseProcess,
+      inherit,
+    };
   }
 
   /**
@@ -25653,10 +25744,7 @@ export class CentralizedKernelWorker {
    * Every site that can change it calls this; see `#sysvActivePidCount`.
    */
   #refreshSysvActivePidCount(entry?: KernelWorkerEntryContext): void {
-    const count = this.#requireSysvMirrorExport<() => number>(
-      "kernel_shared_mapping_sysv_active_pid_count",
-      entry,
-    )();
+    const count = this.#sysvMirrorExports(entry).activePidCount();
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new Error(
         `Invalid SysV attachment population from the kernel: ${count}`,
@@ -25677,9 +25765,10 @@ export class CentralizedKernelWorker {
     force: boolean,
     entry?: KernelWorkerEntryContext,
   ): boolean {
-    const result = this.#requireSysvMirrorExport<
-      (pid: number, force: number) => number
-    >("kernel_shared_mapping_sysv_sync_process", entry)(pid, force ? 1 : 0);
+    const result = this.#sysvMirrorExports(entry).syncProcess(
+      pid,
+      force ? 1 : 0,
+    );
     if (!Number.isSafeInteger(result) || result > 0) {
       throw new Error(
         `Invalid SysV mirror sync result from the kernel: ${result}`,
@@ -25704,19 +25793,10 @@ export class CentralizedKernelWorker {
     size: number,
     entry?: KernelWorkerEntryContext,
   ): number {
-    const result = this.#requireSysvMirrorExport<
-      (
-        pid: number,
-        addr: KernelPointer,
-        segId: number,
-        size: number,
-      ) => number
-    >(
-      op === "publish"
-        ? "kernel_shared_mapping_sysv_publish_mapping"
-        : "kernel_shared_mapping_sysv_drop_mapping",
-      entry,
-    )(pid, kernelAddr, segId, size);
+    const exports = this.#sysvMirrorExports(entry);
+    const result = op === "publish"
+      ? exports.publishMapping(pid, kernelAddr, segId, size)
+      : exports.dropMapping(pid, kernelAddr, segId, size);
     if (op === "drop") this.#refreshSysvActivePidCount(entry);
     if (!Number.isSafeInteger(result) || result > 0) {
       throw new Error(
@@ -25739,9 +25819,7 @@ export class CentralizedKernelWorker {
     options: { publish: boolean; detach: boolean },
     entry?: KernelWorkerEntryContext,
   ): void {
-    const result = this.#requireSysvMirrorExport<
-      (pid: number, publish: number, detach: number) => number
-    >("kernel_shared_mapping_sysv_release_process", entry)(
+    const result = this.#sysvMirrorExports(entry).releaseProcess(
       pid,
       options.publish ? 1 : 0,
       options.detach ? 1 : 0,
@@ -28705,9 +28783,7 @@ export class CentralizedKernelWorker {
     // Nothing to inherit when the machine owns no SysV state; the kernel's
     // mirror is empty, so the transaction would be a proven no-op.
     const inheritResult = this.#machineOwnsSysvState()
-      ? this.#requireSysvMirrorExport<
-        (parentPid: number, childPid: number, childMemoryLen: bigint) => number
-      >("kernel_shared_mapping_sysv_inherit", entry)(
+      ? this.#sysvMirrorExports(entry).inherit(
         prepared.parentPid,
         prepared.childPid,
         BigInt(prepared.childMemory.buffer.byteLength),
@@ -31808,10 +31884,7 @@ export class CentralizedKernelWorker {
 
     // A previously sole observer may not have published at ordinary boundaries.
     // Force it current before this new attachment reads the segment.
-    this.#requireSysvMirrorExport<(segId: number) => number>(
-      "kernel_shared_mapping_sysv_sync_segment",
-      entry,
-    )(shmid);
+    this.#sysvMirrorExports(entry).syncSegment(shmid);
 
     const kernelShmat = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmat_for_task as
       (pid: number, tid: number, shmid: number, shmaddr: number, flags: number) => number;
@@ -31921,15 +31994,7 @@ export class CentralizedKernelWorker {
       // The kernel reads its own segment bytes and seeds the process's mapped
       // range from them, so the snapshot no longer travels back to the host
       // through chunked `kernel_ipc_shm_read_chunk` scratch round trips.
-      const trackResult = this.#requireSysvMirrorExport<
-        (
-          pid: number,
-          addr: KernelPointer,
-          segId: number,
-          size: number,
-          readOnly: number,
-        ) => number
-      >("kernel_shared_mapping_sysv_track", entry)(
+      const trackResult = this.#sysvMirrorExports(entry).track(
         channel.pid,
         kernelAllocatedAddr,
         shmid,
