@@ -37,11 +37,21 @@ reaches the TLS connection along those paths today. The hazard is therefore
 permits what the engine forbids, so a future caller handing in a guest-memory
 view compiles cleanly and fails at runtime, in the browser, in TLS.
 
-**Browsers not run.** Node's error text is Blink's, so Chromium will behave
-identically; WebKit is unverified. That gap is smaller than it looks, because
-the specification excludes shared buffers from `BufferSource` outright — but it
-is a gap, and this campaign has disproved fourteen claims that were argued
-rather than measured.
+## All three engines agree (`results-browsers.json`)
+
+Run under real cross-origin isolation (`crossOriginIsolated: true`,
+`SharedArrayBuffer` available), which is the configuration the demos ship under
+— without it there is no SAB to test.
+
+| engine | `sab_digest` / `sab_importKey` / `sab_sign` | copied view |
+|---|---|---|
+| **Node 24.15.0** | threw — *"is a view on a SharedArrayBuffer, which is not allowed"* | accepted |
+| **Chromium 151.0.7922.34** | threw — *"The provided ArrayBufferView value must not be shared"* | accepted |
+| **WebKit 26.5** | threw — *"SharedArrayBuffer is not allowed"* | accepted |
+
+Controls passed on every engine. Three independent implementations, three
+different error texts, one behaviour — this is not a quirk of one engine's
+bindings.
 
 ## Remedy, if it is ever made reachable
 

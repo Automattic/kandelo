@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SAB + SubtleCrypto probe</title>
+<script type="module">
+  import { runSabWebCryptoProbe } from './probe-core.mjs';
+  window.__done = { crossOriginIsolated, sabAvailable: typeof SharedArrayBuffer === 'function' };
+  try {
+    window.__done.rows = await runSabWebCryptoProbe(crypto.subtle);
+  } catch (e) {
+    window.__done.fatal = String(e);
+  }
+  window.__ready = true;
+</script>
