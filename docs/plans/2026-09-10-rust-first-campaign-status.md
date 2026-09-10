@@ -2420,6 +2420,60 @@ The gate is therefore:
 - `xtask verify-fresh` exit 0,
 - the maintainer's own manual browser check.
 
+## MERGE ORDER FOR THE SIX IN-FLIGHT AGENTS (planned 2026-09-10)
+
+Written before anything lands, because the maintainer's instruction was
+explicit: *"Please don't make different campaign tier work clobber each other.
+Let's thoughtfully merge."* Both of this campaign's design collisions landed in
+shared foundation files, never in the leaf files agents were assigned, so the
+overlaps are known in advance here rather than discovered at merge time.
+
+### Measured overlap
+
+| file | agents touching it |
+|---|---|
+| `crates/runtime-core/src/syscalls.rs` | epoll, slot placement, K11 — **three-way** |
+| `crates/kernel/src/wasm_api.rs` | epoll, slot placement |
+| `abi/snapshot.json` | epoll, slot placement (both regenerate) |
+| `crates/runtime-core/src/process.rs` | slot placement, K11 |
+| `crates/host-native/src/lib.rs` | resolver, slot placement |
+| `host/src/generated/abi.ts` | epoll (regenerated) |
+
+### Order, and why
+
+1. **Resolver / one-location artifacts** — smallest footprint (4 files) and it
+   unblocks ~167 of the 212 test failures. Nothing downstream can be measured
+   honestly until it lands. Collides only with slot placement, on
+   `crates/host-native/src/lib.rs`.
+2. **Epoll host-mirror deletion** — large but concentrated in its own area
+   (`kernel-scratch`, `wasm_api`, `syscalls`).
+3. **pthread slot placement** — overlaps epoll on `wasm_api.rs`, `syscalls.rs`
+   and the snapshot. Merge after epoll so the snapshot is regenerated once, on
+   top of both, rather than twice against each other.
+4. **K11 devices** — overlaps on `syscalls.rs` and `process.rs`; last, so it
+   rebases onto a settled kernel surface.
+5. **T2 (`browser-kernel.test.ts`)** and **T3 (VFS products)** — independent
+   file sets, mergeable whenever they finish.
+
+**After the Rust four land: regenerate `abi/snapshot.json` once**, then
+`./scripts/xtask.sh verify-fresh` and the full host suite. Do not accept either
+agent's snapshot as-is; two regenerations of the same file against different
+bases is precisely how a snapshot ends up describing neither tree.
+
+### The dispatch defect to fix in how agents are launched
+
+**Twice now an agent has been given a worktree based on `9195dedd1`, the
+campaign merge-base, instead of the branch tip** — once the resolver agent
+(after being resumed from a stall), once the B21 agent, dispatched in the same
+message as a sibling that got the correct tip. Both were caught by checking
+`git merge-base` against each worktree's HEAD before trusting their work.
+
+The cost is real: the resolver agent had written a fix against a 3,041-line
+`constants.ts` that is now 294 lines, and had re-fixed an asyncify check that
+was already fixed. **Check every agent's base before merging, and before
+believing any measurement it reports.** A worktree on the wrong base produces
+results that are internally consistent and about the wrong tree.
+
 ## THE TEST-FAILURE PLAN (maintainer-directed 2026-09-10)
 
 **"Please go ahead and plan to fix these tests as part of this campaign."**
