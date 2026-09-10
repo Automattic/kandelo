@@ -11,7 +11,6 @@
  */
 
 import type { MountConfig } from "./types";
-import { FILE_MODES } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
 import { restoreVerifiedVfsImage } from "./load-image";
 
