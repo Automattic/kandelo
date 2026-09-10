@@ -1088,22 +1088,29 @@ where
         if dst.is_empty() {
             return Ok(());
         }
-        // Bound the range against the image the host declared before asking for
-        // any of it, so an out-of-range read is `EIO` here rather than a
-        // silently short host answer that a caller could mistake for data.
-        let end = offset.checked_add(dst.len() as u64).ok_or(Errno::EIO)?;
+        // Two failures are possible here and they are different facts.
+        //
+        // `EINVAL` means the IMAGE is wrong: the kernel asked past the length
+        // the host declared, or the host hit end-of-image inside a range that
+        // length said it holds. Both say the container is not the size it
+        // claims, which is a malformed image however it arose. Reporting them
+        // identically keeps the verdict from depending on which byte the walk
+        // happened to reach first.
+        //
+        // Any other errno means the HOST is wrong, or busy: `ENOSYS` (no image
+        // source installed), `EAGAIN` (bytes not ready), `EIO` (transport). Those
+        // propagate untouched, because the image may be perfectly good.
+        let end = offset.checked_add(dst.len() as u64).ok_or(Errno::EINVAL)?;
         if end > self.len {
-            return Err(Errno::EIO);
+            return Err(Errno::EINVAL);
         }
         let mut byte_source = self.byte_source.try_borrow_mut().map_err(|_| Errno::EIO)?;
         let mut done = 0usize;
         while done < dst.len() {
-            let at = offset.checked_add(done as u64).ok_or(Errno::EIO)?;
+            let at = offset.checked_add(done as u64).ok_or(Errno::EINVAL)?;
             let read = (*byte_source)(ByteReq::Image { offset: at }, &mut dst[done..])?;
             if read == 0 {
-                // The range was validated above, so end-of-image inside it means
-                // the host and the declared length disagree. Truthful failure.
-                return Err(Errno::EIO);
+                return Err(Errno::EINVAL); // shorter than the declared length
             }
             done = done.checked_add(read).ok_or(Errno::EIO)?;
             if done > dst.len() {
@@ -1203,7 +1210,17 @@ where
     // header and a missing section must stay distinguishable from a corrupt one
     // (`kernel_lazy_span` returns `None` vs `EINVAL`).
     let linkage = match crate::sffs::kernel_lazy_span(&source)? {
-        None => crate::klzy::KernelLazyLinkage::default(),
+        // A `/` image that declares no `KLZY` section predates the kernel's
+        // ability to parse an image, and the kernel has no way to tell "this
+        // image has no lazy files" from "this image records its lazy files only
+        // in the host-side JSON the kernel cannot read". Accepting it would
+        // silently build a tree where every deferred file reports size 0 — a
+        // wrong tree that looks like a right one. An image with genuinely no
+        // lazy files still carries the section, empty, in 20 bytes. So a missing
+        // section is a stale artifact, and `docs/agent-guidance/abi.md` is
+        // explicit that a stale artifact fails loudly and is rebuilt through the
+        // normal path rather than shimmed.
+        None => return Err(Errno::EINVAL),
         Some((offset, len)) => {
             let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
             let mut bytes = Vec::new();
@@ -4117,7 +4134,8 @@ mod tests {
     #[test]
     fn load_image_builds_the_base_tree_from_a_real_vfs_image() {
         let _guard = TestGuard::acquire();
-        let count = load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).expect("load image");
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(count, 6, "root + 4 root entries + 1 file under /dir");
 
         let root = lstat(b"/").expect("/ stat");
@@ -4180,11 +4198,27 @@ mod tests {
     }
 
     #[test]
-    fn load_image_reads_an_image_without_a_kernel_lazy_section_as_older_not_corrupt() {
+    fn load_image_rejects_an_image_that_declares_no_kernel_lazy_section() {
         let _guard = TestGuard::acquire();
-        // `TINY_VFS` has the flag clear. That is a legitimate older image.
-        assert!(load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).is_ok());
-        assert!(lazy_member_source(b"/big.txt").is_err());
+        // `TINY_VFS` has the container flag clear, so it predates the section.
+        // Loading it would build a tree where every deferred file reports size
+        // 0 — wrong, and indistinguishable from right. It must fail loudly and
+        // be rebuilt, not be read on a best-effort basis.
+        assert_eq!(
+            load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).unwrap_err(),
+            Errno::EINVAL
+        );
+        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
+    }
+
+    #[test]
+    fn load_image_accepts_an_image_whose_kernel_lazy_section_is_empty() {
+        let _guard = TestGuard::acquire();
+        // An image with genuinely no lazy files still declares the section, and
+        // that is what distinguishes it from a stale one. Twenty bytes.
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        assert_eq!(load_image(image.len() as u64, image_host(&image)).unwrap(), 6);
+        assert_eq!(lstat(b"/big.txt").expect("big").st_size, 45_000);
     }
 
     #[test]
@@ -4207,7 +4241,7 @@ mod tests {
         build_sample_tree();
         assert!(lstat(b"/").is_ok());
 
-        let mut bad = TINY_VFS.to_vec();
+        let mut bad = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
         bad[0] ^= 0xff; // break the VFSI magic
         assert_eq!(
             load_image(bad.len() as u64, image_host(&bad)).unwrap_err(),
@@ -4219,18 +4253,20 @@ mod tests {
     }
 
     #[test]
-    fn load_image_reports_an_image_shorter_than_the_host_declared_as_eio() {
+    fn load_image_rejects_an_image_shorter_than_the_host_declared() {
         let _guard = TestGuard::acquire();
-        // The host claims a longer image than it can serve, and the missing
-        // bytes are ones the walk needs (the inode table starts at block 3, so
-        // 13,000 bytes stops inside it). The walk must fail rather than treat
-        // end-of-image as zero-filled data.
-        let truncated = &TINY_VFS[..13_000];
-        assert_eq!(
-            load_image(TINY_VFS.len() as u64, image_host(truncated)).unwrap_err(),
-            Errno::EIO
-        );
-        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
+        // The host claims a longer image than it can serve. Whichever read bites
+        // first — the trailing `KLZY` section or an inode-table block — the
+        // verdict must be the same one: this container is not the size it says.
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        for cut in [13_000usize, image.len() - 4] {
+            assert_eq!(
+                load_image(image.len() as u64, image_host(&image[..cut])).unwrap_err(),
+                Errno::EINVAL,
+                "truncated at {cut}"
+            );
+            assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
+        }
     }
 
     #[test]
@@ -4249,19 +4285,20 @@ mod tests {
     #[test]
     fn load_image_never_asks_the_host_beyond_the_declared_image_length() {
         let _guard = TestGuard::acquire();
-        let limit = TINY_VFS.len() as u64;
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let limit = image.len() as u64;
         let mut highest = 0u64;
         let mut source = |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
             let ByteReq::Image { offset } = req else {
                 return Err(Errno::ENOSYS);
             };
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
-            if start >= TINY_VFS.len() {
+            if start >= image.len() {
                 return Ok(0);
             }
-            let n = core::cmp::min(buf.len(), TINY_VFS.len() - start);
+            let n = core::cmp::min(buf.len(), image.len() - start);
             highest = highest.max(offset + n as u64);
-            buf[..n].copy_from_slice(&TINY_VFS[start..start + n]);
+            buf[..n].copy_from_slice(&image[start..start + n]);
             Ok(n)
         };
         load_image(limit, &mut source).expect("load image");

@@ -874,6 +874,18 @@ export class WasmPosixKernel {
   #rootfsArchiveProvider:
     | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
+  /**
+   * Raw VFS image byte window (K8 increment 1). The Rust kernel parses the `/`
+   * image itself — it mounts the image's own filesystem, walks it, and reads its
+   * kernel-facing lazy-linkage section — instead of consuming a tree this host
+   * walked and re-encoded. The host resolves no names here: there is exactly one
+   * image, so the provider takes only an offset. Until set, `host_image_read`
+   * reports ENOSYS, which is what keeps `kernel_rootfs_load_image` dormant and
+   * the boot-manifest path authoritative.
+   */
+  #rootfsImageProvider:
+    | ((offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -983,6 +995,16 @@ export class WasmPosixKernel {
     provider: (archiveId: number, offset: bigint, dest: Uint8Array) => number,
   ): void {
     this.#rootfsArchiveProvider = provider;
+  }
+
+  /**
+   * Install the raw VFS image byte window (K8 increment 1).
+   * See {@link WasmPosixKernel.prototype} `#rootfsImageProvider`.
+   */
+  setRootfsImageProvider(
+    provider: (offset: bigint, dest: Uint8Array) => number,
+  ): void {
+    this.#rootfsImageProvider = provider;
   }
 
   constructor(
@@ -1655,6 +1677,25 @@ export class WasmPosixKernel {
                 bufPtr,
                 bufLen,
                 "host_fetch_archive destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_image_read: (
+          bufPtr: KernelPointer,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          try {
+            return this.#hostImageRead(
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_image_read destination",
               ),
             );
           } catch {
@@ -2847,6 +2888,57 @@ export class WasmPosixKernel {
     let result: number;
     try {
       result = provider(archiveId, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
+      return -5; // EIO
+    }
+    if (result < 0) {
+      return result; // provider-reported negative errno
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(
+          destination,
+          subarrayUint8Array(staged, 0, result),
+        );
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
+  }
+
+  /**
+   * host_image_read(buf_ptr, buf_len, offset) -> i32
+   *
+   * Serve raw bytes of the VFS image this kernel booted from. The kernel parses
+   * that image itself, so the host resolves no names and carries no id: there is
+   * one image, and this is a positioned window onto it. Bytes are staged outside
+   * kernel memory and published once (never lend a live view of Rust-owned
+   * memory to the provider), mirroring `#hostBlobRead`. Reports ENOSYS when no
+   * image source is installed, which is what keeps the kernel's image-parsing
+   * path dormant while the boot manifest is still authoritative.
+   */
+  #hostImageRead(
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#rootfsImageProvider;
+    if (provider === undefined) {
+      return -38; // ENOSYS
+    }
+    const destinationCapacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(destinationCapacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(offset, staged);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }
