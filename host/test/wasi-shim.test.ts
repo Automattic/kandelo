@@ -134,6 +134,11 @@ describe("WASI shim", () => {
   it("reads, seeks, and tells against a real file via path_open", async () => {
     const result = await runCentralizedProgram({
       programPath: join(fixturesDir, "wasi-file-io.wasm"),
+      // The fixture creates everything it needs, so it runs against the
+      // kernel's own writable overlay rather than the canonical rootfs
+      // image. That keeps a test of WASI file I/O from depending on the
+      // whole base-program set having been built.
+      useDefaultRootfs: false,
       timeout: 10_000,
     });
     // "abcd" from the first read, "4" from fd_tell, "ghi" after a relative
@@ -146,6 +151,8 @@ describe("WASI shim", () => {
   it("lists a real directory via fd_readdir", async () => {
     const result = await runCentralizedProgram({
       programPath: join(fixturesDir, "wasi-readdir.wasm"),
+      // As above: the fixture creates its own directory and files.
+      useDefaultRootfs: false,
       timeout: 10_000,
     });
     // Two five-character names ("alpha", "bravo"). "." and ".." are 1 and 2

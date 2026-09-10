@@ -13,7 +13,7 @@
 ;; (`crates/wasi-module/tests/entry_points.rs`, `defect_5_*`).
 ;;
 ;; The program:
-;;   1. path_create_directory("k10-readdir")
+;;   1. path_create_directory("tmp/k10-readdir")
 ;;   2. create two files inside it
 ;;   3. path_open the directory (O_DIRECTORY)
 ;;   4. fd_readdir into a buffer
@@ -54,9 +54,9 @@
   ;; 1024 dirent buffer (4 KiB)
   (data (i32.const 128) "E")
   (data (i32.const 136) "\n")
-  (data (i32.const 256) "k10-readdir")
-  (data (i32.const 320) "k10-readdir/alpha")
-  (data (i32.const 384) "k10-readdir/bravo")
+  (data (i32.const 256) "tmp/k10-readdir")
+  (data (i32.const 320) "tmp/k10-readdir/alpha")
+  (data (i32.const 384) "tmp/k10-readdir/bravo")
 
   (func $puts (param $ptr i32) (param $len i32)
     (i32.store (i32.const 0) (local.get $ptr))
@@ -87,18 +87,18 @@
 
     ;; A pre-existing directory from an earlier run is fine; only a failure
     ;; that is NOT "already exists" (WASI EEXIST = 20) is fatal.
-    (local.set $rc (call $mkdir (i32.const 3) (i32.const 256) (i32.const 11)))
+    (local.set $rc (call $mkdir (i32.const 3) (i32.const 256) (i32.const 15)))
     (if (i32.and
           (i32.ne (local.get $rc) (i32.const 0))
           (i32.ne (local.get $rc) (i32.const 20)))
       (then (call $die)))
 
-    (call $touch (i32.const 320) (i32.const 17))
-    (call $touch (i32.const 384) (i32.const 17))
+    (call $touch (i32.const 320) (i32.const 21))
+    (call $touch (i32.const 384) (i32.const 21))
 
     ;; Open the directory itself.
     (if (call $path_open
-          (i32.const 3) (i32.const 1) (i32.const 256) (i32.const 11)
+          (i32.const 3) (i32.const 1) (i32.const 256) (i32.const 15)
           (i32.const 2)      ;; O_DIRECTORY
           (i64.const 0) (i64.const 0) (i32.const 0) (i32.const 32))
       (then (call $die)))
