@@ -516,6 +516,19 @@ Two observations that matter for K3:
 
 ## 4. The epoll mirror — what deleting it actually costs
 
+> **DONE 2026-09-10 (item B6). This section is the record of what was
+> believed, not of what shipped.** D1 (stale V8 comments), D2+D3 (fork
+> inheritance and OFD keying, landed as one change — see B7), D4
+> (`resolveEpollReadinessIndices`) and D5 (the remaining touchpoints) are all
+> paid. D4 did not take the "interim export" shape guessed below: it became
+> `kernel_epoll_wake_indices(pid, epfd, kind, out, len)`, scoped to the epfd
+> being waited on rather than unioning every epfd the pid holds. D6 (the
+> empty-interest `host_nanosleep`) and D7 (`EPOLLET`/`EPOLLONESHOT`/
+> `EPOLLRDHUP`) are NOT paid and remain open. The census below also
+> undercounted: three touchpoints are missing from the table of 14. See "B6 —
+> epoll mirror deleted" in
+> `docs/plans/2026-09-10-rust-first-campaign-status.md`.
+
 ### 4.1 The justification is stale in two independent ways
 
 The claim appears **three times**, all asserting a suspicion as fact:

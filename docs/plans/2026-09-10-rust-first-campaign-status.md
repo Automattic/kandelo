@@ -449,7 +449,7 @@ branch — not just that a docs commit describing it does.
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
 | K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
-| K3-7.7 | epoll mirror in `kernel-worker.ts` | unmeasured |
+| ~~K3-7.7~~ | ~~epoll mirror in `kernel-worker.ts`~~ | **PAID: 423 removed, 85 added (net -338)** |
 
 ## K7 cutover — mis-scoped, and the finding is worth more than the item
 
@@ -2702,6 +2702,8 @@ keep their row so they are not re-opened.
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
+| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines; the file-ownership block has cleared |
+| B6 | **K3 epoll cutover (K3-7.7)** | **CLOSED 2026-09-10.** Mirror deleted, `handleEpollCreate` and `handleEpollCtl` deleted with it, wake-token join moved into the kernel. See "B6 — epoll mirror deleted" |
 | B5 | **DONE 2026-09-10** | Piece 3 cut over (TS -100 / Rust +626). Pieces 2 and 4 are immovable and the grounding named the wrong blocker for both. Delivered anyway: a 3,556-line dead TLS backend deleted, a live duplicate-`Content-Length` defect fixed by framing HTTP once, and a legal-but-refused unaligned float payload accepted. Measured total TS/JS **-3,584**. Four NDDs raised. See "B5 — K11 device pieces 2, 3 and 4" |
 | B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll host mirror. **No longer gated — B7 is done.** See "B7 — epoll OFD ownership" for what the mirror now contradicts. Highest-value unblocked delete on this list |
 | B7 | **epoll fork inheritance + OFD keying** | **CLOSED 2026-09-10.** Verified, not assumed. Caveat recorded: unit-tested, not conformance-validated |
@@ -2946,6 +2948,101 @@ evaluation against an OFD the caller does not hold, which `sys_poll`'s
 `&mut Process` shape cannot express today. `epoll_ctl()` and `epoll_pwait()`
 therefore stay **Partial** in `posix-status.md`; `epoll_create1()` becomes
 **Full**, and the `exec()` row's epoll numeric-fd gap is gone.
+### B6 — epoll mirror deleted (DONE 2026-09-10)
+
+**Ledger.** `host/src/kernel-worker.ts` -423 / +85, net **-338 lines**, plus
++3 in `kernel-scratch.ts` (registering the new export's name and pointer role).
+Rust: +154/-26 in `runtime-core/src/syscalls.rs`, +100/-1 in
+`kernel/src/wasm_api.rs`, +16/-2 in `shared/src/host_abi.rs`. Tests: -74 net
+across four host suites.
+
+**What the census found, and where grep would have been wrong.** The mirror
+was not 14 touchpoints, it was 14 plus three the grounding did not name: the
+`ExecFdMirrorPrunePlan` interface field, its `KernelWorkerExecFdMirrorState`
+test-facing declaration, and `inheritHostFdMirrors`'s `includeEpoll`
+parameter — a *default* argument, invisible to any grep for `epollInterests`,
+whose one `false` call site carried a comment claiming "Epoll backing tables
+are not yet cloned by `spawn_child`". That comment was already false: after B7
+the instance is reached through the inherited description, so nothing needs
+cloning. The parameter existed to describe a gap that had closed.
+
+**Three host handlers went, not one.**
+
+`handleEpollCreate` was pure duplication. `epoll_create1` and `epoll_create`
+have no pointer arguments, and the kernel dispatch already maps 378's ignored
+`size` to `flags = 0` (`wasm_api.rs:5815`). The handler hand-built a channel
+record and called `kernel_handle_channel` — which is what the generic path
+does — solely so it could seed the mirror afterwards.
+
+`handleEpollCtl` hand-marshalled `struct epoll_event` into `CH_DATA` and
+rewrote argument 3 as a scratch address. That is exactly what a
+`SYSCALL_ARG_DESCRIPTORS` entry does, so `epoll_ctl` now declares one and the
+hand-written copy is gone. `epoll_ctl` stays in the Phase 2 RAW set, which is
+the same arrangement `poll` (60) already has: RAW on the guest side,
+descriptor-marshalled on the host side.
+
+`handleEpollPwait` stays, minus its two mirror gates. **This is a real floor,
+not a dead one**: the *wait* is host-owned, as `poll`'s is, until B8 lands the
+K3 blocking scheduler. The kernel is dispatched with `timeout = 0` as a
+non-blocking readiness evaluation and the host loops to the caller's deadline.
+Its `-EBADF` gate and its empty-interest short-circuit were both redundant
+against `sys_epoll_pwait` and are gone; an unknown `epfd` is now the kernel's
+`EBADF` (and `EINVAL` for a descriptor that is not an epoll instance), and an
+empty interest list is the kernel's zero-event answer landing in the ordinary
+timeout handling.
+
+**The one genuine reader, moved rather than deleted.**
+`resolveEpollReadinessIndices` walked the mirror to call
+`kernel_get_socket_recv_pipe` and `kernel_get_fd_accept_wake_idx` once per
+interest. It now calls one export, `kernel_epoll_wake_indices(pid, epfd, kind,
+out, len)`, which does the join in Rust against the kernel's own list. Two
+improvements fall out. It is now scoped to the `epfd` actually being waited
+on — the mirror version unioned every epfd the pid held, so an unrelated
+instance's descriptors produced spurious wakes. And it shares
+`epoll_resolved_interests` with `sys_epoll_pwait`, so the tokens a wait parks
+on and the interests it evaluates cannot drift apart. Deleting the tokens
+outright was considered and rejected: the retry timer caps at 10 ms, so their
+absence is a latency regression, and an unmeasured one.
+
+**Host import count: 75, unchanged**, measured from the built
+`kandelo_kernel.wasm` import section rather than inherited. The new surface is
+a kernel *export*, not an `env.host_*` import.
+
+**No ABI bump.** `abi/snapshot.json` gains the export signature and the
+`"240"` descriptor; both are additive, one epoch, ABI 44.
+
+**A latent defect found by the census and fixed.** Both the host handler and
+`kernel_epoll_ctl` accepted a null `event` for every operation, substituting
+`events = 0, data = 0`. For `EPOLL_CTL_ADD` that silently registers an
+interest that can never report anything, and returns success while doing it.
+Linux returns `EFAULT`. Fixed in the kernel; the `epoll_ctl()` row of
+`docs/posix-status.md` records the behaviour.
+
+**A latent defect found and NOT fixed — `epoll_pwait` ignores its signal
+mask.** `handleEpollPwait` validates the caller's `sigset_t` pointer and its
+size, then zeroes channel arguments 4 and 5 and never passes the mask to the
+kernel. `sys_epoll_pwait` supports `sigmask: Option<u64>` and never receives
+one, so the atomic mask swap that is the entire reason `epoll_pwait` exists
+separately from `epoll_wait` does not happen. This is not fixable at the host:
+the mask must hold for the duration of the wait, and the host owns that wait
+as a sequence of `timeout = 0` probes, so applying and restoring it per probe
+would be a different guarantee wearing the same name. **It closes with B8**,
+when the kernel owns the wait. Recorded here rather than papered over.
+
+**A dead-test finding, adjacent.** Every `#[cfg(test)]` module inside
+`crates/kernel/src/wasm_api.rs` is unreachable: `lib.rs:14` gates the module on
+`target_arch = "wasm32"`/`"wasm64"`, and `cargo test` runs on the host target,
+so none of them has ever executed. `getgroups_destination_tests` is one
+example. This is the dead-floor pattern applied to tests, and it is why this
+item's null-event predicate lives in `runtime-core` instead of beside the
+export that calls it. Not chased further.
+
+**Conformance: still none, for the reason B19 names.** `tests/posix` and
+`tests/libc` hold no epoll behaviour test, and B7's first case
+(`tests/sortix/os-test-local/basic/sys_epoll/epoll-fork-shares-instance.c`)
+still cannot execute. This item rests on unit and Vitest evidence, and it
+inherits B7's caveat rather than clearing it.
+
 ### B17/B18/B19 closed — three build-environment defects, one shape
 
 Each produced a failure that named something other than its cause.
