@@ -629,6 +629,7 @@ Rust **206,833**.
 |---|---|---|
 | **K1 step 5** | the JSON `entries[]` path (~2,000+ across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes) | needs its own ABI ruling (§2c item 3); **completes V3** |
 | **K10 I6** | `host/src/wasi-shim.ts`, 1,625 | fixtures cannot exercise a real wasi-libc guest (§2h) |
+| **K5 I7** | `host/src/dylink.ts` + `dylink-fork-archive.ts`, **6,340** | the Rust planner landed first; executors and native `dlopen` follow (§2p) |
 
 Both deferrals were correct. Neither is done until the owner item lands.
 
@@ -1067,6 +1068,62 @@ passed, wasm32 + wasm64) and, in the browser, only indirectly. The Chromium
 `kernel-scratch-runtime` specs do exercise the widened `u64` path on **both
 pointer widths**, which is the riskier half — but an ifconf browser test does
 not exist and should.
+
+## 2p. K5 — COMPLETE (2026-09-09)
+
+Worktree `.claude/worktrees/agent-aa0323de6a37d7c51`, base `210384516`, tip
+`4d6edebc4`, 7 commits. No ABI bump, no new `env.host_*`, **no
+NEEDS-DEFER-DECISION and no STRONG DOUBT**.
+
+**`LinkAct` as data.** Eight engine act kinds (`Compile`, `NewGlobal`,
+`ReadGlobal`, `WriteGlobal`, `GrowTable`, `WriteTable`, `GrowMemory`, `NewTag`,
+`Instantiate`, plus `ReadExports`/`ZeroMemory`) answered by `ActResult` — and a
+**separate `PlanStep::Host`** for what is not an engine act at all: `SYS_MMAP`
+allocation, mapping adoption, activation prepare/register/unregister, and
+table-mutation journalling. That split keeps the executor contract honest about
+engine-versus-process ownership instead of blurring them into one list.
+
+**The ordered-binding requirement is enforced, not assumed.** `Instantiate`
+carries `Vec<ImportBinding>`, one per import *declaration* in section order,
+duplicates preserved and second occurrences flagged. `ImportPlan::bind` rejects
+an out-of-position push and `validate_against` re-checks the finished list
+against the import section — which is what both `Instance::new`'s positional
+slice and the engine-observable counting `Proxy` actually require.
+
+**`dylink_archive.rs` is WIRED, not duplicated.** `ReplayInputs::from_archive`
+and `PendingTransaction::from_archive` give its 1,318 decoder lines callers for
+the first time. **That is one of the three ported-but-unwired Rust modules
+closed** (`sffs.rs`/`klzy.rs` remain, owned by K8).
+
+### D4 adjudicated on ELF semantics — and the root cause found
+
+**Verdict: strong + unresolved FAILS the load; weak + unresolved is zero.**
+Reasoning: `RTLD_LAZY` defers only PLT relocations, never data ones; lazy
+binding never yields NULL even for functions, because the PLT slot points at the
+resolver, which raises `symbol lookup error`; a wasm `GOT.func` cell is an
+address-take — a `GLOB_DAT` data relocation resolved eagerly — and wasm has no
+PLT or resolver stub, so it is `RTLD_NOW` **by construction**. The only
+zero-correct case is `STB_WEAK` + `SHN_UNDEF`. `UnresolvedPolicy::LegacyZero`
+pins the old behaviour for the differential harness.
+
+**Why the loader could not tell them apart:** `dylink.ts` **parses
+`WASM_DYLINK_FLAG_WEAK` and never reads it** — the only three occurrences in the
+repo are its declaration, its initialization, and one `add`. The zero-write was
+not a lazy-binding choice; it was the absence of the information needed to make
+one. Exactly the kind of answer generic-first was meant to force: decided on ELF
+semantics, not on which symbols PHP leaves unresolved.
+
+Two further defects fixed en route: weak flags keyed by field name alone
+(conflating `env` / `GOT.mem` / `GOT.func`), and a negative element-segment
+offset that wrapped instead of being rejected.
+
+**Validation:** `cargo test -p dylink` 72/72, `-p fork-codec` 444/444, `no_std`
+wasm32 build, `cargo check --workspace`. **D5 measured nothing and therefore
+claims nothing** about the O(n)→O(1) table scan.
+
+**Ledger** `210384516..4d6edebc4`: in-scope TS **+0**, Rust **+7,271** (4,918
+production, 2,353 test). Deleting `dylink.ts` + `dylink-fork-archive.ts`
+(**6,340 lines**) is debt owed by **K5 I7** — recorded below.
 
 ## 3. Decisions already taken — do not relitigate
 
