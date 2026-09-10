@@ -2066,3 +2066,634 @@ impl FileBacking {
         }
     }
 }
+
+/// Every process's `MAP_SHARED` intervals, the authoritative backings behind
+/// them, and the coherence protocol that keeps the two in step.
+///
+/// This is the kernel-owned replacement for the eleven `Map`/`Set` containers
+/// the TypeScript host used to model the same state.
+#[derive(Debug, Default)]
+pub struct SharedMappingTable {
+    /// pid → (mapping start address → mapping).
+    mappings: BTreeMap<u32, BTreeMap<u64, SharedMapping>>,
+    /// Backend identity → page-cached file object.
+    file_backings: BTreeMap<String, FileBacking>,
+    /// Backing key → anonymous byte store.
+    anon_backings: BTreeMap<String, AnonymousBacking>,
+    next_anon_id: u64,
+    /// pid → (writeback dup → reference count). A single mmap owns one dup; a
+    /// middle-split creates a second sub-mapping that shares it, so the dup is
+    /// closed only once every sub-mapping referencing it is released.
+    writeback_refs: BTreeMap<u32, BTreeMap<i32, u32>>,
+    /// Guards against nested cleanup releasing one address space twice.
+    releasing_pids: BTreeSet<u32>,
+    /// pid → (attach address → SysV attachment mirror).
+    sysv: BTreeMap<u32, BTreeMap<u64, SysvShmMapping>>,
+    /// Authoritative segment version, bumped after each merged publication.
+    sysv_versions: BTreeMap<i32, u64>,
+    writeback_loss_reports: u32,
+}
+
+impl SharedMappingTable {
+    pub fn new() -> Self {
+        Self {
+            next_anon_id: 1,
+            ..Default::default()
+        }
+    }
+
+    // -- inspection -------------------------------------------------------
+
+    pub fn is_empty(&self) -> bool {
+        self.mappings.is_empty() && self.sysv.is_empty()
+    }
+
+    pub fn has_file_backings(&self) -> bool {
+        !self.file_backings.is_empty()
+    }
+
+    pub fn mapping(&self, pid: u32, addr: u64) -> Option<&SharedMapping> {
+        self.mappings.get(&pid)?.get(&addr)
+    }
+
+    pub fn mappings_for(&self, pid: u32) -> impl Iterator<Item = (&u64, &SharedMapping)> {
+        self.mappings.get(&pid).into_iter().flat_map(|m| m.iter())
+    }
+
+    pub fn file_backing(&self, key: &str) -> Option<&FileBacking> {
+        self.file_backings.get(key)
+    }
+
+    pub fn file_backing_mut(&mut self, key: &str) -> Option<&mut FileBacking> {
+        self.file_backings.get_mut(key)
+    }
+
+    pub fn anon_backing(&self, key: &str) -> Option<&AnonymousBacking> {
+        self.anon_backings.get(key)
+    }
+
+    pub fn sysv_mapping(&self, pid: u32, addr: u64) -> Option<&SysvShmMapping> {
+        self.sysv.get(&pid)?.get(&addr)
+    }
+
+    pub fn sysv_segment_version(&self, seg_id: i32) -> u64 {
+        self.sysv_versions.get(&seg_id).copied().unwrap_or(0)
+    }
+
+    fn insert_mapping(&mut self, pid: u32, addr: u64, mapping: SharedMapping) {
+        self.mappings.entry(pid).or_default().insert(addr, mapping);
+    }
+
+    // -- anonymous MAP_SHARED --------------------------------------------
+
+    /// Track a new anonymous `MAP_SHARED` interval, seeding its host-owned byte
+    /// store from the region's current contents.
+    pub fn track_anonymous_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        len: usize,
+        writable: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if len == 0 {
+            return Ok(());
+        }
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Ok(());
+        };
+        if map_addr.saturating_add(len as u64) > mem_len {
+            return Ok(());
+        }
+        let mut initial = vec![0u8; len];
+        io.read_process(pid, map_addr, &mut initial)?;
+
+        let key = alloc::format!("anon:{}:{}:{}", pid, map_addr, self.next_anon_id);
+        self.next_anon_id += 1;
+        self.anon_backings.insert(
+            key.clone(),
+            AnonymousBacking {
+                key: key.clone(),
+                bytes: initial.clone(),
+                ref_count: 1,
+                version: 0,
+            },
+        );
+        self.insert_mapping(
+            pid,
+            map_addr,
+            SharedMapping::anonymous(len, writable, key, initial),
+        );
+        Ok(())
+    }
+
+    /// Merge this process's anonymous `MAP_SHARED` writes into the host-owned
+    /// backings, then import the complete authoritative result.
+    ///
+    /// `seen_version` advances only after *both* steps, so a stale process that
+    /// publishes a disjoint write cannot mark unseen peer bytes as observed.
+    pub fn sync_anonymous_from_process(
+        &mut self,
+        pid: u32,
+        force: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Ok(());
+        };
+        let Self {
+            mappings,
+            anon_backings,
+            ..
+        } = self;
+        let Some(pid_map) = mappings.get_mut(&pid) else {
+            return Ok(());
+        };
+        for (map_addr, mapping) in pid_map.iter_mut() {
+            if mapping.backing_kind != Some(BackingKind::Anonymous) {
+                continue;
+            }
+            let Some(key) = mapping.backing_key.as_deref() else {
+                continue;
+            };
+            if mapping.snapshot.is_none() {
+                continue;
+            }
+            let Some(backing) = anon_backings.get_mut(key) else {
+                continue;
+            };
+            if map_addr.saturating_add(mapping.len as u64) > mem_len {
+                continue;
+            }
+            let base = mapping.file_offset as usize;
+            if base.saturating_add(mapping.len) > backing.bytes.len() {
+                continue;
+            }
+            let was_stale = mapping.seen_version != backing.version;
+            // A sole *current* observer can defer scanning its private memory,
+            // but a sole *stale* observer must still import a publication made
+            // by a child or peer before that other mapping detached.
+            if !force && backing.ref_count <= 1 && !was_stale {
+                continue;
+            }
+
+            let snapshot = mapping.snapshot.take().expect("checked above");
+            let mut current = vec![0u8; mapping.len];
+            if let Err(err) = io.read_process(pid, *map_addr, &mut current) {
+                mapping.snapshot = Some(snapshot);
+                return Err(err);
+            }
+
+            let mut changed = false;
+            if mapping.writable {
+                for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
+                    let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
+                    let src = &current[offset..offset + chunk];
+                    let snap = &snapshot[offset..offset + chunk];
+                    if !range_differs_from_snapshot(src, snap) {
+                        continue;
+                    }
+                    if merge_changed_byte_runs(src, snap, &mut backing.bytes, base + offset) {
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                backing.version += 1;
+            }
+
+            // A publisher may itself have been stale. Always reconcile after a
+            // publication rather than assigning the new version to a partial
+            // view.
+            if changed || was_stale {
+                let latest = backing.bytes[base..base + mapping.len].to_vec();
+                io.write_process(pid, *map_addr, &latest)?;
+                mapping.snapshot = Some(latest);
+            } else {
+                mapping.snapshot = Some(snapshot);
+            }
+            mapping.seen_version = backing.version;
+        }
+        Ok(())
+    }
+
+    fn release_anonymous_reference(&mut self, key: &str) {
+        let Some(backing) = self.anon_backings.get_mut(key) else {
+            return;
+        };
+        backing.ref_count = backing.ref_count.saturating_sub(1);
+        if backing.ref_count == 0 {
+            self.anon_backings.remove(key);
+        }
+    }
+
+    // -- file MAP_SHARED --------------------------------------------------
+
+    /// Register (or adopt) the page-cached backing for a shared file object.
+    ///
+    /// An open description's access mode cannot change, so a writable source
+    /// for an existing read-only backing must be a *distinct* `O_RDWR` handle
+    /// for the same file; the backing adopts it and releases the old one.
+    pub fn get_or_create_file_backing(
+        &mut self,
+        key: &str,
+        stat: &SharedMappingStat,
+        source_writable: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<&mut FileBacking, Errno> {
+        let Some(source_handle) = stat.host_handle else {
+            return Err(Errno::ENOTSUP);
+        };
+        if self.file_backings.contains_key(key) {
+            let existing = self.file_backings.get_mut(key).expect("checked above");
+            if source_writable && !existing.writable {
+                if source_handle == existing.handle {
+                    return Err(Errno::EIO);
+                }
+                io.retain_handle(source_handle)?;
+                let old_handle = existing.handle;
+                existing.handle = source_handle;
+                existing.writable = true;
+                existing.size = stat.size;
+                existing.size_valid = true;
+                io.release_handle(old_handle);
+            } else {
+                existing.revalidate(io)?;
+            }
+            return Ok(self.file_backings.get_mut(key).expect("checked above"));
+        }
+
+        io.retain_handle(source_handle)?;
+        self.file_backings.insert(
+            String::from(key),
+            FileBacking::new(String::from(key), source_handle, source_writable, stat.size),
+        );
+        Ok(self.file_backings.get_mut(key).expect("just inserted"))
+    }
+
+    /// Drop a backing nothing references. A zero-reference backing can remain
+    /// after a failed final writeback; its dirty pages and stable handle are
+    /// preserved for a later mapping of the same object rather than silently
+    /// discarding acknowledged `MAP_SHARED` stores.
+    pub fn discard_unreferenced_file_backing(&mut self, key: &str, io: &mut dyn SharedMappingIo) {
+        let Some(backing) = self.file_backings.get(key) else {
+            return;
+        };
+        if backing.ref_count != 0 || !backing.dirty_pages.is_empty() {
+            return;
+        }
+        let handle = backing.handle;
+        self.file_backings.remove(key);
+        io.release_handle(handle);
+    }
+
+    /// Drop one reference; on the last one, flush and close. A failed final
+    /// flush keeps the handle and dirty cache alive, because closing here would
+    /// irreversibly lose acknowledged stores.
+    pub fn release_file_backing_reference(&mut self, key: &str, io: &mut dyn SharedMappingIo) {
+        let Some(backing) = self.file_backings.get_mut(key) else {
+            return;
+        };
+        backing.ref_count = backing.ref_count.saturating_sub(1);
+        if backing.ref_count > 0 {
+            return;
+        }
+        if !backing.flush_all(io) {
+            return;
+        }
+        let handle = backing.handle;
+        self.file_backings.remove(key);
+        io.release_handle(handle);
+    }
+
+    /// Publish, then refresh, every file mapping of one process.
+    ///
+    /// Both phases run over the whole candidate set before the other begins: a
+    /// one-pass publish-and-refresh loop can leave an earlier alias stale when
+    /// a later alias advances the same backing during this boundary, and every
+    /// refreshed range is read before *any* process memory is written so a
+    /// single unreadable backing cannot leave the process partially refreshed.
+    pub fn sync_file_from_process(
+        &mut self,
+        pid: u32,
+        force: bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Ok(());
+        };
+        let mut candidates: Vec<(u64, String)> = Vec::new();
+        {
+            let Some(pid_map) = self.mappings.get(&pid) else {
+                return Ok(());
+            };
+            for (map_addr, mapping) in pid_map.iter() {
+                if mapping.backing_kind != Some(BackingKind::File) {
+                    continue;
+                }
+                let Some(key) = mapping.backing_key.as_deref() else {
+                    continue;
+                };
+                if mapping.snapshot.is_none() {
+                    continue;
+                }
+                let Some(backing) = self.file_backings.get(key) else {
+                    continue;
+                };
+                if map_addr.saturating_add(mapping.len as u64) > mem_len {
+                    continue;
+                }
+                let was_stale = mapping.seen_version != backing.version;
+                if !force && backing.ref_count <= 1 && !was_stale {
+                    continue;
+                }
+                candidates.push((*map_addr, String::from(key)));
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        // Phase 1 — publish every alias.
+        for (map_addr, key) in &candidates {
+            let Self {
+                mappings,
+                file_backings,
+                ..
+            } = self;
+            let Some(mapping) = mappings.get_mut(&pid).and_then(|m| m.get_mut(map_addr)) else {
+                continue;
+            };
+            let Some(backing) = file_backings.get_mut(key) else {
+                continue;
+            };
+            if !mapping.writable {
+                continue;
+            }
+            let Some(snapshot) = mapping.snapshot.take() else {
+                continue;
+            };
+            let mut current = vec![0u8; mapping.len];
+            if let Err(err) = io.read_process(pid, *map_addr, &mut current) {
+                mapping.snapshot = Some(snapshot);
+                return Err(err);
+            }
+            let mut changed = false;
+            let mut failure = None;
+            for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
+                let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
+                let src = &current[offset..offset + chunk];
+                let snap = &snapshot[offset..offset + chunk];
+                if !range_differs_from_snapshot(src, snap) {
+                    continue;
+                }
+                match backing.merge_changed_runs(
+                    src,
+                    snap,
+                    mapping.file_offset + offset as u64,
+                    io,
+                ) {
+                    Ok(true) => changed = true,
+                    Ok(false) => {}
+                    Err(err) => {
+                        failure = Some(err);
+                        break;
+                    }
+                }
+            }
+            mapping.snapshot = Some(snapshot);
+            if changed {
+                backing.version += 1;
+            }
+            if let Some(err) = failure {
+                return Err(err);
+            }
+        }
+
+        // Phase 2a — read every final snapshot before mutating process memory.
+        let mut refreshes: Vec<(u64, Vec<u8>, u64)> = Vec::new();
+        for (map_addr, key) in &candidates {
+            let Self {
+                mappings,
+                file_backings,
+                ..
+            } = self;
+            let Some(mapping) = mappings.get(&pid).and_then(|m| m.get(map_addr)) else {
+                continue;
+            };
+            let Some(backing) = file_backings.get_mut(key) else {
+                continue;
+            };
+            if mapping.seen_version == backing.version {
+                continue;
+            }
+            let latest = backing.read_range(mapping.file_offset, mapping.len, io)?;
+            refreshes.push((*map_addr, latest, backing.version));
+        }
+
+        // Phase 2b — apply them.
+        for (map_addr, latest, version) in refreshes {
+            io.write_process(pid, map_addr, &latest)?;
+            if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
+                mapping.snapshot = Some(latest);
+                mapping.seen_version = version;
+            }
+        }
+        Ok(())
+    }
+
+    /// Force every current observer of a backing to publish, before another
+    /// mapping joins it or an ordinary file read observes it. Without this a
+    /// sole observer's deferred writes would be invisible to the newcomer.
+    pub fn publish_file_backing_observers(
+        &mut self,
+        key: &str,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(backing) = self.file_backings.get(key) else {
+            return Ok(());
+        };
+        if backing.ref_count == 0 {
+            return Ok(());
+        }
+        let observers: Vec<u32> = self
+            .mappings
+            .iter()
+            .filter(|(_, m)| {
+                m.values().any(|mapping| {
+                    mapping.backing_kind == Some(BackingKind::File)
+                        && mapping.backing_key.as_deref() == Some(key)
+                })
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+        for pid in observers {
+            self.sync_file_from_process(pid, true, io)?;
+        }
+        Ok(())
+    }
+
+    // -- fd-writeback bridge (kernel-owned tmpfs / memfd files) -----------
+
+    /// Record one more reference to a mapping's owned writeback dup.
+    fn retain_writeback_fd(&mut self, pid: u32, mapping: &SharedMapping) {
+        let Some(wf) = mapping.owned_writeback_fd() else {
+            return;
+        };
+        let per_pid = self.writeback_refs.entry(pid).or_default();
+        *per_pid.entry(wf).or_insert(0) += 1;
+    }
+
+    /// Release one reference; close the owned dup when it reaches zero.
+    fn release_writeback_fd(&mut self, pid: u32, mapping: &SharedMapping, io: &mut dyn SharedMappingIo) {
+        let Some(wf) = mapping.owned_writeback_fd() else {
+            return;
+        };
+        let Some(per_pid) = self.writeback_refs.get_mut(&pid) else {
+            return;
+        };
+        let next = per_pid.get(&wf).copied().unwrap_or(0).saturating_sub(1);
+        if next > 0 {
+            per_pid.insert(wf, next);
+            return;
+        }
+        per_pid.remove(&wf);
+        if per_pid.is_empty() {
+            self.writeback_refs.remove(&pid);
+        }
+        io.close_fd(pid, wf);
+    }
+
+    fn report_writeback_loss(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        reason: &str,
+        io: &mut dyn SharedMappingIo,
+    ) {
+        if self.writeback_loss_reports >= WRITEBACK_LOSS_REPORT_LIMIT {
+            return;
+        }
+        self.writeback_loss_reports += 1;
+        io.report_writeback_loss(pid, map_addr, reason);
+    }
+
+    /// Flush the dirty bytes of an fd-writeback mapping back to its
+    /// kernel-owned file, clamped to the file's live size so a whole-page
+    /// mapping never grows the file past EOF, and writing only the byte runs
+    /// this mapping changed so concurrent mappings preserve each other's
+    /// disjoint updates.
+    ///
+    /// Returns `false` when the write cannot be performed safely. The writeback
+    /// dup is a guest-*visible* descriptor number, so a `closefrom`/`close_fds`
+    /// can close it and a `dup2` can repoint it at another file. In both cases
+    /// the flush is REFUSED rather than blindly written: writing to a closed
+    /// number is pointless and writing to a repointed one would corrupt an
+    /// unrelated file. The loss is reported, never silent.
+    pub fn flush_fd_writeback_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        flush_start: u64,
+        flush_len: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        let Some(mapping) = self.mappings.get(&pid).and_then(|m| m.get(&map_addr)) else {
+            return true;
+        };
+        let writeback_fd = mapping.writeback_fd.unwrap_or(mapping.fd);
+        let file_offset = mapping.file_offset;
+
+        // Consult the live descriptor for both the current size (so a
+        // legitimate post-mmap ftruncate-larger is honored) AND its identity.
+        let live = match io.fd_stat(pid, writeback_fd) {
+            Ok(stat) => stat,
+            Err(_) => {
+                self.report_writeback_loss(pid, map_addr, "descriptor closed", io);
+                return false;
+            }
+        };
+        let dev_mismatch = mapping.expected_dev.is_some_and(|d| d != live.dev);
+        let ino_mismatch = mapping.expected_ino.is_some_and(|i| i != live.ino);
+        if dev_mismatch || ino_mismatch {
+            self.report_writeback_loss(
+                pid,
+                map_addr,
+                "descriptor repointed to a different file",
+                io,
+            );
+            return false;
+        }
+
+        let live_size = live.size;
+        let mapping_offset = flush_start.saturating_sub(map_addr);
+        let file_offset_base = file_offset + mapping_offset;
+        {
+            let mapping = self
+                .mappings
+                .get_mut(&pid)
+                .and_then(|m| m.get_mut(&map_addr))
+                .expect("checked above");
+            mapping.file_size = live_size;
+        }
+        if file_offset_base >= live_size {
+            return true; // entirely past EOF; drop.
+        }
+        let writable_len = flush_len.min(live_size - file_offset_base) as usize;
+        if writable_len == 0 {
+            return true;
+        }
+
+        let mut current = vec![0u8; writable_len];
+        if io.read_process(pid, flush_start, &mut current).is_err() {
+            self.report_writeback_loss(pid, map_addr, "process memory unreadable", io);
+            return false;
+        }
+
+        let snapshot: Option<Vec<u8>> = {
+            let mapping = self
+                .mappings
+                .get(&pid)
+                .and_then(|m| m.get(&map_addr))
+                .expect("checked above");
+            mapping.snapshot.as_ref().map(|s| {
+                let lo = (mapping_offset as usize).min(s.len());
+                let hi = (lo + writable_len).min(s.len());
+                s[lo..hi].to_vec()
+            })
+        };
+        // With no snapshot every byte is "changed", which is the conservative
+        // direction: publish more, never less.
+        let snapshot_ref: &[u8] = snapshot.as_deref().unwrap_or(&[]);
+
+        let mut success = true;
+        for (start, end) in changed_runs(&current, snapshot_ref) {
+            match io.fd_pwrite(
+                pid,
+                writeback_fd,
+                file_offset_base + start as u64,
+                &current[start..end],
+            ) {
+                Ok(count) if count == end - start => {}
+                _ => {
+                    self.report_writeback_loss(pid, map_addr, "write failed", io);
+                    success = false;
+                    break;
+                }
+            }
+        }
+
+        // Advance the snapshot to the bytes just published, so a later flush
+        // sends only new changes and cannot re-clobber a peer's writes.
+        if success {
+            if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
+                if let Some(snap) = mapping.snapshot.as_mut() {
+                    let lo = (mapping_offset as usize).min(snap.len());
+                    let hi = (lo + writable_len).min(snap.len());
+                    snap[lo..hi].copy_from_slice(&current[..hi - lo]);
+                }
+            }
+        }
+        success
+    }
+}
