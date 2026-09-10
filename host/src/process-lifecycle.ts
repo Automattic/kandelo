@@ -64,6 +64,7 @@ import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
+import type { ProcessMemoryAllocator } from "./process-memory";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
@@ -80,7 +81,9 @@ import type {
   ExactProcessGenerationDetachLedger,
   ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
-import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { extractHeapBase } from "./constants";
+import { computeProcessMemoryLayout } from "./process-memory";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
@@ -109,6 +112,10 @@ export interface ProcessLifecycleInfo extends ProcessGenerationOwnership {
   channelOffset: number;
   vforkWorkspace?: VforkWorkspaceOwnership;
   worker: LifecycleWorker;
+  ptrWidth: 4 | 8;
+  layout: ProcessMemoryLayout;
+  /** The image's argument vector, where the host records one. */
+  argv?: readonly string[];
 }
 
 /**
@@ -145,6 +152,7 @@ export interface ThreadWorkerRecord<W extends LifecycleWorker> {
 export type ProcessLifecycleOutboundMessage =
   | HostDiagnosticMessage
   | ForkModuleProofMessage
+  | { type: "kernel_fatal"; error: string }
   | { type: "response"; requestId: number; result: unknown; error?: string };
 
 /**
@@ -232,6 +240,25 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
    * one. Null means the kernel has no overlay to write into or export.
    */
   rootfsBaseImage(): MemoryFileSystem | null | undefined;
+
+  /** This kernel's process memory allocator. */
+  processMemoryAllocator(): ProcessMemoryAllocator;
+
+  /** Default per-process page ceiling when a spawn does not name one. */
+  defaultMaxPages(): number;
+
+  /** Default number of thread slots to reserve in a new address space. */
+  defaultThreadSlots(): number;
+
+  /**
+   * Stop this kernel realm after a fatal kernel-instance failure.
+   *
+   * The last irreducible step of `terminatePoisonedKernelWorker`: the kernel
+   * can no longer coordinate anything, so the host closes its own worker
+   * realm. A dedicated worker closes itself in the browser and exits the
+   * thread on Node, after releasing whatever host resources it owns.
+   */
+  stopKernelRealm(): void;
 
   /**
    * The guest mount table, when one exists.
@@ -685,6 +712,199 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   /** Serialises rootfs mutations against a rootfs image export. */
   const rootfsSnapshotGate = new RootfsSnapshotGate();
 
+  /**
+   * Set once the kernel instance has been declared fatally poisoned, so the
+   * teardown below runs exactly once however many callers observe the fault.
+   */
+  let kernelFatalReported = false;
+
+  /**
+   * Tear this kernel realm down after a fatal kernel-instance failure.
+   *
+   * A trapped kernel export can strand Rust's global transfer reservation in
+   * Executing state, so nothing may call back into that generation. Terminate
+   * the process workers and the process-owned pthread workers directly, then
+   * hand the last step to the host.
+   */
+  function terminatePoisonedKernelWorker(error: Error): void {
+    if (kernelFatalReported) return;
+    kernelFatalReported = true;
+    const detail = formatError(error);
+    const prefix = host.diagnosticPrefix;
+    try {
+      try {
+        reportHostDiagnostic({
+          pid: 0,
+          source: "kernel fatal",
+          message: `${prefix} fatal kernel instance failure: ${detail}`,
+        });
+      } catch (reportError) {
+        console.error(
+          `${prefix} could not report fatal diagnostic:`,
+          reportError,
+        );
+      }
+      try {
+        host.post({ type: "kernel_fatal", error: detail });
+      } catch (postError) {
+        console.error(`${prefix} could not post fatal state:`, postError);
+      }
+    } finally {
+      // A rejected terminate() must not become an unhandled rejection in the
+      // middle of fatal teardown: the browser entry dropped the catch the Node
+      // entry had, so a refused termination surfaced as a second, unrelated
+      // failure on top of the one being reported.
+      for (const info of host.processes.values()) {
+        intentionallyTerminated.add(info.worker as object);
+        void info.worker.terminate().catch(() => {});
+      }
+      for (const threads of threadWorkers.values()) {
+        for (const thread of threads) {
+          intentionallyTerminated.add(thread.worker as object);
+          void thread.worker.terminate().catch(() => {});
+        }
+      }
+      host.stopKernelRealm();
+    }
+  }
+
+  /** What a process-memory allocation was for, reported when it fails. */
+  interface ProcessMemoryAllocationContext {
+    operation:
+      | "spawn"
+      | "posix_spawn"
+      | "exec"
+      | "fork"
+      | "vfork"
+      | "clone";
+    path?: string;
+    argv?: readonly string[];
+  }
+
+  /**
+   * Everything worth knowing about why a process-memory allocation failed.
+   *
+   * An allocation failure is a resource-exhaustion boundary, and the useful
+   * question is always "exhausted by what" — so report the requested layout
+   * alongside every live image and every teardown still in flight. This was a
+   * browser-only diagnostic; a Node allocation failure threw with no context
+   * at all.
+   */
+  function processMemoryAllocationDiagnostics(
+    pid: number,
+    ptrWidth: 4 | 8,
+    layout: ProcessMemoryLayout,
+    heapBase: bigint | number | null,
+    context?: ProcessMemoryAllocationContext,
+  ) {
+    let totalLiveBufferBytes = 0;
+    const liveProcesses = Array.from(host.processes.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([livePid, info]) => {
+        const bufferBytes = info.memory.buffer.byteLength;
+        totalLiveBufferBytes += bufferBytes;
+        return {
+          pid: livePid,
+          argv: info.argv?.slice(0, 8),
+          ptrWidth: info.ptrWidth,
+          currentPages: Math.ceil(bufferBytes / WASM_PAGE_SIZE),
+          maximumPages: info.layout.maximumPages,
+          bufferBytes,
+        };
+      });
+
+    return {
+      operation: context?.operation,
+      pid,
+      path: context?.path,
+      argv: context?.argv,
+      ptrWidth,
+      heapBase: heapBase == null ? null : heapBase.toString(),
+      requestedLayout: {
+        initialPages: layout.initialPages,
+        maximumPages: layout.maximumPages,
+        controlBase: layout.controlBase,
+        brkBase: layout.brkBase,
+        mmapBase: layout.mmapBase,
+        maxAddr: layout.maxAddr,
+        threadSlotCount: layout.threadSlotCount,
+        threadArenaEndPage: layout.threadArenaEndPage,
+      },
+      liveProcessCount: host.processes.size,
+      pendingProcessTeardowns: host.processTeardowns.size,
+      pendingWorkerTeardowns: workerTeardowns.size,
+      totalLiveBufferBytes,
+      liveProcesses,
+    };
+  }
+
+  /**
+   * Build a brand-new address space for one execution image.
+   *
+   * `processMaxPages` honours a caller-supplied per-process page ceiling; the
+   * Node entry ignored the spawn option entirely and always used the kernel
+   * default, which is a POSIX-visible difference in what a spawn request can
+   * ask for.
+   */
+  async function createFreshProcessMemory(
+    pid: number,
+    programBytes: ArrayBuffer,
+    ptrWidth: 4 | 8,
+    processMaxPages = host.defaultMaxPages(),
+    context?: ProcessMemoryAllocationContext,
+  ): Promise<{
+    memory: WebAssembly.Memory;
+    memoryLease: ProcessMemoryLease;
+    layout: ProcessMemoryLayout;
+    threadAllocator: ThreadPageAllocator;
+  }> {
+    const heapBase = extractHeapBase(programBytes);
+    const layout = computeProcessMemoryLayout({
+      maxPages: processMaxPages,
+      defaultThreadSlots: host.defaultThreadSlots(),
+      ptrWidth,
+      programBytes,
+      heapBase,
+    });
+    let memoryLease: ProcessMemoryLease;
+    try {
+      memoryLease = await host.processMemoryAllocator().acquireWhenAvailable({
+        ptrWidth,
+        initialPages: layout.initialPages,
+        maximumPages: layout.maximumPages,
+      });
+    } catch (e) {
+      console.error(
+        `${host.diagnosticPrefix} process memory allocation failed`,
+        JSON.stringify(
+          processMemoryAllocationDiagnostics(
+            pid,
+            ptrWidth,
+            layout,
+            heapBase,
+            context,
+          ),
+        ),
+      );
+      throw e;
+    }
+    try {
+      const memory = memoryLease.memory;
+      new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
+      return {
+        memory,
+        memoryLease,
+        layout,
+        threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
+      };
+    } catch (error) {
+      // No Worker or kernel registration can exist yet, so the lease still has
+      // one owner and may be returned transactionally rather than force-retired.
+      memoryLease.release();
+      throw error;
+    }
+  }
+
   function respondTransferredBytes(requestId: number, result: Uint8Array): void {
     host.post(
       { type: "response", requestId, result },
@@ -1040,6 +1260,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
+    createFreshProcessMemory,
     detachExactProcessGeneration,
     dispatchForkHostImport,
     handleExportRootfsImage,
@@ -1074,6 +1295,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     respond,
     respondError,
     respondTransferredBytes,
+    terminatePoisonedKernelWorker,
     threadAllocatorForLayout,
     traceVforkMechanism,
   };

@@ -72,7 +72,6 @@ import {
   describeWasmArtifactPolicyFailures,
   detectPtrWidth,
   extractAbiVersion,
-  extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
@@ -108,7 +107,6 @@ import {
 } from "./fork-host-import-runtime";
 import {
   acquireForkMemoryClone,
-  computeProcessMemoryLayout,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
   deriveProcessMemoryRetirementAdmissionThresholds,
@@ -301,7 +299,6 @@ let rootfsForeignPrefixes: string[] = [];
  *  mount. Defaults set-ID honoring. */
 let rootfsNosuid = false;
 let initReady = false;
-let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
@@ -548,6 +545,13 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => rootfsMemfs,
+  processMemoryAllocator: () => processMemoryAllocator,
+  defaultMaxPages: () => maxPages,
+  defaultThreadSlots: () => defaultThreadSlots,
+  stopKernelRealm: () => {
+    cleanupSessionDir();
+    queueMicrotask(() => process.exit(1));
+  },
   // Node alone has locally injected program buffers and a main-thread
   // `resolve_exec` fallback beyond the filesystem.
   resolveExecFile: (path) => resolveExec(path),
@@ -555,6 +559,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
   handleExportRootfsImage,
@@ -587,6 +592,7 @@ const {
   reportRetainedProcessGeneration,
   respond,
   respondError,
+  terminatePoisonedKernelWorker,
   threadAllocatorForLayout,
   traceVforkMechanism,
 } = lifecycle;
@@ -704,93 +710,9 @@ function post(msg: KernelToMainMessage, transfer?: ArrayBuffer[]) {
   port.postMessage(msg, transfer ?? []);
 }
 
-function terminatePoisonedKernelWorker(error: Error): void {
-  if (kernelFatalReported) return;
-  kernelFatalReported = true;
-  const detail = error.stack
-    ? `${error.message}\n${error.stack}`
-    : error.message;
-  try {
-    try {
-      reportHostDiagnostic({
-        pid: 0,
-        source: "kernel fatal",
-        message: `[node-kernel-worker] fatal kernel instance failure: ${detail}`,
-      });
-    } catch (reportError) {
-      console.error(
-        "[node-kernel-worker] could not report fatal diagnostic:",
-        reportError,
-      );
-    }
-    try {
-      post({ type: "kernel_fatal", error: detail });
-    } catch (postError) {
-      console.error(
-        "[node-kernel-worker] could not post fatal state:",
-        postError,
-      );
-    }
-  } finally {
-    // WHY: a trapped kernel export can strand Rust's global transfer
-    // reservation in Executing state. Do not call back into that generation;
-    // terminate its process workers directly and stop this worker thread.
-    for (const info of processes.values()) {
-      intentionallyTerminated.add(info.worker as object);
-      void info.worker.terminate().catch(() => {});
-    }
-    for (const threads of threadWorkers.values()) {
-      for (const thread of threads) {
-        intentionallyTerminated.add(thread.worker as object);
-        void thread.worker.terminate().catch(() => {});
-      }
-    }
-    cleanupSessionDir();
-    queueMicrotask(() => process.exit(1));
-  }
-}
 
 
 
-async function createFreshProcessMemory(
-  pid: number,
-  programBytes: ArrayBuffer,
-  ptrWidth: 4 | 8,
-): Promise<{
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-  layout: ProcessMemoryLayout;
-  threadAllocator: ThreadPageAllocator;
-}> {
-  const heapBase = extractHeapBase(programBytes);
-  const layout = computeProcessMemoryLayout({
-    maxPages,
-    defaultThreadSlots,
-    ptrWidth,
-    programBytes,
-    heapBase,
-  });
-  const memoryLease = await processMemoryAllocator.acquireWhenAvailable({
-    ptrWidth,
-    initialPages: layout.initialPages,
-    maximumPages: layout.maximumPages,
-  });
-  try {
-    const memory = memoryLease.memory;
-    new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
-    return {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
-    };
-  } catch (error) {
-    // No Worker or kernel registration can exist yet, so the lease still has
-    // one owner and may be returned transactionally.
-    memoryLease.release();
-    throw error;
-  }
-}
 
 
 function resolveExecLocal(path: string): ArrayBuffer | null {

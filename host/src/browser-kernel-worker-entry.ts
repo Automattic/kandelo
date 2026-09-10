@@ -56,7 +56,6 @@ import {
   describeWasmArtifactPolicyFailures,
   detectPtrWidth,
   extractAbiVersion,
-  extractHeapBase,
   isWasmModuleBytes,
 } from "./constants";
 import {
@@ -98,7 +97,6 @@ import {
 } from "./generated/abi";
 import {
   acquireForkMemoryClone,
-  computeProcessMemoryLayout,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
   deriveProcessMemoryRetirementAdmissionThresholds,
@@ -208,7 +206,6 @@ type LazyRegistrationMessage = Extract<
 
 let initReady = false;
 let initFailure: string | null = null;
-let kernelFatalReported = false;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
@@ -416,6 +413,16 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => memfs,
+  processMemoryAllocator: () => processMemoryAllocator,
+  defaultMaxPages: () => maxPages,
+  defaultThreadSlots: () => defaultThreadSlots,
+  stopKernelRealm: () => {
+    // A dedicated worker realm closes itself; the in-class fatal latch
+    // makes queued waitAsync/timer callbacks inert during this turn.
+    queueMicrotask(() => {
+      (globalThis as unknown as { close(): void }).close();
+    });
+  },
   // No `resolveExecFile`: the browser has no locally injected program buffers
   // and no main-thread `resolve_exec` fallback, so the filesystem is the only
   // source of exec bytes.
@@ -423,6 +430,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
   handleExportRootfsImage,
@@ -455,6 +463,7 @@ const {
   reportRetainedProcessGeneration,
   respond,
   respondError,
+  terminatePoisonedKernelWorker,
   threadAllocatorForLayout,
   traceVforkMechanism,
 } = lifecycle;
@@ -534,44 +543,6 @@ function acknowledgeMainFramebufferRelease(requestId: number): void {
   pending.resolve(true);
 }
 
-function terminatePoisonedKernelWorker(error: Error): void {
-  if (kernelFatalReported) return;
-  kernelFatalReported = true;
-  const detail = formatError(error);
-  try {
-    try {
-      reportHostDiagnostic({
-        pid: 0,
-        source: "kernel fatal",
-        message: `[kernel-worker] fatal kernel instance failure: ${detail}`,
-      });
-    } catch (reportError) {
-      console.error("[kernel-worker] could not report fatal diagnostic:", reportError);
-    }
-    try {
-      post({ type: "kernel_fatal", error: detail });
-    } catch (postError) {
-      console.error("[kernel-worker] could not post fatal state:", postError);
-    }
-  } finally {
-    // The kernel can no longer coordinate process teardown. Stop every nested
-    // Worker directly, then close this dedicated kernel Worker. The in-class
-    // fatal latch makes queued waitAsync/timer callbacks inert during this turn.
-    for (const info of processes.values()) {
-      intentionallyTerminated.add(info.worker as object);
-      void info.worker.terminate();
-    }
-    for (const threads of threadWorkers.values()) {
-      for (const thread of threads) {
-        intentionallyTerminated.add(thread.worker as object);
-        void thread.worker.terminate();
-      }
-    }
-    queueMicrotask(() => {
-      (globalThis as unknown as { close(): void }).close();
-    });
-  }
-}
 
 function reportBridgePendingRequests(): void {
   post({ type: "http_bridge_pending", count: activeBridgeRequests.size });
@@ -693,112 +664,8 @@ async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<voi
   }
 }
 
-interface ProcessMemoryAllocationContext {
-  operation: "spawn" | "exec" | "posix_spawn";
-  path?: string;
-  argv?: readonly string[];
-}
 
-function processMemoryAllocationDiagnostics(
-  pid: number,
-  ptrWidth: 4 | 8,
-  layout: ProcessMemoryLayout,
-  heapBase: bigint | number | null,
-  context?: ProcessMemoryAllocationContext,
-) {
-  let totalLiveBufferBytes = 0;
-  const liveProcesses = Array.from(processes.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([livePid, info]) => {
-      const bufferBytes = info.memory.buffer.byteLength;
-      totalLiveBufferBytes += bufferBytes;
-      return {
-        pid: livePid,
-        argv: info.argv.slice(0, 8),
-        ptrWidth: info.ptrWidth,
-        currentPages: Math.ceil(bufferBytes / PAGE_SIZE),
-        maximumPages: info.layout.maximumPages,
-        bufferBytes,
-      };
-    });
 
-  return {
-    operation: context?.operation,
-    pid,
-    path: context?.path,
-    argv: context?.argv,
-    ptrWidth,
-    heapBase: heapBase == null ? null : heapBase.toString(),
-    requestedLayout: {
-      initialPages: layout.initialPages,
-      maximumPages: layout.maximumPages,
-      controlBase: layout.controlBase,
-      brkBase: layout.brkBase,
-      mmapBase: layout.mmapBase,
-      maxAddr: layout.maxAddr,
-      threadSlotCount: layout.threadSlotCount,
-      threadArenaEndPage: layout.threadArenaEndPage,
-    },
-    liveProcessCount: processes.size,
-    pendingProcessTeardowns: processTeardowns.size,
-    pendingWorkerTeardowns: workerTeardowns.size,
-    totalLiveBufferBytes,
-    liveProcesses,
-  };
-}
-
-async function createFreshProcessMemory(
-  pid: number,
-  programBytes: ArrayBuffer,
-  ptrWidth: 4 | 8,
-  processMaxPages = maxPages,
-  context?: ProcessMemoryAllocationContext,
-): Promise<{
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-  layout: ProcessMemoryLayout;
-  threadAllocator: ThreadPageAllocator;
-}> {
-  const heapBase = extractHeapBase(programBytes);
-  const layout = computeProcessMemoryLayout({
-    maxPages: processMaxPages,
-    defaultThreadSlots,
-    ptrWidth,
-    programBytes,
-    heapBase,
-  });
-  let memoryLease: ProcessMemoryLease;
-  try {
-    memoryLease = await processMemoryAllocator.acquireWhenAvailable({
-      ptrWidth,
-      initialPages: layout.initialPages,
-      maximumPages: layout.maximumPages,
-    });
-  } catch (e) {
-    console.error(
-      "[kernel-worker] process memory allocation failed",
-      JSON.stringify(
-        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
-      ),
-    );
-    throw e;
-  }
-  try {
-    const memory = memoryLease.memory;
-    new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
-    return {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
-    };
-  } catch (error) {
-    // No browser Worker or kernel registration exists yet, so rollback is an
-    // exact single-owner release rather than forced retirement.
-    memoryLease.release();
-    throw error;
-  }
-}
 
 // ── Init ──
 

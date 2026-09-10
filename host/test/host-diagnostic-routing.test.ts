@@ -63,15 +63,23 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("wires a poisoned shared kernel instance to definitive worker teardown", () => {
-    expect(source).toMatch(
+    // The teardown itself is one implementation in
+    // `host/src/process-lifecycle.ts` now, so it is asserted there. What each
+    // entry still owes is the wire into the kernel and the one irreducibly
+    // host-specific step: stopping its own worker realm once the kernel can no
+    // longer coordinate anything.
+    expect(sharedLifecycleSource).toMatch(
       /\bfunction\s+terminatePoisonedKernelWorker\s*\(\s*error:\s*Error\s*\)/,
     );
+    expect(sharedLifecycleSource).toMatch(
+      /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
+    );
+    expect(sharedLifecycleSource).toContain("host.stopKernelRealm()");
     expect(source).toMatch(
       /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
     );
-    expect(source).toMatch(
-      /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
-    );
+    expect(source).toContain("terminatePoisonedKernelWorker,");
+    expect(source).toMatch(/\bstopKernelRealm:\s*\(\)\s*=>/);
   });
 });
 
