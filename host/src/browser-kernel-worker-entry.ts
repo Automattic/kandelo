@@ -266,7 +266,6 @@ const pendingFramebufferReleaseAcks = new Map<
   number,
   { resolve: (released: boolean) => void; timeout: ReturnType<typeof setTimeout> }
 >();
-const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
@@ -282,7 +281,6 @@ const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
 // all threads of the same process. Keyed by PID of the process that spawned threads.
-const threadModuleCache = new Map<number, WebAssembly.Module>();
 
 
 
@@ -396,21 +394,17 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
   reportProcessExit: (pid, info, status) =>
     reportProcessExit(pid, info.generation, status),
-  processExitSettleMs: (pid, info) => {
-    const threadedSettleMs = threadedProcessPids.has(pid)
-      ? THREADED_WORKER_TERMINATION_SETTLE_MS
-      : 0;
-    threadedProcessPids.delete(pid);
-    return Math.max(
-      threadedSettleMs,
-      processWorkerTerminationSettleMs(info.argv),
-    );
-  },
+  // Only the process worker's own compatibility delay; the shared exit path
+  // adds the thread-worker settle for a process that cloned.
+  processExitSettleMs: (_pid, info) =>
+    processWorkerTerminationSettleMs(info.argv),
   releaseGenerationAliases: (pid, info) =>
     releaseMainFramebufferGeneration(pid, info),
   allocateProcessGeneration,
   forkHostImportOwnerRuntime,
   createProcessWorker: (init) => workerAdapter.createWorker(init),
+  createThreadWorker: (init) =>
+    new DeferredWorkerHandle(() => workerAdapter.createWorker(init)),
   createDeferredProcessWorker: (init, purpose) =>
     new DeferredWorkerHandle(() => {
       // The vfork rollback's test seam. Scoped to vfork on purpose: a
@@ -458,6 +452,10 @@ const {
   handleOrdinaryFork,
   handleVfork,
   handleFork,
+  handleClone,
+  handleExit,
+  threadModuleCache,
+  threadedProcessPids,
   classifyWasmTrap,
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -1908,308 +1906,6 @@ async function handleExec(
  * contents from the VFS, follows shebangs, and compiles the final Wasm
  * module. Safe to call before the kernel applies spawn file actions.
  */
-
-async function handleClone(
-  attachment: ThreadChannelAttachment,
-): Promise<void> {
-  const { pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory } =
-    attachment;
-  const processInfo = processes.get(pid);
-  if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
-  threadedProcessPids.add(pid);
-
-  // Auto-compile thread module if not already cached.
-  // The cache is per-PID so each process's module is compiled once and reused
-  // for all its threads. Async compilation is fine since clone() blocks on the channel.
-  // We keep this separate from processInfo.programModule (which is the unpatched
-  // module used for fork children) to avoid conflating the two.
-  let threadModule = threadModuleCache.get(pid);
-  let cacheCompiledModule = false;
-  if (!threadModule) {
-    const patched = patchWasmForThread(processInfo.programBytes);
-    threadModule = await WebAssembly.compile(patched);
-    cacheCompiledModule = true;
-  }
-
-  // Compilation yields. A sibling pthread may have committed exec while this
-  // clone continuation was suspended; never attach the old program/Memory to
-  // the replacement exec image for the same process identity.
-  const belongsToCompiledProcessImage = () =>
-    isCurrentProcessGeneration(
-      processes,
-      pid,
-      processInfo,
-      memory,
-      kernelWorker.isExecHandoffActive(pid),
-    );
-  const executionState = await retryKernelEntryResultForGeneration(
-    belongsToCompiledProcessImage,
-    () => kernelWorker.isProcessExecutionActive(pid),
-  );
-  if (executionState.status === "stale" || !executionState.value) {
-    throw new Error(`Process ${pid} changed generation during clone`);
-  }
-  if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
-
-  let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
-  try {
-    const allocationState = await retryKernelEntryResultForGeneration(
-      belongsToCompiledProcessImage,
-      () => processInfo.threadAllocator.allocate(memory),
-    );
-    if (allocationState.status === "stale") {
-      throw new Error(`Process ${pid} changed generation during clone allocation`);
-    }
-    alloc = allocationState.value;
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    reportHostDiagnostic({
-      pid,
-      source: "clone allocation",
-      message: `[kernel-worker] pid=${pid}: ${message}`,
-    });
-    throw e;
-  }
-
-  // Register fnPtr/argPtr so handleFork can route a fork() from this
-  // thread back through its entry point. Mirrors handleClone in
-  // host/src/node-kernel-worker-entry.ts.
-  try {
-    const attachmentState = await retryKernelEntryResultForGeneration(
-      belongsToCompiledProcessImage,
-      () => kernelWorker.attachThreadChannel(attachment, alloc.channelOffset),
-    );
-    if (attachmentState.status === "stale") {
-      throw new Error(`Process ${pid} changed generation during clone attachment`);
-    }
-  } catch (err) {
-    processInfo.threadAllocator.free(alloc.basePage);
-    throw err;
-  }
-
-  let threadWorker: DeferredWorkerHandle;
-  let threadEntry: ThreadWorkerRecord<ProcessInfo["worker"]>;
-  const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-    pid,
-    generationId: processInfo.externrefGeneration.id,
-    authorizeSender: () => {
-      const entries = threadWorkers.get(pid);
-      if (
-        !belongsToCurrentProcessImage()
-        || !threadEntry
-        || threadEntry.worker !== threadWorker
-        || !entries?.includes(threadEntry)
-      ) {
-        throw new Error(
-          `stale fork host-import sender for pid=${pid} tid=${tid}`,
-        );
-      }
-    },
-  });
-  const threadInitData: CentralizedThreadInitMessage = {
-    type: "centralized_thread_init",
-    pid,
-    tid,
-    programBytes: processInfo.programBytes,
-    programModule: threadModule,
-    memory,
-    processChannelOffset: processInfo.channelOffset,
-    channelOffset: alloc.channelOffset,
-    secureExec: processInfo.secureExec,
-    externrefGenerationId: processInfo.externrefGeneration.id,
-    forkHostImports: forkHostImports.init,
-    // Phase 6 D7b: ship the same co-resident fork-module decision the process
-    // worker receives, so a fork issued FROM this pthread unwinds through the
-    // module (the parent side of a fork-from-thread). Mirrors the Node host.
-    ...sideModuleInitFields(processInfo.ptrWidth),
-    fnPtr,
-    argPtr,
-    stackPtr,
-    tlsPtr,
-    ctidPtr,
-    tlsOffset: alloc.tlsOffset,
-    tlsAllocAddr: alloc.tlsAllocAddr,
-    ptrWidth: processInfo.ptrWidth,
-    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-    kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-  };
-
-  threadWorker = new DeferredWorkerHandle(
-    () => workerAdapter.createWorker(threadInitData),
-  );
-  bindForkHostImports(threadWorker, forkHostImports);
-  if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  threadEntry = {
-    worker: threadWorker,
-    channelOffset: alloc.channelOffset,
-    tid,
-    basePage: alloc.slotStartPage,
-    quiescent: false,
-    workerQuiescence: createWorkerQuiescence(),
-    execRetirement: createWorkerQuiescence(),
-  };
-  threadWorkers.get(pid)!.push(threadEntry);
-
-  const belongsToCurrentProcessImage = () =>
-    isCurrentProcessGeneration(
-      processes,
-      pid,
-      processInfo,
-      memory,
-      kernelWorker.isExecHandoffActive(pid),
-    );
-  let reclaimed = false;
-  const reclaimThread = async () => {
-    if (reclaimed) return;
-    reclaimed = true;
-    if (threadEntry.quiescent) {
-      // The browser entry returned from worker-main before publishing this
-      // fence, so neither guest code nor its Worker can race slot reuse.
-      await kernelWorker.settleRetiredChannelListeners(
-        pid,
-        memory,
-        alloc.channelOffset,
-      );
-      processInfo.threadAllocator.free(alloc.basePage);
-    } else {
-      // Hard browser termination is not a quiescence barrier. Keep the slot
-      // and ultimately prevents safe retirement of the process backing.
-      processInfo.memoryRetirementSafe = false;
-    }
-    if (belongsToCurrentProcessImage()) {
-      threadExits.release(pid, alloc.channelOffset);
-    }
-    removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
-  };
-  const terminateThreadEntry = (): Promise<void> => {
-    if (!threadEntry.termination) {
-      threadEntry.termination = terminateTrackedWorker(
-        threadWorker,
-        THREADED_WORKER_TERMINATION_SETTLE_MS,
-      ).then(reclaimThread);
-    }
-    return threadEntry.termination;
-  };
-  threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
-
-  const isCurrentThreadGeneration = () =>
-    !intentionallyTerminated.has(threadWorker as object)
-    && belongsToCurrentProcessImage();
-  const failThread = (reason: string, awaitQuiescence = false) => {
-    if (!isCurrentThreadGeneration()) {
-      void terminateThreadEntry();
-      return;
-    }
-    const disposition = threadWorkerFailureDisposition(classifyWasmTrap, reason);
-    reportHostDiagnostic({
-      pid,
-      status: disposition.kind === "guest-fatal-trap"
-        ? disposition.exitStatus
-        : undefined,
-      source: "thread worker failure",
-      message: `[kernel-worker] pid=${pid} tid=${tid}: ${reason}`,
-    });
-    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
-    if (!awaitQuiescence) void terminateThreadEntry();
-    if (disposition.kind === "guest-fatal-trap") {
-      handleExit(pid, disposition.exitStatus, disposition.signum);
-    }
-  };
-
-  threadWorker.on("message", (msg: unknown) => {
-    const m = msg as WorkerToHostMessage;
-    if (m.type === "exec_retired" && m.tid === tid) {
-      threadEntry.execRetirement.settle();
-    } else if (m.type === "thread_exit") {
-      if (!isCurrentThreadGeneration()) {
-        void terminateThreadEntry();
-        return;
-      }
-      // The browser wrapper publishes memory_quiescent after worker-main
-      // returns. Do not turn this earlier semantic exit into a retirement fence.
-    } else if (m.type === "memory_quiescent" && m.tid === tid) {
-      threadEntry.quiescent = true;
-      threadEntry.workerQuiescence.settle();
-      void terminateThreadEntry();
-    } else if ((m as { type?: string }).type === "error") {
-      // worker-main posted {type:"error"} — instantiation failure, top-level
-      // throw, etc. Without this the parent's pthread_join blocks forever.
-      failThread(
-        (m as { message?: string }).message ?? "thread error",
-        true,
-      );
-    } else if (m.type === "vm_interrupt_timer") {
-      if (!isCurrentThreadGeneration() || m.pid !== pid) return;
-      handleVmInterruptTimer(m, pid, processInfo);
-    } else if (m.type === "fork_host_import") {
-      dispatchForkHostImport(threadWorker, m);
-    } else if (m.type === "fork_module_frames" && m.pid === pid) {
-      // Phase 6 D7b: forward the pthread PARENT worker's fork-module proof-of-use
-      // (the parent side of a fork-from-thread). The process-worker handler above
-      // forwards the same message for the main worker; the pthread worker has its
-      // own handler, so mirror it here or the parent-frame proof is dropped.
-      // Mirrors node-kernel-worker-entry so both hosts report identically.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message: `fork_module_frames=${m.frames}`,
-      });
-    }
-  });
-  threadWorker.on("error", (err: Error) => {
-    failThread(`worker error: ${err.message ?? err}`);
-  });
-
-  let startDisposition: ReturnType<
-    CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
-  >;
-  try {
-    startDisposition = await retryKernelEntryResult(() =>
-      kernelWorker.startProcessWorkerWhenRunnable(
-        pid,
-        memory,
-        () => { threadWorker.start(); },
-        () => {
-          forkHostImports.close();
-          void threadWorker.terminate();
-        },
-        () => {
-          kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
-          const failedClone = kernelWorker.failDeferredCloneLaunch(pid, tid, 12);
-          void terminateThreadEntry();
-          return failedClone;
-        },
-      ),
-    );
-  } catch (error) {
-    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
-    void terminateThreadEntry();
-    throw error;
-  }
-  if (startDisposition === "stale") {
-    void terminateThreadEntry();
-    throw new Error(`Process ${pid} changed generation before thread Worker launch`);
-  }
-
-}
-
-function handleExit(
-  pid: number,
-  exitStatus: number,
-  crashSignum?: number,
-  expectedWorker = processes.get(pid)?.worker,
-  vforkReason: VforkExactCompletionReason =
-    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
-): void {
-  void finishProcessExit(
-    pid,
-    exitStatus,
-    crashSignum,
-    expectedWorker,
-    vforkReason,
-  );
-}
-
 
 // ── Terminate ──
 
