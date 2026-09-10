@@ -1119,13 +1119,6 @@ pub mod socket {
     pub const SCM_RIGHTS: u32 = 1;
     /// Serialized width of one file descriptor in SCM_RIGHTS payload data.
     pub const SCM_RIGHTS_FD_BYTES: usize = 4;
-    /// Exact iovec-record count in a nonempty flattened kernel message wire.
-    ///
-    /// WHY: public sendmsg/recvmsg still accept IOV_MAX native entries. The
-    /// host flattens or scatters those entries through one canonical scratch
-    /// iovec so Rust never interprets a caller-width table. An empty caller
-    /// list uses zero records; every nonempty list uses exactly this count.
-    pub const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT: u32 = 1;
     pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
@@ -1813,46 +1806,6 @@ pub struct WasmPollFd {
     pub revents: i16,
 }
 
-/// Fixed u32-pointer iovec used only inside kernel-owned scratch.
-///
-/// Guest wasm64 `struct iovec` is wider. The host validates and translates
-/// caller-native records before Rust receives this width-independent wire.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelIovecWire {
-    pub base: u32,
-    pub len: u32,
-}
-
-/// Fixed u32-pointer `msghdr` used only inside kernel-owned scratch.
-///
-/// The pointed-to name, control, iovec, and data ranges all live within the
-/// same synchronously leased kernel allocation.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelMsghdrWire {
-    pub name: u32,
-    pub name_len: u32,
-    pub iov: u32,
-    pub iov_len: u32,
-    pub control: u32,
-    pub control_len: u32,
-    pub flags: u32,
-}
-
-/// Fixed ancillary-message header used only inside kernel-owned scratch.
-///
-/// This matches the wasm32 C layout by design, but it is not a caller-native
-/// structure. The host translates wasm64 headers and eight-byte CMSG
-/// alignment before and after the synchronous kernel call.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelCmsghdrWire {
-    pub cmsg_len: u32,
-    pub cmsg_level: u32,
-    pub cmsg_type: u32,
-}
-
 /// Canonical `struct epoll_event` layout used by both Kandelo musl targets.
 ///
 /// The C ABI aligns `epoll_data_t` to eight bytes on wasm32 and wasm64, so
@@ -1900,8 +1853,7 @@ pub struct WasmStatfs {
 #[cfg(test)]
 mod native_wire_layout_tests {
     use super::{
-        kernel_scratch_wire, prctl, KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire,
-        WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
+        kernel_scratch_wire, prctl, WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
     };
     use core::mem::{align_of, offset_of, size_of};
 
@@ -1917,30 +1869,6 @@ mod native_wire_layout_tests {
     fn sysv_message_header_is_one_canonical_i64() {
         assert_eq!(size_of::<WasmSysvMessageHeader>(), 8);
         assert_eq!(offset_of!(WasmSysvMessageHeader, mtype), 0);
-    }
-
-    #[test]
-    fn kernel_socket_scratch_wires_use_fixed_u32_fields() {
-        assert_eq!(size_of::<KernelIovecWire>(), 8);
-        assert_eq!(align_of::<KernelIovecWire>(), 4);
-        assert_eq!(offset_of!(KernelIovecWire, base), 0);
-        assert_eq!(offset_of!(KernelIovecWire, len), 4);
-
-        assert_eq!(size_of::<KernelMsghdrWire>(), 28);
-        assert_eq!(align_of::<KernelMsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, name), 0);
-        assert_eq!(offset_of!(KernelMsghdrWire, name_len), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov), 8);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov_len), 12);
-        assert_eq!(offset_of!(KernelMsghdrWire, control), 16);
-        assert_eq!(offset_of!(KernelMsghdrWire, control_len), 20);
-        assert_eq!(offset_of!(KernelMsghdrWire, flags), 24);
-
-        assert_eq!(size_of::<KernelCmsghdrWire>(), 12);
-        assert_eq!(align_of::<KernelCmsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_len), 0);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_level), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_type), 8);
     }
 
     #[test]

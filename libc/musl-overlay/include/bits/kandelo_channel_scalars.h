@@ -127,6 +127,16 @@ _Static_assert(__NR_signal == 73u,
 #endif
 _Static_assert(__NR_ftruncate == 79u,
 "musl __NR_ftruncate drifted from the Kandelo channel scalar contract");
+#ifndef __NR_writev
+#error "musl is missing __NR_writev required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_writev == 81u,
+"musl __NR_writev drifted from the Kandelo channel scalar contract");
+#ifndef __NR_readv
+#error "musl is missing __NR_readv required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_readv == 82u,
+"musl __NR_readv drifted from the Kandelo channel scalar contract");
 #ifndef __NR_truncate
 #error "musl is missing __NR_truncate required by the Kandelo channel scalar contract"
 #endif

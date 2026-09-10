@@ -684,7 +684,6 @@ export const SOCKET_SOL_SOCKET = 1 as const;
 export const SOCKET_SCM_RIGHTS = 1 as const;
 export const SOCKET_MSG_TRUNC = 32 as const;
 export const SCM_RIGHTS_FD_BYTES = 4 as const;
-export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = 1 as const;
 export const SPAWN_WIRE_HEADER_BYTES = 40 as const;
 export const SPAWN_WIRE_STRING_OFFSET_BYTES = 4 as const;
 export const SPAWN_WIRE_HEADER_ARGC_OFFSET = 0 as const;
@@ -981,25 +980,6 @@ export const STRUCT_SIZE_WASM_POLL_FD = 8 as const;
 export const WASM_POLL_FD_FD_OFFSET = 0 as const;
 export const WASM_POLL_FD_EVENTS_OFFSET = 4 as const;
 export const WASM_POLL_FD_REVENTS_OFFSET = 6 as const;
-export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = 8 as const;
-export const KERNEL_IOVEC_WIRE_ALIGN = 4 as const;
-export const KERNEL_IOVEC_WIRE_BASE_OFFSET = 0 as const;
-export const KERNEL_IOVEC_WIRE_LEN_OFFSET = 4 as const;
-export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = 28 as const;
-export const KERNEL_MSGHDR_WIRE_ALIGN = 4 as const;
-export const KERNEL_MSGHDR_WIRE_NAME_OFFSET = 0 as const;
-export const KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET = 4 as const;
-export const KERNEL_MSGHDR_WIRE_IOV_OFFSET = 8 as const;
-export const KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET = 12 as const;
-export const KERNEL_MSGHDR_WIRE_CONTROL_OFFSET = 16 as const;
-export const KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET = 20 as const;
-export const KERNEL_MSGHDR_WIRE_FLAGS_OFFSET = 24 as const;
-export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = 12 as const;
-export const KERNEL_CMSGHDR_WIRE_ALIGN = 4 as const;
-export const KERNEL_CMSGHDR_WIRE_LEN_OFFSET = 0 as const;
-export const KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET = 4 as const;
-export const KERNEL_CMSGHDR_WIRE_TYPE_OFFSET = 8 as const;
-export const KERNEL_CMSGHDR_WIRE_DATA_OFFSET = 12 as const;
 export const STRUCT_SIZE_WASM_EPOLL_EVENT = 16 as const;
 export const WASM_EPOLL_EVENT_EVENTS_OFFSET = 0 as const;
 export const WASM_EPOLL_EVENT_PAD_OFFSET = 4 as const;
@@ -1294,6 +1274,8 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   65: { 2: "process-size", 3: "i64", },
   73: { 1: "exact-u32", },
   79: { 1: "i64", },
+  81: { 1: "process-address", },
+  82: { 1: "process-address", },
   85: { 1: "i64", },
   102: { 3: "process-size", },
   109: { 2: "process-size", },
@@ -1323,10 +1305,10 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   291: { 4: "process-size", },
   293: { 1: "i64", 2: "process-size", },
   294: { 3: "process-size", },
-  295: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
-  296: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
-  297: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
-  298: { 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  295: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  296: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  297: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  298: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
   308: { 2: "i64", 3: "i64", },
   333: { 1: "process-address", 2: "process-size", },
   334: { 1: "process-address", 2: "process-size", },
@@ -1907,6 +1889,12 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   78: [
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
   ],
+  81: [
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  82: [
+    { argIndex: 1, direction: "out", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
   83: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
   ],
@@ -2119,6 +2107,18 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   294: [
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },
+  ],
+  295: [
+    { argIndex: 1, direction: "out", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  296: [
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  297: [
+    { argIndex: 1, direction: "out", size: { type: "kernel-dereferenced" }, nullable: true },
+  ],
+  298: [
+    { argIndex: 1, direction: "in", size: { type: "kernel-dereferenced" }, nullable: true },
   ],
   299: [
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },

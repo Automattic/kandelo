@@ -3,19 +3,17 @@
 //! This module is target-independent so the pure ownership checks used by the
 //! Wasm dispatcher are exercised by the ordinary native kernel test suite.
 
-use core::mem::{offset_of, size_of};
+use core::mem::size_of;
 
 use wasm_posix_shared::abi::extended_syscalls;
 use wasm_posix_shared::host_abi::{
     PROCESS_POINTER_WIDTH_ARG_INDEX, SYSCALL_ARG_DESCRIPTORS, SyscallArgDesc, SyscallArgSize,
 };
 use wasm_posix_shared::{
-    Errno, KernelIovecWire, KernelMsghdrWire, Syscall, WasmEpollEvent, WasmSysvMessageHeader,
-    kernel_scratch_wire, platform_limits, prctl,
+    Errno, Syscall, WasmEpollEvent, WasmSysvMessageHeader, kernel_scratch_wire, prctl,
 };
 
 const SCRATCH_ALIGNMENT: usize = 8;
-const KERNEL_WIRE_ALIGNMENT: usize = 4;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 /// Numeric bounds of the data area in one live kernel channel allocation.
@@ -376,151 +374,6 @@ fn checked_nullable_exact_range(
     Ok(())
 }
 
-unsafe fn validate_iovec_layout(
-    args: &[i64; 6],
-    region: ChannelScratchRegion,
-) -> Result<ValidatedChannelScratchArgs, Errno> {
-    let count = checked_size_scalar(args[2])?;
-    if count > platform_limits::IOV_MAX {
-        return Err(Errno::EINVAL);
-    }
-    let mut validated = ValidatedChannelScratchArgs::new();
-    if count == 0 {
-        // POSIX ignores the iovec pointer when no entries exist. Record a
-        // canonical null for dispatch without converting, range-checking, or
-        // reading the caller-provided pointer bits.
-        validated.mark_null(1)?;
-        return Ok(validated);
-    }
-    let table_bytes = count
-        .checked_mul(size_of::<KernelIovecWire>())
-        .ok_or(Errno::EINVAL)?;
-    let table = checked_exact_range(&mut validated, args, 1, region.start, table_bytes, region)?;
-    let table_bytes =
-        unsafe { core::slice::from_raw_parts(table.start as *const u8, table.length) };
-    let mut cursor = table.start.checked_add(table.length).ok_or(Errno::EFAULT)?;
-    for entry in table_bytes.chunks_exact(size_of::<KernelIovecWire>()) {
-        let base = read_wire_u32(entry, offset_of!(KernelIovecWire, base))? as usize;
-        let length = read_wire_u32(entry, offset_of!(KernelIovecWire, len))? as usize;
-        if base != cursor {
-            return Err(Errno::EFAULT);
-        }
-        region.checked_range(base, length)?;
-        cursor = align_up(
-            base.checked_add(length).ok_or(Errno::EFAULT)?,
-            KERNEL_WIRE_ALIGNMENT,
-        )?;
-        if cursor > region.end()? {
-            return Err(Errno::EFAULT);
-        }
-    }
-    Ok(validated)
-}
-
-fn read_wire_u32(bytes: &[u8], offset: usize) -> Result<u32, Errno> {
-    let end = offset.checked_add(size_of::<u32>()).ok_or(Errno::EFAULT)?;
-    let bytes = bytes.get(offset..end).ok_or(Errno::EFAULT)?;
-    Ok(u32::from_le_bytes(
-        bytes.try_into().map_err(|_| Errno::EFAULT)?,
-    ))
-}
-
-unsafe fn validate_message_layout(
-    args: &[i64; 6],
-    region: ChannelScratchRegion,
-) -> Result<ValidatedChannelScratchArgs, Errno> {
-    let mut validated = ValidatedChannelScratchArgs::new();
-    let header = checked_exact_range(
-        &mut validated,
-        args,
-        1,
-        region.start,
-        size_of::<KernelMsghdrWire>(),
-        region,
-    )?;
-    let header = unsafe { core::slice::from_raw_parts(header.start as *const u8, header.length) };
-    unsafe { validate_message_wire_layout(header, region) }?;
-    Ok(validated)
-}
-
-/// Validate the nested extents described by one canonical message header.
-///
-/// Keeping this separate from the outer header-range proof lets native tests
-/// exercise wasm32 wire addresses without requiring the test allocator itself
-/// to return an address below 4 GiB.
-///
-/// # Safety
-///
-/// When the header describes one iovec, that iovec must name readable memory
-/// for the complete `KernelIovecWire` after this function proves its range.
-unsafe fn validate_message_wire_layout(
-    header: &[u8],
-    region: ChannelScratchRegion,
-) -> Result<(), Errno> {
-    if header.len() != size_of::<KernelMsghdrWire>() {
-        return Err(Errno::EFAULT);
-    }
-    let name = read_wire_u32(header, offset_of!(KernelMsghdrWire, name))? as usize;
-    let name_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, name_len))? as usize;
-    let iov = read_wire_u32(header, offset_of!(KernelMsghdrWire, iov))? as usize;
-    let iov_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, iov_len))? as usize;
-    let control = read_wire_u32(header, offset_of!(KernelMsghdrWire, control))? as usize;
-    let control_len = read_wire_u32(header, offset_of!(KernelMsghdrWire, control_len))? as usize;
-
-    let mut cursor = region
-        .start
-        .checked_add(size_of::<KernelMsghdrWire>())
-        .ok_or(Errno::EFAULT)?;
-    let mut append = |pointer: usize, length: usize| -> Result<(), Errno> {
-        if length == 0 {
-            // A null pointer means the optional field is absent. The current
-            // cursor is the one canonical allocation-owned zero-capacity
-            // address and preserves presence without lending any bytes.
-            return if pointer == 0 || pointer == cursor {
-                Ok(())
-            } else {
-                Err(Errno::EFAULT)
-            };
-        }
-        if pointer != cursor {
-            return Err(Errno::EFAULT);
-        }
-        region.checked_range(pointer, length)?;
-        cursor = align_up(
-            pointer.checked_add(length).ok_or(Errno::EFAULT)?,
-            KERNEL_WIRE_ALIGNMENT,
-        )?;
-        if cursor > region.end()? {
-            return Err(Errno::EFAULT);
-        }
-        Ok(())
-    };
-
-    append(name, name_len)?;
-    append(control, control_len)?;
-    if iov_len > wasm_posix_shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT as usize {
-        return Err(Errno::EINVAL);
-    }
-    let iov_bytes = iov_len
-        .checked_mul(size_of::<KernelIovecWire>())
-        .ok_or(Errno::EINVAL)?;
-    append(iov, iov_bytes)?;
-    if iov_len == 1 {
-        let iovec =
-            unsafe { core::slice::from_raw_parts(iov as *const u8, size_of::<KernelIovecWire>()) };
-        let base = read_wire_u32(iovec, offset_of!(KernelIovecWire, base))? as usize;
-        let length = read_wire_u32(iovec, offset_of!(KernelIovecWire, len))? as usize;
-        if length == 0 {
-            if base != 0 {
-                return Err(Errno::EFAULT);
-            }
-        } else {
-            append(base, length)?;
-        }
-    }
-    Ok(())
-}
-
 fn validate_select_layout(
     args: &[i64; 6],
     region: ChannelScratchRegion,
@@ -623,20 +476,10 @@ fn validate_special_layout(
             Ok(validated)
         }
         number if number == Syscall::Ioctl as u32 => validate_ioctl_layout(args, region),
-        number
-            if matches!(
-                number,
-                x if x == Syscall::Writev as u32
-                    || x == Syscall::Readv as u32
-                    || x == extended_syscalls::SYS_PREADV
-                    || x == extended_syscalls::SYS_PWRITEV
-                    || x == extended_syscalls::SYS_PREADV2
-                    || x == extended_syscalls::SYS_PWRITEV2
-            ) =>
-        unsafe { validate_iovec_layout(args, region) },
-        number if number == Syscall::Sendmsg as u32 || number == Syscall::Recvmsg as u32 => unsafe {
-            validate_message_layout(args, region)
-        },
+        // The scatter/gather and socket-message syscalls have no arm here:
+        // their caller structures are `SyscallArgSize::KernelDereferenced`, so
+        // they are answered by `validate_descriptor_layout` and never stage a
+        // kernel-scratch table for this function to prove.
         number if number == Syscall::Select as u32 => validate_select_layout(args, region, false),
         extended_syscalls::SYS_PSELECT6 => validate_select_layout(args, region, true),
         extended_syscalls::SYS_MSGRCV | extended_syscalls::SYS_MSGSND => {
@@ -795,169 +638,6 @@ pub struct PreparedChannelRecord {
     pub copy_back: alloc::vec::Vec<ChannelRecordCopyBack>,
 }
 
-/// Write a little-endian `u32` into scratch at `addr`.
-///
-/// # Safety
-///
-/// The caller must have bounds-checked the four-byte `[addr, addr + 4)` range
-/// against the live allocation before calling.
-unsafe fn write_scratch_u32(addr: usize, value: u32) {
-    let bytes = value.to_le_bytes();
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as *mut u8, bytes.len()) };
-}
-
-/// True when this syscall's iovec buffers are kernel outputs (the kernel writes
-/// received bytes into them), so each sub-buffer needs a post-dispatch copy-back
-/// to its original record offset. `readv`/`preadv`/`preadv2` scatter into the
-/// buffers; `writev`/`pwritev`/`pwritev2` only read from them.
-fn iovec_syscall_is_output(syscall: u16) -> bool {
-    let nr = syscall as u32;
-    nr == Syscall::Readv as u32
-        || nr == extended_syscalls::SYS_PREADV
-        || nr == extended_syscalls::SYS_PREADV2
-}
-
-/// Lay a `KernelIovecWire` table plus its buffers into scratch, mirroring the
-/// exact contiguous layout the legacy host copy-in produces and
-/// [`validate_iovec_layout`]/[`validate_message_wire_layout`] consume: a table
-/// of `{ u32 base; u32 len }` entries at `table_addr`, then each buffer laid
-/// immediately after (each successive buffer aligned to
-/// [`KERNEL_WIRE_ALIGNMENT`]). Returns the next free cursor after the final
-/// buffer. When `output`, records a copy-back of each non-empty buffer to its
-/// original record offset (readv/preadv/recvmsg scatter targets).
-///
-/// # Safety
-///
-/// `region` must describe the live kernel-owned allocation; `data_base` must be
-/// the base of the owned record snapshot that `bufs` borrow from.
-unsafe fn lay_kernel_iovec_block(
-    region: ChannelScratchRegion,
-    data_base: *const u8,
-    region_start: usize,
-    table_addr: usize,
-    bufs: &[&[u8]],
-    output: bool,
-    copy_back: &mut alloc::vec::Vec<ChannelRecordCopyBack>,
-) -> Result<usize, Errno> {
-    let entry_size = size_of::<KernelIovecWire>();
-    let table_bytes = bufs.len().checked_mul(entry_size).ok_or(Errno::EINVAL)?;
-    region.checked_range(table_addr, table_bytes)?;
-
-    let mut buf_cursor = table_addr.checked_add(table_bytes).ok_or(Errno::EFAULT)?;
-    for (index, buf) in bufs.iter().enumerate() {
-        let len = buf.len();
-        let base = buf_cursor;
-        region.checked_range(base, len)?;
-
-        let entry_addr = table_addr
-            .checked_add(index.checked_mul(entry_size).ok_or(Errno::EFAULT)?)
-            .ok_or(Errno::EFAULT)?;
-        // KernelIovecWire is { base: u32, len: u32 }; write it field by field so
-        // the bytes match the struct's `repr(C)` layout the validator reads.
-        unsafe {
-            write_scratch_u32(
-                entry_addr
-                    .checked_add(offset_of!(KernelIovecWire, base))
-                    .ok_or(Errno::EFAULT)?,
-                base as u32,
-            );
-            write_scratch_u32(
-                entry_addr
-                    .checked_add(offset_of!(KernelIovecWire, len))
-                    .ok_or(Errno::EFAULT)?,
-                len as u32,
-            );
-        }
-
-        if len > 0 {
-            unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), base as *mut u8, len) };
-            if output {
-                let original_offset = (buf.as_ptr() as usize)
-                    .checked_sub(data_base as usize)
-                    .ok_or(Errno::EFAULT)?;
-                copy_back.push(ChannelRecordCopyBack {
-                    channel_dest: region_start
-                        .checked_add(original_offset)
-                        .ok_or(Errno::EFAULT)?,
-                    scratch_src: base,
-                    len,
-                });
-            }
-        }
-
-        buf_cursor = align_up(
-            base.checked_add(len).ok_or(Errno::EFAULT)?,
-            KERNEL_WIRE_ALIGNMENT,
-        )?;
-        if buf_cursor > region.end()? {
-            return Err(Errno::EFAULT);
-        }
-    }
-    Ok(buf_cursor)
-}
-
-/// Lay one optional flat msghdr sub-buffer (the socket name or the ancillary
-/// control block) into scratch at `cursor`. Returns its wire pointer field
-/// (`0` when the buffer is empty, matching the "absent" encoding the validator
-/// accepts) and the next cursor. When `output`, records a copy-back to the
-/// buffer's original record offset (recvmsg name/control results).
-///
-/// # Safety
-///
-/// As for [`lay_kernel_iovec_block`].
-unsafe fn lay_msghdr_subbuffer(
-    region: ChannelScratchRegion,
-    data_base: *const u8,
-    region_start: usize,
-    cursor: usize,
-    buf: &[u8],
-    output: bool,
-    copy_back: &mut alloc::vec::Vec<ChannelRecordCopyBack>,
-) -> Result<(u32, usize), Errno> {
-    if buf.is_empty() {
-        return Ok((0, cursor));
-    }
-    let base = cursor;
-    region.checked_range(base, buf.len())?;
-    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), base as *mut u8, buf.len()) };
-    if output {
-        let original_offset = (buf.as_ptr() as usize)
-            .checked_sub(data_base as usize)
-            .ok_or(Errno::EFAULT)?;
-        copy_back.push(ChannelRecordCopyBack {
-            channel_dest: region_start
-                .checked_add(original_offset)
-                .ok_or(Errno::EFAULT)?,
-            scratch_src: base,
-            len: buf.len(),
-        });
-    }
-    let next = align_up(
-        base.checked_add(buf.len()).ok_or(Errno::EFAULT)?,
-        KERNEL_WIRE_ALIGNMENT,
-    )?;
-    if next > region.end()? {
-        return Err(Errno::EFAULT);
-    }
-    Ok((base as u32, next))
-}
-
-/// Lay a `select`/`pselect6` record's fd_set (and optional pselect6 sigmask)
-/// spans at the FIXED disjoint offsets [`validate_select_layout`] re-proves:
-/// fd_set arg `i` (`1..=3`) at `region.start + (i - 1) * FD_SET_BYTES`, and the
-/// pselect6 sigmask (arg 5) at `region.start + 3 * FD_SET_BYTES`.
-///
-/// The generic contiguous packing in [`prepare_channel_record`] would shift
-/// those offsets whenever a leading fd_set is null (the guest omits the span),
-/// so these two syscalls get an explicit by-arg placement pass instead. fd_sets
-/// are value-result (the kernel narrows them in place), so an `Out`/`InOut`
-/// span records a copy-back to its original record offset exactly like the
-/// generic path; the pselect6 sigmask is input-only.
-///
-/// # Safety
-///
-/// `region` must describe the live kernel-owned allocation, and every span in
-/// `decoded` must borrow the owned snapshot starting at `data_base`.
 unsafe fn prepare_select_record(
     region: ChannelScratchRegion,
     region_start: usize,
@@ -1055,7 +735,6 @@ pub unsafe fn prepare_channel_record(
     use wasm_posix_shared::channel_record::{
         RECORD_MAGIC, SPAN_KIND_IN_OUT_PTR, SPAN_KIND_OUT_PTR,
     };
-    use wasm_posix_shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT;
 
     let region_start = region.start();
     let data_capacity = match region.end() {
@@ -1104,14 +783,6 @@ pub unsafe fn prepare_channel_record(
             return Some(Err($errno))
         };
     }
-    macro_rules! bail_on {
-        ($result:expr) => {
-            match $result {
-                Ok(value) => value,
-                Err(errno) => return Some(Err(errno)),
-            }
-        };
-    }
 
     for span in &decoded.spans {
         let arg_index = span.arg_index as usize;
@@ -1129,193 +800,22 @@ pub unsafe fn prepare_channel_record(
             return Some(Err(Errno::EINVAL));
         }
 
-        // Nested iovec/msghdr spans are reconstructed into the exact
-        // `KernelIovecWire`/`KernelMsghdrWire` scratch layout the UNCHANGED
-        // legacy dispatch (and its `validate_channel_scratch_arguments`
-        // re-validation) consumes today. The iovec table / msghdr wire must
-        // sit at the allocation base, matching the legacy host copy-in, so lay
-        // them at `cursor` (which is the region base for these single-span
-        // syscalls).
+        // A nested iovec/msghdr span used to be reconstructed into a fixed
+        // `KernelIovecWire`/`KernelMsghdrWire` table in kernel scratch, which
+        // the dispatch arm then read out. Every syscall that can carry one --
+        // writev, readv, preadv, pwritev, preadv2, pwritev2, sendmsg, recvmsg
+        // -- now declares its pointer `KernelDereferenced` and walks the
+        // CALLER's own structure instead. There is nothing left to lay out,
+        // and honouring such a span would replace the caller's guest address
+        // with a scratch offset the guest never named.
+        //
+        // The check above already refuses the ordinary case, where the span
+        // sits on the kernel-dereferenced argument itself. This refuses the
+        // remainder: a span kind the decoder still parses, attached to some
+        // other syscall's argument, which no correct guest emits.
         match &span.nested {
-            Some(Nested::Iovec(bufs)) => {
-                let table_addr = cursor;
-                let output = iovec_syscall_is_output(decoded.syscall);
-                let next = bail_on!(unsafe {
-                    lay_kernel_iovec_block(
-                        region,
-                        data.as_ptr(),
-                        region_start,
-                        table_addr,
-                        bufs,
-                        output,
-                        &mut copy_back,
-                    )
-                });
-                // writev/readv/preadv/pwritev take (fd, iov, iovcnt, ...): the
-                // iovec pointer is this span's arg and the count is the next
-                // arg word.
-                let count_index = match arg_index.checked_add(1) {
-                    Some(index) if index < args.len() => index,
-                    _ => bail!(Errno::EINVAL),
-                };
-                args[arg_index] = table_addr as i64;
-                args[count_index] = bufs.len() as i64;
-                cursor = next;
-                continue;
-            }
-            Some(Nested::MsgHdr {
-                name,
-                iov,
-                control,
-                flags,
-            }) => {
-                // The legacy canonical msghdr wire flattens the scatter/gather
-                // list to at most one buffer (KERNEL_MESSAGE_WIRE_FLATTENED_-
-                // IOVEC_COUNT). More than one entry is a truthful EINVAL.
-                if iov.len() > KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT as usize {
-                    bail!(Errno::EINVAL);
-                }
-                let output = decoded.syscall == Syscall::Recvmsg as u16;
-
-                let wire_addr = cursor;
-                let wire_bytes = size_of::<KernelMsghdrWire>();
-                bail_on!(region.checked_range(wire_addr, wire_bytes));
-                // The referenced payloads follow the fixed wire in the exact
-                // order the validator walks them: name, control, iovec block.
-                let mut sub_cursor = match wire_addr.checked_add(wire_bytes) {
-                    Some(value) => value,
-                    None => bail!(Errno::EFAULT),
-                };
-
-                let (name_field, sub_cursor_after_name) = bail_on!(unsafe {
-                    lay_msghdr_subbuffer(
-                        region,
-                        data.as_ptr(),
-                        region_start,
-                        sub_cursor,
-                        name,
-                        output,
-                        &mut copy_back,
-                    )
-                });
-                sub_cursor = sub_cursor_after_name;
-
-                let (control_field, sub_cursor_after_control) = bail_on!(unsafe {
-                    lay_msghdr_subbuffer(
-                        region,
-                        data.as_ptr(),
-                        region_start,
-                        sub_cursor,
-                        control,
-                        output,
-                        &mut copy_back,
-                    )
-                });
-                sub_cursor = sub_cursor_after_control;
-
-                let iov_table_addr = sub_cursor;
-                let next = bail_on!(unsafe {
-                    lay_kernel_iovec_block(
-                        region,
-                        data.as_ptr(),
-                        region_start,
-                        iov_table_addr,
-                        iov,
-                        output,
-                        &mut copy_back,
-                    )
-                });
-                let iov_field = if iov.is_empty() {
-                    0u32
-                } else {
-                    iov_table_addr as u32
-                };
-                sub_cursor = next;
-
-                // Materialize the KernelMsghdrWire the legacy sendmsg/recvmsg
-                // dispatch reads. Fields are u32 offsets into this same live
-                // allocation.
-                let write_field = |field_offset: usize, value: u32| -> Result<(), Errno> {
-                    let addr = wire_addr.checked_add(field_offset).ok_or(Errno::EFAULT)?;
-                    unsafe { write_scratch_u32(addr, value) };
-                    Ok(())
-                };
-                bail_on!(write_field(offset_of!(KernelMsghdrWire, name), name_field));
-                bail_on!(write_field(
-                    offset_of!(KernelMsghdrWire, name_len),
-                    name.len() as u32
-                ));
-                bail_on!(write_field(offset_of!(KernelMsghdrWire, iov), iov_field));
-                bail_on!(write_field(
-                    offset_of!(KernelMsghdrWire, iov_len),
-                    iov.len() as u32
-                ));
-                bail_on!(write_field(
-                    offset_of!(KernelMsghdrWire, control),
-                    control_field
-                ));
-                bail_on!(write_field(
-                    offset_of!(KernelMsghdrWire, control_len),
-                    control.len() as u32
-                ));
-                bail_on!(write_field(offset_of!(KernelMsghdrWire, flags), *flags));
-
-                // recvmsg reports value-result lengths and output flags by
-                // updating the KernelMsghdrWire in place. Reflect those three
-                // fields back to the record's msghdr region so a record-path
-                // caller reads them exactly where it marshalled them. The record
-                // msghdr region layout is { name_off, name_len, <iovec block>,
-                // control_off, control_len, flags }; name_len sits at offset 4
-                // and control_len/flags are the final two u32s of the structural
-                // prefix (`span.bytes`).
-                if output {
-                    let struct_prefix = span.bytes.len();
-                    let region_offset = match (span.bytes.as_ptr() as usize)
-                        .checked_sub(data.as_ptr() as usize)
-                    {
-                        Some(value) => value,
-                        None => bail!(Errno::EFAULT),
-                    };
-                    let record_field = |field_offset: usize| -> Option<usize> {
-                        region_offset
-                            .checked_add(field_offset)
-                            .and_then(|value| region_start.checked_add(value))
-                    };
-                    let control_len_off = match struct_prefix.checked_sub(8) {
-                        Some(value) => value,
-                        None => bail!(Errno::EINVAL),
-                    };
-                    let flags_off = match struct_prefix.checked_sub(4) {
-                        Some(value) => value,
-                        None => bail!(Errno::EINVAL),
-                    };
-                    let scratch_field = |field_offset: usize| -> Option<usize> {
-                        wire_addr.checked_add(field_offset)
-                    };
-                    for (scratch_offset, record_offset) in [
-                        (offset_of!(KernelMsghdrWire, name_len), 4usize),
-                        (offset_of!(KernelMsghdrWire, control_len), control_len_off),
-                        (offset_of!(KernelMsghdrWire, flags), flags_off),
-                    ] {
-                        let scratch_src = match scratch_field(scratch_offset) {
-                            Some(value) => value,
-                            None => bail!(Errno::EFAULT),
-                        };
-                        let channel_dest = match record_field(record_offset) {
-                            Some(value) => value,
-                            None => bail!(Errno::EFAULT),
-                        };
-                        copy_back.push(ChannelRecordCopyBack {
-                            channel_dest,
-                            scratch_src,
-                            len: size_of::<u32>(),
-                        });
-                    }
-                }
-
-                args[arg_index] = wire_addr as i64;
-                cursor = sub_cursor;
-                continue;
+            Some(Nested::Iovec(_)) | Some(Nested::MsgHdr { .. }) => {
+                bail!(Errno::EINVAL);
             }
             None => {}
         }
@@ -1470,61 +970,6 @@ mod tests {
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
-    }
-
-    #[test]
-    fn zero_iovec_count_ignores_pointer_without_reading_it() {
-        let bytes = [0u8; 1];
-        let region = ChannelScratchRegion::new(bytes.as_ptr() as usize, bytes.len()).unwrap();
-        for ignored_pointer in [0, i64::MIN, -1] {
-            let mut args = [0i64; 6];
-            args[1] = ignored_pointer;
-            args[2] = 0;
-            let validated = unsafe { validate_iovec_layout(&args, region) }.unwrap();
-            assert_eq!(validated.pointer(1), Ok(0));
-        }
-
-        let mut args = [0i64; 6];
-        args[2] = -1;
-        assert_eq!(
-            unsafe { validate_iovec_layout(&args, region) },
-            Err(Errno::EINVAL),
-        );
-        args[2] = i64::try_from(platform_limits::IOV_MAX + 1).unwrap();
-        assert_eq!(
-            unsafe { validate_iovec_layout(&args, region) },
-            Err(Errno::EINVAL),
-        );
-    }
-
-    #[test]
-    fn message_layout_distinguishes_absent_and_present_zero_capacity_names() {
-        let start = 0x1000usize;
-        let header_size = size_of::<KernelMsghdrWire>();
-        let region = ChannelScratchRegion::new(start, header_size).unwrap();
-        let canonical_zero_extent = start.checked_add(header_size).unwrap();
-        let mut header = vec![0u8; header_size];
-
-        let set_name = |header: &mut [u8], pointer: usize| {
-            let pointer = u32::try_from(pointer).unwrap().to_le_bytes();
-            let offset = offset_of!(KernelMsghdrWire, name);
-            header[offset..offset + pointer.len()].copy_from_slice(&pointer);
-        };
-
-        // Both sendmsg and recvmsg use this canonical nested-wire validator.
-        // Null encodes absence, while the current checked cursor encodes a
-        // present output field whose caller capacity is exactly zero.
-        set_name(&mut header, 0);
-        assert!(unsafe { validate_message_wire_layout(&header, region) }.is_ok());
-
-        set_name(&mut header, canonical_zero_extent);
-        assert!(unsafe { validate_message_wire_layout(&header, region) }.is_ok());
-
-        set_name(&mut header, canonical_zero_extent + 1);
-        assert_eq!(
-            unsafe { validate_message_wire_layout(&header, region) },
-            Err(Errno::EFAULT),
-        );
     }
 
     #[test]

@@ -307,10 +307,8 @@ fn render_channel_scalars_header() -> String {
 /// `wasm_posix_shared::channel_record` and `wasm_posix_shared::host_abi` and are
 /// asserted against those sources by the marshal encoder's tests.
 fn render_marshal_header() -> String {
-    use shared::abi::extended_syscalls as ext;
     use shared::channel_record as record;
     use shared::host_abi::{SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS};
-    use shared::Syscall;
 
     // Record span kinds sourced from the authoritative record module so the
     // guest encoder cannot drift from the decoder.
@@ -396,23 +394,12 @@ fn render_marshal_header() -> String {
         });
     }
 
-    // Nested iovec syscalls: a single IOVEC_ARRAY span. `a` carries the arg
-    // index of the iovcnt count word (writev/readv/preadv/pwritev all take
-    // (fd, iov, iovcnt, ...)).
-    for number in [
-        Syscall::Writev as u32,
-        Syscall::Readv as u32,
-        ext::SYS_PREADV,
-        ext::SYS_PWRITEV,
-        ext::SYS_PREADV2,
-        ext::SYS_PWRITEV2,
-    ] {
-        entries.push(Entry {
-            number,
-            nested: NESTED_IOVEC,
-            args: vec![(1, SPAN_IOVEC, 0, 0, 2, 0, 0)],
-        });
-    }
+    // writev/readv/preadv/pwritev/preadv2/pwritev2 deliberately have NO nested
+    // entry, for the same reason as sendmsg/recvmsg below: their `struct iovec`
+    // table is declared `KernelDereferenced` in `SYSCALL_ARG_DESCRIPTORS`, so
+    // the record carries only the caller's raw address in its scalar slot and
+    // the kernel walks the caller's own table.
+
     // sendmsg/recvmsg deliberately have NO nested entry. Their `msghdr` is
     // declared `KernelDereferenced` in `SYSCALL_ARG_DESCRIPTORS` above, so the
     // record carries only the caller's raw address in its scalar slot and the
@@ -3098,10 +3085,6 @@ fn render_ts_module() -> String {
         shared::socket::SCM_RIGHTS_FD_BYTES
     ));
     out.push_str(&format!(
-        "export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = {} as const;\n",
-        shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT
-    ));
-    out.push_str(&format!(
         "export const SPAWN_WIRE_HEADER_BYTES = {} as const;\n",
         shared::spawn_contract::WIRE_HEADER_BYTES
     ));
@@ -3640,82 +3623,6 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const WASM_POLL_FD_REVENTS_OFFSET = {} as const;\n",
         offset_of!(shared::WasmPollFd, revents)
-    ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = {} as const;\n",
-        size_of::<shared::KernelIovecWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelIovecWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_BASE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelIovecWire, base)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_LEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelIovecWire, len)
-    ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = {} as const;\n",
-        size_of::<shared::KernelMsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelMsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_NAME_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, name)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, name_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_IOV_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, iov)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, iov_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_CONTROL_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, control)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, control_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_FLAGS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, flags)
-    ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = {} as const;\n",
-        size_of::<shared::KernelCmsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelCmsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_LEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_level)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_TYPE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_type)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_DATA_OFFSET = {} as const;\n",
-        size_of::<shared::KernelCmsghdrWire>()
     ));
     out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_EPOLL_EVENT = {} as const;\n",
@@ -4744,10 +4651,6 @@ fn process_native_layouts() -> Value {
         "socket_message_flags": {
             "trunc": shared::socket::MSG_TRUNC,
         },
-        "kernel_message_wire": {
-            "flattened_iovec_count":
-                shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT,
-        },
         "iovec": {
             "wasm32": {
                 "base_offset": iovec::WASM32_BASE_OFFSET,
@@ -5261,7 +5164,7 @@ fn marshalled_structs() -> Value {
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
-        KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire, KernelWaitResult, WasmDirent,
+        KernelWaitResult, WasmDirent,
         WasmEpollEvent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat, WasmStatfs,
         WasmSysvMessageHeader, WasmTimespec,
     };
@@ -5377,30 +5280,6 @@ fn marshalled_structs() -> Value {
             fd,
             events,
             revents
-        }),
-    );
-    structs.insert(
-        "KernelIovecWire".into(),
-        struct_layout!(KernelIovecWire { base, len }),
-    );
-    structs.insert(
-        "KernelMsghdrWire".into(),
-        struct_layout!(KernelMsghdrWire {
-            name,
-            name_len,
-            iov,
-            iov_len,
-            control,
-            control_len,
-            flags,
-        }),
-    );
-    structs.insert(
-        "KernelCmsghdrWire".into(),
-        struct_layout!(KernelCmsghdrWire {
-            cmsg_len,
-            cmsg_level,
-            cmsg_type,
         }),
     );
     structs.insert(
@@ -7762,15 +7641,8 @@ mod tests {
         ));
         assert!(rendered.contains("export const PROCESS_MSGHDR_WASM64_SIZE = 56 as const;"));
         assert!(rendered.contains("export const PROCESS_CMSGHDR_WASM64_ALIGN = 8 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = 8 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = 28 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = 12 as const;"));
         assert!(rendered.contains("export const PROCESS_METADATA_KIND_ARGV = 0 as const;"));
         assert!(rendered.contains("export const PROCESS_METADATA_KIND_ENVIRONMENT = 1 as const;"));
-        assert!(
-            rendered
-                .contains("export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = 1 as const;")
-        );
         assert!(rendered.contains("export const SOCKET_MSG_TRUNC = 32 as const;"));
         assert!(rendered.contains("export const WASM_EPOLL_EVENT_EVENTS_OFFSET = 0 as const;"));
         assert!(rendered.contains("export const WASM_EPOLL_EVENT_PAD_OFFSET = 4 as const;"));
@@ -8016,7 +7888,7 @@ mod tests {
             "export const CHANNEL_RESULT_DEFAULT_KIND = \"i32\" as const;",
             "  5: { 1: \"split-i64-low-u32\", 2: \"split-i64-high-i32\", },",
             "  64: { 2: \"process-size\", 3: \"i64\", },",
-            "  295: { 3: \"split-i64-low-u32\", 4: \"split-i64-high-i32\", },",
+            "  295: { 1: \"process-address\", 3: \"split-i64-low-u32\", 4: \"split-i64-high-i32\", },",
             "  5: \"i64\",",
             "  46: \"process-address\",",
         ] {
@@ -8254,10 +8126,6 @@ mod tests {
             }),
         );
         assert_eq!(
-            layouts["kernel_message_wire"],
-            json!({"flattened_iovec_count": 1}),
-        );
-        assert_eq!(
             layouts["socket_message_flags"],
             json!({"trunc": shared::socket::MSG_TRUNC}),
         );
@@ -8341,10 +8209,6 @@ mod tests {
         assert!(header.contains("#define KANDELO_SOCKADDR_UNIX_PATH_BYTES 108u"));
         assert!(header.contains("#define KANDELO_SELECT_FD_SET_BYTES 128u"));
 
-        let structs = marshalled_structs();
-        assert_eq!(structs["KernelIovecWire"]["size"], json!(8));
-        assert_eq!(structs["KernelMsghdrWire"]["size"], json!(28));
-        assert_eq!(structs["KernelCmsghdrWire"]["size"], json!(12));
     }
 
     #[test]

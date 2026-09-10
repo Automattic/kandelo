@@ -356,6 +356,28 @@
         "arguments": [
           {
             "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "writev",
+        "number": 81,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "readv",
+        "number": 82,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
             "kind": "i64"
           }
         ],
@@ -722,6 +744,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 3,
             "kind": "split-i64-low-u32"
           },
@@ -736,6 +762,10 @@
       },
       {
         "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
           {
             "index": 3,
             "kind": "split-i64-low-u32"
@@ -752,6 +782,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 3,
             "kind": "split-i64-low-u32"
           },
@@ -766,6 +800,10 @@
       },
       {
         "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
           {
             "index": 3,
             "kind": "split-i64-low-u32"
@@ -3292,81 +3330,6 @@
       ],
       "size": 32
     },
-    "KernelCmsghdrWire": {
-      "fields": [
-        {
-          "name": "cmsg_len",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "cmsg_level",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "cmsg_type",
-          "offset": 8,
-          "span": 4
-        }
-      ],
-      "size": 12
-    },
-    "KernelIovecWire": {
-      "fields": [
-        {
-          "name": "base",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "len",
-          "offset": 4,
-          "span": 4
-        }
-      ],
-      "size": 8
-    },
-    "KernelMsghdrWire": {
-      "fields": [
-        {
-          "name": "name",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "name_len",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "iov",
-          "offset": 8,
-          "span": 4
-        },
-        {
-          "name": "iov_len",
-          "offset": 12,
-          "span": 4
-        },
-        {
-          "name": "control",
-          "offset": 16,
-          "span": 4
-        },
-        {
-          "name": "control_len",
-          "offset": 20,
-          "span": 4
-        },
-        {
-          "name": "flags",
-          "offset": 24,
-          "span": 4
-        }
-      ],
-      "size": 28
-    },
     "KernelWaitResult": {
       "fields": [
         {
@@ -4860,9 +4823,6 @@
         "len_offset": 8,
         "size": 16
       }
-    },
-    "kernel_message_wire": {
-      "flattened_iovec_count": 1
     },
     "msghdr": {
       "wasm32": {
@@ -7720,6 +7680,46 @@
         }
       }
     ],
+    "295": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "296": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "297": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "298": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
     "299": [
       {
         "argIndex": 0,
@@ -8450,6 +8450,26 @@
         "size": {
           "size": 8,
           "type": "fixed"
+        }
+      }
+    ],
+    "81": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "82": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
         }
       }
     ],
