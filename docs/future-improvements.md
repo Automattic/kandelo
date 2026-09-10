@@ -428,6 +428,27 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
+### The scratch-export allowlist is written twice, and only one copy is tested
+
+`host/src/kernel-scratch.ts` states which kernel exports may borrow a scratch
+lease in two places: the frozen `KERNEL_SCRATCH_EXPORT_NAMES` array
+(`:131`) and a hand-written `switch` in `isKernelScratchExportName` (`:323`).
+The array is the one `kernel-scratch-contract.test.ts` iterates; the `switch`
+is the one the runtime actually consults.
+
+Adding an export to the array alone therefore passes every test and fails at
+run time — and it fails **fatally**: a rejected borrow is an export-failure
+signal, so the entry gate poisons the kernel instance rather than returning an
+error to the caller. Found on 2026-09-10 while adding
+`kernel_classify_wasm_trap_signal`, where the symptom was every Wasm trap
+reporting exit status -1 with the kernel worker torn down underneath it.
+
+The `switch` exists so the check is a compile-time-exhaustive type guard rather
+than an array scan. Both properties are obtainable from one source: derive the
+predicate from the frozen array (a `Set` membership test with a
+`value is KernelScratchExportName` return), or have a test assert the two agree
+name-for-name. Either removes the second authority.
+
 ### `crates/host-native` reports a faulting guest without `WIFSIGNALED`
 
 A guest that traps under `crates/host-native` now ends with the same wait
