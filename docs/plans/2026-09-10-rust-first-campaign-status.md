@@ -1672,6 +1672,66 @@ same ~3 new host hooks. Three together buy the hooks once; one alone saves
 almost nothing. Recommendation: take it as a single item, with the fork-path
 guest suites provisioned *first* — this pass proved those suites were dark.
 
+## Tier-end reconciliation — done, and three corrections to what it was thought to be
+
+`usePolling`, the 16 memory-authority sites and the stale "ABI 43" strings are
+executed. Three of the figures this document carried were wrong, and each was
+wrong in a way worth recording rather than just fixing.
+
+**"Six test files set `usePolling: true`" was right; a later census saying
+"one" was wrong.** The census grepped `= true` and missed
+`usePolling: true` inside `Object.assign`, which is how all seven of the real
+assignments are written. A count of an identifier must match every syntactic
+form the identifier is assigned in.
+
+**"Three stale ABI 43 strings in `kernel-worker.ts`" was right; a later census
+saying "none" was wrong, and for a reusable reason.** One of the three is
+spelled `ABI-43` with a hyphen, so a `grep "ABI 43"` census cannot see it.
+`grep -E "ABI[ -]43"` finds twelve remaining sites across `host/src`, not ten.
+
+**"16 unreviewed kernel-memory-authority sites, reach 8/8" was wrong twice
+over.** The audit had **36** findings: 21 unreviewed sites, 13 allowances whose
+sites this campaign had moved or deleted, and 2 ownership seeds naming an
+interface that had been hoisted into `process-lifecycle.ts`. And 8/8 was never
+reachable by allowlisting, because two of the three failures were not audit
+findings at all.
+
+**Two of the 21 "sites to review" were provability bugs, not sites.** The
+record path omitted `#executeCapacityOwnedChannel`'s defaulted `retryToken`, and
+the audit's exact-arity check therefore could not prove the lease transaction —
+six findings from one missing argument. `handleExit` selected its commit export
+by indexing the exports namespace with a computed name, so a scalar call was
+classified as a pointer bypass. Both were fixed by making the existing property
+provable rather than by recording an exception to it. **When a review gate
+flags code that already looks compliant, suspect that the gate cannot see the
+proof, before concluding the code is wrong.**
+
+### Still open: `#sysvMirrorExports` returns scoped entry authority
+
+`kernel-scratch-contract` is 7/8. The last failure is
+`context-return at CentralizedKernelWorker.#sysvMirrorExports`: the method
+resolves nine SysV mirror exports from `#kernelInstanceForEntry(entry)` and
+**returns them as a bundle**, so raw kernel export functions outlive the entry
+scope by shape. All eight call sites invoke members immediately and none
+retains the bundle, so nothing is wrong today.
+
+The two remedies are not equivalent and the choice is a maintainer's:
+
+- Add `#sysvMirrorExports` to the audit's `ENTRY_SELECTORS`. Cheap, but it
+  edits the gate to accept the code — the inverse of the two fixes above, and
+  the shape this campaign has been burned by ten times. It also widens a set
+  that today holds only the two instance selectors to include a nine-function
+  export bundle.
+- Convert it to a callback form so the exports never escape. Correct in
+  direction, but it touches eight call sites on the SysV shared-memory path,
+  and it is not obvious the entry-context audit models a new callback helper
+  any better than it models the current return — so it could be a real
+  refactor that does not clear the finding.
+
+**Cost of leaving it:** one known-red assertion, which erodes the gate's
+signal. **Cost of guessing:** a wrong refactor on shared-memory teardown.
+Recommendation: the callback form, but scoped as its own item by whoever owns
+the entry-gate contract, with the audit change (if any) argued explicitly.
 ## NDD-K4-2 executed — the launch family is one implementation
 
 **Ledger −919 TS.** The two entries went from 2,748 and 3,371 lines to 2,173
