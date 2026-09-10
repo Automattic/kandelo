@@ -449,7 +449,7 @@ branch — not just that a docs commit describing it does.
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
 | K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
-| ~~K3-7.7~~ | ~~epoll mirror in `kernel-worker.ts`~~ | **PAID: 423 removed, 95 added (net -328)** |
+| ~~K3-7.7~~ | ~~epoll mirror in `kernel-worker.ts`~~ | **PAID: 423 removed, 112 added (net -311)** |
 
 ## K7 cutover — mis-scoped, and the finding is worth more than the item
 
@@ -2950,9 +2950,9 @@ therefore stay **Partial** in `posix-status.md`; `epoll_create1()` becomes
 **Full**, and the `exec()` row's epoll numeric-fd gap is gone.
 ### B6 — epoll mirror deleted (DONE 2026-09-10)
 
-**Ledger.** `host/src/kernel-worker.ts` -423 / +95, net **-328 lines**, plus
-+3 in `kernel-scratch.ts` (registering the new export's name and pointer role).
-Rust: +154/-26 in `runtime-core/src/syscalls.rs`, +100/-1 in
+**Ledger.** `host/src/kernel-worker.ts` -423 / +112, net **-311 lines**,
+plus +3 in `kernel-scratch.ts` (registering the new export's name and pointer
+role). Rust: +155/-26 in `runtime-core/src/syscalls.rs`, +105/-1 in
 `kernel/src/wasm_api.rs`, +16/-2 in `shared/src/host_abi.rs`. Tests: -38 net
 across five host suites. Both `+` figures include doc comments carrying the
 reasoning; the deleted code carried almost none.
