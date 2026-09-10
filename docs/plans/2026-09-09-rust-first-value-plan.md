@@ -2663,6 +2663,99 @@ gated on measurement.** K7's cutover must benchmark before adding it.
 12. **Hold the curation.** The maintainer wants to cross-examine the work and
     the repo state before agreeing to a curated commit set. Do not squash.
 
+## 2x. K7 re-cut piece 1 — the SysV half is CUT OVER (2026-09-10)
+
+Worktree `.claude/worktrees/agent-a4a3478cb72f27219`, base `7105e6b04`.
+**The TypeScript is deleted.** No ABI bump, no new `env.host_*`;
+`abi/snapshot.json` regenerated for nine additive exports inside ABI 44.
+
+**Ledger `7105e6b04..<tip>`: in-scope TS 306 added / 638 removed = −332.
+Rust +789 production.** The first item in this campaign whose cutover
+actually happened, and the first meaningfully net-negative TS step since K2.
+
+### What went
+
+Both containers — `shmMappings` (pid → attach address → snapshot) and
+`shmSegmentVersions` — and everything that read them: `hasPeerSysvShmMapping`,
+`syncSysvShmMappingsFromProcess`, `syncSysvShmSegmentFromMappedProcesses`,
+`mergeAndRefreshSysvShmMapping`, `readSysvShmRange`, `writeSysvShmRange`,
+`mappingDiffersFromSnapshot`, `releaseAllSysvShmMappingsForProcess`, the
+per-attachment fork attach/record/rollback loop with
+`#rollbackInheritedSysvAttachmentsWithinKernelEntry`, and four interfaces
+(`SysvShmMapping`, `PreparedInheritedSysvMapping`,
+`MaterializedInheritedSysvMapping`, `MaterializedSharedMappingInheritance`).
+
+Nine kernel exports drive the Rust mirror: `track`, `sync_process`,
+`sync_segment`, `publish_mapping`, `drop_mapping`, `release_process`,
+`inherit`, `active_pid_count`, `process_count`.
+
+### The boundary early-out trap, and how it was answered
+
+`synchronizeSharedMemoryForBoundary` early-outs on
+`sharedMappings.size === 0 && shmMappings.size === 0`. The second half was the
+trap: a per-boundary kernel call would put a new call on the syscall hot path
+for every process, and driving the sync from inside kernel dispatch would move
+where it happens relative to the syscall, which is load-bearing.
+
+**Neither was needed.** The host caches the *count of processes owning
+attachments* and re-reads it from the kernel at every site that can change it —
+shmat, shmdt, fork inheritance, exec finalization, teardown. It is a cached
+predicate refreshed from the authority, never an independently maintained
+mirror, so it cannot drift: nothing in the host ever increments or decrements
+it. The sync still runs on the host side of dispatch, before the syscall,
+exactly as before.
+
+**It also came out narrower than the code it replaced.** Every host path into
+the mirror is gated on that predicate, not just the boundary — so a machine
+that never uses SysV IPC now pays nothing at fork, exec or teardown either,
+where the deleted TypeScript still walked its containers. The old boundary code
+called its SysV sync whenever *either* half of the subsystem was non-empty.
+
+### A POSIX defect the cutover surfaced
+
+An attachment was skipped at a boundary whenever it had no live peer.
+Peer-existence alone is not sufficient, and treating it as sufficient loses a
+peer's writes in an ordinary IPC shape: a child attaches, fills the segment,
+publishes and exits; the parent, now sole observer, never imports what the
+child wrote. `shmdt` and teardown publish the departing attachment's bytes, but
+nothing re-read them into the survivors.
+
+An attachment is now skipped only when it has no live peer **and** has already
+observed the segment's current version — exactly what
+`sync_anonymous_from_process` has always tested (`ref_count <= 1 &&
+!was_stale`). The SysV path tested only the first half.
+
+**The defect predates the campaign**: the deleted TypeScript had the same
+single-condition skip and the K7 Rust port reproduced it faithfully. It
+surfaced from a test written to assert the POSIX behaviour rather than the
+implemented one. It is a behaviour change riding inside a cutover, so it landed
+as its own commit and can be dropped independently if the maintainer would
+rather sequence it separately.
+
+### One structural correction made during the work
+
+The first draft put the fork transaction and its rollback in
+`crates/kernel/src/wasm_api.rs`, which is the export shim and has no unit-test
+seam — moving the rollback from a TypeScript file with five tests to a Rust
+file with none. It now lives on
+`SharedMappingTable::inherit_sysv_attachments` behind a `SysvAttachmentOps`
+trait, with six tests, four of them rollback paths asserting exact call order
+(releasing by the wrong key would detach an unrelated same-segment attachment).
+
+**Generalizable:** "moved to Rust" is not automatically "better covered".
+Check where in Rust, and whether that place can be tested.
+
+### What is explicitly NOT covered by this item
+
+Stated because silence in a work contract reads as completeness:
+
+- The anonymous and file-backed halves of `MAP_SHARED` are untouched. Pieces 2
+  and 3 of the re-cut still own them and the ~1,203-line file-syscall coherence
+  gap.
+- `retain_handle` / fd-writeback still refuse `ENOSYS`; that is the file half.
+- Browser is unverified for this change. Node-only; see the validation note.
+- The `host_proc_compare_bytes` import remains unspent. This half never needed
+  it: the kernel reads its own segment bytes.
 ### Three defects only the guest-ABI tests could find
 
 Unit tests would have passed on all three. Each needs a real kernel

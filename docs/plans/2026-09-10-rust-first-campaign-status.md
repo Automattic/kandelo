@@ -62,6 +62,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K5 | **Rust landed; I6a RUNNING** | Placement adjudicated (standalone module, 14 pipeline points). I6b = rewire + delete 6,340 lines |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
+| K7 | **piece 1 (SysV) CUT OVER; pieces 2/3 open** | SysV TypeScript deleted, TS −332. See "K7 cutover" below |
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
@@ -216,7 +217,7 @@ branch — not just that a docs commit describing it does.
 | K5 I6a/I6b | `dylink.ts` + `dylink-fork-archive.ts` | 6,340 |
 | K10 I6 | `wasi-shim.ts` | 1,649 |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
-| K7 re-cut (1) | SysV half of `kernel-worker.ts` | ~263 |
+| ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
 | K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
 | K3-7.7 | epoll mirror in `kernel-worker.ts` | unmeasured |
 
@@ -257,13 +258,19 @@ benchmark, not a general suite. **`host_proc_compare_bytes` was therefore not
 needed and not added**; the sanctioned import remains unspent.
 
 **Re-cut as three items:**
-1. **SysV half, now** — separable, complete, ~263 TypeScript lines, two
-   containers, and the one part with a performance *gain*. Design the boundary
-   early-out trap first: `shmMappings.size` is half a predicate the host would
-   otherwise lose.
+1. ~~**SysV half, now**~~ — **DONE 2026-09-10.** The half was separable exactly
+   as scoped: both containers and everything reading them are deleted, and the
+   boundary early-out was preserved by caching the attachment-population count
+   and refreshing it from the kernel at every mutation site rather than calling
+   per boundary. It also came out narrower than the code it replaced, and it
+   surfaced a real POSIX coherence defect. See §2x of the value plan.
 2. **Write the coherence layer in Rust**, sized as policy rather than as
    plumbing.
 3. **Anon + file cutover**, gated on that targeted benchmark.
+   `benchmarks/programs/sysv-shm-bench.c` now exists as the shape such a
+   benchmark needs: a live peer, a real attachment, a loop of boundaries, and
+   clean/dirty cases reported separately because they move in opposite
+   directions.
 
 ## In-scope test failures — coordinator owns these
 

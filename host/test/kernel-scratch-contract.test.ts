@@ -643,16 +643,10 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::messageSizeForDescriptor( channel.pid, this.guestTidForChannel(channel), origArgs[0], )",
   ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmat!( prepared.childPid, mapping.segId, mapping.mapAddr, mapping.readOnly ? SHM_RDONLY : 0, )",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmdt!( prepared.childPid, mapping.segId, )",
-    2,
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::recordMapping!( prepared.childPid, kernelMapAddrs[mappingIndex]!, mapping.segId, mapping.size, )",
-  ),
+  // The three SysV inheritance calls that stood here -- shmat, shmdt and
+  // record_mapping, interleaved per attachment -- are gone: the transaction
+  // moved into the kernel, which drives its own tables without crossing the
+  // host boundary at all.
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
   ),
