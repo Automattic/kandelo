@@ -1,0 +1,36 @@
+[
+  {
+    "engine": "chromium",
+    "version": "151.0.7922.34",
+    "crossOriginIsolated": true,
+    "fetched": {
+      "byteLength": 233500,
+      "contentType": "application/wasm"
+    },
+    "mainThreadBufferDetachedAfterTransfer": true,
+    "worker": {
+      "received": true,
+      "byteLength": 233500,
+      "compiled": true,
+      "imports": 0,
+      "dlExports": 21
+    }
+  },
+  {
+    "engine": "webkit",
+    "version": "26.5",
+    "crossOriginIsolated": true,
+    "fetched": {
+      "byteLength": 233500,
+      "contentType": "application/wasm"
+    },
+    "mainThreadBufferDetachedAfterTransfer": true,
+    "worker": {
+      "received": true,
+      "byteLength": 233500,
+      "compiled": true,
+      "imports": 0,
+      "dlExports": 21
+    }
+  }
+]
