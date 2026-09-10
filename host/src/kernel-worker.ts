@@ -13718,6 +13718,15 @@ export class CentralizedKernelWorker {
           lease.dataView(CH_DATA, 4).setUint32(0, 0, true);
           return out;
         },
+        // The record path never resumes a parked request, so it carries no
+        // retry token. State that explicitly rather than leaning on the
+        // default: the kernel-scratch audit proves the two-phase lease
+        // transaction by matching this call against
+        // `#executeCapacityOwnedChannel`'s exact parameter list, and an
+        // omitted argument makes it unprovable -- which reported every
+        // `lease.*` use in the two callbacks below as an unbounded kernel
+        // view.
+        0n,
       );
       recordOut = dispatched.value;
     } catch (err) {
