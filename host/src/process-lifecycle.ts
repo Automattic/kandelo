@@ -74,10 +74,13 @@ import {
   waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
   type WorkerQuiescence,
 } from "./worker-quiescence";
-import type {
-  VforkExactCompletionReason,
-  VforkLifetimeCoordinator,
+import {
+  VforkAddressSpaceBusyError,
+  type VforkExactCompletionReason,
+  type VforkLifetimeCoordinator,
+  type VforkLifetimeDisposition,
 } from "./vfork-lifetime";
+import { SIGSEGV, signalExitStatus } from "./trap-signals";
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import type {
   ExactProcessGenerationDetachLedger,
@@ -1118,6 +1121,103 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   }
 
   /**
+   * Contain a shared vfork address space whose child teardown was ambiguous.
+   *
+   * A vfork child borrows the parent's backing, so if the host cannot prove
+   * which of the two still owns it, neither may keep running: both are exited
+   * with SIGSEGV and the backing is force-retired. Failing to contain either
+   * one leaves the kernel with two live images over one address space, which
+   * is not a recoverable state — poison the kernel instance rather than
+   * continue.
+   */
+  async function containVforkAddressSpace(
+    disposition: Extract<
+      VforkLifetimeDisposition<Info>,
+      { kind: "contain-address-space" }
+    >,
+    childGeneration: Info,
+    parentPid: number,
+  ): Promise<number[]> {
+    const status = signalExitStatus(SIGSEGV);
+    reportHostDiagnostic({
+      pid: parentPid,
+      status,
+      source: "vfork address-space containment",
+      message:
+        `[vfork] containing shared address space after ambiguous child `
+        + `teardown for pid=${disposition.childPid}: ${
+          formatError(disposition.cause)
+        }`,
+    });
+
+    // SIGSEGV is passed explicitly rather than left to the host default: this
+    // path knows both images are being killed, so the synthesized reap is
+    // required on every host regardless of how that host's ordinary exits
+    // reach it.
+    if (host.processes.get(disposition.childPid) === childGeneration) {
+      await finishProcessExit(
+        disposition.childPid,
+        status,
+        SIGSEGV,
+        childGeneration.worker,
+        "trap",
+      );
+    }
+    if (host.processes.get(parentPid) === disposition.parentGeneration) {
+      await finishProcessExit(
+        parentPid,
+        status,
+        SIGSEGV,
+        disposition.parentGeneration.worker,
+        "trap",
+      );
+    }
+
+    if (
+      host.processes.get(disposition.childPid) === childGeneration
+      || host.processes.get(parentPid) === disposition.parentGeneration
+    ) {
+      const error = new Error(
+        `could not contain ambiguous vfork address space for parent=${parentPid} `
+        + `child=${disposition.childPid}`,
+        { cause: disposition.cause },
+      );
+      terminatePoisonedKernelWorker(error);
+      throw error;
+    }
+
+    // WHY: rejecting onFork here would ask the kernel to roll back childPid,
+    // which may already name a successful exec replacement. Resolving is safe
+    // only because the exact parked parent generation is now absent, so the
+    // kernel completion guard cannot publish into its retired channel.
+    return [];
+  }
+
+  /** Settle a completed vfork lifetime into what `onFork` should return. */
+  async function finishVforkDisposition(
+    disposition: VforkLifetimeDisposition<Info>,
+    childGeneration: Info,
+    parentPid: number,
+  ): Promise<number[]> {
+    if (disposition.kind === "return-error") {
+      throw new VforkAddressSpaceBusyError(
+        `vfork launch returned errno ${disposition.errno}`,
+      );
+    }
+    if (disposition.kind === "contain-address-space") {
+      return containVforkAddressSpace(disposition, childGeneration, parentPid);
+    }
+    // A sibling pthread can exec or exit the parent image while its calling
+    // thread is parked. In that case the original channel no longer exists and
+    // the kernel completion guard must observe no current parent generation.
+    traceVforkMechanism(
+      "parent_released",
+      `parent=${parentPid} child=${disposition.childPid}`,
+    );
+    return [childGeneration.channelOffset];
+  }
+
+  /**
    * Wait for `pid`'s teardown, starting one if the exit has not been seen.
    */
   async function awaitFinalizedProcessTeardown(
@@ -1493,7 +1593,9 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     createFreshProcessMemory,
     detachExactProcessGeneration,
     dispatchForkHostImport,
+    containVforkAddressSpace,
     finishProcessExit,
+    finishVforkDisposition,
     handleExportRootfsImage,
     handleInjectConnection,
     handlePipeRead,

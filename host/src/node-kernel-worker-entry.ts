@@ -122,7 +122,6 @@ import {
   VforkLifetimeCoordinator,
   type VforkExactCompletionReason,
   type VforkLifetime,
-  type VforkLifetimeDisposition,
 } from "./vfork-lifetime";
 import {
   ExactProcessGenerationDetachLedger,
@@ -573,7 +572,9 @@ const {
   createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  containVforkAddressSpace,
   finishProcessExit,
+  finishVforkDisposition,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -1406,101 +1407,7 @@ async function handleFork(
   );
 }
 
-async function containVforkAddressSpace(
-  disposition: Extract<
-    VforkLifetimeDisposition<ProcessInfo>,
-    { kind: "contain-address-space" }
-  >,
-  childGeneration: ProcessInfo,
-  parentPid: number,
-): Promise<number[]> {
-  const status = signalExitStatus(SIGSEGV);
-  reportHostDiagnostic({
-    pid: parentPid,
-    status,
-    source: "vfork address-space containment",
-    message:
-      `[vfork] containing shared address space after ambiguous child `
-      + `teardown for pid=${disposition.childPid}: ${
-        disposition.cause instanceof Error
-          ? disposition.cause.message
-          : String(disposition.cause)
-      }`,
-  });
 
-  const childCurrent = processes.get(disposition.childPid);
-  if (childCurrent === childGeneration) {
-    try {
-      kernelWorker.notifyHostProcessCrashed(disposition.childPid, SIGSEGV);
-    } catch {
-      // Continue to the exact-generation teardown funnel.
-    }
-    await finishProcessExit(
-      disposition.childPid,
-      status,
-      undefined,
-      childGeneration.worker,
-      "trap",
-    );
-  }
-
-  if (processes.get(parentPid) === disposition.parentGeneration) {
-    try {
-      kernelWorker.notifyHostProcessCrashed(parentPid, SIGSEGV);
-    } catch {
-      // Continue to forced host containment even if Rust already exited it.
-    }
-    await finishProcessExit(
-      parentPid,
-      status,
-      undefined,
-      disposition.parentGeneration.worker,
-      "trap",
-    );
-  }
-
-  if (
-    processes.get(disposition.childPid) === childGeneration
-    || processes.get(parentPid) === disposition.parentGeneration
-  ) {
-    const error = new Error(
-      `could not contain ambiguous vfork address space for parent=${parentPid} `
-      + `child=${disposition.childPid}`,
-      { cause: disposition.cause },
-    );
-    terminatePoisonedKernelWorker(error);
-    throw error;
-  }
-
-  // WHY: rejecting onFork here would ask KernelWorker to roll back childPid,
-  // which may already name a successful exec replacement. Resolving is safe
-  // only because the exact parked parent generation is now absent, so the
-  // kernel completion guard cannot publish into its retired channel.
-  return [];
-}
-
-async function finishVforkDisposition(
-  disposition: VforkLifetimeDisposition<ProcessInfo>,
-  childGeneration: ProcessInfo,
-  parentPid: number,
-): Promise<number[]> {
-  if (disposition.kind === "return-error") {
-    throw new VforkAddressSpaceBusyError(
-      `vfork launch returned errno ${disposition.errno}`,
-    );
-  }
-  if (disposition.kind === "contain-address-space") {
-    return containVforkAddressSpace(disposition, childGeneration, parentPid);
-  }
-  // A sibling pthread can exec or exit the parent image while its calling
-  // thread is parked. In that case the original channel no longer exists and
-  // the kernel completion guard must observe no current parent generation.
-  traceVforkMechanism(
-    "parent_released",
-    `parent=${parentPid} child=${disposition.childPid}`,
-  );
-  return [childGeneration.channelOffset];
-}
 
 async function handleVfork(
   parentPid: number,

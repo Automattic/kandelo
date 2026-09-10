@@ -112,7 +112,6 @@ import {
   VforkLifetimeCoordinator,
   type VforkExactCompletionReason,
   type VforkLifetime,
-  type VforkLifetimeDisposition,
 } from "./vfork-lifetime";
 import {
   ExactProcessGenerationDetachLedger,
@@ -440,7 +439,9 @@ const {
   createFreshProcessMemory,
   detachExactProcessGeneration,
   dispatchForkHostImport,
+  containVforkAddressSpace,
   finishProcessExit,
+  finishVforkDisposition,
   handleExportRootfsImage,
   handleInjectConnection,
   handlePipeRead,
@@ -1603,83 +1604,7 @@ async function handleFork(
   );
 }
 
-async function containVforkAddressSpace(
-  disposition: Extract<
-    VforkLifetimeDisposition<ProcessInfo>,
-    { kind: "contain-address-space" }
-  >,
-  childGeneration: ProcessInfo,
-  parentPid: number,
-): Promise<number[]> {
-  const status = signalExitStatus(SIGSEGV);
-  reportHostDiagnostic({
-    pid: parentPid,
-    status,
-    source: "vfork address-space containment",
-    message:
-      `[vfork] containing shared address space after ambiguous child `
-      + `teardown for pid=${disposition.childPid}: ${
-        formatError(disposition.cause)
-      }`,
-  });
 
-  if (processes.get(disposition.childPid) === childGeneration) {
-    await finishProcessExit(
-      disposition.childPid,
-      status,
-      SIGSEGV,
-      childGeneration.worker,
-      "trap",
-    );
-  }
-  if (processes.get(parentPid) === disposition.parentGeneration) {
-    await finishProcessExit(
-      parentPid,
-      status,
-      SIGSEGV,
-      disposition.parentGeneration.worker,
-      "trap",
-    );
-  }
-
-  if (
-    processes.get(disposition.childPid) === childGeneration
-    || processes.get(parentPid) === disposition.parentGeneration
-  ) {
-    const error = new Error(
-      `could not contain ambiguous vfork address space for parent=${parentPid} `
-      + `child=${disposition.childPid}`,
-      { cause: disposition.cause },
-    );
-    terminatePoisonedKernelWorker(error);
-    throw error;
-  }
-
-  // WHY: rejecting onFork could roll back a child PID that already belongs to
-  // a successful exec replacement. The original parent's exact channel is now
-  // absent, so resolving cannot wake the parked vfork caller.
-  return [];
-}
-
-async function finishVforkDisposition(
-  disposition: VforkLifetimeDisposition<ProcessInfo>,
-  childGeneration: ProcessInfo,
-  parentPid: number,
-): Promise<number[]> {
-  if (disposition.kind === "return-error") {
-    throw new VforkAddressSpaceBusyError(
-      `vfork launch returned errno ${disposition.errno}`,
-    );
-  }
-  if (disposition.kind === "contain-address-space") {
-    return containVforkAddressSpace(disposition, childGeneration, parentPid);
-  }
-  traceVforkMechanism(
-    "parent_released",
-    `parent=${parentPid} child=${disposition.childPid}`,
-  );
-  return [childGeneration.channelOffset];
-}
 
 async function handleVfork(
   parentPid: number,
