@@ -390,15 +390,16 @@ describe("KLZY equivalence with the host-emitted RTFS manifest", () => {
   const available = existsSync(imageDir);
 
   it("finds every production image", () => {
-    if (!available) {
-      // A fresh worktree has no build outputs yet. Say so rather than
-      // reporting a pass: `./run.sh setup` produces this directory.
-      console.warn(
-        `skipping KLZY equivalence: ${imageDir} not built. ` +
-          "Run ./run.sh setup to produce the production images.",
-      );
-      return;
-    }
+    // Deliberately a FAILURE, not a skip. This suite is the equivalence gate
+    // for the KLZY section: if it cannot read the production images it has
+    // proved nothing, and a green run would be a false assurance. Per the
+    // build contract, a missing artifact is a provisioning step
+    // (`./run.sh setup`), not a boundary to pass over silently.
+    expect(
+      available,
+      `${imageDir} is not built, so the KLZY equivalence gate cannot run. ` +
+        "Run ./run.sh setup to produce the production images.",
+    ).toBe(true);
     const missing = PRODUCTION_IMAGES.filter(
       (name) => !existsSync(join(imageDir, name)),
     );
@@ -410,7 +411,12 @@ describe("KLZY equivalence with the host-emitted RTFS manifest", () => {
       `carries the same lazy facts as the manifest for ${name}`,
       async () => {
         const path = join(imageDir, name);
-        if (!available || !existsSync(path)) return;
+        // Same reasoning as above: an unreadable image fails the gate rather
+        // than quietly passing it.
+        expect(
+          available && existsSync(path),
+          `${path} is missing; run ./run.sh setup before this gate can prove anything.`,
+        ).toBe(true);
 
         const raw = new Uint8Array(readFileSync(path));
         const fs = MemoryFileSystem.fromImagePreservingCapacity(raw);
