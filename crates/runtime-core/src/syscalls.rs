@@ -16225,6 +16225,22 @@ pub fn sys_clone(
     if table.get(pid).is_some_and(|proc| proc.vfork_child) {
         return Err(Errno::EAGAIN);
     }
+
+    // POSIX: `pthread_create` fails with EAGAIN when the system lacks the
+    // resources for another thread. The limit is on threads that exist *now*
+    // -- `Process::threads` holds exactly the live pthreads, the leader being
+    // tracked separately -- so a joined thread stops counting the moment it is
+    // reaped and a create/join loop runs indefinitely.
+    //
+    // This is refused here, before `create_thread`, because POSIX requires a
+    // failed `pthread_create` to have created nothing: allocating a tid and
+    // then discovering the host cannot place the thread would leak one.
+    if let Some(proc) = table.get(pid) {
+        if proc.threads.len() as u64 >= u64::from(proc.thread_slot_quota) {
+            return Err(Errno::EAGAIN);
+        }
+    }
+
     let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
     // CLONE_PARENT_SETTID: the creating thread expects the new tid to appear
@@ -39781,6 +39797,90 @@ impl HostIO for NetMock {
             Err(Errno::EAGAIN),
         );
         assert!(table.get(pid).unwrap().get_thread(pid + 1).is_none());
+    }
+
+    #[test]
+    fn test_clone_records_parent_settid_target_only_when_requested() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        const CLONE_VM: u32 = 0x00000100;
+        const CLONE_THREAD: u32 = 0x00010000;
+        const CLONE_PARENT_SETTID: u32 = 0x00100000;
+
+        // Without the flag the address must be ignored, not stored: a host
+        // that wrote to it anyway would clobber whatever the guest keeps
+        // there.
+        let plain = sys_clone(&mut table, 0, 0x8000, CLONE_VM | CLONE_THREAD, 0, 0xdead, 0, 0)
+            .expect("thread clone");
+        assert_eq!(
+            table.get_mut(pid).unwrap().get_thread_mut(plain as u32).unwrap().parent_settid_ptr,
+            0,
+        );
+
+        let settid = sys_clone(
+            &mut table,
+            0,
+            0x8000,
+            CLONE_VM | CLONE_THREAD | CLONE_PARENT_SETTID,
+            0,
+            0xbeef,
+            0,
+            0,
+        )
+        .expect("thread clone");
+        assert_eq!(
+            table.get_mut(pid).unwrap().get_thread_mut(settid as u32).unwrap().parent_settid_ptr,
+            0xbeef,
+        );
+    }
+
+    #[test]
+    fn test_clone_refuses_past_the_concurrent_thread_quota_and_recovers_on_exit() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        table.get_mut(pid).unwrap().thread_slot_quota = 2;
+        const FLAGS: u32 = 0x00000100 | 0x00010000; // CLONE_VM | CLONE_THREAD
+
+        let first = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("first thread");
+        let second = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0).expect("second thread");
+
+        // POSIX: EAGAIN once the process holds its ceiling of live threads...
+        assert_eq!(
+            sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0),
+            Err(Errno::EAGAIN),
+        );
+        // ...and nothing was created by the refusal. A tid allocated and then
+        // abandoned would leak, which is why the check precedes create_thread.
+        assert_eq!(table.get(pid).unwrap().threads.len(), 2);
+
+        // ...but the ceiling counts threads that exist NOW. A joined thread
+        // stops counting immediately, so a create/join loop runs indefinitely.
+        // This is the whole difference between a concurrency limit and a
+        // lifetime budget.
+        table.get_mut(pid).unwrap().remove_thread(first as u32);
+        let third = sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0)
+            .expect("a joined thread's capacity must come back");
+        assert_ne!(third, second);
+        assert_eq!(table.get(pid).unwrap().threads.len(), 2);
+    }
+
+    #[test]
+    fn test_clone_refuses_every_thread_when_the_quota_is_zero() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        // A program declaring THREAD_SLOTS_NONE gets no pthreads at all, and
+        // says so through EAGAIN rather than by failing somewhere later.
+        table.get_mut(pid).unwrap().thread_slot_quota = 0;
+        const FLAGS: u32 = 0x00000100 | 0x00010000;
+
+        assert_eq!(
+            sys_clone(&mut table, 0, 0x8000, FLAGS, 0, 0, 0, 0),
+            Err(Errno::EAGAIN),
+        );
+        assert!(table.get(pid).unwrap().threads.is_empty());
     }
 
     #[test]

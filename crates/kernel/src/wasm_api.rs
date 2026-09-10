@@ -13693,6 +13693,31 @@ pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
     }
 }
 
+/// Declare how many pthreads may exist **concurrently** in `pid`.
+///
+/// The host knows two things the kernel cannot: the program's own
+/// `__wasm_posix_thread_slots` declaration, and how many per-thread control
+/// slots that host is actually able to place in the process address space. It
+/// resolves those into one ceiling and states it here; the kernel then refuses
+/// `clone` with EAGAIN past that point, before a tid is allocated, which is
+/// what POSIX requires of a failed `pthread_create`.
+///
+/// Enforcement lives in the kernel rather than in each host because the kernel
+/// owns the live-thread set, and because a limit enforced per host is a limit
+/// two hosts can disagree about.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_thread_slot_quota(pid: u32, quota: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match pt.get_mut(pid) {
+        Some(proc) => {
+            proc.thread_slot_quota = quota;
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// The `CLONE_PARENT_SETTID` target for `tid`, or 0 when the flag was not
 /// requested; negative errno if the thread is unknown or owned by another
 /// process.

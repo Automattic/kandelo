@@ -818,6 +818,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
+  "kernel_set_thread_slot_quota",
   "kernel_thread_parent_tid_target",
 ] as const;
 

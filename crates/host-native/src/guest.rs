@@ -117,16 +117,33 @@ const MAIN_CHANNEL_PRIMARY_PAGE: usize = 1;
 /// `ceil(MIN_CHANNEL_SIZE / WASM_PAGE_SIZE)` — the channel spans this many pages.
 const CHANNEL_PAGES: usize = (MIN_CHANNEL_SIZE + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
 
-// Per-thread slot layout (mirrors host/src/thread-allocator.ts + the
-// PROCESS_MEMORY_THREAD_SLOT_* constants in the generated ABI). Each spawned
-// thread gets a 4-page slot; within it the TLS page is page 0 and the channel's
-// primary page is page 2 (page 1 is the fork-save page, unused here).
-const PAGES_PER_THREAD_SLOT: usize = 4;
-const THREAD_SLOT_TLS_PAGE: usize = 0;
-const THREAD_SLOT_CHANNEL_PRIMARY_PAGE: usize = 2;
+// Per-thread slot layout. These are ABI, owned by `wasm-posix-shared` and
+// consumed by every host through it -- they were previously re-declared here
+// as private literals despite this crate already depending on the crate that
+// exports them, which is how a layout constant comes to have two definitions
+// that can drift.
+const PAGES_PER_THREAD_SLOT: usize =
+    wasm_posix_shared::process_memory::PAGES_PER_THREAD_SLOT as usize;
+const THREAD_SLOT_TLS_PAGE: usize =
+    wasm_posix_shared::process_memory::THREAD_SLOT_TLS_PAGE as usize;
+const THREAD_SLOT_CHANNEL_PRIMARY_PAGE: usize =
+    wasm_posix_shared::process_memory::THREAD_SLOT_CHANNEL_PRIMARY_PAGE as usize;
+
 /// Thread slots reserved below `brk_base`, so a spawned thread's channel/TLS
-/// pages never collide with the guest's brk/mmap allocations. A test needs one;
-/// this leaves generous headroom.
+/// pages never collide with the guest's brk/mmap allocations.
+///
+/// This is a **host** limit, not ABI and not a POSIX constant: it is how many
+/// per-thread control slots this host can place in a process address space
+/// whose layout is fixed at launch. It bounds *concurrent* threads only --
+/// slots are returned to `GuestProcess::free_thread_slot_pages` when a thread
+/// exits -- and it is reported to the kernel as this process's concurrent
+/// ceiling (`kernel_set_thread_slot_quota`) so a guest that asks for more gets
+/// a POSIX EAGAIN from `pthread_create` rather than an abort from the pump.
+///
+/// The JavaScript hosts do not have this ceiling: they reserve each slot from
+/// the kernel's own address-space allocator (`kernel_reserve_host_region`) and
+/// so honour a program's full `__wasm_posix_thread_slots` declaration. Lifting
+/// it here means giving this host dynamic slot placement too.
 const RESERVED_THREAD_SLOTS: usize = 16;
 
 /// The kernel imports `env.memory` with these bounds (see increment 1).
@@ -1659,6 +1676,8 @@ pub fn run_guest(
         kernel.get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_exit")?;
     let thread_parent_tid_target = kernel
         .get_typed_func::<(u32, u32), i64>(&mut kernel_store, "kernel_thread_parent_tid_target")?;
+    let set_thread_slot_quota = kernel
+        .get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_set_thread_slot_quota")?;
     // The sandboxed in-memory VFS toggles (crates/kernel/src/wasm_api.rs). No
     // manifest is loaded and no blob/archive provider is installed here — see
     // the call site below.
@@ -1956,6 +1975,7 @@ pub fn run_guest(
         &engine,
         &mut kernel_store,
         &alloc_scratch,
+        &set_thread_slot_quota,
         &set_brk_base,
         &set_mmap_base,
         &set_max_addr,
@@ -1993,6 +2013,7 @@ pub fn run_guest(
         &thread_exit,
         &thread_parent_tid_target,
         &alloc_scratch,
+        &set_thread_slot_quota,
         &set_brk_base,
         &set_mmap_base,
         &set_max_addr,
@@ -6077,6 +6098,7 @@ fn launch_process(
     engine: &Engine,
     kernel_store: &mut Store<()>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -6125,6 +6147,18 @@ fn launch_process(
     };
 
     for (name, val) in [
+        // POSIX: the concurrent-thread ceiling this host can actually honour.
+        // Slots are placed in a fixed arena carved below `brk_base` at launch,
+        // so RESERVED_THREAD_SLOTS is the real limit; telling the kernel means
+        // a guest asking for more gets EAGAIN out of `pthread_create` -- with
+        // no thread and no tid created, which is what POSIX requires -- rather
+        // than an abort from the pump. It bounds live threads only: an exited
+        // thread's slot returns to `free_thread_slot_pages` and stops counting.
+        (
+            "kernel_set_thread_slot_quota",
+            set_thread_slot_quota
+                .call(&mut *kernel_store, (pid, RESERVED_THREAD_SLOTS as u32))?,
+        ),
         ("kernel_set_brk_base", set_brk_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
         ("kernel_set_mmap_base", set_mmap_base.call(&mut *kernel_store, (pid, layout.brk_base as i32))?),
         ("kernel_set_max_addr", set_max_addr.call(&mut *kernel_store, (pid, max_addr as i32))?),
@@ -6158,6 +6192,7 @@ fn launch_process(
         layout,
         channels: vec![PumpChannel { offset: layout.channel_offset, tid: pid, is_main: true }],
         next_thread_slot: 0,
+        free_thread_slot_pages: Vec::new(),
         thread_handles,
         fork_format,
         vfork_parent_release: None,
@@ -6190,6 +6225,7 @@ fn launch_vfork_borrowed_child(
     engine: &Engine,
     kernel_store: &mut Store<()>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -6209,6 +6245,18 @@ fn launch_vfork_borrowed_child(
     let scratch_base = scratch_ptr as u32 as usize;
 
     for (name, val) in [
+        // POSIX: the concurrent-thread ceiling this host can actually honour.
+        // Slots are placed in a fixed arena carved below `brk_base` at launch,
+        // so RESERVED_THREAD_SLOTS is the real limit; telling the kernel means
+        // a guest asking for more gets EAGAIN out of `pthread_create` -- with
+        // no thread and no tid created, which is what POSIX requires -- rather
+        // than an abort from the pump. It bounds live threads only: an exited
+        // thread's slot returns to `free_thread_slot_pages` and stops counting.
+        (
+            "kernel_set_thread_slot_quota",
+            set_thread_slot_quota
+                .call(&mut *kernel_store, (pid, RESERVED_THREAD_SLOTS as u32))?,
+        ),
         (
             "kernel_set_brk_base",
             set_brk_base.call(&mut *kernel_store, (pid, parent_layout.brk_base as i32))?,
@@ -6255,6 +6303,7 @@ fn launch_vfork_borrowed_child(
         layout: child_layout,
         channels: vec![PumpChannel { offset: child_layout.channel_offset, tid: pid, is_main: true }],
         next_thread_slot: 0,
+        free_thread_slot_pages: Vec::new(),
         thread_handles,
         fork_format,
         vfork_parent_release: None,
@@ -10287,11 +10336,21 @@ struct GuestProcess {
     scratch_base: usize,
     layout: ProcessLayout,
     channels: Vec<PumpChannel>,
-    /// Next unused slot index in this process's reserved thread-slot arena
-    /// (`layout.first_thread_slot_page`); each `pthread_create` (SYS_CLONE)
-    /// consumes one. Per-process because the arena itself is carved out of
-    /// this process's own memory layout.
+    /// Next never-yet-used slot index in this process's reserved thread-slot
+    /// arena (`layout.first_thread_slot_page`). Per-process because the arena
+    /// itself is carved out of this process's own memory layout.
     next_thread_slot: usize,
+    /// Slot start pages returned by threads that have exited, available for
+    /// the next `pthread_create`.
+    ///
+    /// POSIX limits *concurrent* threads, not threads ever created, so a
+    /// joined thread's control slot has to come back. Without this the arena
+    /// was a lifetime budget: 16 `pthread_create` calls per process however
+    /// briefly each thread lived, which a worker-thread-per-item program
+    /// exhausts for no reason it can observe. The kernel refuses a clone past
+    /// the declared concurrent ceiling (`kernel_set_thread_slot_quota`); this
+    /// list is only the placement bookkeeping for slots inside that ceiling.
+    free_thread_slot_pages: Vec<usize>,
     /// The OS `JoinHandle` backing each live entry in `channels`, keyed by
     /// that channel's `offset` (the same key `reclaim_parked_thread` writes
     /// the teardown sentinel to). Normally these threads are never joined —
@@ -10743,6 +10802,7 @@ fn run_pump(
     thread_exit: &wasmtime::TypedFunc<(u32, u32), i64>,
     thread_parent_tid_target: &wasmtime::TypedFunc<(u32, u32), i64>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -10939,12 +10999,14 @@ fn run_pump(
                     complete_channel(
                         &guest_mem, kernel_mem, scratch_ptr, ch, syscall_nr, &args, &[], 0, 0,
                     )?;
-                    // Drop this worker's JoinHandle alongside its channel: the
-                    // thread is exiting on its own, and worker channel offsets
-                    // are never reused within a process (next_thread_slot only
-                    // increments), so leaving the entry would accumulate a stale
-                    // dead-thread handle per pthread ever created.
+                    // Drop this worker's JoinHandle alongside its channel, and
+                    // return its control slot to the process's free list: POSIX
+                    // counts threads that exist now, so an exited thread's slot
+                    // must be available to the next `pthread_create`.
                     processes[pi].thread_handles.remove(&ch.offset);
+                    let slot_page =
+                        ch.offset / WASM_PAGE_SIZE - THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
+                    processes[pi].free_thread_slot_pages.push(slot_page);
                     processes[pi].channels.remove(ci);
                     continue; // the vec shifted; do not advance ci
                 }
@@ -10990,12 +11052,29 @@ fn run_pump(
                         }
                     }
 
-                    let next_thread_slot = processes[pi].next_thread_slot;
-                    if next_thread_slot >= RESERVED_THREAD_SLOTS {
-                        anyhow::bail!("out of reserved thread slots ({RESERVED_THREAD_SLOTS})");
-                    }
-                    let slot_page = layout.first_thread_slot_page + next_thread_slot * PAGES_PER_THREAD_SLOT;
-                    processes[pi].next_thread_slot += 1;
+                    // Reuse a slot a previous thread released before taking a
+                    // fresh one. The kernel has already refused any clone past
+                    // this process's declared concurrent ceiling
+                    // (`kernel_set_thread_slot_quota`, set to at most
+                    // RESERVED_THREAD_SLOTS at launch), so a slot is always
+                    // available here and running out is a host bug rather than
+                    // a resource limit -- POSIX's EAGAIN was returned to the
+                    // guest long before this point.
+                    let slot_page = match processes[pi].free_thread_slot_pages.pop() {
+                        Some(page) => page,
+                        None => {
+                            let next_thread_slot = processes[pi].next_thread_slot;
+                            anyhow::ensure!(
+                                next_thread_slot < RESERVED_THREAD_SLOTS,
+                                "thread-slot arena exhausted at slot {next_thread_slot} despite \
+                                 the kernel's concurrent-thread quota; the quota and the arena \
+                                 have drifted apart"
+                            );
+                            processes[pi].next_thread_slot += 1;
+                            layout.first_thread_slot_page
+                                + next_thread_slot * PAGES_PER_THREAD_SLOT
+                        }
+                    };
                     let thread_channel_offset =
                         (slot_page + THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
                     let tls_offset = (slot_page + THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
@@ -11045,7 +11124,8 @@ fn run_pump(
                 if ch.is_main && syscall_nr == SYS_SPAWN {
                     handle_spawn(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
-                        spawn_blob_decode, spawn_process, publish_spawn_child, remove_process, set_brk_base,
+                        spawn_blob_decode, spawn_process, publish_spawn_child, remove_process,
+                        set_thread_slot_quota, set_brk_base,
                         set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
                         exec_target_read, spawn_exec_commit, exec_target_cancel,
                         exec_target_resolve_shebang, wait_table, use_fork_module, fork_proof_of_use,
@@ -11093,7 +11173,8 @@ fn run_pump(
                 if syscall_nr == SYS_FORK || (ch.is_main && syscall_nr == SYS_VFORK) {
                     handle_fork(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
-                        fork_process, remove_process, alloc_scratch, set_brk_base, set_mmap_base,
+                        fork_process, remove_process, alloc_scratch, set_thread_slot_quota,
+                        set_brk_base, set_mmap_base,
                         set_max_addr, use_fork_module, fork_proof_of_use, wait_table,
                     )?;
                     ci += 1;
@@ -11139,7 +11220,8 @@ fn run_pump(
                     if let Some(fatal_exit_code) = handle_exec_common(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
-                        set_brk_base, set_mmap_base, set_max_addr, exec_target_prepare, exec_target_size,
+                        set_thread_slot_quota, set_brk_base, set_mmap_base, set_max_addr,
+                        exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
                         remove_process, wait_table, use_fork_module, fork_proof_of_use,
                     )? {
@@ -11176,7 +11258,8 @@ fn run_pump(
                     let flags = args[4] as u32;
                     if let Some(fatal_exit_code) = handle_exec_common(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args, dirfd,
-                        path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_brk_base, set_mmap_base,
+                        path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_thread_slot_quota,
+                        set_brk_base, set_mmap_base,
                         set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
                         exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
                         use_fork_module, fork_proof_of_use,
@@ -11362,6 +11445,7 @@ fn handle_spawn(
     spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -11601,6 +11685,7 @@ fn handle_spawn(
         engine,
         kernel_store,
         alloc_scratch,
+        set_thread_slot_quota,
         set_brk_base,
         set_mmap_base,
         set_max_addr,
@@ -11727,6 +11812,7 @@ fn handle_fork(
     fork_process: &wasmtime::TypedFunc<(u32, u32, u32), i32>,
     remove_process: &wasmtime::TypedFunc<u32, i32>,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -11845,6 +11931,7 @@ fn handle_fork(
                 engine,
                 kernel_store,
                 alloc_scratch,
+                set_thread_slot_quota,
                 set_brk_base,
                 set_mmap_base,
                 set_max_addr,
@@ -11953,6 +12040,7 @@ fn handle_fork(
         engine,
         kernel_store,
         alloc_scratch,
+        set_thread_slot_quota,
         set_brk_base,
         set_mmap_base,
         set_max_addr,
@@ -12093,6 +12181,7 @@ fn handle_exec_common(
     envp_ptr: u32,
     flags: u32,
     alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+    set_thread_slot_quota: &wasmtime::TypedFunc<(u32, u32), i32>,
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
@@ -12286,6 +12375,7 @@ fn handle_exec_common(
         engine,
         kernel_store,
         alloc_scratch,
+        set_thread_slot_quota,
         set_brk_base,
         set_mmap_base,
         set_max_addr,

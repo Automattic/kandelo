@@ -1980,6 +1980,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         brkBase: layout.brkBase,
         mmapBase: layout.mmapBase,
         maxAddr: layout.maxAddr,
+        threadSlotQuota: layout.threadSlotCount,
       });
       createdMemoryRegistered = true;
 
@@ -2217,6 +2218,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         brkBase: layout.brkBase,
         mmapBase: layout.mmapBase,
         maxAddr: layout.maxAddr,
+        threadSlotQuota: layout.threadSlotCount,
       });
       registered = true;
 
@@ -2466,6 +2468,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ptrWidth,
             maxAddr: childLayout.maxAddr,
             mmapBase: childLayout.mmapBase,
+            threadSlotQuota: childLayout.threadSlotCount,
           },
         ),
       );
@@ -3219,6 +3222,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           ptrWidth,
           maxAddr: childLayout.maxAddr,
           mmapBase: childLayout.mmapBase,
+          threadSlotQuota: childLayout.threadSlotCount,
           borrowedAddressSpace: true,
         }),
       );

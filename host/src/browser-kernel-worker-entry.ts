@@ -1675,6 +1675,7 @@ async function handleExec(
         brkBase: newLayout.brkBase,
         mmapBase: newLayout.mmapBase,
         maxAddr: newLayout.maxAddr,
+        threadSlotQuota: newLayout.threadSlotCount,
         // Refresh kernel-owned argv/environment for procfs and kernel APIs.
         argv: launchArgv,
         env: envp,

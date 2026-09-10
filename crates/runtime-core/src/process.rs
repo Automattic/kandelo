@@ -925,6 +925,26 @@ pub struct ProcessIdentity {
 pub struct Process {
     identity: ProcessIdentity,
     pub ppid: u32,
+    /// Maximum number of pthreads that may exist **concurrently** in this
+    /// process.
+    ///
+    /// POSIX gives `pthread_create` EAGAIN when "the system lacked the
+    /// necessary resources to create another thread, or the system-imposed
+    /// limit on the total number of threads in a process
+    /// {PTHREAD_THREADS_MAX} would be exceeded". Both clauses describe
+    /// threads that exist *now*, so this is a ceiling on live threads and
+    /// never a budget spent once per thread created: a joined thread stops
+    /// counting immediately, and a create/join loop must run indefinitely.
+    ///
+    /// The kernel enforces it because the kernel owns the live-thread set
+    /// ([`ProcessIdentity::threads`]) and is the only place that can refuse a
+    /// clone *before* a tid is allocated -- which is what POSIX requires, a
+    /// `pthread_create` that fails having created nothing. Each host declares
+    /// the ceiling it can actually honour (a program's
+    /// `__wasm_posix_thread_slots` declaration, clamped by whatever the host's
+    /// own per-thread control arena can place), so an EAGAIN here is a
+    /// truthful statement about that machine rather than a shared guess.
+    pub thread_slot_quota: u32,
     credentials: Credentials,
     /// Kernel-owned secure-startup fact for the current process image.
     ///
@@ -1253,6 +1273,7 @@ impl Process {
         terminal.foreground_pgid = pid as i32;
 
         Process {
+            thread_slot_quota: wasm_posix_shared::process_memory::DEFAULT_THREAD_SLOTS,
             identity: ProcessIdentity {
                 pid,
                 threads: Vec::new(),

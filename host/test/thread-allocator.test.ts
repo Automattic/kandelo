@@ -122,14 +122,18 @@ describe("ThreadPageAllocator", () => {
     expect(mem.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
   });
 
-  it("throws when the thread control arena is exhausted", () => {
+  it("throws when the static thread control arena has no address space left", () => {
     const alloc = new ThreadPageAllocator({
       firstSlotStartPage: 24,
       maxPageExclusive: 25,
     });
     const mem = makeMemory();
 
-    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+    // Distinct from running out of *quota*, which the kernel now refuses with
+    // EAGAIN before a tid exists. Reaching this means the arena and the
+    // kernel's ceiling disagree, which no guest can fix by retrying, so it
+    // must stay a loud host error rather than a POSIX resource failure.
+    expect(() => alloc.allocate(mem)).toThrow(/arena exhausted/);
   });
 
   it("dynamically reserves slots when configured", () => {
@@ -155,7 +159,15 @@ describe("ThreadPageAllocator", () => {
     expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
     expect(reservations).toBe(2);
     expect(mem.buffer.byteLength).toBe((t2.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
-    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+
+    // The allocator places slots; it does not police how many a process may
+    // have. That ceiling is the kernel's, enforced inside `clone` before a tid
+    // is allocated (`kernel_set_thread_slot_quota`), because only there can a
+    // failed `pthread_create` return EAGAIN having created nothing. A third
+    // request therefore reserves a third range rather than being refused here.
+    const t3 = alloc.allocate(mem);
+    expect(t3.slotStartPage).toBe(128 + 2 * PAGES_PER_THREAD);
+    expect(reservations).toBe(3);
   });
 
   it("reuses dynamic slots without reserving a new host range", () => {
@@ -201,11 +213,15 @@ describe("ThreadPageAllocator", () => {
 
     const control = alloc.allocateHostControl(mem);
 
+    // The borrowing child's control slot is reserved even though the program
+    // declared no pthreads. That a *pthread* is then refused is the kernel's
+    // call, not this allocator's: a process whose quota is 0 has `clone`
+    // refused with EAGAIN, and host control never counted against it because
+    // it creates no kernel thread to count.
     expect(control.slotStartPage).toBe(128);
-    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
   });
 
-  it("does not charge host control against the pthread quota", () => {
+  it("gives host control its own slot and recycles both kinds", () => {
     let nextPage = 128;
     const alloc = new ThreadPageAllocator({
       firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
@@ -223,10 +239,15 @@ describe("ThreadPageAllocator", () => {
     const pthread = alloc.allocate(mem);
     expect(control.slotStartPage).toBe(128);
     expect(pthread.slotStartPage).toBe(128 + PAGES_PER_THREAD);
-    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
 
+    // "Host control does not consume pthread capacity" used to be a counter
+    // maintained here. It is now structural: the kernel's ceiling counts
+    // `Process.threads`, which only a real `clone` adds to, and a vfork
+    // borrowing child's control slot creates no kernel thread. What remains
+    // this allocator's job is placement -- a freed slot of either kind must
+    // come back, since POSIX limits threads that exist now.
     alloc.free(control.slotStartPage);
-    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+    expect(alloc.allocate(mem).slotStartPage).toBe(control.slotStartPage);
     alloc.free(pthread.slotStartPage);
     expect(alloc.allocate(mem).slotStartPage).toBe(pthread.slotStartPage);
   });

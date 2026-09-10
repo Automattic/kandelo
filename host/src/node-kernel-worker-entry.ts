@@ -1470,6 +1470,7 @@ async function handleExec(
         brkBase: newLayout.brkBase,
         mmapBase: newLayout.mmapBase,
         maxAddr: newLayout.maxAddr,
+        threadSlotQuota: newLayout.threadSlotCount,
         // Refresh kernel-side Process.argv and environment so procfs and
         // kernel APIs reflect the replacement image.
         argv: launchArgv,

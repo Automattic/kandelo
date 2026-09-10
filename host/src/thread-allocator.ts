@@ -57,8 +57,6 @@ export class ThreadPageAllocator {
   private readonly ptrWidth: 4 | 8;
   private readonly reservedSlots: number;
   private readonly reserveSlotStartPage?: () => number;
-  private activeCount = 0;
-  private readonly hostControlPages = new Set<number>();
 
   constructor(options: ThreadPageAllocatorOptions);
   constructor(maxPages: number);
@@ -111,16 +109,15 @@ export class ThreadPageAllocator {
 
   private allocateSlot(
     memory: WebAssembly.Memory,
-    hostControl: boolean,
+    _hostControl: boolean,
   ): ThreadAllocation {
-    if (!hostControl && this.activeCount >= this.reservedSlots) {
-      throw new Error(
-        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
-          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
-          "or increase the host defaultThreadSlots setting.",
-      );
-    }
-
+    // The concurrent-pthread ceiling is NOT enforced here. The kernel refuses
+    // `clone` with EAGAIN once a process holds `reservedSlots` live threads,
+    // and it does so before allocating a tid -- which is what POSIX requires
+    // of a failed `pthread_create` and what this check could never provide,
+    // because it runs after `kernel_clone` has already succeeded. The quota is
+    // published to the kernel by `registerProcess`'s `threadSlotQuota`; this
+    // allocator is placement only.
     let slotStartPage: number;
     if (this.freePages.length > 0) {
       slotStartPage = this.freePages.pop()!;
@@ -135,14 +132,19 @@ export class ThreadPageAllocator {
       }
     }
 
+    // A static arena that has run out of address space is a host defect, not a
+    // resource limit: the kernel already refused anything past the declared
+    // concurrent ceiling, so reaching this means the arena and the quota have
+    // drifted apart. Fail loudly rather than reporting it as EAGAIN, which
+    // would tell a guest to retry something that can never succeed.
     if (!this.reserveSlotStartPage && (
       slotStartPage < 0 ||
       slotStartPage + PAGES_PER_THREAD > this.maxPageExclusive
     )) {
       throw new Error(
-        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
-          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
-          "or increase the host defaultThreadSlots setting.",
+        `pthread slot arena exhausted at page ${slotStartPage} despite the ` +
+          `kernel's concurrent-thread quota (${this.reservedSlots}); the quota ` +
+          "and the arena have drifted apart.",
       );
     }
 
@@ -164,8 +166,6 @@ export class ThreadPageAllocator {
     new Uint8Array(memory.buffer, forkSaveOffset, WASM_PAGE_SIZE).fill(0);
     new Uint8Array(memory.buffer, forkSaveOffset, FORK_SAVE_BUFFER_SIZE).fill(0);
 
-    if (hostControl) this.hostControlPages.add(slotStartPage);
-    else this.activeCount++;
     return {
       slotStartPage,
       basePage: slotStartPage,
@@ -176,11 +176,14 @@ export class ThreadPageAllocator {
     };
   }
 
-  /** Return pages to the free list after thread exit. */
+  /**
+   * Return pages to the free list after thread exit.
+   *
+   * POSIX counts threads that exist now, so a joined thread's slot has to
+   * become available again immediately; without this the arena would be a
+   * budget spent once per thread ever created.
+   */
   free(slotStartPage: number): void {
     this.freePages.push(slotStartPage);
-    if (!this.hostControlPages.delete(slotStartPage)) {
-      this.activeCount = Math.max(0, this.activeCount - 1);
-    }
   }
 }

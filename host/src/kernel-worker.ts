@@ -1649,6 +1649,15 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+  /**
+   * Maximum pthreads that may exist concurrently in this process.
+   *
+   * POSIX limits live threads, not threads ever created, so this is a ceiling
+   * a joined thread stops counting against. The kernel enforces it inside
+   * `clone`, before a tid is allocated, which is the only place a failed
+   * `pthread_create` can return EAGAIN having created nothing.
+   */
+  threadSlotQuota?: number;
   /** The process is a vfork child borrowing another process's Memory. */
   borrowedAddressSpace?: boolean;
 }
@@ -6797,6 +6806,7 @@ export class CentralizedKernelWorker {
     const mmapBase = options?.mmapBase;
     const explicitMaxAddr = options?.maxAddr;
     const brkLimit = options?.brkLimit;
+    const threadSlotQuota = options?.threadSlotQuota;
     const existingRegistration = this.processes.get(pid);
     const replacingExecImage =
       preserveProcessState
@@ -6909,6 +6919,19 @@ export class CentralizedKernelWorker {
         ) {
           throw new Error(
             "Kernel export kernel_set_brk_limit is required for legacy low-control layout",
+          );
+        }
+        // The kernel owns the POSIX EAGAIN decision because only it can refuse
+        // a clone before a tid exists. The host contributes the one fact the
+        // kernel cannot know: how many concurrent per-thread control slots
+        // this host can actually place in this address space.
+        if (
+          threadSlotQuota !== undefined
+          && !this.#setThreadSlotQuotaWithinKernelEntry(pid, threadSlotQuota, entry)
+        ) {
+          throw new Error(
+            "Kernel export kernel_set_thread_slot_quota is required to enforce the "
+              + "process pthread limit",
           );
         }
 
@@ -29274,6 +29297,20 @@ export class CentralizedKernelWorker {
       );
     }
     return updated;
+  }
+
+  #setThreadSlotQuotaWithinKernelEntry(
+    pid: number,
+    quota: number,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const setQuotaFn = this.#kernelInstanceForEntry(entry).exports
+      .kernel_set_thread_slot_quota as
+      ((pid: number, quota: number) => number) | undefined;
+    if (!setQuotaFn) {
+      return false;
+    }
+    return setQuotaFn(pid, quota) >= 0;
   }
 
   #setBrkBaseWithinKernelEntry(
