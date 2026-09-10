@@ -420,7 +420,18 @@ export class VirtualPlatformIO implements PlatformIO {
     info.backend.fchown(info.localHandle, uid, gid);
   }
 
-  // --- Path-based operations ---
+  // --- Path-based operations: host-internal, NOT part of the kernel contract
+  //
+  // The kernel never calls any of these. It resolves the POSIX namespace
+  // itself and reaches this host only through the `*at` methods above, so
+  // none of them appears on `PlatformIO` any more.
+  //
+  // They survive as ordinary class methods for two reasons: the `*at` methods
+  // are implemented in terms of them (a backend is path-shaped, and joining
+  // one component to a directory's path is what an anchor means here), and
+  // host-side machinery that is not serving a guest — image export, worker
+  // bookkeeping — still addresses files by name. Adding a caller from the
+  // kernel side would be a regression.
 
   stat(path: string): StatResult {
     const { backend, relativePath } = this.resolve(path);

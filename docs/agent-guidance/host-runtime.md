@@ -56,6 +56,52 @@ Node and browser consideration even when only one host-specific file changed.
 it. Fix runtime bugs in `host/src`, not inside demo pages, unless the bug is
 truly presentation-specific.
 
+## The host filesystem contract is handle-only
+
+**A host resolves at most one path component, relative to a directory handle it
+previously issued. It never receives a guest path, a mount prefix, a `..`, or a
+symlink chain.**
+
+The kernel owns the POSIX namespace. `resolve_namespace_path_from`
+(`crates/runtime-core/src/syscalls.rs`) walks a guest path component by
+component against the kernel's own metadata and produces a canonical path with
+every symlink and `..` already resolved; `crates/runtime-core/src/hostdir.rs`
+then steps a host directory handle along it with
+`host_openat(dir, component, O_DIRECTORY|O_NOFOLLOW)` and presents the final
+operation a single component.
+
+What this means when you touch host code:
+
+- **Do not add a path-taking host import.** If you find yourself wanting one —
+  anything shaped like "resolve the remainder of this path for me" — stop and
+  discuss it. That is the defect the contract removed, and the direction of
+  travel is one way.
+- **A directory is an ordinary handle.** `host_openat(..., O_DIRECTORY)` issues
+  it, `host_readdir` iterates it, `host_close` releases it. There is no second
+  handle namespace and no `closedir`. A host must therefore issue **distinct
+  handles for distinct directories** (the kernel's walk holds several at once),
+  keep its directory ids **disjoint from its file ids** (one `close` serves
+  both), and answer `fstat`, `fstatfs`, `fpathconf`, `fchmod`, `fchown`, and
+  `fsync` on a directory handle as well as a file one.
+- **The whole family is optional.** It is reachable only under a mount whose
+  root handle the host published through
+  `kernel_rootfs_set_foreign_mount_roots`. A host with no host-backed directory
+  implements none of it; a browser host implements none of it today. Leaving
+  these unimplemented is a truthful boundary, not a gap to paper over.
+- **The final component is still a name, and that is irreducible.** `mkdir`,
+  `unlink`, `rename`, `link`, and `symlink` name an entry that does not exist
+  yet or is about to stop existing; `lstat`, `lchown`, and a
+  `AT_SYMLINK_NOFOLLOW` `utimensat` name an entry the host must not open,
+  because opening a symlink follows it. The goal is no name *resolution*, not
+  no names.
+- **`PlatformIO`'s remaining path methods are host-internal.** They implement
+  the `*at` methods and serve host-side machinery such as image export. The
+  kernel calls none of them. Adding a kernel-side caller is a regression.
+
+`docs/abi-versioning.md` records the full import list and the reasoning; the
+concept-level accounting is in
+`docs/plans/2026-09-09-rust-first-value-plan.md` §2t and §4.
+
 ## Rust-first for kernel and fork control flow
 
 Kernel and fork control flow are Rust-first. Do NOT add kernel or fork
