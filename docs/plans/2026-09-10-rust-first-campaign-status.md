@@ -997,6 +997,45 @@ removed, followed by work on whatever it finds. The mid-campaign census run
 early found six uncovered items and a false KEEP in our own ledger, so the
 end-of-campaign one is not expected to come back empty.
 
+## Open decisions collected — the ones needing the maintainer, in one place
+
+1. **The 76th host import.** `host_debug_log` is now live and linked, because
+   K7 supplied a caller (`report_writeback_loss`) for a declaration K9 had
+   removed as callerless. One import whose only job is to make an unrecoverable
+   shared-mapping writeback loss *visible* rather than silent. Keep it, or
+   surface the loss without a host call?
+2. **NDD-K4-2 — the last 16 worker-entry pairs.** One fork/exec/clone/init
+   family, ~2,700 lines. **Cannot be split**: each constructs or tears down a
+   process generation, so all need the same ~3 new host hooks. Three together
+   buy the hooks once; one alone saves almost nothing. Recommendation: one item,
+   fork-path guest suites provisioned first.
+3. **NDD-K4-1 — `parseShebang`'s kernel move.** The duplicate is now shared
+   (one call site, not two), so the remaining question is only whether the
+   *kernel* should own shebang parsing. `kernel_exec_target_shebang` needs a
+   prepared target token the side-effect-free spawn preflight cannot obtain
+   without breaking POSIX's "file_actions exactly once".
+4. **K7 re-cut pieces 2 and 3** — the coherence layer (sized as policy, not
+   plumbing) and the anon+file cutover, the latter gated on a *targeted*
+   shared-mapping benchmark. A general syscall benchmark exercises only the
+   early-out and cannot close the question.
+5. **The measured SysV regression.** 3.7× on a clean boundary with a live peer.
+   Cheaper remedy first: `host_proc_read_bytes` copies its range **twice** and
+   allocates per call — host-side, no import. Beyond that, the campaign's one
+   sanctioned import `host_proc_compare_bytes` is now **evidence-backed rather
+   than argued**. Neither has been spent.
+6. **K6's ABI motion.** The snapshot moved twice without a bump: five exports
+   removed, and `kernel_sendmsg`/`kernel_recvmsg` changed **arity**. Consistent
+   with the one-epoch ruling, but arity changed, not just counts.
+7. **K3's remainder** — `usePolling` deletion, and two epoll POSIX gaps
+   (interest-list inheritance across `fork`, OFD keying). Ruling was "fix if
+   straightforward, else log explicitly and defer"; not yet actioned.
+8. **Should `./run.sh setup` install root npm dependencies?** It already
+   bootstraps `host/` and `tools/mkrootfs/` on the non-sealed path. This is the
+   one provisioning step a fresh worktree needs that `setup` does not perform,
+   and its absence cascade-blocks every browser product.
+9. **No SysV conformance coverage exists anywhere in `tests/`** — checked, not
+   assumed. A platform gap worth its own item.
+
 ## Open decisions for the maintainer
 
 1. K3 §11.2 `usePolling` deletion.
