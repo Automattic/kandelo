@@ -88,6 +88,7 @@ pub mod placement;
 pub mod plan;
 pub mod scope;
 pub mod wasm;
+pub mod wire;
 
 pub use act::{
     ActResult, BindingValue, GlobalId, ImportBinding, ImportPlan, InstanceExport, InstanceId,
@@ -111,6 +112,9 @@ pub use plan::{
 pub use scope::{
     is_fork_runtime_export, is_public_dylink_export, DataBinding, LinkerScope, LoadState,
     LoadedLibrary, ResolvedSymbol, SymbolValue, MAIN_INSTANCE,
+};
+pub use wire::{
+    decode_act_result, decode_plan_step, encode_act_result, encode_plan_step, Reader, Writer,
 };
 pub use wasm::{
     custom_section, read_module_shape, require_passive_data_segments,
