@@ -2745,6 +2745,59 @@ trait, with six tests, four of them rollback paths asserting exact call order
 **Generalizable:** "moved to Rust" is not automatically "better covered".
 Check where in Rust, and whether that place can be tested.
 
+### MEASURED: the predicted gain is a regression, and the sanctioned import is now justified
+
+§2w predicted the SysV half was "the one part with a performance *gain*",
+because the mirror stops pulling whole segments through
+`kernel_ipc_shm_*_chunk`. **Measurement disproves that.** Node,
+`benchmarks/programs/sysv-shm-bench.c`, 256 KiB segment, one live peer, medians
+of 5 runs each, same machine, cutover kernel vs a kernel built from the base
+commit with the base host:
+
+| case | before | after | change |
+|---|---|---|---|
+| boundary, peer alive, nothing written | **793 µs** | **2,965 µs** | **3.7× slower** |
+| boundary, a byte dirtied each iteration | **2,317 µs** | **3,861 µs** | **1.7× slower** |
+| attach + detach cycle | **6,105 µs** | **11,441 µs** | **1.9× slower** |
+
+The spreads do not overlap on the clean case (before 485–1,513; after
+2,823–3,717), so this is a real separation, not the machine's noise. Both runs
+were taken after the concurrent builds finished; an earlier "after" run taken
+*during* a build was discarded rather than reported, because it would have
+overstated the same conclusion.
+
+**The cause is the one §2w already named, on the half nobody expected it on.**
+The TypeScript diffed a zero-copy view of guest memory, so deciding "nothing
+changed" was free. The kernel must pull the whole mapping across
+`host_proc_read_bytes` *before* it can decide anything, and it pays that on
+every boundary with a live peer whether or not a byte moved. Replacing the
+chunked segment round trips is a real saving, but it is smaller than the copy
+it buys.
+
+**Two remedies, and the cheaper one is not an import.**
+
+1. `host_proc_read_bytes` copies the range **twice** and allocates once per
+   call (`host/src/kernel.ts`): `sliceUint8Array(processView)` materializes a
+   fresh array, and `#writeKernelBytes` then copies that into the kernel
+   destination. 256 KiB in, 512 KiB copied. Writing straight into the proven
+   kernel destination is a host-side fix in existing code, needs no new import,
+   and helps every one of the family's callers.
+2. **`host_proc_compare_bytes` — the campaign's one sanctioned new import — is
+   now justified by measurement rather than by argument**, and by the half it
+   was not reserved for. A cross-memory compare returning a dirty bitmap turns
+   the clean case (the common one) from a full copy into a comparison, which is
+   exactly what the TypeScript had for free. §2w reserved it for the anon/file
+   half "if a *targeted* benchmark ever justifies it". The targeted benchmark
+   now exists and the answer is yes.
+
+**This is a decision for the maintainer, not for the item that found it.** The
+cutover is correct, deletes the TypeScript, and fixes a POSIX defect; it also
+costs measurably on a narrow path — a process holding a large writable SysV
+attachment with a live peer, crossing boundaries in a loop. Whether that is
+acceptable until remedy 1 or 2 lands is a judgment about this platform's
+priorities, and the performance contract puts correctness above speed but does
+not license shipping an unreported regression.
+
 ### The host import count moved 83 → 84, and it is not growth
 
 `host_debug_log`. Nothing was declared and no capability was added: it was

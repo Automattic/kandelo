@@ -206,6 +206,15 @@ not visible in the diff. Measure it on a built kernel, before and after.
 `host_proc_compare_bytes`, the third member of the read/write family. See §2w of
 the value plan for why it protects the abstraction.
 
+**The measurement gate is now satisfied.** K7's SysV cutover measured a 3.7×
+regression on a syscall boundary holding a live-peer shared attachment, caused
+by exactly the full-range copy the compare member exists to avoid (§2x of the
+value plan). Still unspent and still the maintainer's call — but no longer
+waiting on evidence. Note the cheaper remedy first: `host_proc_read_bytes`
+currently copies its range **twice** (`host/src/kernel.ts` allocates via
+`sliceUint8Array` and then copies again into the kernel destination), which
+needs no import at all.
+
 ## CORRECTION — K5 was recorded as COMPLETE and was not
 
 §2p of the value plan claimed "K5 — COMPLETE … `cargo test -p dylink` 72/72".
