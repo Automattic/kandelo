@@ -1327,6 +1327,30 @@ latency consequences, not a port.
 whether the Linux-VT MEDIUMRAW model and the three VT ioctls are the right
 long-term contract. That is a different question and must not be folded in.
 
+**Piece 2 partial win: PS/2 delta splitting moved into `mouse.rs`.** Not on
+the original list, and found only by sweeping for already-ported Rust. A PS/2
+packet carries at most `-128..=127` per axis; `mouse::inject_event` **clamped**
+and dropped the excess, and `browser-controls.ts` compensated by looping over
+`injectMouseEvent`. So the `/dev/input/mice` device model's packet-generation
+rule lived outside the device model, in one host only — Node and host-native
+still clamped, and the same injected motion produced different bytes per host.
+Moved into `mouse.rs`, which already owns the packet layout, sign bits, queue
+and drop-oldest policy. **No ABI change**: `kernel_inject_mouse_event` already
+carried the full `i32`, so the host had been truncating information the ABI
+could express and then working around it. Bounded at the queue's packet
+capacity, since past that a packet evicts one the same call just queued.
+
+**Test-suite finding while validating it.** `host/test/mouse-integration.test.ts`
+is gated on `host/wasm/mousetest.wasm`, which **no standard build populates** —
+`build-programs.sh` writes `local-binaries/programs/wasm32/mousetest.wasm`, and
+only `scripts/pack-exact-abi-source-test-workspace.sh` maps it across. So the
+one end-to-end test of `/dev/input/mice` is skipped in every normal run. Staged
+by hand, it delivers the packets **exactly** right — guest stdout was
+`ready / pkt 08 3 5 / pkt 38 -2 -7 / pkt 09 0 0`, byte-for-byte the assertion —
+and then **hangs**: the process does not exit within 10s of reading its three
+packets. Delivery is correct; the exit path is not. Pre-existing and unrelated
+to the encoding, but invisible because the gate keeps the test off.
+
 ### Piece 3 — `webgl/bridge.ts` (700) — BLOCKED
 
 **Line:** framing and payload validation are computation; every `gl.*` call is
