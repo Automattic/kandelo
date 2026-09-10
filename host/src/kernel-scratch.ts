@@ -147,7 +147,6 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
-  "kernel_network_ifconf_write",
   "kernel_pipe2",
   "kernel_pipe_read",
   "kernel_pipe_write",
@@ -243,7 +242,6 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_0;
     case "kernel_get_cwd":
     case "kernel_getrusage":
-    case "kernel_network_ifconf_write":
     case "kernel_pipe2":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
@@ -338,7 +336,6 @@ function isKernelScratchExportName(
     case "kernel_ipc_shm_read_chunk":
     case "kernel_ipc_shm_write_chunk":
     case "kernel_mq_drain_notification":
-    case "kernel_network_ifconf_write":
     case "kernel_pipe2":
     case "kernel_pipe_read":
     case "kernel_pipe_write":

@@ -1032,13 +1032,42 @@ fn handle_drm_version(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Convert a fixed-width DRM UAPI pointer to the process-memory bridge.
+/// Prove a DRM UAPI output pointer is writable BEFORE any output is written.
 ///
-/// WHY: KMS structs use `u64` pointers even for wasm32 compatibility, while
-/// the current host bridge accepts only a lossless `u32` process address.
-/// Truncation would redirect a wasm64 pointer into unrelated low memory.
-fn checked_dri_process_pointer(pointer: u64) -> Result<u32, Errno> {
-    u32::try_from(pointer).map_err(|_| Errno::EFAULT)
+/// WHY: `DRM_IOCTL_MODE_GETRESOURCES` and `MODE_GETCONNECTOR` each hand back
+/// several independently-addressed nested buffers. If the third one turns out
+/// to be a bad address, the caller must see a clean `EFAULT` with none of its
+/// buffers touched, not two of three filled in. So every nested address is
+/// validated up front and the writes only begin once all of them have passed.
+///
+/// This used to be a pure narrowing check (`u32::try_from`), because the
+/// process-memory bridge accepted only a 32-bit guest address while KMS
+/// structs carry `u64` pointers on every guest width; the check existed to
+/// turn a wasm64 pointer above 4 GiB into `EFAULT` instead of silently
+/// redirecting it into unrelated low memory. `HostIO::proc_read_bytes` /
+/// `proc_write_bytes` now take the guest address at its full `u64` width, so
+/// there is nothing left to narrow — but the ordering guarantee still has to
+/// come from somewhere, and only the host knows a process's real extent.
+///
+/// So the pre-pass now probes each address with a `proc_read_bytes` of the
+/// exact length that will later be written. Reading is side-effect-free, and
+/// a range that is inside the process's memory now is still inside it when
+/// the writes begin a few instructions later: linear memory only ever grows,
+/// and the host dispatches this syscall synchronously without re-entering the
+/// kernel. A concurrent thread may change the *bytes* in between — that is
+/// inherent and documented on `HostIO::proc_write_bytes` — but it cannot
+/// shrink the range out from under the write.
+fn probe_dri_process_pointer(
+    host: &mut dyn HostIO,
+    pid: i32,
+    pointer: u64,
+    len: usize,
+) -> Result<u64, Errno> {
+    let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
+    if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    Ok(pointer)
 }
 
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
@@ -1462,7 +1491,7 @@ fn handle_dri_ioctl(
             // the host needs to dispatch.
             let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
             if info.in_buf_len > 0 {
-                let rc = host.proc_read_bytes(pid, info.in_buf_ptr, &mut in_buf);
+                let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1474,7 +1503,7 @@ fn handle_dri_ioctl(
             }
             let n = (written as usize).min(out_buf.len());
             if n > 0 && info.out_buf_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, info.out_buf_ptr, &out_buf[..n]);
+                let rc = host.proc_write_bytes(pid, u64::from(info.out_buf_ptr), &out_buf[..n]);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -1527,13 +1556,13 @@ fn handle_dri_card_ioctl(
             // unrepresentable wasm64 pointer cannot leave earlier outputs
             // partially updated.
             let crtc_id_ptr = (req.count_crtcs >= 1 && req.crtc_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.crtc_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.crtc_id_ptr, 4))
                 .transpose()?;
             let connector_id_ptr = (req.count_connectors >= 1 && req.connector_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.connector_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.connector_id_ptr, 4))
                 .transpose()?;
             let encoder_id_ptr = (req.count_encoders >= 1 && req.encoder_id_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoder_id_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoder_id_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = crtc_id_ptr {
                 let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
@@ -1617,10 +1646,17 @@ fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.modes_ptr))
+                .then(|| {
+                    probe_dri_process_pointer(
+                        host,
+                        pid,
+                        req.modes_ptr,
+                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                    )
+                })
                 .transpose()?;
             let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
-                .then(|| checked_dri_process_pointer(req.encoders_ptr))
+                .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
                 let mode = host.kms_mode_info(1);
@@ -15495,6 +15531,84 @@ pub fn sys_ioctl(
     // proves `fd` names an open descriptor (the `fd_table.get(fd)` above),
     // which is a strictly truthful improvement (EBADF on a bogus fd) without
     // narrowing any previously-working caller (real programs pass a socket).
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFCONF {
+        // `SIOCGIFCONF` enumerates every interface into a caller-supplied
+        // buffer. Unlike its `ifreq` siblings above, its argument is a
+        // `struct ifconf` holding a SECOND process-memory pointer
+        // (`ifc_buf`) whose size the caller chooses at runtime via `ifc_len`.
+        //
+        // That nested, runtime-sized indirection is why this request used to
+        // be marshalled entirely by the host, and it is still why the ioctl
+        // contract table cannot describe the inner buffer: the table names one
+        // static size per request. The kernel handles it here instead by
+        // reading `ifc_len`/`ifc_buf` out of the staged outer struct and
+        // writing the entries straight into the caller's memory through
+        // `HostIO::proc_write_bytes` — the same primitive the DRI/KMS paths
+        // have used all along.
+        //
+        // `buf` is the OUTER struct, already copied into kernel memory by the
+        // contract dispatch. Parsing `ifc_len` and `ifc_buf` from that copy —
+        // never re-reading them from the guest — is the copy-once-then-parse
+        // rule `HostIO::proc_write_bytes` documents, and it is what keeps this
+        // free of the time-of-check/time-of-use hazard a naive conversion
+        // would introduce.
+        //
+        // Layout (`struct ifconf`, `<net/if.h>`): `int ifc_len` at 0, then the
+        // pointer union at the platform's pointer alignment — offset 4 in an
+        // 8-byte wasm32 struct, offset 8 in a 16-byte wasm64 one. The staged
+        // length is the contract's declared size for the caller's width, so it
+        // is what tells us which width we are serving.
+        let pointer_width: u8 = match buf.len() {
+            8 => 4,
+            16 => 8,
+            _ => return Err(Errno::EINVAL),
+        };
+        let ifc_len = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        if ifc_len < 0 {
+            return Err(Errno::EINVAL);
+        }
+        let ifc_buf: u64 = if pointer_width == 8 {
+            u64::from_le_bytes([
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+            ])
+        } else {
+            u64::from(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]))
+        };
+
+        // Linux treats a null `ifc_buf` as a size query: report how many bytes
+        // a full enumeration would need and write nothing.
+        if ifc_buf == 0 {
+            let total = crate::netif::ifconf_total_size(pointer_width) as i32;
+            buf[0..4].copy_from_slice(&total.to_le_bytes());
+            return Ok(());
+        }
+
+        let entry_size = crate::netif::ifreq_size(pointer_width);
+        if entry_size == 0 || (ifc_len as usize) < entry_size {
+            // Not even one whole entry fits. Linux reports zero bytes written
+            // rather than failing.
+            buf[0..4].copy_from_slice(&0i32.to_le_bytes());
+            return Ok(());
+        }
+
+        // Bound the kernel-side allocation by what the interface table can
+        // actually produce, not by the caller's `ifc_len`. Reaching a
+        // caller's memory directly removes the host transport's 64 KiB
+        // ceiling, so a guest-supplied length must not be allowed to size a
+        // kernel allocation on its own.
+        let requested = (ifc_len as usize / entry_size) * entry_size;
+        let bytes = requested.min(crate::netif::ifconf_total_size(pointer_width));
+        let mut out: alloc::vec::Vec<u8> = alloc::vec![0u8; bytes];
+        let written = crate::netif::ifconf_write(pointer_width, &mut out, host);
+        if written > 0 {
+            let rc = host.proc_write_bytes(proc.pid as i32, ifc_buf, &out[..written]);
+            if rc < 0 {
+                return Err(Errno::EFAULT);
+            }
+        }
+        buf[0..4].copy_from_slice(&(written as i32).to_le_bytes());
+        return Ok(());
+    }
     if request == wasm_posix_shared::ioctl_contract::SIOCGIFNAME {
         if buf.len() < crate::netif::IF_NAMESIZE + 4 {
             return Err(Errno::EINVAL);
@@ -19274,7 +19388,12 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
-        proc_write_calls: Vec<(i32, u32, Vec<u8>)>,
+        proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
+        /// Simulated guest linear memory for `proc_read_bytes` /
+        /// `proc_write_bytes`. Without it every cross-memory call fails with
+        /// the trait's `-ENOSYS` default, which would make a test that means
+        /// to prove "this address is REJECTED" pass for the wrong reason.
+        proc_memory: Vec<u8>,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
@@ -19332,6 +19451,22 @@ mod tests {
     }
 
     impl MockHostIO {
+        /// Resolve `(ptr, len)` against the simulated process memory, the same
+        /// way a real host resolves it against a guest's live linear memory:
+        /// the address must be representable, non-null for a positive length,
+        /// and the whole range must fit inside the memory that owns it.
+        fn proc_range(memory: &[u8], ptr: u64, len: usize) -> Option<usize> {
+            let offset = usize::try_from(ptr).ok()?;
+            if offset == 0 && len != 0 {
+                return None;
+            }
+            let end = offset.checked_add(len)?;
+            if end > memory.len() {
+                return None;
+            }
+            Some(offset)
+        }
+
         fn new() -> Self {
             MockHostIO {
                 next_handle: 100,
@@ -19370,6 +19505,10 @@ mod tests {
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
+                // 64 KiB — one wasm page, enough for every address these
+                // tests use and small enough that a deliberately-high
+                // address is out of range.
+                proc_memory: alloc::vec![0u8; 65536],
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
@@ -20165,8 +20304,20 @@ mod tests {
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
             self.gl_submit_rc
         }
-        fn proc_write_bytes(&mut self, pid: i32, ptr: u32, bytes: &[u8]) -> i32 {
+        fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
+            let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
+                return -(Errno::EFAULT as i32);
+            };
+            self.proc_memory[offset..offset + bytes.len()].copy_from_slice(bytes);
             self.proc_write_calls.push((pid, ptr, bytes.to_vec()));
+            0
+        }
+
+        fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
+            let Some(offset) = Self::proc_range(&self.proc_memory, ptr, dst.len()) else {
+                return -(Errno::EFAULT as i32);
+            };
+            dst.copy_from_slice(&self.proc_memory[offset..offset + dst.len()]);
             0
         }
     }
@@ -42785,6 +42936,173 @@ mod tests {
             desc_ptr,
         );
         assert_eq!(buf[64], 0xa5);
+    }
+
+    /// Build the staged outer `struct ifconf` the ioctl contract hands the
+    /// kernel: `int ifc_len` at 0, then the pointer union at the platform's
+    /// pointer alignment (offset 4 in an 8-byte wasm32 struct, offset 8 in a
+    /// 16-byte wasm64 one).
+    fn ifconf_buf(pointer_width: u8, ifc_len: i32, ifc_buf: u64) -> alloc::vec::Vec<u8> {
+        let size = if pointer_width == 8 { 16 } else { 8 };
+        let mut buf = alloc::vec![0u8; size];
+        buf[0..4].copy_from_slice(&ifc_len.to_le_bytes());
+        if pointer_width == 8 {
+            buf[8..16].copy_from_slice(&ifc_buf.to_le_bytes());
+        } else {
+            buf[4..8].copy_from_slice(&(ifc_buf as u32).to_le_bytes());
+        }
+        buf
+    }
+
+    fn socket_fd_for_ifconf(proc: &mut Process, host: &mut MockHostIO) -> i32 {
+        sys_socket(proc, host, 2 /* AF_INET */, 2 /* SOCK_DGRAM */, 0).unwrap()
+    }
+
+    #[test]
+    fn ifconf_null_buffer_reports_the_size_of_a_full_enumeration() {
+        for pointer_width in [4u8, 8u8] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let mut buf = ifconf_buf(pointer_width, 0, 0);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                crate::netif::ifconf_total_size(pointer_width) as i32,
+            );
+            // A size query writes nothing into the caller's memory.
+            assert!(host.proc_write_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn ifconf_writes_whole_entries_into_the_callers_nested_buffer() {
+        for pointer_width in [4u8, 8u8] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let total = crate::netif::ifconf_total_size(pointer_width);
+            let ifc_buf: u64 = 4096;
+            let mut buf = ifconf_buf(pointer_width, total as i32, ifc_buf);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                total as i32,
+            );
+            assert_eq!(host.proc_write_calls.len(), 1);
+            let (pid, addr, bytes) = &host.proc_write_calls[0];
+            assert_eq!(*pid, 1);
+            assert_eq!(*addr, ifc_buf);
+            assert_eq!(bytes.len(), total);
+            // First entry is the loopback interface, name-first.
+            assert_eq!(&bytes[..2], b"lo");
+        }
+    }
+
+    #[test]
+    fn ifconf_truncates_to_whole_entries_and_never_partially_fills_one() {
+        for pointer_width in [4u8, 8u8] {
+            let entry_size = crate::netif::ifreq_size(pointer_width);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            // Room for one entry plus a byte: POSIX/Linux report one entry.
+            let mut buf = ifconf_buf(pointer_width, entry_size as i32 + 1, 4096);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(
+                i32::from_le_bytes(buf[0..4].try_into().unwrap()),
+                entry_size as i32,
+            );
+            assert_eq!(host.proc_write_calls[0].2.len(), entry_size);
+        }
+    }
+
+    #[test]
+    fn ifconf_reports_zero_when_not_one_whole_entry_fits() {
+        for pointer_width in [4u8, 8u8] {
+            let entry_size = crate::netif::ifreq_size(pointer_width);
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+            let mut buf = ifconf_buf(pointer_width, entry_size as i32 - 1, 4096);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut buf,
+            )
+            .unwrap();
+
+            assert_eq!(i32::from_le_bytes(buf[0..4].try_into().unwrap()), 0);
+            assert!(host.proc_write_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn ifconf_rejects_a_negative_length_and_an_unreachable_nested_buffer() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = socket_fd_for_ifconf(&mut proc, &mut host);
+
+        let mut negative = ifconf_buf(4, -1, 4096);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut negative,
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert!(host.proc_write_calls.is_empty());
+
+        // A wasm64 nested pointer above the process's memory must fail
+        // outright, not alias its low 32 bits onto a valid low address. 4096
+        // is a perfectly good address in this mock's memory; `1 << 32 | 4096`
+        // must not become it.
+        let total = crate::netif::ifconf_total_size(8);
+        let aliasing = (1u64 << 32) | 4096;
+        let mut wide = ifconf_buf(8, total as i32, aliasing);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::ioctl_contract::SIOCGIFCONF,
+                &mut wide,
+            ),
+            Err(Errno::EFAULT),
+        );
     }
 
     #[test]

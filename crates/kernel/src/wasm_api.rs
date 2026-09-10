@@ -248,8 +248,8 @@ unsafe extern "C" {
     ) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
-    fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
-    fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
+    fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
+    fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     fn host_kms_addfb(
         pid: i32,
@@ -1110,11 +1110,11 @@ impl HostIO for WasmHostIO {
         unsafe { host_kms_drop_master(pid) }
     }
 
-    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+    fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
         unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
     }
 
-    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+    fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
         unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
     }
 
@@ -11322,70 +11322,6 @@ pub extern "C" fn kernel_ioctl(
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
-}
-
-/// Bytes per `struct ifreq` entry at the caller's pointer width (32 for
-/// wasm32, 40 for wasm64 — `struct ifmap`'s `unsigned long` members are
-/// pointer-sized). `SIOCGIFCONF`'s host-side pointer arithmetic (how many
-/// whole entries fit in the caller's buffer) needs this; every other detail
-/// of the layout is decided by `kernel_network_ifconf_write` itself.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_network_ifreq_size(process_pointer_width: u32) -> i32 {
-    match u8::try_from(process_pointer_width)
-        .ok()
-        .filter(|width| *width == 4 || *width == 8)
-    {
-        Some(pointer_width) => crate::netif::ifreq_size(pointer_width) as i32,
-        None => -(Errno::EINVAL as i32),
-    }
-}
-
-/// SIOCGIFCONF query-mode support: total bytes needed to enumerate every
-/// network interface's `ifreq` entry at the caller's pointer width. Used
-/// when the caller's `struct ifconf.ifc_buf` is null (a size query).
-///
-/// The host still decodes the outer `ifconf`/`ifc_buf` pointers — a
-/// process-memory address the kernel's separate Wasm instance cannot itself
-/// reach — but the interface table and struct layout are kernel-owned
-/// (Workstream H4). Machine-global, so unlike `kernel_ioctl` this does not
-/// take a `fd` or the global kernel lock, matching other read-only
-/// introspection exports (`kernel_enum_procs`, `kernel_read_proc_maps`).
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_network_ifconf_size(process_pointer_width: u32) -> i32 {
-    match u8::try_from(process_pointer_width)
-        .ok()
-        .filter(|width| *width == 4 || *width == 8)
-    {
-        Some(pointer_width) => crate::netif::ifconf_total_size(pointer_width) as i32,
-        None => -(Errno::EINVAL as i32),
-    }
-}
-
-/// SIOCGIFCONF: write as many complete `ifreq` entries as fit in
-/// `out_ptr[..out_len]` (a kernel-scratch buffer; the host copies the result
-/// into the caller's real `ifc_buf` afterward). Returns the number of bytes
-/// written, or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_network_ifconf_write(
-    process_pointer_width: u32,
-    out_ptr: *mut u8,
-    out_len: u32,
-) -> i32 {
-    let Some(pointer_width) = u8::try_from(process_pointer_width)
-        .ok()
-        .filter(|width| *width == 4 || *width == 8)
-    else {
-        return -(Errno::EINVAL as i32);
-    };
-    if out_len == 0 {
-        return 0;
-    }
-    if out_ptr.is_null() {
-        return -(Errno::EFAULT as i32);
-    }
-    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len as usize) };
-    let mut host = WasmHostIO;
-    crate::netif::ifconf_write(pointer_width, out, &mut host) as i32
 }
 
 /// Channel dispatcher implementation with the complete target-width `arg2`

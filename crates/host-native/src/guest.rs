@@ -518,6 +518,81 @@ unsafe fn write_bytes(mem: &SharedMemory, off: usize, bytes: &[u8]) {
     unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), mem_base(mem).add(off), bytes.len()) };
 }
 
+/// Resolve `(addr, len)` against a `SharedMemory`'s OWN current extent,
+/// returning the byte offset to copy at.
+///
+/// Shared by the two cross-memory imports below for BOTH sides of a copy —
+/// the guest range and the kernel range — because the reasoning is identical:
+/// fitting inside a live linear memory is the only thing an address can be
+/// checked for from outside the instance that owns it.
+///
+/// Rejects, in order: a length the host cannot address; a null address with a
+/// positive length (mirroring `checkedWasmImportMemoryRange`'s
+/// `allowAddressZero: false` in the JS host, `host/src/kernel-scratch.ts`);
+/// and any end that overflows or exceeds `mem.data().len()`.
+/// `mem.data().len()` is read fresh on every call rather than cached, because
+/// a guest may `memory.grow` between calls.
+fn checked_shared_range(mem: &SharedMemory, addr: u64, len: u32) -> Option<usize> {
+    let len = len as usize;
+    let addr = usize::try_from(addr).ok()?;
+    if addr == 0 && len != 0 {
+        return None;
+    }
+    let end = addr.checked_add(len)?;
+    if end > mem.data().len() {
+        return None;
+    }
+    Some(addr)
+}
+
+/// Copy `len` bytes from guest process memory at `addr` into kernel memory at
+/// `dst_ptr` (`host_proc_read_bytes`). Returns 0, or `-EFAULT` if either range
+/// is not wholly inside its own memory.
+///
+/// The copy is NOT atomic: another thread of the guest process may write these
+/// bytes while they are being read, and no host can serialize against it. See
+/// `HostIO::proc_write_bytes`'s doc comment
+/// (`crates/runtime-core/src/process.rs`) for the contract this implements and
+/// the copy-once-then-parse rule it obliges every kernel caller to follow.
+fn proc_copy_in(
+    guest: &SharedMemory,
+    addr: u64,
+    kernel: &SharedMemory,
+    dst_ptr: u64,
+    len: u32,
+) -> i32 {
+    let Some(src_off) = checked_shared_range(guest, addr, len) else {
+        return -(libc_errno::EFAULT);
+    };
+    let Some(dst_off) = checked_shared_range(kernel, dst_ptr, len) else {
+        return -(libc_errno::EFAULT);
+    };
+    let bytes = unsafe { read_bytes(guest, src_off, len as usize) };
+    unsafe { write_bytes(kernel, dst_off, &bytes) };
+    0
+}
+
+/// Copy `len` bytes from kernel memory at `src_ptr` into guest process memory
+/// at `addr` (`host_proc_write_bytes`). Returns 0, or `-EFAULT` if either
+/// range is not wholly inside its own memory. Non-atomic, as above.
+fn proc_copy_out(
+    kernel: &SharedMemory,
+    src_ptr: u64,
+    guest: &SharedMemory,
+    addr: u64,
+    len: u32,
+) -> i32 {
+    let Some(src_off) = checked_shared_range(kernel, src_ptr, len) else {
+        return -(libc_errno::EFAULT);
+    };
+    let Some(dst_off) = checked_shared_range(guest, addr, len) else {
+        return -(libc_errno::EFAULT);
+    };
+    let bytes = unsafe { read_bytes(kernel, src_off, len as usize) };
+    unsafe { write_bytes(guest, dst_off, &bytes) };
+    0
+}
+
 unsafe fn read_u32(mem: &SharedMemory, off: usize) -> u32 {
     let b = unsafe { read_bytes(mem, off, 4) };
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
@@ -1505,6 +1580,90 @@ pub fn build_base_image(entries: &[BaseEntrySpec]) -> BaseImage {
     BaseImage { manifest: buf, blobs }
 }
 
+/// Cross-memory copy primitive tests (`host_proc_read_bytes` /
+/// `host_proc_write_bytes`). These exercise the free functions rather than the
+/// import closures so no kernel instance is needed; the closures add only the
+/// `pid == current_pid` liveness check on top.
+///
+/// The cases mirror the JS host's contract tests
+/// (`host/test/kernel-public-scratch.test.ts`) so both hosts are pinned to the
+/// same failure modes: an out-of-range guest range, an out-of-range kernel
+/// range, a null address with a positive length, and the exact
+/// end-of-memory boundary.
+#[cfg(test)]
+mod proc_bytes_tests {
+    use super::*;
+
+    const PAGE: usize = 65536;
+
+    fn mems() -> (Engine, SharedMemory, SharedMemory) {
+        let engine = crate::kernel_engine().expect("engine");
+        let guest = new_shared(&engine, 1, 1).expect("guest mem");
+        let kernel = new_shared(&engine, 1, 1).expect("kernel mem");
+        (engine, guest, kernel)
+    }
+
+    #[test]
+    fn copy_in_moves_guest_bytes_into_kernel_memory() {
+        let (_engine, guest, kernel) = mems();
+        unsafe { write_bytes(&guest, 128, &[1, 2, 3, 4]) };
+        assert_eq!(proc_copy_in(&guest, 128, &kernel, 4096, 4), 0);
+        assert_eq!(unsafe { read_bytes(&kernel, 4096, 4) }, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn copy_out_moves_kernel_bytes_into_guest_memory() {
+        let (_engine, guest, kernel) = mems();
+        unsafe { write_bytes(&kernel, 4096, &[9, 8, 7, 6]) };
+        assert_eq!(proc_copy_out(&kernel, 4096, &guest, 128, 4), 0);
+        assert_eq!(unsafe { read_bytes(&guest, 128, 4) }, vec![9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn a_guest_range_past_the_end_of_memory_is_efault() {
+        let (_engine, guest, kernel) = mems();
+        assert_eq!(proc_copy_in(&guest, PAGE as u64, &kernel, 4096, 1), -14);
+        assert_eq!(proc_copy_out(&kernel, 4096, &guest, PAGE as u64, 1), -14);
+    }
+
+    #[test]
+    fn a_kernel_range_past_the_end_of_memory_is_efault() {
+        let (_engine, guest, kernel) = mems();
+        assert_eq!(proc_copy_in(&guest, 128, &kernel, PAGE as u64, 1), -14);
+        assert_eq!(proc_copy_out(&kernel, PAGE as u64, &guest, 128, 1), -14);
+    }
+
+    #[test]
+    fn an_address_above_the_addressable_range_is_efault_not_truncated() {
+        // The u64 address that aliases guest offset 128 if the host were to
+        // narrow it to 32 bits. It must be rejected, never wrapped.
+        let (_engine, guest, kernel) = mems();
+        let aliasing = (1u64 << 32) | 128;
+        assert_eq!(proc_copy_in(&guest, aliasing, &kernel, 4096, 4), -14);
+        assert_eq!(proc_copy_out(&kernel, 4096, &guest, aliasing, 4), -14);
+    }
+
+    #[test]
+    fn a_null_address_with_a_positive_length_is_efault() {
+        let (_engine, guest, kernel) = mems();
+        assert_eq!(proc_copy_in(&guest, 0, &kernel, 4096, 4), -14);
+        assert_eq!(proc_copy_out(&kernel, 0, &guest, 128, 4), -14);
+        // A zero-length copy at address zero is legal and copies nothing.
+        assert_eq!(proc_copy_in(&guest, 0, &kernel, 0, 0), 0);
+        assert_eq!(proc_copy_out(&kernel, 0, &guest, 0, 0), 0);
+    }
+
+    #[test]
+    fn the_exact_end_of_memory_boundary_is_inclusive() {
+        let (_engine, guest, kernel) = mems();
+        let last4 = (PAGE - 4) as u64;
+        assert_eq!(proc_copy_in(&guest, last4, &kernel, 4096, 4), 0);
+        assert_eq!(proc_copy_in(&guest, last4, &kernel, 4096, 5), -14);
+        assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 4), 0);
+        assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 5), -14);
+    }
+}
+
 #[cfg(test)]
 mod base_image_tests {
     use super::*;
@@ -1691,6 +1850,83 @@ fn define_kernel_host_imports(
                 mem.atomic_notify(addr as u32 as u64, n as u32)
                     .map(|woke| woke as i32)
                     .unwrap_or(0)
+            },
+        )?;
+    }
+    // host_proc_read_bytes(pid, addr, dst_ptr, len) -> i32 and
+    // host_proc_write_bytes(pid, addr, src_ptr, len) -> i32: the kernel's
+    // general cross-memory primitive. `addr` is an address in the GUEST
+    // process `pid`; `dst_ptr`/`src_ptr` are addresses in KERNEL memory.
+    //
+    // The two address widths are deliberately different, and the closures'
+    // parameter types say so. `addr` is `u64` because it names a location in a
+    // guest whose width the kernel does not control — one signature covers a
+    // wasm32 and a wasm64 guest, and an address above 4 GiB from a wasm64
+    // guest must be rejectable rather than silently aliased down to its low 32
+    // bits. `dst_ptr`/`src_ptr` are `u32` because they name a location in the
+    // kernel's OWN linear memory, and this host runs the wasm32 kernel build
+    // (`target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`, see
+    // `crate::EXPECTED_HOST_IMPORT_COUNT`'s neighbours in `lib.rs`), where a
+    // kernel pointer is an `i32`. A wasm64 kernel would import these with an
+    // `i64` in that position; matching the module's declared type is what
+    // `Linker::func_wrap` checks, so that build would need its own closure
+    // rather than silently mismatching here. Until
+    // now both fell to `define_unknown_imports_as_traps`, so any kernel path
+    // reaching for process memory killed a native run — truthful, but it meant
+    // the native host could not run the DRI/KMS paths that have used this
+    // primitive since it was introduced, and could not run anything the
+    // Rust-first campaign converts onto it.
+    //
+    // Resolving `pid` → memory: this host binds the dispatching process's
+    // memory and pid into `current_memory`/`current_pid` immediately before
+    // every `kernel_handle_channel` call (`bind_and_dispatch`), and the
+    // contract on `HostIO::proc_write_bytes` states that the only sound target
+    // is the process currently being dispatched for — it is live by
+    // construction, because these imports never re-enter the kernel and host
+    // dispatch is synchronous, so no exec or exit can interleave and rebind
+    // the pid's memory underneath the copy.
+    //
+    // So these closures resolve `pid` by CHECKING it against `current_pid`
+    // rather than by looking it up in a pid-keyed registry. That is a
+    // deliberate choice, not a shortcut. A registry would have to be kept in
+    // step with four process-creation sites, `handle_exec_common`'s
+    // `std::mem::replace` of a process's entire image, and every teardown
+    // path; a single missed update there is a silent write into the WRONG
+    // process's memory — a stale entry cannot be distinguished from a live one
+    // at the point of use. Checking the binding the pump already maintains has
+    // no stale state to miss: a target that is not the dispatching process
+    // returns `-ESRCH` and the caller sees a boundary instead of corruption.
+    // Reaching a peer process's memory would need its own liveness proof and
+    // is a separate contract change, exactly as the trait doc says.
+    {
+        let kmem = kernel_mem.clone();
+        let current_memory = current_memory.clone();
+        let current_pid = current_pid.clone();
+        linker.func_wrap(
+            "env",
+            "host_proc_read_bytes",
+            move |_c: Caller<'_, ()>, pid: i32, addr: u64, dst_ptr: u32, len: u32| -> i32 {
+                if pid < 0 || pid as u32 != *current_pid.lock().unwrap() {
+                    return -(libc_errno::ESRCH);
+                }
+                let guest = current_memory.lock().unwrap().clone();
+                proc_copy_in(&guest, addr, &kmem, u64::from(dst_ptr), len)
+            },
+        )?;
+    }
+    {
+        let kmem = kernel_mem.clone();
+        let current_memory = current_memory.clone();
+        let current_pid = current_pid.clone();
+        linker.func_wrap(
+            "env",
+            "host_proc_write_bytes",
+            move |_c: Caller<'_, ()>, pid: i32, addr: u64, src_ptr: u32, len: u32| -> i32 {
+                if pid < 0 || pid as u32 != *current_pid.lock().unwrap() {
+                    return -(libc_errno::ESRCH);
+                }
+                let guest = current_memory.lock().unwrap().clone();
+                proc_copy_out(&kmem, u64::from(src_ptr), &guest, addr, len)
             },
         )?;
     }
@@ -11464,6 +11700,7 @@ mod libc_errno {
     pub const EFAULT: i32 = 14;
     pub const EBADF: i32 = 9;
     pub const ECHILD: i32 = 10;
+    pub const ESRCH: i32 = 3;
     pub const EAGAIN: i32 = 11;
     pub const EACCES: i32 = 13;
     pub const EEXIST: i32 = 17;

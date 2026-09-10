@@ -1084,7 +1084,7 @@ describe("Rust-owned host import ranges", () => {
 
     expect(imports.env.host_proc_read_bytes(
       7,
-      1024,
+      1024n,
       BigInt(Number.MAX_SAFE_INTEGER) + 1n,
       4,
     )).toBe(-14);
@@ -1106,10 +1106,10 @@ describe("Rust-owned host import ranges", () => {
     new Uint8Array(memory.buffer, 4096, 4).set([1, 2, 3, 4]);
     new Uint8Array(processMemory.buffer, 0, 4).fill(0xa5);
 
-    expect(imports.env.host_proc_write_bytes(7, 0, 4096, 4)).toBe(-14);
+    expect(imports.env.host_proc_write_bytes(7, 0n, 4096, 4)).toBe(-14);
     expect(new Uint8Array(processMemory.buffer, 0, 4))
       .toEqual(new Uint8Array(4).fill(0xa5));
-    expect(imports.env.host_proc_read_bytes(7, 0, 4096, 4)).toBe(-14);
+    expect(imports.env.host_proc_read_bytes(7, 0n, 4096, 4)).toBe(-14);
     expect(new Uint8Array(memory.buffer, 4096, 4))
       .toEqual(new Uint8Array([1, 2, 3, 4]));
   });
@@ -1130,7 +1130,7 @@ describe("Rust-owned host import ranges", () => {
 
     expect(imports.env.host_proc_write_bytes(
       7,
-      processEnd - 4,
+      BigInt(processEnd - 4),
       4096,
       4,
     )).toBe(0);
@@ -1138,7 +1138,7 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array([1, 2, 3, 4]));
     expect(imports.env.host_proc_write_bytes(
       7,
-      processEnd - 4,
+      BigInt(processEnd - 4),
       4096,
       5,
     )).toBe(-14);
@@ -1147,7 +1147,7 @@ describe("Rust-owned host import ranges", () => {
       .set([5, 6, 7, 8]);
     expect(imports.env.host_proc_read_bytes(
       7,
-      processEnd - 4,
+      BigInt(processEnd - 4),
       8192,
       4,
     )).toBe(0);
@@ -1155,10 +1155,45 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array([5, 6, 7, 8]));
     expect(imports.env.host_proc_read_bytes(
       7,
-      processEnd - 4,
+      BigInt(processEnd - 4),
       8192,
       5,
     )).toBe(-14);
+  });
+
+  it("rejects a guest address above 4 GiB instead of aliasing its low bits", () => {
+    // The regression the `u64` widening exists to make impossible: a wasm64
+    // guest address whose low 32 bits name a perfectly valid offset in the
+    // process's first page. Narrowing it — which a hardcoded pointer width of
+    // 4 would have done — would write to offset 128 of a different part of the
+    // address space than the caller named. It must be an EFAULT instead.
+    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const { kernel, memory } = kernelHarness({});
+    Object.assign(kernel, {
+      callbacks: {
+        getProcessMemory: () => processMemory,
+      },
+    });
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    new Uint8Array(memory.buffer, 4096, 4).set([1, 2, 3, 4]);
+    new Uint8Array(processMemory.buffer, 0, 256).fill(0xa5);
+
+    const aliasing = (1n << 32n) | 128n;
+    expect(imports.env.host_proc_write_bytes(7, aliasing, 4096, 4)).toBe(-14);
+    expect(new Uint8Array(processMemory.buffer, 128, 4))
+      .toEqual(new Uint8Array(4).fill(0xa5));
+    expect(imports.env.host_proc_read_bytes(7, aliasing, 8192, 4)).toBe(-14);
+    expect(new Uint8Array(memory.buffer, 8192, 4))
+      .toEqual(new Uint8Array(4));
+
+    // The same low bits, offered honestly as a 32-bit address, still work —
+    // so the rejection above is about the address's magnitude, not a blanket
+    // refusal of the widened parameter.
+    expect(imports.env.host_proc_write_bytes(7, 128n, 4096, 4)).toBe(0);
+    expect(new Uint8Array(processMemory.buffer, 128, 4))
+      .toEqual(new Uint8Array([1, 2, 3, 4]));
   });
 
   it("does not wrap a wasm64 futex address onto a low kernel word", () => {

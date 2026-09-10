@@ -358,17 +358,56 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn kms_drop_master(&mut self, pid: i32) {}
 
+    /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
+    /// linear memory at guest address `addr`. Returns 0 on success, negative
+    /// errno on failure.
+    ///
+    /// # The copy is not atomic
+    ///
+    /// A guest process's linear memory is a `SharedArrayBuffer` (browser and
+    /// Node hosts) or a wasmtime `SharedMemory` (native host). Another thread
+    /// of that process — a pthread, or the process's own main thread when the
+    /// copy happens outside a channel round-trip — may write those bytes
+    /// *during* the copy, and no host can serialize against it: there is no
+    /// lock a Wasm kernel can take over a peer instance's linear memory. A
+    /// successful return therefore means "`src.len()` bytes were transferred",
+    /// never "they were transferred as a consistent snapshot". A concurrent
+    /// writer may tear the copy at any granularity.
+    ///
+    /// # Copy once, then parse
+    ///
+    /// The load-bearing consequence for every caller: **copy once into
+    /// kernel-owned memory, then parse the copy. Never validate a value in
+    /// guest memory and re-read it afterwards.** Any length, count, index, or
+    /// nested pointer the kernel takes out of guest memory must be validated
+    /// against the copy it will actually use. Re-reading a validated value is
+    /// a time-of-check/time-of-use bug that does not exist while the kernel
+    /// only ever sees a copy. Linux states the same rule for `copy_from_user`
+    /// and Kandelo inherits it.
+    ///
+    /// # Target liveness
+    ///
+    /// The only sound target is the process the kernel is currently
+    /// dispatching for. It is live by construction: the import must not
+    /// re-enter the kernel, and host dispatch is synchronous, so no exec or
+    /// exit can interleave and rebind the pid's memory. Targeting a peer
+    /// process is a separate contract change with its own liveness proof.
     #[allow(unused_variables)]
-    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
-        0
+    fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
     }
 
     /// Copy `dst.len()` bytes from the wasm process at `pid`'s linear
     /// memory at `addr` into the kernel-side scratch `dst`. Returns 0 on
     /// success, negative errno on failure.
+    ///
+    /// The non-atomicity, copy-once-then-parse, and target-liveness rules
+    /// documented on [`HostIO::proc_write_bytes`] apply here identically, and
+    /// the copy-once rule binds hardest in this direction: the bytes this call
+    /// delivers are the only trustworthy view of that guest range.
     #[allow(unused_variables)]
-    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
-        0
+    fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
     }
 
     #[allow(unused_variables)]
