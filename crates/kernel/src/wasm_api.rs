@@ -1225,7 +1225,12 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         })
     }
 
-    fn handle_identity(&mut self, _handle: i64, dev: u64, ino: u64) -> Option<String> {
+    fn handle_identity(
+        &mut self,
+        _handle: i64,
+        dev: u64,
+        ino: u64,
+    ) -> Option<alloc::string::String> {
         // Identity is derived from the live handle's backing object, never from
         // a pathname, so a rename or a second fd onto the same object resolves
         // to the same backing.
