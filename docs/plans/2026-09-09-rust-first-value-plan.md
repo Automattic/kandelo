@@ -2376,8 +2376,10 @@ is a narrow check supporting a broad claim, and it must not be used to close
 the doubt. Measuring this honestly needs a targeted case holding a genuinely
 shared mapping with a live peer.
 
-**Performance was not measured in this item.** The cutover it would have
-measured does not exist, and provisioning had not finished.
+**Performance was not measured in this item**, and the reason is that there is
+no cutover to measure — "after" would be "before". Note from the analysis above
+that the general benchmark suites would not have answered the open question
+anyway: they exercise the early-out, not the copy.
 
 ### What did land
 
@@ -2397,6 +2399,27 @@ attempt would otherwise have to write first:
 
 `cargo test -p runtime-core --lib`: **1869 passed, 1 failed** — the failure is
 `zip::real_man_zip_cross_checks_members`, pre-existing and assigned elsewhere.
+
+`cargo check` clean on **wasm32 and wasm64** as well as native. The wasm build
+earned its place here: a bare `String` in the bridge resolved on the native
+test target and broke both real ones, because the kernel is `no_std` plus
+`alloc`. A native-only check would have reported this item green.
+
+The seven mmap/shared-memory Vitest files: **95 passed, 1 skipped** — the same
+result K7 recorded, so the added Rust regresses nothing. `verify-fresh` is
+green and reports the ABI snapshot in sync; this item adds no export and no
+import, and `abi/snapshot.json` is untouched.
+
+**Provisioning note, and it will hit every parallel worktree.** `./run.sh
+setup` failed in this worktree with `kandelo-sdk/wasm32` executing a *different
+worktree's* build script — `.../agent-a01d686732af90be5/packages/registry/
+kandelo-sdk/build-kandelo-sdk.sh`, importing that tree's `host/src/vfs/
+memory-fs.ts`, which failed on a missing `fzstd` because that worktree has no
+`node_modules`. The shared `~/.cache/kandelo/source-only/` cache is capturing
+**absolute source paths** from whichever worktree populated an entry first.
+This is not the known cache-key drift (that was resolved and was about key
+determinism); it is path capture in the cache payload, and with several agents
+in parallel worktrees it will keep misrouting builds. Worth its own item.
 
 ### NEEDS-DEFER-DECISION — how to re-cut this item, for the maintainer
 
