@@ -3041,6 +3041,66 @@ impl SharedMappingTable {
         }
     }
 
+    /// Number of processes that own at least one SysV attachment.
+    ///
+    /// This exists to serve the host's syscall-boundary early-out. The host
+    /// used to answer "does this machine own SysV shared state" by reading
+    /// `shmMappings.size` on a container it owned; with the container here it
+    /// caches this count instead and refreshes it from this authority at every
+    /// site that can change it. It is therefore a cached predicate, never an
+    /// independently maintained mirror.
+    pub fn sysv_pid_count(&self) -> usize {
+        self.sysv.len()
+    }
+
+    /// Number of SysV attachments owned by one process.
+    pub fn sysv_mapping_count_for(&self, pid: u32) -> usize {
+        self.sysv.get(&pid).map_or(0, |m| m.len())
+    }
+
+    /// Every attachment of one process as `(map_addr, seg_id, size, read_only)`.
+    ///
+    /// Ordered by address, because the caller replays it into kernel-side
+    /// attachment records and a rollback walks it in reverse.
+    pub fn sysv_attachments_for(&self, pid: u32) -> Vec<(u64, i32, usize, bool)> {
+        self.sysv
+            .get(&pid)
+            .map(|m| {
+                m.iter()
+                    .map(|(addr, mapping)| {
+                        (*addr, mapping.seg_id, mapping.size, mapping.read_only)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Reconcile exactly one attachment. Returns whether every publication
+    /// succeeded; see [`SharedMappingTable::sync_sysv_from_process`].
+    pub fn sync_sysv_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        self.merge_and_refresh_sysv_mapping(pid, map_addr, io)
+    }
+
+    /// Forget one attachment's byte mirror. Returns whether it was present.
+    ///
+    /// The kernel's own attachment record is a separate authority
+    /// (`Process::shm_mappings`); dropping the mirror never detaches.
+    pub fn drop_sysv_mapping(&mut self, pid: u32, map_addr: u64) -> bool {
+        let Some(pid_map) = self.sysv.get_mut(&pid) else {
+            return false;
+        };
+        let removed = pid_map.remove(&map_addr).is_some();
+        if pid_map.is_empty() {
+            self.sysv.remove(&pid);
+        }
+        removed
+    }
+
     /// Drop every SysV attachment of a process, optionally publishing first.
     pub fn release_all_sysv_for_process(
         &mut self,

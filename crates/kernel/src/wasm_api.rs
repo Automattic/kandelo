@@ -7169,6 +7169,337 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 }
 
 // ---------------------------------------------------------------------------
+// SysV shared-memory byte-coherence mirror -- kernel-owned entry points
+// ---------------------------------------------------------------------------
+//
+// These are the cutover surface for the SysV half of the shared-mapping
+// subsystem. The mirror itself lives in [`crate::memory::SharedMappingTable`];
+// the host no longer holds a `shmMappings` / `shmSegmentVersions` pair and
+// drives it through these entry points instead.
+//
+// # What moved, and what deliberately did not
+//
+// Moved: the per-attachment snapshot, the segment version counter, the
+// dirty-run merge, the authoritative refresh, fork inheritance of the mirror,
+// and teardown. NOT moved: the anonymous and file-backed halves of
+// `MAP_SHARED`, which still live in `host/src/kernel-worker.ts` because the
+// file-syscall coherence layer they depend on has no Rust counterpart yet.
+// `SharedMappingTable::mappings` is therefore empty in production today, and
+// [`kernel_shared_mapping_sysv_inherit`] relies on that: it calls the table's
+// whole-subsystem `inherit_process_mappings`, which covers exactly the SysV
+// half while the other half is empty, and will cover both without change once
+// that half lands.
+//
+// # Why the kernel reads the segment and the host does not
+//
+// The bytes are `crate::ipc::IpcTable`'s. Reading them here replaces the
+// host's chunked `kernel_ipc_shm_read_chunk` / `kernel_ipc_shm_write_chunk`
+// round trips -- one scratch lease and one export call per `CH_DATA_SIZE`
+// window -- with a direct slice copy. Against that, the kernel must now pull
+// the attaching process's own bytes across `host_proc_read_bytes`, where the
+// host had a zero-copy view. Neither direction dominates a priori; see the
+// performance note on [`crate::memory::SharedMappingTable`].
+//
+// No new `env.host_*` import is required: `read_process` and `write_process`
+// are the existing `host_proc_read_bytes` / `host_proc_write_bytes`.
+
+/// `SHM_RDONLY`. `crate::ipc`'s copy is private, and fork inheritance is the
+/// only other site that must reproduce a guest's attach flags.
+const SHM_RDONLY_FLAG: i32 = 0o10000;
+
+/// Number of processes owning at least one SysV attachment.
+///
+/// The host caches this to keep its syscall-boundary early-out, which used to
+/// read `shmMappings.size` on a container it owned. It is refreshed from here
+/// at every site that can change it -- attach, detach, fork inheritance, exec,
+/// teardown -- so it stays a cached predicate rather than a second authority.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_active_pid_count() -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    i32::try_from(table.sysv_pid_count()).unwrap_or(i32::MAX)
+}
+
+/// Number of SysV attachments one process owns.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_process_count(pid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    i32::try_from(table.sysv_mapping_count_for(pid)).unwrap_or(i32::MAX)
+}
+
+/// Start mirroring a freshly materialized attachment, seeding the process's
+/// mapped range from the segment's authoritative bytes.
+///
+/// Returns 0, or a negative errno. `-EEXIST` means an attachment is already
+/// mirrored at that address, which is an internal coherence failure rather
+/// than a retryable condition.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_track(
+    pid: u32,
+    addr: usize,
+    seg_id: i32,
+    size: u32,
+    read_only: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    if size == 0 || seg_id < 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.sysv_mapping(pid, addr as u64).is_some() {
+        return -(Errno::EEXIST as i32);
+    }
+    let mut io = WasmSharedMappingIo::new();
+    match table.track_sysv_mapping(
+        pid,
+        addr as u64,
+        seg_id,
+        size as usize,
+        read_only != 0,
+        &mut io,
+    ) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Reconcile every attachment of one process at a syscall boundary.
+///
+/// `force` bypasses the sole-observer skip, for the publication points where a
+/// process must become current even with no live peer: `fork`, the `exec`
+/// address-space preflight, and teardown.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_sync_process(pid: u32, force: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.sysv_mapping_count_for(pid) == 0 {
+        return 0;
+    }
+    let mut io = WasmSharedMappingIo::new();
+    if table.sync_sysv_from_process(pid, force != 0, &mut io) {
+        0
+    } else {
+        -(Errno::EIO as i32)
+    }
+}
+
+/// Publish every current attachment of one segment before a new observer joins
+/// it, so the newcomer starts from the latest shared state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_sync_segment(seg_id: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let mut io = WasmSharedMappingIo::new();
+    table.sync_sysv_segment_from_attached(seg_id, &mut io);
+    0
+}
+
+/// Publish one attachment and stop mirroring it, for `shmdt`.
+///
+/// `expect_seg_id` and `expect_size` are the kernel attachment record the
+/// caller already resolved. They are checked against the mirror here rather
+/// than by the caller: a divergence means two in-kernel authorities disagree,
+/// and reporting that truthfully is better than detaching a mapping whose
+/// bytes cannot be published.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_publish_and_drop(
+    pid: u32,
+    addr: usize,
+    expect_seg_id: i32,
+    expect_size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let Some(mapping) = table.sysv_mapping(pid, addr as u64) else {
+        return -(Errno::EIO as i32);
+    };
+    if expect_seg_id < 0
+        || expect_size == 0
+        || mapping.seg_id != expect_seg_id
+        || mapping.size != expect_size as usize
+    {
+        return -(Errno::EIO as i32);
+    }
+    let mut io = WasmSharedMappingIo::new();
+    if !table.sync_sysv_mapping(pid, addr as u64, &mut io) {
+        return -(Errno::EIO as i32);
+    }
+    if !table.drop_sysv_mapping(pid, addr as u64) {
+        return -(Errno::EIO as i32);
+    }
+    0
+}
+
+/// Drop every SysV attachment of a process.
+///
+/// `publish` forces a final publication first. `detach` also releases the
+/// kernel's own attachment records, which is what an ordinary teardown wants;
+/// `exec` passes 0 because its commit already drained them, and repeating the
+/// detach would release a different same-segment attachment.
+///
+/// Teardown continues past a failed detach and reports the first errno, so one
+/// missing record cannot strand the remaining attachments.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_release_process(
+    pid: u32,
+    publish: i32,
+    detach: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    let mut io = WasmSharedMappingIo::new();
+    if publish != 0 {
+        table.sync_sysv_from_process(pid, true, &mut io);
+    }
+    let mut failure = 0i32;
+    if detach != 0 {
+        for (addr, _, _, _) in table.sysv_attachments_for(pid) {
+            if let Err(e) = ipc_shmdt_addr(pid, addr as usize, false) {
+                if failure == 0 {
+                    failure = -(e as i32);
+                }
+            }
+        }
+    }
+    table.release_all_sysv_for_process(pid, false, &mut io);
+    failure
+}
+
+/// Give a forked child its parent's SysV attachments, atomically.
+///
+/// One entry point covers both authorities on purpose. The kernel's attachment
+/// records (`nattch`, `Process::shm_mappings`) and the byte mirror must commit
+/// or roll back together, and the parent's attachment list now lives in the
+/// kernel, so splitting this across host calls would mean exporting that
+/// container back to the host to drive a transaction the kernel can run itself.
+///
+/// `child_memory_len` is the child's committed linear-memory length. It is an
+/// argument rather than an import because guest memory length belongs to a
+/// `WebAssembly.Memory` the kernel holds no handle to, and the caller is
+/// holding the value already.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_sysv_inherit(
+    parent_pid: u32,
+    child_pid: u32,
+    child_memory_len: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    if parent_pid == child_pid {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.sysv_mapping_count_for(child_pid) != 0 {
+        return -(Errno::EEXIST as i32);
+    }
+    let parent = table.sysv_attachments_for(parent_pid);
+
+    // Attach the child to every parent segment first. Each nonnegative shmat
+    // has already incremented nattch, so a failing step releases its own
+    // attachment by segment identity before the successful ones are unwound by
+    // address.
+    let mut attached: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+    let mut failure: Option<Errno> = None;
+    for (addr, seg_id, size, read_only) in &parent {
+        let addr = *addr as usize;
+        let flags = if *read_only { SHM_RDONLY_FLAG } else { 0 };
+        let attached_size = kernel_ipc_shmat_for_process(child_pid, *seg_id, 0, flags);
+        let size32 = u32::try_from(*size).ok();
+        if attached_size < 0 || attached_size as usize != *size || size32.is_none() {
+            if attached_size >= 0 {
+                let ipc = unsafe { crate::ipc::global_ipc_table() };
+                let _ = ipc.shmdt(*seg_id, child_pid);
+            }
+            failure = Some(if size32.is_none() {
+                Errno::EOVERFLOW
+            } else {
+                Errno::EIO
+            });
+            break;
+        }
+        if let Err(e) = ipc_record_shm_mapping(child_pid, addr, *seg_id, size32.unwrap(), true) {
+            let ipc = unsafe { crate::ipc::global_ipc_table() };
+            let _ = ipc.shmdt(*seg_id, child_pid);
+            failure = Some(e);
+            break;
+        }
+        attached.push(addr);
+    }
+
+    if failure.is_none() {
+        let mut io = WasmSharedMappingIo::new();
+        io.set_process_memory_len(child_pid, child_memory_len);
+        if let Err(e) = table.inherit_process_mappings(parent_pid, child_pid, &mut io) {
+            failure = Some(e);
+        }
+    }
+
+    if let Some(e) = failure {
+        for addr in attached.iter().rev() {
+            let _ = ipc_shmdt_addr(child_pid, *addr, false);
+        }
+        return -(e as i32);
+    }
+    0
+}
+
+/// Byte size of the target musl `struct semid_ds`.
+///
+/// `pointer_width` is the caller process width in bytes, not the kernel Wasm
+/// width: one kernel may serve wasm32 and wasm64 processes. wasm32 uses its
+/// time64 ILP32 layout; wasm64 uses the LP64 layout. The host queries this
+/// before validating or allocating the IPC_STAT transfer.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_semid_ds_bytes(pointer_width: u32) -> i32 {
+    match crate::ipc_wire::semid_ds_size(pointer_width) {
+        Ok(size) => size as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Byte size of the target musl `struct msqid_ds`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_msqid_ds_bytes(pointer_width: u32) -> i32 {
+    match crate::ipc_wire::msqid_ds_size(pointer_width) {
+        Ok(size) => size as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Byte size of the target musl `struct shmid_ds`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shmid_ds_bytes(pointer_width: u32) -> i32 {
+    match crate::ipc_wire::shmid_ds_size(pointer_width) {
+        Ok(size) => size as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Return the exact kernel-owned array size used by semctl GETALL/SETALL.
+///
+/// The host validates the caller range against this value before moving any
+/// bytes into or out of kernel scratch. Permission checking happens here so
+/// the sizing preflight cannot disclose metadata the command itself could not
+/// access. PID and TID are explicit because a sizing query must not install or
+/// consume the one-shot ambient binding reserved for `kernel_handle_channel`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_semctl_array_bytes(pid: u32, tid: u32, semid: i32, cmd: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(error) = table.validate_task(pid, tid) {
+        return -(error as i32);
+    }
+    let (uid, gid) = match table.get(pid) {
+        Some(process) => (process.effective_uid(), process.effective_gid()),
+        None => return -(Errno::ESRCH as i32),
+    };
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    match ipc.semctl_array_bytes(semid, cmd & !0x100, uid, gid) {
+        Ok(bytes) => i32::try_from(bytes).unwrap_or(-(Errno::EOVERFLOW as i32)),
+        Err(error) => -(error as i32),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POSIX mqueue kernel exports
 // ---------------------------------------------------------------------------
 
