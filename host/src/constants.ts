@@ -2425,7 +2425,17 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
-  return containsAscii(new Uint8Array(programBytes), "asyncify_");
+  // WHY export names rather than a byte scan: this was
+  // `containsAscii(bytes, "asyncify_")`, which flags any artifact that merely
+  // *mentions* the string anywhere, including in its data section. It began
+  // rejecting the kernel itself once `crates/wasm-artifact` — which carries
+  // that literal in order to *detect* legacy instrumentation — was linked in,
+  // so the host's own resolver refused to load the kernel. A module is
+  // Asyncify-instrumented when it exports the transform's entry points; that
+  // is the property, and a mention of it is not.
+  return readWasmExportNames(programBytes).some((name) =>
+    name.startsWith("asyncify_")
+  );
 }
 
 export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {

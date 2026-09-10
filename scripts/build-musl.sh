@@ -67,6 +67,26 @@ for tool in "$CC" "$AR" "$RANLIB"; do
 done
 
 # ---------------------------------------------------------------
+# 0. Preconditions
+# ---------------------------------------------------------------
+# WHY this check exists: with `libc/musl` uninitialized the overlay copy below
+# fails, but this script previously reported success anyway, leaving a partial
+# `libc/musl/arch` tree and no sysroot. The failure then resurfaced much later
+# as a confusing missing-sysroot error naming neither the submodule nor this
+# script. A step that cannot do its job must say so, at the point it cannot do
+# it -- the platform's rule is truthful failure over convenient illusion.
+if [ ! -d "$MUSL_DIR/arch" ] || [ ! -f "$MUSL_DIR/Makefile" ]; then
+    echo "Error: the musl submodule at $MUSL_DIR is not initialized." >&2
+    echo "       Expected $MUSL_DIR/arch and $MUSL_DIR/Makefile to exist." >&2
+    echo "       Run:  git submodule update --init --recursive libc/musl" >&2
+    exit 1
+fi
+if [ ! -d "$OVERLAY_DIR/arch/$ARCH" ]; then
+    echo "Error: no overlay for arch '$ARCH' at $OVERLAY_DIR/arch/$ARCH." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------
 # 1. Copy overlay files into musl source tree
 # ---------------------------------------------------------------
 echo "==> Copying overlay files for $ARCH..."

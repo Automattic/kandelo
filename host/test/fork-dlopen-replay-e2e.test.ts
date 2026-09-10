@@ -12,6 +12,7 @@
  * The fix is to replay parent dlopens in the fork child before resuming.
  * This fixture is expected to FAIL until that fix lands.
  */
+import { artifactGate } from "./support/artifact-gate";
 import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
@@ -251,7 +252,17 @@ async function pollFramesCommitted(
   }
 }
 
-describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () => {
+const forkDlopenGate = artifactGate("fork-dlopen-replay-e2e", [
+  { what: "musl sysroot (libc.a)", present: hasSysroot, build: "scripts/build-musl.sh" },
+  {
+    what: "local-binaries/kernel.wasm",
+    present: hasKernel,
+    build:
+      "./run.sh rebuild kernel && xtask build-deps ... install-local-artifact kernel",
+  },
+]);
+
+describe.skipIf(forkDlopenGate.skip)("fork after dlopen end-to-end", () => {
   beforeAll(() => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });
