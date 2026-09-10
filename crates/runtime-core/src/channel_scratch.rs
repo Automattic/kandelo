@@ -240,6 +240,10 @@ unsafe fn descriptor_size(
             8 => Ok(wasm64_size as usize),
             _ => Err(Errno::EINVAL),
         },
+        // Unreachable: `validate_descriptor_layout` skips this form before
+        // asking for a size, because the extent is the dispatch arm's to
+        // compute and lives in the caller's address space, not in scratch.
+        SyscallArgSize::KernelDereferenced => Err(Errno::EINVAL),
     }
 }
 
@@ -255,6 +259,17 @@ unsafe fn validate_descriptor_layout(
         let index = descriptor.arg_index as usize;
         if index >= args.len() {
             return Err(Errno::EINVAL);
+        }
+        if descriptor.size == SyscallArgSize::KernelDereferenced {
+            // This slot holds a GUEST address, not a channel-scratch one. The
+            // host staged no bytes for it and the dispatch arm reads the
+            // caller's memory itself through the cross-memory primitives, so
+            // there is no scratch subrange to validate and — crucially —
+            // `ValidatedChannelScratchArgs::pointer` must keep refusing it.
+            // Marking it described would hand a raw guest address to a
+            // `channel_const_ptr!`-style borrow as though it were kernel
+            // memory.
+            continue;
         }
         let pointer = checked_pointer(args[index])?;
         if pointer == 0 {

@@ -2606,6 +2606,213 @@ pub mod test_host {
         fn unbind_framebuffer(&mut self, _p: i32) {}
         fn fb_write(&mut self, _p: i32, _o: usize, _b: &[u8]) {}
     }
+
+    /// A [`NoopHost`] that additionally models ONE process's linear memory, so
+    /// the cross-memory primitives can be exercised without a wasm engine.
+    ///
+    /// Kernel-dereferenced syscall arguments (`SyscallArgSize::KernelDereferenced`)
+    /// are read and written straight out of the caller's address space rather
+    /// than staged into the scratch channel, which makes
+    /// `proc_read_bytes`/`proc_write_bytes` the only surface under test for a
+    /// growing set of syscalls: SysV `msgsnd`/`msgrcv`/`msgctl`/`semctl`, POSIX
+    /// message queues, `sendmsg`/`recvmsg`, and `SIOCGIFCONF`. Every other
+    /// method forwards to `NoopHost`, so a test that reaches one is asking for
+    /// something this double does not model and should say so.
+    ///
+    /// `base` is the guest address the modelled region starts at. Choosing a
+    /// non-zero base is deliberate: it keeps a test from passing merely because
+    /// an offset happened to equal an address.
+    pub struct GuestMemoryHost {
+        pub base: u64,
+        pub memory: alloc::vec::Vec<u8>,
+    }
+
+    impl GuestMemoryHost {
+        pub fn new(base: u64, len: usize) -> Self {
+            Self {
+                base,
+                memory: alloc::vec![0u8; len],
+            }
+        }
+
+        /// Overwrite the modelled region at guest address `addr`.
+        pub fn poke(&mut self, addr: u64, bytes: &[u8]) {
+            let range = self
+                .range(addr, bytes.len())
+                .expect("test poke outside the modelled guest region");
+            self.memory[range].copy_from_slice(bytes);
+        }
+
+        /// Read the modelled region back at guest address `addr`.
+        pub fn peek(&self, addr: u64, len: usize) -> &[u8] {
+            let range = self
+                .range(addr, len)
+                .expect("test peek outside the modelled guest region");
+            &self.memory[range]
+        }
+
+        fn range(&self, addr: u64, len: usize) -> Option<core::ops::Range<usize>> {
+            let offset = usize::try_from(addr.checked_sub(self.base)?).ok()?;
+            let end = offset.checked_add(len)?;
+            (end <= self.memory.len()).then_some(offset..end)
+        }
+    }
+
+    impl HostIO for GuestMemoryHost {
+        fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
+            match self.range(addr, dst.len()) {
+                Some(range) => {
+                    dst.copy_from_slice(&self.memory[range]);
+                    0
+                }
+                None => -(Errno::EFAULT as i32),
+            }
+        }
+
+        fn proc_write_bytes(&mut self, _pid: i32, addr: u64, src: &[u8]) -> i32 {
+            match self.range(addr, src.len()) {
+                Some(range) => {
+                    self.memory[range].copy_from_slice(src);
+                    0
+                }
+                None => -(Errno::EFAULT as i32),
+            }
+        }
+
+        fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
+            NoopHost.host_open(path, flags, mode)
+        }
+        fn host_close(&mut self, h: i64) -> Result<(), Errno> {
+            NoopHost.host_close(h)
+        }
+        fn host_read(&mut self, h: i64, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_read(h, b)
+        }
+        fn host_write(&mut self, h: i64, b: &[u8]) -> Result<usize, Errno> {
+            NoopHost.host_write(h, b)
+        }
+        fn host_seek(&mut self, h: i64, o: i64, w: u32) -> Result<i64, Errno> {
+            NoopHost.host_seek(h, o, w)
+        }
+        fn host_fstat(&mut self, h: i64) -> Result<WasmStat, Errno> {
+            NoopHost.host_fstat(h)
+        }
+        fn host_stat(&mut self, p: &[u8]) -> Result<WasmStat, Errno> {
+            NoopHost.host_stat(p)
+        }
+        fn host_lstat(&mut self, p: &[u8]) -> Result<WasmStat, Errno> {
+            NoopHost.host_lstat(p)
+        }
+        fn host_mkdir(&mut self, p: &[u8], m: u32) -> Result<(), Errno> {
+            NoopHost.host_mkdir(p, m)
+        }
+        fn host_rmdir(&mut self, p: &[u8]) -> Result<(), Errno> {
+            NoopHost.host_rmdir(p)
+        }
+        fn host_unlink(&mut self, p: &[u8]) -> Result<(), Errno> {
+            NoopHost.host_unlink(p)
+        }
+        fn host_rename(&mut self, o: &[u8], n: &[u8]) -> Result<(), Errno> {
+            NoopHost.host_rename(o, n)
+        }
+        fn host_link(&mut self, o: &[u8], n: &[u8]) -> Result<(), Errno> {
+            NoopHost.host_link(o, n)
+        }
+        fn host_symlink(&mut self, t: &[u8], l: &[u8]) -> Result<(), Errno> {
+            NoopHost.host_symlink(t, l)
+        }
+        fn host_readlink(&mut self, p: &[u8], b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_readlink(p, b)
+        }
+        fn host_chmod(&mut self, p: &[u8], m: u32) -> Result<(), Errno> {
+            NoopHost.host_chmod(p, m)
+        }
+        fn host_chown(&mut self, p: &[u8], u: u32, g: u32) -> Result<(), Errno> {
+            NoopHost.host_chown(p, u, g)
+        }
+        fn host_access(&mut self, p: &[u8], a: u32) -> Result<(), Errno> {
+            NoopHost.host_access(p, a)
+        }
+        fn host_opendir(&mut self, p: &[u8]) -> Result<i64, Errno> {
+            NoopHost.host_opendir(p)
+        }
+        fn host_readdir(&mut self, h: i64, b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
+            NoopHost.host_readdir(h, b)
+        }
+        fn host_closedir(&mut self, h: i64) -> Result<(), Errno> {
+            NoopHost.host_closedir(h)
+        }
+        fn host_clock_gettime(&mut self, c: u32) -> Result<(i64, i64), Errno> {
+            NoopHost.host_clock_gettime(c)
+        }
+        fn host_nanosleep(&mut self, s: i64, n: i64) -> Result<(), Errno> {
+            NoopHost.host_nanosleep(s, n)
+        }
+        fn host_ftruncate(&mut self, h: i64, l: i64) -> Result<(), Errno> {
+            NoopHost.host_ftruncate(h, l)
+        }
+        fn host_fsync(&mut self, h: i64) -> Result<(), Errno> {
+            NoopHost.host_fsync(h)
+        }
+        fn host_fchmod(&mut self, h: i64, m: u32) -> Result<(), Errno> {
+            NoopHost.host_fchmod(h, m)
+        }
+        fn host_fchown(&mut self, h: i64, u: u32, g: u32) -> Result<(), Errno> {
+            NoopHost.host_fchown(h, u, g)
+        }
+        fn host_set_alarm(&mut self, s: u32) -> Result<(), Errno> {
+            NoopHost.host_set_alarm(s)
+        }
+        fn host_set_posix_timer(&mut self, t: i32, s: i32, v: i64, i: i64) -> Result<(), Errno> {
+            NoopHost.host_set_posix_timer(t, s, v, i)
+        }
+        fn host_call_signal_handler(&mut self, h: u32, s: u32, f: u32) -> Result<(), Errno> {
+            NoopHost.host_call_signal_handler(h, s, f)
+        }
+        fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_getrandom(b)
+        }
+        fn host_utimensat(&mut self, p: &[u8], a_s: i64, an: i64, ms: i64, mn: i64) -> Result<(), Errno> {
+            NoopHost.host_utimensat(p, a_s, an, ms, mn)
+        }
+        fn host_waitpid(&mut self, p: i32, o: u32) -> Result<(i32, i32), Errno> {
+            NoopHost.host_waitpid(p, o)
+        }
+        fn host_net_connect(&mut self, h: i32, a: &[u8], p: u16) -> Result<(), Errno> {
+            NoopHost.host_net_connect(h, a, p)
+        }
+        fn host_net_connect_status(&mut self, h: i32) -> Result<(), Errno> {
+            NoopHost.host_net_connect_status(h)
+        }
+        fn host_net_send(&mut self, h: i32, d: &[u8], f: u32) -> Result<usize, Errno> {
+            NoopHost.host_net_send(h, d, f)
+        }
+        fn host_net_recv(&mut self, h: i32, l: u32, f: u32, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_net_recv(h, l, f, b)
+        }
+        fn host_net_close(&mut self, h: i32) -> Result<(), Errno> {
+            NoopHost.host_net_close(h)
+        }
+        fn host_net_listen(&mut self, f: i32, p: u16, a: &[u8; 4]) -> Result<(), Errno> {
+            NoopHost.host_net_listen(f, p, a)
+        }
+        fn host_getaddrinfo(&mut self, n: &[u8], r: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_getaddrinfo(n, r)
+        }
+        fn host_futex_wake(&mut self, a: usize, c: u32) -> Result<i32, Errno> {
+            NoopHost.host_futex_wake(a, c)
+        }
+        fn bind_framebuffer(&mut self, p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) {
+            NoopHost.bind_framebuffer(p, a, l, w, h, s, f)
+        }
+        fn unbind_framebuffer(&mut self, p: i32) {
+            NoopHost.unbind_framebuffer(p)
+        }
+        fn fb_write(&mut self, p: i32, o: usize, b: &[u8]) {
+            NoopHost.fb_write(p, o, b)
+        }
+    }
+
 }
 
 #[cfg(test)]
