@@ -81,6 +81,61 @@ test fails the build if any `packages/registry/*/build.toml` package compiles
 a workspace crate directly without declaring the matching `cargo:<crate>`
 input, so this class of gap cannot reappear undetected.
 
+### Adding a wasm module that is not a registry package
+
+A correct `build-wasm.sh` and a correct build-key stamp are **not enough to
+make a module reach a host**. `crates/wasi-module` had both for a while and
+was served by neither host, because nothing invoked its script, nothing
+projected its artifact, and no resolver admitted its name. That is the failure
+mode to avoid, and it is silent: the crate builds, its tests pass, and the
+module is simply never loaded.
+
+The pipeline is driven by the `CoresidentSideModule` table in
+`tools/xtask/src/local_build.rs` (`CORESIDENT_SIDE_MODULES`). Adding a row
+gives a module all of the build, freshness, and projection wiring at once: the
+build invocation from the local-build engine, the `xtask verify-fresh` gate on
+the *projected* copy, the SourceOnly projection node, member staging, and the
+clean-no-op fast path. `crates/fork-module`, `crates/wasi-module` and
+`crates/dylink-module` are all rows in it.
+
+Despite the name, **not every row is co-resident**. fork-module and
+wasi-module are PIC (`--pie`) side modules placed inside the guest's linear
+memory; the dynamic-linking planner imports nothing at all and owns its own
+memory. Membership in the table says how a module is *delivered*, not how it
+is *built* — each `build-wasm.sh` owns its own flags.
+
+Four things still have to be done per module, and each fails **only** in a
+SourceOnly browser build, so a Node run will not catch any of them:
+
+1. A `cargo_closure.rs` guard test asserting the module's closure really
+   covers every crate whose content can change the artifact.
+2. Admission by name in `host/src/binary-resolver.ts`. This is deliberately
+   an allowlist, not "any root-level member": it is what stops a node in an
+   untrusted projection from claiming a root path. **Forgetting it does not
+   break only that module** — the projection parse throws before any binary
+   resolves, so an unadmitted node takes down every SourceOnly boot. That is
+   exactly what a row added to the table without a matching allowlist entry
+   produces, and it happened once already.
+3. The browser registrations: a specifier plus capability in
+   `apps/browser-demos/browser-module-contract.mjs`, a resolve branch in
+   `apps/browser-demos/vite.config.ts`, its own `?url` artifact module under
+   `host/src/` (its own file, so a build that does not need the module does
+   not require the artifact), and the fetch/transfer/compile chain in
+   `browser-kernel-host.ts` + `browser-kernel-worker-entry.ts` with a field
+   on `browser-kernel-protocol.ts`.
+4. Delivery to workers on both hosts, through the `sideModuleInitFields`
+   helper each kernel-worker entry spreads into process-worker `InitData`.
+   Check its early returns: it short-circuits for a wasm64 worker because the
+   two PIC side modules are wasm32-only, so a module that is NOT
+   width-specific has to be attached on that path too.
+
+Decide deliberately whether delivery is gated. Fork-module is instantiated
+only under `if (hasForkInstrumentation)`; a module implementing a **generic**
+POSIX facility must not inherit that gate, or it silently disappears for
+every uninstrumented process — a gap no artifact in this repository would
+catch when the one package that exercises the facility happens to be
+instrumented.
+
 The local-build engine's "skip fast path" (`compute_skip_receipts` /
 `source_only_skip_receipt_if_clean` in `tools/xtask/src/local_build.rs` and
 `build_deps.rs`) reports a package node `Cached` without launching a child
