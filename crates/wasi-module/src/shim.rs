@@ -659,6 +659,13 @@ impl<M: GuestMemory, C: Channel> WasiShim<M, C> {
             let mut consumed = 0u32;
             while consumed < got {
                 // Read the record header plus enough of the name to decode.
+                //
+                // 512 bytes holds any record the kernel can produce: a Linux
+                // `dirent64` is a 19-byte header plus a NUL-terminated name,
+                // and NAME_MAX is 255, so the longest possible record is 275
+                // bytes. A record that somehow exceeded this buffer would fail
+                // `decode_linux_dirent`'s `reclen > buf.len()` check and
+                // surface as EIO rather than being silently truncated.
                 let remaining = (got - consumed) as usize;
                 let mut record = [0u8; 512];
                 let take = remaining.min(record.len());
