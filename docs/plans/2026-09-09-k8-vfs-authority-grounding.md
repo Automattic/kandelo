@@ -31,6 +31,11 @@ the predicate is at **`crates/runtime-core/src/syscalls.rs:2105-2107`** and the
 special-case probe at **`:2124-2135`**. `syscalls.rs` is 46,885+ lines and moves
 under every K item; cite by symbol as well as line.
 
+**Two inherited claims are refuted outright by this pass** — the K7 dependency
+(§2.6) and `assertImageKernelAbi` being callerless (§3.2) — and a third is
+refuted in the opposite direction (the stamp's "build-cache freshness job",
+§3.3b). Prior groundings should be annotated rather than quietly superseded.
+
 ---
 
 ## 1. Q1 — What still makes `memory-fs.ts` the runtime authority
@@ -484,7 +489,7 @@ made that false for kernel-owned regular files. Recorded as **D-K8-5**.
 ## 3. Q3 — Step 5 and the ABI stamp: what removing it concretely requires
 
 Value plan §2c decision 3 split this out with its own ABI ruling. Scoping it
-concretely, in three parts.
+concretely.
 
 ### 3.1 Part A — what still reads the JSON after `KLZY`
 
@@ -730,7 +735,9 @@ pre-existing failure. The fix is one line: interpolate `options.expectedAbi` as
 plus `worker-main.ts:3201` and `dylink.ts:1297,1309,1322` have the same drift.
 Independent of K8; recorded so it is not miscounted as K8 fallout.
 
-**This is the actual V3 completion.** After step 4 and this removal, an image
+### 3.6 Why this is the actual V3 completion
+
+After step 4 and this removal, an image
 contains: an SFFS block filesystem the kernel parses, a `KLZY` linkage section
 the kernel parses, and host-only JSON for fetch authority and provenance.
 Nothing in it is bound to the guest ABI except the Wasm programs inside it,
@@ -874,6 +881,19 @@ the repo until the toolchain campaign.
   `tests/scripts/ci-run-test-suite-groups.test.sh:521`) that **exclude its test
   from the default suite**. 864 lines of unexercised surface sitting inside K8's
   blast radius. It needs a disposition decision (D-K8-4), not a silent port.
+- **The whole OPFS group — 1,841 lines, mounted by no worker entry.**
+  VERIFIED: `OpfsFileSystem` (`opfs.ts:30`) is referenced only by
+  `host/test/{host-file-offset,opfs-channel,append-contract}.test.ts`,
+  `apps/browser-demos/test/fixtures/opfs-*-client-worker.ts`, and the barrel
+  `index.ts:83`. Neither `browser-kernel-worker-entry.ts` nor
+  `node-kernel-worker-entry.ts` mounts it. `host/tsup.config.ts:19` still ships
+  `opfs-worker.ts` as a build entry. **This qualifies §5.1's claim that OPFS is
+  a genuine host byte store that stays:** it is the right *shape* for the
+  contract, it has real Playwright coverage (`opfs-*.spec.ts`), and it is
+  correctly below the line — but it is not currently on any production boot
+  path, so K8 must not cite "OPFS still needs it" as a reason to keep anything
+  above the line. Stated so the byte-line argument rests on the contract shape,
+  not on a usage that does not exist.
 - **`device-fs.ts` — 339 lines, probably fully shadowed.** The kernel owns every
   `/dev` path except `/dev/shm` (§2.1) — directories via `devfs.rs`, device
   files via `match_virtual_device` (`syscalls.rs:218-231`), PTYs via
@@ -922,6 +942,14 @@ alone. K8 touches all three.
    silent wrong-artifact boot.
 6. **`/dev/shm` mmap convergence (§2.5).** If a guest ever uses `sem_open`, the
    regression is a lost wakeup, not an error.
+7. **The stamp's one load-time check is browser-only** (`live-setup.ts:1167-1171`,
+   §3.2). Node has no equivalent, so a Node-only validation of §3's removal
+   would exercise nothing that changed. Whatever replaces it must be tested in
+   a browser by construction.
+8. **The network demo has no rootfs overlay** (§1.1). It still serves `/` from
+   a mounted host `MemoryFileSystem`, so it is the demo most likely to break at
+   the cutover — and it is not in the §6.2 spec list below, which is itself a
+   coverage gap worth closing before K8.3.
 
 ### 6.2 What must actually be run
 
@@ -937,7 +965,8 @@ Per `docs/agent-guidance/validation.md`, and stated as evidence-for-a-claim:
   `kandelo-source-rootfs-shell.spec.ts`, `kandelo-wordpress.spec.ts`,
   `service-worker-scope-state.spec.ts` and `sw-bridge-fetch.spec.ts` (SW),
   `kandelo-url.spec.ts` and `scoped-deployments.spec.ts` (sharing / boot
-  descriptors), `openssl-rootfs.spec.ts` (the CA cert), plus the OPFS group
+  descriptors), `openssl-rootfs.spec.ts` (the CA cert), **`network.spec.ts`**
+  (the no-overlay demo of §1.1), plus the OPFS group
   (`opfs-*.spec.ts`) because §5 claims OPFS is untouched and that claim should
   be tested rather than asserted.
 - **`kandelo-webkit-smoke.spec.ts`** specifically, for the image-switch
@@ -1053,6 +1082,16 @@ convergence property.** No shipped package uses `shm_open`/`sem_open` (§2.2), s
 §2.5's regression would produce a **green suite**. Absence of a failing test is
 not evidence of preserved behaviour when there is no test.
 
+**SD-K8-7 — the ABI stamp is NOT the cheap, callerless removal the prior
+groundings describe.** K1b §7.4 called it *"independent of everything above,
+and cheaper than it looks"* on the strength of two dead readers. One of the two
+is alive and is the repo's only load-time image check (§3.2), the stamp is what
+today catches an image full of programs that carry **no** `__abi_version`
+marker (§3.3 path 2), and its removal drags in a regenerated committed bundle
+(`scripts/resolve-binary.bundle.mjs`), a published external contract
+(`docs-site/guide/publish-software.md:134`), and a decision about eight
+product-image builders. Re-derive the cost before scheduling it as trivial.
+
 ---
 
 ## 9. NEEDS-DEFER-DECISION
@@ -1147,21 +1186,54 @@ Per the standing rule I am deciding none of these.
   (it is independent of K8), and rewrite the `/dev/shm` row *as part of* the
   shmfs cutover with whatever §2.6's convergence work actually delivers.
 
-### D-K8-6 — The stale nginx-log diagnostic (§1.6)
+### D-K8-6 — The two stale-authority reads and the browser-only lazy-registration RPC (§1.6)
 
-- **What.** `readServiceLogForProcess` / `readFileFromFs`
+- **What.** Three items, grouped because K8 forces all three: (a)
+  `readServiceLogForProcess` / `readFileFromFs`
   (`browser-kernel-worker-entry.ts:424-432`, `:4522-4540`) reads
-  `/var/log/nginx.log` from a retired authority and silently yields nothing.
-- **Why now.** It is the last caller of a `memfs` FS method that K8 retires, and
-  leaving it would make K8 look like it removed a working diagnostic.
-- **Cost now.** Repoint at `kernelWorker.rootfsReadFile` (which the same file
-  already uses at `:4602`), or delete it.
-- **Cost of deferring.** A diagnostic that lies by omission survives the
-  migration, and the failure it was written for stays undiagnosable.
-- **Recommendation.** Repoint rather than delete — it exists because someone
-  needed nginx's log at failure time — but it is small enough that either is
-  defensible, and it is package-shaped (`name === "nginx"`), which is worth a
-  second look on its own terms.
+  `/var/log/nginx.log` from a retired authority and silently yields nothing;
+  (b) `handleUnlinkVfsFile`'s `io.lstat(msg.path)` probe (`:3995`) tests a mount
+  table that no longer contains `/`; (c) `register_lazy_files` /
+  `register_lazy_archives` (`:837-844`, `:896-912`) mutate `memfs` after `init`
+  **on the browser only** — Node has no such RPC.
+- **Why now.** (a) and (b) are the last callers of `memfs` FS methods K8
+  retires; leaving them would make K8 look like it removed working behaviour.
+  (c) is a Node/browser parity gap in a shared contract, which the host-runtime
+  contract says must be decided rather than inherited.
+- **Cost now.** (a) repoint at `kernelWorker.rootfsReadFile` (already used at
+  `:4602`) or delete; (b) repoint at `rootfsStatMode` (`kernel-worker.ts:5402`);
+  (c) either add a kernel-side registration entry point on both hosts, or remove
+  the RPC.
+- **Cost of deferring.** Two paths that lie by omission survive the migration,
+  and (c) becomes a silent no-op the moment the kernel owns the tree from the
+  image — a capability lost without a failure.
+- **Recommendation.** Repoint (a) and (b) rather than delete — they exist
+  because someone needed them — though (a) is package-shaped
+  (`name === "nginx"`) and deserves a second look on its own terms. (c) is a
+  genuine design question and is the maintainer's call: it is the only
+  post-`init` mutation of the image left, and K8 is the moment to decide whether
+  that capability survives at all.
+
+### D-K8-7 — What happens to `network-demo-worker.ts`, the no-overlay demo?
+
+- **What.** `apps/browser-demos/pages/network/network-demo-worker.ts:156-173,206,245`
+  builds a live kernel with a mounted host `/` `MemoryFileSystem` and never
+  calls `configureRootfsOverlay` — the last live-kernel consumer running fully
+  on System A.
+- **Why now.** K8's cutover removes the ability to serve `/` from a host mount.
+  Whatever this demo relies on stops existing.
+- **Cost now (port it).** It must adopt the overlay path like the other demos —
+  bounded work, but it is `apps/browser-demos`, which the campaign scopes out
+  (value plan §3.6).
+- **Cost of deferring.** It breaks at K8.3 with no owner, and
+  `docs/agent-guidance/browser-and-user.md` is explicit that a demo must not be
+  an alternate implementation of the runtime — which, by not using the overlay,
+  it currently is.
+- **Recommendation.** Port it in the same change that lands K8.3, and treat
+  "does any demo still construct a kernel without `configureRootfsOverlay`" as a
+  standing check. But whether demo work is in scope for this campaign is the
+  maintainer's call, and it should be made before K8.3 rather than discovered
+  by a red spec.
 
 ---
 
@@ -1202,7 +1274,14 @@ already have a writable `MAP_SHARED` bridge (`kernel-worker.ts:27082-27116`) —
 but a narrower real dependency replaces it: that bridge is **flush-only**, so a
 naive `/dev/shm` cutover would silently regress the cross-process convergence
 `docs/posix-status.md:426` documents, and no shipped package would fail. The ABI
-stamp turns out to have **no load-time enforcement at all** (its two other
-readers are dead), so removing it costs one thing only: replacing the
-build-cache freshness signal in `binary-resolver.ts:2911-2926` with a
-closure-derived key — and that removal *is* V3's completion.
+stamp is **not** the cheap removal the prior groundings describe: K1b's
+"`assertImageKernelAbi` has no caller" is **refuted** —
+`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1167-1171` is the
+repo's only load-time image check and it throws — while its *other* claim, that
+the stamp's live job is build-cache freshness, is refuted in the opposite
+direction, because `scripts/build-rootfs.sh:90` and
+`packages/registry/rootfs/build.toml:16` already carry the ABI into the cache
+key twice over. What removal actually costs is one browser-only load-time gate,
+the safety net for programs carrying no `__abi_version` marker, a regenerated
+`scripts/resolve-binary.bundle.mjs`, and a published external contract — and
+that removal *is* V3's completion.

@@ -91,9 +91,22 @@ All four were assertions no one had re-tested.
 
 ### `host/src/vfs/**` — 22,599 lines
 
+> **CORRECTED 2026-09-09 by the K8 grounding.** This section treated
+> `memory-fs.ts` + `sharedfs-vendor.ts` (11,950 lines) as MIGRATE in bulk. That
+> is wrong. **Only ~556 lines (`memory-fs.ts:7430-7985`, the `FileSystemBackend`
+> surface) stop being a guest-visible mount.** The rest survives with a
+> different job: `memory-fs.ts` is the **image writer** (`saveImage:7029`) and
+> the host fetch authority — for `tools/mkrootfs`, `images/vfs/scripts`, and
+> crucially the **runtime** `export_rootfs_image` path on *both* hosts
+> (`browser-kernel-worker-entry.ts:4038`, `node-…:3973` →
+> `rootfs-overlay-export.ts`). `sharedfs-vendor.ts` survives essentially whole,
+> because its read helpers back the write path; it leaves only with the
+> toolchain campaign. K8's real removal is **~1,500-2,500 lines, not ~12,000** —
+> Phase 5 already took `/`.
+
 | part | lines | verdict | reason |
 |---|---|---|---|
-| `sharedfs-vendor.ts` + `memory-fs.ts` as **runtime FS authority** | 11,950 | **MIGRATE** | they are the VFS image **format owner**, and images are stamped with the guest ABI (`mkrootfs --kernel-abi`). `sffs.rs` is the Rust reader for that exact format and is wired to nothing. Inverting this is what decouples images from the ABI (**V3**) |
+| `sharedfs-vendor.ts` + `memory-fs.ts` as **runtime FS authority** | 11,950 → **~556** | **SPLIT (corrected)** | they are the VFS image **format owner**, and images are stamped with the guest ABI (`mkrootfs --kernel-abi`). `sffs.rs` is the Rust reader for that exact format and is wired to nothing. Inverting this is what decouples images from the ABI (**V3**) |
 | tar/zip/manifest parsers, lazy-tree materialization | ~3,500 | **MIGRATE** | byte parsing; `zip.rs` already exists in Rust |
 | `/dev/shm` backing | — | **MIGRATE** | the one host-backed subtree inside the kernel devfs namespace (`syscalls.rs:2068`, `:2122`). Folds into an in-kernel shmfs generalized from `tmpfs.rs` |
 | OPFS worker/channel/handles, browser lazy fetcher, `host-fs.ts` | ~3,000 | **KEEP** | §2.3 — real host byte stores |

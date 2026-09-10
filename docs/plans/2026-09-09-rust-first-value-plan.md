@@ -886,6 +886,68 @@ not — so the probe is the thing that decides whether K4b is affordable at all.
 - Still needing detail: whether the three incomplete kernel seams get their own
   K-number, and the browser conformance runners that are wired into nothing.
 
+## 2m. K8 grounding — outcomes and decisions (2026-09-09)
+
+`docs/plans/2026-09-09-k8-vfs-authority-grounding.md` (1,287 lines).
+
+### Corrections
+
+- **`memory-fs.ts` cannot be deleted, and mostly does not move.** Only ~556 of
+  its 8,269 lines stop being a guest-visible mount. It remains the **image
+  writer** and host fetch authority, including the **runtime**
+  `export_rootfs_image` path on both hosts. `sharedfs-vendor.ts` survives
+  essentially whole. **K8 removes ~1,500-2,500 lines, not the ~12,000 the census
+  claimed** — Phase 5 already took `/`.
+- **K8 does NOT depend on K7.** Workstream H5's "needs SAB-shared `mmap` first"
+  is refuted: `shmSab` is a single-consumer byte store never shared with process
+  workers (6 sites, all `kernel-worker`), and `tmpfs.rs` already has everything
+  `sem_open` needs except a mount entry — including `link:1020` and stable
+  `(st_dev, st_ino)`. Kernel-owned files already get writable `MAP_SHARED` via
+  the fd-writeback bridge.
+- **The ABI stamp has a live caller.** The prior grounding called
+  `assertImageKernelAbi` callerless; it is not —
+  `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1168` is the
+  repo's only load-time image check **and it throws**. (I nearly re-confirmed
+  the wrong answer myself by truncating a grep with `head -4`.) Removing the
+  stamp costs that browser gate, the safety net for programs with no
+  `__abi_version`, a regenerated `scripts/resolve-binary.bundle.mjs`, a docs-site
+  page, and a warn-once beside the otherwise silent `ENOEXEC`. Not free.
+
+### THIRD instance of ported-but-unwired Rust
+
+**`klzy.rs` and `sffs.rs` have zero production callers** (VERIFIED
+independently). K1 proved equivalence and landed the reader, but nothing calls
+it — because I scoped K1 away from `syscalls.rs` to keep the parallel merge
+clean, deferring the `ByteReq::Image` wiring. That was the right call for the
+merge and the wrong outcome to leave standing: **K1's deliverable is not yet
+load-bearing.** With `dylink_archive.rs` (1,318 lines) that is now three
+decoder-complete Rust modules proving nothing.
+
+**DECIDED: wiring `klzy`/`sffs` into production is K8's FIRST job**, not a
+later step. Until then K1 counts as unfinished, and the ledger's TS debt for
+K1 step 5 cannot be paid.
+
+### The trap worth naming — generic-first, exactly
+
+The fd-writeback bridge is **flush-only** (`kernel-worker.ts:29119` gates import
+on `backingKey`), so a naive shmfs cutover **silently regresses** the
+cross-process convergence `docs/posix-status.md:426` documents. And because **no
+shipped package uses `shm_open`/`sem_open`, the whole suite stays green.**
+
+That is the generic-first failure mode in its purest form: a real POSIX
+regression that today's package set cannot detect. **DECIDED: close the import
+side of the bridge inside K8, and write the `shm_open`/`sem_open` coverage that
+does not exist** — the absence of a consumer is not evidence of correctness.
+
+### Browser risk (per `docs/agent-guidance/browser-and-user.md`)
+
+CA-cert reordering; `export_rootfs_image` going silently wrong; and
+`network-demo-worker.ts` has **no overlay at all**. All three need real browser
+validation, not code reasoning.
+
+7 NEEDS-DEFER-DECISION and 7 STRONG DOUBT entries remain in the doc; none
+self-deferred.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
