@@ -371,6 +371,13 @@ fn render_marshal_header() -> String {
                     wasm32_size,
                     wasm64_size,
                 } => (dir_span(arg.direction), SIZE_LAYOUT, wasm32_size, wasm64_size, 0),
+                // The kernel dereferences this argument itself, so the guest
+                // record carries no span for it: the raw guest address in the
+                // scalar slot is the whole contract. Emitting a span would
+                // ask the guest to copy bytes the kernel is about to read
+                // directly, and no span kind can describe an extent the
+                // kernel has not yet computed.
+                SyscallArgSize::KernelDereferenced => continue,
             };
             args.push((
                 arg.arg_index,
@@ -3852,7 +3859,8 @@ fn render_ts_module() -> String {
     out.push_str("  | { type: \"arg\"; argIndex: number; multiplier?: number; add?: number }\n");
     out.push_str("  | { type: \"deref\"; argIndex: number }\n");
     out.push_str("  | { type: \"fixed\"; size: number }\n");
-    out.push_str("  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number };\n\n");
+    out.push_str("  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number }\n");
+    out.push_str("  | { type: \"kernel-dereferenced\" };\n\n");
     out.push_str("export type SyscallArgCopyOutLengthSpec =\n");
     out.push_str("  | { type: \"u32-field\"; argIndex: number; offset: number }\n");
     out.push_str(
@@ -4065,6 +4073,9 @@ fn ts_syscall_arg_size(size: shared::host_abi::SyscallArgSize) -> String {
             format!("{{ type: \"deref\", argIndex: {arg_index} }}")
         }
         SyscallArgSize::Fixed { size } => format!("{{ type: \"fixed\", size: {size} }}"),
+        SyscallArgSize::KernelDereferenced => {
+            "{ type: \"kernel-dereferenced\" }".to_string()
+        }
         SyscallArgSize::ProcessLayout {
             wasm32_size,
             wasm64_size,
@@ -6122,6 +6133,9 @@ fn syscall_arg_size_json(size: shared::host_abi::SyscallArgSize) -> Value {
         SyscallArgSize::Fixed { size } => {
             m.insert("type".into(), json!("fixed"));
             m.insert("size".into(), json!(size));
+        }
+        SyscallArgSize::KernelDereferenced => {
+            m.insert("type".into(), json!("kernel-dereferenced"));
         }
         SyscallArgSize::ProcessLayout {
             wasm32_size,

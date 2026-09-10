@@ -145,6 +145,38 @@ const PROCESS_SIZE_ARGUMENT_5: &[ChannelScalarArgument] = &[ChannelScalarArgumen
     index: 5,
     kind: ChannelScalarKind::ProcessSize,
 }];
+
+/// The caller's `struct msghdr *`. `sendmsg`/`recvmsg` hand the kernel the
+/// raw guest address and it walks the header itself, so every physical bit
+/// must survive the channel word.
+const PROCESS_ADDRESS_ARGUMENT_1: &[ChannelScalarArgument] = &[ChannelScalarArgument {
+    index: 1,
+    kind: ChannelScalarKind::ProcessAddress,
+}];
+/// `msgctl`/`shmctl`: the caller's `struct msqid_ds *` / `struct shmid_ds *`.
+const PROCESS_ADDRESS_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
+    index: 2,
+    kind: ChannelScalarKind::ProcessAddress,
+}];
+/// `semctl`: the `union semun` slot, which is a guest address for every
+/// pointer-taking command and an `int` for `SETVAL`. Preserving the physical
+/// bits serves both — `SETVAL`'s value is recovered by the kernel as an i32.
+const PROCESS_ADDRESS_ARGUMENT_3: &[ChannelScalarArgument] = &[ChannelScalarArgument {
+    index: 3,
+    kind: ChannelScalarKind::ProcessAddress,
+}];
+/// A caller buffer address in slot 1 paired with its byte count in slot 2:
+/// `mq_timedsend`/`mq_timedreceive` and `msgsnd`.
+const PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessSize,
+    },
+];
 const U32_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
     index: 2,
     kind: ChannelScalarKind::U32,
@@ -251,6 +283,10 @@ const FALLOCATE_ARGUMENTS: &[ChannelScalarArgument] = &[
     },
 ];
 const MSGRCV_ARGUMENTS: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
     ChannelScalarArgument {
         index: 2,
         kind: ChannelScalarKind::ProcessSize,
@@ -502,6 +538,18 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Sendmsg as u32,
+        musl_name: "sendmsg",
+        arguments: PROCESS_ADDRESS_ARGUMENT_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: Syscall::Recvmsg as u32,
+        musl_name: "recvmsg",
+        arguments: PROCESS_ADDRESS_ARGUMENT_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_FUTEX,
         musl_name: "futex",
         arguments: PROCESS_ADDRESS_ARGUMENT_0,
@@ -636,13 +684,13 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
     ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_MQ_TIMEDSEND,
         musl_name: "mq_timedsend",
-        arguments: PROCESS_SIZE_ARGUMENT_2,
+        arguments: PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_MQ_TIMEDRECEIVE,
         musl_name: "mq_timedreceive",
-        arguments: PROCESS_SIZE_ARGUMENT_2,
+        arguments: PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
@@ -654,7 +702,13 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
     ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_MSGSND,
         musl_name: "msgsnd",
-        arguments: PROCESS_SIZE_ARGUMENT_2,
+        arguments: PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_MSGCTL,
+        musl_name: "msgctl",
+        arguments: PROCESS_ADDRESS_ARGUMENT_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
@@ -664,9 +718,21 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_SEMCTL,
+        musl_name: "semctl",
+        arguments: PROCESS_ADDRESS_ARGUMENT_3,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_SHMGET,
         musl_name: "shmget",
         arguments: SHMGET_ARGUMENTS,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_SHMCTL,
+        musl_name: "shmctl",
+        arguments: PROCESS_ADDRESS_ARGUMENT_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
