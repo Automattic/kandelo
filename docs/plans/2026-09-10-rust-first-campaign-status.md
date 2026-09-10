@@ -1843,6 +1843,32 @@ session that ends takes its briefs with it.
 | A4 | pthread slot arena unification + dead surface | `shell-config.ts` 91; `host_call_signal_handler` (76→75); one authority | agent |
 | A5 | Reconciliation — `usePolling` + poller, 16 memory-authority sites, epoch strings | ~200 | agent |
 | A6 | `hostname.ts` (99) MIGRATE · `device-fs.ts` (335) ELIMINATE · `boot-descriptor.ts` (507) scope-check | ~940 | agent |
+| A7 | **B7** — epoll instances to OFD ownership; fork inheritance | unblocks A-future B6 (the host epoll mirror) | agent |
+| A8 | **B17+B18+B19** — `tar/wasm32` compile, root npm install, stale-tier install | throughput, not lines | agent |
+
+### How the next item is chosen
+
+The original Tier 1/2/3 structure was built around the K-items and they are all
+done or in flight. What follows is not tiered; it is ordered by this rule,
+which comes from the maintainer's four goals plus the one lesson this campaign
+paid for — **deletion is what counts, not migration.**
+
+1. **Unblockers.** B7 gates B6. B3 is gated on a benchmark that does not exist.
+   Nothing downstream moves until these do.
+2. **Force multipliers.** B17, B18, B19 serve none of the four goals directly
+   and have each cost hours of agent time, repeatedly. Every one produces a
+   failure that names something other than its cause. **Highest value per line
+   changed on this list.**
+3. **Deletes TypeScript *and* shrinks the host surface** — B1 (completes V3), B9.
+4. **Deletes TypeScript** — B5, B2, B12.
+5. **Correctness found along the way** — B15, B16, B11.
+
+**Parallelism is bounded by two things, neither of which is agent count:**
+shared foundation files (`local_build.rs`, `rootfs.rs`, `wasm_api.rs`,
+`kernel-worker.ts` — where *both* design collisions landed, not in the leaf
+files agents were assigned), and the coordinator's serial merge throughput.
+Batch by file locality, and do not start two items that restructure one
+foundation file.
 
 ### B. Owed, no agent — each needs dispatching or an explicit decision
 
@@ -1854,7 +1880,7 @@ session that ends takes its briefs with it.
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
 | B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines, blocked at the time on file ownership that has since cleared |
 | B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; gated on B7 |
-| B7 | **epoll fork inheritance + OFD keying** | **One change, not two.** Deferred with its real shape; `posix-status.md` corrected from "Full" to "Partial" |
+| B7 | *(moved to A7 — dispatched)* | |
 | B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
 | B9 | **NDD-IOVEC-1 — per-process pointer width at registration** | **Maintainer approved.** Frees `preadv2`/`pwritev2`'s `flags` slot, currently holding the width stamp. Must survive fork inheritance and a width-changing exec. Do it *before* anything else claims slot 5. |
 | B10 | **NDD-K4-1 — kernel-owned shebang parsing** | The duplicate is shared (one call site); the kernel move needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
@@ -1864,9 +1890,9 @@ session that ends takes its briefs with it.
 | B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
 | B15 | **TLS `SharedArrayBuffer` hazard** | All three engines throw on SAB-backed views; reachability unproven. Fix when the file is next touched: copy at the boundary, tighten `ArrayBufferLike` → `ArrayBuffer` |
 | B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15 |
-| B17 | **`tar/wasm32` fails to compile on base** | `readdir.c:38: incomplete definition of type 'DIR'`. Blocks `shell` and every image below it. Latent — a cached artifact hid it; anyone rebuilding musl meets it. **Recorded in the value plan, not here, until now.** |
-| B18 | **`./run.sh setup` does not install root npm dependencies** | Its absence cascade-blocks every browser product |
-| B19 | **`install-local-artifact` leaves a higher-priority tier stale** | The resolver reads `source-only-v1` first; one command should leave every tier consistent, or fail loudly |
+| B17 | *(moved to A8 — dispatched)* | |
+| B18 | *(moved to A8 — dispatched)* | |
+| B19 | *(moved to A8 — dispatched)* | |
 | B20 | **Tier-end browser pass** | Now split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed this way |
 
 ### C. Closed by measurement, kept only so they are not re-opened
