@@ -91,6 +91,7 @@ interface PlannerExports {
   readonly dl_configure: (len: number) => number;
   readonly dl_reset: () => void;
   readonly dl_publish_main_image: (len: number) => number;
+  readonly dl_adopt_process_tags: (longjmp: number, cppException: number) => number;
   readonly dl_open_begin: (len: number) => number;
   readonly dl_step: (token: number) => number;
   readonly dl_resume: (token: number, len: number) => number;
@@ -116,6 +117,10 @@ interface PlannerExports {
   readonly dl_archive_generation: (token: number) => bigint;
   readonly dl_archive_set_table_patches: (len: number) => number;
   readonly dl_archive_set_table_state_root: (root: bigint) => number;
+  readonly dl_archive_append_table_patch: (len: number) => number;
+  readonly dl_archive_can_append_table_patch: (len: number) => number;
+  readonly dl_archive_table_state: () => number;
+  readonly dl_archive_modules: () => number;
   readonly dl_fork_reconcile_begin: (borrowed: number) => number;
   readonly dl_fork_reconcile_finish: (token: number) => number;
 }
@@ -213,6 +218,17 @@ export class PlannerSession {
   publishMainImage(image: MainImage): void {
     const length = this.#write(encodeMainImage(image));
     this.#require(this.#exports.dl_publish_main_image(length), "dl_publish_main_image");
+  }
+
+  /**
+   * Adopt the process's existing exception tags under the ids this side has
+   * bound them to. `null` for a tag the process does not have.
+   */
+  adoptProcessTags(longjmp: number | null, cppException: number | null): void {
+    this.#require(
+      this.#exports.dl_adopt_process_tags(longjmp ?? -1, cppException ?? -1),
+      "dl_adopt_process_tags",
+    );
   }
 
   /**
@@ -394,6 +410,45 @@ export class PlannerSession {
     );
   }
 
+  /**
+   * The archive's table-replication state, still encoded.
+   *
+   * This is the only part of the archive that crosses back: the funcref table
+   * replica is the one consumer that is not the loader. Modules and
+   * transactions never cross, because a reconcile drives them from inside.
+   */
+  tableStateBytes(): Uint8Array {
+    this.#require(this.#exports.dl_archive_table_state(), "dl_archive_table_state");
+    return this.#output();
+  }
+
+  /** The archived objects a fork child names before it reconciles. */
+  archivedModulesBytes(): Uint8Array {
+    this.#require(this.#exports.dl_archive_modules(), "dl_archive_modules");
+    return this.#output();
+  }
+
+  /** Would the patch journal accept this patch, or must it be compacted? */
+  canAppendTablePatch(patch: DylinkTablePatch): boolean {
+    return this.#appendTablePatch(patch, true);
+  }
+
+  /** Append one funcref patch to the journal the next publication carries. */
+  appendTablePatch(patch: DylinkTablePatch): boolean {
+    return this.#appendTablePatch(patch, false);
+  }
+
+  #appendTablePatch(patch: DylinkTablePatch, probeOnly: boolean): boolean {
+    const length = this.#write(encodeTablePatches([patch]));
+    const status = probeOnly
+      ? this.#exports.dl_archive_can_append_table_patch(length)
+      : this.#exports.dl_archive_append_table_patch(length);
+    if (status < 0) {
+      throw new DylinkPlannerError("dl_archive_append_table_patch", this.takeError() ?? "");
+    }
+    return status === 1;
+  }
+
   /** Seal a typed table snapshot; patches before a checkpoint are superseded. */
   setTableStateRoot(root: bigint): void {
     this.#require(
@@ -444,6 +499,30 @@ export interface DylinkEngineEnvironment {
    * never inspects them; ownership stays with the fork side.
    */
   readonly activationEnv: (name: string) => unknown;
+  /**
+   * One synchronous wrapper boundary for the process activation owner, applied
+   * to the import object immediately before instantiation.
+   *
+   * Imported global and table identity is observable only while WebAssembly is
+   * resolving this exact proxy graph, so the owner is handed the graph rather
+   * than an enumeration of it: enumerating would collapse duplicate
+   * `(module, name)` declarations and capture the wrong provider.
+   */
+  readonly wrapImports?: (imports: WebAssembly.Imports) => WebAssembly.Imports;
+  /**
+   * Route one resolved FUNCTION import through the process Worker owner.
+   *
+   * Called at the moment the binding is resolved, so duplicate declarations and
+   * activation-owned exception identities are not collapsed. `occurrence` is
+   * which read of this `(module, name)` pair this is, counting from zero.
+   */
+  readonly routeFunctionImport?: (
+    library: string,
+    module: string,
+    name: string,
+    occurrence: number,
+    value: CallableFunction,
+  ) => unknown;
 }
 
 /**
@@ -643,6 +722,10 @@ export class DylinkActExecutor {
    * the moment the planner asks for them.
    */
   readonly #images = new Map<string, Uint8Array>();
+  /** Compiled modules by library name, for the activation coordinator. */
+  readonly #modulesByLibrary = new Map<string, WebAssembly.Module>();
+  /** The object the last `compile` act named, for import routing. */
+  #currentLibrary = "";
 
   constructor(
     environment: DylinkEngineEnvironment,
@@ -662,6 +745,17 @@ export class DylinkActExecutor {
   /** Drop an image once its object is loaded or its load was abandoned. */
   forgetImage(library: string): void {
     this.#images.delete(library);
+    this.#modulesByLibrary.delete(library);
+  }
+
+  /** The compiled module for a library, once its `compile` act has run. */
+  moduleFor(library: string): WebAssembly.Module | undefined {
+    return this.#modulesByLibrary.get(library);
+  }
+
+  /** The image a library was compiled from. */
+  imageFor(library: string): Uint8Array | undefined {
+    return this.#images.get(library);
   }
 
   instance(id: number): WebAssembly.Instance | undefined {
@@ -708,7 +802,12 @@ export class DylinkActExecutor {
         if (!bytes) {
           throw new Error(`dylink: no module image for ${act.library}`);
         }
-        this.#modules.set(act.module, new WebAssembly.Module(asModuleSource(bytes)));
+        const compiled = new WebAssembly.Module(asModuleSource(bytes));
+        this.#modules.set(act.module, compiled);
+        // The activation coordinator reads this object's custom sections when
+        // it prepares an activation, and it knows the object only by name.
+        this.#modulesByLibrary.set(act.library, compiled);
+        this.#currentLibrary = act.library;
         return { result: "done" };
       }
       case "newGlobal": {
@@ -769,10 +868,29 @@ export class DylinkActExecutor {
         // which does not exist until the instance does. The trampoline closes
         // over the slot rather than the value.
         const slot: { instance?: WebAssembly.Instance } = {};
-        const imports = buildImportObject(act.bindings, (binding) =>
-          this.#resolveBinding(binding, slot),
+        // Which read of each `(module, name)` pair this binding is. The routing
+        // hook needs it because `wasm-ld` can declare the same pair twice and
+        // the two declarations may be routed differently.
+        const occurrences = new Map<string, number>();
+        const imports = buildImportObject(act.bindings, (binding) => {
+          const key = `${binding.module} ${binding.name}`;
+          const occurrence = occurrences.get(key) ?? 0;
+          occurrences.set(key, occurrence + 1);
+          const value = this.#resolveBinding(binding, slot);
+          const route = this.#environment.routeFunctionImport;
+          if (!route || typeof value !== "function") return value;
+          return route(
+            this.#currentLibrary,
+            binding.module,
+            binding.name,
+            occurrence,
+            value as CallableFunction,
+          );
+        });
+        const instance = new WebAssembly.Instance(
+          module,
+          this.#environment.wrapImports?.(imports) ?? imports,
         );
-        const instance = new WebAssembly.Instance(module, imports);
         slot.instance = instance;
         this.#instances.set(act.instance, instance);
         return { result: "done" };

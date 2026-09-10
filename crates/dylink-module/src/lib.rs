@@ -316,6 +316,31 @@ pub extern "C" fn dl_reset() {
     *session() = None;
 }
 
+/// Adopt the process's existing exception tags under the ids the driver has
+/// already bound them to. Pass -1 for a tag the process does not have.
+///
+/// C++ exceptions and `longjmp` crossing a side-module call require tag
+/// IDENTITY, not just a matching payload type, and the identity is the main
+/// image's. A planner that created its own tags would give every side module a
+/// realm the main image cannot catch in, which fails only when an exception
+/// actually crosses — long after the load looked successful.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_adopt_process_tags(longjmp: i32, cpp_exception: i32) -> i32 {
+    with_session(|state| {
+        let tag = |value: i32| -> Result<Option<dylink::TagId>, DylinkError> {
+            match value {
+                -1 => Ok(None),
+                id if id >= 0 => Ok(Some(dylink::TagId(id as u32))),
+                _ => Err(DylinkError::MalformedModule("tag id must be -1 or non-negative")),
+            }
+        };
+        let longjmp = tag(longjmp)?;
+        let cpp_exception = tag(cpp_exception)?;
+        state.adopt_process_tags(longjmp, cpp_exception);
+        Ok(())
+    })
+}
+
 /// Publish the main image's exports and element-segment table layout from an
 /// encoded `MainImage`.
 ///
@@ -678,6 +703,73 @@ pub extern "C" fn dl_archive_set_table_patches(len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn dl_archive_set_table_state_root(root: u64) -> i32 {
     with_session(|state| state.set_table_state_root(root))
+}
+
+/// Append one funcref patch to the journal the next publication carries.
+///
+/// Returns 1 when it fits and 0 when the journal is full, in which case the
+/// caller must take a full table checkpoint instead. The limits are the KFLA
+/// format's, so the answer is the format's to give: a driver that guessed them
+/// would publish a record the decoder then refuses.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_append_table_patch(len: u32) -> i32 {
+    with_session_i64(|state| {
+        let mut patches = dylink::wire::decode_table_patches(request(len)?)?;
+        let Some(patch) = patches.pop() else {
+            return Err(DylinkError::MalformedModule("no table patch to append"));
+        };
+        Ok(i64::from(state.append_table_patch(patch)))
+    }) as i32
+}
+
+/// The archived objects a fork child must name before it reconciles, as
+/// `[(name, activation id, image bytes)]`.
+///
+/// A child builds its activation-to-module map for reference decoding BEFORE
+/// any object is rebuilt, because module and reference recipes name activation
+/// coordinates rather than whichever instance happens to load first.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_modules() -> i32 {
+    with_session(|state| {
+        buffers().output = dylink::wire::encode_archived_modules(state.archived_modules())?;
+        Ok(())
+    })
+}
+
+/// Would [`dl_archive_append_table_patch`] accept this patch?
+///
+/// Asked BEFORE the caller commits to a patch, so a journal that is full leads
+/// to a full table checkpoint rather than to a record the decoder refuses.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_can_append_table_patch(len: u32) -> i32 {
+    with_session_i64(|state| {
+        let patches = dylink::wire::decode_table_patches(request(len)?)?;
+        let Some(patch) = patches.first() else {
+            return Err(DylinkError::MalformedModule("no table patch to measure"));
+        };
+        Ok(i64::from(state.can_append_table_patch(patch)))
+    }) as i32
+}
+
+/// The archive's table-replication state, as
+/// `[u64 generation][u64 tableStateRoot][u64 checkpointGeneration][patches]`.
+///
+/// This is the only part of the archive a driver reads back, because the
+/// funcref table replica is the one consumer that is not the loader. The
+/// modules and transactions never cross the boundary: a reconcile drives them
+/// from inside.
+#[unsafe(no_mangle)]
+pub extern "C" fn dl_archive_table_state() -> i32 {
+    with_session(|state| {
+        let (generation, root, checkpoint, patches) = state.table_state();
+        let mut output = Vec::new();
+        output.extend_from_slice(&generation.to_le_bytes());
+        output.extend_from_slice(&root.to_le_bytes());
+        output.extend_from_slice(&checkpoint.to_le_bytes());
+        output.extend_from_slice(&dylink::wire::encode_table_patch_journal(patches)?);
+        buffers().output = output;
+        Ok(())
+    })
 }
 
 // ---------------------------------------------------------------------------

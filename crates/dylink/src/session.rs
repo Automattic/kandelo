@@ -49,8 +49,11 @@ use fork_codec::dylink_archive::{
     DylinkTransaction,
 };
 
-use crate::act::{ActResult, InstanceId, LinkAct, TableValue};
-use crate::archive::{next_generation, ArchiveState, SyncFlow};
+use crate::act::{ActResult, InstanceId, LinkAct, TableValue, TagId};
+use crate::archive::{
+    next_generation, ArchiveState, SyncFlow, MAX_TABLE_PATCH_BYTES, MAX_TABLE_PATCH_RECORDS,
+    TABLE_PATCH_HEADER_BYTES, TABLE_PATCH_RUN_BYTES,
+};
 use crate::error::{DylinkError, DylinkResult};
 use crate::got::refresh_shared_cells;
 use crate::handles::{CloseOutcome, HandleTable, MAIN_PROGRAM_HANDLE};
@@ -233,6 +236,29 @@ impl Session {
     /// Live transaction tokens, oldest first.
     pub fn tokens(&self) -> Vec<u32> {
         self.transactions.keys().copied().collect()
+    }
+
+    /// Adopt the process's existing exception tags under ids the driver has
+    /// already bound them to.
+    ///
+    /// C++ exceptions and `longjmp` crossing a side-module call require tag
+    /// IDENTITY, not just a matching payload type, and the identity is the main
+    /// image's. A planner that created its own tags would give every side module
+    /// a realm the main image cannot catch in — which fails only when an
+    /// exception actually crosses, long after the load looked successful.
+    pub fn adopt_process_tags(&mut self, longjmp: Option<TagId>, cpp_exception: Option<TagId>) {
+        let highest = [longjmp, cpp_exception]
+            .into_iter()
+            .flatten()
+            .map(|tag| tag.index())
+            .max();
+        self.linker.longjmp_tag = longjmp;
+        self.linker.cpp_exception_tag = cpp_exception;
+        if let Some(highest) = highest {
+            // The planner allocates tag ids from a counter; adopted ones must
+            // not be handed out again to a tag it creates later.
+            self.linker.reserve_tags(highest + 1);
+        }
     }
 
     /// The plan currently linking an object inside `token`, if any.
@@ -1334,6 +1360,68 @@ impl Session {
     /// archive.
     pub fn set_table_patches(&mut self, patches: Vec<DylinkTablePatch>) {
         self.table_patches = patches;
+    }
+
+    /// Append one funcref patch to the journal the next publication carries.
+    ///
+    /// Returns false when the journal is full, in which case the caller must
+    /// take a full table checkpoint instead. The limits are the archive
+    /// format's, so the answer is the format's to give: a driver that guessed
+    /// them would publish a record the decoder then refuses.
+    pub fn append_table_patch(&mut self, patch: DylinkTablePatch) -> bool {
+        if !self.can_append_table_patch(&patch) {
+            return false;
+        }
+        self.table_patches.push(patch);
+        true
+    }
+
+    /// Would [`Session::append_table_patch`] accept this patch?
+    pub fn can_append_table_patch(&self, patch: &DylinkTablePatch) -> bool {
+        let count = self.table_patches.len() + 1;
+        if count > MAX_TABLE_PATCH_RECORDS {
+            return false;
+        }
+        let bytes: usize = self
+            .table_patches
+            .iter()
+            .chain(core::iter::once(patch))
+            .map(|patch| TABLE_PATCH_HEADER_BYTES + patch.runs.len() * TABLE_PATCH_RUN_BYTES)
+            .sum();
+        bytes <= MAX_TABLE_PATCH_BYTES
+    }
+
+    /// The archived objects a fork child must name before it reconciles.
+    ///
+    /// A child builds its activation-to-module map for reference decoding
+    /// BEFORE any object is rebuilt, because module and reference recipes name
+    /// activation coordinates rather than whichever instance loads first. That
+    /// map needs each object's image, and the images live in the archive this
+    /// session decoded.
+    pub fn archived_modules(&self) -> &[DylinkModule] {
+        match &self.archive {
+            Some(archive) => &archive.modules,
+            None => &[],
+        }
+    }
+
+    /// The archive's table-replication state: the fence, the sealed snapshot
+    /// root, the checkpoint that sealed it, and the patch journal since.
+    ///
+    /// This is the only part of the archive a driver reads back, because the
+    /// funcref table replica is the one consumer that is not the loader. The
+    /// modules and transactions never cross the boundary: a reconcile drives
+    /// them from inside.
+    pub fn table_state(&self) -> (u64, u64, u64, &[DylinkTablePatch]) {
+        match &self.archive {
+            Some(archive) => (
+                archive.generation,
+                archive.table_state_root,
+                archive.table_checkpoint_generation,
+                &archive.table_patches,
+            ),
+            None => (0, 0, 0, &[]),
+        }
     }
 
     /// Seal a typed table snapshot. Patches published before a checkpoint are

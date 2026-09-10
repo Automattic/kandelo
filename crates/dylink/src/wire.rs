@@ -1101,6 +1101,57 @@ pub fn encode_table_patches(
     Ok(w.into_bytes())
 }
 
+/// Encode the archived objects a fork child names before it reconciles.
+///
+/// Only the three fields that map an activation to an image cross: the name,
+/// the activation id, and the bytes. A child builds that map before any object
+/// is rebuilt, because module and reference recipes name activation coordinates
+/// rather than whichever instance loads first.
+pub fn encode_archived_modules(
+    modules: &[fork_codec::dylink_archive::DylinkModule],
+) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    w.len_prefix(modules.len())?;
+    for module in modules {
+        w.str(&module.name)?;
+        put_option_u32(&mut w, module.activation_id);
+        w.blob(&module.module_bytes)?;
+    }
+    Ok(w.into_bytes())
+}
+
+/// Encode the patch journal a driver reads back, generations included.
+///
+/// The publication assigns each generation, so unlike [`encode_table_patches`]
+/// this direction carries it: the replica applies only patches NEWER than what
+/// it has already seen, and it has no other way to tell.
+pub fn encode_table_patch_journal(
+    patches: &[fork_codec::dylink_archive::DylinkTablePatch],
+) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    w.len_prefix(patches.len())?;
+    for patch in patches {
+        w.u64(patch.generation);
+        w.u32(patch.activation_id);
+        w.u32(patch.owner_id);
+        w.u64(patch.start);
+        w.u64(patch.table_length);
+        w.len_prefix(patch.runs.len())?;
+        for run in &patch.runs {
+            w.u64(run.length);
+            match run.function {
+                Some(function) => {
+                    w.bool(true);
+                    w.u32(function.activation_id);
+                    w.u32(function.ordinal);
+                }
+                None => w.bool(false),
+            }
+        }
+    }
+    Ok(w.into_bytes())
+}
+
 /// Decode a patch list.
 pub fn decode_table_patches(
     bytes: &[u8],

@@ -52,8 +52,7 @@ host/test/dri-modeset.test.ts	prepared-product
 host/test/dri-multiplex.test.ts	source-only
 host/test/dri-registry.test.ts	source-only
 host/test/dri-smoke.test.ts	prepared-product
-host/test/dylink-fork-archive.test.ts	source-only
-host/test/dylink.test.ts	source-only
+host/test/dylink-planner-drive.test.ts	source-only
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only

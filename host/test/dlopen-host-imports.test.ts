@@ -121,10 +121,10 @@ describe("dlopen host import pointer widths", () => {
       new Uint8Array(memory.buffer, archiveControlAddr - 32, 32),
     );
 
-    expect(support.readForkState()).toMatchObject({
-      nextHandle: 2,
-      libraries: [],
-    });
+    // A process that never published names no objects. The archive itself is
+    // read and validated inside the planner module; what crosses back is only
+    // what a child needs to map activation ids to images.
+    expect(support.readForkState()).toEqual([]);
     expect(() => support.acquireArchiveReader()).toThrow(
       "cannot acquire the dynamic-loader archive reader",
     );

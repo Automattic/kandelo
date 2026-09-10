@@ -64,6 +64,17 @@ pub(crate) const ARCHIVE_GENERATION_OFFSET: u64 = 40;
 /// a larger one could not round-trip, and the format never emits one.
 const MAX_EXACT_GENERATION: u64 = 9_007_199_254_740_991;
 
+/// The KFLA format's bounds on the funcref patch journal.
+///
+/// A journal past either limit must be compacted into a full table checkpoint.
+/// Restated here so the session can answer "will this fit" BEFORE a caller
+/// commits to a patch, rather than having the encoder refuse a record the
+/// caller has already treated as published.
+pub(crate) const MAX_TABLE_PATCH_RECORDS: usize = 256;
+pub(crate) const MAX_TABLE_PATCH_BYTES: usize = 1024 * 1024;
+pub(crate) const TABLE_PATCH_HEADER_BYTES: usize = 64;
+pub(crate) const TABLE_PATCH_RUN_BYTES: usize = 24;
+
 /// One record as it currently exists in guest memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedRecord {

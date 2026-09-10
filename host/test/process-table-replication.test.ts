@@ -3,10 +3,8 @@ import type { DlopenSupport } from "../src/worker-main";
 import {
   __testCreateProcessTableReplicationOwner,
 } from "../src/worker-main";
-import {
-  DylinkForkArchive,
-  type DylinkForkTablePatch,
-} from "../src/dylink-fork-archive";
+import type { DylinkLoader, LoaderTableState } from "../src/dylink-loader";
+import type { DylinkTablePatch as DylinkForkTablePatch } from "../src/dylink-planner-wire";
 import type { ForkActivationRegistry } from "../src/fork-activation-registry";
 import type { ForkTableSnapshot } from "../src/fork-table-snapshot";
 import type { ForkModuleStateArena } from "../src/fork-module-state";
@@ -22,37 +20,77 @@ interface TestTableReplicationOwner {
   reconcileNow(): number;
 }
 
-function archiveFixture() {
-  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8 });
-  let head = 0;
-  let next = 4_096;
-  const archive = new DylinkForkArchive(
-    memory,
-    4,
-    () => head,
-    (value) => { head = value; },
-    (size) => {
-      const address = next;
-      next += Math.ceil(size / 8) * 8;
-      return { address, size };
-    },
-    () => {},
-    "process table test archive",
-  );
-  archive.sync({ nextHandle: 2, libraries: [] });
-  return { archive, memory };
+/**
+ * The archive's table half, as the loader exposes it.
+ *
+ * The record layout, the immutability rules and the generation fence now live
+ * in `crates/dylink::archive` and are proved there. What this suite exercises is
+ * the ORCHESTRATION above them: when a mutation becomes a patch, when the
+ * journal is full enough to force a checkpoint, and which generations a replica
+ * applies. So the archive is a stand-in that keeps exactly the state those
+ * decisions read.
+ */
+interface ArchiveFixture {
+  readonly loader: DylinkLoader;
+  read(): LoaderTableState;
+  generation(): number;
+  publishTablePatch(patch: DylinkForkTablePatch): void;
 }
 
-function dlopenFixture(archive: DylinkForkArchive): DlopenSupport {
+/** The KFLA journal bound, past which a full checkpoint is the only option. */
+const MAX_TABLE_PATCH_RECORDS = 256;
+
+function archiveFixture(): ArchiveFixture {
+  let generation = 1;
+  let tableStateRoot = 0;
+  let tableCheckpointGeneration = 0;
+  let tablePatches: (DylinkForkTablePatch & { generation: number })[] = [];
+  const state = (): LoaderTableState => ({
+    generation,
+    tableStateRoot,
+    tableCheckpointGeneration,
+    tablePatches: [...tablePatches],
+  });
+  const loader = {
+    generation: () => generation,
+    readArchive: () => {},
+    tableState: state,
+    canPublishTablePatch: () => tablePatches.length + 1 <= MAX_TABLE_PATCH_RECORDS,
+    publishTablePatch: (value: DylinkForkTablePatch) => {
+      generation += 1;
+      tablePatches = [...tablePatches, { ...value, generation }];
+      return { state: state() };
+    },
+    publishTableState: (root: number) => {
+      const previousTableStateRoot = tableStateRoot;
+      generation += 1;
+      tableStateRoot = root;
+      tableCheckpointGeneration = generation;
+      // A checkpoint supersedes every patch published before it.
+      tablePatches = [];
+      return { state: state(), previousTableStateRoot };
+    },
+  } as unknown as DylinkLoader;
+  return {
+    loader,
+    read: state,
+    generation: () => generation,
+    publishTablePatch: (value) => {
+      loader.publishTablePatch(value);
+    },
+  };
+}
+
+function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
   let writerDepth = 0;
   let readerDepth = 0;
   let writerObserver = () => {};
   return {
     imports: {},
-    readForkState: () => archive.read(),
+    readForkState: () => [],
     replayDlopens: () => {},
     resetForkChildLock: () => {},
-    archive,
+    loader: () => archive.loader,
     acquireArchiveWriter: () => {
       if (writerDepth++ === 0) writerObserver();
     },
@@ -117,7 +155,7 @@ function patch(generation?: number): DylinkForkTablePatch {
 
 describe("process table replication publication", () => {
   it("uses patches normally and transparently compacts at the journal bound", () => {
-    const { archive } = archiveFixture();
+    const archive = archiveFixture();
     const dlopen = dlopenFixture(archive);
     let checkpoints = 0;
     let typedFallback = false;
@@ -170,7 +208,7 @@ describe("process table replication publication", () => {
   });
 
   it("skips only the fork child's copied baseline and applies later patches", () => {
-    const { archive } = archiveFixture();
+    const archive = archiveFixture();
     archive.publishTablePatch(patch());
     const applied: number[] = [];
     const registry = {
@@ -203,7 +241,7 @@ describe("process table replication publication", () => {
   });
 
   it("observes a borrowed immutable generation without acquiring its writer", () => {
-    const { archive } = archiveFixture();
+    const archive = archiveFixture();
     archive.publishTablePatch(patch());
     const dlopen = dlopenFixture(archive);
     let writerAcquisitions = 0;

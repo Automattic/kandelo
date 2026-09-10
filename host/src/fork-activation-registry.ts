@@ -46,9 +46,9 @@ import {
   ForkFunctionCatalog,
 } from "./fork-function-catalog";
 import type {
-  DylinkForkTablePatch,
-  DylinkForkTablePatchRun,
-} from "./dylink-fork-archive";
+  DylinkTablePatch as DylinkForkTablePatch,
+  DylinkTablePatchRun as DylinkForkTablePatchRun,
+} from "./dylink-planner-wire";
 import {
   FORK_GC_LAYOUT_REQUIRES_PROVENANCE,
   ForkGcProvenanceRegistry,

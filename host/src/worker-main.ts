@@ -15,21 +15,20 @@ import { BorrowedVforkWorkspace } from "./vfork-workspace";
 import {
   createCppExceptionTag,
   createLongjmpTag,
-  DynamicLinker,
   FORK_CAP_DYLINK_MAIN,
   forkInstrumentRoleAvailable,
   readForkInstrumentCapabilityClaim,
   requireCppExceptionTag,
   requireLongjmpTag,
-  type DylinkForkActivationOwner,
-  type DylinkForkState,
-  type LoadedSharedLibrary,
-} from "./dylink";
+} from "./dylink-artifact";
 import {
-  DylinkForkArchive,
-  DylinkForkTableReplica,
-  type DylinkForkArchiveSnapshot,
-} from "./dylink-fork-archive";
+  DylinkLoader,
+  type LoaderArchivedModule,
+  type LoaderForkActivationOwner,
+  type LoaderTableState,
+} from "./dylink-loader";
+import { DylinkForkTableReplica } from "./dylink-table-replica";
+import type { MainImage, SymbolValue } from "./dylink-planner-wire";
 import {
   describeWasmArtifactPolicyFailures,
   extractAbiVersion,
@@ -646,18 +645,104 @@ export function buildKernelImportsForTest(
   );
 }
 
+/**
+ * Names the loader must never publish as main-image symbols.
+ *
+ * They are the loader's own per-module import contract — every side module gets
+ * its own `__memory_base`, its own `__table_base`, and the process's one memory,
+ * table, stack pointer and exception tags. Publishing the main image's under
+ * these names would let a side module resolve them from the global scope and
+ * shadow the ones the planner bound for it.
+ */
+const MAIN_IMAGE_RESERVED_EXPORTS: ReadonlySet<string> = new Set([
+  "memory",
+  "__indirect_function_table",
+  "__memory_base",
+  "__table_base",
+  "__stack_pointer",
+  "__c_longjmp",
+  "__cpp_exception",
+  FORK_UNWIND_TAG_IMPORT_NAME,
+]);
+
+/**
+ * Describe the main image for the planner: its public symbols, and which table
+ * slots its element segments already occupy.
+ *
+ * The slot map is built by scanning the table ONCE against the instance's own
+ * exports. `dylink.ts:4037-4067` did the same scan on every `dlsym` of a
+ * function; the planner keeps the map instead and never scans again, so this is
+ * the only place the identity comparison happens.
+ */
+function describeMainImage(
+  instance: WebAssembly.Instance | undefined,
+  table: WebAssembly.Table,
+): MainImage {
+  const exports: [string, SymbolValue][] = [];
+  const elementSlots: [bigint, number, string][] = [];
+  if (!instance) {
+    return { tableLength: BigInt(table.length), exports, elementSlots };
+  }
+  const byFunction = new Map<Function, string>();
+  for (const [name, exported] of Object.entries(instance.exports)) {
+    if (MAIN_IMAGE_RESERVED_EXPORTS.has(name)) continue;
+    if (typeof exported === "function") {
+      exports.push([name, { kind: "func", instance: 0, export: name }]);
+      // A function exported under two names occupies one slot; the first name
+      // wins, exactly as the scan it replaces did.
+      if (!byFunction.has(exported as Function)) {
+        byFunction.set(exported as Function, name);
+      }
+      continue;
+    }
+    if (exported instanceof WebAssembly.Global) {
+      const raw: unknown = exported.value;
+      exports.push([
+        name,
+        {
+          kind: "data",
+          address: typeof raw === "bigint" ? raw : BigInt(Number(raw) >>> 0),
+          binding: { kind: "export", instance: 0, name },
+        },
+      ]);
+    }
+  }
+  for (let slot = 0; slot < table.length; slot++) {
+    let entry: unknown;
+    try {
+      entry = table.get(slot);
+    } catch {
+      // A table whose element type this embedding cannot read back is not a
+      // funcref table the loader can index; leave it out rather than guess.
+      break;
+    }
+    if (typeof entry !== "function") continue;
+    const name = byFunction.get(entry as Function);
+    if (name !== undefined) elementSlots.push([BigInt(slot), 0, name]);
+  }
+  return { tableLength: BigInt(table.length), exports, elementSlots };
+}
+
 export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
-  /** Validate and return the compact copied live-module closure. */
-  readForkState: () => DylinkForkState;
+  /**
+   * Decode the copied archive, and report the objects a child must name before
+   * anything is rebuilt.
+   *
+   * The archive's records are read and validated inside the planner module; a
+   * child needs only each object's name, activation id and image, because
+   * module and reference recipes name activation coordinates rather than
+   * whichever instance loads first.
+   */
+  readForkState: () => readonly LoaderArchivedModule[];
   /** Recreate the parent's live module and handle state from linear memory. */
   replayDlopens: (
-    validatedState?: DylinkForkState,
     options?: { readonly memoryOwnership?: "copied" | "borrowed" },
   ) => void;
   /** Clear a fork parent's copied archive lock in ordinary child memory. */
   resetForkChildLock: () => void;
-  readonly archive: DylinkForkArchive;
+  /** The process's loader, which owns the archive. */
+  readonly loader: () => DylinkLoader;
   /** Acquire one reentrant process-archive writer depth, blocking if needed. */
   acquireArchiveWriter(): void;
   /** Release exactly one writer depth acquired by this Worker. */
@@ -675,7 +760,7 @@ export interface DlopenSupport {
   setOperationAbortObserver(observer: () => void): void;
   setCommitObserver(
     observer: (
-      linkerPublication: DylinkForkArchiveSnapshot | undefined,
+      linkerPublication: LoaderTableState | undefined,
       tableMutationCommitted: boolean,
     ) => void,
   ): void;
@@ -756,7 +841,7 @@ interface ProcessReferenceReplayImports
  */
 function createProcessDylinkActivationOwner(
   options: ProcessDylinkActivationOwnerOptions,
-): DylinkForkActivationOwner {
+): LoaderForkActivationOwner {
   let nextActivationId = 1;
   const claimed = new Set<number>();
 
@@ -1170,7 +1255,7 @@ export function buildDlopenImports(
   ptrWidth: 4 | 8,
   longjmpTag: WebAssembly.Tag | undefined,
   cppExceptionTag: WebAssembly.Tag | undefined,
-  forkActivationOwner?: DylinkForkActivationOwner,
+  forkActivationOwner?: LoaderForkActivationOwner,
   forkActivationOwnerUnavailableReason?: string,
   forkUnwindTag?: WebAssembly.Tag,
   onTableMutation?: (
@@ -1181,6 +1266,7 @@ export function buildDlopenImports(
   hostImportRuntime?: ForkHostImportWorkerRuntime,
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
+  plannerModule?: WebAssembly.Module,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1191,8 +1277,7 @@ export function buildDlopenImports(
       `invalid dynamic-loader Worker identity ${String(workerIdentity)}`,
     );
   }
-  let linker: DynamicLinker | null = null;
-  const loadedLibraries = new Map<string, LoadedSharedLibrary>();
+  let linker: DylinkLoader | null = null;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number =>
@@ -1292,7 +1377,7 @@ export function buildDlopenImports(
   let tableMutationPending = false;
   let commitObserver:
     | ((
-        linkerPublication: DylinkForkArchiveSnapshot | undefined,
+        linkerPublication: LoaderTableState | undefined,
         tableMutationCommitted: boolean,
       ) => void)
     | null = null;
@@ -1472,12 +1557,23 @@ export function buildDlopenImports(
       releaseArchiveReader();
     }
   };
-  const notifyCommit = (
-    publication: DylinkForkArchiveSnapshot | undefined,
-  ): void => {
+  const notifyCommit = (publication: LoaderTableState | undefined): void => {
     const mutated = tableMutationPending;
     tableMutationPending = false;
     commitObserver?.(publication, mutated);
+  };
+  /**
+   * Publish the loader's state and report what a table replica needs from it.
+   *
+   * The archive's layout, its record reuse and the ORDERING of its generation
+   * write are decided in `crates/dylink::archive`; this only asks for the
+   * publication and reads back the table half, which is the one part of the
+   * archive that is not loader state.
+   */
+  const publishArchive = (): LoaderTableState => {
+    const loader = getLinker();
+    loader.syncArchive();
+    return loader.tableState();
   };
   const abortLinkerOperation = (): void => {
     tableMutationPending = false;
@@ -1850,41 +1946,23 @@ export function buildDlopenImports(
     return null;
   };
 
-  const getLinker = (): DynamicLinker => {
+  const getLinker = (): DylinkLoader => {
     if (linker) return linker;
     const table = getTable();
     const sp = getStackPointer();
     if (!table || !sp)
       throw new Error("dlopen: program has no table or stack pointer");
-
-    // Register main program's exported functions and data globals as global
-    // symbols so shared libraries can resolve references to libc, libphp, etc.
-    // Many libc helpers (e.g. __sigsetjmp_save, __errno_location) are __-
-    // prefixed by convention but still need to be visible to side modules.
-    // RESERVED names are handled per-module by the dylink env Proxy and must
-    // not be shadowed by main exports.
-    const RESERVED = new Set([
-      "memory",
-      "__indirect_function_table",
-      "__memory_base",
-      "__table_base",
-      "__stack_pointer",
-      "__c_longjmp",
-      "__cpp_exception",
-      FORK_UNWIND_TAG_IMPORT_NAME,
-    ]);
-    const globalSymbols = new Map<string, Function | WebAssembly.Global>();
-    const globalSymbolOwners = new Map<string, string | undefined>();
-    const inst = getInstance();
-    if (inst) {
-      for (const [name, exp] of Object.entries(inst.exports)) {
-        if (RESERVED.has(name)) continue;
-        if (typeof exp === "function" || exp instanceof WebAssembly.Global) {
-          globalSymbols.set(name, exp);
-          globalSymbolOwners.set(name, undefined);
-        }
-      }
+    if (!plannerModule) {
+      // The planner is the loader. Without it there is no `dlopen` at all, and
+      // saying so here is the truthful failure: a process that silently loaded
+      // nothing would fail much later, inside a side module's own code.
+      throw new Error(
+        "dlopen: this process worker has no dynamic-linking planner module; " +
+          "rebuild dylink_module32.wasm",
+      );
     }
+
+    const inst = getInstance();
 
     // A main-defined/exported tag is the process ABI authority. If the main
     // image instead imports and re-exports the host tag, the identity is the
@@ -1902,77 +1980,86 @@ export function buildDlopenImports(
         ? cppExceptionTag
         : requireCppExceptionTag(exportedCppExceptionTag, "main module export");
 
-    linker = new DynamicLinker({
-      memory,
-      table,
-      stackPointer: sp,
-      allocateMemory,
-      deallocateMemory,
-      describeMemoryAllocation,
-      adoptMemoryAllocation,
-      forgetMemoryAllocation,
-      globalSymbols,
-      globalSymbolOwners,
-      got: new Map(),
-      loadedLibraries,
-      resolveLibrarySync,
-      longjmpTag: canonicalLongjmpTag,
-      cppExceptionTag: canonicalCppExceptionTag,
-      forkUnwindTag,
-      ptrWidth,
-      forkActivationOwner,
-      forkActivationOwnerUnavailableReason,
-      onTableMutation: (table, firstIndex, length) => {
-        onTableMutation?.(table, firstIndex, length);
-        tableMutationPending = true;
+    const created = new DylinkLoader(
+      {
+        module: plannerModule,
+        memory,
+        ptrWidth,
+        table: () => {
+          const current = getTable();
+          if (!current) throw new Error("dlopen: program has no table");
+          return current;
+        },
+        stackPointer: () => {
+          const current = getStackPointer();
+          if (!current) throw new Error("dlopen: program has no stack pointer");
+          return current;
+        },
+        mainInstance: getInstance,
+        allocateMemory,
+        deallocateMemory,
+        describeMemoryAllocation,
+        adoptMemoryAllocation,
+        readDependencyFile,
+        readArchiveHead,
+        writeArchiveHead,
+        readGenerationFence,
+        writeGenerationFence,
+        ...(forkActivationOwner ? { forkActivationOwner } : {}),
+        ...(forkActivationOwnerUnavailableReason === undefined
+          ? {}
+          : { forkActivationUnavailableReason: forkActivationOwnerUnavailableReason }),
+        onTableMutation: (mutated, firstIndex, length) => {
+          onTableMutation?.(mutated, firstIndex, length);
+          tableMutationPending = true;
+        },
+        ...(hostImportRuntime
+          ? {
+              routeFunctionImport: (imported, implementation) =>
+                hostImportRuntime.routeFunction(imported, implementation),
+            }
+          : {}),
       },
-      routeFunctionImport: hostImportRuntime
-        ? (imported, implementation) =>
-            hostImportRuntime.routeFunction(imported, implementation)
-        : undefined,
-    });
+      {
+        pointerWidth: ptrWidth,
+        hasAllocator: true,
+        forkActivationAvailable: forkActivationOwner !== undefined,
+        forkActivationUnavailableReason:
+          forkActivationOwnerUnavailableReason ??
+          "side modules require a process activation owner",
+        unresolvedPolicy: "elfStrict",
+        memoryBytes: BigInt(memory.buffer.byteLength),
+        sharedMemory:
+          typeof SharedArrayBuffer !== "undefined" &&
+          memory.buffer instanceof SharedArrayBuffer,
+      },
+    );
+    created.adoptProcessTags(canonicalLongjmpTag, canonicalCppExceptionTag);
+    created.publishMainImage(describeMainImage(inst, table));
+    linker = created;
     return linker;
   };
 
-  const forkArchive = new DylinkForkArchive(
-    memory,
-    ptrWidth,
-    readArchiveHead,
-    writeArchiveHead,
-    (size) => ({
-      address: allocateMemory(size, 1),
-      size,
-    }),
-    ({ address, size }) => {
-      deallocateMemory(address, size, true);
-    },
-    "process dylink archive",
-    {
-      read: readGenerationFence,
-      write: writeGenerationFence,
-    },
-  );
-
-  const readForkState = (): DylinkForkState => forkArchive.read();
+  const readForkState = (): readonly LoaderArchivedModule[] => {
+    const loader = getLinker();
+    loader.readArchive();
+    return loader.archivedModules();
+  };
 
   const replayDlopens = (
-    validatedState?: DylinkForkState,
     options: { readonly memoryOwnership?: "copied" | "borrowed" } = {},
   ): void => {
-    const state = validatedState ?? readForkState();
-    if (
-      state.nextHandle === 2 &&
-      state.libraries.length === 0 &&
-      linker === null
-    )
-      return;
+    // A process that never published has nothing to reconcile, and asking the
+    // module is one call rather than a second copy of the state here.
+    if (linker === null && readArchiveHead() === 0) return;
 
-    // Materialize only missing modules, then replace the Worker-local handle
-    // view. Pthread Workers can call this for every process generation.
-    const lk = getLinker();
+    // Materialize only missing modules, then adopt the parent's handle table.
+    // Pthread Workers can call this for every process generation.
+    const loader = getLinker();
     try {
-      lk.reconcileForkModules(state, options);
-      lk.reconcileForkHandleState(state);
+      loader.readArchive();
+      if (loader.archiveIsEmpty()) return;
+      loader.reconcile(options.memoryOwnership ?? "copied");
     } catch (error) {
       abortLinkerOperation();
       throw error;
@@ -2071,7 +2158,7 @@ export function buildDlopenImports(
           claimedLoader = true;
         }
         const request = readDlopenRequest(bytesPtr, bytesLen, namePtr, nameLen);
-        const transaction = getLinker().beginDlopenSync(
+        const transaction = getLinker().begin(
           request.name,
           request.bytes,
           (flags & RTLD_GLOBAL) !== 0,
@@ -2102,7 +2189,7 @@ export function buildDlopenImports(
         if (
           !ownedDlopenTransactions.has(transaction) &&
           Atomics.load(loaderOwner, 0) === workerIdentity &&
-          linker.hasPendingDlopen(transaction)
+          linker.hasPending(transaction)
         ) {
           // A fresh fork child reconstructed this token from the copied
           // archive. Its loader lease was rebound before module replay.
@@ -2112,9 +2199,9 @@ export function buildDlopenImports(
           // Transitional standalone callers still use the explicit commit
           // import. ABI-43 libc always supplies the output pointer and takes
           // the atomic finish path below.
-          const entry = linker.nextDlopenInitialization(transaction);
+          const entry = linker.nextInitialization(transaction);
           if (entry !== 0) {
-            notifyCommit(forkArchive.sync(linker.forkState()));
+            notifyCommit(publishArchive());
           }
           if (entry < 0) {
             ownedDlopenTransactions.delete(transaction);
@@ -2129,24 +2216,24 @@ export function buildDlopenImports(
           ptrWidth,
           "__wasm_dlopen_next handle",
         );
-        const { entry, handle } = linker.advanceDlopenSync(transaction);
+        const { entry, handle } = linker.advance(transaction);
         new DataView(memory.buffer).setInt32(handleRange.offset, handle, true);
         if (entry > 0) {
           // Publish the exact provisional activation/stage before libc can
           // enter it. A fork from that table call can therefore reconstruct
           // both the fresh side instance and the stopped loader generator.
-          notifyCommit(forkArchive.sync(linker.forkState()));
+          notifyCommit(publishArchive());
         } else {
           // Completion opens the public handle and removes the private
           // transaction in this same host transition. Rollback likewise
           // removes the issued entry before control returns to Wasm.
-          notifyCommit(forkArchive.sync(linker.forkState()));
+          notifyCommit(publishArchive());
           ownedDlopenTransactions.delete(transaction);
           releaseLoaderOwnershipIfIdle();
         }
         return entry;
       } catch (error) {
-        getLinker().abortDlopenTransaction(transaction, error);
+        getLinker().abort(transaction, error);
         ownedDlopenTransactions.delete(transaction);
         releaseLoaderOwnershipIfIdle();
         abortLinkerOperation();
@@ -2161,19 +2248,19 @@ export function buildDlopenImports(
       hostDlopenError = null;
       try {
         const linker = getLinker();
-        const handle = linker.commitDlopenSync(transaction);
-        notifyCommit(forkArchive.sync(linker.forkState()));
+        const handle = linker.commit(transaction);
+        notifyCommit(publishArchive());
         // WHY: commit deliberately returns zero without destroying a
         // transaction whose initializer is still outstanding. Retaining the
         // process lease keeps another pthread from interleaving loader state
         // if arbitrary Wasm calls this transitional import too early.
-        if (!linker.hasPendingDlopen(transaction)) {
+        if (!linker.hasPending(transaction)) {
           ownedDlopenTransactions.delete(transaction);
           releaseLoaderOwnershipIfIdle();
         }
         return handle;
       } catch (error) {
-        getLinker().abortDlopenTransaction(transaction, error);
+        getLinker().abort(transaction, error);
         ownedDlopenTransactions.delete(transaction);
         releaseLoaderOwnershipIfIdle();
         abortLinkerOperation();
@@ -2241,14 +2328,9 @@ export function buildDlopenImports(
         const nameBytesCopy = new Uint8Array(nameBytesView);
         const name = decoder.decode(nameBytesCopy);
         const lk = getLinker();
-        const handle = lk.dlopenSync(
-          name,
-          bytesCopy,
-          undefined,
-          (flags & RTLD_GLOBAL) !== 0,
-        );
+        const handle = lk.dlopenSync(name, bytesCopy, (flags & RTLD_GLOBAL) !== 0);
         if (handle > 0) {
-          notifyCommit(forkArchive.sync(lk.forkState()));
+          notifyCommit(publishArchive());
         } else {
           abortLinkerOperation();
         }
@@ -2304,7 +2386,7 @@ export function buildDlopenImports(
         const lk = getLinker();
         const result = lk.dlclose(handle);
         if (result === 0) {
-          notifyCommit(forkArchive.sync(lk.forkState()));
+          notifyCommit(publishArchive());
         } else {
           abortLinkerOperation();
         }
@@ -2358,7 +2440,7 @@ export function buildDlopenImports(
     readForkState,
     replayDlopens,
     resetForkChildLock,
-    archive: forkArchive,
+    loader: getLinker,
     acquireArchiveWriter,
     releaseArchiveWriter: releaseMainDlopenLock,
     acquireArchiveReader,
@@ -2930,7 +3012,7 @@ function createProcessTableReplicationOwner(options: {
   readonly tableSnapshot: ForkTableSnapshot;
   readonly dlopen: DlopenSupport;
   readonly newArena: () => ForkModuleStateArena;
-  readonly materializeModules: (snapshot: DylinkForkArchiveSnapshot) => void;
+  readonly materializeModules: () => void;
   readonly restoreSnapshots: boolean;
   /**
    * The vfork parent holds the archive reader from capture until its parked
@@ -2957,9 +3039,9 @@ function createProcessTableReplicationOwner(options: {
     arena.release();
   };
   const replica = new DylinkForkTableReplica(
-    options.dlopen.archive,
+    options.dlopen.loader(),
     (snapshot, previousGeneration) => {
-      options.materializeModules(snapshot);
+      options.materializeModules();
       if (suppressInitialSnapshotRestore) {
         // WHY: a fork child restores the exact capture-time table graph from
         // its normal KFMS arena after all activations exist. The archive
@@ -2992,7 +3074,7 @@ function createProcessTableReplicationOwner(options: {
     // syscall returns. Adopt the exact immutable generation the child has
     // already materialized so side-module guards report truthful state
     // without attempting to mutate either archive lock word.
-    replica.adoptPublishedGeneration(options.dlopen.archive.generation());
+    replica.adoptPublishedGeneration(options.dlopen.loader().generation());
   }
 
   const reconcileLocked = (): number => {
@@ -3016,7 +3098,7 @@ function createProcessTableReplicationOwner(options: {
     }
   };
 
-  const publishLocked = (): DylinkForkArchiveSnapshot => {
+  const publishLocked = (): LoaderTableState => {
     const arena = options.newArena();
     arena.begin();
     let root: number;
@@ -3028,12 +3110,12 @@ function createProcessTableReplicationOwner(options: {
     }
     let publication;
     try {
-      publication = options.dlopen.archive.publishTableState(root);
+      publication = options.dlopen.loader().publishTableState(root);
     } catch (error) {
       arena.release();
       throw error;
     }
-    replica.adoptPublishedGeneration(publication.snapshot.generation);
+    replica.adoptPublishedGeneration(publication.state.generation);
     if (
       publication.previousTableStateRoot !== 0 &&
       publication.previousTableStateRoot !== root
@@ -3041,7 +3123,7 @@ function createProcessTableReplicationOwner(options: {
       releaseArena(publication.previousTableStateRoot);
     }
     deferredPublication = false;
-    return publication.snapshot;
+    return publication.state;
   };
 
   options.dlopen.setCommitObserver(
@@ -3119,10 +3201,10 @@ function createProcessTableReplicationOwner(options: {
           );
           if (
             patch !== null &&
-            options.dlopen.archive.canPublishTablePatch(patch)
+            options.dlopen.loader().canPublishTablePatch(patch)
           ) {
-            const publication = options.dlopen.archive.publishTablePatch(patch);
-            replica.adoptPublishedGeneration(publication.snapshot.generation);
+            const publication = options.dlopen.loader().publishTablePatch(patch);
+            replica.adoptPublishedGeneration(publication.state.generation);
           } else {
             // Typed/opaque entries stay on the Wasm codec path. The same full
             // checkpoint transparently compacts a bounded patch journal; no
@@ -3145,7 +3227,7 @@ function createProcessTableReplicationOwner(options: {
     },
     reconcileNow,
     isCurrentUnderLock: () =>
-      replica.generation() === options.dlopen.archive.generation(),
+      replica.generation() === options.dlopen.loader().generation(),
     abortActiveMutations,
   };
 }
@@ -3890,7 +3972,7 @@ export async function centralizedWorkerMain(
       let earlyChildReferences: ForkEarlyChildReferenceProvider | null = null;
       let decodedChildReferences: DecodedSegmentedForkReferenceTransaction | null =
         null;
-      let childDylinkState: DylinkForkState | null = null;
+      let childDylinkState: readonly LoaderArchivedModule[] | null = null;
       // Phase 6 item 3c: the raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
       // per activation and the host-exception owner, captured in the child's
       // pre-instantiation planning block (where the compiled activation `modules`
@@ -4333,6 +4415,7 @@ export async function centralizedWorkerMain(
         processHostImportRuntime,
         pid,
         forkMemoryOwnership,
+        initData.dylinkModuleModule,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -4345,10 +4428,8 @@ export async function centralizedWorkerMain(
         ),
         dlopen: dlopenSupport,
         newArena: newModuleStateArena,
-        materializeModules: (snapshot) => {
-          dlopenSupport.replayDlopens(snapshot, {
-            memoryOwnership: forkMemoryOwnership,
-          });
+        materializeModules: () => {
+          dlopenSupport.replayDlopens({ memoryOwnership: forkMemoryOwnership });
         },
         // The inherited fork arena restores a child process's complete
         // global/table/reference graph and preserves aliases with live frames.
@@ -4378,7 +4459,7 @@ export async function centralizedWorkerMain(
           FORK_REFERENCE_TRANSACTION_OWNER_ID,
         );
         const modules = new Map<number, WebAssembly.Module>([[0, module]]);
-        for (const library of childDylinkState.libraries) {
+        for (const library of childDylinkState) {
           if (library.activationId === undefined) continue;
           if (modules.has(library.activationId)) {
             throw new Error(
@@ -4558,7 +4639,7 @@ export async function centralizedWorkerMain(
         );
         const archivedOrder = [
           0,
-          ...childDylinkState.libraries.flatMap(({ activationId }) =>
+          ...childDylinkState.flatMap(({ activationId }) =>
             activationId === undefined ? [] : [activationId],
           ),
         ];
@@ -4803,7 +4884,7 @@ export async function centralizedWorkerMain(
           if (!childDylinkState) {
             throw new Error("inherited dynamic-linker state was not prepared");
           }
-          dlopenSupport.replayDlopens(childDylinkState, {
+          dlopenSupport.replayDlopens({
             memoryOwnership: forkMemoryOwnership,
           });
           // Ordinary children reconcile a copied archive under their private
@@ -5510,6 +5591,8 @@ export async function centralizedWorkerMain(
         undefined,
         undefined,
         pid,
+        "copied",
+        initData.dylinkModuleModule,
       );
       const importObject = buildImportObject(
         module,
@@ -6987,6 +7070,8 @@ export async function centralizedThreadWorkerMain(
       },
       threadHostImportRuntime ?? undefined,
       tid,
+      "copied",
+      initData.dylinkModuleModule,
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -6999,8 +7084,8 @@ export async function centralizedThreadWorkerMain(
         ),
         dlopen: threadDlopenSupport,
         newArena: newThreadModuleStateArena,
-        materializeModules: (snapshot) => {
-          threadDlopenSupport.replayDlopens(snapshot);
+        materializeModules: () => {
+          threadDlopenSupport.replayDlopens();
         },
         restoreSnapshots: true,
         label: `pid=${pid} tid=${tid}`,
@@ -7166,7 +7251,7 @@ export async function centralizedThreadWorkerMain(
       WebAssembly.Global | undefined;
     if (
       (!threadTable || !threadStackPointer) &&
-      threadDlopenSupport.archive.generation() !== 0
+      threadDlopenSupport.loader().generation() !== 0
     ) {
       throw new Error(
         `pid=${pid} tid=${tid}: process has dlopen table recipes but ` +

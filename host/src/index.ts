@@ -67,8 +67,20 @@ export {
   binariesDir,
   localBinariesDir,
 } from "./binary-resolver";
-export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker } from "./dylink";
-export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } from "./dylink";
+// The dynamic loader itself is `crates/dylink`, driven through
+// `crates/dylink-module`. What is left on this side is what a Rust planner
+// cannot be asked for: a reader for what an artifact SAYS about itself, and the
+// driver that performs the engine acts the planner orders.
+export { parseDylinkSection, isForkRuntimeExport } from "./dylink-artifact";
+export type { DylinkMetadata } from "./dylink-artifact";
+export { DylinkLoader, MAIN_PROGRAM_HANDLE } from "./dylink-loader";
+export type {
+  DylinkLoaderOptions,
+  LoaderArchivedModule,
+  LoaderForkActivation,
+  LoaderForkActivationOwner,
+  LoaderTableState,
+} from "./dylink-loader";
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 export { ThreadPageAllocator } from "./thread-allocator";
 export type { ThreadAllocation, ThreadPageAllocatorOptions } from "./thread-allocator";

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { WPK_FORK_EXPORTS } from "../src/constants";
-import { SIDE_MODULE_FORK_EXPORTS } from "../src/dylink";
+import { SIDE_MODULE_FORK_EXPORTS } from "../src/dylink-artifact";
 import {
   ABI_CUSTOM_SECTION,
   ABI_KERNEL_EXPORT,

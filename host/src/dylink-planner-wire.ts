@@ -842,12 +842,12 @@ export function encodeTablePatches(patches: readonly DylinkTablePatch[]): Uint8A
   for (const patch of patches) {
     w.u32(patch.activationId);
     w.u32(patch.ownerId);
-    w.u64(patch.start);
-    w.u64(patch.tableLength);
+    w.u64(BigInt(patch.start));
+    w.u64(BigInt(patch.tableLength));
     w.u32(patch.runs.length);
     for (const run of patch.runs) {
-      w.u64(run.length);
-      if (run.function === undefined) {
+      w.u64(BigInt(run.length));
+      if (run.function === null) {
         w.bool(false);
       } else {
         w.bool(true);
@@ -865,18 +865,34 @@ export interface DylinkTableFunction {
   readonly ordinal: number;
 }
 
-/** `length` consecutive slots set to `function`, or cleared when absent. */
+/**
+ * `length` consecutive slots set to `function`, or cleared when it is `null`.
+ *
+ * Plain numbers rather than `bigint` because the archive format caps every
+ * stored `u64` at `Number.MAX_SAFE_INTEGER` — the value could not round-trip
+ * through the host's reader otherwise, so the format never emits a larger one.
+ */
 export interface DylinkTablePatchRun {
-  readonly length: bigint;
-  readonly function?: DylinkTableFunction;
+  readonly length: number;
+  readonly function: DylinkTableFunction | null;
 }
 
 /** One published funcref table patch. */
 export interface DylinkTablePatch {
+  /**
+   * The publication that made this patch visible.
+   *
+   * Absent on a patch a Worker has just captured and not yet published: the
+   * generation is assigned by the publication, and a caller-chosen one could
+   * claim to be newer than the archive it lands in. A consumer that applies a
+   * patch therefore requires it, and that is what distinguishes a published
+   * recipe from a proposed one.
+   */
+  readonly generation?: number;
   readonly activationId: number;
   readonly ownerId: number;
-  readonly start: bigint;
-  readonly tableLength: bigint;
+  readonly start: number;
+  readonly tableLength: number;
   readonly runs: readonly DylinkTablePatchRun[];
 }
 

@@ -15,7 +15,7 @@ import {
   FORK_CAP_SIDE_ENTRY,
   parseDylinkSection,
   readForkInstrumentCapabilities,
-} from "../src/dylink";
+} from "../src/dylink-artifact";
 import {
   makeHostScratchTempRoot,
   runCentralizedProgram,

@@ -2,15 +2,21 @@
 //! wrote.
 //!
 //! `testdata/dylink-archive-wasm32.bin` is real output from
-//! `host/src/dylink-fork-archive.ts`, captured by
-//! `testdata/gen-dylink-archive-fixture.mts`. The decoder's own suite proves
-//! this crate can READ it. These tests prove the encoder can WRITE it: given
-//! the same archive and the same record addresses, every byte must match.
+//! `host/src/dylink-fork-archive.ts`. The decoder's own suite proves this crate
+//! can READ it. These tests prove the encoder can WRITE it: given the same
+//! archive and the same record addresses, every byte must match.
 //!
 //! That is a much stronger claim than a self-round-trip. An encoder and a
 //! decoder that agree only with each other can drift from the format together
-//! and never notice; here the reference is the incumbent writer whose output a
-//! live fork child has to consume.
+//! and never notice; here the reference is the writer whose output a live fork
+//! child had to consume.
+//!
+//! **The fixture is now frozen, and deliberately so.** The TypeScript writer it
+//! came from has been deleted — this crate and `crates/dylink::archive` are the
+//! only writer left. Regenerating these bytes from the surviving writer would
+//! turn the reference into a self-portrait and lose exactly the property that
+//! makes it worth having: that a process which last published under the old
+//! writer can still be read, and republished, by the new one.
 
 use fork_codec::dylink_archive::{
     decode_dylink_archive,

@@ -413,6 +413,12 @@ impl Linker {
         id
     }
 
+    /// Reserve tag ids a caller has already bound to engine objects, so the
+    /// planner never hands one of them out for a tag it creates.
+    pub fn reserve_tags(&mut self, next: u32) {
+        self.next_tag = self.next_tag.max(next);
+    }
+
     fn width(&self) -> PointerWidth {
         self.config.pointer_width
     }
