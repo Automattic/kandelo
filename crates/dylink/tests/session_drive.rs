@@ -14,6 +14,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use dylink::act::{ActResult, GlobalId, InstanceExport, LinkAct, TableValue, WasmValue};
+use fork_codec::dylink_archive::{DylinkTablePatch, DylinkTablePatchRun};
 use dylink::error::DylinkError;
 use dylink::handles::CloseOutcome;
 use dylink::plan::{HostRequest, LinkerConfig, LoadRequest, PlanStep, StagedCall};
@@ -1277,4 +1278,64 @@ fn an_aborted_load_releases_its_dependency_through_the_same_loop() {
         "a dependency this transaction loaded is released with it",
     );
     assert!(!session.contains(token));
+}
+
+// ---------------------------------------------------------------------------
+// The funcref patch journal
+// ---------------------------------------------------------------------------
+
+/// A process that never linked anything still publishes funcref table patches.
+///
+/// The activation coordinator captures a patch from a live `WebAssembly.Table`,
+/// so it cannot know the generation the patch will be published under — that
+/// value is the fence, and the fence belongs to the publication. The capture
+/// therefore arrives unassigned, and the session numbers it. Before it did, the
+/// archive planner refused the whole publication ("the loader state does not
+/// fit an archive image") because a patch at generation 0 is not strictly above
+/// the checkpoint, and every process that replicated a table without ever
+/// calling `dlopen` failed at its first table mutation, naming a loader it had
+/// never asked for.
+#[test]
+fn an_unassigned_funcref_patch_is_numbered_by_the_publication() {
+    let mut session = process_session();
+    let mut executor = Executor::new(4, 0x1000);
+
+    let patch = |start: u64| DylinkTablePatch {
+        generation: 0,
+        activation_id: 1,
+        owner_id: 7,
+        start,
+        table_length: 16,
+        runs: vec![DylinkTablePatchRun { length: 1, function: None }],
+    };
+
+    assert!(session.append_table_patch(patch(3)), "the journal has room");
+    let token = session.archive_sync_begin().expect("a patch-only archive is publishable");
+    executor.drive(&mut session, token).expect("publish");
+    let (head, generation) = session.archive_sync_finish(token).expect("finish");
+    assert!(head != 0 && generation > 0);
+
+    // A second capture is numbered above the first, and both survive.
+    assert!(session.append_table_patch(patch(9)));
+    let token = session.archive_sync_begin().expect("begin");
+    executor.drive(&mut session, token).expect("publish");
+    let (head, generation) = session.archive_sync_finish(token).expect("finish");
+
+    let mut child = process_session();
+    let mut child_executor = Executor::new(4, 0x1000);
+    child_executor.guest = executor.guest.clone();
+    let read = child.archive_read_begin(head, 1 << 20).expect("read begins");
+    child_executor.drive(&mut child, read).expect("walk");
+    child.archive_read_finish(read).expect("decode");
+    let (fence, root, checkpoint, patches) = child.table_state();
+    assert_eq!(fence, generation);
+    assert_eq!((root, checkpoint), (0, 0), "no checkpoint has been sealed");
+    assert_eq!(patches.len(), 2);
+    assert_eq!(patches.iter().map(|p| p.start).collect::<Vec<_>>(), vec![3, 9]);
+    assert!(
+        patches[0].generation > 0 && patches[1].generation > patches[0].generation,
+        "patch generations are strictly increasing: {:?}",
+        patches.iter().map(|p| p.generation).collect::<Vec<_>>(),
+    );
+    assert!(patches[1].generation <= fence, "and never above the header's fence");
 }

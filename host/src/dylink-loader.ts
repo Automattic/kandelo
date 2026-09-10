@@ -503,7 +503,12 @@ export class DylinkLoader {
 
   /** Publish the loader's state, and the head and fence that make it visible. */
   syncArchive(): { readonly head: number; readonly generation: number } {
-    this.#requireMainImage();
+    // Deliberately does NOT publish the main image. A process with no
+    // `__indirect_function_table` — one that never links anything — still
+    // publishes funcref table patches on behalf of the fork activation
+    // coordinator, and the archive records loaded objects, not the main image's
+    // scope. Demanding a table here failed those processes at a table mutation,
+    // naming a loader the program had never asked for.
     const token = this.#session.archiveSyncBegin();
     this.#drive(token);
     const published = this.#session.archiveSyncFinish(token);

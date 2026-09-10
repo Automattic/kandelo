@@ -549,7 +549,7 @@ const ownershipSeeds: OwnershipSeed[] = [
       "refuse a region that would not fit.",
   },
   {
-    declaration: "host/src/dylink.ts::LoadSharedLibraryOptions.memory",
+    declaration: "host/src/dylink-loader.ts::DylinkLoaderOptions.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
@@ -1137,7 +1137,13 @@ const auditAllowances: AuditAllowance[] = [
     why: "The memory32 branch creates one allocator-owned process generation and immediately records its exact ownership and byte charge.",
   },
   {
-    key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",
+    key: "host/src/dylink-planner.ts::PlannerSession.instantiate::wasm-instance-authority::new WebAssembly.Instance(module, {})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The dynamic-linking planner module imports nothing at all — not even a memory — so this instance can reach no process state; it answers questions in its own linear memory.",
+  },
+  {
+    key: "host/src/dylink-planner.ts::DylinkActExecutor.perform::wasm-instance-authority::new WebAssembly.Instance( module, this.#environment.wrapImports?.(imports) ?? imports, )",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This instance is a user process's dynamically linked shared library and receives only that activation's wrapped process imports.",

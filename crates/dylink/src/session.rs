@@ -1528,7 +1528,29 @@ impl Session {
         desired.generation = next_generation(self.published.generation)?;
         desired.table_state_root = self.table_state_root;
         desired.table_checkpoint_generation = self.table_checkpoint_generation;
-        desired.table_patches = self.table_patches.clone();
+        // A patch is captured before it is published, so it arrives with no
+        // generation: the fence value belongs to the publication, not to the
+        // caller, and a caller-chosen one could claim to be newer than the
+        // archive it lands in. The format requires patch generations STRICTLY
+        // increasing and no greater than the archive's, so each unassigned
+        // patch takes the next value and the archive's own fence advances past
+        // the last of them.
+        let mut generation = self.published.generation;
+        let mut patches = Vec::with_capacity(self.table_patches.len());
+        for patch in &self.table_patches {
+            if patch.generation != 0 {
+                generation = generation.max(patch.generation);
+                patches.push(patch.clone());
+                continue;
+            }
+            generation = next_generation(generation)?;
+            patches.push(DylinkTablePatch { generation, ..patch.clone() });
+        }
+        // `generation` is now the last patch's, and never below the published
+        // fence, so the publication's own fence is the value after it.
+        desired.generation = next_generation(generation)?;
+        desired.table_patches = patches.clone();
+        self.table_patches = patches;
         let flow = SyncFlow::plan(&self.published, desired)?;
         self.transactions
             .insert(token, Transaction { awaiting: None, flow: Flow::Sync(flow) });
