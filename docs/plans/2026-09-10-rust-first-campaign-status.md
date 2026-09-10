@@ -2161,3 +2161,120 @@ instead of read as a broken feature.
 - **Fourteen inherited claims have now been disproved, eight of them the
   coordinator's.** The newest is this census's own row 2 — see value plan §2y.
   Measure rather than inherit, *including* what was measured yesterday.
+
+## K5 I6c — the TypeScript `ld.so` is deleted (2026-09-10)
+
+`host/src/dylink.ts` (4,188) and `host/src/dylink-fork-archive.ts` (2,152)
+are gone. Every `dlopen`, `dlsym`, `dlclose` and fork replay in a Kandelo
+process is planned by `crates/dylink` and performed by a driver that makes no
+linker decision.
+
+**In-scope TypeScript for this item: −4,314**, measured
+`5ba896788..e1722458d`. The campaign figure moves from −693 to roughly
+−5,007.
+
+### The six contracts, and how each is exercised
+
+| contract | closed by | exercised by |
+|---|---|---|
+| `DT_NEEDED` resolution | `HostRequest::ReadDependency` + the session's search order | a real `libtop.so`→`libleaf.so` chain built with `wasm32posix-cc -shared`, driven through the wasm module, asserting the exact probed path list; and a real `DT_NEEDED` closure resolved from the process VFS and replayed into a fork child (`fork-from-dlopen-side-module-e2e`) |
+| `dlsym` → address | `dl_sym_begin`/`dl_sym_address` as a transaction | `dlopen-e2e` resolves `adder_add` to a table index and calls it; the second lookup performs NO engine work |
+| multi-transaction sessions | tokens, `dl_pending`, `dl_finished` | two concurrent `dl_open_begin`s each get a token; the staged prepare/next/commit path runs a real side module |
+| fork-state capture | `Session::fork_state` | four archive round-trips, including one taken at `wpk_fork_module_bootstrap` |
+| fork reconcile | `fork_reconcile_begin`/`_finish` | a child rebuilds a parent's closure at the parent's addresses with the parent's handles |
+| `dlclose` unload | `dl_close_begin`/`dl_close_result` | slots nulled, mapping released, global scope rebuilt; a dependency outlives its consumer only until the consumer is gone |
+
+### Six MORE contracts the six did not name
+
+The previous agent's finding was right in kind and short in count. Closing
+the six exposed six more, each verified against a call site:
+
+7. **The archive's record chain could not be read by the module at all.** It
+   imports nothing, so guest memory is unreachable from inside it.
+   `fork_codec::dylink_archive::walk::ArchiveWalk` turns the archive into a
+   sequence of byte-range requests, and an `ArchiveBytes` trait lets ONE
+   decoder serve both a flat caller and a sparse one.
+8. **Funcref table-patch publication is not loader state** but rides in the
+   same record chain under the same generation fence
+   (`worker-main.ts:3041-3229`). It crosses back as the only part of the
+   archive a driver reads.
+9. **The parent's saved `GOT.func` value** (`dylink.ts:1651`). A child
+   re-deriving a funcref index aims a live function pointer at a different
+   function. The planner decided GOT cells in a phase that ran BEFORE the
+   activation existed, so `Activation` now runs before `Got` and the planner
+   ASKS (`HostRequest::SavedGotFunc`).
+10. **The process's own exception tags.** The planner would have created its
+    own; a side module given a tag the main image cannot catch in fails only
+    when an exception crosses. `dl_adopt_process_tags`.
+11. **A staged transaction must be claimed by a module initialization**, and
+    a load suspended at bootstrap has no committed record to claim it. The
+    session synthesizes the provisional record from the in-flight plan.
+12. **An in-flight staged transaction must be RESTORED in a fork child** —
+    `dylink.ts:2854 restorePendingDlopenTransactions`. Not done; see
+    NDD-K5-2.
+
+### One defect that was blocking the whole branch
+
+`wasmContainsLegacyAsyncify` scanned an artifact's entire byte image for the
+ASCII text `asyncify_`. `crates/kernel` links `crates/wasm-artifact`, whose
+own diagnostic string contains it — so the host resolver refused the kernel
+that the kernel's own policy authority would have admitted, with "Binary
+exists but was rejected by artifact policy". **Every real-`dlopen` e2e test
+on this branch was gated behind that refusal**, which is why the recorded
+`115 passed / 2 failed of 118` baseline could not be reproduced. Fixed by
+applying the rule `crates/wasm-artifact` already applies — an artifact is
+Asyncify-instrumented when it EXPORTS `asyncify_*` — which also retires the
+duplicated authority.
+
+### NEEDS-DEFER-DECISION — NDD-K5-2
+
+**What:** restoring an in-flight staged `dlopen` transaction in a fork child.
+
+**Why it is open:** a fork taken while a side module's constructor is
+running archives the transaction and a provisional record for the object.
+The child rebuilds the object, but the parent's TOKEN is in the child's
+copied memory and libc will call `__wasm_dlopen_next(token)` on it. The
+child's session has no such transaction, and the reconcile currently drives
+the replayed object to completion instead — re-running a constructor over
+already-constructed state.
+
+**Cost now:** the child must create a Load transaction under the ARCHIVED
+token whose plan is positioned at the recorded stage, and the reconcile must
+stop there rather than finish. `LinkPlan` already yields the full staged
+sequence for an in-flight replay precisely so a selector can stop at the
+resumed call — but WHICH earlier stages a child must re-run is a fork
+semantics question (bootstrap is instance-local; relocations are already
+applied in copied memory), and guessing it corrupts a child silently rather
+than loudly. That is why it is not guessed at here.
+
+**Cost later:** none that grows. Two tests are red and named.
+
+**Gates:** `fork-from-dlopen-side-module-e2e` — "replays a fork issued while
+dlopen runs a side-module constructor" and "lowers the original
+two-argument loader before a constructor can fork". Both fail with
+`fork-replay-dlopen failed: [object WebAssembly.Exception]`.
+
+**Recommendation:** one item, scoped as "restore the in-flight transaction",
+with the stage-selection question answered by the maintainer or by reading
+the deleted `loadSharedLibrarySyncSteps` resume path out of git history.
+
+### What was measured
+
+The `dlopen` suite, in the dev shell against an installed kernel:
+**32 passed / 4 failed / 1 skipped of 37.** Two of the four are the tracked
+pre-existing pthread `__wpk_fork_frame_reserve` gap (73fd6763f); two are
+NDD-K5-2.
+
+`cargo test -p dylink -p dylink-module -p fork-codec -p runtime-core
+--target aarch64-apple-darwin`: **2,501 passed, 0 failed.**
+`cargo check` clean on wasm32 and on wasm64 (`-Z build-std=core,alloc`).
+
+**Coverage this traded.** `host/test/dylink.test.ts` (3,265) and
+`host/test/dylink-fork-archive.test.ts` (492) tested the deleted
+implementations and went with them. Standing in their place: 128 Rust tests
+across `dylink`/`dylink-module`, 460 in `fork-codec` including the
+byte-for-byte encoder check against the archive image the TypeScript writer
+actually produced, and the real-`dlopen` e2e suite, which is unchanged and
+remains the behavioural gate. `crates/fork-codec/testdata/dylink-archive-wasm32.bin`
+is now FROZEN and its generator deleted: regenerating it from the surviving
+writer would turn the reference into a self-portrait.
