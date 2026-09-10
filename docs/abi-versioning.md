@@ -1102,6 +1102,48 @@ Packages built after an additive change may depend on the new syscall or
 export; those packages should be resolved with the matching current
 kernel, even though the ABI epoch did not change.
 
+#### `kernel_rootfs_load_image` and `env.host_image_read` (ABI 44 epoch)
+
+Additive, in both directions, and recorded here so the reasoning is
+auditable rather than implicit.
+
+`kernel_rootfs_load_image(image_len_lo, image_len_hi)` lets the kernel
+build the in-kernel rootfs overlay's base tree by parsing the `/` VFS
+image itself, instead of consuming the RTFS boot manifest a host walked
+the image to produce. It is a NEW export beside
+`kernel_rootfs_load_manifest`; every existing export keeps its kind,
+signature, and semantics, and a host that never calls the new one behaves
+exactly as before. Under the rule above, that is a backward-compatible
+addition: snapshot regenerated, no `ABI_VERSION` bump.
+
+The kernel reads the image's bytes through a new `env.host_image_read`
+import. That is an addition to the HOST adapter surface, not the guest
+one: it does not change what a compiled program must carry, and
+`ABI_VERSION` gates program-to-kernel binding. It does mean a host built
+before this change cannot instantiate a kernel built after it — the
+instantiation fails loudly with a missing-import link error, which is the
+truthful failure, not a silent wrong answer. Kernel and hosts ship
+together from this repository, and `verify-fresh` catches a stale
+pairing.
+
+The import is expected to be temporary as a NET addition:
+`EXPECTED_HOST_IMPORT_COUNT` (`crates/host-native/src/lib.rs`) rises from
+84 to 85 here, and the cutover that deletes `emitRootfsManifest` and its
+host-side inode-to-path map retires `host_blob_read` with it, returning
+the count to 84.
+
+**Image compatibility is NOT additive, and is deliberately strict.**
+`kernel_rootfs_load_image` requires the image to declare a `KLZY`
+kernel-lazy section. An image predating that section is refused with
+`EINVAL` rather than read on a best-effort basis: the kernel cannot
+distinguish "this image has no lazy files" from "this image records its
+lazy files only in the host-side JSON I cannot read", and the
+best-effort read produces a tree where every deferred file reports size
+0 — wrong, and indistinguishable from right. An image with genuinely no
+lazy files still carries the section, empty, in 20 bytes. Per the ABI
+contract, an ABI-mismatched image fails loudly and is rebuilt through the
+normal package/release path.
+
 An additive export is compatible only while existing required capabilities and
 existing semantics remain unchanged. ABI 43's scratch work is deliberately not
 such an addition: it expands the required host-adapter export set, removes the
