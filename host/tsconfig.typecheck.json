@@ -20,7 +20,12 @@
     "rootDir": null,
     "declaration": false,
     "sourceMap": false,
-    "outDir": null
+    "outDir": null,
+    // `vite/client` declares the `?url` / `?worker&url` virtual-module forms
+    // and `import.meta.env`. Without it, nine real source files report TS2307
+    // or TS2339 for imports the Vite build resolves correctly — noise that
+    // would hide a genuine error behind it.
+    "types": ["node", "vite/client"]
   },
   "include": ["src"]
 }

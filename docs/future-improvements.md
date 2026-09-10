@@ -1133,3 +1133,30 @@ gate reported none of them.
 
 The Vite-typing gap should be closed first, so the remaining count is small
 enough that a new error is visible — the property this gate lacked.
+
+### The TLS code's type errors describe a browser-only runtime hazard
+
+With Vite's ambient types in the program, the host typecheck baseline is **9
+errors**, and **8 are Web Crypto calls in `packages/registry/openssl/src/tls/`**
+(`crypto.subtle.importKey`, `crypto.subtle.sign`, and the certificate path)
+receiving `Uint8Array<ArrayBufferLike>` where `BufferSource` is required. The
+ninth is `host/src/networking/tls-network-backend.ts:213`, the same shape.
+
+`ArrayBufferLike` is `ArrayBuffer | SharedArrayBuffer`. **`BufferSource`
+excludes `SharedArrayBuffer`, and SubtleCrypto throws a `TypeError` when handed
+a view backed by one.**
+
+In Kandelo a guest's memory **is** a `SharedArrayBuffer`. So the type error is
+not pedantry: it says that if TLS key or secret material ever reaches these
+calls as a view over guest memory, rather than copied into a non-shared buffer
+first, the call fails at runtime — in the browser, in the TLS path.
+
+**Not yet proven reachable**, and that is the next step rather than a fix. What
+is established is that the types permit a value Web Crypto forbids, on a path
+where the forbidden value is the ambient case rather than an exotic one. A
+short probe — pass a SAB-backed view to `crypto.subtle.importKey` in each
+engine — would settle it, in the way the K0/K0c probes settled their questions.
+
+Out of the rust-first campaign's scope (`packages/**`), and
+`tls-network-backend.ts` belongs to K11's outstanding second pass, so this is
+recorded rather than fixed.
