@@ -819,6 +819,13 @@ const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
 const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
 const SYS_SELECT = ABI_SYSCALLS.Select;
+/**
+ * `kernel_epoll_wake_indices` token families. The kernel rejects any other
+ * value with EINVAL; these two must stay in step with the `KIND_*` constants
+ * in `crates/kernel/src/wasm_api.rs`.
+ */
+const EPOLL_WAKE_KIND_PIPE = 0;
+const EPOLL_WAKE_KIND_ACCEPT = 1;
 const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
 const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
@@ -15139,17 +15146,27 @@ export class CentralizedKernelWorker {
     acceptIndices: number[];
   } {
     return {
-      pipeIndices: this.#epollWakeIndices(pid, epfd, 0, entry),
-      acceptIndices: this.#epollWakeIndices(pid, epfd, 1, entry),
+      pipeIndices: this.#epollWakeIndices(
+        pid,
+        epfd,
+        EPOLL_WAKE_KIND_PIPE,
+        entry,
+      ),
+      acceptIndices: this.#epollWakeIndices(
+        pid,
+        epfd,
+        EPOLL_WAKE_KIND_ACCEPT,
+        entry,
+      ),
     };
   }
 
   /**
    * Read one wake-token family for `epfd` out of the kernel.
    *
-   * `kind` selects the family: 0 for pipe/socket receive-buffer indices, 1 for
-   * listener accept tokens. Kept a method rather than a closure so the entry
-   * context is threaded explicitly instead of captured.
+   * `kind` selects the family — see `EPOLL_WAKE_KIND_*`. Kept a method rather
+   * than a closure so the entry context is threaded explicitly instead of
+   * captured.
    */
   #epollWakeIndices(
     pid: number,
