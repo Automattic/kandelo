@@ -388,3 +388,276 @@ fn a_vector_length_larger_than_the_record_is_rejected() {
         "an impossible export count must be rejected",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session records
+// ---------------------------------------------------------------------------
+//
+// The records above cross the boundary once per ACT. These cross it once per
+// SESSION: the process config, the main image, one `dlopen` request, and the
+// `dlsym` / `dlclose` answers. They carry the fields a driver is most likely to
+// drop silently -- every one of them is `Option`-shaped or a collection -- so
+// the same three families apply.
+
+use dylink::got::UnresolvedPolicy;
+use dylink::handles::CloseOutcome;
+use dylink::plan::{LinkerConfig, LoadRequest, ReplayInputs};
+use dylink::scope::{DataBinding, ResolvedSymbol, SymbolValue};
+use dylink::wire::{
+    decode_close_outcome, decode_linker_config, decode_load_request, decode_main_image,
+    decode_resolved_symbol, encode_close_outcome, encode_linker_config, encode_load_request,
+    encode_main_image, encode_resolved_symbol, MainImage,
+};
+
+fn every_config() -> Vec<LinkerConfig> {
+    vec![
+        LinkerConfig::default(),
+        LinkerConfig {
+            pointer_width: dylink::act::PointerWidth::W64,
+            has_allocator: false,
+            fork_activation_available: true,
+            fork_activation_unavailable_reason: String::new(),
+            unresolved_policy: UnresolvedPolicy::LegacyZero,
+            memory_bytes: 1 << 32,
+            shared_memory: true,
+            heap_pointer: Some(0xdead_beef),
+        },
+    ]
+}
+
+#[test]
+fn every_linker_config_round_trips() {
+    for config in every_config() {
+        let bytes = encode_linker_config(&config).expect("encode config");
+        let decoded = decode_linker_config(&bytes).expect("decode config");
+        assert_eq!(decoded.pointer_width, config.pointer_width);
+        assert_eq!(decoded.has_allocator, config.has_allocator);
+        assert_eq!(
+            decoded.fork_activation_available,
+            config.fork_activation_available
+        );
+        assert_eq!(
+            decoded.fork_activation_unavailable_reason,
+            config.fork_activation_unavailable_reason
+        );
+        assert_eq!(decoded.unresolved_policy, config.unresolved_policy);
+        assert_eq!(decoded.memory_bytes, config.memory_bytes);
+        assert_eq!(decoded.shared_memory, config.shared_memory);
+        assert_eq!(decoded.heap_pointer, config.heap_pointer);
+    }
+}
+
+/// The `heap_pointer` embedder case is the one a driver is most likely to drop:
+/// `None` and `Some(0)` are different process states (no allocator vs a heap
+/// that starts at zero) and they must not encode to the same bytes.
+#[test]
+fn an_absent_heap_pointer_is_distinct_from_a_zero_one() {
+    let absent = LinkerConfig {
+        heap_pointer: None,
+        ..LinkerConfig::default()
+    };
+    let zero = LinkerConfig {
+        heap_pointer: Some(0),
+        ..LinkerConfig::default()
+    };
+    assert_ne!(
+        encode_linker_config(&absent).expect("encode absent"),
+        encode_linker_config(&zero).expect("encode zero"),
+        "no allocator and a zero-based heap must not encode identically",
+    );
+}
+
+fn every_symbol() -> Vec<ResolvedSymbol> {
+    vec![
+        ResolvedSymbol {
+            value: SymbolValue::main_data("environ", 0x1000),
+            owner: None,
+            globally_visible: true,
+        },
+        ResolvedSymbol {
+            value: SymbolValue::Data {
+                address: 0xffff_ffff_ffff,
+                binding: DataBinding::Global(GlobalId(7)),
+            },
+            owner: Some("opcache.so".into()),
+            globally_visible: false,
+        },
+        ResolvedSymbol {
+            value: SymbolValue::Func {
+                instance: InstanceId(3),
+                export: "zend_extension_entry".into(),
+            },
+            owner: Some("opcache.so".into()),
+            globally_visible: true,
+        },
+    ]
+}
+
+#[test]
+fn every_resolved_symbol_round_trips() {
+    for symbol in every_symbol() {
+        let bytes = encode_resolved_symbol(Some(&symbol)).expect("encode symbol");
+        let decoded = decode_resolved_symbol(&bytes).expect("decode symbol");
+        assert_eq!(decoded.as_ref(), Some(&symbol));
+    }
+}
+
+/// A `dlsym` miss is an ordinary POSIX answer, not a transport failure, so it
+/// must decode as `None` rather than as an error.
+#[test]
+fn a_dlsym_miss_round_trips_as_an_answer_not_an_error() {
+    let bytes = encode_resolved_symbol(None).expect("encode miss");
+    assert_eq!(decode_resolved_symbol(&bytes).expect("decode miss"), None);
+}
+
+#[test]
+fn a_main_image_round_trips_with_its_element_segment_map() {
+    let image = MainImage {
+        table_length: 4096,
+        exports: vec![
+            ("environ".into(), SymbolValue::main_data("environ", 0x2000)),
+            (
+                "malloc".into(),
+                SymbolValue::Func {
+                    instance: InstanceId(0),
+                    export: "malloc".into(),
+                },
+            ),
+        ],
+        element_slots: vec![
+            (12, InstanceId(0), "malloc".into()),
+            (13, InstanceId(0), "free".into()),
+        ],
+    };
+    let bytes = encode_main_image(&image).expect("encode main image");
+    assert_eq!(decode_main_image(&bytes).expect("decode main image"), image);
+}
+
+fn a_replay() -> ReplayInputs {
+    let mut saved_got_func = std::collections::BTreeMap::new();
+    saved_got_func.insert("zend_hash_add".to_string(), WasmValue::I32(0x40));
+    ReplayInputs {
+        memory_base: 0x10_0000,
+        table_base: 512,
+        activation_id: Some(3),
+        tls_base: Some(0x20_0000),
+        global_visibility: true,
+        committed_global_root: true,
+        provider_dependencies: vec!["libc.so".into()],
+        allocations: vec![DylinkAllocation {
+            address: 0x10_0000,
+            size: 0x1000,
+            mapping_address: 0x10_0000,
+            mapping_size: 0x1000,
+        }],
+        initialization_stage: Some(InitializationStage::Constructors),
+        saved_got_func,
+    }
+}
+
+#[test]
+fn a_load_request_round_trips_with_and_without_replay() {
+    for replay in [None, Some(a_replay())] {
+        let request = LoadRequest {
+            name: "opcache.so".into(),
+            module_bytes: vec![0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0],
+            global_visibility: false,
+            replay: replay.clone(),
+            borrowed_memory: true,
+        };
+        let bytes = encode_load_request(&request).expect("encode request");
+        let decoded = decode_load_request(&bytes).expect("decode request");
+        assert_eq!(decoded.name, request.name);
+        assert_eq!(decoded.module_bytes, request.module_bytes);
+        assert_eq!(decoded.global_visibility, request.global_visibility);
+        assert_eq!(decoded.borrowed_memory, request.borrowed_memory);
+        match (&decoded.replay, &replay) {
+            (None, None) => {}
+            (Some(decoded), Some(expected)) => assert_eq!(decoded, expected),
+            _ => panic!("replay presence did not survive the encoding"),
+        }
+    }
+}
+
+/// The saved `GOT.func` map is the field whose LOSS is silent: a fork child
+/// that re-derives a funcref instead of restoring the parent's gets a callable
+/// with a different identity, and nothing fails until a comparison does.
+#[test]
+fn saved_got_func_entries_survive_a_load_request_round_trip() {
+    let request = LoadRequest {
+        name: "opcache.so".into(),
+        module_bytes: Vec::new(),
+        global_visibility: true,
+        replay: Some(a_replay()),
+        borrowed_memory: false,
+    };
+    let bytes = encode_load_request(&request).expect("encode request");
+    let decoded = decode_load_request(&bytes).expect("decode request");
+    let replay = decoded.replay.expect("replay survived");
+    assert_eq!(
+        replay.saved_got_func.get("zend_hash_add"),
+        Some(&WasmValue::I32(0x40)),
+    );
+}
+
+#[test]
+fn every_close_outcome_round_trips() {
+    for outcome in [
+        CloseOutcome::MainImage,
+        CloseOutcome::StillReferenced {
+            library: "opcache.so".into(),
+            remaining: 2,
+        },
+        CloseOutcome::Released {
+            library: "opcache.so".into(),
+        },
+    ] {
+        let bytes = encode_close_outcome(&outcome).expect("encode outcome");
+        assert_eq!(
+            decode_close_outcome(&bytes).expect("decode outcome"),
+            outcome
+        );
+    }
+}
+
+/// Truncation, for the session records too. Every prefix of a valid record must
+/// be an error rather than a partially-populated value: a `LoadRequest` decoded
+/// from a short buffer with `replay: None` silently turns a fork replay into a
+/// fresh load.
+#[test]
+fn every_prefix_of_a_session_record_is_rejected() {
+    let request = LoadRequest {
+        name: "opcache.so".into(),
+        module_bytes: vec![1, 2, 3, 4],
+        global_visibility: true,
+        replay: Some(a_replay()),
+        borrowed_memory: false,
+    };
+    let bytes = encode_load_request(&request).expect("encode request");
+    for cut in 0..bytes.len() {
+        assert!(
+            decode_load_request(&bytes[..cut]).is_err(),
+            "a {cut}-byte prefix of a load request must not decode",
+        );
+    }
+
+    let config = LinkerConfig::default();
+    let bytes = encode_linker_config(&config).expect("encode config");
+    for cut in 0..bytes.len() {
+        assert!(
+            decode_linker_config(&bytes[..cut]).is_err(),
+            "a {cut}-byte prefix of a linker config must not decode",
+        );
+    }
+}
+
+/// Trailing bytes are a disagreement about the format, not a harmless suffix.
+#[test]
+fn a_session_record_with_trailing_bytes_is_rejected() {
+    let mut bytes = encode_close_outcome(&CloseOutcome::MainImage).expect("encode outcome");
+    bytes.push(0);
+    assert!(
+        decode_close_outcome(&bytes).is_err(),
+        "trailing bytes must be rejected, not ignored",
+    );
+}

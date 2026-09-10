@@ -47,15 +47,21 @@
 //! with [`crate::act::ImportBinding::position`] restated per entry, so a driver
 //! that reorders them is caught by the same check a native executor would hit.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::act::{
     ActResult, BindingValue, GlobalId, ImportBinding, InstanceExport, InstanceId, LinkAct, ModuleId,
-    ModuleSource, TableValue, TagId, WasmValue,
+    ModuleSource, PointerWidth, TableValue, TagId, WasmValue,
 };
 use crate::error::{DylinkError, DylinkResult};
-use crate::plan::{HostRequest, InitializationStage, PlanStep, StagedCall};
+use crate::got::UnresolvedPolicy;
+use crate::handles::CloseOutcome;
+use crate::plan::{
+    HostRequest, InitializationStage, LinkerConfig, LoadRequest, PlanStep, ReplayInputs, StagedCall,
+};
+use crate::scope::{DataBinding, ResolvedSymbol, SymbolValue};
 use crate::wasm::{ExternKind, ValType};
 
 fn malformed(reason: &'static str) -> DylinkError {
@@ -871,4 +877,449 @@ pub fn decode_act_result(bytes: &[u8]) -> DylinkResult<ActResult> {
     };
     r.finish()?;
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Session records
+// ---------------------------------------------------------------------------
+//
+// `PlanStep` and `ActResult` above are the per-act boundary. These are the
+// records that OPEN and CLOSE a session: the process configuration, the main
+// image the global scope is rooted on, one `dlopen` request, and the answers
+// `dlsym` / `dlclose` return. A native executor never needs them -- it holds a
+// `Linker` and calls the methods -- so they exist for exactly the same reason
+// the two above do: on a JavaScript host the planner is wasm, and every value
+// crossing into it has to be bytes.
+//
+// The alternative would have been a scalar argument list per entry point. That
+// fails on the first `Option`-shaped field and on `ReplayInputs`, which carries
+// four variable-length collections, so it would have become a byte format
+// anyway -- just an undocumented one.
+
+const MIN_STRING_BYTES: usize = 4;
+const MIN_NAMED_SYMBOL_BYTES: usize = MIN_STRING_BYTES + 1;
+const MIN_ELEMENT_SLOT_BYTES: usize = 8 + 4 + MIN_STRING_BYTES;
+const MIN_ALLOCATION_BYTES: usize = 8 * 4;
+const MIN_SAVED_GOT_ENTRY_BYTES: usize = MIN_STRING_BYTES + 1;
+
+fn put_option_u32(w: &mut Writer, value: Option<u32>) {
+    match value {
+        Some(value) => {
+            w.u8(1);
+            w.u32(value);
+        }
+        None => w.u8(0),
+    }
+}
+
+fn get_option_u32(r: &mut Reader<'_>) -> DylinkResult<Option<u32>> {
+    match r.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(r.u32()?)),
+        _ => Err(malformed("unknown wire optional u32 tag")),
+    }
+}
+
+fn put_option_u64(w: &mut Writer, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            w.u8(1);
+            w.u64(value);
+        }
+        None => w.u8(0),
+    }
+}
+
+fn get_option_u64(r: &mut Reader<'_>) -> DylinkResult<Option<u64>> {
+    match r.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(r.u64()?)),
+        _ => Err(malformed("unknown wire optional u64 tag")),
+    }
+}
+
+fn put_option_str(w: &mut Writer, value: Option<&str>) -> DylinkResult<()> {
+    match value {
+        Some(value) => {
+            w.u8(1);
+            w.str(value)?;
+        }
+        None => w.u8(0),
+    }
+    Ok(())
+}
+
+fn get_option_str(r: &mut Reader<'_>) -> DylinkResult<Option<String>> {
+    match r.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(r.str()?)),
+        _ => Err(malformed("unknown wire optional string tag")),
+    }
+}
+
+fn put_pointer_width(w: &mut Writer, width: PointerWidth) {
+    w.u8(match width {
+        PointerWidth::W32 => 0,
+        PointerWidth::W64 => 1,
+    });
+}
+
+fn get_pointer_width(r: &mut Reader<'_>) -> DylinkResult<PointerWidth> {
+    match r.u8()? {
+        0 => Ok(PointerWidth::W32),
+        1 => Ok(PointerWidth::W64),
+        _ => Err(malformed("unknown wire pointer width")),
+    }
+}
+
+fn put_unresolved_policy(w: &mut Writer, policy: UnresolvedPolicy) {
+    w.u8(match policy {
+        UnresolvedPolicy::ElfStrict => 0,
+        UnresolvedPolicy::LegacyZero => 1,
+    });
+}
+
+fn get_unresolved_policy(r: &mut Reader<'_>) -> DylinkResult<UnresolvedPolicy> {
+    match r.u8()? {
+        0 => Ok(UnresolvedPolicy::ElfStrict),
+        1 => Ok(UnresolvedPolicy::LegacyZero),
+        _ => Err(malformed("unknown wire unresolved policy")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LinkerConfig
+// ---------------------------------------------------------------------------
+
+/// Encode the process-wide linker configuration.
+pub fn encode_linker_config(config: &LinkerConfig) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    put_pointer_width(&mut w, config.pointer_width);
+    w.bool(config.has_allocator);
+    w.bool(config.fork_activation_available);
+    w.str(&config.fork_activation_unavailable_reason)?;
+    put_unresolved_policy(&mut w, config.unresolved_policy);
+    w.u64(config.memory_bytes);
+    w.bool(config.shared_memory);
+    put_option_u64(&mut w, config.heap_pointer);
+    Ok(w.into_bytes())
+}
+
+/// Decode the process-wide linker configuration.
+pub fn decode_linker_config(bytes: &[u8]) -> DylinkResult<LinkerConfig> {
+    let mut r = Reader::new(bytes);
+    let config = LinkerConfig {
+        pointer_width: get_pointer_width(&mut r)?,
+        has_allocator: r.bool()?,
+        fork_activation_available: r.bool()?,
+        fork_activation_unavailable_reason: r.str()?,
+        unresolved_policy: get_unresolved_policy(&mut r)?,
+        memory_bytes: r.u64()?,
+        shared_memory: r.bool()?,
+        heap_pointer: get_option_u64(&mut r)?,
+    };
+    r.finish()?;
+    Ok(config)
+}
+
+// ---------------------------------------------------------------------------
+// SymbolValue / ResolvedSymbol
+// ---------------------------------------------------------------------------
+
+fn put_symbol_value(w: &mut Writer, value: &SymbolValue) -> DylinkResult<()> {
+    match value {
+        SymbolValue::Data { address, binding } => {
+            w.u8(0);
+            w.u64(*address);
+            match binding {
+                DataBinding::Export { instance, name } => {
+                    w.u8(0);
+                    w.u32(instance.index());
+                    w.str(name)?;
+                }
+                DataBinding::Global(global) => {
+                    w.u8(1);
+                    w.u32(global.index());
+                }
+            }
+        }
+        SymbolValue::Func { instance, export } => {
+            w.u8(1);
+            w.u32(instance.index());
+            w.str(export)?;
+        }
+    }
+    Ok(())
+}
+
+fn get_symbol_value(r: &mut Reader<'_>) -> DylinkResult<SymbolValue> {
+    Ok(match r.u8()? {
+        0 => {
+            let address = r.u64()?;
+            let binding = match r.u8()? {
+                0 => DataBinding::Export {
+                    instance: InstanceId(r.u32()?),
+                    name: r.str()?,
+                },
+                1 => DataBinding::Global(GlobalId(r.u32()?)),
+                _ => return Err(malformed("unknown wire data binding")),
+            };
+            SymbolValue::Data { address, binding }
+        }
+        1 => SymbolValue::Func {
+            instance: InstanceId(r.u32()?),
+            export: r.str()?,
+        },
+        _ => return Err(malformed("unknown wire symbol value")),
+    })
+}
+
+/// Encode a `dlsym` answer. `None` is a miss, which POSIX reports through
+/// `dlerror` -- it is not a transport failure, so it has its own tag rather
+/// than an error return.
+pub fn encode_resolved_symbol(symbol: Option<&ResolvedSymbol>) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    match symbol {
+        None => w.u8(0),
+        Some(symbol) => {
+            w.u8(1);
+            put_symbol_value(&mut w, &symbol.value)?;
+            put_option_str(&mut w, symbol.owner.as_deref())?;
+            w.bool(symbol.globally_visible);
+        }
+    }
+    Ok(w.into_bytes())
+}
+
+/// Decode a `dlsym` answer.
+pub fn decode_resolved_symbol(bytes: &[u8]) -> DylinkResult<Option<ResolvedSymbol>> {
+    let mut r = Reader::new(bytes);
+    let symbol = match r.u8()? {
+        0 => None,
+        1 => {
+            let value = get_symbol_value(&mut r)?;
+            let owner = get_option_str(&mut r)?;
+            Some(ResolvedSymbol {
+                value,
+                owner,
+                globally_visible: r.bool()?,
+            })
+        }
+        _ => return Err(malformed("unknown wire resolved symbol")),
+    };
+    r.finish()?;
+    Ok(symbol)
+}
+
+// ---------------------------------------------------------------------------
+// Main image
+// ---------------------------------------------------------------------------
+
+/// What [`crate::scope::LinkerScope::publish_main_image`] needs, as one record.
+///
+/// The main image is the root of the global scope, so this crosses the boundary
+/// once per process, before any `dlopen` can resolve a symbol against it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MainImage {
+    pub table_length: u64,
+    /// Export name -> what it denotes.
+    pub exports: Vec<(String, SymbolValue)>,
+    /// `(table slot, defining instance, export name)`: the element-segment map.
+    pub element_slots: Vec<(u64, InstanceId, String)>,
+}
+
+/// Encode the main image's exports and element-segment table layout.
+pub fn encode_main_image(image: &MainImage) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    w.u64(image.table_length);
+    w.len_prefix(image.exports.len())?;
+    for (name, value) in &image.exports {
+        w.str(name)?;
+        put_symbol_value(&mut w, value)?;
+    }
+    w.len_prefix(image.element_slots.len())?;
+    for (slot, instance, export) in &image.element_slots {
+        w.u64(*slot);
+        w.u32(instance.index());
+        w.str(export)?;
+    }
+    Ok(w.into_bytes())
+}
+
+/// Decode the main image record.
+pub fn decode_main_image(bytes: &[u8]) -> DylinkResult<MainImage> {
+    let mut r = Reader::new(bytes);
+    let table_length = r.u64()?;
+    let export_count = r.vec_len(MIN_NAMED_SYMBOL_BYTES)?;
+    let mut exports = Vec::with_capacity(export_count);
+    for _ in 0..export_count {
+        let name = r.str()?;
+        exports.push((name, get_symbol_value(&mut r)?));
+    }
+    let slot_count = r.vec_len(MIN_ELEMENT_SLOT_BYTES)?;
+    let mut element_slots = Vec::with_capacity(slot_count);
+    for _ in 0..slot_count {
+        let slot = r.u64()?;
+        let instance = InstanceId(r.u32()?);
+        element_slots.push((slot, instance, r.str()?));
+    }
+    r.finish()?;
+    Ok(MainImage {
+        table_length,
+        exports,
+        element_slots,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// LoadRequest / ReplayInputs
+// ---------------------------------------------------------------------------
+
+/// Encode one `dlopen` request, replay inputs included.
+pub fn encode_load_request(request: &LoadRequest) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    w.str(&request.name)?;
+    w.blob(&request.module_bytes)?;
+    w.bool(request.global_visibility);
+    w.bool(request.borrowed_memory);
+    match &request.replay {
+        None => w.u8(0),
+        Some(replay) => {
+            w.u8(1);
+            put_replay_inputs(&mut w, replay)?;
+        }
+    }
+    Ok(w.into_bytes())
+}
+
+/// Decode one `dlopen` request.
+pub fn decode_load_request(bytes: &[u8]) -> DylinkResult<LoadRequest> {
+    let mut r = Reader::new(bytes);
+    let name = r.str()?;
+    let module_bytes = r.blob()?;
+    let global_visibility = r.bool()?;
+    let borrowed_memory = r.bool()?;
+    let replay = match r.u8()? {
+        0 => None,
+        1 => Some(get_replay_inputs(&mut r)?),
+        _ => return Err(malformed("unknown wire replay tag")),
+    };
+    r.finish()?;
+    Ok(LoadRequest {
+        name,
+        module_bytes,
+        global_visibility,
+        replay,
+        borrowed_memory,
+    })
+}
+
+fn put_replay_inputs(w: &mut Writer, replay: &ReplayInputs) -> DylinkResult<()> {
+    w.u64(replay.memory_base);
+    w.u64(replay.table_base);
+    put_option_u32(w, replay.activation_id);
+    put_option_u64(w, replay.tls_base);
+    w.bool(replay.global_visibility);
+    w.bool(replay.committed_global_root);
+    w.len_prefix(replay.provider_dependencies.len())?;
+    for dependency in &replay.provider_dependencies {
+        w.str(dependency)?;
+    }
+    w.len_prefix(replay.allocations.len())?;
+    for allocation in &replay.allocations {
+        put_allocation(w, allocation);
+    }
+    match replay.initialization_stage {
+        None => w.u8(0),
+        Some(stage) => {
+            w.u8(1);
+            put_stage(w, stage);
+        }
+    }
+    w.len_prefix(replay.saved_got_func.len())?;
+    for (name, value) in &replay.saved_got_func {
+        w.str(name)?;
+        put_wasm_value(w, *value);
+    }
+    Ok(())
+}
+
+fn get_replay_inputs(r: &mut Reader<'_>) -> DylinkResult<ReplayInputs> {
+    let memory_base = r.u64()?;
+    let table_base = r.u64()?;
+    let activation_id = get_option_u32(r)?;
+    let tls_base = get_option_u64(r)?;
+    let global_visibility = r.bool()?;
+    let committed_global_root = r.bool()?;
+    let dependency_count = r.vec_len(MIN_STRING_BYTES)?;
+    let mut provider_dependencies = Vec::with_capacity(dependency_count);
+    for _ in 0..dependency_count {
+        provider_dependencies.push(r.str()?);
+    }
+    let allocation_count = r.vec_len(MIN_ALLOCATION_BYTES)?;
+    let mut allocations = Vec::with_capacity(allocation_count);
+    for _ in 0..allocation_count {
+        allocations.push(get_allocation(r)?);
+    }
+    let initialization_stage = match r.u8()? {
+        0 => None,
+        1 => Some(get_stage(r)?),
+        _ => return Err(malformed("unknown wire initialization stage tag")),
+    };
+    let saved_count = r.vec_len(MIN_SAVED_GOT_ENTRY_BYTES)?;
+    let mut saved_got_func = BTreeMap::new();
+    for _ in 0..saved_count {
+        let name = r.str()?;
+        saved_got_func.insert(name, get_wasm_value(r)?);
+    }
+    Ok(ReplayInputs {
+        memory_base,
+        table_base,
+        activation_id,
+        tls_base,
+        global_visibility,
+        committed_global_root,
+        provider_dependencies,
+        allocations,
+        initialization_stage,
+        saved_got_func,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// dlclose
+// ---------------------------------------------------------------------------
+
+/// Encode what `dlclose` did.
+pub fn encode_close_outcome(outcome: &CloseOutcome) -> DylinkResult<Vec<u8>> {
+    let mut w = Writer::new();
+    match outcome {
+        CloseOutcome::MainImage => w.u8(0),
+        CloseOutcome::StillReferenced { library, remaining } => {
+            w.u8(1);
+            w.str(library)?;
+            w.u32(*remaining);
+        }
+        CloseOutcome::Released { library } => {
+            w.u8(2);
+            w.str(library)?;
+        }
+    }
+    Ok(w.into_bytes())
+}
+
+/// Decode what `dlclose` did.
+pub fn decode_close_outcome(bytes: &[u8]) -> DylinkResult<CloseOutcome> {
+    let mut r = Reader::new(bytes);
+    let outcome = match r.u8()? {
+        0 => CloseOutcome::MainImage,
+        1 => CloseOutcome::StillReferenced {
+            library: r.str()?,
+            remaining: r.u32()?,
+        },
+        2 => CloseOutcome::Released { library: r.str()? },
+        _ => return Err(malformed("unknown wire close outcome")),
+    };
+    r.finish()?;
+    Ok(outcome)
 }
