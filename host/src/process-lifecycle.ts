@@ -42,16 +42,21 @@
  * missing.
  */
 
-import type {
-  CentralizedKernelWorker,
-  ResolvedSpawnProgram,
-  SpawnProgramResolution,
+import {
+  CAPTURED_STDIO,
+  TERMINAL_STDIO,
+  type CentralizedKernelWorker,
+  type ResolvedSpawnProgram,
+  type SpawnProgramResolution,
 } from "./kernel-worker";
+import type { CentralizedWorkerInitMessage } from "./worker-protocol";
+import { createWorkerQuiescence } from "./worker-quiescence";
 import { retryKernelEntryResult } from "./kernel-entry-retry";
 import { readPreparedPlatformFile } from "./vfs";
 import type { PlatformIO } from "./types";
 import {
   describeWasmArtifactPolicyFailures,
+  detectPtrWidth,
   extractAbiVersion,
   isWasmModuleBytes,
 } from "./constants";
@@ -113,16 +118,108 @@ export interface VforkWorkspaceOwnership {
  * Deliberately structural and minimal: each host's richer record satisfies
  * it, and this module cannot reach fields it has no business touching.
  */
-export interface ProcessLifecycleInfo extends ProcessGenerationOwnership {
+/**
+ * A request to launch the first process of a machine.
+ *
+ * The union of what the two hosts' `SpawnMessage` types could express. Each
+ * host's message satisfies it structurally, so neither protocol had to change
+ * — but the launch path now honours every field on every host, which closed
+ * three drifts: `maxPages` (browser-only), `maxAddr` (Node-only) and `cwd`
+ * reaching the worker (browser-only).
+ */
+export interface ProcessSpawnRequest {
+  requestId: number;
+  argv: string[];
+  env?: readonly string[];
+  cwd?: string;
+  programBytes?: ArrayBuffer;
+  programPath?: string;
+  /** A module pre-compiled from `programBytes`, where the host has one. */
+  programModule?: WebAssembly.Module;
+  uid?: number;
+  gid?: number;
+  pty?: boolean;
+  ptyCols?: number;
+  ptyRows?: number;
+  stdin?: Uint8Array | ArrayBuffer;
+  /** Per-process page ceiling; the kernel default when absent. */
+  maxPages?: number;
+  /** Heap growth limit protecting the thread channel pages. */
+  maxAddr?: number;
+}
+
+/** Non-`_start` continuation root inherited from a pthread fork until exec. */
+export interface ForkReplayContext {
+  fnPtr: number;
+  argPtr: number;
+  forkBufAddr: number;
+}
+
+/**
+ * One execution image's host-side record.
+ *
+ * Generic in the worker handle alone, because that is the only part of it
+ * that was ever host-specific: the two entries' `ProcessInfo` declarations
+ * were otherwise field-for-field the same once the browser's four extra
+ * fields were recognised as host-independent concepts. Making the whole
+ * module generic in the *worker* rather than in the *record* is what lets
+ * shared code build a generation, instead of asking each host to.
+ */
+export interface ProcessLifecycleInfo<
+  W extends LifecycleWorker = LifecycleWorker,
+> extends ProcessGenerationOwnership {
   channelOffset: number;
   vforkWorkspace?: VforkWorkspaceOwnership;
-  worker: LifecycleWorker;
+  worker: W;
+  forkReplayContext?: ForkReplayContext;
+  /**
+   * The co-resident fork-module region this process worker placed in its
+   * shared linear memory (reported by the worker at init). A COPIED fork child
+   * reuses this exact base so it does not double-map the module region it
+   * already inherits via its memory clone. Inherited into a child's generation
+   * so a grandchild fork propagates the same base.
+   */
+  forkModuleRegion?: { base: number; bytes: number };
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
   workerQuiescence: WorkerQuiescence;
+  execRetirement: WorkerQuiescence;
   externrefGeneration: ForkExternrefGeneration;
-  /** The image's argument vector, where the host records one. */
-  argv?: readonly string[];
+  threadAllocator: ThreadPageAllocator;
+  secureExec: boolean;
+  programBytes: ArrayBuffer;
+  programModule?: WebAssembly.Module;
+  /** The image's argument vector. */
+  argv: readonly string[];
+
+  /**
+   * Host-independent identity for one execution image. A PID persists across
+   * exec; a generation does not.
+   *
+   * The browser needs it to address a main-thread framebuffer alias cloned
+   * from this exact Memory, and Node has no such alias — but the *concept* is
+   * not browser-specific, and giving both hosts a monotonic counter is what
+   * lets every process-constructing path be written once. What differs is only
+   * whether the exit message carries it, and that is `reportProcessExit`.
+   */
+  generation: number;
+
+  /**
+   * Whether this generation's backing may still be released exactly rather
+   * than force-retired.
+   *
+   * Cleared when a host-side owner was lost without an ownership fence — a
+   * browser thread Worker terminated while parked, say. Always true where
+   * `terminationProvesQuiescence` holds, which is why Node is the host the
+   * predicate never falsifies rather than the host missing a safety model.
+   */
+  memoryRetirementSafe: boolean;
+
+  /** True once this generation's Memory was cloned to a host-side alias. */
+  aliasExposed: boolean;
+
+  /** Exact host-side alias teardown, shared by competing failure paths. */
+  aliasRelease?: Promise<boolean>;
 }
 
 /**
@@ -167,7 +264,7 @@ export type ProcessLifecycleOutboundMessage =
  * boundary appears here, so the list of real differences is readable in one
  * place instead of being inferred from two 4,000-line files.
  */
-export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
+export interface ProcessLifecycleHost<W extends LifecycleWorker> {
   /**
    * Send a message to the main thread, optionally transferring buffers.
    *
@@ -201,8 +298,8 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
   /** Whether `traceVforkMechanism` should emit. Read per call, not cached. */
   isVforkMechanismTraceEnabled(): boolean;
 
-  readonly vforkLifetimes: VforkLifetimeCoordinator<Info>;
-  readonly vmInterruptTimers: VmInterruptTimerManager<Info>;
+  readonly vforkLifetimes: VforkLifetimeCoordinator<ProcessLifecycleInfo<W>>;
+  readonly vmInterruptTimers: VmInterruptTimerManager<ProcessLifecycleInfo<W>>;
 
   /**
    * The kernel this entry drives.
@@ -228,10 +325,10 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
   readonly ptyByPid: Map<number, number>;
 
   /** Live processes by PID. */
-  readonly processes: Map<number, Info>;
+  readonly processes: Map<number, ProcessLifecycleInfo<W>>;
 
   /** In-flight process teardowns, keyed by the worker being torn down. */
-  readonly processTeardowns: Map<Info["worker"], Promise<void>>;
+  readonly processTeardowns: Map<W, Promise<void>>;
 
   /**
    * Whether `handleInit` has completed.
@@ -267,7 +364,11 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
    * fields: the browser names the execution generation that ended, Node names
    * the PID alone.
    */
-  reportProcessExit(pid: number, info: Info, status: number): void;
+  reportProcessExit(
+    pid: number,
+    info: ProcessLifecycleInfo<W>,
+    status: number,
+  ): void;
 
   /**
    * The signal to synthesize a crash reap with when a caller of
@@ -301,19 +402,97 @@ export interface ProcessLifecycleHost<Info extends ProcessLifecycleInfo> {
    * the worker's `memory_quiescent` fence does that. Called once per exit, so
    * a host may also retire per-PID exit bookkeeping here.
    */
-  processExitSettleMs(pid: number, info: Info): number;
+  processExitSettleMs(pid: number, info: ProcessLifecycleInfo<W>): number;
 
   /**
-   * Extra host-side ownership fences that must hold before a process's memory
-   * backing can be released exactly rather than force-retired.
+   * Release any host-side alias of this generation's `WebAssembly.Memory`,
+   * resolving true once the host proves it no longer owns one.
    *
-   * The browser has two — its `memoryRetirementSafe` flag, and the release of
-   * any main-thread framebuffer alias cloned from this generation's Memory.
-   * Node has none, because `await worker.terminate()` already proves the
-   * ownership this is protecting. Node is the host where the predicate always
-   * holds, not the host that is missing a safety model.
+   * The browser has one: main-thread framebuffer registry views cloned from
+   * the Memory at `fb_bind`. Worker quiescence fences the process and
+   * kernel-worker realms only, so main's exact-generation acknowledgement is
+   * part of retirement too; a timeout resolves false rather than pretending.
+   * Node has no such owner and answers true.
+   *
+   * This replaced the narrower `exitRetirementFences`, which folded the alias
+   * release together with `memoryRetirementSafe`. That flag now lives on the
+   * shared `ProcessLifecycleInfo`, so the exit predicate — and the identical
+   * one in every process-construction rollback — is written once here.
    */
-  exitRetirementFences(pid: number, info: Info): boolean | Promise<boolean>;
+  releaseGenerationAliases(
+    pid: number,
+    info: ProcessLifecycleInfo<W>,
+  ): boolean | Promise<boolean>;
+
+  /**
+   * Allocate the next execution-generation number for this realm.
+   *
+   * Monotonic and never reused, so a message naming a generation can always
+   * be rejected as stale rather than misapplied to a successor image.
+   */
+  allocateProcessGeneration(): number;
+
+  /** Owner registry issuing this realm's fork host-import workers. */
+  readonly forkHostImportOwnerRuntime: {
+    createWorker(options: {
+      pid: number;
+      generationId: number;
+      authorizeSender: () => void;
+    }): ForkHostImportOwnerWorker;
+  };
+
+  /**
+   * Construct a process worker for a fully built init message.
+   *
+   * The irreducible host floor: `new Worker(url)` in the browser and
+   * `new NodeWorker(path)` on Node, already narrowed to one call by
+   * `worker-adapter.ts`.
+   */
+  createProcessWorker(init: CentralizedWorkerInitMessage): W;
+
+  /**
+   * Init-message fields naming this host's co-resident side modules.
+   *
+   * A genuine artifact difference: Node reads the modules off disk, the
+   * browser receives them as compiled `WebAssembly.Module`s from main.
+   */
+  sideModuleInitFields(ptrWidth: 4 | 8): Partial<CentralizedWorkerInitMessage>;
+
+  /** Attach this host's message/error listeners to a new process worker. */
+  installProcessWorkerListeners(worker: W, pid: number): void;
+
+  /**
+   * The environment a launch actually runs with, given the requested one.
+   *
+   * The browser injects its TLS-MITM CA path so guest TLS can verify through
+   * the host's proxied egress; Node reaches the network directly and returns
+   * the request unchanged. A host decoration, not a POSIX one.
+   */
+  decorateLaunchEnv(env: readonly string[]): string[];
+
+  /** The environment a spawn request that names none inherits. */
+  defaultLaunchEnv(): readonly string[];
+
+  /**
+   * Barrier a new process generation must clear before claiming an address
+   * space, beyond the allocator's own admission.
+   *
+   * See `waitForProcessTeardowns` on the browser entry: without an ownership
+   * fence, a still-terminating predecessor's backing is not yet reclaimable,
+   * so admitting a successor first can exhaust the reservation. Where
+   * `terminationProvesQuiescence` holds the teardown has already completed by
+   * the time it is awaited, so the barrier is vacuous rather than absent.
+   */
+  awaitProcessConstructionBarrier(): Promise<void>;
+
+  /**
+   * Called once a spawn has set up a PTY for the new process.
+   *
+   * Node registers the output callback here; the browser waits for main to
+   * ask with `register_pty_output`, because its main thread owns when the
+   * terminal starts consuming. A protocol difference, not a POSIX one.
+   */
+  onProcessPtyReady?(pid: number, ptyIdx: number): void;
 
   /**
    * Stop this kernel realm after a fatal kernel-instance failure.
@@ -436,9 +615,10 @@ export function handleThreadExit(pid: number, channelOffset: number): boolean {
  * Returns plain functions rather than a class so each entry can destructure
  * exactly what it uses and the call sites read the same as before.
  */
-export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
-  host: ProcessLifecycleHost<Info>,
+export function createProcessLifecycle<W extends LifecycleWorker>(
+  host: ProcessLifecycleHost<W>,
 ) {
+  type Info = ProcessLifecycleInfo<W>;
   function traceVforkMechanism(event: string, fields: string): void {
     if (!host.isVforkMechanismTraceEnabled()) return;
     console.log(`[vfork-mechanism] event=${event} ${fields}`);
@@ -681,7 +861,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   /** Thread workers per PID, for cleanup. */
   const threadWorkers = new Map<
     number,
-    ThreadWorkerRecord<Info["worker"]>[]
+    ThreadWorkerRecord<W>[]
   >();
 
   const threadExits = new ThreadExitCoordinator();
@@ -693,7 +873,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
    * the worker actually stop; it is 0 where termination is itself a fence.
    */
   async function terminateTrackedWorker(
-    worker: Info["worker"],
+    worker: W,
     settleMs = 0,
   ): Promise<void> {
     intentionallyTerminated.add(worker as object);
@@ -996,7 +1176,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     pid: number,
     exitStatus: number,
     crashSignum: number | undefined,
-    expectedWorker: Info["worker"] | undefined,
+    expectedWorker: W | undefined,
     vforkReason: VforkExactCompletionReason =
       signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
   ): Promise<void> {
@@ -1050,7 +1230,10 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
         generation: info,
         operation: "deactivate",
         retire: async (commit) => {
-          const hostFences = await host.exitRetirementFences(pid, info);
+          // The exit predicate, in full: every realm that could still be
+          // holding this backing has proved it is not.
+          const hostFences = info.memoryRetirementSafe
+            && await host.releaseGenerationAliases(pid, info);
           exactMemoryTeardown = workerQuiescent && threadsQuiescent
             && hostFences;
           if (exactMemoryTeardown) {
@@ -1223,7 +1406,7 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   async function awaitFinalizedProcessTeardown(
     pid: number,
     exitStatus: number,
-    expectedWorker: Info["worker"],
+    expectedWorker: W,
     crashSignum?: number,
     reason: VforkExactCompletionReason =
       signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
@@ -1586,9 +1769,261 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
     }
   }
 
+  /**
+   * Create the first process of a launch: a fresh PID, a fresh address space
+   * and a fresh worker, with a rollback that leaves no half-built generation.
+   *
+   * Both entries carried this whole transaction. The differences were four
+   * host decorations — a generation number, a TLS-CA environment injection, a
+   * PTY-output registration and a side-module init block — plus three
+   * behaviours only one host had, each of which is now the one both get:
+   *
+   * - **Exactly one program source.** Node refused a request naming both
+   *   `programBytes` and `programPath`; the browser silently preferred the
+   *   bytes and dropped the path, so a caller that got the pair wrong was told
+   *   its spawn succeeded. The refusal is the correct half.
+   * - **`maxPages` is honoured.** The Node entry ignored the per-request page
+   *   ceiling and always used the kernel default, which is a POSIX-visible
+   *   difference in what a spawn request may ask for.
+   * - **`cwd` reaches the worker.** The browser passed it in the init message
+   *   and Node did not, so a Node guest reading its own working directory
+   *   before its first `chdir` saw the kernel default rather than the
+   *   directory the launch named.
+   */
+  async function handleSpawn(msg: ProcessSpawnRequest): Promise<void> {
+    let releaseMutation: (() => void) | undefined;
+    let createdPid: number | undefined;
+    let createdMemoryLease: ProcessMemoryLease | undefined;
+    let createdMemoryRegistered = false;
+    let workerCreationAttempted = false;
+    let createdWorker: W | undefined;
+    let createdGeneration: Info | undefined;
+    let createdExternrefGeneration: ForkExternrefGeneration | undefined;
+    let createdForkHostImports: ForkHostImportOwnerWorker | undefined;
+    const kernelWorker = host.kernel();
+    try {
+      releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
+      await host.awaitProcessConstructionBarrier();
+
+      const hasProgramBytes = msg.programBytes !== undefined;
+      const hasProgramPath = msg.programPath !== undefined;
+      if (hasProgramBytes === hasProgramPath) {
+        respondError(
+          msg.requestId,
+          "spawn requires exactly one of programBytes or programPath",
+        );
+        return;
+      }
+      const programBytes = msg.programBytes
+        ?? await readExecFromVfs(msg.programPath!);
+      // A pre-compiled module belongs to the bytes it was compiled from, so a
+      // path-sourced spawn must not adopt one.
+      const programModule = hasProgramBytes ? msg.programModule : undefined;
+      if (programBytes === null) {
+        respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
+        return;
+      }
+      if (!isWasmModuleBytes(programBytes)) {
+        respondError(
+          msg.requestId,
+          "ENOEXEC: program is not a WebAssembly module",
+        );
+        return;
+      }
+
+      const pid = kernelWorker.createProcess(
+        msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
+      );
+      createdPid = pid;
+      const ptrWidth = detectPtrWidth(programBytes);
+      const {
+        memory,
+        memoryLease,
+        layout,
+        threadAllocator,
+      } = await createFreshProcessMemory(
+        pid,
+        programBytes,
+        ptrWidth,
+        msg.maxPages ?? host.defaultMaxPages(),
+        {
+          operation: "spawn",
+          path: msg.programPath ?? msg.argv[0],
+          argv: msg.argv,
+        },
+      );
+      createdMemoryLease = memoryLease;
+      const channelOffset = layout.channelOffset;
+      const launchEnv = host.decorateLaunchEnv(
+        msg.env ?? host.defaultLaunchEnv(),
+      );
+
+      kernelWorker.registerProcess(pid, memory, [channelOffset], {
+        ptrWidth,
+        argv: msg.argv,
+        env: launchEnv,
+        brkBase: layout.brkBase,
+        mmapBase: layout.mmapBase,
+        maxAddr: layout.maxAddr,
+      });
+      createdMemoryRegistered = true;
+
+      kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
+      const secureExec = kernelWorker.processSecureExec(pid);
+      if (msg.cwd) kernelWorker.setCwd(pid, msg.cwd);
+      if (msg.maxAddr != null) kernelWorker.setMaxAddr(pid, msg.maxAddr);
+
+      if (msg.pty) {
+        const ptyIdx = kernelWorker.setupPty(pid);
+        host.ptyByPid.set(pid, ptyIdx);
+        // Apply the initial winsize before the wasm program starts. Without
+        // this the program's first TIOCGWINSZ returns the kernel default
+        // (80x24) and TUI renderers cache the wrong width before the
+        // post-spawn pty_resize lands, corrupting the first redraw.
+        if (msg.ptyCols != null && msg.ptyRows != null) {
+          kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
+        }
+        host.onProcessPtyReady?.(pid, ptyIdx);
+      } else if (msg.stdin) {
+        kernelWorker.setStdinData(
+          pid,
+          msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin),
+        );
+      }
+
+      const externrefGeneration = host.externrefProcessOwner.startGeneration(pid);
+      createdExternrefGeneration = externrefGeneration;
+      let worker: W;
+      const forkHostImports = host.forkHostImportOwnerRuntime.createWorker({
+        pid,
+        generationId: externrefGeneration.id,
+        authorizeSender: () => {
+          const current = host.processes.get(pid);
+          if (
+            !current
+            || current.worker !== worker
+            || current.externrefGeneration !== externrefGeneration
+          ) {
+            throw new Error(`stale fork host-import sender for pid=${pid}`);
+          }
+        },
+      });
+      createdForkHostImports = forkHostImports;
+      const initData: CentralizedWorkerInitMessage = {
+        type: "centralized_init",
+        pid,
+        programBytes,
+        programModule,
+        memory,
+        channelOffset,
+        secureExec,
+        externrefGenerationId: externrefGeneration.id,
+        forkHostImports: forkHostImports.init,
+        env: launchEnv,
+        argv: msg.argv,
+        cwd: msg.cwd,
+        ptrWidth,
+        kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+        kernelAbiContractDigest:
+          kernelWorker.getKernelAbiContractDigest() ?? undefined,
+        ...host.sideModuleInitFields(ptrWidth),
+      };
+
+      // A constructor may expose Memory to a partially created worker before
+      // it throws, so any failure from this point uses forced retirement.
+      workerCreationAttempted = true;
+      worker = host.createProcessWorker(initData);
+      createdWorker = worker;
+      bindForkHostImports(worker, forkHostImports);
+      createdGeneration = {
+        generation: host.allocateProcessGeneration(),
+        memory,
+        memoryLease,
+        workerQuiescence: createWorkerQuiescence(),
+        execRetirement: createWorkerQuiescence(),
+        memoryRetirementSafe: true,
+        aliasExposed: false,
+        programBytes,
+        programModule,
+        worker,
+        argv: msg.argv,
+        channelOffset,
+        ptrWidth,
+        secureExec,
+        layout,
+        threadAllocator,
+        externrefGeneration,
+      };
+      host.processes.set(pid, createdGeneration);
+
+      host.installProcessWorkerListeners(worker, pid);
+      createdMemoryLease = undefined;
+      createdPid = undefined;
+      createdExternrefGeneration = undefined;
+      createdForkHostImports = undefined;
+
+      respond(msg.requestId, pid);
+    } catch (e) {
+      createdForkHostImports?.close();
+      if (createdExternrefGeneration) {
+        host.externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
+      }
+      if (createdPid !== undefined) {
+        if (createdWorker) await terminateTrackedWorker(createdWorker);
+        const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
+        if (lease) {
+          const generation = createdGeneration ?? {
+            memory: lease.memory,
+            memoryLease: lease,
+          };
+          const rollbackPid = createdPid;
+          const detachResult = await detachExactProcessGeneration({
+            pid: rollbackPid,
+            generation,
+            operation: createdMemoryRegistered ? "unregister" : "none",
+            retire: async (commit) => {
+              const aliasesReleased = createdGeneration
+                ? await host.releaseGenerationAliases(
+                    rollbackPid,
+                    createdGeneration,
+                  )
+                : true;
+              // Where termination is not itself an ownership fence, an
+              // attempted worker construction may already hold the Memory.
+              if (workerCreationAttempted || !aliasesReleased) {
+                lease.releaseAfterForcedTermination();
+              } else {
+                lease.release();
+              }
+              commit();
+            },
+          });
+          if (detachResult.status !== "released") {
+            reportRetainedProcessGeneration(
+              rollbackPid,
+              "initial spawn rollback",
+              detachResult,
+            );
+          }
+        }
+        if (!createdMemoryRegistered) {
+          try {
+            kernelWorker.removeProcessFromKernelTable(createdPid);
+          } catch {
+            // Preserve the original spawn failure in the response.
+          }
+        }
+      }
+      respondError(msg.requestId, String(e));
+    } finally {
+      releaseMutation?.();
+    }
+  }
+
   return {
     bindForkHostImports,
     completeVforkGenerationTeardown,
+    handleSpawn,
     awaitFinalizedProcessTeardown,
     createFreshProcessMemory,
     detachExactProcessGeneration,
@@ -1634,8 +2069,8 @@ export function createProcessLifecycle<Info extends ProcessLifecycleInfo>(
   };
 }
 
-export type ProcessLifecycle<Info extends ProcessLifecycleInfo> =
-  ReturnType<typeof createProcessLifecycle<Info>>;
+export type ProcessLifecycle<W extends LifecycleWorker> =
+  ReturnType<typeof createProcessLifecycle<W>>;
 
 // ── Exec target resolution ──────────────────────────────────────────────────
 //

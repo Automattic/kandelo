@@ -173,6 +173,8 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   bufferToArrayBuffer,
   createProcessLifecycle,
+  type ForkReplayContext,
+  type ProcessLifecycleInfo,
   type ThreadWorkerRecord,
   formatError,
   handleThreadExit,
@@ -372,39 +374,32 @@ const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 // Process tracking
-interface ForkReplayContext {
-  fnPtr: number;
-  argPtr: number;
-  forkBufAddr: number;
+/**
+ * This host's execution-image record.
+ *
+ * The whole declaration is shared now: the two entries' copies were
+ * field-for-field the same apart from the worker handle, so the shared module
+ * is generic in that alone. `ForkReplayContext` came with it.
+ */
+type ProcessInfo = ProcessLifecycleInfo<
+  ReturnType<NodeWorkerAdapter["createWorker"]>
+>;
+let nextProcessGeneration = 1;
+
+/**
+ * Allocate the next execution-generation number for this realm.
+ *
+ * Monotonic and never reused, so a message naming a generation can always be
+ * rejected as stale rather than misapplied to a successor image.
+ */
+function allocateProcessGeneration(): number {
+  const generation = nextProcessGeneration++;
+  if (!Number.isSafeInteger(generation)) {
+    throw new Error("process execution generation space exhausted");
+  }
+  return generation;
 }
 
-interface ProcessInfo extends ProcessGenerationOwnership {
-  workerQuiescence: WorkerQuiescence;
-  execRetirement: WorkerQuiescence;
-  programBytes: ArrayBuffer;
-  programModule?: WebAssembly.Module;
-  worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-  channelOffset: number;
-  ptrWidth: 4 | 8;
-  /** Kernel-owned sticky secure-execution state for this exact image. */
-  secureExec: boolean;
-  layout: ProcessMemoryLayout;
-  threadAllocator: ThreadPageAllocator;
-  /** Exact broker authority for this PID's current Wasm image. */
-  externrefGeneration: ForkExternrefGeneration;
-  /** Non-_start continuation root inherited from a pthread fork until exec. */
-  forkReplayContext?: ForkReplayContext;
-  /** Parent-owned control slot borrowed only until exact exec/exit teardown. */
-  vforkWorkspace?: VforkWorkspaceOwnership;
-  /**
-   * The co-resident fork-module region this process worker placed in its shared
-   * linear memory (reported by the worker at init). A COPIED fork child reuses
-   * this exact base so it does not double-map the module region it already
-   * inherits via its memory clone. Inherited into a child's generation so a
-   * grandchild fork propagates the same base.
-   */
-  forkModuleRegion?: { base: number; bytes: number };
-}
 const processes = new Map<number, ProcessInfo>();
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
@@ -592,7 +587,7 @@ const processGenerationDetaches =
  * `Atomics.wait` on a SharedArrayBuffer does not resume once it resolves.
  * The browser entry declares `false` for the same field.
  */
-const lifecycle = createProcessLifecycle<ProcessInfo>({
+const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   post: (message, transfer) => post(message, transfer),
   terminationProvesQuiescence: true,
   isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
@@ -614,10 +609,30 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
   defaultExitCrashSignum: () => undefined,
   threadWorkerSettleMs: 0,
   reportProcessExit: (pid, _info, status) => reportProcessExit(pid, status),
+  allocateProcessGeneration,
+  forkHostImportOwnerRuntime,
+  createProcessWorker: (init) => workerAdapter.createWorker(init),
+  sideModuleInitFields,
+  installProcessWorkerListeners: (worker, pid) =>
+    installProcessWorkerListeners(worker, pid),
+  // Node reaches the network directly, so a launch runs with exactly the
+  // environment it asked for.
+  decorateLaunchEnv: (env) => [...env],
+  defaultLaunchEnv: () => [],
+  // `await worker.terminate()` is the ownership fence, so every predecessor
+  // teardown has already completed by the time a successor is admitted.
+  awaitProcessConstructionBarrier: () => Promise.resolve(),
+  // Node registers the PTY output callback at spawn; the browser's main
+  // thread asks for it separately with `register_pty_output`.
+  onProcessPtyReady: (pid, ptyIdx) => {
+    kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
+      post({ type: "pty_output", pid, data });
+    });
+  },
   // `await worker.terminate()` joins the thread on Node, so nothing has
-  // to settle afterwards and there are no extra ownership fences to check.
+  // to settle afterwards, and no host-side alias of the Memory exists.
   processExitSettleMs: () => 0,
-  exitRetirementFences: () => true,
+  releaseGenerationAliases: () => true,
   processMemoryAllocator: () => processMemoryAllocator,
   defaultMaxPages: () => maxPages,
   defaultThreadSlots: () => defaultThreadSlots,
@@ -632,6 +647,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  handleSpawn,
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
@@ -1226,207 +1242,6 @@ async function handleInit(msg: InitMessage) {
 
 // --- Spawn ---
 
-async function handleSpawn(msg: SpawnMessage) {
-  let releaseMutation: (() => void) | undefined;
-  let createdPid: number | undefined;
-  let createdMemoryLease: ProcessMemoryLease | undefined;
-  let createdMemoryRegistered = false;
-  let workerCreationAttempted = false;
-  let createdWorker: ProcessInfo["worker"] | undefined;
-  let createdGeneration: ProcessInfo | undefined;
-  let createdExternrefGeneration: ForkExternrefGeneration | undefined;
-  let createdForkHostImports: ForkHostImportOwnerWorker | undefined;
-  try {
-    releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
-    const hasProgramBytes = msg.programBytes !== undefined;
-    const hasProgramPath = msg.programPath !== undefined;
-    if (hasProgramBytes === hasProgramPath) {
-      respondError(
-        msg.requestId,
-        "spawn requires exactly one of programBytes or programPath",
-      );
-      return;
-    }
-    const programBytes = msg.programBytes ??
-      await readExecFromVfs(msg.programPath!);
-    const programModule = hasProgramBytes ? msg.programModule : undefined;
-    if (programBytes === null) {
-      respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
-      return;
-    }
-    if (!isWasmModuleBytes(programBytes)) {
-      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
-      return;
-    }
-
-    const pid = kernelWorker.createProcess(
-      msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
-    );
-    createdPid = pid;
-    const ptrWidth = detectPtrWidth(programBytes);
-    const {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator,
-    } = await createFreshProcessMemory(pid, programBytes, ptrWidth);
-    createdMemoryLease = memoryLease;
-    const channelOffset = layout.channelOffset;
-
-    kernelWorker.registerProcess(pid, memory, [channelOffset], {
-      ptrWidth,
-      argv: msg.argv,
-      env: msg.env ?? [],
-      brkBase: layout.brkBase,
-      mmapBase: layout.mmapBase,
-      maxAddr: layout.maxAddr,
-    });
-    createdMemoryRegistered = true;
-
-    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    const secureExec = kernelWorker.processSecureExec(pid);
-    if (msg.cwd) {
-      kernelWorker.setCwd(pid, msg.cwd);
-    }
-
-    if (msg.maxAddr != null) {
-      kernelWorker.setMaxAddr(pid, msg.maxAddr);
-    }
-
-    if (msg.pty) {
-      const ptyIdx = kernelWorker.setupPty(pid);
-      ptyByPid.set(pid, ptyIdx);
-      // Apply initial winsize before the wasm program starts. Without this,
-      // the program's first TIOCGWINSZ returns the kernel default (80x24)
-      // and TUI renderers (ink, blessed) cache the wrong width before the
-      // post-spawn pty_resize lands, causing redraw corruption.
-      if (msg.ptyCols != null && msg.ptyRows != null) {
-        kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
-      }
-      kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
-        post({ type: "pty_output", pid, data });
-      });
-    } else {
-      if (msg.stdin) {
-        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-        kernelWorker.setStdinData(pid, stdinData);
-      }
-    }
-
-    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
-    createdExternrefGeneration = externrefGeneration;
-    let worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
-    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-      pid,
-      generationId: externrefGeneration.id,
-      authorizeSender: () => {
-        const current = processes.get(pid);
-        if (
-          !current
-          || current.worker !== worker
-          || current.externrefGeneration !== externrefGeneration
-        ) {
-          throw new Error(`stale fork host-import sender for pid=${pid}`);
-        }
-      },
-    });
-    createdForkHostImports = forkHostImports;
-    const initData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
-      pid,
-      programBytes,
-      programModule,
-      memory,
-      channelOffset,
-      secureExec,
-      externrefGenerationId: externrefGeneration.id,
-      forkHostImports: forkHostImports.init,
-      env: msg.env,
-      argv: msg.argv,
-      ptrWidth,
-      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...sideModuleInitFields(ptrWidth),
-    };
-
-    // A constructor may expose Memory to a partially created Worker before it
-    // throws, so any failure from this point uses forced retirement.
-    workerCreationAttempted = true;
-    worker = workerAdapter.createWorker(initData);
-    createdWorker = worker;
-    bindForkHostImports(worker, forkHostImports);
-    createdGeneration = {
-      memory,
-      memoryLease,
-      workerQuiescence: createWorkerQuiescence(),
-      execRetirement: createWorkerQuiescence(),
-      programBytes,
-      programModule,
-      worker,
-      channelOffset,
-      ptrWidth,
-      secureExec,
-      layout,
-      threadAllocator,
-      externrefGeneration,
-    };
-    processes.set(pid, createdGeneration);
-
-    installProcessWorkerListeners(worker, pid);
-    createdMemoryLease = undefined;
-    createdPid = undefined;
-    createdExternrefGeneration = undefined;
-    createdForkHostImports = undefined;
-
-    respond(msg.requestId, pid);
-  } catch (e) {
-    createdForkHostImports?.close();
-    if (createdExternrefGeneration) {
-      externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
-    }
-    if (createdPid !== undefined) {
-      if (createdWorker) await terminateTrackedWorker(createdWorker);
-      const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
-      if (lease) {
-        const generation = createdGeneration ?? {
-          memory: lease.memory,
-          memoryLease: lease,
-        };
-        const detachResult = await detachExactProcessGeneration({
-          pid: createdPid,
-          generation,
-          operation: createdMemoryRegistered ? "unregister" : "none",
-          retire: (commit) => {
-            if (workerCreationAttempted) {
-              lease.releaseAfterForcedTermination();
-            } else {
-              lease.release();
-            }
-            commit();
-          },
-        });
-        if (detachResult.status !== "released") {
-          reportRetainedProcessGeneration(
-            createdPid,
-            "initial spawn rollback",
-            detachResult,
-          );
-        }
-      }
-      if (!createdMemoryRegistered) {
-        try {
-          kernelWorker.removeProcessFromKernelTable(createdPid);
-        } catch {
-          // Preserve the original spawn failure in the response.
-        }
-      }
-    }
-    respondError(msg.requestId, String(e));
-  } finally {
-    releaseMutation?.();
-  }
-}
-
 // --- Process lifecycle callbacks ---
 
 async function handleFork(
@@ -1656,10 +1471,14 @@ async function handleVfork(
     launchedWorker = childWorker;
     bindForkHostImports(childWorker, forkHostImports);
     childGeneration = {
+      generation: allocateProcessGeneration(),
       memory: parentMemory,
       memoryLease: childMemoryLease,
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      aliasExposed: false,
+      argv: parentInfo.argv,
       programBytes: parentProgram,
       programModule: parentInfo.programModule,
       worker: childWorker,
@@ -2035,10 +1854,14 @@ async function handleOrdinaryFork(
     launchedWorker = worker;
     bindForkHostImports(worker, forkHostImports);
     childGeneration = {
+      generation: allocateProcessGeneration(),
       memory: childMemory,
       memoryLease: childMemoryLease,
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      aliasExposed: false,
+      argv: parentInfo.argv,
       programBytes: parentProgram,
       programModule: parentInfo.programModule,
       worker,
@@ -2403,10 +2226,14 @@ async function handleExec(
       threadModuleCache.delete(pid);
 
       processes.set(pid, {
+        generation: allocateProcessGeneration(),
         memory: newMemory,
         memoryLease: newMemoryLease,
         workerQuiescence: createWorkerQuiescence(),
         execRetirement: createWorkerQuiescence(),
+        memoryRetirementSafe: true,
+        aliasExposed: false,
+        argv: launchArgv,
         programBytes,
         programModule,
         worker: replacementWorker,
@@ -2732,10 +2559,14 @@ async function handlePosixSpawn(
     const worker = newWorker;
     bindForkHostImports(worker, processForkHostImports);
     childGeneration = {
+      generation: allocateProcessGeneration(),
       memory,
       memoryLease,
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      aliasExposed: false,
+      argv,
       programBytes,
       programModule,
       worker,

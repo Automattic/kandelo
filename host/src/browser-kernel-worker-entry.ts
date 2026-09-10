@@ -155,6 +155,8 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import {
   createProcessLifecycle,
   delay,
+  type ForkReplayContext,
+  type ProcessLifecycleInfo,
   type ThreadWorkerRecord,
   formatError,
   handleThreadExit,
@@ -255,49 +257,19 @@ let injectExecWorkerConstructionFailure = false;
 let injectedExecWorkerConstructionFailure = false;
 
 // Process tracking
-interface ForkReplayContext {
-  fnPtr: number;
-  argPtr: number;
-  forkBufAddr: number;
-}
-
-interface ProcessInfo extends ProcessGenerationOwnership {
-  /** Host-only identity for one execution image. A PID persists across exec. */
-  generation: number;
-  memory: WebAssembly.Memory;
-  memoryLease: ProcessMemoryLease;
-  workerQuiescence: WorkerQuiescence;
-  execRetirement: WorkerQuiescence;
-  memoryRetirementSafe: boolean;
-  /** True once this generation's Memory was cloned to browser main for fb0. */
-  framebufferExposed: boolean;
-  /** Exact browser-main alias teardown, shared by competing failure paths. */
-  framebufferRelease?: Promise<boolean>;
-  programBytes: ArrayBuffer;
-  programModule?: WebAssembly.Module;
-  worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
-  argv: string[];
-  channelOffset: number;
-  ptrWidth: 4 | 8;
-  /** Kernel-owned sticky secure-execution state for this exact image. */
-  secureExec: boolean;
-  layout: ProcessMemoryLayout;
-  threadAllocator: ThreadPageAllocator;
-  /** Exact broker authority for this PID's current Wasm image. */
-  externrefGeneration: ForkExternrefGeneration;
-  /** Non-_start continuation root inherited from a pthread fork until exec. */
-  forkReplayContext?: ForkReplayContext;
-  /** Parent-owned control slot borrowed only until exact exec/exit teardown. */
-  vforkWorkspace?: VforkWorkspaceOwnership;
-  /**
-   * The co-resident fork-module region this process worker placed in its shared
-   * linear memory (reported by the worker at init). A COPIED fork child reuses
-   * this exact base so it does not double-map the region it already inherits via
-   * its memory clone. Inherited into a child's generation so a grandchild fork
-   * propagates the same base.
-   */
-  forkModuleRegion?: { base: number; bytes: number };
-}
+/**
+ * This host's execution-image record.
+ *
+ * The whole declaration is shared now: the two entries' copies were
+ * field-for-field the same apart from the worker handle, so the shared module
+ * is generic in that alone. `ForkReplayContext` came with it, and the four
+ * fields that had looked browser-only — `generation`, `memoryRetirementSafe`,
+ * the alias-exposure pair and `argv` — are host-independent concepts that
+ * Node simply never had to falsify.
+ */
+type ProcessInfo = ProcessLifecycleInfo<
+  ReturnType<BrowserWorkerAdapter["createWorker"]>
+>;
 const processes = new Map<number, ProcessInfo>();
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
@@ -423,7 +395,7 @@ const processGenerationDetaches =
  * `true` for the same field, and that one difference is why its thread-slot
  * reclaim and exec-rollback paths look different from these.
  */
-const lifecycle = createProcessLifecycle<ProcessInfo>({
+const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   post: (message, transfer) => post(message, transfer),
   terminationProvesQuiescence: false,
   isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
@@ -455,9 +427,21 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
       processWorkerTerminationSettleMs(info.argv),
     );
   },
-  exitRetirementFences: async (pid, info) =>
-    info.memoryRetirementSafe
-    && await releaseMainFramebufferGeneration(pid, info),
+  releaseGenerationAliases: (pid, info) =>
+    releaseMainFramebufferGeneration(pid, info),
+  allocateProcessGeneration,
+  forkHostImportOwnerRuntime,
+  createProcessWorker: (init) => workerAdapter.createWorker(init),
+  sideModuleInitFields,
+  installProcessWorkerListeners: (worker, pid) =>
+    installProcessWorkerListeners(worker, pid),
+  // Guest TLS verifies through the host's proxied egress, so a launch needs
+  // the MITM CA on its path.
+  decorateLaunchEnv: withBrowserMitmCaEnv,
+  defaultLaunchEnv: () => defaultEnv,
+  // Browser `Worker.terminate()` is not an ownership fence, so a still-
+  // terminating predecessor's backing is not yet reclaimable.
+  awaitProcessConstructionBarrier: waitForProcessTeardowns,
   processMemoryAllocator: () => processMemoryAllocator,
   defaultMaxPages: () => maxPages,
   defaultThreadSlots: () => defaultThreadSlots,
@@ -475,6 +459,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo>({
 const {
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  handleSpawn,
   awaitFinalizedProcessTeardown,
   createFreshProcessMemory,
   detachExactProcessGeneration,
@@ -551,11 +536,11 @@ function releaseMainFramebufferGeneration(
   pid: number,
   info: ProcessInfo,
 ): Promise<boolean> {
-  if (!info.framebufferExposed) return Promise.resolve(true);
-  if (info.framebufferRelease) return info.framebufferRelease;
+  if (!info.aliasExposed) return Promise.resolve(true);
+  if (info.aliasRelease) return info.aliasRelease;
 
   const requestId = nextFramebufferReleaseRequestId++;
-  info.framebufferRelease = new Promise<boolean>((resolve) => {
+  info.aliasRelease = new Promise<boolean>((resolve) => {
     const timeout = setTimeout(() => {
       if (!pendingFramebufferReleaseAcks.delete(requestId)) return;
       resolve(false);
@@ -581,7 +566,7 @@ function releaseMainFramebufferGeneration(
     }
     return released;
   });
-  return info.framebufferRelease;
+  return info.aliasRelease;
 }
 
 function acknowledgeMainFramebufferRelease(requestId: number): void {
@@ -1136,7 +1121,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       const b = kernelWorker.framebuffers.get(pid);
       const memory = kernelWorker.getProcessMemory(pid);
       if (!b || !memory) return;
-      processInfo.framebufferExposed = true;
+      processInfo.aliasExposed = true;
       post({
         type: "fb_bind",
         pid,
@@ -1229,218 +1214,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 }
 
 // ── Spawn ──
-
-async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
-  let releaseMutation: (() => void) | undefined;
-  let createdPid: number | undefined;
-  let createdMemoryLease: ProcessMemoryLease | undefined;
-  let createdMemoryRegistered = false;
-  let workerCreationAttempted = false;
-  let createdWorker: ProcessInfo["worker"] | undefined;
-  let createdGeneration: ProcessInfo | undefined;
-  let createdExternrefGeneration: ForkExternrefGeneration | undefined;
-  let createdForkHostImports: ForkHostImportOwnerWorker | undefined;
-  try {
-    releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
-    await waitForProcessTeardowns();
-
-    let programBytes: ArrayBuffer;
-    if (msg.programBytes) {
-      programBytes = msg.programBytes;
-    } else if (msg.programPath) {
-      // Read from shared filesystem
-      const bytes = await readExecFromVfs(msg.programPath);
-      if (!bytes) {
-        respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
-        return;
-      }
-      programBytes = bytes;
-    } else {
-      respondError(msg.requestId, "No programBytes or programPath");
-      return;
-    }
-
-    if (!isWasmModuleBytes(programBytes)) {
-      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
-      return;
-    }
-
-    const pid = kernelWorker.createProcess(
-      msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
-    );
-    createdPid = pid;
-    const path = msg.programPath ?? msg.argv[0];
-    const pages = msg.maxPages ?? maxPages;
-    const ptrWidth = detectPtrWidth(programBytes);
-    const {
-      memory,
-      memoryLease,
-      layout,
-      threadAllocator,
-    } = await createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
-      operation: "spawn",
-      path,
-      argv: msg.argv,
-    });
-    createdMemoryLease = memoryLease;
-    const channelOffset = layout.channelOffset;
-    const launchEnv = withBrowserMitmCaEnv(msg.env ?? defaultEnv);
-
-    kernelWorker.registerProcess(pid, memory, [channelOffset], {
-      ptrWidth,
-      argv: msg.argv,
-      env: launchEnv,
-      brkBase: layout.brkBase,
-      mmapBase: layout.mmapBase,
-      maxAddr: layout.maxAddr,
-    });
-    createdMemoryRegistered = true;
-
-    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
-    const secureExec = kernelWorker.processSecureExec(pid);
-    if (msg.cwd) {
-      kernelWorker.setCwd(pid, msg.cwd);
-    }
-
-    if (msg.pty) {
-      const ptyIdx = kernelWorker.setupPty(pid);
-      ptyByPid.set(pid, ptyIdx);
-      // Apply initial winsize before the wasm program starts. Without this,
-      // the program's first TIOCGWINSZ returns the kernel default (80x24)
-      // and TUI renderers (ink, blessed) cache the wrong width before the
-      // post-spawn pty_resize lands, causing redraw corruption.
-      if (msg.ptyCols != null && msg.ptyRows != null) {
-        kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
-      }
-    } else {
-      if (msg.stdin) {
-        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-        kernelWorker.setStdinData(pid, stdinData);
-      }
-    }
-
-    const externrefGeneration = externrefProcessOwner.startGeneration(pid);
-    createdExternrefGeneration = externrefGeneration;
-    let worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
-    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
-      pid,
-      generationId: externrefGeneration.id,
-      authorizeSender: () => {
-        const current = processes.get(pid);
-        if (
-          !current
-          || current.worker !== worker
-          || current.externrefGeneration !== externrefGeneration
-        ) {
-          throw new Error(`stale fork host-import sender for pid=${pid}`);
-        }
-      },
-    });
-    createdForkHostImports = forkHostImports;
-    const initData: CentralizedWorkerInitMessage = {
-      type: "centralized_init",
-      pid,
-      programBytes,
-      memory,
-      channelOffset,
-      secureExec,
-      externrefGenerationId: externrefGeneration.id,
-      forkHostImports: forkHostImports.init,
-      env: launchEnv,
-      argv: msg.argv,
-      cwd: msg.cwd,
-      ptrWidth,
-      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-      kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-      ...sideModuleInitFields(ptrWidth),
-    };
-
-    workerCreationAttempted = true;
-    worker = workerAdapter.createWorker(initData);
-    createdWorker = worker;
-    bindForkHostImports(worker, forkHostImports);
-    createdGeneration = {
-      generation: allocateProcessGeneration(),
-      memory,
-      memoryLease,
-      workerQuiescence: createWorkerQuiescence(),
-      execRetirement: createWorkerQuiescence(),
-      memoryRetirementSafe: true,
-      framebufferExposed: false,
-      programBytes,
-      worker,
-      argv: msg.argv,
-      channelOffset,
-      ptrWidth,
-      secureExec,
-      layout,
-      threadAllocator,
-      externrefGeneration,
-    };
-    processes.set(pid, createdGeneration);
-
-    installProcessWorkerListeners(worker, pid);
-    createdMemoryLease = undefined;
-    createdPid = undefined;
-    createdExternrefGeneration = undefined;
-    createdForkHostImports = undefined;
-
-    respond(msg.requestId, pid);
-  } catch (e) {
-    createdForkHostImports?.close();
-    if (createdExternrefGeneration) {
-      externrefProcessOwner.releaseGeneration(createdExternrefGeneration);
-    }
-    if (createdPid !== undefined) {
-      if (createdWorker) await terminateTrackedWorker(createdWorker);
-      const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
-      if (lease) {
-        const generation = createdGeneration ?? {
-          memory: lease.memory,
-          memoryLease: lease,
-        };
-        const detachResult = await detachExactProcessGeneration({
-          pid: createdPid,
-          generation,
-          operation: createdMemoryRegistered ? "unregister" : "none",
-          retire: async (commit) => {
-            const framebufferReleased = createdGeneration
-              ? await releaseMainFramebufferGeneration(
-                  createdPid!,
-                  createdGeneration,
-                )
-              : true;
-            // Browser Worker termination has no completion event. Once
-            // creation was attempted, retire through the forced path.
-            if (workerCreationAttempted || !framebufferReleased) {
-              lease.releaseAfterForcedTermination();
-            } else {
-              lease.release();
-            }
-            commit();
-          },
-        });
-        if (detachResult.status !== "released") {
-          reportRetainedProcessGeneration(
-            createdPid,
-            "initial spawn rollback",
-            detachResult,
-          );
-        }
-      }
-      if (!createdMemoryRegistered) {
-        try {
-          kernelWorker.removeProcessFromKernelTable(createdPid);
-        } catch {
-          // Preserve the original spawn failure.
-        }
-      }
-    }
-    respondError(msg.requestId, String(e));
-  } finally {
-    releaseMutation?.();
-  }
-}
 
 /**
  * Wire the four ways a process worker can die so the kernel's view of
@@ -1864,7 +1637,7 @@ async function handleVfork(
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       memoryRetirementSafe: true,
-      framebufferExposed: false,
+      aliasExposed: false,
       programBytes: parentInfo.programBytes,
       programModule: parentInfo.programModule,
       worker: childWorker,
@@ -2248,7 +2021,7 @@ async function handleOrdinaryFork(
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       memoryRetirementSafe: true,
-      framebufferExposed: false,
+      aliasExposed: false,
       programBytes: parentInfo.programBytes,
       programModule: parentInfo.programModule,
       worker,
@@ -2347,10 +2120,10 @@ async function handleOrdinaryFork(
       generation,
       operation: registered ? "deactivate" : "none",
       retire: async (commit) => {
-        const framebufferReleased = childGeneration
+        const aliasReleased = childGeneration
           ? await releaseMainFramebufferGeneration(childPid, childGeneration)
           : true;
-        if (workerStartAttempted || !framebufferReleased) {
+        if (workerStartAttempted || !aliasReleased) {
           childMemoryLease.releaseAfterForcedTermination();
         } else {
           childMemoryLease.release();
@@ -2662,7 +2435,7 @@ async function handleExec(
         workerQuiescence: createWorkerQuiescence(),
         execRetirement: createWorkerQuiescence(),
         memoryRetirementSafe: true,
-        framebufferExposed: false,
+        aliasExposed: false,
         programBytes: bytes,
         programModule,
         worker: replacementWorker,
@@ -3000,7 +2773,7 @@ async function handlePosixSpawn(
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
       memoryRetirementSafe: true,
-      framebufferExposed: false,
+      aliasExposed: false,
       programBytes,
       programModule,
       worker,
@@ -3061,10 +2834,10 @@ async function handlePosixSpawn(
       generation,
       operation: registered ? "deactivate" : "none",
       retire: async (commit) => {
-        const framebufferReleased = childGeneration
+        const aliasReleased = childGeneration
           ? await releaseMainFramebufferGeneration(childPid, childGeneration)
           : true;
-        if (workerStartAttempted || !framebufferReleased) {
+        if (workerStartAttempted || !aliasReleased) {
           memoryLease.releaseAfterForcedTermination();
         } else {
           memoryLease.release();
