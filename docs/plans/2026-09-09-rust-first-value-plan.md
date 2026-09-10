@@ -25,6 +25,47 @@ of all. Sound engineering. Complete engineering. No cheats or hacks."*
 A boundary is a floor only when it is **proven** to be one. Truthful failure
 over convenient illusion.
 
+### Generic-first (maintainer, 2026-09-09) — a standing rule, not a one-off
+
+> *"Kandelo aims to be a generically applicable POSIX-compatible kernel. We
+> don't really choose and implement special cases at all without good reason."*
+
+Raised after this plan recorded that PHP is the only artifact performing a
+runtime `dlopen`, and framed it as something that "materially shrinks K5's
+blast radius". That phrasing invited a PHP-shaped linker. The maintainer's point
+is that this is **a typical pattern in this repository**, not a single slip.
+
+**The rule.** Knowing which packages exercise a subsystem today bounds the
+**validation surface**. It never bounds the **design**. A POSIX interface must
+be generically correct whether or not any in-repo artifact reaches a given path.
+`docs/agent-guidance` already says it — *"a fix that only makes one program,
+demo, package script, or button work is suspect"*, and *"missing or incomplete
+POSIX behavior is a platform gap to close, not permission to weaken the model or
+add software-specific behavior"* — this records that it binds **campaign
+decisions**, not just code.
+
+**The failure mode to watch for**, because it is subtle and sounds responsible:
+"only X uses this, so we can scope to X" · "no package hits that path, so the
+current behaviour is fine" · "the fixture set doesn't cover it, so it's out of
+scope". Each of those silently converts a coverage fact into a design licence.
+
+**Where generic correctness cannot be validated with today's package set, record
+a documented boundary — do not narrow the implementation to match the tests.**
+
+**Applied so far:** K5's guard (§2j D2) on `dlopen`, and the two adjudications
+most exposed to it (the GOT zero-write on ELF/`RTLD_LAZY` semantics rather than
+PHP's symbol set; the table-scan structure on generic symbol profiles rather
+than `intl.so`'s). K1 had already made the right call independently by refusing
+the `SOURCE_PATH_DERIVED` optimisation because the 7,467/7,467 match was a
+property of *today's builders* rather than of the format.
+
+**Needs re-checking under this rule:** K10's ranking was argued partly on
+"a capability with no in-repo consumer". Ranking by value is legitimate — WASI
+genuinely serves fewer users today — but the reasoning is one step from
+"therefore implement less of it", and the item's held deletion (I6) is gated on
+fixtures rather than on generic correctness. Re-read that decision before I6
+lands.
+
 **Scope:** the runtime — everything required to run the kernel on a host,
 including fork capture/replay. Explicitly **not** the build/packaging
 toolchain (`tools/mkrootfs`, `images/vfs/scripts`, `scripts/`, `sdk/`,
