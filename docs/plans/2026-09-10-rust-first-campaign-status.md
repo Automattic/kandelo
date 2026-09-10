@@ -1043,6 +1043,25 @@ accidents: **when a gate reports success, check that it ran.**
    module. Green for `@fork-module32-wasm` for as long as that alias existed.
    Now sourced from `browser-module-contract.mjs`.
 
+### Two mitigations that looked applied and were not
+
+Both produce cross-worktree side effects, and both produce failures naming
+neither worktree — which is what makes them expensive rather than annoying.
+
+- **`KANDELO_SOURCE_CACHE_ROOT` was stripped by
+  `nix develop --ignore-environment`** while every agent brief mandated setting
+  it. So no agent ever had cache isolation, and the campaign's own
+  kernel-install recipe installed nothing when invoked the obvious way. Three
+  agents found it independently, from three different symptoms. Fixed.
+- **The per-session scratchpad is shared between concurrent agents.** One agent
+  wrote a helper script there; a sibling replaced it between write and execute,
+  and the script that ran `cd`'d into the sibling's worktree and refreshed its
+  `kernel.wasm`. Later confirmed from the other direction: a sibling's
+  `./run.sh setup` writing its log into that agent's scratchpad. **Defensive
+  pattern:** a uniquely-named file *plus* an in-script guard asserting the
+  expected worktree — a unique name alone does not help, because the failure is
+  a replacement between write and execute.
+
 ### Two more that cost whole test runs
 
 **The full Vitest suite needs an otherwise-idle tree.** Two agents discarded

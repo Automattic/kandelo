@@ -1030,9 +1030,20 @@ No data was lost, and the agent caught and reported it. But the environment
 presents the scratchpad as session-isolated, and with several agents running it
 is not isolated between them.
 
-Until that is fixed, a helper script written from an agent must use a
-uniquely-named path and guard on its own content before executing — the agent
-that hit this re-did it that way. The wider point is that a cross-worktree
-build side effect is exactly the class of thing that produces failures naming
-neither worktree, which is the same shape as the shared-cache defect recorded
-above.
+**Confirmed as systematic, not a one-off.** The same agent later found a
+sibling's `./run.sh setup` writing its log into that agent's scratchpad
+directory. It verified via `lsof` that the sibling's working directory was its
+own worktree, so no tree was mutated that time — but the collision is the same,
+and it has now happened twice from two different directions.
+
+**The defensive pattern that worked:** a uniquely-named file *plus* an in-script
+guard that asserts the expected worktree before acting. A unique name alone is
+not enough, because the failure is a replacement between write and execute.
+
+This belongs in agent briefs beside the `KANDELO_SOURCE_CACHE_ROOT` note,
+because the failure mode is identical in shape: **a mitigation that looks
+applied and is not.** The cache flag was stripped by
+`nix develop --ignore-environment` while every brief mandated setting it; the
+scratchpad is described as session-isolated while being shared. Both produce
+cross-worktree side effects, and both produce failures that name neither
+worktree.
