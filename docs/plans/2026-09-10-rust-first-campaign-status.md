@@ -1824,6 +1824,62 @@ task killed a *concurrent* `dev-shell.sh` build in the same worktree
 (`Terminated: 15`, exit 143). Agents sharing a worktree must not stop dev-shell
 tasks.
 
+## OWED-WORK REGISTER — every outstanding item, audited 2026-09-10
+
+Written after an audit found **six items that existed only in agent briefs and
+a chat transcript**, not in any document. That is the failure this register
+exists to prevent: work that is dispatched is not thereby recorded, and a
+session that ends takes its briefs with it.
+
+**Rule: nothing is dispatched until it appears here.**
+
+### A. In flight — an agent is working it right now
+
+| # | Item | Deletes / changes | Owner |
+|---|---|---|---|
+| A1 | K5 I6c — six missing `DynamicLinker` host↔module contracts | `dylink.ts` 4,188 + `dylink-fork-archive.ts` 2,152 | agent |
+| A2 | `crates/wasm-artifact` side module + cutover | `constants.ts` remainder ~2,900 | agent |
+| A3 | K4b — remaining worker-entry declarations (21, not 16) | ~2,700 | agent |
+| A4 | pthread slot arena unification + dead surface | `shell-config.ts` 91; `host_call_signal_handler` (76→75); one authority | agent |
+| A5 | Reconciliation — `usePolling` + poller, 16 memory-authority sites, epoch strings | ~200 | agent |
+| A6 | `hostname.ts` (99) MIGRATE · `device-fs.ts` (335) ELIMINATE · `boot-descriptor.ts` (507) scope-check | ~940 | agent |
+
+### B. Owed, no agent — each needs dispatching or an explicit decision
+
+| # | Item | Why it is still here |
+|---|---|---|
+| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **Completes V3.** Recorded only as a table cell until now; never scoped. Removes ~2,000 lines across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes. |
+| B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
+| B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
+| B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
+| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines, blocked at the time on file ownership that has since cleared |
+| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; gated on B7 |
+| B7 | **epoll fork inheritance + OFD keying** | **One change, not two.** Deferred with its real shape; `posix-status.md` corrected from "Full" to "Partial" |
+| B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
+| B9 | **NDD-IOVEC-1 — per-process pointer width at registration** | **Maintainer approved.** Frees `preadv2`/`pwritev2`'s `flags` slot, currently holding the width stamp. Must survive fork inheritance and a width-changing exec. Do it *before* anything else claims slot 5. |
+| B10 | **NDD-K4-1 — kernel-owned shebang parsing** | The duplicate is shared (one call site); the kernel move needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
+| B11 | **`report_writeback_loss` wiring** | Kept, and the reason imports read 76 not 75. Better home: kernel-visible state readable through an existing export — costs no import, survives the session, and is testable |
+| B12 | **`privileged-projection.ts` (864) — test-only** | Census finding, unrecorded until now. Open as D-K8-4 |
+| B13 | **`dylink-planner.ts` (796) test-only** | Becomes production when A1 lands; **`dylink-planner-wire.ts` is NOT test-only** — Serena refuted that; it is imported by production source |
+| B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
+| B15 | **TLS `SharedArrayBuffer` hazard** | All three engines throw on SAB-backed views; reachability unproven. Fix when the file is next touched: copy at the boundary, tighten `ArrayBufferLike` → `ArrayBuffer` |
+| B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15 |
+| B17 | **`tar/wasm32` fails to compile on base** | `readdir.c:38: incomplete definition of type 'DIR'`. Blocks `shell` and every image below it. Latent — a cached artifact hid it; anyone rebuilding musl meets it. **Recorded in the value plan, not here, until now.** |
+| B18 | **`./run.sh setup` does not install root npm dependencies** | Its absence cascade-blocks every browser product |
+| B19 | **`install-local-artifact` leaves a higher-priority tier stale** | The resolver reads `source-only-v1` first; one command should leave every tier consistent, or fail loudly |
+| B20 | **Tier-end browser pass** | Now split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed this way |
+
+### C. Closed by measurement, kept only so they are not re-opened
+
+`host_futex_wait` · `host_sigsuspend_wait` · `host_debug_log` declared-vs-linked ·
+the E1 GC blockers · the V8 `epoll_pwait` crash · the four-JS-act dylink floor ·
+the K1b callerless `assertImageKernelAbi` · `netif.rs`'s "cannot itself reach" ·
+OPFS-as-live-floor · the `constants.ts` "re-export shim" KEEP · the
+pre-/post-kernel two-category framing · "16 inseparable pairs" · "~30 ABI-43
+strings" · the `describeWasmArtifactPolicyFailures` holder · wasmtime-exnref.
+
+**Fifteen disproved claims. Seven were written by the coordinator.**
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
