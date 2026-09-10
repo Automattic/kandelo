@@ -1,0 +1,36 @@
+[package]
+name = "dylink-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone wasm entry point for the dynamic-linking planner"
+
+# The wasm face of `crates/dylink`.
+#
+# `crates/dylink` is a pure Rust library with a Rust-native `step`/`resume`
+# API. `crates/host-native` links it directly and matches on the enums. The two
+# JavaScript hosts cannot: there is no wasm entry point, so on Node and in the
+# browser NOTHING can call the planner. That, not scope, is what blocks the
+# deletion of `host/src/dylink.ts` (4,188 lines) and
+# `host/src/dylink-fork-archive.ts` (2,152).
+#
+# This crate is that entry point, and its placement is forced rather than
+# chosen. See `src/lib.rs` for why folding into `crates/fork-module` and
+# linking into the kernel were both refuted.
+[lib]
+name = "dylink_module"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dylink = { path = "../dylink" }
+
+# The module owns its own linear memory (it imports nothing at all), so it
+# supplies its own global allocator. `dlmalloc` is what `crates/kernel` uses and
+# what Rust itself uses for ordinary wasm32-unknown-unknown programs; crucially
+# it RECLAIMS, which a bump allocator does not. A process that loads and unloads
+# shared objects over its lifetime must give the memory back.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false }
+
+[target.'cfg(target_arch = "wasm64")'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false }
