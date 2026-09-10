@@ -9,11 +9,11 @@
  *
  * Exactly two facts in those sections are kernel-relevant: a lazy file's real
  * size, and an archive member's `(archive_id, source_path, size)`. The kernel
- * already consumes both today, in binary, through the RTFS v3 manifest's
- * `KIND_LAZY_FILE` entries (`rootfs-manifest.ts`) — which the host produces by
- * walking the restored filesystem after loading the image. `KLZY` puts the
- * same kernel-needed subset in the image itself, so an image's lazy linkage is
- * readable without a JSON parser and without a host-side tree walk first.
+ * used to get both from the RTFS manifest the host built by walking the
+ * restored filesystem. `KLZY` puts the same kernel-needed subset in the image
+ * itself, so an image's lazy linkage is readable without a JSON parser and
+ * without a host-side tree walk first — which is what let the boot cutover
+ * remove the walk entirely.
  *
  * The layout is documented once, authoritatively, next to its structural
  * constants in `crates/shared/src/lib.rs` (`VFS_IMAGE_KERNEL_LAZY_*`); the

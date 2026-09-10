@@ -4,16 +4,20 @@
  *
  * `buildRootfsLazyWiring` consumes `MemoryFileSystem.exportLazyArchiveEntries()`
  * output and produces, from one pass over the groups:
- *  - a `RootfsLazyInput` (fed to `emitRootfsManifest` so the manifest walker
- *    emits `KIND_LAZY_FILE` linkage for lazy members), and
  *  - an `archiveProvider` closure (fed to `configureRootfsOverlay`) that
  *    answers the kernel's `host_fetch_archive(archive_id, offset, dest)`
  *    calls by fetching the whole raw archive once, caching it, and reporting
- *    `EAGAIN` while the fetch is outstanding.
+ *    `EAGAIN` while the fetch is outstanding — the production output, and
+ *  - a `RootfsLazyInput`, the linkage the host used to feed to the RTFS
+ *    manifest walker. Since the boot cutover the kernel learns which files are
+ *    lazy from the image's own `KLZY` section, so this half has no production
+ *    consumer left; it survives because the differential gates in
+ *    `host/test/support/rootfs-manifest-oracle.ts` compare the image's section
+ *    against exactly this reconstruction.
  *
  * Both outputs share ONE `Map<archiveId, ...>` and one reduction pass over
- * `entries`, so the manifest's archive table and the provider's lookup table
- * can never drift relative to each other.
+ * `entries`, so the two can never drift relative to each other — which is what
+ * makes the comparison a real check rather than a tautology.
  *
  * That reduction -- which groups are fetchable, which members are byte ranges,
  * and what `archiveId` each group gets -- lives in `reduceLazyArchiveGroups`
