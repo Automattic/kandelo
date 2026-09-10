@@ -691,23 +691,55 @@ suites reported as flaky.**
   byte-identical to the same suites at `49c0718ee` run in a separate worktree.
   The failure is the coordinator's `kernel-scratch-contract`
   unreviewed-memory-authority case, with the same 20 findings before and after.
-- **23 worker-lifecycle/entry suites: 209 passed / 3 failed / 1 skipped of
-  213 executed** — identical counts and identical failing files at
-  `49c0718ee`. The 3 failures are `rootfs.vfs` provisioning
-  (`environment-lifecycle`, `fifo-lifecycle-guest`, `wait-lifecycle-guest`),
-  not results. Provisioned to reach this: musl wasm32 + wasm64 sysroots,
-  `crates/fork-module/build-wasm.sh`, a kernel build installed to
-  `local-binaries/kernel.wasm` via `install-local-artifact`, and `npm --prefix
-  host install`. Before the kernel was installed, five of those files failed
-  with `BinaryNotFoundError`; installing it turned three into passes, which is
-  the counted-execution check the campaign asks for.
+- **23 worker-lifecycle/entry suites: 236 passed of 236 executed, 23/23
+  files.** This number only exists because the worktree was fully
+  provisioned; the same command in a partly-provisioned tree reported
+  209/213 with 3 failures and 1 skip, and earlier still 5 failing files.
+  The executed count is the result — "green" was available at every stage.
 - `tsc -p host/tsconfig.json`: clean for all three changed sources; the host
   project's 32 remaining errors are unchanged and pre-existing (bundler-only
   imports, `rootDir` scope, vendored openssl TLS).
+- **The two suites that cover this pass's riskiest change were contributing
+  zero tests until the last provisioning step.** `vfork-lifecycle-guest`
+  (6/6) and `spawn-pid-authority` (17/17) both failed at *collection* on a
+  missing fixture `.wasm`, in this worktree and at `49c0718ee` alike. Among
+  the six now-executing vfork tests are "contains a compute-running borrower
+  after an external fatal signal", which drives the shared
+  `containVforkAddressSpace`, and "releases the parent after exact trap and
+  signal teardown", which drives the shared `finishProcessExit`. Those were
+  the two changes reasoned about but not executed.
 - **Browser: NOT run.** Everything above is Node. The browser-visible changes
   are the pre-init pipe guard, the exec-of-a-directory refusal, the
   `read_vfs_file` byte transfer, the concurrent exit fences, and the fatal
   teardown `.catch()`.
+
+### Fresh-worktree provisioning: what `./run.sh setup` does not do
+
+Every step below turned erroring or non-collecting files into executing
+ones, and none is optional for a worktree that needs to run guest suites:
+
+1. `git submodule update --init libc/musl`, then `scripts/build-musl.sh` and
+   `scripts/build-musl.sh --arch wasm64posix`. Note `--arch wasm64` is
+   rejected; the name is `wasm64posix`.
+2. `npm --prefix host install` — `vitest` is a `host/` devDependency.
+3. **`npm install` at the repo root.** `./run.sh setup` does not do this, and
+   without it `rootfs` fails with `build-rootfs: sealed build requires locked
+   root dependency node_modules/tsx/dist/cli.mjs` and `node-browser-bundle`
+   with `locked tsx CLI not found`. Neither message says "run npm install".
+   `rootfs` then cascade-blocks `platform-rootfs`, `browser-main-shell`,
+   `browser-nginx`, `browser-wordpress`, `browser-node`, `browser-lamp`,
+   `shell`, `node-vfs`, `nginx-vfs` and `coreutils-docs` — so an agent told
+   not to fight browser provisioning reads this as the browser being broken.
+4. `crates/fork-module/build-wasm.sh`.
+5. A kernel build installed to `local-binaries/kernel.wasm` via
+   `install-local-artifact` — `./run.sh rebuild kernel` alone does not
+   repoint it.
+6. `./run.sh rebuild rootfs` (writes `host/wasm/rootfs.vfs`).
+7. `scripts/build-programs.sh` — the test-fixture `.wasm` files.
+
+A full `./run.sh setup` in this worktree still exited **1** with `php`
+(ICU `pkg-config`) and `mariadb-test` failing for their own reasons. Those
+two are unrelated to the host runtime and are not this item's.
 
 ### Six structural parity assertions updated — each still checks its subject
 
@@ -767,7 +799,8 @@ changed, so roughly 75% is already identical.
   exec and the init prologue — and the browser half cannot be executed from
   Node. Expect roughly a session's careful work plus a browser pass.
 - *Cost later:* the drift continues. This item's own census moved measurably in
-  a day, and 70%+ of pairs differing is what produced D1–D17 in the first place.
+  a day, and 70%+ of pairs differing is what produced D1–D17 in the first
+  place.
 - *Recommendation:* take it, as **one** item, with the fork-path guest suites
   provisioned first (`rootfs.vfs` + `local-binaries/kernel.wasm`) so
   `vfork-lifecycle-guest`, `wait-lifecycle-guest` and `fifo-lifecycle-guest`
