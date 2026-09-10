@@ -2782,6 +2782,17 @@ Any change to a translation table now fails a test until someone regenerates
 and reviews the diff. That closes the one failure mode the Vitest harness could
 not see: it compared TypeScript against whatever JSON happened to be checked in.
 
+### One behaviour change beyond the five defects: wasm64 WASI now fails loud
+
+The deleted shim hardcoded `PROCESS_IOVEC_WASM32_BASE_OFFSET` /
+`_LEN_OFFSET` / `_SIZE` and took no pointer width at all, so a wasm64 WASI
+guest would have had its `iovec` fields read at wasm32 offsets and been
+silently mis-marshalled. WASI Preview 1 is a wasm32 ABI, so the module is
+built wasm32-only and `sideModuleInitFields` supplies it only for `ptrWidth`
+4; a wasm64 WASI guest now gets a loud error naming the build script instead
+of wrong bytes. This is the truthful-failure contract applied to a case the
+TypeScript answered incorrectly rather than not at all.
+
 ### Honestly unproven
 
 - **Browser.** Not run. The Vite alias, the artifact module, the protocol field
