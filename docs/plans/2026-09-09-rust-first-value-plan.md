@@ -2666,7 +2666,7 @@ gated on measurement.** K7's cutover must benchmark before adding it.
 ## 2x. K10 I4/I5/I6 — the Rust WASI module RUNS and `wasi-shim.ts` is DELETED (2026-09-10)
 
 Worktree `.claude/worktrees/agent-af972f7169e0efbd3`, base `c45e73d3d`.
-**Ledger `c45e73d3d..HEAD`: in-scope TS 721 added / 1,697 removed = −976.**
+**Ledger `c45e73d3d..78718ecd1`: in-scope TS 740 added / 1,795 removed = −1,055.**
 No `ABI_VERSION` change; no new `env.host_*`.
 
 ### The fixtures gate was NOT a floor. It was the thirteenth disproved one.
