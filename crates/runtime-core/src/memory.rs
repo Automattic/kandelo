@@ -2070,8 +2070,9 @@ impl FileBacking {
 /// Every process's `MAP_SHARED` intervals, the authoritative backings behind
 /// them, and the coherence protocol that keeps the two in step.
 ///
-/// This is the kernel-owned replacement for the eleven `Map`/`Set` containers
-/// the TypeScript host used to model the same state.
+/// This is the kernel-owned replacement for the state behind the eleven
+/// `Map`/`Set` containers the TypeScript host used to model it — but **not yet
+/// for every operation over that state**. See "What this does not replace".
 ///
 /// # Cutover status
 ///
@@ -2084,8 +2085,63 @@ impl FileBacking {
 /// it live needs host-callable `kernel_*` entry points, and
 /// `crates/kernel/src/wasm_api.rs` is the only place those can be declared. The
 /// alternative, hooking the guest syscalls where they are already dispatched,
-/// lands in `crates/runtime-core/src/syscalls.rs`. Both files were owned by a
-/// concurrent workstream when this landed, so neither was touched.
+/// lands in `crates/runtime-core/src/syscalls.rs`.
+///
+/// A production [`SharedMappingIo`] now exists (`WasmSharedMappingIo` in
+/// `crates/kernel/src/wasm_api.rs`) and the table has a machine-wide singleton
+/// ([`global_shared_mapping_table`]), so the remaining work is entry points
+/// plus the gap below — not environment plumbing.
+///
+/// # What this does not replace, and why the cutover is not one item
+///
+/// The TypeScript subsystem is ~3,600 lines. This table corresponds to roughly
+/// two thirds of it. **A third has no counterpart here**, and because it reads
+/// the *same* containers, those containers cannot be deleted until it does:
+///
+/// | TypeScript, ~1,200 lines | status here |
+/// |---|---|
+/// | `handleSharedMappingsAfterFileSyscall` and its per-syscall range policy | **absent** |
+/// | `flushSharedMappingsBeforeFileSyscall`, `syscallTouchesFdStorageBeforeKernel` | **absent** |
+/// | `findSharedMmapBackingForFd`, `sharedMmapFdCache` and its invalidation | **absent** |
+/// | `resolveSharedMmapPath`, `findSharedMmapBackingForPath`, `flushSharedBackingForPath` | **absent** — and see below |
+/// | `reloadSharedMmapBacking{,ForFd,ForPath,Range}` | **absent** |
+/// | `prepareSharedMmapFromFile`, `registerPreparedSharedMmap`, `registerFdWritebackSharedMmap` | **absent** |
+///
+/// This is a **dispatch and policy** gap, not a primitive gap. Every primitive
+/// those functions need already exists here — [`FileBacking::invalidate_range`],
+/// [`FileBacking::flush_range`], [`FileBacking::revalidate`],
+/// [`FileBacking::ensure_range_loaded`]. What is missing is the layer that
+/// decides *which* backing and *which* byte range each file syscall touches:
+/// that a `write` through one fd must invalidate the overlapping pages of a
+/// mapping held through another, that `O_TRUNC` on open reloads from zero, that
+/// `ftruncate` clamps. That is POSIX `MAP_SHARED` fd/mapping coherence, and it
+/// is required, not optional — so it cannot be dropped to finish the cutover.
+///
+/// The path-keyed functions deserve a design note rather than a straight port.
+/// This table keys backings on **handle identity, never a pathname**
+/// (see [`SharedMappingIo::handle_identity`]), which already subsumes the
+/// common case the TypeScript path lookups exist for: a second fd onto the same
+/// object resolves to the same `dev`/`ino` key without consulting a name. A
+/// port should re-derive that policy, not translate it line by line.
+///
+/// # Suggested sequencing
+///
+/// The **SysV half is separable and complete**: `sysv`, `sysv_versions`,
+/// [`SharedMappingTable::track_sysv_mapping`],
+/// [`SharedMappingTable::sync_sysv_from_process`],
+/// [`SharedMappingTable::sync_sysv_segment_from_attached`] and
+/// [`SharedMappingTable::release_all_sysv_for_process`] cover the TypeScript
+/// `shmMappings` / `shmSegmentVersions` pair with no dependency on the gap
+/// above, and it is the one part with a clear performance *gain* (the mirror
+/// stops pulling whole segments through `kernel_ipc_shm_*_chunk`).
+///
+/// One trap to design for first: `synchronizeSharedMemoryForBoundary` early-outs
+/// on `sharedMappings.size === 0 && shmMappings.size === 0`. Moving only the
+/// SysV half leaves the host unable to see half that predicate, and answering it
+/// with a per-syscall kernel call would put a new call on the hot path. Driving
+/// the sync from inside the kernel's own dispatch avoids the extra call
+/// entirely, but moves where the sync happens relative to the syscall — which
+/// is load-bearing, since TypeScript syncs *before* dispatch.
 ///
 /// # What the wiring needs
 ///
@@ -2100,11 +2156,26 @@ impl FileBacking {
 /// | `pwrite` | `host_pwrite` |
 /// | `fstat_handle` | `host_fstat` |
 ///
-/// The remaining operations are in-kernel: `fd_stat`/`fd_pwrite`/`close_fd` are
-/// the kernel's own fd table, `shm_read`/`shm_write` are `ipc::IpcTable`'s
-/// segment bytes (`shm_read_chunk`/`shm_write_chunk` without the channel-sized
-/// chunking the host mirror needs today), and `retain_handle`/`release_handle`
-/// are the existing host-file-handle refcount.
+/// `process_memory_len` is a sixth host-sourced value, and it is **not** an
+/// import: guest memory length belongs to a `WebAssembly.Memory` the kernel has
+/// no handle to, and the host grows a process's memory *after* the kernel
+/// returns from `mmap`. Entry points take it as an argument, which the host
+/// already holds at every boundary that drives this table. Each entry point
+/// must seed every pid it can reach — an unseeded pid reads as "process gone"
+/// and is skipped.
+///
+/// `shm_read`/`shm_write` are `ipc::IpcTable`'s segment bytes
+/// (`shm_read_chunk`/`shm_write_chunk`, without the channel-sized chunking the
+/// host mirror needs today).
+///
+/// `retain_handle`/`release_handle` and `fd_stat`/`fd_pwrite`/`close_fd` are
+/// **not yet implemented** and refuse with `ENOSYS`. Retaining a handle means
+/// deferring the kernel's own `host_close` until the last mapping reference
+/// drops; the TypeScript equivalent is the host-side refcount
+/// `retainHostFileHandle`/`releaseHostFileHandle` with its
+/// `descriptorClosePending` deferral, and moving it here is part of the
+/// file-backing half. The refusal is deliberate: a silent success would hand a
+/// caller a handle the kernel may close underneath it.
 ///
 /// # TypeScript this replaces
 ///
@@ -2141,6 +2212,28 @@ impl FileBacking {
 /// kernel reads its own segment bytes. `docs/agent-guidance/performance.md`
 /// requires before/after benchmarks on Node **and** browser before the cutover,
 /// and forbids calling the result neutral without them.
+///
+/// Two structural facts bound *where* the copy can be paid, and a benchmark
+/// that does not reach them measures nothing about this change:
+///
+/// 1. [`SharedMappingTable::synchronize_for_boundary`] returns immediately when
+///    a process owns no shared state — the overwhelming majority of processes.
+/// 2. [`SharedMappingTable::sync_anonymous_from_process`] skips a mapping whose
+///    backing has `ref_count <= 1` and is not stale, exactly as the TypeScript
+///    does. A mapping with no live peer is never scanned, let alone copied.
+///
+/// So the regression risk is confined to a process holding a large writable
+/// `MAP_SHARED` **with at least one live peer**, crossing boundaries often. A
+/// general syscall benchmark will exercise fact 1 and report no change; that is
+/// a true result about the early-out and says nothing about the copy. Measuring
+/// this honestly needs a targeted case that holds a genuinely shared mapping.
+///
+/// If measurement shows the copy is real, the shape that fixes it without
+/// special-casing this subsystem is a third member of the existing cross-memory
+/// family — a pure `compare` over bytes returning a dirty bitmap, letting the
+/// kernel transfer only changed pages. It stays generic because it answers
+/// "which bytes differ" and never "what should happen": this table keeps the
+/// dirty-set semantics, the publish/refresh protocol and the writeback policy.
 ///
 /// # What this does not fix
 ///
