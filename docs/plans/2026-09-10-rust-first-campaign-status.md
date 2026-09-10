@@ -2333,7 +2333,7 @@ keep their row so they are not re-opened.
 | B10 | **NDD-K4-1 — kernel-owned shebang parsing** | The duplicate is shared (one call site); the kernel move needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
 | B11 | **`report_writeback_loss` wiring** | Maintainer said keep. Better home: kernel-visible state readable through an existing export — costs no import, survives the session, is testable |
 | B12 | **`privileged-projection.ts` (864) — test-only** | Census finding. Open as D-K8-4 |
-| B13 | **`dylink-planner.ts` (796) test-only** | Became production when A1 landed; **`dylink-planner-wire.ts` is NOT test-only** — Serena refuted that; production source imports it |
+| B13 | **CLOSED 2026-09-10 — not deletion debt** | Verified after A1 landed: `dylink-planner` and `dylink-planner-wire` are both imported by production source (`dylink-loader.ts`, `fork-activation-registry.ts`, `worker-main.ts`). The census's "test-only" reading was true only while the TypeScript `ld.so` still existed to do the job instead |
 | B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
 | B15 | **CLOSED 2026-09-10** — TLS `SharedArrayBuffer` hazard | Fixed at the boundary: `toCryptoBufferSource` copies only when the view is not already `ArrayBuffer`-backed. Reachability is no longer unproven — the nine typecheck errors *were* the reachable sites |
 | B16 | **CLOSED 2026-09-10** — the typecheck baseline is **0** | All nine were one family with B15 and were fixed with it, not suppressed. `npm --prefix host run typecheck` can now gate; a baseline of nine could not fail loudly |
