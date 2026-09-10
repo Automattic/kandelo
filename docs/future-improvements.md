@@ -77,7 +77,9 @@ performance evidence: the current boundary coordinator runs in the syscall hot
 path, and its cost has not yet been established by before/after micro and full
 application benchmarks on both hosts.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/worker-main.ts`,
+**Files:** `crates/runtime-core/src/memory.rs` (the mapping table and its
+coherence protocol), `host/src/kernel-worker.ts` (still the live
+implementation; see the cutover note below), `host/src/worker-main.ts`,
 `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`
 
@@ -100,8 +102,20 @@ kernel-owned memfd mapping bridge, external invalidation (or a documented
 ownership boundary), and a Wasm mechanism or instrumentation for faulting
 beyond EOF.
 
-**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
+**Files:** `crates/runtime-core/src/memory.rs` (the page cache and its
+writeback rules), `host/src/kernel-worker.ts` (still the live
+implementation; see the cutover note below), `host/src/vfs/opfs-worker.ts`,
 `host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
+
+**Cutover status.** `crates/runtime-core/src/memory.rs` now holds a Rust
+implementation of the shared-mapping table, its page cache, the fd-writeback
+bridge, the SysV byte-coherence mirror and fork inheritance, with unit tests.
+It is dormant: nothing calls it, because a host-driven subsystem needs
+host-callable `kernel_*` entry points and `crates/kernel/src/wasm_api.rs` is
+the only place those can be declared. Until that wiring lands,
+`host/src/kernel-worker.ts` remains the live implementation and is the file to
+change for behavior. Moving ownership into Rust does not by itself close the
+immediate-coherence gap above; that remains an architectural limit.
 
 ### Re-evaluate the Linux-specificity of the VT keyboard input path
 

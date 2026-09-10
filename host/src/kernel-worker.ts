@@ -3254,6 +3254,17 @@ export class CentralizedKernelWorker {
   private nextAnonymousSharedBackingId = 1;
   /** Stable host handles and page caches for file/POSIX MAP_SHARED objects. */
   private sharedMmapBackings = new Map<string, SharedMmapBacking>();
+  /**
+   * Whether any file/POSIX MAP_SHARED page cache exists.
+   *
+   * Exposed as a predicate rather than an inline container probe so callers
+   * outside the mapping subsystem — notably the blocking-retry replay path,
+   * which only needs to know whether post-replay writeback is possible — do
+   * not reach into the mapping table's internal containers.
+   */
+  private hasSharedMmapBackings(): boolean {
+    return (this.sharedMmapBackings?.size ?? 0) > 0;
+  }
   /** Prevent nested signal cleanup from releasing the same address space twice. */
   private sharedMemoryReleasePids = new Set<number>();
   /**
@@ -3266,6 +3277,17 @@ export class CentralizedKernelWorker {
   private sharedMappingInheritancePids = new Set<number>();
   /** Process fd → resolved backing identity, including negative lookups. */
   private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
+  /**
+   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
+   *
+   * WHY: separate WebAssembly memories cannot directly share segment bytes.
+   * Rust owns attachment identity and lifetime; the shared host still needs
+   * snapshots and versions to reconcile bytes across those memories.
+   */
+  private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
+  /** Authoritative segment version, incremented after each merged publication. */
+  private shmSegmentVersions = new Map<number, number>();
+
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results.
    *
@@ -3280,16 +3302,6 @@ export class CentralizedKernelWorker {
    *  scheduled for deletion with the epoll family of the K3 scheduler
    *  migration. Do not add new readers. */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
-  /**
-   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
-   *
-   * WHY: separate WebAssembly memories cannot directly share segment bytes.
-   * Rust owns attachment identity and lifetime; the shared host still needs
-   * snapshots and versions to reconcile bytes across those memories.
-   */
-  private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
-  /** Authoritative segment version, incremented after each merged publication. */
-  private shmSegmentVersions = new Map<number, number>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -17598,7 +17610,7 @@ export class CentralizedKernelWorker {
     }
 
     if (
-      (this.sharedMmapBackings?.size ?? 0) > 0
+      this.hasSharedMmapBackings()
       && (
         snapshot.syscallNr === SYS_READ
         || snapshot.syscallNr === SYS_WRITE
