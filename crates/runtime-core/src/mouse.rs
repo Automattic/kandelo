@@ -68,23 +68,69 @@ fn queue() -> &'static mut VecDeque<u8> {
     unsafe { &mut *GLOBAL.0.get() }
 }
 
-/// Encode and enqueue a mouse event. `dx` / `dy` are clamped into
-/// signed 8-bit range. `dy` is in the *PS/2 sense* — positive = mouse
-/// moved up; the host is responsible for inverting browser
-/// positive-down deltas before calling.
+/// Most packets one [`inject_event`] call may generate.
 ///
-/// `buttons` is a bitmask: bit 0 = left, bit 1 = right, bit 2 = middle.
+/// A displacement larger than one packet can carry is split across
+/// several (see [`inject_event`]), and the caller-supplied delta is a
+/// full `i32`, so the split needs a bound. The queue holds
+/// `MAX_QUEUED_BYTES / PACKET_LEN` packets, and anything past that would
+/// evict its own earlier packets — emitting more is pure work for bytes
+/// no reader can ever see.
+const MAX_PACKETS_PER_EVENT: usize = MAX_QUEUED_BYTES / PACKET_LEN;
+
+/// Encode and enqueue a mouse event.
+///
+/// `dy` is in the *PS/2 sense* — positive = mouse moved up; the host is
+/// responsible for inverting browser positive-down deltas before
+/// calling. `buttons` is a bitmask: bit 0 = left, bit 1 = right, bit 2 =
+/// middle.
+///
+/// A PS/2 packet carries at most `-128..=127` per axis. A larger
+/// displacement is **split across consecutive packets** so the full
+/// motion reaches the reader, rather than being clamped and the excess
+/// silently discarded — which is what a `mousedev` reader expects, and
+/// what the guest needs for a pointer to land where the user put it.
+/// Both axes advance together, so a single fast diagonal movement stays
+/// diagonal instead of turning a corner. Bounded by
+/// [`MAX_PACKETS_PER_EVENT`]; a displacement past that bound is
+/// truncated, because further packets would evict the ones already
+/// queued for this same event.
+///
+/// A zero displacement still emits exactly one packet: that is how a
+/// button press or release with no motion is delivered.
 ///
 /// Idempotent on overflow: when the queue would exceed
 /// [`MAX_QUEUED_BYTES`] the oldest packet is dropped to make room. The
 /// caller cannot tell — same behavior as Linux mousedev.
+///
+/// Splitting used to live in the host, in
+/// `host/src/framebuffer/browser-controls.ts`, which looped over
+/// `injectMouseEvent` because this function clamped. That put the PS/2
+/// device model's packet-generation rule outside the device model, gave
+/// every host its own copy to get right, and left the Node and native
+/// hosts with the clamping behavior the browser had already rejected.
+/// Workstream K11.
 pub fn inject_event(dx: i32, dy: i32, buttons: u32) {
-    let dx_i8 = dx.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-    let dy_i8 = dy.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+    let mut remaining_x = dx;
+    let mut remaining_y = dy;
+    let mut packets = 0usize;
+    loop {
+        let step_x = remaining_x.clamp(i8::MIN as i32, i8::MAX as i32);
+        let step_y = remaining_y.clamp(i8::MIN as i32, i8::MAX as i32);
+        enqueue_packet(step_x as i8, step_y as i8, buttons);
+        remaining_x -= step_x;
+        remaining_y -= step_y;
+        packets += 1;
+        if (remaining_x == 0 && remaining_y == 0) || packets >= MAX_PACKETS_PER_EVENT {
+            return;
+        }
+    }
+}
 
+fn enqueue_packet(dx_i8: i8, dy_i8: i8, buttons: u32) {
     // PS/2 byte0: bit3 always 1, bits0..2 = button state, bits4..5 =
     // sign of dx/dy mirroring the byte's high bit, bits6..7 = overflow
-    // (we never set since clamped fits in i8).
+    // (we never set since each step fits in i8).
     let mut b0: u8 = 0x08 | ((buttons & 0x07) as u8);
     if dx_i8 < 0 {
         b0 |= 0x10;
@@ -185,7 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn dx_clamped_to_i8_range() {
+    fn first_packet_of_a_split_saturates_each_axis() {
+        // A displacement wider than one packet leads with a saturated
+        // packet and carries the remainder in the packets after it; see
+        // `large_displacement_splits_across_packets_preserving_total`.
         let _g = fresh();
         inject_event(500, -500, 0);
         let mut buf = [0u8; 3];
@@ -232,6 +281,67 @@ mod tests {
         assert!(!has_data());
         let mut buf = [0u8; 3];
         assert_eq!(read_into(&mut buf), 0);
+    }
+
+    /// Read every queued packet back as `(buttons, dx, dy)` triples.
+    fn drain_packets() -> alloc::vec::Vec<(u8, i32, i32)> {
+        let mut out = alloc::vec::Vec::new();
+        let mut buf = [0u8; PACKET_LEN];
+        while read_into(&mut buf) == PACKET_LEN {
+            out.push((buf[0] & 0x07, buf[1] as i8 as i32, buf[2] as i8 as i32));
+        }
+        out
+    }
+
+    #[test]
+    fn displacement_within_one_packet_stays_one_packet() {
+        let _g = fresh();
+        inject_event(127, -128, 0b010);
+        assert_eq!(drain_packets(), alloc::vec![(0b010, 127, -128)]);
+    }
+
+    #[test]
+    fn zero_displacement_still_reports_button_state() {
+        // A press or release with no motion must reach the reader.
+        let _g = fresh();
+        inject_event(0, 0, 0b001);
+        assert_eq!(drain_packets(), alloc::vec![(0b001, 0, 0)]);
+    }
+
+    #[test]
+    fn large_displacement_splits_across_packets_preserving_total() {
+        let _g = fresh();
+        inject_event(300, -260, 0b101);
+        let packets = drain_packets();
+        // Both axes advance together, so a fast diagonal stays diagonal.
+        assert_eq!(
+            packets,
+            alloc::vec![(0b101, 127, -128), (0b101, 127, -128), (0b101, 46, -4)]
+        );
+        // The whole displacement arrives; nothing is silently dropped.
+        let total_x: i32 = packets.iter().map(|p| p.1).sum();
+        let total_y: i32 = packets.iter().map(|p| p.2).sum();
+        assert_eq!((total_x, total_y), (300, -260));
+    }
+
+    #[test]
+    fn one_axis_finishing_early_does_not_stop_the_other() {
+        let _g = fresh();
+        inject_event(5, 400, 0);
+        let packets = drain_packets();
+        assert_eq!(packets, alloc::vec![(0, 5, 127), (0, 0, 127), (0, 0, 127), (0, 0, 19)]);
+        assert_eq!(packets.iter().map(|p| p.2).sum::<i32>(), 400);
+    }
+
+    #[test]
+    fn split_is_bounded_so_an_extreme_delta_cannot_spin() {
+        // The delta arrives from the host as a full i32. Splitting it at
+        // 127 per packet without a bound would be ~16.9M iterations for
+        // i32::MAX, every one of them evicting a packet queued moments
+        // earlier by this same call.
+        let _g = fresh();
+        inject_event(i32::MAX, i32::MIN, 0);
+        assert_eq!(drain_packets().len(), MAX_QUEUED_BYTES / PACKET_LEN);
     }
 
     #[test]

@@ -5,10 +5,8 @@ import {
   DEFAULT_POINTER_LOCK_MOUSE_SENSITIVITY,
   encodeKeyboardEventAsLinuxMediumRaw,
   encodeLinuxMediumRawKeyCode,
-  injectChunkedMouseMotion,
   linuxKeyCodeFromKeyboardEvent,
   scalePointerLockMouseDelta,
-  type MouseEventSink,
 } from "../src/framebuffer/browser-controls.js";
 
 describe("framebuffer browser controls", () => {
@@ -126,22 +124,10 @@ describe("framebuffer browser controls", () => {
     })).toEqual({ dx: 40, dy: -8 });
   });
 
-  it("splits large mouse movement into legal signed-byte PS/2 packets", () => {
-    const packets: Array<{ dx: number; dy: number; buttons: number }> = [];
-    const sink: MouseEventSink = {
-      injectMouseEvent: (dx, dy, buttons) => {
-        packets.push({ dx, dy, buttons });
-      },
-    };
-
-    injectChunkedMouseMotion(sink, 300, -260, 0b101);
-
-    expect(packets).toEqual([
-      { dx: 127, dy: -128, buttons: 0b101 },
-      { dx: 127, dy: -128, buttons: 0b101 },
-      { dx: 46, dy: -4, buttons: 0b101 },
-    ]);
-  });
+  // Splitting a large displacement into legal signed-byte PS/2 packets is the
+  // kernel's job now, and is covered by `mouse::tests::
+  // large_displacement_splits_across_packets_preserving_total` in
+  // `crates/runtime-core/src/mouse.rs` with this same 300/-260/0b101 case.
 
   it("keeps the retired PCM scheduler export explicitly unavailable", async () => {
     let drainCalls = 0;
