@@ -1210,3 +1210,26 @@ Better wiring, costing no import: make it kernel-visible state — a counter or
 condition the host can read through an existing export — so the loss is
 queryable after the fact rather than only greppable in a console that may not
 be attached. That also makes it testable, which a console log is not.
+
+### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
+
+Measured 2026-09-10 while a machine filled its disk: with the flag set, the
+private cache held **1.2 MB** and the shared tree held **237 GB**. The flag
+isolates the source-only projection cache and **not** the built-programs cache,
+so concurrent agents still share the expensive half.
+
+This is the **third** mitigation this session that looked applied and was not,
+after `nix develop --ignore-environment` stripping this very variable, and the
+per-session scratchpad being shared between agents. All three share a shape: an
+instruction that is present, plausible, and inert.
+
+Consequences observed:
+- A machine reached **100% of 1.8 TiB** with 151 GB in 34 agent worktrees,
+  which fails builds with `StorageFull` errors that name a package rather than
+  the disk.
+- One agent discarded a full test run whose 15 failures were all `StorageFull`.
+
+Two things worth doing: make the flag cover the programs cache too, or rename
+it so it stops promising isolation it does not deliver; and give agent
+worktrees a cleanup path, since 34 full checkouts with build artifacts is the
+steady state of a parallel campaign rather than an accident.
