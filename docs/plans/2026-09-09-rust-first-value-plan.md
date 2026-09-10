@@ -540,6 +540,49 @@ so this is provisioning rather than a defect, but the agent explicitly refused t
 claim a pass it had not seen. **The group validation run must actually execute
 them.**
 
+## 2i. The TS-removal ledger — measured, not asserted (2026-09-09)
+
+Prompted by the maintainer asking whether anything actually *checks* that
+TypeScript is being removed. Nothing did. Measured with
+`scripts/migration-ledger.sh`:
+
+| point | in-scope TS | Rust | fork TS |
+|---|---|---|---|
+| campaign base `c326c5e72` | 150,261 | 206,833 | 28,350 |
+| after Tier 1 `bd3364c95` | **150,623** | 213,510 | 28,350 |
+| **delta** | **+362** | +6,677 | 0 |
+
+**Tier 1 removed no TypeScript. It added 362 lines.** That is explicable and
+was deliberate — K1 added the `KLZY` writer (+437) as the dual-write half of a
+prove-then-cut-over sequence, K2 removed ~98 lines with `handleIoctlIfconf`,
+and both deletions that would move this number were consciously deferred:
+
+- **K1 step 5** — remove the JSON `entries[]` and drop the image ABI stamp.
+  Deferred with its own ABI ruling (§2c item 3). **This is what completes V3.**
+- **K10 I6** — delete `host/src/wasi-shim.ts` (1,625). Held because the
+  fixtures cannot exercise a real wasi-libc guest (§2h).
+
+Both were the right calls. But "delete it later" with no ratchet is how a
+migration quietly becomes an addition, and this campaign has already found
+four claims that outlived their evidence. So:
+
+**RULE, from here on.** Every K item reports its in-scope TS delta in its
+final report, using `scripts/migration-ledger.sh`. An item that *increases*
+the number must name the item that will remove the difference, and that item
+goes in this plan before the increasing item is called done. Deferred
+deletions are debt with an owner, not intentions.
+
+**Caveat, so the metric is not mistaken for the goal.** A line count is a
+crude proxy: it rewards deleting comments, punishes adding tests, and cannot
+distinguish a real migration from code relocated outside the measured scope.
+It is a *watchdog on a promise*, nothing more — the same status as
+`EXPECTED_HOST_IMPORT_COUNT`, which has itself gone up twice. Judge the
+campaign on §8's structural criteria; use this to catch drift between them.
+
+**Currently outstanding deletion debt: 2,062+ lines** (K1 step 5's JSON path
+plus `wasi-shim.ts`), against a projected total reduction of 60–77% of
+~153,000. Essentially the entire reduction remains ahead, in Tiers 2 and 3.
+
 ## 3. Decisions already taken — do not relitigate
 
 1. The whole campaign is **one ABI epoch**. Re-instrumentation is available.
