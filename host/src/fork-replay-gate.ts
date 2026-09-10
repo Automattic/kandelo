@@ -203,7 +203,14 @@ export function observeForkReplayWorker(
         protocolFailure(
           `Worker failed before replay readiness: ${message.message ?? "unknown error"}`,
         );
-      } else {
+      } else if (message.type === "exit") {
+        // Tested explicitly rather than left as `else`. The outer guard already
+        // restricts this to "error" | "exit", but `message` is
+        // `Partial<WorkerToHostMessage>`, so `type` is optional on every arm
+        // and the negative branch cannot narrow to the exit shape. Reading
+        // `.status` off the un-narrowed union type-checked as `any`-adjacent
+        // and would have printed `status=undefined` for a malformed message
+        // rather than saying the message was malformed.
         protocolFailure(
           `Worker exited before replay readiness (status=${String(message.status)})`,
         );
