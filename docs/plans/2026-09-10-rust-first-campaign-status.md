@@ -2420,6 +2420,73 @@ The gate is therefore:
 - `xtask verify-fresh` exit 0,
 - the maintainer's own manual browser check.
 
+### Host suite triage, measured 2026-09-10 — what is ours and what is not
+
+Run correctly (from `host/`, inside `scripts/dev-shell.sh`) against a kernel
+that `verify-fresh` still called stale:
+
+    Test Files  101 failed | 320 passed | 6 skipped (427)
+         Tests  213 failed | 3706 passed | 2 expected fail | 25 skipped (3946)
+
+Clustered by cause, not by file:
+
+| count | cause | whose |
+|---|---|---|
+| 81 | `void kernel ingress kernel initialization completion failed` | stale kernel / tier |
+| 47 | test timeouts | downstream of the above |
+| 42 | `Package artifact closure is incomplete` | **B19**, verbatim |
+| 30 | `BrowserKernel test should not fetch` | **pre-existing on main** |
+| 30 | test doubles undefined (`simulateMessage`, `lastMessage`, `sent`) | same file as above |
+| 3 | `expected 'stub://vite-url' to be 'stub://default-rootfs'` | **pre-existing on main** |
+
+**The `browser-kernel.test.ts` family (~60 failures) is not ours.** Verified
+rather than assumed: `host/test/browser-kernel.test.ts`,
+`host/test/fixtures/vite-url-stub.ts` and
+`host/src/browser-kernel-default-artifacts.ts` are **byte-identical to
+`origin/main`**, and the campaign's only edit to `host/vitest.config.ts` was
+adding `setupFiles`. The mechanism is structural: the config's
+`vitest-stub-vite-url-imports` plugin resolves *every* `?url` import to one
+fixture exporting `"stub://vite-url"`, while the test asserts `fetch` is called
+with `"stub://default-rootfs"`. `browser-kernel-default-artifacts.ts` obtains
+that URL from `@rootfs-vfs?url`, so the assertion cannot match under any
+kernel. A per-alias stub would fix it; that is main's bug to fix, logged here
+so nobody spends the campaign's time on it.
+
+**Everything else in the table is one of two roots** — the stale kernel and the
+tier-identity refusal — which is why the re-run against a freshly built and
+properly installed kernel is the measurement that matters, not this one.
+
+### `bootstrap kernel` updates one tier and leaves the other stale
+
+The cleanest demonstration of B23 yet, produced while clearing the gate:
+
+    ./scripts/xtask.sh bootstrap kernel      # publishes source-only-v1
+    ./scripts/xtask.sh verify-fresh
+    -> local-binaries/kernel.wasm is stale: built for key 925962d2...,
+       current source tree resolves to key e5d75599...
+
+One build command, one tier updated, the other left behind — and `verify-fresh`
+names it exactly. `install_local_binary kernel <fresh>` then repaired it, which
+it could only do once the asyncify guard stopped refusing the artifact. Both
+halves of the loop had to be fixed before a green gate was reachable at all.
+
+### Another wrong invocation, another confident wrong answer
+
+`verify-fresh` reported "the ABI-snapshot freshness check did not pass (either
+`abi/snapshot.json` drifted from its sources, or the check could not run)".
+Nothing had drifted. The real line was
+`scripts/check-sysv-ipc-layouts.sh: line 18: wasm32posix-cc: command not found`
+— `scripts/xtask.sh` ran `cargo run` directly rather than through the dev
+shell, so the SDK was absent and a sub-check could not run. Following the
+message's own advice would have produced a no-op snapshot regeneration commit.
+
+Fixed: the wrapper now re-execs through `scripts/dev-shell.sh`. But note the
+family. Three separate wrong invocations in one day each produced a confident,
+specific, entirely wrong result: vitest from the wrong directory (269 fictional
+failures), vitest outside the dev shell (~80, earlier in the campaign), and
+xtask outside it (fictional ABI drift). **The check being right is not enough;
+the invocation has to be right, and a wrong one does not announce itself.**
+
 ### Trap: `vitest run host/test` from the repo root is not the host suite
 
 Measured 2026-09-10 and recorded before it costs anyone else a day. Running
