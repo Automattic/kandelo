@@ -18,7 +18,6 @@ import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
   DEFAULT_MOUNT_SPEC,
-  ensureMountParentDirectories,
   filterMountSpecForKernelTmpfs,
   KERNEL_TMPFS_OWNED_PREFIXES,
   resolveForBrowser,
@@ -338,31 +337,6 @@ describe("resolveForNode", () => {
       }
     },
   );
-
-  it("creates missing rootfs ancestors for nested runtime mount points", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
-
-    expect(() => root.stat("/usr/local")).toThrow();
-    ensureMountParentDirectories(root, ["/usr/local/lib/kandelo"]);
-
-    for (const path of ["/usr", "/usr/local", "/usr/local/lib"]) {
-      expect(root.stat(path).mode & FILE_TYPE_MASK).toBe(DIRECTORY_MODE);
-    }
-    expect(() => root.stat("/usr/local/lib/kandelo")).toThrow();
-  });
-
-  it("does not hide non-directory rootfs ancestors", async () => {
-    const mounts = await resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
-    const fd = root.open("/usr", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
-    root.close(fd);
-
-    ensureMountParentDirectories(root, ["/usr/local/lib/kandelo"]);
-
-    expect(root.stat("/usr").mode & FILE_TYPE_MASK).not.toBe(DIRECTORY_MODE);
-    expect(() => root.stat("/usr/local")).toThrow();
-  });
 
   it("throws on duplicate mount paths", () => {
     const dup: MountSpec[] = [

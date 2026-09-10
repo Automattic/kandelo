@@ -41,7 +41,6 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   DeviceFileSystem,
-  ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
 } from "./vfs";
@@ -888,7 +887,6 @@ async function buildVirtualPlatformIO(
     ? rootMount.backend
     : null;
   if (rootfsMemfs) {
-    ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
     if (rootfsLazyUrlBase !== undefined) {
       rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
       rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));

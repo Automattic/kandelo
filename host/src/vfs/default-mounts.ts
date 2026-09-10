@@ -122,48 +122,6 @@ export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
  */
 export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
 
-function normalizeMountPoint(path: string): string {
-  return path === "/" ? path : path.replace(/\/+$/, "");
-}
-
-function isDirectoryMode(mode: number): boolean {
-  return (mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR;
-}
-
-/**
- * Ensure mount points below image-missing directories are reachable.
- *
- * The kernel checks search permissions on every parent component before
- * opening or statting a final path. Runtime mounts such as
- * `/usr/local/lib/kandelo` therefore need `/usr/local` and
- * `/usr/local/lib` to exist in the root image even though the mounted
- * backend owns the final mount point itself.
- */
-export function ensureMountParentDirectories(
-  rootfs: MemoryFileSystem,
-  mountPoints: readonly string[],
-): void {
-  for (const mountPoint of mountPoints) {
-    const normalized = normalizeMountPoint(mountPoint);
-    if (normalized === "/" || !normalized.startsWith("/")) continue;
-
-    const segments = normalized.split("/").filter(Boolean);
-    let current = "";
-    for (let i = 0; i < segments.length - 1; i++) {
-      const segment = segments[i];
-      if (segment === "." || segment === "..") break;
-
-      current += `/${segment}`;
-      try {
-        const st = rootfs.stat(current);
-        if (!isDirectoryMode(st.mode)) break;
-      } catch {
-        rootfs.mkdir(current, 0o755);
-      }
-    }
-  }
-}
-
 /**
  * Drop the scratch mounts the in-kernel tmpfs owns, so the host materialises no
  * backend for a prefix the kernel serves — the cutover's "host stops owning
