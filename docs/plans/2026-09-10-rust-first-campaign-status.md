@@ -157,6 +157,7 @@ Against a kernel rebuilt from this branch and installed into
 | `scripts/xtask.sh verify-fresh` | exit 0 |
 | `scripts/check-abi-version.sh` | snapshot in sync, version consistent |
 | `tsc --noEmit -p host` | 32 errors, all pre-existing (identical count at `44f321ae4`) |
+| `host/test/sigpending.test.ts`, `chown-sentinel.test.ts` | 3/3 once `rootfs.vfs` existed |
 
 The 22 end-to-end cases are real compiled C programs running under the
 kernel, not host-side mocks — which matters here, because the mocks are
@@ -188,6 +189,15 @@ end-to-end suite above runs both widths against the one wasm32 kernel.
    `local-binaries/kernel.wasm`, so 74 test files failed with "package
    resolver did not materialize" / missing-projection errors. Re-run alone
    after the artifact is installed.
+3. **Provision with `./run.sh setup`, not piecemeal.** `sigpending` and
+   `chown-sentinel` sat for ~50s each and then failed on a missing
+   `rootfs.vfs`. `docs/agent-guidance/validation.md` step 2 already says
+   `./run.sh setup` produces `host/wasm/rootfs.vfs`; the gap was mine — I had
+   run `build-musl.sh` and `build-programs.sh` individually and never the
+   front door. The lesson is not a missing doc, it is that a partial
+   provisioning leaves failures that read like defects: a missing image
+   surfaces as a ~50s timeout, and the resolver error naming five checked
+   paths is the only thing that distinguishes it.
 
 ## Host import surface
 
