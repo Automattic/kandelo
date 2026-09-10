@@ -12,6 +12,9 @@ amend, never force-push. The maintainer is the sole merger.**
 
 ## Ledger — the number that judges this campaign
 
+`9638a2023..bb9fe63ec`: in-scope TS **+474** (890 added / 416 removed),
+Rust **+21,211** (16,678 production / 4,533 test). K4a's continuation then
+took TS **-80** over `49c0718ee..51f23b85d`.
 `9638a2023..d72190d0e`: in-scope TS **−2,397** (5,388 added / 7,785 removed),
 Rust **+26,134** (21,565 production / 4,569 test).
 
@@ -70,6 +73,10 @@ avoid a contested file. The coordinator resolves at merge.
 | K7 | **Rust landed; cutover MIS-SCOPED (confirmed twice)** | SysV re-cut RUNNING; see "K7 cutover" below |
 | K12 | **DONE (scope corrected)** | GC elimination disproved; `fm_*` 72 → 70 |
 | K11 | **PARTIAL** | 1 of 4 landed; 2/3/4 need a second pass (now unblocked) |
+| K9 | **RUNNING** | Handle-only host contract, 83 → ~67 |
+| K4 | **K4a: 21 more pairs shared; K4b probe PASS** | 16 pairs left, all one fork/exec/init family — NDD-K4-2 |
+| K6 | **RUNNING** | Marshalling: SysV IPC, mqueue, sendmsg/recvmsg, ifconf |
+| K13b | **NOT STARTED** | Export cull |
 | K9 | **COMPLETE** | Imports 83 → **75**; 18 path-taking removed, 10 `*at` added |
 | K4 | **RUNNING** | Worker entry unification |
 | K6 | **DONE — cut over, TS net −1,880** | All four families; see below |
@@ -474,6 +481,178 @@ shared module is 464 lines paid once, 488 left the entries, 60 left
 `worker-main.ts`; the remaining 39 differing pairs are K4a's outstanding work.
 
 **Browser NOT validated** — see the cache race below.
+
+## K4a continuation — 21 pairs shared, and pure subtraction is nearly spent
+
+**Re-measured census at base `49c0718ee`** (top-level `function`, `const`
+function and `interface`/`type` declarations shared by name between the two
+entries): **38 common — 3 byte-identical, 0 cosmetic, 35 differing**, holding
+3,379 browser and 2,917 node lines. That is the same population the previous
+entry describes as "13 identical / 3 cosmetic / 39 differing"; the counting
+differs (renamed near-twins, `const` arrow functions), the conclusion does not.
+
+**After this pass: 17 common — 1 identical, 16 differing**, holding 2,808
+browser and 2,370 node lines. **21 pairs unified.** The entries went 4,681 →
+3,965 (browser) and 4,072 → 3,461 (node); `process-lifecycle.ts` went 464 →
+1,711.
+
+**Ledger `49c0718ee..51f23b85d`: in-scope TS -80** (1,400 added / 1,480
+removed), Rust unchanged.
+
+### Six protocol drifts closed, each toward the correct half
+
+Ordered by how observable the difference was:
+
+| drift | what differed | resolution |
+|---|---|---|
+| pre-init pipe requests | Node returned `uninitializedKernelPipeResult`; the browser let the kernel throw into a protocol error | Node's guard, universally — a caller learns the pipe is absent, not that the protocol broke |
+| kernel throws in pipe/inject | only the browser had a `respondError` guard | browser's guard, universally |
+| exec of a directory | Node refused; the browser returned the bytes | Node's check, universally |
+| `read_vfs_file` `includeMode` / byte transfer | one feature per host | both, on both |
+| rootfs-export quiescence | only the browser counted in-flight worker teardowns | both hosts track them now, so the predicate is the same |
+| duplicate process exit | Node re-reported; the browser dropped it silently | Node's re-report, made idempotent by `reportedExits` |
+
+Also: the browser had lost the `.catch()` Node had on `worker.terminate()`
+inside fatal kernel teardown, so a refused termination became an unhandled
+rejection on top of the failure being reported. Node gained the browser's
+per-process `maxPages` (drift D7) and its structured allocation-failure
+diagnostic; Node's rootfs and reap diagnostics keep their stacks. The browser's
+sequential exit fences are now concurrent, as Node's already were.
+
+### The terminate-fence boundary explained every "bug-shaped" difference met
+
+Every remaining asymmetry in the shared code traced to `await
+worker.terminate()` being an ownership fence on Node and not in the browser,
+exactly as the previous entry records — and each is now *declared* on
+`ProcessLifecycleHost` rather than inferred:
+
+- `exitRetirementFences` — the browser's `memoryRetirementSafe` flag and its
+  main-thread framebuffer-alias release. Node returns `true`, because
+  termination already proves what they protect.
+- `processExitSettleMs` / `threadWorkerSettleMs` — compatibility delays
+  after a termination that reports nothing. Node returns 0.
+- `stopKernelRealm`, `rootfsBaseImage`, `execMountIO`, `resolveExecFile`,
+  `defaultMaxPages`, `defaultThreadSlots`, `processMemoryAllocator`,
+  `reportProcessExit`, `isInitReady`, `externrefProcessOwner`.
+
+**One boundary was deliberately declared rather than unified.**
+`defaultExitCrashSignum`: the synthesized signal-style reap that keeps a
+parent's `waitpid` from blocking when a worker dies without SYS_EXIT_GROUP is a
+*callee* responsibility in the browser (it synthesizes on every exit and relies
+on the kernel's `hostReaped` guard) and a *caller* responsibility on Node
+(`finalizeProcessWorker` and the vfork containment path call
+`notifyHostProcessCrashed` themselves). Same kernel call, two call graphs.
+Collapsing it changes Node's worker-'exit' path in a way the Node suites cannot
+prove, so behaviour on both hosts is bit-for-bit unchanged and the difference is
+visible in one place.
+
+### Genuine defect found, outside the refactor
+
+**`scripts/dev-shell.sh` silently discarded `KANDELO_SOURCE_CACHE_ROOT`.** The
+dev shell enters `nix develop --ignore-environment` with an explicit `--keep`
+list, and the variable was not on it — nor were
+`WASM_POSIX_LOCAL_INSTALL_SOURCE` and `WASM_POSIX_LOCAL_INSTALL_SESSION`. Since
+the dev shell *is* the verification contract, every agent told to isolate its
+cache was isolating nothing, and the campaign's own recorded kernel-install
+recipe installed nothing. Verified before and after with `dev-shell.sh bash -c
+'echo $KANDELO_SOURCE_CACHE_ROOT'`. Fixed in `5ca6029c5`. **This is the actual
+mechanism behind the "three consecutive `prepare-browser` failures" and the
+suites reported as flaky.**
+
+### Validation actually run
+
+- **7 host-parity/contract suites: 48 passed / 1 failed of 49 executed** —
+  byte-identical to the same suites at `49c0718ee` run in a separate worktree.
+  The failure is the coordinator's `kernel-scratch-contract`
+  unreviewed-memory-authority case, with the same 20 findings before and after.
+- **23 worker-lifecycle/entry suites: 209 passed / 3 failed / 1 skipped of
+  213 executed** — identical counts and identical failing files at
+  `49c0718ee`. The 3 failures are `rootfs.vfs` provisioning
+  (`environment-lifecycle`, `fifo-lifecycle-guest`, `wait-lifecycle-guest`),
+  not results. Provisioned to reach this: musl wasm32 + wasm64 sysroots,
+  `crates/fork-module/build-wasm.sh`, a kernel build installed to
+  `local-binaries/kernel.wasm` via `install-local-artifact`, and `npm --prefix
+  host install`. Before the kernel was installed, five of those files failed
+  with `BinaryNotFoundError`; installing it turned three into passes, which is
+  the counted-execution check the campaign asks for.
+- `tsc -p host/tsconfig.json`: clean for all three changed sources; the host
+  project's 32 remaining errors are unchanged and pre-existing (bundler-only
+  imports, `rootDir` scope, vendored openssl TLS).
+- **Browser: NOT run.** Everything above is Node. The browser-visible changes
+  are the pre-init pipe guard, the exec-of-a-directory refusal, the
+  `read_vfs_file` byte transfer, the concurrent exit fences, and the fatal
+  teardown `.catch()`.
+
+### Six structural parity assertions updated — each still checks its subject
+
+Two were literal-argument or delimiter breakage
+(`node-process-teardown-ordering`, `process-generation-detach-host-parity`'s
+`terminateThreadWorkers(pid)`). Three now assert against
+`process-lifecycle.ts`, which is **stronger**: with one implementation, the
+invariant cannot hold on one host's path and be missing from the other's —
+`fork-externref-host-parity`'s externref-generation release,
+`process-generation-detach-host-parity`'s ledger route, and
+`host-owned-process-reap`'s terminate → detach → reap ordering (all three
+also still require both entries to bind the shared function).
+`host-diagnostic-
+routing`'s poisoned-kernel test gained an assertion it never had — that the
+teardown reaches `host.stopKernelRealm()`. `spawn-host-parity` gained
+`expectEntryProvides`, which accepts a declaration *or* a binding from
+`./process-lifecycle`: sharing a function must not read as deleting it.
+
+### What is left, and why it is one item rather than sixteen
+
+**16 differing pairs, 2,808 browser / 2,370 node lines.** Twelve of those lines
+are `post` (3/3), the irreducible host floor. `forkModuleInitFields` (11/16) is
+a real host difference. The rest is one connected subsystem:
+
+| pair | browser | node |
+|---|---|---|
+| `handleInit` | 472 | 265 |
+| `handleExec` | 494 | 455 |
+| `handleVfork` | 397 | 396 |
+| `handleOrdinaryFork` | 295 | 284 |
+| `handleClone` | 283 | 266 |
+| `handleSpawn` | 211 | 200 |
+| `handlePosixSpawn` | 204 | 186 |
+| `installProcessWorkerListeners` | 168 | 98 |
+| `performDestroy` | 143 | 133 |
+| `ProcessInfo` | 37 | 27 |
+| `handleFork` (identical), `handleExit`, `handleDestroy`, `reportProcessExit` | 80 | 68 |
+
+They cannot be taken one at a time. Every one of them constructs or tears down
+a process generation, so they all need the same three new host hooks — a
+`ProcessInfo` factory (`allocateProcessGeneration`, `memoryRetirementSafe`,
+`framebufferExposed`, `argv` exist only in the browser's record), a worker
+constructor, and a rollback-fence hook — plus an adjudication of D15
+(`waitForProcessTeardowns`, a browser-only pre-fork barrier with no stated
+correctness argument). Sharing three of them buys the hooks once and the other
+seven nearly free; sharing one buys the hooks and saves almost nothing.
+
+`handleOrdinaryFork` is the measured example: 295/284 lines with only 71
+changed, so roughly 75% is already identical.
+
+**NEEDS-DEFER-DECISION (NDD-K4-2): the fork/exec/init family, as one item.**
+- *What:* the 12 pairs above, ~2,700 node lines, behind ~5 new declared host
+  hooks.
+- *Why now:* it is the largest single TypeScript reduction left in the campaign
+  and the last one in K4; the shared module's fixed cost is fully paid.
+- *Cost now:* it is the campaign's most delicate code — fork, vfork, clone,
+  exec and the init prologue — and the browser half cannot be executed from
+  Node. Expect roughly a session's careful work plus a browser pass.
+- *Cost later:* the drift continues. This item's own census moved measurably in
+  a day, and 70%+ of pairs differing is what produced D1–D17 in the first place.
+- *Recommendation:* take it, as **one** item, with the fork-path guest suites
+  provisioned first (`rootfs.vfs` + `local-binaries/kernel.wasm`) so
+  `vfork-lifecycle-guest`, `wait-lifecycle-guest` and `fifo-lifecycle-guest`
+  actually execute rather than erroring on a missing artifact — that is the
+  gate this item needs and the earlier tranches did not have.
+
+**`parseShebang` is shared, and NDD-K4-1 is untouched.** Both copies were
+byte-identical, so folding them in was pure reuse: no new export, no ABI
+surface, no state. The kernel-owning question — `kernel_exec_target_shebang`
+needing a prepared target token the side-effect-free spawn preflight has none
+of — is unchanged, and now has one call site to repoint instead of two.
 
 ## Concurrent agents race on the shared build cache — use an isolated root
 
