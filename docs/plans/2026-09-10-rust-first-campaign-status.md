@@ -43,6 +43,21 @@ entry points. **K13b is in flight to remove ~116 of them.**
 Measure with `scripts/migration-ledger.sh --step <base> <tip>`. It is a
 measurement, not a gate; line count is a poor metric but a useful hint.
 
+## Trunk health, measured 2026-09-10
+
+**`cargo test --workspace`: 3,671 passed, 0 failed.** Run on an otherwise
+quiet-enough tree after merging nine agent branches and resolving two design
+collisions. `cargo check` clean on **wasm32 and wasm64** as well as the host —
+a native-only check called `no_std` code green twice this week, so both wasm
+targets are part of the claim.
+
+**Not claimed:** the full Vitest suite, which needs an otherwise-idle tree and
+has not had one; and the browser, which runs as a consolidated pass at tier end
+plus the maintainer's own check. Several agents discarded whole Vitest runs they
+had contaminated with their own builds rather than report a number they could
+not stand behind. That is the standard here, so the number above is the Rust
+workspace and nothing more.
+
 ## The rule that governs everything from 2026-09-10
 
 **Cutover is part of the item.** An item is done when the Rust *runs* and the
