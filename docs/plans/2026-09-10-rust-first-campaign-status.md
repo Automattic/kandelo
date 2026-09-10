@@ -80,7 +80,7 @@ avoid a contested file. The coordinator resolves at merge.
 | K10 | **DONE** | I1/I2/I3/I7 landed earlier; I4/I5/I6 landed 2026-09-10 — the Rust module runs and `wasi-shim.ts` is deleted. See §2x of the value plan |
 | K10 | **COMPLETE** | I6 deleted `wasi-shim.ts` (−1,055); fixtures gate disproved; I4/I5 done |
 | K14 | **DONE** | |
-| K5 | **Rust landed; I6a RUNNING** | Placement adjudicated (standalone module, 14 pipeline points). I6b = rewire + delete 6,340 lines |
+| K5 | **I6a DONE 2026-09-10; I6b owed** | Module built, projected, served on both hosts via the one side-module table; I6b = rewire + delete 6,340 lines |
 | K8 | **incr 1 done; incr 2 running** | Kernel parses a real VFS image; boot flip in progress |
 | K3 | **0a/0b/1/2 done; epoll cutover owed** | `wait_queue.rs` + `wait_shadow.rs` dormant |
 | K7 | **piece 1 (SysV) CUT OVER; pieces 2/3 open** | SysV TypeScript deleted, TS −332. See "K7 cutover" below |
@@ -324,7 +324,7 @@ branch — not just that a docs commit describing it does.
 
 | Owner | Target | Lines |
 |---|---|---|
-| K5 I6a/I6b | `dylink.ts` + `dylink-fork-archive.ts` | 6,340 |
+| K5 I6b (I6a done; module built, projected, served) | `dylink.ts` + `dylink-fork-archive.ts` | 6,340 |
 | ~~K10 I6~~ | ~~`wasi-shim.ts`~~ | **PAID 2026-09-10** |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
@@ -508,6 +508,63 @@ the deletion — the item was scoped as I7 but is really I2–I7.
 **Re-cut as I6a** (module crate + the 14 pipeline points, provable by
 `verify-fresh` plus a browser boot) **and I6b** (KFLA encoder, TS
 driver/executor, `worker-main` rewire, deletion, browser pass).
+
+### I6a — DONE (2026-09-10). I6b is now a rewire
+
+`crates/dylink-module` is a standalone wasm module with **zero imports**
+(verified by `wasm-objdump` on every build; the check was itself falsified
+against a control module that does import). 21 `dl_*` exports drive the
+planner, and `crates/dylink/src/wire.rs` gained the six session codecs the
+per-act pair was missing, so a load can now be STARTED, not just stepped.
+
+**One table, three modules.** K10 and I generalized the same machinery in
+parallel and the merge produced 30 conflicting hunks. `CORESIDENT_SIDE_MODULES`
+is the survivor: its `(file name, target arch, required)` artifact list is
+strictly better than my prefix+width derivation, which could only describe
+artifacts named `<prefix><width>.wasm`. Mine is dropped; the planner is a third
+row. Note the table is **no longer all co-resident** — fork-module and
+wasi-module are PIC side modules in guest memory, the planner imports nothing
+and owns its own. Membership says how a module is delivered, not how it is
+built.
+
+**A latent break in the incumbent, found and fixed.** The engine already
+projected `wasi-module`, but `binary-resolver.ts` still admitted only the two
+fork-module artifacts. An unadmitted node does not degrade one module: the
+projection parse throws before ANY binary resolves. Demonstrated on the
+incumbent resolver against a real manifest — `node "wasi-module" (wasm32) is
+neither an exact v2 program node nor a root-mirror package` — which would have
+taken down every SourceOnly boot. The allowlist now names all three and says it
+must track the table.
+
+**Evidence.** `verify-fresh` EXIT=0 on the merged table; EXIT=1 naming
+`dylink-module`, and separately `wasi-module`, when one byte of that staged
+member is changed; EXIT=0 after restore. `dylink_module32.wasm` resolves
+through the real `binary-resolver.ts` under `source-only-v1`. Real-`dlopen`
+suite with the kernel present: **118 tests, 115 passed / 2 failed / 1 skipped**
+— the 18 that silently skip now EXECUTE; the 2 failures are the tracked pthread
+`__wpk_fork_frame_reserve` gap, the 1 skip is wasm64. `cargo test` dylink 91,
+dylink-module 10, fork-codec 444; `cargo check` green on host, wasm32, wasm64.
+
+**Ledger: in-scope TS +140.** I6a is pipeline and delivery; it deletes nothing.
+The 6,340 lines are I6b's.
+
+**Unproven: three of the four browser registrations.** The Vite alias, the
+`?url` artifact module, and the fetch/transfer/compile chain fail only in a
+SourceOnly browser build and need a boot. Browser products were BLOCKED here by
+unrelated package failures (`node`, `vim`, `wget`, `ruby-browser-bundle`,
+`coreutils-docs`). The fourth — resolver admission — is proven above.
+
+**Eighth silent-success defect, fixed:** `crates/fork-module/build-wasm.sh
+--verify-fresh` exited 0 when the artifact did not exist at all.
+`ensure_coresident_side_modules_built` builds only when that check FAILS, so on
+a fresh worktree the module was never built and the local-build died much later
+at projection finalization telling you to run the script by hand. Absence is
+not freshness. wasm32 is now required; wasm64 stays best-effort.
+
+Note: adding a workspace member changes `Cargo.toml` and `Cargo.lock`, which
+are declared `packages/registry/kernel/build.toml` inputs, so the kernel's
+cache key legitimately moves and the kernel rebuilds once. Closure-derived keys
+working, not a regression.
 
 ## K4 — a real browser defect fixed, and the grounding blamed the wrong host
 
