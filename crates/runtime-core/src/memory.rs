@@ -2909,7 +2909,9 @@ impl SharedMappingTable {
     }
 
     /// Whether any *other* attachment observes the same segment. A sole
-    /// observer can defer scanning its private memory every boundary.
+    /// observer that is already current can defer scanning its private memory
+    /// every boundary; see [`SharedMappingTable::sync_sysv_from_process`] for
+    /// why being current is a required half of that condition.
     fn has_peer_sysv_mapping(&self, pid: u32, map_addr: u64, seg_id: i32) -> bool {
         self.sysv.iter().any(|(other_pid, mappings)| {
             mappings.iter().any(|(other_addr, mapping)| {
@@ -3001,6 +3003,21 @@ impl SharedMappingTable {
     }
 
     /// Reconcile every SysV attachment of one process.
+    ///
+    /// An attachment is skipped only when it has no live peer **and** it has
+    /// already observed the segment's current version. Both halves are
+    /// required, and this mirrors
+    /// [`SharedMappingTable::sync_anonymous_from_process`], which has always
+    /// tested both.
+    ///
+    /// Peer-existence alone is not sufficient, and treating it as sufficient
+    /// loses a peer's writes in an ordinary IPC shape: a child attaches, fills
+    /// the segment, publishes and exits, and the parent -- now the sole
+    /// observer -- would never import what the child wrote. `shmdt` and
+    /// process teardown publish the departing attachment's bytes, but nothing
+    /// re-reads them into the survivors, so the survivor keeps a private view
+    /// of a segment it does not own. POSIX makes an attachment a view of the
+    /// segment, not a copy taken at attach time.
     pub fn sync_sysv_from_process(
         &mut self,
         pid: u32,
@@ -3010,10 +3027,16 @@ impl SharedMappingTable {
         let Some(pid_map) = self.sysv.get(&pid) else {
             return true;
         };
-        let targets: Vec<(u64, i32)> = pid_map.iter().map(|(a, m)| (*a, m.seg_id)).collect();
+        let targets: Vec<(u64, i32, u64)> = pid_map
+            .iter()
+            .map(|(addr, mapping)| (*addr, mapping.seg_id, mapping.seen_version))
+            .collect();
         let mut success = true;
-        for (map_addr, seg_id) in targets {
-            if !force && !self.has_peer_sysv_mapping(pid, map_addr, seg_id) {
+        for (map_addr, seg_id, seen_version) in targets {
+            if !force
+                && !self.has_peer_sysv_mapping(pid, map_addr, seg_id)
+                && seen_version == self.sysv_segment_version(seg_id)
+            {
                 continue;
             }
             if !self.merge_and_refresh_sysv_mapping(pid, map_addr, io) {
@@ -4637,6 +4660,120 @@ mod shared_mapping_tests {
         table.inherit_process_mappings(1, 2, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"SEGMENTS".to_vec());
         assert_eq!(table.sysv_mapping(2, 0).unwrap().seg_id, 7);
+    }
+
+    #[test]
+    fn a_stale_sole_sysv_attachment_still_imports_a_peers_publication() {
+        // The sole-observer skip is keyed on having no live peer, not on
+        // having published. A process whose only peer detached after
+        // publishing must still see those bytes, or it would keep a private
+        // view of a segment it does not own.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let mut table = sysv_table(&mut io);
+
+        io.poke(2, 0, b"PEERWROT");
+        assert!(table.sync_sysv_from_process(2, false, &mut io));
+        table.release_all_sysv_for_process(2, false, &mut io);
+        assert_eq!(table.sysv_pid_count(), 1);
+
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        assert_eq!(io.peek(1, 0, 8), b"PEERWROT".to_vec());
+    }
+
+    #[test]
+    fn a_segment_sync_publishes_every_attachment_before_a_newcomer_joins() {
+        // shmat calls this so a previously sole observer, which had been
+        // deferring, is current before the new attachment snapshots the
+        // segment. Without it the newcomer would start from stale bytes.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, vec![b'.'; 8]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        io.poke(1, 0, b"SOLEWRIT");
+
+        // Deferred: no peer yet.
+        assert!(table.sync_sysv_from_process(1, false, &mut io));
+        assert_eq!(io.shm[&7], vec![b'.'; 8]);
+
+        table.sync_sysv_segment_from_attached(7, &mut io);
+        assert_eq!(io.shm[&7], b"SOLEWRIT".to_vec());
+
+        table.track_sysv_mapping(2, 0, 7, 8, false, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"SOLEWRIT".to_vec());
+    }
+
+    #[test]
+    fn dropping_one_attachment_leaves_the_process_others_alone() {
+        let mut io = MockIo::new().with_process(1, 64);
+        io.shm.insert(7, vec![b'.'; 8]);
+        io.shm.insert(9, vec![b'-'; 8]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        table.track_sysv_mapping(1, 16, 9, 8, false, &mut io).unwrap();
+        assert_eq!(table.sysv_mapping_count_for(1), 2);
+        assert_eq!(table.sysv_pid_count(), 1);
+
+        assert!(table.drop_sysv_mapping(1, 0));
+        assert!(table.sysv_mapping(1, 0).is_none());
+        assert_eq!(table.sysv_mapping(1, 16).unwrap().seg_id, 9);
+        assert_eq!(table.sysv_mapping_count_for(1), 1);
+
+        // Dropping the last one retires the pid, so the host's cached
+        // boundary predicate goes back to zero.
+        assert!(table.drop_sysv_mapping(1, 16));
+        assert!(!table.drop_sysv_mapping(1, 16));
+        assert_eq!(table.sysv_pid_count(), 0);
+        assert_eq!(table.sysv_mapping_count_for(1), 0);
+    }
+
+    #[test]
+    fn attachments_are_listed_by_address_for_replay_and_rollback() {
+        let mut io = MockIo::new().with_process(1, 64);
+        io.shm.insert(7, vec![b'.'; 8]);
+        io.shm.insert(9, vec![b'-'; 4]);
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 16, 9, 4, true, &mut io).unwrap();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+
+        assert_eq!(
+            table.sysv_attachments_for(1),
+            vec![(0u64, 7i32, 8usize, false), (16u64, 9i32, 4usize, true)],
+        );
+        assert!(table.sysv_attachments_for(2).is_empty());
+    }
+
+    #[test]
+    fn inheriting_into_a_child_that_already_owns_attachments_is_refused() {
+        // The kernel entry point relies on this: a child whose mirror is
+        // already populated would otherwise have its parent's attachments
+        // merged over the top of its own.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        io.shm.insert(7, b"SEGMENTS".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+        table.track_sysv_mapping(2, 0, 7, 8, false, &mut io).unwrap();
+
+        assert_eq!(
+            table.inherit_process_mappings(1, 2, &mut io),
+            Err(Errno::EEXIST),
+        );
+    }
+
+    #[test]
+    fn inheritance_is_refused_when_the_child_memory_cannot_hold_the_attachment() {
+        // The child's committed memory length is supplied by the caller. An
+        // attachment that would not fit must fail before any child byte is
+        // written, not be truncated.
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 4);
+        io.shm.insert(7, b"SEGMENTS".to_vec());
+        let mut table = SharedMappingTable::new();
+        table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+
+        assert_eq!(
+            table.inherit_process_mappings(1, 2, &mut io),
+            Err(Errno::EINVAL),
+        );
+        assert!(table.sysv_mapping(2, 0).is_none());
     }
 
     // -- teardown ----------------------------------------------------------
