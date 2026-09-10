@@ -2247,6 +2247,9 @@ foundation file.
 | B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
 | B15 | **TLS `SharedArrayBuffer` hazard** | All three engines throw on SAB-backed views; reachability unproven. Fix when the file is next touched: copy at the boundary, tighten `ArrayBufferLike` → `ArrayBuffer` |
 | B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15 |
+| B17 | **`tar/wasm32` fails to compile on base** | `readdir.c:38: incomplete definition of type 'DIR'`. Blocks `shell` and every image below it. Latent — a cached artifact hid it; anyone rebuilding musl meets it. **Recorded in the value plan, not here, until now.** |
+| B18 | **`./run.sh setup` does not install root npm dependencies** | Its absence cascade-blocks every browser product |
+| B19 | **`install-local-artifact` leaves a higher-priority tier stale** | The resolver reads `source-only-v1` first; one command should leave every tier consistent, or fail loudly. **Now diagnosed exactly — see "B19, measured" below.** It is what blocks every kernel-booting suite in a locally built worktree |
 | B17 | **CLOSED — and it was never a `tar` or overlay defect** | See "B17/B18/B19 closed" below. `tar/wasm32` builds green on this base; the error was a broken sysroot wearing a package's clothes |
 | B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
 | B19 | **CLOSED** | The install now fails loudly rather than leaving the tier consumers read stale |
@@ -2293,6 +2296,16 @@ struct-layout assertion in `tests/abi`. This is the same shape as B14 (SysV).
 A first case now exists at
 `tests/sortix/os-test-local/basic/sys_epoll/epoll-fork-shares-instance.c`,
 picked up automatically by the `basic` suite.
+
+**It compiles but has never executed, and B7 is therefore NOT conformance-
+validated.** The runner dies before reaching any guest — see "B19, measured"
+below. The Rust behaviour is covered by eight unit tests (four committed red
+first, three mutation-verified), which is unit evidence, not inheritance
+semantics observed through libc. Run this case as soon as B19 clears.
+Note also that the default `TEST_TIMEOUT=30` in `scripts/run-sortix-tests.sh`
+is too short for a first kernel boot on a loaded machine: two known-good
+control cases (`unistd/fsync-directory`,
+`spawn/posix_spawn_large_environment`) also timed out at 30s and needed 120s.
 
 **What B6 must know.** The host mirror (`kernel-worker.ts`, `epollInterests`)
 is now not merely a second authority but a **weaker model** of the kernel's:
@@ -2386,6 +2399,45 @@ moment it creates it.
   showed 1.1 GiB free of 1.8 TiB. Discarded and re-run after space freed.
   Worth knowing while six worktrees share one disk: a contaminated run of this
   suite looks like a scatter of unrelated `build_deps` failures.
+
+### B19, measured — why a locally built worktree cannot run any kernel-booting suite
+
+Found while trying to run B7's conformance case. The failure is **not** a
+missing artifact, which is why "build it and continue" does not clear it.
+
+`examples/run-example.ts` — the entry every Sortix, libc and POSIX case goes
+through — asks the resolver for its builtin program closure, and gets:
+
+```
+Package artifact closure is incomplete: no single provenance tier contains
+every accepted artifact, and tiers will not be mixed.
+  source-only-v1: shared package identity rejected: a mutable source-checkout
+                  wasm tree is not an installed package identity
+  local-binaries:      programs/wasm32/dash.wasm (missing)
+  binaries:            programs/wasm32/dash.wasm (missing)
+  installed package:   programs/wasm32/dash.wasm (missing)
+```
+
+**`dash.wasm` is present** — `source-only-v1` held 108 built programs at the
+time. The tier is rejected for a *different* reason: `binary-resolver.ts`
+(~`:3174`) requires every member of a multi-member package to be a **symlink**
+into `.kandelo-local-generations`, and refuses a set of regular files unless
+`tier.allowRegularFileClosure`. A locally built `source-only-v1` contains
+regular files, so the moment a program closure needs any multi-member package,
+the whole tier is refused and the other three tiers are empty.
+
+**Do not work around this by hand-placing artifacts.** Copying a built
+`kernel.wasm` to the scalar mirror was tried and made things worse: the
+resolver then refused it, and `install-local-artifact` refused to replace it
+("refusing to replace regular file at scalar mirror"). Hand-symlinking a
+program to satisfy one suite is exactly the special-casing the values contract
+forbids.
+
+**Two adjacent defects were fixed on the way** and are no longer part of this
+(commits `12118ac68`, `4034dee7e`): a stale `scripts/resolve-binary.bundle.mjs`
+still demanding K6's five deleted sizing exports, and `run-example.ts` asking
+for perl by its legacy flat path. Both had the same shape as B19 — invisible
+until someone rebuilds, and reported as something other than what they were.
 
 ### C. Closed by measurement, kept only so they are not re-opened
 
