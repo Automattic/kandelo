@@ -2188,18 +2188,33 @@ session that ends takes its briefs with it.
 
 **Rule: nothing is dispatched until it appears here.**
 
-### A. In flight — an agent is working it right now
+### A. Dispatched batch — final state (audited 2026-09-10, after the merge wave)
 
-| # | Item | Deletes / changes | Owner |
-|---|---|---|---|
-| A1 | K5 I6c — six missing `DynamicLinker` host↔module contracts | `dylink.ts` 4,188 + `dylink-fork-archive.ts` 2,152 | agent |
-| A2 | `crates/wasm-artifact` side module + cutover | `constants.ts` remainder ~2,900 | agent |
-| A3 | K4b — remaining worker-entry declarations (21, not 16) | ~2,700 | agent |
-| A4 | pthread slot arena unification + dead surface | `shell-config.ts` 91; `host_call_signal_handler` (76→75); one authority | agent |
-| A5 | Reconciliation — `usePolling` + poller, 16 memory-authority sites, epoch strings | ~200 | agent |
-| A6 | `hostname.ts` (99) MIGRATE · `device-fs.ts` (335) ELIMINATE · `boot-descriptor.ts` (507) scope-check | ~940 | agent |
-| A7 | **B7** — epoll instances to OFD ownership; fork inheritance | unblocks A-future B6 (the host epoll mirror) | agent |
-| A8 | **B17+B18+B19** — `tar/wasm32` compile, root npm install, stale-tier install | throughput, not lines | agent |
+| # | Item | State |
+|---|---|---|
+| A1 | K5 I6c — six missing `DynamicLinker` host↔module contracts | **DONE, merged.** `dylink.ts` 4,188 + `dylink-fork-archive.ts` 2,152 deleted |
+| A2 | `crates/wasm-artifact` side module + cutover | **DONE, merged.** `constants.ts` 3,041 → 294 |
+| A3 | K4b — remaining worker-entry declarations (21, not 16) | **DONE, merged.** Left NDD-K4-3 open |
+| A4 | pthread slot arena unification + dead surface | **DONE, merged.** `shell-config.ts` deleted; `host_call_signal_handler` struck, imports **76 → 75**; NDD open on slot *placement* |
+| A5 | Reconciliation — `usePolling` + poller, 16 memory-authority sites, epoch strings | **DONE, merged** |
+| A6 | `hostname.ts` MIGRATE · `device-fs.ts` ELIMINATE · `boot-descriptor.ts` scope-check | **DONE, merge pending** — `d5f2ba584..f88504243`, TS −421 / Rust +560. Boot descriptor **not started** — NDD-BOOT-1 below |
+| A7 | **B7** — epoll instances to OFD ownership; fork inheritance | **DONE, merged.** Unblocks B6. Explicitly **not** conformance-validated — rests on 8 unit tests |
+| A8 | **B17+B18+B19** — `tar/wasm32` compile, root npm install, stale-tier install | B17 and B18 closed. **B19 did not close** — the same ID now names a different, measured defect. See B19 below |
+
+**Nothing is in flight as of this line.** The next dispatch comes from B.
+
+Two findings the batch produced that are not items:
+
+- **A4 disproved its own predicted cause.** The 17-thread divergence was a
+  `__tl_lock` deadlock at round *2* on native: `sys_clone` accepted and dropped
+  `CLONE_PARENT_SETTID`, so `pthread.tid` stayed 0 and musl read equal zeros as
+  a recursive acquire. Native's real pthread limit was **one**; the 16-slot
+  arena was unreachable. Node was masked because `kernel-worker.ts` wrote ptid
+  itself — a third instance of the "dead floor" pattern.
+- **A6 disproved `/dev` unreachability.** Three syscalls were missing from the
+  devfs guard list. One was live: the host backend ignores `O_EXCL`, so
+  `bind(fd, "/dev/null")` **succeeded**, registering an endpoint at a path
+  `unlink` refuses to remove (EROFS). Fixed in the kernel before deletion.
 
 ### How the next item is chosen
 
@@ -2227,36 +2242,46 @@ foundation file.
 
 ### B. Owed, no agent — each needs dispatching or an explicit decision
 
+Deduplicated 2026-09-10. Earlier revisions of this table carried B6, B7, B17,
+B18 and B19 two and three times with contradictory statuses, an artifact of
+keep-both conflict resolution on this file. One row per item now; closed items
+keep their row so they are not re-opened.
+
 | # | Item | Why it is still here |
 |---|---|---|
-| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **Completes V3.** Recorded only as a table cell until now; never scoped. Removes ~2,000 lines across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes. |
+| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **Completes V3.** Recorded only as a table cell until now; never scoped. Removes ~2,000 lines across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes |
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
-| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines, blocked at the time on file ownership that has since cleared |
-| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; **no longer gated — B7 is done.** See "B7 — epoll OFD ownership" below for what the mirror now contradicts |
-| B7 | **epoll fork inheritance + OFD keying** | **DONE.** One change, as recorded — verified, not assumed. See below |
-| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll mirror; gated on B7 |
-| B7 | *(moved to A7 — dispatched)* | |
+| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines; the file-ownership block has cleared |
+| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll host mirror. **No longer gated — B7 is done.** See "B7 — epoll OFD ownership" for what the mirror now contradicts. Highest-value unblocked delete on this list |
+| B7 | **epoll fork inheritance + OFD keying** | **CLOSED 2026-09-10.** Verified, not assumed. Caveat recorded: unit-tested, not conformance-validated |
 | B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
-| B9 | **NDD-IOVEC-1 — per-process pointer width at registration** | **Maintainer approved.** Frees `preadv2`/`pwritev2`'s `flags` slot, currently holding the width stamp. Must survive fork inheritance and a width-changing exec. Do it *before* anything else claims slot 5. |
+| B9 | **NDD-IOVEC-1 — per-process pointer width at registration** | **Maintainer approved.** Frees `preadv2`/`pwritev2`'s `flags` slot, currently holding the width stamp. Must survive fork inheritance and a width-changing exec. Do it *before* anything else claims slot 5 |
 | B10 | **NDD-K4-1 — kernel-owned shebang parsing** | The duplicate is shared (one call site); the kernel move needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
-| B11 | **`report_writeback_loss` wiring** | Kept, and the reason imports read 76 not 75. Better home: kernel-visible state readable through an existing export — costs no import, survives the session, and is testable |
-| B12 | **`privileged-projection.ts` (864) — test-only** | Census finding, unrecorded until now. Open as D-K8-4 |
-| B13 | **`dylink-planner.ts` (796) test-only** | Becomes production when A1 lands; **`dylink-planner-wire.ts` is NOT test-only** — Serena refuted that; it is imported by production source |
+| B11 | **`report_writeback_loss` wiring** | Maintainer said keep. Better home: kernel-visible state readable through an existing export — costs no import, survives the session, is testable |
+| B12 | **`privileged-projection.ts` (864) — test-only** | Census finding. Open as D-K8-4 |
+| B13 | **`dylink-planner.ts` (796) test-only** | Became production when A1 landed; **`dylink-planner-wire.ts` is NOT test-only** — Serena refuted that; production source imports it |
 | B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
 | B15 | **TLS `SharedArrayBuffer` hazard** | All three engines throw on SAB-backed views; reachability unproven. Fix when the file is next touched: copy at the boundary, tighten `ArrayBufferLike` → `ArrayBuffer` |
-| B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15 |
-| B17 | **`tar/wasm32` fails to compile on base** | `readdir.c:38: incomplete definition of type 'DIR'`. Blocks `shell` and every image below it. Latent — a cached artifact hid it; anyone rebuilding musl meets it. **Recorded in the value plan, not here, until now.** |
-| B18 | **`./run.sh setup` does not install root npm dependencies** | Its absence cascade-blocks every browser product |
-| B19 | **`install-local-artifact` leaves a higher-priority tier stale** | The resolver reads `source-only-v1` first; one command should leave every tier consistent, or fail loudly. **Now diagnosed exactly — see "B19, measured" below.** It is what blocks every kernel-booting suite in a locally built worktree |
-| B17 | **CLOSED — and it was never a `tar` or overlay defect** | See "B17/B18/B19 closed" below. `tar/wasm32` builds green on this base; the error was a broken sysroot wearing a package's clothes |
+| B16 | **8 openssl + 1 host typecheck errors** | The `host/src` one is in `tls-network-backend.ts`, K11's file — same SAB family as B15. This is the 9-error typecheck baseline |
+| B17 | **CLOSED — never a `tar` or overlay defect** | `tar/wasm32` builds green on this base; the error was a broken sysroot wearing a package's clothes. See "B17/B18/B19 closed" |
 | B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
-| B19 | **CLOSED** | The install now fails loudly rather than leaving the tier consumers read stale |
-| B17 | *(moved to A8 — dispatched)* | |
-| B18 | *(moved to A8 — dispatched)* | |
-| B19 | *(moved to A8 — dispatched)* | |
-| B20 | **Tier-end browser pass** | Now split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed this way |
+| B19 | **RE-OPENED, and now measured exactly** | The *install* defect closed. A **different** defect wears the same ID: the resolver refuses the entire `source-only-v1` tier the moment a program closure needs a multi-member package, because a locally built tier holds **regular files** where `host/src/binary-resolver.ts` requires **symlinks** into `.kandelo-local-generations`. It reports `programs/wasm32/dash.wasm (missing)` while `dash.wasm` is present among 108 built programs, so "build it and continue" cannot clear it. Re-measured against a near-complete package tree (only `gzip`/`xz` failing, `dash`/`coreutils`/`login`/`perl`/`node`/`rootfs` all green): **identical tier-identity error.** This is what blocks every Sortix, libc and POSIX suite in any locally built worktree. See "B19, measured" |
+| B20 | **Tier-end browser pass** | Split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed that way |
+| B21 | **`gzip` and `xz` fail to build** | Found alongside B19 on the same setup run; `nginx` and `php` block behind them. They are what stop the `shell` product and every image below it. Adjacent to B17 in shape, not chased |
+| B22 | **libc-test cannot be fetched in the dev shell** | Its submodule URL is `git@github.com:` and ssh is unavailable there. A second, independent reason no conformance suite has run in this campaign — B19 is not the only one |
+
+### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
+
+A6 scoped it and stopped, correctly. Its only production caller runs on the
+**browser main thread with no kernel instance** (`live-setup.ts:1076`, against
+the kernel-bearing path at `:1286`); `host/src/**` has zero references. A
+migration needs a standalone main-thread Wasm module and **no precedent
+exists** — `detectPtrWidth`, the precedent cited when this was scoped, is plain
+TypeScript. Cost: 507 lines plus ~63 types inside a KEEP-marked file, a new
+module kind, build and Vite wiring, a sync→async contract change, and an
+error-`code` discriminant crossing the boundary. **Maintainer's call.**
 
 ### B7 — epoll OFD ownership (DONE 2026-09-10)
 
