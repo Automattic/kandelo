@@ -9,7 +9,6 @@ import type {
 import { EagainError } from "./fetch-backend";
 import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
-const EADDRINUSE = 98;
 const EADDRNOTAVAIL = 99;
 const ENETUNREACH = 101;
 const ECONNRESET = 104;
@@ -33,12 +32,17 @@ function copyAddr(addr: Uint8Array): Uint8Array {
   return new Uint8Array([addr[0] ?? 0, addr[1] ?? 0, addr[2] ?? 0, addr[3] ?? 0]);
 }
 
+/**
+ * Forwarding match for a routed packet: a wildcard-bound endpoint accepts any
+ * destination address on its machine, a specifically-bound one accepts only
+ * its own.
+ *
+ * This is the fabric's forwarding-table lookup — the simulated wire deciding
+ * which attached endpoint a packet is for. It is deliberately *not* a POSIX
+ * bind decision; see the note on `LocalVirtualNetwork`.
+ */
 function addrMatches(bound: string, dst: string): boolean {
   return bound === ANY || bound === dst;
-}
-
-function addrConflicts(a: string, b: string): boolean {
-  return a === ANY || b === ANY || a === b;
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBufferLike> {
@@ -207,6 +211,42 @@ export interface VirtualNetworkMachineOptions {
   hostnames?: string[];
 }
 
+/**
+ * A simulated wire joining several Kandelo machines that share one host
+ * thread. Each attached machine has its own kernel instance; this class is
+ * the switch between them, not part of any one kernel.
+ *
+ * **It does not decide bind conflicts.** `EADDRINUSE` for an AF_INET or
+ * AF_INET6 endpoint is decided once, in the kernel, by
+ * `crates/runtime-core/src/socket.rs` (`udp_can_bind` / `udp_register`,
+ * `tcp_can_bind` / `tcp_register`). `listenTcp` and `bindUdp` below are
+ * reached only *after* that kernel decision has already succeeded — see
+ * `udp_bind_socket` in `crates/runtime-core/src/syscalls.rs`, which calls
+ * `socket::udp_register` and only then notifies the host.
+ *
+ * This class used to re-derive that rule with its own wildcard-conflict
+ * predicate and its own `EADDRINUSE`, giving the fabric a veto over a bind
+ * the kernel had already allowed. The two authorities disagreed on real
+ * POSIX cases:
+ *
+ * - **`SO_REUSEADDR`.** `socket::udp_can_bind` permits two sockets to share
+ *   an address when both set `SO_REUSEADDR`. The fabric copy had no notion
+ *   of the option and answered `EADDRINUSE`, which `udp_bind_socket`
+ *   propagates to the caller after rolling the kernel registration back. On
+ *   a virtual-network machine, `SO_REUSEADDR` therefore did not work.
+ * - **Inherited bindings.** `socket.rs` keeps a binding alive while any
+ *   `fork`/`spawn` peer still owns the socket. The fabric keyed entries by
+ *   `pid:handle`, so an inherited copy looked like an unrelated conflicting
+ *   binding to it.
+ *
+ * Neither case is exercised by the in-repo network demo. They are POSIX
+ * cases regardless, which is why the second authority is removed rather than
+ * reconciled: one rule, in the kernel, for every host.
+ *
+ * What genuinely belongs here is what no single kernel can know — which
+ * machine owns which virtual address, the hostname aliases between them, and
+ * the paired peer objects that carry the bytes.
+ */
 export class LocalVirtualNetwork {
   private machines = new Map<string, VirtualNetworkBackend>();
   private addressOwners = new Map<string, string>();
@@ -269,15 +309,6 @@ export class LocalVirtualNetwork {
   ): number {
     const addrKey = ipKey(addr);
     if (!this.machineOwnsAddress(machineId, addrKey)) return EADDRNOTAVAIL;
-    for (const listener of this.tcpListeners) {
-      if (
-        listener.machineId === machineId &&
-        listener.port === port &&
-        addrConflicts(listener.addrKey, addrKey)
-      ) {
-        return EADDRINUSE;
-      }
-    }
     this.closeTcpListener(listenerId);
     this.tcpListeners.push({
       machineId,
@@ -339,15 +370,6 @@ export class LocalVirtualNetwork {
   ): number {
     const addrKey = ipKey(addr);
     if (!this.machineOwnsAddress(machineId, addrKey)) return EADDRNOTAVAIL;
-    for (const endpoint of this.udpEndpoints) {
-      if (
-        endpoint.machineId === machineId &&
-        endpoint.port === port &&
-        addrConflicts(endpoint.addrKey, addrKey)
-      ) {
-        return EADDRINUSE;
-      }
-    }
     this.unbindUdp(endpointId);
     this.udpEndpoints.push({
       machineId,
@@ -517,7 +539,6 @@ export class VirtualNetworkBackend implements NetworkIO {
 }
 
 export const VIRTUAL_NETWORK_ERRNO = {
-  EADDRINUSE,
   EADDRNOTAVAIL,
   ENETUNREACH,
   ECONNRESET,

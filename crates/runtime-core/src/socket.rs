@@ -1,3 +1,20 @@
+//! Socket state: the socket table, per-socket options, the AF_INET and
+//! AF_INET6 TCP/UDP binding registries, and the shared accept backlog.
+//!
+//! **This module is the single authority for whether an internet-domain
+//! address/port may be bound.** `tcp_can_bind` / `tcp_register`,
+//! `udp_can_bind` / `udp_register` and their IPv6 counterparts decide
+//! `EADDRINUSE` once, for every host. A host adapter is notified of a bind
+//! only *after* that decision has succeeded (`syscalls::udp_bind_socket`),
+//! and it must not re-derive the rule: the registry here carries facts an
+//! adapter does not have — `SO_REUSEADDR`, and the set of `fork`/`spawn`
+//! peers that jointly own one logical binding.
+//!
+//! `host/src/networking/virtual-network.ts` used to keep a second copy of
+//! this rule for the multi-machine virtual network and diverged from it on
+//! both of those facts; that copy has been removed rather than reconciled.
+//! Its doc comment records what the divergence cost. Workstream K11.
+
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
