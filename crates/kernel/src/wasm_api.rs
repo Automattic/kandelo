@@ -14316,6 +14316,94 @@ pub extern "C" fn kernel_get_fd_accept_wake_idx(pid: u32, fd: i32) -> i32 {
         .unwrap_or(-1)
 }
 
+/// Collect the targeted wake tokens an `epoll_pwait` on `epfd` should register
+/// against, resolved from the kernel's own interest list.
+///
+/// # Why this is a kernel export and not a host loop
+///
+/// The host used to keep a `"pid:epfd"` -> interest-array mirror in
+/// TypeScript, seeded from `epoll_create1` and replayed from every
+/// `epoll_ctl`, purely so it could call `kernel_get_socket_recv_pipe` and
+/// `kernel_get_fd_accept_wake_idx` once per interest. Since the epoll instance
+/// became owned by the open file description rather than the process
+/// (`descriptor_backing::with_epolls`), that mirror was not merely redundant
+/// but a *weaker model*: it was per-process and keyed on numeric descriptors,
+/// where an interest is shared across `fork` and keyed on `(fd, OfdId)`. The
+/// join belongs where the interest list lives.
+///
+/// `kind` selects the token family, because the two are separate host wake
+/// domains and the caller keys them separately:
+///
+/// * `0` — pipe/socket receive-buffer indices, for every interest.
+/// * `1` — listener accept-wake tokens, for interests that asked for
+///   `EPOLLIN`.
+///
+/// Writes up to `out_len` bytes as little-endian `i32` values at `out_ptr` and
+/// returns the number of values written, or a negative errno. A buffer too
+/// small for the whole set is `-E2BIG`: a truncated wake set would silently
+/// lose a wakeup, which is a hang, so it must be a loud failure rather than a
+/// partial answer.
+///
+/// The tokens are an optimization, not a correctness requirement — the caller
+/// also re-checks readiness on a timer — but an interest resolved here is one
+/// the *calling* process can currently reach, matching what `sys_epoll_pwait`
+/// itself will evaluate.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wake_indices(
+    pid: u32,
+    epfd: i32,
+    kind: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    use wasm_posix_shared::epoll::EPOLLIN;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let interests = match syscalls::epoll_resolved_interests(proc, epfd) {
+        Ok(interests) => interests,
+        Err(e) => return -(e as i32),
+    };
+
+    let mut values: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
+    for (fd, interest) in &interests {
+        match kind {
+            0 => {
+                let idx = kernel_get_socket_recv_pipe(pid, *fd);
+                if idx >= 0 {
+                    values.push(idx);
+                }
+            }
+            1 => {
+                if interest.events & EPOLLIN != 0 {
+                    let idx = kernel_get_fd_accept_wake_idx(pid, *fd);
+                    if idx >= 0 {
+                        values.push(idx);
+                    }
+                }
+            }
+            _ => return -(Errno::EINVAL as i32),
+        }
+    }
+
+    let needed = values.len() * core::mem::size_of::<i32>();
+    if needed > out_len as usize {
+        return -(Errno::E2BIG as i32);
+    }
+    if !values.is_empty() {
+        if out_ptr.is_null() {
+            return -(Errno::EFAULT as i32);
+        }
+        let bytes: alloc::vec::Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, bytes.len());
+        }
+    }
+    values.len() as i32
+}
+
 /// Find the lowest live listener fd carrying `wake_idx` in `pid`.
 ///
 /// The wake token identifies the shared listener/open-description state across

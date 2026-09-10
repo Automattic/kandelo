@@ -139,6 +139,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
+  "kernel_epoll_wake_indices",
   "kernel_exec_target_artifact_policy",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
@@ -279,6 +280,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
+    case "kernel_epoll_wake_indices":
     case "kernel_process_metadata_stage":
     case "kernel_exec_target_prepare":
     case "kernel_setsockopt":
@@ -336,6 +338,7 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_epoll_wake_indices":
     case "kernel_exec_target_artifact_policy":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":

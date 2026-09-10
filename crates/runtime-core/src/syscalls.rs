@@ -16519,6 +16519,50 @@ fn fd_naming_ofd_id(
         .map(|(fd, _)| fd)
 }
 
+/// Resolve `epfd`'s shared interest list into descriptors `proc` currently
+/// holds.
+///
+/// The instance is owned by the open file description `epfd` names, not by the
+/// process (see [`crate::descriptor_backing::with_epolls`]), so this is the one
+/// place that turns registrations back into per-caller descriptor numbers. The
+/// registration number an interest carries is only a hint: after `dup` the same
+/// description is reachable at another number, after close/reopen the same
+/// number names something else, and in a `fork` child the number may never have
+/// been used for `epoll_ctl` at all.
+///
+/// An interest whose description this process can no longer reach contributes
+/// nothing and is dropped — see the `epoll_pwait()` row of
+/// `docs/posix-status.md` for the residual divergence when only a sibling still
+/// holds the description.
+///
+/// Errors mirror `epoll_pwait`: `EBADF` for a descriptor that is not open or an
+/// instance that is gone, `EINVAL` for a descriptor that is not an epoll
+/// instance.
+pub fn epoll_resolved_interests(
+    proc: &Process,
+    epfd: i32,
+) -> Result<Vec<(i32, crate::process::EpollInterest)>, Errno> {
+    let entry = proc.fd_table.get(epfd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Epoll {
+        return Err(Errno::EINVAL);
+    }
+    let ep_idx = (-(ofd.host_handle + 1)) as usize;
+    let interests: Vec<crate::process::EpollInterest> =
+        crate::descriptor_backing::with_epolls(|table| {
+            table
+                .get(ep_idx)
+                .map(|ep| ep.interests.clone())
+                .ok_or(Errno::EBADF)
+        })?;
+    Ok(interests
+        .into_iter()
+        .filter_map(|interest| {
+            fd_naming_ofd_id(proc, interest.ofd_id, interest.fd).map(|fd| (fd, interest))
+        })
+        .collect())
+}
+
 /// epoll_ctl — modify an epoll interest list.
 ///
 /// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
@@ -16616,32 +16660,7 @@ pub fn sys_epoll_pwait(
         return Err(Errno::EINVAL);
     }
 
-    // Look up the epoll instance
-    let entry = proc.fd_table.get(epfd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Epoll {
-        return Err(Errno::EINVAL);
-    }
-    let ep_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // Copy the shared interest list, then resolve each registered open file
-    // description to a descriptor this process currently holds. The
-    // registration number is only a hint: after `dup` the description may be
-    // reachable at another number, and after close/reopen the same number may
-    // name something else entirely.
-    let interests: Vec<crate::process::EpollInterest> =
-        crate::descriptor_backing::with_epolls(|table| {
-            table
-                .get(ep_idx)
-                .map(|ep| ep.interests.clone())
-                .ok_or(Errno::EBADF)
-        })?;
-    let interests: Vec<(i32, crate::process::EpollInterest)> = interests
-        .into_iter()
-        .filter_map(|interest| {
-            fd_naming_ofd_id(proc, interest.ofd_id, interest.fd).map(|fd| (fd, interest))
-        })
-        .collect();
+    let interests = epoll_resolved_interests(proc, epfd)?;
 
     if interests.is_empty() {
         // No interests — just handle timeout/sigmask

@@ -900,12 +900,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, interest.fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, interest.fd)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",
   ),
   reviewedScalarKernelExportCall(

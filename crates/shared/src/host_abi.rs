@@ -10,8 +10,8 @@ use core::mem::{offset_of, size_of};
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
 use crate::{
-    kernel_scratch_wire, platform_limits, Syscall, WasmTimespec, SCHED_AFFINITY_MASK_SIZE,
-    WASM_RUSAGE_WIRE_SIZE,
+    kernel_scratch_wire, platform_limits, Syscall, WasmEpollEvent, WasmTimespec,
+    SCHED_AFFINITY_MASK_SIZE, WASM_RUSAGE_WIRE_SIZE,
 };
 
 /// Private channel argument used to carry the calling process's pointer width.
@@ -868,6 +868,13 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_SCHED_GETAFFINITY,
         [desc!(2, Out, fixed!(SCHED_AFFINITY_MASK_SIZE), required)]
+    ),
+    entry!(
+        // `EPOLL_CTL_DEL` ignores the event, and musl lets a caller pass null
+        // for it, so the pointer is nullable rather than required. The kernel
+        // (`sys_epoll_ctl`) reads `events`/`data` from the staged bytes.
+        extra_syscalls::SYS_EPOLL_CTL,
+        [desc!(3, In, fixed!(size_of::<WasmEpollEvent>() as u32), nullable)]
     ),
     entry!(
         extra_syscalls::SYS_TIMERFD_SETTIME,

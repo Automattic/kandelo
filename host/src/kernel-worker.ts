@@ -114,7 +114,6 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
-  EPOLL_EVENTS,
   FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
   FILE_MODES,
@@ -195,8 +194,6 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
-  WASM_EPOLL_EVENT_DATA_OFFSET,
-  WASM_EPOLL_EVENT_EVENTS_OFFSET,
   WAIT_EVENT_CONTINUED,
   WAIT_EVENT_EXITED,
   WAIT_EVENT_STOPPED,
@@ -823,9 +820,6 @@ const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
 const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
 const SYS_SELECT = ABI_SYSCALLS.Select;
 const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
-const SYS_EPOLL_CREATE1 = ABI_SYSCALLS.EpollCreate1;
-const SYS_EPOLL_CREATE = ABI_SYSCALLS.EpollCreate;
-const SYS_EPOLL_CTL = ABI_SYSCALLS.EpollCtl;
 const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
@@ -2179,10 +2173,6 @@ interface TcpListenerRegistrationPlan {
 }
 
 interface ExecFdMirrorPrunePlan {
-  readonly epollInterests: Map<
-    string,
-    Array<{ fd: number; events: number; data: bigint }>
-  >;
   readonly tcpListenerTargets: Map<number, TcpListenerTarget[]>;
   readonly tcpListenerRRIndex: Map<number, number>;
   readonly tcpListeners: Map<string, TcpListenerBridge>;
@@ -3151,26 +3141,6 @@ export class CentralizedKernelWorker {
    * needing a kernel that actually holds attachments.
    */
   private sysvActivePidCount = 0;
-
-  /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
-   *  Maintained by intercepting epoll_ctl results.
-   *
-   *  This is a SECOND AUTHORITY for state the kernel already owns
-   *  (`descriptor_backing::with_epolls`). It is also a WEAKER model of it:
-   *  the kernel owns an instance per open file description and keys each
-   *  interest on `(fd, OfdId)`, so it survives fork, dup, and descriptor
-   *  reuse correctly, while this map is keyed `pid:epfd` on numeric fds and
-   *  is copied per process at fork. Any divergence is the mirror being
-   *  wrong. It exists because epoll_pwait was once
-   *  routed around `kernel_handle_channel`, on the belief that call crashed
-   *  Chrome through a V8 shared-memory Wasm bug. That belief is DISPROVED
-   *  (`docs/plans/probes/2026-09-09-k0c-epoll/`) and the routing is already
-   *  gone — `handleEpollPwait` dispatches SYS_EPOLL_PWAIT through
-   *  `kernel_handle_channel`. The mirror now survives only to resolve
-   *  readiness wake indices for the host-owned blocking wait, and is
-   *  scheduled for deletion with the epoll family of the K3 scheduler
-   *  migration. Do not add new readers. */
-  private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -7880,13 +7850,6 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Clean up epoll interest mirrors for this process
-    for (const key of this.epollInterests.keys()) {
-      if (key.startsWith(`${pid}:`)) {
-        this.epollInterests.delete(key);
-      }
-    }
-
     // Remove from kernel process table
     this.#removeFromKernelProcessTableWithinKernelEntry(pid, entry);
 
@@ -8940,7 +8903,6 @@ export class CentralizedKernelWorker {
     parentPid: number,
     childPid: number,
     entry: KernelWorkerEntryContext,
-    includeEpoll: boolean = true,
   ): void {
     const getAcceptWake = this.#kernelInstanceForEntry(entry).exports
       .kernel_get_fd_accept_wake_idx as
@@ -8967,22 +8929,6 @@ export class CentralizedKernelWorker {
         targets.push({ pid: childPid, ...childTarget });
       }
     }
-
-    if (!includeEpoll) return;
-
-    const fdIsOpen = this.#kernelInstanceForEntry(entry).exports.kernel_fd_is_open as
-      ((pid: number, fd: number) => number) | undefined;
-    for (const [key, interests] of Array.from(this.epollInterests.entries())) {
-      if (!key.startsWith(`${parentPid}:`)) continue;
-      const epfd = Number(key.slice(key.indexOf(":") + 1));
-      if (fdIsOpen && fdIsOpen(childPid, epfd) !== 1) continue;
-      this.epollInterests.set(
-        `${childPid}:${epfd}`,
-        interests
-          .filter((entry) => !fdIsOpen || fdIsOpen(childPid, entry.fd) === 1)
-          .map((entry) => ({ ...entry })),
-      );
-    }
   }
 
   /** Remove host-only child state after fork/spawn Worker launch fails. */
@@ -9004,9 +8950,6 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     this.#deactivateProcessWithinKernelEntry(childPid, entry);
-    for (const key of Array.from(this.epollInterests.keys())) {
-      if (key.startsWith(`${childPid}:`)) this.epollInterests.delete(key);
-    }
   }
 
   /**
@@ -9027,26 +8970,6 @@ export class CentralizedKernelWorker {
     if (!fdIsOpen) return null;
     const prefix = `${pid}:`;
     const aliasByWake = new Map<number, number | null>();
-
-    const nextEpollInterests = new Map(this.epollInterests);
-    for (const [key, interests] of Array.from(this.epollInterests.entries())) {
-      if (!key.startsWith(prefix)) continue;
-      const epfd = Number(key.slice(prefix.length));
-      if (fdIsOpen(pid, epfd) !== 1) {
-        nextEpollInterests.delete(key);
-      } else {
-        // This MIRROR stores numeric fds rather than OFD identity; the
-        // kernel it mirrors no longer does. Dropping closed targets keeps the
-        // mirror's wake-index hints from observing a stale registration after
-        // fd reuse. It is a property of the mirror, not of epoll.
-        nextEpollInterests.set(
-          key,
-          interests.filter(
-            (interest) => fdIsOpen(pid, interest.fd) === 1,
-          ),
-        );
-      }
-    }
 
     const nextTcpListenerTargets = new Map(this.tcpListenerTargets);
     const nextTcpListenerRRIndex = new Map(this.tcpListenerRRIndex);
@@ -9133,7 +9056,6 @@ export class CentralizedKernelWorker {
     }
 
     return {
-      epollInterests: nextEpollInterests,
       tcpListenerTargets: nextTcpListenerTargets,
       tcpListenerRRIndex: nextTcpListenerRRIndex,
       tcpListeners: nextTcpListeners,
@@ -9186,7 +9108,6 @@ export class CentralizedKernelWorker {
 
   /** Publish one materialized exec mirror replacement outside Wasm authority. */
   #publishExecFdMirrorPrune(plan: ExecFdMirrorPrunePlan): void {
-    this.epollInterests = plan.epollInterests;
     this.tcpListenerTargets = plan.tcpListenerTargets;
     this.tcpListenerRRIndex = plan.tcpListenerRRIndex;
     this.tcpListeners = plan.tcpListeners;
@@ -11862,22 +11783,10 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // --- epoll: intercept all epoll syscalls on host side ---
-    // These arms all dispatch to the kernel; the host adds only the blocking
-    // wait and a mirror of the interest list used to resolve wake indices.
-    // The original reason for intercepting — "kernel_handle_channel crashes
-    // in Chrome for epoll_pwait" — is DISPROVED
-    // (`docs/plans/probes/2026-09-09-k0c-epoll/`); the bypass it justified was
-    // already removed. The interception is scheduled to go with the epoll
-    // family of the K3 scheduler migration.
-    if (syscallNr === SYS_EPOLL_CREATE1 || syscallNr === SYS_EPOLL_CREATE) {
-      this.handleEpollCreate(channel, syscallNr, origArgs, entry);
-      return;
-    }
-    if (syscallNr === SYS_EPOLL_CTL) {
-      this.handleEpollCtl(channel, origArgs, entry, rawArgs);
-      return;
-    }
+    // --- epoll_pwait: the wait is still host-owned ---
+    // `epoll_create1`/`epoll_create`/`epoll_ctl` are NOT intercepted: they are
+    // ordinary kernel syscalls on the generic descriptor path. Only the
+    // blocking wait is here, and only until the K3 blocking scheduler owns it.
     if (syscallNr === SYS_EPOLL_PWAIT || syscallNr === SYS_EPOLL_WAIT) {
       this.handleEpollPwait(channel, syscallNr, origArgs, entry, rawArgs);
       return;
@@ -15204,44 +15113,71 @@ export class CentralizedKernelWorker {
     return { pipeIndices: indices, acceptIndices };
   }
 
+  /**
+   * Ask the kernel which targeted wake tokens an `epoll_pwait` on `epfd`
+   * should park against.
+   *
+   * WHY THE KERNEL ANSWERS THIS. The interest list belongs to the open file
+   * description `epfd` names (`descriptor_backing::with_epolls`), is shared
+   * across `fork`, and keys each registration on `(fd, OfdId)`. The host held
+   * a `"pid:epfd"` mirror of it for exactly this join; that mirror was
+   * per-process and keyed on bare descriptor numbers, so it could only ever
+   * be a weaker model of what the kernel already knows. The join now runs
+   * where the interests live (`kernel_epoll_wake_indices`).
+   *
+   * The tokens are a latency optimization: the wait also re-checks readiness
+   * on a timer, so an empty result costs wake latency, never correctness. A
+   * kernel that cannot answer (an epfd already closed, an instance gone)
+   * yields no tokens and the timer carries the wait.
+   */
   private resolveEpollReadinessIndices(
     pid: number,
+    epfd: number,
     entry: KernelWorkerEntryContext,
   ): {
     pipeIndices: number[];
     acceptIndices: number[];
   } {
-    const getRecvPipe = this.#kernelInstanceForEntry(entry).exports
-      .kernel_get_socket_recv_pipe as
-      ((pid: number, fd: number) => number) | undefined;
-    const getAcceptWakeIdx = this.#kernelInstanceForEntry(entry).exports
-      .kernel_get_fd_accept_wake_idx as
-      ((pid: number, fd: number) => number) | undefined;
-    if (!getRecvPipe && !getAcceptWakeIdx)
-      return { pipeIndices: [], acceptIndices: [] };
+    const wakeIndices = this.#kernelInstanceForEntry(entry).exports
+      .kernel_epoll_wake_indices as
+      ((
+        pid: number,
+        epfd: number,
+        kind: number,
+        outPtr: KernelPointer,
+        outLen: number,
+      ) => number) | undefined;
+    if (!wakeIndices) return { pipeIndices: [], acceptIndices: [] };
 
-    const key = `${pid}:`;
-    const indices: number[] = [];
-    const acceptIndices: number[] = [];
-    const { EPOLLIN } = EPOLL_EVENTS;
-    for (const [k, interests] of this.epollInterests) {
-      if (!k.startsWith(key)) continue;
-      for (const interest of interests) {
-        if (getRecvPipe) {
-          const pipeIdx = getRecvPipe(pid, interest.fd);
-          if (pipeIdx >= 0) {
-            indices.push(pipeIdx);
-          }
+    const scratch = this.#requireMainScratchRegion();
+    const read = (kind: number): number[] =>
+      scratch.withLease((lease) => {
+        const request = Math.min(SCRATCH_SIZE, scratch.capacity);
+        const n = this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_epoll_wake_indices",
+          [pid, epfd, kind, lease.exportPointer(0, request), request],
+        );
+        // A negative result is the kernel declining to answer for this epfd
+        // (EBADF once it is closed, ESRCH once the process is gone). Both are
+        // ordinary races against a wait that is about to be retried anyway.
+        if (n <= 0) return [];
+        const bytes = n * 4;
+        if (!Number.isSafeInteger(bytes) || bytes > request) {
+          throw new KernelScratchError(
+            "epoll wake-index output exceeded scratch capacity",
+            EIO,
+          );
         }
-        if (getAcceptWakeIdx && (interest.events & EPOLLIN) !== 0) {
-          const acceptIdx = getAcceptWakeIdx(pid, interest.fd);
-          if (acceptIdx >= 0) {
-            acceptIndices.push(acceptIdx);
-          }
-        }
-      }
-    }
-    return { pipeIndices: indices, acceptIndices };
+        const out = lease.copyOut(0, bytes);
+        const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+        const values: number[] = [];
+        for (let i = 0; i < n; i++) values.push(view.getInt32(i * 4, true));
+        return values;
+      });
+
+    return { pipeIndices: read(0), acceptIndices: read(1) };
   }
 
   private wakeBlockedAccept(acceptIdx: number): void {
@@ -19051,244 +18987,26 @@ export class CentralizedKernelWorker {
   }
 
   // ---- epoll host-side implementation ----
-  // Every arm calls the kernel; the host contributes the blocking wait and a
-  // mirror of the interest list:
-  //   epoll_create1/create → kernel creates the fd, host mirrors the result
-  //   epoll_ctl → kernel owns the interest, host mirrors it
-  //   epoll_pwait → dispatched through kernel_handle_channel with timeout 0;
-  //                  the host loops on readiness until the deadline
   //
-  // The historical justification for this section — that
+  // `epoll_create1`, `epoll_create` and `epoll_ctl` have no host-side
+  // implementation at all: they are ordinary kernel syscalls reached through
+  // the generic descriptor path, and `epoll_ctl`'s `struct epoll_event *` is
+  // staged by the `SYSCALL_ARG_DESCRIPTORS` entry the kernel declares for it.
+  //
+  // What remains here is `epoll_pwait`, and only because the *wait* is still
+  // host-owned: the kernel is dispatched with `timeout = 0` as a non-blocking
+  // readiness evaluation and this host loops until the caller's deadline. That
+  // loop is the K3 blocking-scheduler floor, shared in shape with `poll`, not
+  // an epoll-specific model — the kernel owns the interest list
+  // (`descriptor_backing::with_epolls`) and computes readiness
+  // (`sys_epoll_pwait`).
+  //
+  // The historical justification for a *larger* section here — that
   // kernel_handle_channel crashed Chrome for epoll_pwait via a suspected V8
   // shared-memory Wasm bug — is DISPROVED. The claim was re-tested on the
   // real ABI-44 kernel across Node, Chromium and WebKit, on the main thread
   // and in a dedicated worker with a peer sharing the memory, and it did not
-  // reproduce: `docs/plans/probes/2026-09-09-k0c-epoll/`. The bypass is
-  // already gone; this host-side wait is what remains, and it is scheduled
-  // for deletion with the epoll family of the K3 scheduler migration.
-
-  /**
-   * Handle epoll_create1 / epoll_create: let the kernel create the fd,
-   * then initialise an empty interest list on the host side.
-   */
-  private handleEpollCreate(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const flags = origArgs[0];
-
-    // For SYS_EPOLL_CREATE, kernel expects flags=0 (size arg ignored)
-        const actualFlags = syscallNr === SYS_EPOLL_CREATE ? 0 : flags;
-    let result: { retVal: number; errVal: number };
-    try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(actualFlags), true);
-        for (let i = 1; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errVal: resultView.getUint32(CH_ERRNO, true),
-        };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    const { retVal, errVal } = result;
-
-    // If successful, initialise the host-side interest mirror
-    if (retVal >= 0) {
-      const key = `${channel.pid}:${retVal}`;
-      this.epollInterests.set(key, []);
-    }
-
-    this.completeChannel(
-      channel,
-      syscallNr,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  /**
-   * Handle epoll_ctl: let the kernel modify its interest list, then mirror
-   * the change on the host side.
-   */
-  private handleEpollCtl(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-    rawArgs?: readonly bigint[],
-  ): void {
-    const epfd = origArgs[0];
-    const op = origArgs[1];
-    const fd = origArgs[2];
-    const rawEventPtr = rawArgs?.[3] ?? origArgs[3]; // process pointer
-    const hasEvent = rawEventPtr !== 0 && rawEventPtr !== 0n;
-
-    // Both Kandelo musl targets align epoll_data_t to eight bytes:
-    // { events: u32, pad: u32, data: u64 } = 16 bytes.
-    let events = 0;
-    let data = 0n;
-    let eventPtr = 0;
-    if (hasEvent) {
-      let eventRange: { pointer: number; length: number; end: number };
-      try {
-        eventRange = this.checkedProcessRange(
-          channel,
-          rawEventPtr,
-          STRUCT_SIZE_WASM_EPOLL_EVENT,
-          "epoll_ctl event",
-        );
-      } catch (error) {
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-      eventPtr = eventRange.pointer;
-      const pv = new DataView(
-        channel.memory.buffer,
-        eventRange.pointer,
-        eventRange.length,
-      );
-      events = pv.getUint32(WASM_EPOLL_EVENT_EVENTS_OFFSET, true);
-      data = pv.getBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, true);
-    }
-
-    let result: { retVal: number; errVal: number };
-    try {
-      result = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        if (hasEvent) {
-          lease.copyFrom(
-            new Uint8Array(channel.memory.buffer),
-            CH_DATA,
-            eventPtr,
-            STRUCT_SIZE_WASM_EPOLL_EVENT,
-          );
-          lease.writeAddress(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            CH_DATA,
-            STRUCT_SIZE_WASM_EPOLL_EVENT,
-            "u64-le",
-          );
-        } else {
-          kernelView.setBigInt64(
-            CH_ARGS + 3 * CH_ARG_SIZE,
-            0n,
-            true,
-          );
-        }
-        kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(epfd), true);
-        kernelView.setBigInt64(CH_ARGS + CH_ARG_SIZE, BigInt(op), true);
-        kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(fd), true);
-        kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, 0n, true);
-        kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errVal: resultView.getUint32(CH_ERRNO, true),
-        };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    const { retVal, errVal } = result;
-
-    // Mirror the change on the host side if the kernel succeeded
-    if (retVal === 0) {
-      const EPOLL_CTL_ADD = 1;
-      const EPOLL_CTL_DEL = 2;
-      const EPOLL_CTL_MOD = 3;
-
-      const key = `${channel.pid}:${epfd}`;
-      let interests = this.epollInterests.get(key);
-      if (!interests) {
-        interests = [];
-        this.epollInterests.set(key, interests);
-      }
-
-      if (op === EPOLL_CTL_ADD) {
-        interests.push({ fd, events, data });
-      } else if (op === EPOLL_CTL_DEL) {
-        const idx = interests.findIndex(e => e.fd === fd);
-        if (idx >= 0) interests.splice(idx, 1);
-      } else if (op === EPOLL_CTL_MOD) {
-        const entry = interests.find(e => e.fd === fd);
-        if (entry) {
-          entry.events = events;
-          entry.data = data;
-        }
-      }
-    }
-
-    this.completeChannel(
-      channel,
-      SYS_EPOLL_CTL,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
+  // reproduce: `docs/plans/probes/2026-09-09-k0c-epoll/`.
 
   /** Complete or reap an epoll wait when its kernel signal boundary fired. */
   private completeEpollSignalOutcome(
@@ -19372,64 +19090,14 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const key = `${channel.pid}:${epfd}`;
-    const interests = this.epollInterests.get(key);
-    if (!interests) {
-      this.completeChannelRawAndRelisten(channel, -9, 9, entry); // -EBADF
-      return;
-    }
-
-    if (interests.length === 0) {
-      // No poll call follows for an empty interest set, so explicitly service
-      // the signal boundary before parking or returning a timeout result.
-      if (this.completeEpollSignalOutcome(channel, entry)) return;
-
-      // No interests registered — return 0 immediately for timeout=0,
-      // or block (EAGAIN) for non-zero timeout.
-      if (timeoutMs === 0) {
-        this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-        return;
-      }
-      if (deadline > 0 && Date.now() >= deadline) {
-        this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-        return;
-      }
-      if (
-        this.interruptPendingCancellationBeforeRegistration(
-          channel,
-          syscallNr,
-          this.#cancellationPointIdentity(channel),
-          entry,
-        )
-      ) return;
-      // For non-zero timeout with no interests, retry with delay to avoid starvation
-      const retryMs = deadline > 0 ? Math.min(Math.max(deadline - Date.now(), 1), 10) : 10;
-      entry.deferProtocolEffect(() => {
-        const timer = this.#registerTimeout(() => {
-          const pending = this.pendingPollRetries.get(channel);
-          if (!pending || pending.timer !== timer) return;
-          this.pendingPollRetries.delete(channel);
-          if (this.isRegisteredChannel(channel)) {
-            this.retrySyscall(channel);
-          }
-        }, retryMs);
-        this.pendingPollRetries.set(channel, {
-          ...this.#cancellationPointIdentity(channel),
-          timer,
-          channel,
-          pipeIndices: [],
-          deadline,
-        });
-      });
-      return;
-    }
-
     // Dispatch epoll_pwait through the kernel as a non-blocking readiness check
-    // (timeout 0). This host still owns the wait/retry loop below, but the
-    // kernel — not a host-side poll conversion — now computes epoll readiness
-    // (sys_epoll_pwait) and writes the ready epoll_events into the scratch data
-    // region, which we copy back to the caller's array. (The interest mirror is
-    // retained only to resolve targeted wake indices for the retry loop.)
+    // (timeout 0). This host still owns the wait/retry loop below; the kernel
+    // owns the interest list, validates `epfd` (EBADF for a descriptor that is
+    // not open, EINVAL for one that is not an epoll instance), computes
+    // readiness (sys_epoll_pwait), and writes the ready epoll_events into the
+    // scratch data region, which we copy back to the caller's array. An empty
+    // interest list is the kernel's zero-event answer, not a host special
+    // case: it lands in the ordinary timeout handling below.
     let epollResult: {
       retVal: number;
       errVal: number;
@@ -19527,6 +19195,7 @@ export class CentralizedKernelWorker {
     // when data arrives; setTimeout is only a fallback.
     const { pipeIndices, acceptIndices } = this.resolveEpollReadinessIndices(
       channel.pid,
+      epfd,
       entry,
     );
     if (
@@ -21943,10 +21612,9 @@ export class CentralizedKernelWorker {
 
     // posix_spawn clones listener sockets after applying fd actions. Install
     // those mirrors before async Worker launch so parent exec cannot close the
-    // shared backend. Epoll backing tables are not yet cloned by spawn_child,
-    // so only listener mirrors are inherited here.
+    // shared backend.
     try {
-      this.inheritHostFdMirrors(parentPid, childPid, entry, false);
+      this.inheritHostFdMirrors(parentPid, childPid, entry);
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
       this.#rollbackSpawnWithinKernelEntry(
@@ -23715,9 +23383,6 @@ export class CentralizedKernelWorker {
     const exitSignal = this.finalizeExecHandoffTermination(pid);
     if (exitSignal !== -1) {
       this.cleanupTcpListeners(pid);
-      for (const key of Array.from(this.epollInterests.keys())) {
-        if (key.startsWith(`${pid}:`)) this.epollInterests.delete(key);
-      }
     }
     return exitSignal;
   }
@@ -23731,9 +23396,6 @@ export class CentralizedKernelWorker {
     if (exitSignal !== -1) {
       entry.deferProtocolEffect(() => {
         this.cleanupTcpListeners(pid);
-        for (const key of Array.from(this.epollInterests.keys())) {
-          if (key.startsWith(`${pid}:`)) this.epollInterests.delete(key);
-        }
         return undefined;
       });
     }
