@@ -1325,6 +1325,29 @@ parallel, expect collisions in the *shared foundation* files rather than in the
 leaf files each was assigned — `local_build.rs` and `rootfs.rs`, not the
 subsystems themselves.
 
+### CORRECTION: the `rootfs.rs` collision was textual, not architectural
+
+The coordinator read "each half carries an unbalanced brace" as entanglement at
+the design level. **It was not.** K9 and K8 each inserted a block into the same
+gap, and **each half lost its closing brace to the other** — which is what
+produces the unbalanced-brace signature. Giving each block its brace back and
+keeping both compiles. The same shape recurred twice more in the rebase: two new
+exports in one gap in `wasm_api.rs`, and two names in one sorted list in
+`kernel-scratch.ts`.
+
+So the diagnostic is weaker than it looked: **an unbalanced brace on both sides
+means the conflict cut through a function body, not that the two changes are
+entangled.** Handing it back was still right — the agent held the context and
+resolved it in minutes — but the *reason* given was wrong, and a coordinator
+using that signature to route work would misroute it.
+
+**K8 also declined to move `ensure_foreign_mount_parents` onto K9's registry,
+with a better argument than the one in the brief:** reachability is *which paths
+exist in the kernel's namespace*, not *where a mount's bytes come from*. A mount
+point must be walkable even when no handle was ever published for it, and
+driving it from the handle registry would impose exactly the publication order
+`MountRoots` documents itself as avoiding.
+
 ## K4a complete — and the validation number only means something because of provisioning
 
 **21 of 38 worker-entry pairs unified**, ledger **−80 TS**. The agent
@@ -1471,6 +1494,47 @@ for.
 I6b lands.** It is no longer a 14-point decision, so it does not need to be the
 maintainer's. Flagging rather than deciding only the part that is theirs: the
 `handleSpawn` gap above.
+
+## NDD-K5-1 — I6b is a second increment, and my brief said otherwise
+
+I dispatched K5 I6b as "a rewire, not infrastructure work". **That was wrong,
+and the agent proved it against call sites rather than accepting the framing.**
+
+`crates/dylink-module`'s 21 exports cover the **load path only**. Six of the
+thirteen `DynamicLinker` methods `worker-main.ts` calls have **no host↔module
+contract at all**:
+
+1. **`DT_NEEDED` resolution** — no `HostRequest`, no NEEDED-list export, so a
+   driver would have to parse `dylink.0` in TypeScript.
+2. **`dlsym`→address** — `dl_sym` returns `(instance, export)`;
+   `LinkerScope::function_table_index`/`record_function_slot` (the D5
+   replacement for the TS identity scan) are not exported.
+3. **Multi-transaction sessions** — `dl_open_begin` refuses a second load, while
+   `worker-main` keeps a `Map`.
+4. **`dl_fork_state`** — absent, and `forkArchive.sync(linker.forkState())` runs
+   after every staged step.
+5. **`reconcileForkModules`/`reconcileForkHandleState`** — pthread-peer
+   reconciliation, no Rust counterpart.
+6. **`dlclose` unload details.**
+
+**That is a second increment the size of I6a.** The 6,340 lines stay owed.
+
+**What did land is exercised, not dormant**, which is why this is a scoping
+error rather than a failed item: the KFLA archive writer re-encodes the
+committed TypeScript-written fixture **byte for byte at its own record
+addresses**, and the surviving TypeScript floor was proven by driving a real
+`wasm32posix-cc -shared` `.so` to a live instance — `adder_add(20,15)`→42, data
+segment mutated →43, `dl_sym` hit and miss, `dl_close` released — with a second
+`.so` carrying a strong undefined symbol **failing the load** on ELF semantics.
+Two gap tests pin items (1) and (3) so that closing them makes the tests fail.
+
+**dlopen suite: 115 passed / 2 failed / 1 skipped of 118 — exactly the
+baseline**, both failures naming the tracked `__wpk_fork_frame_reserve` gap.
+
+**Process hazard the agent flagged:** `TaskStop` on a `scripts/dev-shell.sh`
+task killed a *concurrent* `dev-shell.sh` build in the same worktree
+(`Terminated: 15`, exit 143). Agents sharing a worktree must not stop dev-shell
+tasks.
 
 ## Open decisions collected — the ones needing the maintainer, in one place
 
