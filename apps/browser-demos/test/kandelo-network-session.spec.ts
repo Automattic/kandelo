@@ -153,14 +153,14 @@ test("connects two computers by session name", async ({
       );
     }
 
-    // The dock badge names who the user is now, on both computers: the
-    // sharer holds the machine, so both docks say the sharer's nickname
-    // rather than the role words — the viewer reads a name that is not
-    // theirs as "someone else types".
-    await expect(sharer.locator(".kdock-role")).toHaveText("garply", {
+    // A name shows only for someone you watch: the viewer's badge names the
+    // sharer, and the sharer's own badge says what its seat does. The
+    // distinct viewer nickname proves the badge picks the watched person's
+    // name, not any name in the pair.
+    await expect(viewer.locator(".kdock-role")).toHaveText("garply", {
       timeout: 30_000,
     });
-    await expect(viewer.locator(".kdock-role")).toHaveText("garply", {
+    await expect(sharer.locator(".kdock-role")).toHaveText("Sharing", {
       timeout: 30_000,
     });
   } finally {

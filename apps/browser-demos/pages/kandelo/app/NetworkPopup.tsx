@@ -173,8 +173,8 @@ export const NetworkPopup: React.FC<{
   /**
    * This person's nickname, as typed.
    *
-   * The pair exchanges the names, and each dock badge then names who the
-   * user is instead of saying "User" and "Viewer".
+   * The pair exchanges the names, and the watching page's dock badge then
+   * says who it is viewing instead of the word "Viewer".
    */
   nickname: string;
   onNicknameChange: (name: string) => void;
@@ -193,9 +193,9 @@ export const NetworkPopup: React.FC<{
   const connected = session.link !== null;
   const note = takeNote(handover);
 
-  // Offered before connecting and kept afterwards: the name may be given or
-  // changed at any time, and a person who connected nameless would otherwise
-  // stay the role word for the whole session.
+  // Offered before connecting only: the name introduces you, and once the
+  // pair is linked the introduction is made — the connected popup keeps to
+  // the link itself.
   const nicknameSection = (
     <section className="knetwork-section">
       <label className="knetwork-label" htmlFor="knetwork-nickname">
@@ -208,7 +208,7 @@ export const NetworkPopup: React.FC<{
         spellCheck={false}
         maxLength={NICKNAME_MAX_LENGTH}
         value={nickname}
-        placeholder="Alice"
+        placeholder="Ada"
         onChange={(event) => onNicknameChange(event.target.value)}
       />
     </section>
@@ -307,8 +307,6 @@ export const NetworkPopup: React.FC<{
             holding one is not enough — the grant is offered to the page the
             machine is actually running on. */}
         {hasMachine && !replication.replicating && grantSection}
-
-        {nicknameSection}
 
         <section className="knetwork-section">
           <div className="knetwork-link-controls">
