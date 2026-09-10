@@ -133,11 +133,28 @@ all three agree).** Full table in census §8.
 - **P2c control returns 0 on all three.** A genuine *host* externref is not
   `ref.eq`-comparable once internalized.
 
-**Therefore:** the 2026-09-04 E1 probe's two GC blockers are dissolved.
-Provenance does not need recording because it is recoverable by casting.
-`ForkGcProvenanceRegistry` is eliminable. **`resolve_externref` (handle →
-canonical host externref) is the single genuine fork reference floor**, and
-it is irreducible because the value is a host object.
+**Therefore:** **`resolve_externref` (handle → canonical host externref) is
+a genuine fork reference floor**, and it is irreducible because the value is a
+host object.
+
+> **CORRECTED 2026-09-09 by K12** (probes independently re-run — Node
+> v24.15.0, Chromium 149.0.7827.55, WebKit 26.5, all 15 rows identical). This
+> entry previously read "Provenance does not need recording because it is
+> recoverable by casting. `ForkGcProvenanceRegistry` is eliminable." **That
+> inference is wrong and must not be acted on.** The `ref.test` cascade P1
+> validates was already implemented and already sorted most-derived-first
+> (`crates/fork-instrument/src/module_gc_codec.rs:1278-1316`, `:2132-2140`), so
+> P1 confirms existing behavior rather than unlocking a deletion. Provenance
+> records **constructor shape** and **allocation seeds**, not type identity.
+> An immutable, runtime-length GC array with non-uniform contents has **no**
+> reconstruction path in the wasm instruction set other than
+> `array.new_data`/`array.new_elem` from a static segment
+> (`array.new_fixed`'s length is an immediate; `array.copy`/`array.init_data`
+> require a mutable destination), so that provenance is a proven floor. P1's
+> canonicalization result and the P2c control additionally argue *for* the
+> cross-activation and externref provenance paths. Full reasoning, and the one
+> sub-path that may still be reducible (the struct seed), are in
+> `docs/plans/probes/2026-09-09-k0/README.md` § "Correction".
 
 ## 2b. Grounding round 1 — outcomes and maintainer decisions (2026-09-09)
 
