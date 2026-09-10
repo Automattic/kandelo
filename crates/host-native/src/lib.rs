@@ -369,10 +369,66 @@ pub fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Path to the locally-built kernel artifact the smoke tests load
-/// (`local-binaries/kernel.wasm`, produced by `install_local_binary kernel`).
+/// The artifact tiers the TypeScript resolver searches, in its order
+/// (`binaryCandidateTiers()` in `host/src/binary-resolver.ts`).
+///
+/// WHY THIS LIST EXISTS. These paths named `local-binaries/` alone. The
+/// resolver looks at `local-binaries/source-only-v1/` FIRST, and that is the
+/// tier a completed local build writes: `xtask local-build run` publishes into
+/// it and `xtask verify-fresh` checks the kernel in it. So one artifact lived
+/// in two places, and this host read the one the build no longer maintains.
+///
+/// That is not a theoretical drift. Measured after a `./run.sh setup` that
+/// exited 0: `local-binaries/source-only-v1/kernel.wasm` was a regular file
+/// built that afternoon and exported `kernel_thread_parent_tid_target`, while
+/// `local-binaries/kernel.wasm` was a symlink into
+/// `.kandelo-local-generations` from seven hours earlier and did not.
+/// `cargo test -p host-native` failed 39 of 53 with `failed to find function
+/// export kernel_thread_parent_tid_target` against a tree where the build had
+/// just succeeded. `local-binaries/` is also internally inconsistent — a
+/// symlinked `kernel.wasm` beside regular-file side modules, stale in either
+/// direction depending on the artifact — so "read the other one" is not a fix
+/// either.
+///
+/// Searching the resolver's tiers in the resolver's order means the Rust host
+/// and the TypeScript host load the same bytes.
+const ARTIFACT_TIERS: &[&str] = &[
+    "local-binaries/source-only-v1",
+    "local-binaries",
+    "binaries",
+    "host/wasm",
+];
+
+/// First existing candidate for `file_name`, searched over [`ARTIFACT_TIERS`].
+///
+/// Falls back to the highest-priority tier's path when nothing exists, so a
+/// caller that reports "not found" names the location a completed build is
+/// expected to write rather than a legacy tier that merely comes next.
+fn artifact_path(file_name: &str) -> PathBuf {
+    let root = repo_root();
+    for tier in ARTIFACT_TIERS {
+        let candidate = root.join(tier).join(file_name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    root.join(ARTIFACT_TIERS[0]).join(file_name)
+}
+
+/// Every location [`artifact_path`] considers, so a caller that cannot find an
+/// artifact can report where it actually looked instead of naming one path.
+pub fn artifact_search_paths(file_name: &str) -> Vec<PathBuf> {
+    let root = repo_root();
+    ARTIFACT_TIERS
+        .iter()
+        .map(|tier| root.join(tier).join(file_name))
+        .collect()
+}
+
+/// Path to the locally-built kernel artifact the smoke tests load, resolved
+/// over the same tiers, in the same order, as the TypeScript resolver.
 pub fn kernel_wasm_path() -> PathBuf {
-    repo_root().join("local-binaries").join("kernel.wasm")
+    artifact_path("kernel.wasm")
 }
 
 /// Path to the locally-built fork-module artifact (N1-I4): the co-resident
@@ -382,7 +438,7 @@ pub fn kernel_wasm_path() -> PathBuf {
 /// `fork_module32.wasm` backs the wasm32 guest path this host exercises; a
 /// `fork_module64.wasm` companion exists for a future wasm64 guest.
 pub fn fork_module_path() -> PathBuf {
-    repo_root().join("local-binaries").join("fork_module32.wasm")
+    artifact_path("fork_module32.wasm")
 }
 
 /// The co-resident WASI Preview 1 side module (`crates/wasi-module`).
@@ -395,7 +451,7 @@ pub fn fork_module_path() -> PathBuf {
 ///
 /// Build it with `bash crates/wasi-module/build-wasm.sh`.
 pub fn wasi_module_path() -> PathBuf {
-    repo_root().join("local-binaries").join("wasi_module32.wasm")
+    artifact_path("wasi_module32.wasm")
 }
 
 #[cfg(test)]
@@ -404,6 +460,52 @@ mod tests {
     use std::sync::atomic::Ordering as AtomicOrdering;
     use std::time::Instant;
     use wasm_posix_shared::Syscall;
+
+    /// This host and the TypeScript host must load the SAME artifact bytes.
+    /// The tier list here is a copy of `binaryCandidateTiers()` in
+    /// `host/src/binary-resolver.ts`, and a copy that drifts is how one
+    /// artifact comes to exist in two places with one of them stale — which is
+    /// exactly what happened: these paths named `local-binaries/` only, while a
+    /// completed local build writes `local-binaries/source-only-v1/`, and
+    /// `cargo test -p host-native` then ran against a kernel seven hours older
+    /// than the one the build had just produced.
+    ///
+    /// If you change this order, change `binaryCandidateTiers()` in the same
+    /// commit, and say why in both places.
+    #[test]
+    fn artifact_tiers_match_the_typescript_resolver_order() {
+        assert_eq!(
+            ARTIFACT_TIERS,
+            &[
+                "local-binaries/source-only-v1",
+                "local-binaries",
+                "binaries",
+                "host/wasm",
+            ],
+        );
+        let searched = artifact_search_paths("kernel.wasm");
+        assert_eq!(searched.len(), ARTIFACT_TIERS.len());
+        for (candidate, tier) in searched.iter().zip(ARTIFACT_TIERS) {
+            assert!(
+                candidate.ends_with("kernel.wasm"),
+                "{} should name the artifact",
+                candidate.display(),
+            );
+            assert!(
+                candidate.to_string_lossy().contains(tier),
+                "{} should sit under {tier}",
+                candidate.display(),
+            );
+        }
+        // The fallback names the tier a completed build writes, so a "not
+        // found" report points at the right place rather than a legacy tier.
+        assert!(
+            !kernel_wasm_path().exists()
+                || kernel_wasm_path() == searched[0]
+                || searched.iter().any(|candidate| *candidate == kernel_wasm_path()),
+            "kernel_wasm_path() must be one of the searched tiers",
+        );
+    }
 
     /// N1 residual #4a (non-main-thread `fork()`), non-instrumented sibling
     /// of `smoke_fork_from_thread`: proves the CORE claim — a pthread's
@@ -471,13 +573,23 @@ mod tests {
         if path.exists() {
             Some(path)
         } else {
+            // Name every tier that was searched, not just the one this would
+            // have used. A reader who sees a single path assumes that path is
+            // where the artifact belongs and copies one there by hand; the
+            // kernel is meant to come from the first tier below, which is what
+            // a completed `./run.sh setup` writes.
+            let searched = artifact_search_paths("kernel.wasm")
+                .iter()
+                .map(|candidate| format!("    {}", candidate.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
             eprintln!(
-                "SKIP host-native smoke test: {} not found.\n  Build it with:\n    \
+                "SKIP host-native smoke test: kernel.wasm not found.\n  \
+                 Looked at, in resolver order:\n{searched}\n  Build it with:\n    \
                  scripts/dev-shell.sh cargo build --release -p kandelo -Z build-std=core,alloc\n    \
                  source scripts/install-local-binary.sh; \
                  install_local_binary kernel \
                  target/wasm32-unknown-unknown/release/kandelo_kernel.wasm kandelo-kernel.wasm",
-                path.display()
             );
             None
         }
