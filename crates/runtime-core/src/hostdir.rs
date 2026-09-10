@@ -108,7 +108,13 @@ impl DirRef {
 /// filesystem owns, or the host declared a mount but exposed no directory
 /// capability for it. Neither is a reason to fall back to name resolution.
 fn locate(path: &[u8]) -> Result<(i64, Vec<&[u8]>), Errno> {
-    let (root, prefix_len) = crate::rootfs::foreign_mount_root(path).ok_or(Errno::ENOSYS)?;
+    // A foreign mount beneath an overlay-owned `/` wins on longest prefix.
+    // Failing that, a host that serves `/` itself anchors every path at its
+    // root handle — the whole path is then components below that root.
+    let (root, prefix_len) = match crate::rootfs::foreign_mount_root(path) {
+        Some(found) => found,
+        None => (crate::rootfs::host_root_handle().ok_or(Errno::ENOSYS)?, 0),
+    };
     let components = path[prefix_len..]
         .split(|&b| b == b'/')
         .filter(|c| !c.is_empty())

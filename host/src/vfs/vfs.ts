@@ -13,7 +13,7 @@ import {
   type MountConfig,
   type TimeProvider,
 } from "./types";
-import { OPEN_FLAGS } from "../generated/abi";
+import { AT_FLAGS, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 
 interface MountEntry {
   prefix: string;
@@ -27,6 +27,40 @@ interface HandleInfo {
   backendId: number;
   localHandle: number;
   statfs?: StatfsResult;
+}
+
+/**
+ * An open directory, as the handle-only kernel contract uses it.
+ *
+ * A directory handle is an *anchor*: the backend that owns it plus that
+ * directory's mount-relative path. Every `*at` operation the kernel issues
+ * names one component relative to such an anchor, so this host never routes a
+ * mount prefix, resolves a symlink, or interprets a `..` — the kernel did all
+ * of that before the call.
+ *
+ * `iterator` is the backend's own directory cursor, opened on first `readdir`.
+ * A mount root is an anchor from boot and usually never iterated, so opening a
+ * cursor for it eagerly would cost one per mount for nothing.
+ */
+interface DirHandleInfo {
+  backend: FileSystemBackend;
+  backendId: number;
+  /** Mount-relative canonical path of this directory. */
+  path: string;
+  nosuid: boolean;
+  statfs: StatfsResult;
+  iterator: number | null;
+}
+
+/**
+ * Append one path component to a mount-relative directory path.
+ *
+ * `name` is always exactly one component — the kernel guarantees it — and `"."`
+ * names the directory itself, which is how the kernel addresses a mount root.
+ */
+function joinComponent(dirPath: string, name: string): string {
+  if (name === "." || name === "") return dirPath;
+  return dirPath === "/" ? "/" + name : dirPath + "/" + name;
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
@@ -61,9 +95,14 @@ export class VirtualPlatformIO implements PlatformIO {
   private mounts: MountEntry[];
   private time: TimeProvider;
   private fileHandles = new Map<number, HandleInfo>();
-  private dirHandles = new Map<number, HandleInfo>();
-  private nextFileHandle = 100;
-  private nextDirHandle = 1;
+  private dirHandles = new Map<number, DirHandleInfo>();
+  /**
+   * One counter for both tables. The kernel closes a directory with the same
+   * `host_close` it uses for a file, so the two id spaces must be disjoint;
+   * separate counters (files from 100, directories from 1) collided as soon as
+   * a machine opened a hundred directories.
+   */
+  private nextHandle = 100;
   private readonly qualifiedDeviceIds = new Map<
     FileSystemBackend,
     Map<bigint, bigint>
@@ -150,7 +189,7 @@ export class VirtualPlatformIO implements PlatformIO {
     return info;
   }
 
-  private getDirHandle(handle: number): HandleInfo {
+  private getDirHandle(handle: number): DirHandleInfo {
     const info = this.dirHandles.get(handle);
     if (!info) throw new Error(`EBADF: invalid dir handle ${handle}`);
     return info;
@@ -238,7 +277,7 @@ export class VirtualPlatformIO implements PlatformIO {
         : backendStatfs.flags & ~ST_NOSUID,
     };
     const localHandle = backend.open(relativePath, flags, mode);
-    const globalHandle = this.nextFileHandle++;
+    const globalHandle = this.nextHandle++;
     this.fileHandles.set(globalHandle, {
       backend,
       backendId,
@@ -249,6 +288,17 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   close(handle: number): number {
+    // A directory closes with the same call as a file: the kernel has one
+    // handle concept, not two, so this host must not require it to remember
+    // which release a given handle needs.
+    const dir = this.dirHandles.get(handle);
+    if (dir) {
+      if (dir.iterator !== null) {
+        dir.backend.closedir(dir.iterator);
+      }
+      this.dirHandles.delete(handle);
+      return 0;
+    }
     const info = this.getFileHandle(handle);
     const result = info.backend.close(info.localHandle);
     this.fileHandles.delete(handle);
@@ -415,25 +465,215 @@ export class VirtualPlatformIO implements PlatformIO {
 
   // --- Directory operations ---
 
-  opendir(path: string): number {
-    const { backend, backendId, relativePath } = this.resolve(path);
-    const localHandle = backend.opendir(relativePath);
-    const globalHandle = this.nextDirHandle++;
-    this.dirHandles.set(globalHandle, { backend, backendId, localHandle });
+  /**
+   * Directory handles naming each mount's root, for the kernel to anchor its
+   * per-component walks on.
+   *
+   * This runs once at boot. It is the only place longest-prefix mount routing
+   * is still needed: once the kernel holds a root handle per mount, every
+   * subsequent operation arrives already routed, because the handle names the
+   * backend.
+   */
+  foreignMountRoots(): { prefix: string; handle: number }[] {
+    const roots: { prefix: string; handle: number }[] = [];
+    for (const m of this.mounts) {
+      if (m.prefix === "/") continue;
+      const handle = this.nextHandle++;
+      this.dirHandles.set(handle, {
+        backend: m.backend,
+        backendId: m.backendId,
+        path: "/",
+        nosuid: m.nosuid,
+        statfs: this.mountStatfs(m.backend, "/", m.nosuid),
+        iterator: null,
+      });
+      roots.push({ prefix: m.prefix, handle });
+    }
+    return roots;
+  }
+
+  private mountStatfs(
+    backend: FileSystemBackend,
+    path: string,
+    nosuid: boolean,
+  ): StatfsResult {
+    const backendStatfs = backend.statfs(path);
+    return {
+      ...backendStatfs,
+      flags: nosuid
+        ? backendStatfs.flags | ST_NOSUID
+        : backendStatfs.flags & ~ST_NOSUID,
+    };
+  }
+
+  /**
+   * Open one component relative to a directory handle this host issued.
+   *
+   * `O_DIRECTORY` yields another anchor; anything else yields a file handle.
+   * Both come from the same id space and are released by `close`.
+   */
+  openat(dirHandle: number, name: string, flags: number, mode: number): number {
+    const dir = this.getDirHandle(dirHandle);
+    const path = joinComponent(dir.path, name);
+    const globalHandle = this.nextHandle++;
+    if ((flags & OPEN_FLAGS.O_DIRECTORY) !== 0) {
+      // Confirm it is a directory before handing back an anchor, so a
+      // non-directory component fails here rather than at first use.
+      const st = dir.backend.stat(path);
+      if ((st.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFDIR) {
+        throw new Error(`ENOTDIR: not a directory: ${path}`);
+      }
+      this.dirHandles.set(globalHandle, {
+        backend: dir.backend,
+        backendId: dir.backendId,
+        path,
+        nosuid: dir.nosuid,
+        statfs: this.mountStatfs(dir.backend, path, dir.nosuid),
+        iterator: null,
+      });
+      return globalHandle;
+    }
+    // O_CREAT may name a missing final component; its parent supplies the
+    // filesystem metadata, and the open below remains the sole authority for
+    // validating and creating the entry.
+    const statfsPath = (flags & OPEN_FLAGS.O_CREAT) !== 0 ? dir.path : path;
+    const localHandle = dir.backend.open(path, flags, mode);
+    this.fileHandles.set(globalHandle, {
+      backend: dir.backend,
+      backendId: dir.backendId,
+      localHandle,
+      statfs: this.mountStatfs(dir.backend, statfsPath, dir.nosuid),
+    });
     return globalHandle;
   }
 
+  fstatat(dirHandle: number, name: string, flags: number): StatResult {
+    const dir = this.getDirHandle(dirHandle);
+    const path = joinComponent(dir.path, name);
+    const stat =
+      (flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0
+        ? dir.backend.lstat(path)
+        : dir.backend.stat(path);
+    return this.qualifyStat(dir.backend, stat);
+  }
+
+  mkdirat(dirHandle: number, name: string, mode: number): void {
+    const dir = this.getDirHandle(dirHandle);
+    dir.backend.mkdir(joinComponent(dir.path, name), mode);
+  }
+
+  /** `AT_REMOVEDIR` selects `rmdir(2)`; POSIX gives both the same operation. */
+  unlinkat(dirHandle: number, name: string, flags: number): void {
+    const dir = this.getDirHandle(dirHandle);
+    const path = joinComponent(dir.path, name);
+    if ((flags & AT_FLAGS.AT_REMOVEDIR) !== 0) {
+      dir.backend.rmdir(path);
+    } else {
+      dir.backend.unlink(path);
+    }
+  }
+
+  renameat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void {
+    const oldDir = this.getDirHandle(oldDirHandle);
+    const newDir = this.getDirHandle(newDirHandle);
+    if (oldDir.backend !== newDir.backend) {
+      throw new Error("EXDEV: cross-device link");
+    }
+    oldDir.backend.rename(
+      joinComponent(oldDir.path, oldName),
+      joinComponent(newDir.path, newName),
+    );
+  }
+
+  linkat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void {
+    const oldDir = this.getDirHandle(oldDirHandle);
+    const newDir = this.getDirHandle(newDirHandle);
+    if (oldDir.backend !== newDir.backend) {
+      throw new Error("EXDEV: cross-device link");
+    }
+    oldDir.backend.link(
+      joinComponent(oldDir.path, oldName),
+      joinComponent(newDir.path, newName),
+    );
+  }
+
+  /** `target` is opaque data stored verbatim; only `name` names an entry. */
+  symlinkat(target: string, dirHandle: number, name: string): void {
+    const dir = this.getDirHandle(dirHandle);
+    dir.backend.symlink(target, joinComponent(dir.path, name));
+  }
+
+  readlinkat(dirHandle: number, name: string): string {
+    const dir = this.getDirHandle(dirHandle);
+    return dir.backend.readlink(joinComponent(dir.path, name));
+  }
+
+  fchmodat(dirHandle: number, name: string, mode: number): void {
+    const dir = this.getDirHandle(dirHandle);
+    dir.backend.chmod(joinComponent(dir.path, name), mode);
+  }
+
+  /** `AT_SYMLINK_NOFOLLOW` selects `lchown(2)`. */
+  fchownat(
+    dirHandle: number,
+    name: string,
+    uid: number,
+    gid: number,
+    flags: number,
+  ): void {
+    const dir = this.getDirHandle(dirHandle);
+    const path = joinComponent(dir.path, name);
+    if ((flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0) {
+      dir.backend.lchown(path, uid, gid);
+    } else {
+      dir.backend.chown(path, uid, gid);
+    }
+  }
+
+  utimensatAt(
+    dirHandle: number,
+    name: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
+    const dir = this.getDirHandle(dirHandle);
+    dir.backend.utimensat(
+      joinComponent(dir.path, name),
+      atimeSec,
+      atimeNsec,
+      mtimeSec,
+      mtimeNsec,
+    );
+  }
+
+  /**
+   * Read the next entry of a directory handle.
+   *
+   * The backend cursor is opened on first use. A thrown error must leave the
+   * next entry unconsumed: the kernel may return a short successful
+   * `getdents64` after copying earlier records and retry this call on the next
+   * syscall, so a partially consumed iterator would silently drop an entry.
+   */
   readdir(
     handle: number,
   ): { name: string; type: number; ino: number } | null {
     const info = this.getDirHandle(handle);
-    return info.backend.readdir(info.localHandle);
-  }
-
-  closedir(handle: number): void {
-    const info = this.getDirHandle(handle);
-    info.backend.closedir(info.localHandle);
-    this.dirHandles.delete(handle);
+    if (info.iterator === null) {
+      info.iterator = info.backend.opendir(info.path);
+    }
+    return info.backend.readdir(info.iterator);
   }
 
   // --- Time operations ---

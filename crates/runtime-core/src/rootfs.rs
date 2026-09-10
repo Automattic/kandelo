@@ -34,7 +34,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use wasm_posix_shared::Errno;
@@ -474,22 +474,7 @@ static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 /// check independently disqualifies the path).
 struct ForeignMounts {
     locked: AtomicBool,
-    prefixes: UnsafeCell<Vec<ForeignMount>>,
-}
-
-/// One registered foreign mount: its canonical prefix, plus the host directory
-/// handle naming that mount's root, if the host published one.
-///
-/// `root` is the anchor for the handle-only host contract. Every host file
-/// operation under this prefix starts from `root` and steps one path component
-/// at a time through `host_openat`, so the host never receives a guest path, a
-/// mount prefix, a `..`, or a symlink chain. A prefix registered without a root
-/// handle is a mount the host declared but exposed no directory capability for;
-/// operations under it fail with `ENOSYS` rather than silently falling back to
-/// name resolution.
-pub(crate) struct ForeignMount {
-    pub(crate) prefix: Vec<u8>,
-    pub(crate) root: Option<i64>,
+    prefixes: UnsafeCell<Vec<Vec<u8>>>,
 }
 
 impl ForeignMounts {
@@ -500,7 +485,7 @@ impl ForeignMounts {
         }
     }
 
-    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<ForeignMount>) -> R) -> R {
+    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<Vec<u8>>) -> R) -> R {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -528,7 +513,7 @@ static FOREIGN_MOUNTS: ForeignMounts = ForeignMounts::new();
 /// overlay's own root, never foreign); trailing slashes are trimmed and
 /// duplicates dropped. Returns the number of prefixes registered.
 pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
-    let mut prefixes: Vec<ForeignMount> = Vec::new();
+    let mut prefixes: Vec<Vec<u8>> = Vec::new();
     for part in buf.split(|&b| b == 0) {
         if part.first() != Some(&b'/') {
             continue;
@@ -540,11 +525,8 @@ pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
         if p == b"/" {
             continue;
         }
-        if !prefixes.iter().any(|e| e.prefix == p) {
-            prefixes.push(ForeignMount {
-                prefix: p,
-                root: None,
-            });
+        if !prefixes.iter().any(|e| e == &p) {
+            prefixes.push(p);
         }
     }
     let count = prefixes.len();
@@ -552,78 +534,141 @@ pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
     count
 }
 
-/// Attach host directory handles to registered foreign mounts.
+/// Registry of host directory anchors: the canonical guest path of a host
+/// directory, and the handle the host issued for it.
 ///
-/// `buf` is a sequence of self-describing records, each an 8-byte
-/// little-endian `i64` root handle followed by the mount's canonical prefix
-/// bytes and a NUL terminator. Records are matched to registered prefixes by
-/// name, not by position, because the host's mount table and the prefix list it
-/// published are not guaranteed to share an ordering — `VirtualPlatformIO`
-/// sorts its mounts by prefix length, so a positional scheme would bind two
-/// orderings that are provably different.
-///
-/// A record naming a prefix that is not registered is ignored: the kernel's
-/// notion of which paths are foreign comes from `set_foreign_prefixes` alone,
-/// and a root handle can only qualify a mount that already exists. Returns the
-/// number of records that attached to a registered mount.
-///
-/// Replaces any previously attached handles: every registered mount is first
-/// cleared, so a host republishing a shorter list does not leave a stale handle
-/// behind.
-pub fn set_foreign_mount_roots(buf: &[u8]) -> usize {
-    FOREIGN_MOUNTS.with(|slot| {
-        for mount in slot.iter_mut() {
-            mount.root = None;
-        }
-        let mut attached = 0usize;
-        let mut rest = buf;
-        while rest.len() > 8 {
-            let mut handle_bytes = [0u8; 8];
-            handle_bytes.copy_from_slice(&rest[..8]);
-            let handle = i64::from_le_bytes(handle_bytes);
-            let body = &rest[8..];
-            let Some(nul) = body.iter().position(|&b| b == 0) else {
-                // An unterminated final record is a malformed payload, not a
-                // shorter list. Stop rather than guess at its extent.
-                break;
-            };
-            let mut prefix = body[..nul].to_vec();
-            while prefix.len() > 1 && prefix.last() == Some(&b'/') {
-                prefix.pop();
-            }
-            if let Some(mount) = slot.iter_mut().find(|m| m.prefix == prefix) {
-                mount.root = Some(handle);
-                attached += 1;
-            }
-            rest = &body[nul + 1..];
-        }
-        attached
-    })
+/// Deliberately independent of [`ForeignMounts`]. The two answer different
+/// questions — *which paths are host-owned* versus *which host directory
+/// anchors a path* — and coupling them would impose a publication order on the
+/// host for no gain.
+struct MountRoots {
+    locked: AtomicBool,
+    roots: UnsafeCell<Vec<(Vec<u8>, i64)>>,
 }
 
-/// The host directory handle for the foreign mount owning `path`, together with
-/// the byte length of that mount's prefix, so a caller can split `path` into
-/// (mount, components-below-the-mount) without re-deriving the match.
+impl MountRoots {
+    const fn new() -> Self {
+        MountRoots {
+            locked: AtomicBool::new(false),
+            roots: UnsafeCell::new(Vec::new()),
+        }
+    }
+
+    fn with<R>(&'static self, f: impl FnOnce(&mut Vec<(Vec<u8>, i64)>) -> R) -> R {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let _unlock = UnlockOnDrop(&self.locked);
+        // SAFETY: identical invariant to RootfsGlobal / ForeignMounts — the
+        // spinlock is the sole gate and no reference escapes the closure.
+        let slot = unsafe { &mut *self.roots.get() };
+        f(slot)
+    }
+}
+
+// SAFETY: identical invariant to RootfsGlobal / ForeignMounts.
+unsafe impl Sync for MountRoots {}
+
+static MOUNT_ROOTS: MountRoots = MountRoots::new();
+
+/// Sentinel for "the host published no root handle for `/`". A real handle is a
+/// host-issued positive value, and the kernel's own synthetic handles are
+/// negative and banded, so `i64::MIN` cannot collide with either.
+const NO_HOST_ROOT: i64 = i64::MIN;
+
+/// Root handle for a host that serves `/` itself. See `set_foreign_mount_roots`.
+static HOST_ROOT_HANDLE: AtomicI64 = AtomicI64::new(NO_HOST_ROOT);
+
+/// Register the host directory handles that anchor host filesystem access.
 ///
-/// `Some((root, prefix_len))` means the path lies under a foreign mount the host
-/// exposed a directory capability for. `None` means either the path is not
-/// foreign at all, or it is foreign but the host published no root handle —
-/// callers distinguish those with `path_under_foreign`.
+/// This is the anchor of the handle-only host contract. Every host file
+/// operation starts from one of these handles and steps one path component at a
+/// time through `host_openat`, so the host never receives a guest path, a mount
+/// prefix, a `..`, or a symlink chain.
+///
+/// `buf` is a sequence of self-describing records, each an 8-byte little-endian
+/// `i64` root handle followed by the directory's canonical guest path and a NUL
+/// terminator. Records carry their prefix rather than relying on position,
+/// because the host's mount table and the prefix list it published through
+/// `set_foreign_prefixes` are not guaranteed to share an ordering — a host that
+/// sorts its mounts by prefix length does not — so a positional payload would
+/// bind two orderings that can differ.
+///
+/// A record for `/` names a host that serves the root itself rather than
+/// sibling mounts beneath an overlay-owned `/`. It anchors every host path that
+/// no longer-prefixed record claims.
+///
+/// Replaces any previously registered set. Returns the number of anchors
+/// registered.
+pub fn set_foreign_mount_roots(buf: &[u8]) -> usize {
+    HOST_ROOT_HANDLE.store(NO_HOST_ROOT, Ordering::SeqCst);
+    let mut roots: Vec<(Vec<u8>, i64)> = Vec::new();
+    let mut host_root = false;
+    let mut rest = buf;
+    while rest.len() > 8 {
+        let mut handle_bytes = [0u8; 8];
+        handle_bytes.copy_from_slice(&rest[..8]);
+        let handle = i64::from_le_bytes(handle_bytes);
+        let body = &rest[8..];
+        let Some(nul) = body.iter().position(|&b| b == 0) else {
+            // An unterminated final record is a malformed payload, not a
+            // shorter list. Stop rather than guess at its extent.
+            break;
+        };
+        let mut prefix = body[..nul].to_vec();
+        while prefix.len() > 1 && prefix.last() == Some(&b'/') {
+            prefix.pop();
+        }
+        rest = &body[nul + 1..];
+        if prefix.first() != Some(&b'/') {
+            continue;
+        }
+        if prefix == b"/" {
+            HOST_ROOT_HANDLE.store(handle, Ordering::SeqCst);
+            host_root = true;
+        } else if !roots.iter().any(|(p, _)| p == &prefix) {
+            roots.push((prefix, handle));
+        }
+    }
+    let count = roots.len() + usize::from(host_root);
+    MOUNT_ROOTS.with(|slot| *slot = roots);
+    count
+}
+
+/// The directory handle anchoring host paths that no mount root claims, for a
+/// host that serves `/` directly rather than delegating it to the in-kernel
+/// overlay.
+pub(crate) fn host_root_handle() -> Option<i64> {
+    match HOST_ROOT_HANDLE.load(Ordering::SeqCst) {
+        NO_HOST_ROOT => None,
+        handle => Some(handle),
+    }
+}
+
+/// The host directory handle anchoring `path`, together with the byte length of
+/// that anchor's prefix, so a caller can split `path` into (anchor,
+/// components-below-the-anchor) without re-deriving the match.
+///
+/// Longest prefix wins, so a mount nested inside another resolves to the inner
+/// mount's root. `None` means no published anchor claims this path; the caller
+/// then falls back to [`host_root_handle`], and failing that answers `ENOSYS` —
+/// the truthful boundary rather than a fallback to name resolution.
 pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
-    FOREIGN_MOUNTS.with(|prefixes| {
-        // Longest prefix wins, so a mount nested inside another resolves to the
-        // inner mount's root rather than the outer one's.
+    MOUNT_ROOTS.with(|roots| {
         let mut best: Option<(i64, usize)> = None;
-        for m in prefixes.iter() {
-            let p = m.prefix.as_slice();
+        for (p, handle) in roots.iter() {
+            let p = p.as_slice();
             let matches = path == p
                 || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/');
             if !matches {
                 continue;
             }
-            let Some(root) = m.root else { continue };
             if best.is_none_or(|(_, len)| p.len() > len) {
-                best = Some((root, p.len()));
+                best = Some((*handle, p.len()));
             }
         }
         best
@@ -636,8 +681,8 @@ pub(crate) fn foreign_mount_root(path: &[u8]) -> Option<(i64, usize)> {
 /// `/run/kandelo-runner` or a sibling `/run/other`.
 fn path_under_foreign(path: &[u8]) -> bool {
     FOREIGN_MOUNTS.with(|prefixes| {
-        prefixes.iter().any(|m| {
-            let p = m.prefix.as_slice();
+        prefixes.iter().any(|p| {
+            let p = p.as_slice();
             path == p
                 || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/')
         })
