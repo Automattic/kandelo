@@ -976,6 +976,106 @@ not — so the probe is the thing that decides whether K4b is affordable at all.
 - Still needing detail: whether the three incomplete kernel seams get their own
   K-number, and the browser conformance runners that are wired into nothing.
 
+### K4 drift adjudication — the four bug-shaped drifts (2026-09-09, VERIFIED)
+
+The four drifts were adjudicated on POSIX and on measured host behaviour, not
+normalized toward either host. **Three of the four collapse to a single proven
+host boundary, and the grounding mis-attributed all three to the wrong host.**
+
+#### The boundary that explains D1, D10 and D16: `terminate()` is a join on Node and is not in the browser
+
+**VERIFIED by direct experiment** (scratchpad, Node 24, not committed): a
+worker thread parked in `Atomics.wait` on a `SharedArrayBuffer` is *provably
+stopped* once `await worker.terminate()` resolves.
+
+```
+terminate() resolved code= 1 ms= 1 exitEventAlreadySeen= true
+post-terminate resume marker (999 => thread ran AFTER terminate resolved): 0
+CONTROL resume marker (999 => notify does wake a parked thread): 999
+```
+
+The control is the load-bearing half: the same `Atomics.notify` that wakes a
+live parked thread (999) fails to wake the terminated one (0). So on Node,
+`await worker.terminate()` **is an ownership fence**.
+
+In the browser it is not, and the adapter says so itself:
+`host/src/worker-adapter-browser.ts:82-99` calls `this.worker.terminate()` —
+which returns `void`, with no completion signal — and then *fabricates* the
+`exit` event (`for (const h of this.handlers.get("exit") ?? []) h(0)`). There
+is no observable proof of stop.
+
+This one asymmetry generates three of the four "drifts":
+
+| drift | verdict |
+|---|---|
+| **D1** — node frees a thread's address-space slot with no quiescence proof (`node…:3393-3404`), browser guards on `threadEntry.quiescent` (`browser…:3641-3654`) | **NOT a Node bug.** Node reclaims *after* `await terminateTrackedWorker(...)`, which the experiment proves is a join. Node's comment ("The Worker is stopped at this point") is accurate. The browser's guard is required because its terminate is not a fence. |
+| **D10** — node exactly-releases an exec-replacement lease (`node…:2984-2990`), browser force-retires when `replacementStartAttempted` (`browser…:3204-3208`) | **NOT a Node bug.** Both rollbacks `await terminateTrackedWorker(replacementWorker)` first (`node…:2972`, `browser…:3191`), so on Node the replacement is provably stopped and exact release is correct. **Node's comment is wrong** — "A non-transferred `DeferredWorker` was never started" describes `preparedTransferred`, which is set at `:2852`, *after* `.start()`; a start can absolutely have happened. The comment must be corrected to name the real reason (termination is a join), because as written it will license an unsafe copy into the browser. |
+| **D16** — `memoryRetirementSafe`: 7 browser sites, 0 node sites | **Not a missing Node model.** The browser's persistent `ProcessInfo.memoryRetirementSafe` records "this process has a thread we could not prove stopped" (`browser…:3653`). Node cannot enter that state, so it needs no flag and computes `oldMemoryRetirementSafe` transiently from the quiescence results (`node…:2730`). |
+
+**Generic-first consequence for the unification.** Do not pick a host's
+behaviour. Express the boundary **once**, as a declared host capability —
+*does an awaited termination prove the worker stopped?* — and derive all three
+behaviours from it. The browser's retirement-safety model then becomes the
+**universal** model, and Node is simply the host where the predicate is always
+true. That is strictly better than either copy: it removes the divergence
+*and* it stops the safety model from being browser-specific trivia.
+
+#### D2 — duplicate exit: equivalent today, but the browser's guarantee is structural
+
+**The grounding's framing is incorrect.** Neither host reports an exit twice
+and neither drops one. Both post the exit *eagerly*, immediately after
+`processTeardowns.set(...)` and outside the teardown body
+(`browser…:3916-3921`, `node…:3637-3643`).
+
+- Node dedupes explicitly, via a `reportedExits` set (`node…:325`, `:554-558`).
+  Its duplicate-entry call at `:3560` is therefore a **no-op**, not a second
+  report.
+- The browser dedupes **structurally**: its early `return` is lossless only
+  because `processTeardowns.set` and `post({type:"exit"})` are adjacent with
+  no `await` between them.
+
+**Verdict: adopt Node's explicit `reportedExits` dedup as the unified
+mechanism.** Observable behaviour is unchanged on both hosts; what changes is
+that the once-only exit guarantee becomes *stated* instead of *emergent*.
+Today, inserting a single `await` between those two browser statements
+silently loses a process exit — and nothing tests it.
+
+Node's other `reportProcessExit` site (`:702`, in the node-only
+`finalizeProcessWorker`) is a genuine second entry point for a trailing
+worker-main `exit`/`error` on a worker already tearing down; the browser
+funnels the same events through `finishProcessExit`. Both are lossless, for
+the two different reasons above.
+
+#### D17 — the one real defect, and it is the browser's
+
+**Real, but narrower than stated.** The grounding says the browser never
+clears `vmInterruptTimers` on destroy. It does — `clearAll()` at
+`browser…:4315`, matching `node…:3825`. The genuine divergence is **ordering**:
+node's `retireCurrentGenerations` disarms each process's timer *before*
+terminating its workers and releasing its lease (`node…:3763`); the browser's
+loop (`browser…:4267-4291`) does not, leaving the timer armed across
+`terminateTrackedWorker` → `releaseAfterForcedTermination()`.
+
+That window is live. `VmInterruptTimerManager.fire()`
+(`host/src/vm-interrupt-timer.ts:199-219`) guards only on generation identity,
+which still matches until `detachExactProcessGeneration` unregisters — so a
+timer that fires inside the window performs
+`Atomics.store(flags, entry.timedOutPtr, 1)` into a backing the host has
+**already handed back**.
+
+**Verdict: adopt Node's ordering generically — disarm before releasing the
+backing.** It costs nothing and it is correct on every host, including hosts
+where termination is a join.
+
+#### What this means for K4a
+
+The four drifts do **not** need four independent bug fixes ahead of the
+unification (NDD-3's provisional shape). Three are one boundary that the
+unification must *express*, one is a comment that must be corrected before it
+is copied, one is an explicit-versus-emergent guarantee, and exactly one
+(D17) is a real ordering fix. That is a materially cheaper and more honest
+entry gate than the grounding assumed.
+
 ## 2m. K8 grounding — outcomes and decisions (2026-09-09)
 
 `docs/plans/2026-09-09-k8-vfs-authority-grounding.md` (1,287 lines).
