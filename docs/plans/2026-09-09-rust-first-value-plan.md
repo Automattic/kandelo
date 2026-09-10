@@ -3255,3 +3255,150 @@ largest single-step behavior moves in the campaign and must not be big-bang.
 | `2026-09-09-rust-first-fork-inversion-completion.md` | Fork subsystem; K12 continues it |
 | `docs/future-improvements.md` | Two mmap entries (K7); fork `fm_*` and externref-scan items (K12) |
 | `docs/agent-guidance/{abi,performance,validation}.md` | Binding for K2/K13, K7, and every item respectively |
+
+## 2y. `host/src/constants.ts` — the census correction was right, its conclusion was not (2026-09-10)
+
+Worktree `.claude/worktrees/agent-adc8321d66dfd6187`, base `67912d81e`.
+No `ABI_VERSION` change; no new `env.host_*`; host imports still **75**.
+
+The mid-campaign census reclassified `constants.ts` from KEEP to MIGRATE, and
+that reclassification is correct: the file touches no host object, its input is
+an `ArrayBuffer`, and it fails §2's first test outright.
+
+**But the brief's model of *where* it should go was wrong, and so was mine.**
+The item was framed as a pre-kernel / post-kernel split, on the assumption that
+`extractAbiVersion` and `detectPtrWidth` on `kernel.wasm` are a bootstrap
+paradox and everything else can ask a live kernel. Measured against call sites,
+that line does not decide this file.
+
+### The split, with the call sites that establish it
+
+**Post-kernel — a kernel is provably up.** Each of these sits beside a kernel
+call:
+
+- `exec-target.ts:461` (`launchPreparedExecTarget`) calls
+  `options.kernel.execTargetShebang(...)` on the same token ~15 lines above, and
+  the kernel is already holding the exact bytes in
+  `PreparedExecTarget.observed_bytes`.
+- `node-kernel-worker-entry.ts:1017` passes `kernelWorker.getKernelAbiVersion()`
+  *as the argument* to the policy call.
+- `node-kernel-worker-entry.ts:1478` sits between `kernelWorker.createProcess()`
+  (1473) and `kernelWorker.registerProcess()` (1487).
+- `browser-kernel-worker-entry.ts` mirrors all three.
+
+**Pre-kernel — a genuine floor, proven.**
+
+- `kernel.ts:1588` `detectPtrWidth(wasmSnapshot)` inside `#compileKernelModule`,
+  which needs the width to build the import object *before*
+  `WebAssembly.compile`.
+- `kernel-worker.ts:5406` `readWasmCustomSectionPayload(kernelWasmBuffer, …)`,
+  whose own comment reads "before init compiles the bytes" and which sits on the
+  line preceding `await this.#kernel.init(...)`.
+
+**Neither — no kernel is reachable at all.** This is the category the brief did
+not have, and it is the largest:
+
+- `worker-main.ts:3219`, `dylink.ts:{1199,1306,1320}`,
+  `fork-host-import-runtime.ts:447` and `wasm-module-reflection.ts` all run in
+  the **process worker**, which holds no kernel instance. `dylink.ts` compares
+  against the statically imported `ABI_VERSION`, never a live kernel's.
+- `binary-resolver.ts:2888` runs in three contexts, one of which is
+  `node-kernel-host.ts:1201` `loadKernelWasm` — the main thread, validating
+  `kernel.wasm` itself before any kernel exists.
+
+### Why that makes the file mostly undeletable *by a kernel export*
+
+`describeWasmArtifactPolicyFailures` transitively reaches roughly 2,900 of the
+3,031 lines: the fork-artifact facts reader, all nine descriptor validators, and
+every generic section reader. **One pre-kernel caller keeps that whole graph
+alive.** Migrating every post-kernel call site therefore deletes almost no
+TypeScript — which is exactly what happened here.
+
+**The destination has to be a standalone Rust wasm module, not a kernel export**
+— the K5 `crates/dylink` shape, zero imports, instantiable in the process worker
+and on the main thread *before* the kernel exists. That dissolves the bootstrap
+paradox rather than working around it: a module with no imports is available
+earlier than the kernel is. It is also the only destination that serves all
+three categories at once.
+
+### A real gap the survey found
+
+**`handleSpawn` performs no kernel-side artifact policy check, on either host**
+(`node-kernel-worker-entry.ts:1439-1566`, `browser:1439-1580`). Both the
+embedder API (`NodeKernelHost.spawn`) and `spawnFromVfs`/`spawnFirstProcess`
+reach it, so the first booted process is unvalidated until
+`worker-main.ts:3219` runs — *after* the Worker is constructed and shared memory
+handed over. `fork`/`vfork` children inherit that state, and
+`centralizedThreadWorkerMain` checks nothing at all.
+
+Consequently `worker-main.ts:3219` is **not** redundant and must not be deleted
+before `handleSpawn` is fixed. It is also the **only** check anywhere that
+verifies `expectedAbiContractDigest`: every kernel-worker-side call passes only
+`{expectedAbi}`, so the contract-digest dimension is currently never checked on
+any kernel-side path.
+
+### Duplicated authority: it was three, not two
+
+The census recorded two decoders of the `WPK_FORK_*` format. There are three.
+`tools/xtask/src/build_deps.rs:14661 wasm_artifact_policy_failures_for` is a
+native partial re-implementation used at build and publish time, alongside
+`fork-instrument/src/contract_inventory.rs` and the TypeScript. They disagreed:
+the TypeScript validated descriptor *bytes* the native pair never read, and the
+native pair checked memory pointer-width agreement the TypeScript reached only
+by another route.
+
+`crates/wasm-artifact` is the single authority those three should share. It is
+`no_std + alloc` (so the wasm32 kernel, `host-native` and the build tooling can
+all link it) and it re-decodes no descriptor format: each of the six goes to the
+`fork-codec` module that already owns it. Only the *cross-module* invariants —
+joining a descriptor record to an import ordinal, a catalog export to a table
+index — are new, because those are precisely what a descriptor decoder cannot
+see.
+
+### Two things the port fixed rather than preserved
+
+- `constants.ts`'s `readULEB128` accumulates with JavaScript `|=`, which is a
+  **32-bit signed** operation: a section length at or above 2^31 reads back
+  negative. Its byte reads also run past the end of the buffer, where
+  `undefined & 0x7f` is 0 and silently terminates the loop instead of failing.
+  The Rust walk is `wasmparser`, bounds-checked, and correct against the spec
+  rather than against today's artifacts.
+- Failure messages named "ABI 43" as a literal while `ABI_VERSION` is 44. The
+  Rust validators take the epoch from the caller, so a message names the epoch
+  the artifact was actually measured against.
+
+### What landed, and what it is worth
+
+The exec path is cut over and the Rust runs:
+`kernel_exec_target_artifact_policy` judges the target over
+`exec_target::artifact_bytes`, and `host/src/exec-target.ts` no longer imports
+from `constants.ts` at all. This costs nothing —
+`PreparedExecTarget::new` already reserves the whole artifact and the host fills
+it by reading *through* the kernel, so the removed arrangement was the more
+expensive one: it read those bytes back out and parsed them again in JavaScript.
+
+**`constants.ts` itself is unchanged, and the ledger step is not net-negative.**
+Owner named: the residual needs the module destination above, which collides
+with K5's in-flight `crates/dylink` module pipeline. See the
+NEEDS-DEFER-DECISION below.
+
+### NEEDS-DEFER-DECISION (NDD-CONST-1) — the destination for the remaining ~2,900 lines
+
+- **What.** Whether to build a second standalone Rust side-module pipeline for
+  `crates/wasm-artifact`, fold it into the `crates/dylink` module K5 I6a is
+  already building, or leave the pre-kernel and process-worker halves in
+  TypeScript for this epoch.
+- **Why it is not the agent's call.** K5 measured the module pipeline at 14
+  integration points (build 3, freshness 2, projection 4, hosts 5) and is
+  mid-flight on exactly that machinery. Opening a second one duplicates it;
+  folding into K5's changes another item's scope. Both are sequencing decisions
+  across items.
+- **Cost now.** The 14 pipeline points, or a scope change to K5.
+- **Cost later.** `constants.ts` stays at ~3,031 lines and the three-way
+  duplicated authority stays three-way, with the TypeScript copy still running
+  on the `handleSpawn` and `dlopen` paths.
+- **Recommendation.** Fold into K5's module rather than open a second pipeline,
+  and sequence it after K5 I6b lands. Separately and independently: fix the
+  `handleSpawn` kernel-side gap, which is a real hole regardless of where the
+  parser ends up.
+
