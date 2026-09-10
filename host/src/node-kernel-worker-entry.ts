@@ -217,8 +217,19 @@ function wasiModuleModule(): WebAssembly.Module {
  * record — so one wasm32 module serves wasm32 and wasm64 guests alike.
  */
 let dylinkModuleModuleCache: WebAssembly.Module | null = null;
+// Explicit per-boot planner bytes (see `InitMessage.dylinkModuleBytes`).
+// Seeded from the init message; consulted before the resolver, because a
+// build-time boot runs under the source-only resolution policy with no
+// source-only binary root and the resolver cannot answer at all there.
+let injectedDylinkModuleBytes: ArrayBuffer | undefined;
 function dylinkModuleModule(): WebAssembly.Module | undefined {
   if (dylinkModuleModuleCache) return dylinkModuleModuleCache;
+  if (injectedDylinkModuleBytes !== undefined) {
+    dylinkModuleModuleCache = new WebAssembly.Module(
+      new Uint8Array(injectedDylinkModuleBytes),
+    );
+    return dylinkModuleModuleCache;
+  }
   try {
     dylinkModuleModuleCache = new WebAssembly.Module(
       readFileSync(resolveBinary("dylink_module32.wasm")),
@@ -1208,6 +1219,7 @@ async function handleInit(msg: InitMessage) {
   }
 
   injectedForkModuleBytesByWidth = msg.forkModuleBytesByWidth ?? {};
+  injectedDylinkModuleBytes = msg.dylinkModuleBytes;
 
   await kernelWorker.init(msg.kernelWasmBytes);
 

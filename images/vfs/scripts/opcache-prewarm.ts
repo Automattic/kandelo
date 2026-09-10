@@ -115,6 +115,12 @@ export async function prewarmOpcache(
       // policy with no source-only binary root, so the kernel worker resolving
       // the fork module through the binary resolver would fail.
       forkModuleBytesByWidth: { 4: loadStagedForkModule32() },
+      // PHP loads `opcache.so` through `dlopen`, so the same reasoning applies
+      // to the co-resident dynamic-linking planner. Without it the boot gets
+      // "this process worker has no dynamic-linking planner module" the first
+      // time the extension loads, and the prewarm it was booted to do does not
+      // happen.
+      dylinkModuleBytes: loadStagedDylinkModule32(),
       onStdout: (_pid, data) => {
         activeStdoutSink?.(new Uint8Array(data));
       },
@@ -215,6 +221,13 @@ export async function prewarmOpcache(
 function loadStagedForkModule32(): Uint8Array {
   const repoRoot = findRepoRoot();
   const staged = join(repoRoot, "host/wasm/fork_module32.wasm");
+  return new Uint8Array(readFileSync(staged));
+}
+
+/** The dynamic-linking planner, staged the same way and for the same reason. */
+function loadStagedDylinkModule32(): Uint8Array {
+  const repoRoot = findRepoRoot();
+  const staged = join(repoRoot, "host/wasm/dylink_module32.wasm");
   return new Uint8Array(readFileSync(staged));
 }
 

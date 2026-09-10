@@ -39,6 +39,12 @@ export interface InitMessage {
    * source-only resolution policy when no source-only binary root is set).
    */
   forkModuleBytesByWidth?: Partial<Record<4 | 8, ArrayBuffer>>;
+  /**
+   * Explicit co-resident dynamic-linking planner wasm bytes, for the same
+   * reason and on the same terms as `forkModuleBytesByWidth`. The planner is
+   * width-independent, so there is one buffer rather than one per width.
+   */
+  dylinkModuleBytes?: ArrayBuffer;
   config: {
     maxWorkers: number;
     maxPages?: number;

@@ -260,6 +260,11 @@ async function withKernelSession(
     // resolution policy with no source-only binary root, so the kernel worker
     // resolving the fork module through the binary resolver would fail.
     forkModuleBytesByWidth: { 4: loadStagedForkModule32() },
+    // PHP loads `opcache.so` through `dlopen`, so the same reasoning applies to
+    // the co-resident dynamic-linking planner. Without it the install run gets
+    // "this process worker has no dynamic-linking planner module" and the image
+    // is never written.
+    dylinkModuleBytes: loadStagedDylinkModule32(),
     onStdout: (_pid, data) => {
       activeStdoutSink?.(new Uint8Array(data));
     },
@@ -361,6 +366,12 @@ function loadProgram(binaryId: string): ArrayBuffer {
 function loadStagedForkModule32(): Uint8Array {
   const repoRoot = findRepoRoot();
   return new Uint8Array(readFileSync(join(repoRoot, "host/wasm/fork_module32.wasm")));
+}
+
+/** The dynamic-linking planner, staged the same way and for the same reason. */
+function loadStagedDylinkModule32(): Uint8Array {
+  const repoRoot = findRepoRoot();
+  return new Uint8Array(readFileSync(join(repoRoot, "host/wasm/dylink_module32.wasm")));
 }
 
 function exactProgramBuffer(bytes: Uint8Array, label: string): ArrayBuffer {
