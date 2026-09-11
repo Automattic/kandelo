@@ -28,6 +28,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -44,6 +45,7 @@ import {
   VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
 } from "../src/vfs/kernel-lazy-section";
 import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
+import { parseZipCentralDirectory } from "../src/vfs/zip";
 import { emitRootfsManifest } from "./support/rootfs-manifest-oracle";
 import {
   decodeRootfsManifest,
@@ -378,6 +380,169 @@ describe("KLZY section in the image container", () => {
     expect(MemoryFileSystem.readImageKernelLazyLinkage(second)).toEqual(
       MemoryFileSystem.readImageKernelLazyLinkage(first),
     );
+  });
+
+  /**
+   * The cycle above uses a URL-backed lazy file, whose linkage the JSON lazy
+   * section carries directly. The linkage that can actually be LOST across a
+   * cycle is an archive member's, because it lives in the archive section's
+   * `entries[]` and nowhere else the host reads back. So the cycle is repeated
+   * here over archive-backed state, and then deliberately broken.
+   */
+  describe("archive-backed linkage across a save/restore/save cycle", () => {
+    async function imageWithArchiveState(): Promise<Uint8Array> {
+      const archive = zipSync({
+        "alpha.bin": new TextEncoder().encode("alpha bytes"),
+        "nested/beta.bin": new TextEncoder().encode("beta"),
+      });
+      const digest = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", archive.slice()),
+      );
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      fs.registerLazyArchiveFromEntries(
+        "https://example.invalid/archive.zip",
+        parseZipCentralDirectory(archive),
+        "/runtime",
+        undefined,
+        {
+          sha256: Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(
+            "",
+          ),
+          bytes: archive.byteLength,
+        },
+      );
+      return await fs.saveImage();
+    }
+
+    /** Section extents of a container written by `saveImage`. */
+    function sections(image: Uint8Array): {
+      flags: number;
+      lazy: [number, number];
+      archive: [number, number];
+      rest: number;
+    } {
+      const view = new DataView(
+        image.buffer,
+        image.byteOffset,
+        image.byteLength,
+      );
+      const flags = view.getUint32(8, true);
+      const sabLen = view.getUint32(12, true);
+      const lazyOffset = 16 + sabLen;
+      const lazyLen = view.getUint32(lazyOffset, true);
+      const archiveOffset = lazyOffset + 4 + lazyLen;
+      const archiveLen = view.getUint32(archiveOffset, true);
+      return {
+        flags,
+        lazy: [lazyOffset + 4, lazyLen],
+        archive: [archiveOffset + 4, archiveLen],
+        rest: archiveOffset + 4 + archiveLen,
+      };
+    }
+
+    /**
+     * Rewrite only the archive JSON section, leaving every other byte — the
+     * header flags, the filesystem, and the binary `KLZY` section — exactly as
+     * the writer emitted them. This is the shape of the hazard: a producer
+     * that narrows what the JSON says while the binary section still describes
+     * the full image.
+     */
+    function withArchiveJson(
+      image: Uint8Array,
+      transform: (groups: unknown[]) => unknown[],
+    ): Uint8Array {
+      const s = sections(image);
+      const groups = JSON.parse(
+        new TextDecoder().decode(
+          image.subarray(s.archive[0], s.archive[0] + s.archive[1]),
+        ),
+      ) as unknown[];
+      const json = new TextEncoder().encode(
+        JSON.stringify(transform(groups)),
+      );
+      const head = s.archive[0] - 4;
+      const tailLength = image.byteLength - s.rest;
+      const out = new Uint8Array(head + 4 + json.byteLength + tailLength);
+      out.set(image.subarray(0, head));
+      new DataView(out.buffer).setUint32(head, json.byteLength, true);
+      out.set(json, head + 4);
+      out.set(image.subarray(s.rest), head + 4 + json.byteLength);
+      return out;
+    }
+
+    it("keeps every archive member's linkage across the cycle", async () => {
+      const first = await imageWithArchiveState();
+      const before = MemoryFileSystem.readImageKernelLazyLinkage(first);
+      expect(before!.archives).toHaveLength(1);
+      expect(before!.files).toHaveLength(2);
+
+      const second = await MemoryFileSystem.fromImage(first).saveImage();
+      expect(MemoryFileSystem.readImageKernelLazyLinkage(second)).toEqual(
+        before,
+      );
+    });
+
+    it("refuses an image whose archive JSON dropped every member", async () => {
+      // The existing serialized-archive contract already refuses a group with
+      // no members at all, so this loss is loud without the equality check.
+      // Asserted so the boundary between the two checks stays visible: only
+      // the PARTIAL loss below needs the new one.
+      const image = await imageWithArchiveState();
+      expect(() =>
+        MemoryFileSystem.fromImage(
+          withArchiveJson(image, (groups) =>
+            groups.map((group) => ({
+              ...(group as Record<string, unknown>),
+              entries: [],
+            })),
+          ),
+        ),
+      ).toThrow(/Serialized legacy lazy archive entries/);
+    });
+
+    it("refuses an image whose archive JSON lost a member its KLZY declares", async () => {
+      const image = await imageWithArchiveState();
+      const stripped = withArchiveJson(image, (groups) =>
+        groups.map((group) => ({
+          ...(group as Record<string, unknown>),
+          entries: [(group as { entries: unknown[] }).entries[0]],
+        })),
+      );
+
+      // The image still LOOKS correct to a reader of the binary section
+      // alone — which is why the loss is invisible without this check.
+      expect(
+        MemoryFileSystem.readImageKernelLazyLinkage(stripped)!.files,
+      ).toHaveLength(2);
+
+      // Without the restore-time equality check this restored cleanly, and the
+      // NEXT save wrote a well-formed KLZY with an empty file table: every
+      // archive-backed stub silently became a 0-byte regular file to the
+      // kernel. It is a loud refusal instead.
+      expect(() => MemoryFileSystem.fromImage(stripped)).toThrow(
+        /kernel lazy linkage \(KLZY\) does not match its JSON lazy sections/,
+      );
+    });
+
+    it("refuses an image whose archive JSON gained a member its KLZY does not declare", async () => {
+      const image = await imageWithArchiveState();
+      const grown = withArchiveJson(image, (groups) =>
+        groups.map((group) => {
+          const g = group as { entries: unknown[] };
+          const first = g.entries[0] as Record<string, unknown>;
+          return {
+            ...(group as Record<string, unknown>),
+            entries: [
+              ...g.entries,
+              { ...first, vfsPath: "/runtime/extra.bin", ino: 4242 },
+            ],
+          };
+        }),
+      );
+      expect(() => MemoryFileSystem.fromImage(grown)).toThrow(
+        /kernel lazy linkage \(KLZY\) does not match its JSON lazy sections/,
+      );
+    });
   });
 });
 

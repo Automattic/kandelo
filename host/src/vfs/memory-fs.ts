@@ -973,6 +973,108 @@ function sectionOffsetAfterArchives(
   return { lazyLen, archiveOffset, metadataOffset };
 }
 
+/**
+ * Locate the image's binary kernel-facing lazy-linkage (`KLZY`) section.
+ * Returns `null` only when the image does not declare the section at all.
+ */
+function kernelLazySectionBytes(parsed: ParsedImageHeader): Uint8Array | null {
+  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY)) return null;
+  const { metadataOffset } = sectionOffsetAfterArchives(
+    parsed.image,
+    parsed.view,
+    parsed.flags,
+    parsed.sabLen,
+  );
+  let offset = metadataOffset;
+  if (parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA) {
+    if (parsed.image.byteLength < offset + 4) {
+      throw new Error("VFS image truncated (metadata section)");
+    }
+    offset += 4 + parsed.view.getUint32(offset, true);
+  }
+  if (parsed.image.byteLength < offset + 4) {
+    throw new Error("VFS image truncated (kernel lazy linkage section)");
+  }
+  const length = parsed.view.getUint32(offset, true);
+  if (length > VFS_IMAGE_MAX_KERNEL_LAZY_BYTES) {
+    throw new Error(
+      `VFS image kernel lazy linkage exceeds ${VFS_IMAGE_MAX_KERNEL_LAZY_BYTES} bytes`,
+    );
+  }
+  if (parsed.image.byteLength < offset + 4 + length) {
+    throw new Error("VFS image truncated (kernel lazy linkage payload)");
+  }
+  return parsed.image.subarray(offset + 4, offset + 4 + length);
+}
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Require that an image's two descriptions of its own lazy linkage agree.
+ *
+ * The image's trailing JSON and its binary `KLZY` section are deliberately
+ * split by AUTHORITY, not duplicated for convenience: the JSON carries the
+ * host's fetch authority (URLs, transport mirrors, integrity digests,
+ * activation modes, atomic-group seals) and `KLZY` carries the only two facts
+ * the kernel needs (a lazy file's real size, and an archive member's
+ * `(archive_id, source_path, size)`). See `./kernel-lazy-section.ts`.
+ *
+ * WHY THIS CHECK EXISTS. `saveImage` derives `KLZY` from exactly the two
+ * arrays it stringifies into the JSON sections, so `KLZY` is a pure function
+ * of that JSON for any image this writer produced. Nothing verified that on
+ * the way back in, and only the JSON is read back on restore. A restore that
+ * silently loses archive members — because a producer dropped the JSON
+ * `entries[]`, or trimmed it, or a tool rewrote one section and not the
+ * other — therefore yields a `MemoryFileSystem` that looks healthy and whose
+ * NEXT `saveImage` emits a well-formed `KLZY` with an EMPTY file table. To
+ * the kernel every archive-backed lazy stub in that image is then an ordinary
+ * 0-byte regular file: a plausible-looking product artifact that is wrong,
+ * which is precisely the silent corruption the platform-values contract
+ * forbids. Restore→mutate→save is a production path, not only a build one
+ * (`./rootfs-overlay-export.ts`, reached from the kernel's rootfs-snapshot
+ * request), so the window is real.
+ *
+ * Re-encoding the JSON and comparing bytes turns "the two halves agree" from a
+ * property of one writer into an invariant checked on every read. It is also
+ * writer-agnostic: when the kernel becomes the image writer, the same equality
+ * still has to hold, and this gate keeps holding it to that.
+ */
+function assertKernelLazySectionMatchesJson(
+  parsed: ParsedImageHeader,
+  lazyEntries: readonly LazyFileEntry[],
+  archiveEntries: readonly SerializedLazyArchiveEntry[],
+): void {
+  const declared = kernelLazySectionBytes(parsed);
+  if (declared === null) {
+    // An image that does not declare the section predates it. There is nothing
+    // here to cross-check, and the loud failure for that image already exists
+    // one layer down: `kernel_rootfs_load_image` refuses it with `EINVAL`
+    // rather than reading it best-effort, because the kernel cannot tell "no
+    // lazy files" from "lazy files recorded only in JSON I cannot read". Every
+    // image this writer produces declares the section — empty, in 20 bytes,
+    // when there is no lazy state at all — so for them this branch is
+    // unreachable and the equality below always runs.
+    return;
+  }
+  const derived = encodeKernelLazySection(lazyEntries, archiveEntries);
+  if (!equalBytes(declared, derived)) {
+    throw new Error(
+      "VFS image kernel lazy linkage (KLZY) does not match its JSON lazy " +
+        `sections (${declared.byteLength} bytes declared, ` +
+        `${derived.byteLength} bytes derived from the JSON). The image's two ` +
+        "descriptions of its own deferred files disagree; restoring it would " +
+        "lose deferred backings and the next save would write them out as " +
+        "empty regular files.",
+    );
+  }
+}
+
 function decodeJsonSection(bytes: Uint8Array, label: string): unknown {
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -7187,36 +7289,8 @@ export class MemoryFileSystem implements FileSystemBackend {
   static readImageKernelLazyLinkage(
     image: Uint8Array,
   ): KernelLazyLinkage | null {
-    const parsed = parseImageHeader(image);
-    if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY)) return null;
-    const { metadataOffset } = sectionOffsetAfterArchives(
-      parsed.image,
-      parsed.view,
-      parsed.flags,
-      parsed.sabLen,
-    );
-    let offset = metadataOffset;
-    if (parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA) {
-      if (parsed.image.byteLength < offset + 4) {
-        throw new Error("VFS image truncated (metadata section)");
-      }
-      offset += 4 + parsed.view.getUint32(offset, true);
-    }
-    if (parsed.image.byteLength < offset + 4) {
-      throw new Error("VFS image truncated (kernel lazy linkage section)");
-    }
-    const length = parsed.view.getUint32(offset, true);
-    if (length > VFS_IMAGE_MAX_KERNEL_LAZY_BYTES) {
-      throw new Error(
-        `VFS image kernel lazy linkage exceeds ${VFS_IMAGE_MAX_KERNEL_LAZY_BYTES} bytes`,
-      );
-    }
-    if (parsed.image.byteLength < offset + 4 + length) {
-      throw new Error("VFS image truncated (kernel lazy linkage payload)");
-    }
-    return decodeKernelLazySection(
-      parsed.image.subarray(offset + 4, offset + 4 + length),
-    );
+    const bytes = kernelLazySectionBytes(parseImageHeader(image));
+    return bytes === null ? null : decodeKernelLazySection(bytes);
   }
 
   /**
@@ -7346,6 +7420,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     // Restore lazy entries
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
     const lazyLen = sections.lazyLen;
+    let lazyEntries: LazyFileEntry[] = [];
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
       if (lazyLen > 0) {
         const lazyBytes = image.subarray(
@@ -7359,10 +7434,12 @@ export class MemoryFileSystem implements FileSystemBackend {
           MAX_LAZY_TREE_ENTRIES,
         ) as LazyFileEntry[];
         mfs.importLazyEntriesInternal(entries, true);
+        lazyEntries = entries;
       }
     }
 
     // Restore lazy archive groups
+    let archiveEntries: SerializedLazyArchiveEntry[] = [];
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
       const archiveOffset = sections.archiveOffset;
       const archiveLen = view.getUint32(archiveOffset, true);
@@ -7381,8 +7458,16 @@ export class MemoryFileSystem implements FileSystemBackend {
           Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
           "pending",
         );
+        // Validated by the import above, which throws on any shape the
+        // serialized archive contract does not allow.
+        archiveEntries = entries as SerializedLazyArchiveEntry[];
       }
     }
+
+    // Both JSON halves are now validated, so re-deriving the binary section
+    // from them cannot be led astray by malformed input. See
+    // `assertKernelLazySectionMatchesJson` for why this is checked at all.
+    assertKernelLazySectionMatchesJson(parsed, lazyEntries, archiveEntries);
 
     return mfs;
   }
