@@ -6737,3 +6737,85 @@ The test accepts both `SIGUSR1` + `0 | POLLIN` and `SIGUSR1` + `ppoll: EINTR`.
 passing run produces; **both require the `SIGUSR1` line**, which is exactly
 what the delay protects. The mechanism is unchanged, which is what the
 measurement then confirmed.
+
+## The select A/B's noise floor, measured on the same instrument
+
+The select lazy-arm round reported four `select_*` metrics moving 2.3–2.8 µs
+while six untouched metrics scattered −0.00 to +1.94, and it deliberately
+stopped short of calling the controls flat: the ±0.7 µs floor it was compared
+against came from a different session. This is that floor, taken properly.
+
+**Same instrument, not a similar one.** 24 separate single-run invocations,
+`A B B A`, one working tree, one kernel wasm, one guest binary — identical to
+the measured round in every respect except that **both arms are the same
+bytes**. Whatever separation it reports is instrument, and no smaller
+difference between two real builds can be believed.
+
+Load 4.55–5.53 throughout, against the measured round's 2.79–3.37. That is
+slightly noisier, so this floor is if anything a mild over-estimate of the
+round's own noise — which is the conservative direction for every conclusion
+below.
+
+| metric | dMin | dP10 |
+|---|---|---|
+| `epoll_ready` | −1.06 | +0.22 |
+| `epoll_ready_idle0` | −0.02 | +0.16 |
+| `epoll_ready_idle16` | +0.50 | +0.87 |
+| `epoll_ready_idle64` | −0.57 | −0.03 |
+| `poll_ready` | −0.07 | +0.67 |
+| `poll_ready_late` | −0.34 | +0.06 |
+| `select_ready` | +0.21 | +0.45 |
+| `select_ready_idle0` | **−1.44** | **−1.57** |
+| `select_ready_idle16` | −0.19 | +0.34 |
+| `select_ready_idle64` | −0.26 | −0.29 |
+
+**The floor is ±1.44 dMin / ±1.57 dP10**, not ±0.7. The larger figure is the
+one to use.
+
+### What that settles
+
+| real-round metric | dMin / dP10 | against the floor |
+|---|---|---|
+| `select_ready` | −1.89 / −2.80 | **exceeds both** |
+| `select_ready_idle0` | −2.66 / −2.34 | **exceeds both** |
+| `select_ready_idle16` | −2.50 / −2.59 | **exceeds both** |
+| `select_ready_idle64` | −2.50 / −2.75 | **exceeds both** |
+| `epoll_ready` | +0.90 / +1.20 | **inside** — no regression |
+| `poll_ready` | +1.94 / +0.79 | dMin marginally outside, dP10 well inside — unresolved |
+
+So the select recovery is **resolved**: all four metrics clear the instrument on
+both statistics. `epoll_ready` sits inside the floor, and the earlier hedge on
+it can be dropped — it did not regress. `poll_ready` straddles, with its two
+statistics disagreeing in magnitude; that is an unresolved difference, not a
+regression, and nothing should be claimed about it either way.
+
+### One caution this control supplies, against an argument made earlier
+
+The round's write-up argued the select result was distinguishable by
+*coherence*: four metrics agreeing in sign on both statistics, where controls
+scattered. This control shows `select_ready_idle0` separating by −1.44 / −1.57
+— coherent in sign on both statistics — **with identical arms**. Coherence
+alone is therefore not sufficient; one metric can be coherently wrong. What
+distinguishes the real round is that all four select metrics were coherent
+*and* every one exceeded the floor, where the control produced one such metric
+out of ten.
+
+### The guard that let the first attempt run under load 27
+
+The first attempt at this control started immediately at load 27 and is
+discarded. Its quiet-machine guard read the load with
+`uptime | … | awk '{print $1}'`, which yields `27.19,` — with the comma. Passed
+to `awk -v`, that is a **string**, not a number, so `"27.19," < "5.0"` compared
+lexicographically, `'2' < '5'`, and was **true**. The guard admitted every load
+whose first digit was low.
+
+Demonstrated rather than asserted:
+
+    buggy (string):      PASSES guard
+    fixed  (numeric):    blocks
+    fixed, truly quiet:  PASSES guard
+
+The fix is `{print $1+0}`. No committed code was affected —
+`benchmarks/wait-ab-host-source.sh` logs the load average and never compares it
+— but it is the same family as the assert-nothing guards this branch has found
+twice, and it was caught only because the output printed the comma.
