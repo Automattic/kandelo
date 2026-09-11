@@ -48214,6 +48214,160 @@ impl HostIO for RelSymlinkMock {
         assert!(proc.prepared_exec_targets.is_empty());
     }
 
+    /// `probe` answers with the resolved image path and leaves the ledger
+    /// exactly as it found it. The retain-nothing property is why the spawn
+    /// preflight may call it speculatively, repeatedly, and on a path that can
+    /// be abandoned with no rollback — so every case below asserts
+    /// `is_empty()`, not just the happy one.
+    #[test]
+    fn probe_resolves_a_non_script_to_itself_and_retains_nothing() {
+        let mut proc = Process::new(161);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 6;
+        host.prepared_exec_bytes = Some(b"binary".to_vec());
+        host.set_file_with_owner(b"/bin/prog", 0, 0, S_IFREG | 0o755, b"binary");
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/bin/prog", 0,
+            ),
+            Ok(b"/bin/prog".to_vec()),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn probe_rejects_a_nested_chain_with_enoexec_and_retains_nothing() {
+        // One content slot serves both opens, so the "interpreter" decodes as
+        // a script too — which is precisely the nested chain.
+        let mut proc = Process::new(162);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 14;
+        host.prepared_exec_bytes = Some(b"#!/bin/interp\n".to_vec());
+        host.set_file_with_owner(
+            b"/usr/bin/nested", 0, 0, S_IFREG | 0o755, b"#!/bin/interp\n",
+        );
+        host.set_file_with_owner(
+            b"/bin/interp", 0, 0, S_IFREG | 0o755, b"#!/bin/interp\n",
+        );
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/usr/bin/nested", 0,
+            ),
+            Err(Errno::ENOEXEC),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn probe_reports_enoent_for_a_missing_target_and_retains_nothing() {
+        let mut proc = Process::new(163);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_missing_path(b"/bin/absent");
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/bin/absent", 0,
+            ),
+            Err(Errno::ENOENT),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    /// The asymmetric error path: `resolve_shebang` has already canceled the
+    /// script token by the time the interpreter's own `prepare` fails, so the
+    /// cleanup must tolerate a token that is already gone rather than assume
+    /// it survives.
+    #[test]
+    fn probe_reports_a_missing_interpreter_as_enoent_and_retains_nothing() {
+        let mut proc = Process::new(164);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 12;
+        host.prepared_exec_bytes = Some(b"#!/bin/nope\n".to_vec());
+        host.set_file_with_owner(
+            b"/usr/bin/orphan", 0, 0, S_IFREG | 0o755, b"#!/bin/nope\n",
+        );
+        host.set_missing_path(b"/bin/nope");
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/usr/bin/orphan", 0,
+            ),
+            Err(Errno::ENOENT),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    /// The input token survives `resolve_shebang` in exactly one shape: its
+    /// own header read fails before any retarget happens, so nothing has been
+    /// canceled yet and `probe` itself owns the cleanup.
+    ///
+    /// Without this case the error-branch release asserts NOTHING. Verified
+    /// the only way that claim can be verified: deleting the release leaves
+    /// the other three probe tests all passing, because every other failure
+    /// shape has already emptied the ledger by the time it runs.
+    #[test]
+    fn probe_releases_the_input_token_when_its_header_read_fails() {
+        let mut proc = Process::new(165);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 5;
+        host.prepared_exec_bytes = Some(b"hello".to_vec());
+        host.set_file_with_owner(b"/bin/flaky", 0, 0, S_IFREG | 0o755, b"hello");
+        // The target `probe` prepares internally takes the first handle
+        // MockHostIO hands out, so failing that handle's pread makes the
+        // decode fail while the token is still retained.
+        host.pread_error = Some(Errno::EIO);
+        host.pread_error_handle = Some(100);
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/bin/flaky", 0,
+            ),
+            Err(Errno::EIO),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
     #[test]
     fn resolve_shebang_releases_the_interpreter_token_when_its_header_read_fails() {
         // Fix-round-1 regression test: the one-level-limit check used to

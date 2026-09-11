@@ -753,6 +753,63 @@ pub fn resolve_shebang(
     }
 }
 
+/// Answer the spawn preflight's question — "what would a launch of `path`
+/// actually run?" — while retaining NOTHING.
+///
+/// The preflight exists to reject a doomed candidate BEFORE
+/// `kernel_spawn_process` builds a child and runs its `file_actions`, which
+/// POSIX requires to happen exactly once. It is therefore invoked
+/// speculatively: up to twice per spawn (the CWD-resolved path, then a raw
+/// relative token), again under the overlay's EAGAIN retry, again whenever
+/// the kernel-entry gate defers it onto a later host turn, and on a path that
+/// can be abandoned with its result discarded and no rollback anywhere. That
+/// is why this returns a plain path and holds no ledger state: every one of
+/// those repeats must be idempotent, and nothing may survive an abandoned
+/// call.
+///
+/// It answers with the kernel's own executability rules rather than the
+/// host's guesses — existence, regular-file-ness, `X_OK`, directory
+/// rejection, path resolution against the caller's CWD, and exactly one `#!`
+/// retarget with `ENOEXEC` beyond — and returns the absolute path of the
+/// image a launch would reach. A non-script resolves to itself.
+///
+/// Retained-token accounting, which is the whole safety argument:
+///   * success — `resolve_shebang` leaves exactly one token, and it is
+///     canceled here before returning;
+///   * `resolve_shebang` failure — it releases everything IT created, but the
+///     input token survives when its own header read failed before any
+///     retarget, so that token is released here too. The release is
+///     best-effort and never masks the original errno.
+/// Either way the ledger is exactly as it was before the call.
+pub fn probe(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    owner: PreparedExecOwner,
+    owner_pid: u32,
+    dirfd: i32,
+    path: &[u8],
+    flags: u32,
+) -> Result<Vec<u8>, Errno> {
+    let token = prepare(proc, locks, host, owner, dirfd, path, flags)?;
+    match resolve_shebang(proc, locks, host, owner_pid, token) {
+        Ok(resolved) => {
+            let final_path = proc
+                .prepared_exec_targets
+                .get(resolved.final_token)
+                .map(|target| target.diagnostic_path().to_vec());
+            // Unconditional: the path read above must not be able to strand a
+            // retained token on its own error path.
+            let _ = cancel(proc, locks, host, owner_pid, resolved.final_token);
+            final_path
+        }
+        Err(error) => {
+            let _ = cancel(proc, locks, host, owner_pid, token);
+            Err(error)
+        }
+    }
+}
+
 pub fn cancel(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
