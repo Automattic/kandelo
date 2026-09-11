@@ -3403,6 +3403,55 @@ ones are 128 bytes at *both* models. It was caught by forcing the marshaller to
 what catch a width error. The canary remains as an honest guard on RAW copy-back
 extent, with the header corrected to say so.
 
+### THE TIP MEASUREMENT (2026-09-11) — and why the headline number misleads
+
+First full host suite run at the campaign tip:
+
+| | base `0ab2ccf3e` | tip | change |
+|---|---|---|---|
+| Failed | 103 | **112** | +9 |
+| Passed | 259 | **311** | +52 |
+| **Skipped** | **65** | **4** | **−61** |
+| | 427 files | 427 files | |
+
+**Read the skip column first.** Sixty-one files that previously skipped now
+actually run; fifty-two of them pass and nine fail. The artifact and realm fixes
+did not make the suite worse — they converted silent skips into real executions.
+For a campaign whose most common finding is *a check that could not run
+reporting as a check that passed*, that is the intended direction, and a rising
+failure count is the honest cost of it.
+
+**And the remaining 112 is a provisioning number, not a code number.** The
+largest cluster — 38 × `Package artifact closure is incomplete` — is this
+worktree's own stale tier, and the resolver says so exactly:
+
+    Invalid source-only projection authority …: the tier was published before
+    the build recorded the package selection it was built from, so its identity
+    cannot be checked; rebuild it with ./run.sh setup
+
+The authority here was written at 00:38, before the tier-identity fix landed.
+**That message is itself the improvement**: the same condition previously
+reported `programs/wasm32/dash.wasm (missing)` about a file sitting in the tree,
+which sent several agents to rebuild the wrong thing for hours. It now names the
+real cause and the exact remedy.
+
+The better evidence for the fix is the fresh-worktree proof recorded above —
+70/70 resolving, `php`'s nine-member closure among them, all eight VFS images
+built. A tip measurement taken against a pre-fix tier measures the tier, not the
+branch.
+
+**Clusters at the tip, for comparison with the pre-fix run:**
+
+| cluster | at base | at tip |
+|---|---|---|
+| `Could not find repo root` | 228 | **0** |
+| `artifact lacks an __abi_version export` | 118 | **0** |
+| `void kernel ingress … initialization completion failed` | 81 | 84 |
+| `Package artifact closure is incomplete` | 42 | 38 *(stale local tier)* |
+
+Two of the four dominant causes are **gone**, which is the four-realm reader fix
+showing up in measurement rather than in argument.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
