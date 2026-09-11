@@ -15,12 +15,20 @@
 //! is a silent hang with no error message. This module is the single
 //! mechanism that replaces them.
 //!
-//! # Status: DORMANT
+//! # Status: LIVE as the deadline authority
 //!
-//! Nothing calls into this module yet. It is landed ahead of its wiring so
-//! that the design can be reviewed and differentially tested against the
-//! behaviour of the seven mechanisms it replaces *before* any of them is cut
-//! over. See [`crate::wait_shadow`] for that comparison.
+//! The queue now owns every finite timeout for `poll`, `ppoll`, `select`,
+//! `pselect6`, `epoll_pwait` and `sigtimedwait`. The host arms a wait through
+//! [`global::open_deadline`], asks [`global::remaining_ns`] whether it has
+//! expired, and retires it through [`global::close`]. That replaces the
+//! wall-clock `Date.now()` arithmetic those calls used to do, which invariant
+//! 4 below explains is a real defect and not a stylistic difference.
+//!
+//! The *parks* themselves are still host-owned: the seven mechanisms in
+//! `kernel-worker.ts` still hold the timers and route the wakeups. Moving
+//! those is the remaining work, and [`WaitQueue::next_deadline_ns`] is the
+//! export they need. See [`crate::wait_shadow`] for the differential
+//! comparison that increment is gated on.
 //!
 //! # The four invariants this queue must reproduce
 //!
@@ -579,6 +587,31 @@ impl WaitQueue {
     pub fn get(&self, id: WaiterId) -> Option<&Sleeper> {
         self.sleepers.get(&id)
     }
+
+    /// The sleeper parked on `channel`, if any.
+    ///
+    /// One execution generation carries at most one wait: the generation is
+    /// minted when a blocking call parks and retired when it completes, so a
+    /// second park on a live generation would mean the same call blocked
+    /// twice without finishing.
+    pub fn sleeper_for_channel(&self, channel: ChannelGeneration) -> Option<&Sleeper> {
+        self.sleepers.values().find(|s| s.channel == channel)
+    }
+
+    /// Nanoseconds left before `channel`'s deadline, saturating at zero.
+    ///
+    /// `Ok(None)` means the sleeper has no deadline and waits forever.
+    /// `Err(ESRCH)` means there is no sleeper -- deliberately an error rather
+    /// than "no deadline", because a caller that lost its handle must not
+    /// silently inherit an infinite timeout.
+    pub fn remaining_ns(
+        &self,
+        channel: ChannelGeneration,
+        now_ns: MonotonicNs,
+    ) -> Result<Option<MonotonicNs>, Errno> {
+        let sleeper = self.sleeper_for_channel(channel).ok_or(Errno::ESRCH)?;
+        Ok(sleeper.deadline.map(|d| d.saturating_sub(now_ns).max(0)))
+    }
 }
 
 fn into_wakeup(sleeper: Sleeper, reason: WakeReason) -> Wakeup {
@@ -590,6 +623,205 @@ fn into_wakeup(sleeper: Sleeper, reason: WakeReason) -> Wakeup {
         kind: sleeper.kind,
         reason,
         target: sleeper.target,
+    }
+}
+
+/// The one [`WaitQueue`] a running kernel owns.
+///
+/// # Why a global
+///
+/// The wait queue is machine state, not process state: a deadline armed by
+/// one process must be visible to the single timer the host arms for the
+/// whole machine. It follows the same shape as `tmpfs`'s and
+/// `descriptor_backing`'s stores -- a spinlock around an `UnsafeCell`,
+/// justified by Kandelo entering one kernel instance at a time.
+///
+/// # What this module deliberately does not do
+///
+/// It never reads a clock. Every entry point that needs "now" takes it as
+/// `now_ns`, so the clock source stays the caller's explicit choice and the
+/// queue stays testable without one. The kernel exports read
+/// `CLOCK_MONOTONIC` through `host_clock_gettime` and pass it in.
+pub mod global {
+    use core::cell::UnsafeCell;
+    use core::hint::spin_loop;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use alloc::vec::Vec;
+    use wasm_posix_shared::Errno;
+
+    use super::{
+        ChannelGeneration, MonotonicNs, ParkRequest, WaitKind, WaitQueue, WaitQueueStats, Wakeup,
+    };
+
+    struct WaitQueueGlobal {
+        locked: AtomicBool,
+        state: UnsafeCell<Option<WaitQueue>>,
+    }
+
+    // SAFETY: identical invariant to `tmpfs`'s TmpfsGlobal -- `locked` is the
+    // sole gate, and no reference escapes the closure.
+    unsafe impl Sync for WaitQueueGlobal {}
+
+    struct UnlockOnDrop<'a>(&'a AtomicBool);
+
+    impl Drop for UnlockOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    impl WaitQueueGlobal {
+        const fn new() -> Self {
+            Self {
+                locked: AtomicBool::new(false),
+                state: UnsafeCell::new(None),
+            }
+        }
+
+        fn with<R>(&'static self, f: impl FnOnce(&mut WaitQueue) -> R) -> R {
+            while self
+                .locked
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                spin_loop();
+            }
+            let _unlock = UnlockOnDrop(&self.locked);
+            // SAFETY: `locked` serializes every access and no reference
+            // escapes `f`.
+            let slot = unsafe { &mut *self.state.get() };
+            f(slot.get_or_insert_with(WaitQueue::new))
+        }
+    }
+
+    #[cfg(not(test))]
+    static QUEUE: WaitQueueGlobal = WaitQueueGlobal::new();
+
+    // Native unit tests run in parallel; give each thread its own queue so one
+    // test cannot observe another's sleepers. The Wasm kernel is serialized
+    // and uses the single static above.
+    #[cfg(test)]
+    std::thread_local! {
+        static TEST_QUEUE: core::cell::RefCell<WaitQueue> =
+            core::cell::RefCell::new(WaitQueue::new());
+    }
+
+    fn with<R>(f: impl FnOnce(&mut WaitQueue) -> R) -> R {
+        #[cfg(test)]
+        {
+            return TEST_QUEUE.with(|q| f(&mut q.borrow_mut()));
+        }
+        #[cfg(not(test))]
+        QUEUE.with(f)
+    }
+
+    /// Enable or disable kernel-owned waiting. Returns the previous state.
+    ///
+    /// Turning the queue off while tasks are parked would drop their wakeups,
+    /// so this refuses to do it: `Err(EBUSY)` carries the sleeper count the
+    /// caller has to resolve first.
+    pub fn set_enabled(enabled: bool) -> Result<bool, Errno> {
+        with(|q| {
+            let previous = q.is_enabled();
+            if !enabled && previous && !q.is_empty() {
+                return Err(Errno::EBUSY);
+            }
+            q.set_enabled(enabled);
+            Ok(previous)
+        })
+    }
+
+    pub fn is_enabled() -> bool {
+        with(|q| q.is_enabled())
+    }
+
+    /// Open a wait: mint an execution generation and park a deadline-only
+    /// sleeper on it. Returns the generation, which is the caller's handle.
+    ///
+    /// `timeout_ns` of `None` parks with no deadline.
+    ///
+    /// Refused with `ENOSYS` while the gate is off. The gate is what the host
+    /// turns on at boot to hand deadline authority over; a kernel that has
+    /// not been told to own waits must say so rather than quietly accepting
+    /// one and then never being asked about it again.
+    pub fn open_deadline(
+        pid: u32,
+        tid: u32,
+        kind: WaitKind,
+        now_ns: MonotonicNs,
+        timeout_ns: Option<MonotonicNs>,
+    ) -> Result<ChannelGeneration, Errno> {
+        with(|q| {
+            if !q.is_enabled() {
+                return Err(Errno::ENOSYS);
+            }
+            let channel = q.open_channel();
+            let deadline = match timeout_ns {
+                Some(ns) => Some(now_ns.checked_add(ns).ok_or(Errno::EOVERFLOW)?),
+                None => None,
+            };
+            let result = q.park(ParkRequest {
+                pid,
+                tid,
+                channel,
+                kind,
+                sources: Vec::new(),
+                deadline,
+                target: None,
+                signal_safe: false,
+            });
+            match result {
+                Ok(_) => Ok(channel),
+                Err(error) => {
+                    q.retire_channel(channel);
+                    Err(error)
+                }
+            }
+        })
+    }
+
+    /// Nanoseconds left on `channel`, saturating at zero. `Ok(None)` means no
+    /// deadline; `Err(ESRCH)` means the handle names no live wait.
+    pub fn remaining_ns(
+        channel: ChannelGeneration,
+        now_ns: MonotonicNs,
+    ) -> Result<Option<MonotonicNs>, Errno> {
+        with(|q| q.remaining_ns(channel, now_ns))
+    }
+
+    /// Retire a wait once its call has completed. Returns whether the handle
+    /// named a live generation.
+    pub fn close(channel: ChannelGeneration) -> bool {
+        with(|q| {
+            let live = q.is_channel_live(channel);
+            q.retire_channel(channel);
+            live
+        })
+    }
+
+    /// Retire every wait belonging to `pid` -- process exit or teardown.
+    pub fn retire_process(pid: u32) -> Vec<Wakeup> {
+        with(|q| q.retire_process(pid))
+    }
+
+    /// The earliest deadline in the machine. This is what lets one host timer
+    /// replace the per-waiter timers spread across the host containers.
+    pub fn next_deadline_ns() -> Option<MonotonicNs> {
+        with(|q| q.next_deadline_ns())
+    }
+
+    pub fn stats() -> WaitQueueStats {
+        with(|q| q.stats())
+    }
+
+    pub fn len() -> usize {
+        with(|q| q.len())
+    }
+
+    /// Drop every sleeper and reset the gate. Whole-machine teardown only.
+    pub fn reset() {
+        with(|q| *q = WaitQueue::new());
     }
 }
 
@@ -1011,5 +1243,134 @@ mod tests {
         assert_eq!(q.expire(2 * MS).len(), 1);
         assert_eq!(q.expire(2 * MS).len(), 0);
         assert_eq!(q.next_deadline_ns(), None);
+    }
+}
+
+#[cfg(test)]
+mod global_tests {
+    use super::global;
+    use super::{ChannelGeneration, WaitKind};
+    use wasm_posix_shared::Errno;
+
+    const MS: i64 = 1_000_000;
+
+    fn fresh() {
+        global::reset();
+        // The gate is the host's boot-time handover of deadline authority.
+        global::set_enabled(true).unwrap();
+    }
+
+    #[test]
+    fn deadline_is_measured_from_the_now_the_caller_supplies() {
+        fresh();
+        // A wall clock that steps backwards mid-wait used to extend every
+        // pending timeout. The queue never reads a clock, so the only time it
+        // can see is the monotonic one its caller passes in.
+        let h = global::open_deadline(7, 7, WaitKind::Poll, 1_000 * MS, Some(100 * MS)).unwrap();
+        assert_eq!(global::remaining_ns(h, 1_000 * MS).unwrap(), Some(100 * MS));
+        assert_eq!(global::remaining_ns(h, 1_050 * MS).unwrap(), Some(50 * MS));
+        assert_eq!(global::remaining_ns(h, 1_100 * MS).unwrap(), Some(0));
+        // Past the deadline saturates at zero rather than going negative.
+        assert_eq!(global::remaining_ns(h, 9_999 * MS).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_wait_with_no_timeout_reports_no_deadline_not_zero() {
+        fresh();
+        let h = global::open_deadline(1, 1, WaitKind::Select, 0, None).unwrap();
+        assert_eq!(global::remaining_ns(h, 500 * MS).unwrap(), None);
+        assert_eq!(global::next_deadline_ns(), None);
+    }
+
+    #[test]
+    fn a_closed_handle_is_esrch_and_never_no_deadline() {
+        fresh();
+        // The distinction is load-bearing: a host that read a lost handle as
+        // "no deadline" would turn a finite timeout into an infinite one and
+        // hang the caller with no error anywhere.
+        let h = global::open_deadline(3, 3, WaitKind::EpollWait, 0, Some(10 * MS)).unwrap();
+        assert!(global::close(h));
+        assert_eq!(global::remaining_ns(h, 0).unwrap_err(), Errno::ESRCH);
+        assert!(!global::close(h));
+    }
+
+    #[test]
+    fn a_handle_is_never_reused_across_waits() {
+        fresh();
+        // Invariant 1: exec reuses both pid and mailbox offset, so a handle
+        // that could be reissued would let a timer armed before the exec
+        // complete a request issued after it.
+        let first = global::open_deadline(5, 5, WaitKind::Poll, 0, Some(MS)).unwrap();
+        global::close(first);
+        let second = global::open_deadline(5, 5, WaitKind::Poll, 0, Some(MS)).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(global::remaining_ns(first, 0).unwrap_err(), Errno::ESRCH);
+        assert_eq!(global::remaining_ns(second, 0).unwrap(), Some(MS));
+    }
+
+    #[test]
+    fn next_deadline_is_the_earliest_across_the_machine() {
+        fresh();
+        let late = global::open_deadline(1, 1, WaitKind::Poll, 0, Some(90 * MS)).unwrap();
+        let early = global::open_deadline(2, 2, WaitKind::Select, 0, Some(10 * MS)).unwrap();
+        assert_eq!(global::next_deadline_ns(), Some(10 * MS));
+        global::close(early);
+        assert_eq!(global::next_deadline_ns(), Some(90 * MS));
+        global::close(late);
+        assert_eq!(global::next_deadline_ns(), None);
+    }
+
+    #[test]
+    fn process_teardown_retires_every_wait_that_process_owns() {
+        fresh();
+        let mine = global::open_deadline(11, 1, WaitKind::Poll, 0, Some(MS)).unwrap();
+        let also_mine = global::open_deadline(11, 2, WaitKind::Select, 0, Some(MS)).unwrap();
+        let theirs = global::open_deadline(12, 1, WaitKind::Poll, 0, Some(MS)).unwrap();
+        assert_eq!(global::retire_process(11).len(), 2);
+        assert_eq!(global::remaining_ns(mine, 0).unwrap_err(), Errno::ESRCH);
+        assert_eq!(global::remaining_ns(also_mine, 0).unwrap_err(), Errno::ESRCH);
+        assert!(global::remaining_ns(theirs, 0).is_ok());
+    }
+
+    #[test]
+    fn an_unenabled_kernel_refuses_to_own_a_deadline() {
+        global::reset();
+        // A dormant gate must not quietly accept a wait it will never be
+        // asked about again. The host turns the gate on at boot; a kernel
+        // that has not been told to own waits says so.
+        assert_eq!(
+            global::open_deadline(1, 1, WaitKind::Poll, 0, Some(MS)).unwrap_err(),
+            Errno::ENOSYS,
+        );
+    }
+
+    #[test]
+    fn disabling_the_gate_with_tasks_parked_is_refused() {
+        fresh();
+        // Turning the queue off under live sleepers would drop their
+        // deadlines on the floor -- the silent hang this module exists to
+        // prevent. It must fail loudly instead.
+        let h = global::open_deadline(1, 1, WaitKind::Sleep, 0, Some(MS)).unwrap();
+        assert_eq!(global::set_enabled(false).unwrap_err(), Errno::EBUSY);
+        assert!(global::is_enabled());
+        global::close(h);
+        assert!(global::set_enabled(false).unwrap());
+    }
+
+    #[test]
+    fn an_unopened_handle_is_esrch() {
+        fresh();
+        let bogus = ChannelGeneration(9_999);
+        assert_eq!(global::remaining_ns(bogus, 0).unwrap_err(), Errno::ESRCH);
+    }
+
+    #[test]
+    fn stats_count_what_the_queue_did() {
+        fresh();
+        let before = global::stats();
+        let h = global::open_deadline(4, 4, WaitKind::Poll, 0, Some(MS)).unwrap();
+        assert_eq!(global::stats().parked, before.parked + 1);
+        global::close(h);
+        assert_eq!(global::stats().retired, before.retired + 1);
     }
 }

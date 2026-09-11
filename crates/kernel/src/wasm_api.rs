@@ -1666,6 +1666,194 @@ pub extern "C" fn kernel_set_tmpfs_enabled(enabled: i32) -> i32 {
     crate::tmpfs::set_enabled(enabled != 0) as i32
 }
 
+// ---- Kernel-owned wait deadlines (K3) ----
+//
+// The host still owns the parks -- the timers and the wake routing -- but the
+// *deadline* of every finite blocking timeout is kernel state. The host used
+// to compute `Date.now() + timeoutMs` and compare against `Date.now()`, so a
+// system clock step (NTP correction, DST change, a user setting the clock)
+// moved every pending timeout in the machine: a `poll(fds, n, 100)` could
+// return after one second or never return at all. These exports replace that
+// with `CLOCK_MONOTONIC` deadlines in `crate::wait_queue`.
+//
+// Return conventions, shared by all of them:
+//   * `>= 0`             a real answer (a handle, or nanoseconds remaining)
+//   * `WAIT_NO_DEADLINE` the wait is live but has no deadline (wait forever)
+//   * `< 0`              `-errno`; a protocol failure the host must not paper
+//                        over, since treating a lost handle as "no deadline"
+//                        would silently turn a finite timeout into an
+//                        infinite one.
+
+/// Sentinel for "this wait is live and has no deadline".
+///
+/// Deliberately not `-1`: that is `-EPERM`, and an error must never be
+/// mistaken for an answer.
+const WAIT_NO_DEADLINE: i64 = i64::MIN;
+
+/// Read `CLOCK_MONOTONIC` as nanoseconds, for the wait queue's deadlines.
+fn wait_now_ns() -> Result<i64, Errno> {
+    let (sec, nsec) = HostIO::host_clock_gettime(
+        &mut WasmHostIO,
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    )?;
+    sec.checked_mul(1_000_000_000)
+        .and_then(|s| s.checked_add(nsec))
+        .ok_or(Errno::EOVERFLOW)
+}
+
+/// Map the host's numeric wait kind onto the typed [`WaitKind`].
+///
+/// Unknown values are refused rather than defaulted. A new blocking family
+/// must name itself here; silently parking it as a generic sleep would lose
+/// the distinction the enum exists to keep.
+fn wait_kind_from_u32(kind: u32) -> Result<crate::wait_queue::WaitKind, Errno> {
+    use crate::wait_queue::WaitKind;
+    Ok(match kind {
+        1 => WaitKind::Poll,
+        2 => WaitKind::Select,
+        3 => WaitKind::EpollWait,
+        4 => WaitKind::Sleep,
+        5 => WaitKind::SigTimedWait { mask: 0 },
+        6 => WaitKind::ChildWait { options: 0 },
+        7 => WaitKind::AdvisoryLock,
+        _ => return Err(Errno::EINVAL),
+    })
+}
+
+/// Enable (nonzero) or disable (zero) kernel-owned waiting. Returns the
+/// previous state (0/1), or `-errno`.
+///
+/// Disabling while tasks are parked is refused with `EBUSY` rather than
+/// silently dropping their wakeups.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_wait_queue_enabled(enabled: u32) -> i32 {
+    match crate::wait_queue::global::set_enabled(enabled != 0) {
+        Ok(previous) => previous as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Open a wait and arm its deadline. Returns the handle (> 0), or `-errno`.
+///
+/// `timeout_ms` below zero parks with no deadline. The handle is an execution
+/// generation: it is never reused, so a timer armed before an `exec` cannot
+/// complete a request issued after it (invariant 1 in `wait_queue`).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_open(
+    pid: u32,
+    tid: u32,
+    kind: u32,
+    timeout_ms: i64,
+) -> i64 {
+    let kind = match wait_kind_from_u32(kind) {
+        Ok(kind) => kind,
+        Err(error) => return -(error as i64),
+    };
+    let now_ns = match wait_now_ns() {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    let timeout_ns = if timeout_ms < 0 {
+        None
+    } else {
+        match timeout_ms.checked_mul(1_000_000) {
+            Some(ns) => Some(ns),
+            None => return -(Errno::EOVERFLOW as i64),
+        }
+    };
+    match crate::wait_queue::global::open_deadline(pid, tid, kind, now_ns, timeout_ns) {
+        Ok(channel) => i64::try_from(channel.0).unwrap_or(i64::MAX),
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Nanoseconds left on `handle`, saturating at zero when the deadline has
+/// passed. `WAIT_NO_DEADLINE` if the wait has none; `-ESRCH` if the handle
+/// names no live wait.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_remaining_ns(handle: i64) -> i64 {
+    if handle <= 0 {
+        return -(Errno::EINVAL as i64);
+    }
+    let now_ns = match wait_now_ns() {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    let channel = crate::wait_queue::ChannelGeneration(handle as u64);
+    match crate::wait_queue::global::remaining_ns(channel, now_ns) {
+        Ok(Some(remaining)) => remaining,
+        Ok(None) => WAIT_NO_DEADLINE,
+        Err(error) => -(error as i64),
+    }
+}
+
+/// Retire a wait once its call has completed. Returns 1 if the handle named a
+/// live wait, 0 if it did not, or `-errno`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_deadline_close(handle: i64) -> i32 {
+    if handle <= 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    let channel = crate::wait_queue::ChannelGeneration(handle as u64);
+    crate::wait_queue::global::close(channel) as i32
+}
+
+/// Retire every wait belonging to `pid`. Returns how many were dropped.
+///
+/// Process teardown: a sleeper left behind would hold a deadline for a
+/// process that can never be completed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_retire_process(pid: u32) -> i32 {
+    let dropped = crate::wait_queue::global::retire_process(pid).len();
+    i32::try_from(dropped).unwrap_or(i32::MAX)
+}
+
+/// The earliest deadline in the machine, as absolute `CLOCK_MONOTONIC`
+/// nanoseconds, or `WAIT_NO_DEADLINE` if nothing is timed.
+///
+/// This is what lets one host timer for the whole machine replace the
+/// per-waiter timers spread across the host's parking containers. Nothing
+/// arms that single timer yet; the export is the half the host half needs.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_next_wait_deadline_ns() -> i64 {
+    crate::wait_queue::global::next_deadline_ns().unwrap_or(WAIT_NO_DEADLINE)
+}
+
+/// Number of waits currently parked. Diagnostics and teardown assertions.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_queue_len() -> i32 {
+    i32::try_from(crate::wait_queue::global::len()).unwrap_or(i32::MAX)
+}
+
+/// Write the wait queue's counters as eight little-endian `u64`s, in
+/// `WaitQueueStats` declaration order. Returns the bytes written, or `-errno`.
+///
+/// A missed wakeup has no error message, so the only way to see one before a
+/// user does is to count the things that stand in for it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_queue_stats(out_ptr: *mut u8, len: u32) -> i32 {
+    const FIELDS: usize = 7;
+    const BYTES: usize = FIELDS * 8;
+    if out_ptr.is_null() || (len as usize) < BYTES {
+        return -(Errno::EINVAL as i32);
+    }
+    let stats = crate::wait_queue::global::stats();
+    let values = [
+        stats.parked,
+        stats.woken_by_source,
+        stats.woken_by_deadline,
+        stats.broad_wakes,
+        stats.deadline_expiries_with_sources,
+        stats.retired,
+        stats.cancelled,
+    ];
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, BYTES) };
+    for (i, value) in values.iter().enumerate() {
+        out[i * 8..(i + 1) * 8].copy_from_slice(&value.to_le_bytes());
+    }
+    BYTES as i32
+}
+
 /// Load the in-kernel rootfs overlay's base tree from a boot manifest buffer in
 /// kernel Wasm memory (Phase 5 Increment 2). The host walks the `/` image tree
 /// once and hands the whole thing over in a single crossing. Returns the number
