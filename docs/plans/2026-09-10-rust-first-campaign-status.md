@@ -2428,9 +2428,23 @@ All inside `./scripts/dev-shell.sh`, vitest from `host/` via
   That is provisioning, not a regression, and it means **the suite the
   previous tranche called the gate for exactly this kind of change did not
   execute here either.** `./run.sh rebuild rootfs` was started to close that
-  and did not finish within the session; it builds the rootfs package set
-  from source (sudo, bash, ncurses, …) and is far longer than the plan's
-  provisioning list implies.
+  and **did** finish — it builds the rootfs package set from source (sudo,
+  bash, ncurses, …) and is far longer than the plan's provisioning list
+  implies, but it is a provisioning step, not a boundary.
+- **The fork-path guest gate then ran, and is GREEN.** With
+  `host/wasm/rootfs.vfs` present, three kernel-booting suites, at base
+  `d6f4f188f` and at the tip: **8 passed / 1 failed of 9 at both**, the same
+  single case (`fifo-lifecycle-guest` → "rendezvouses across processes and
+  cancels an exact blocked thread").
+  **`vfork-lifecycle-guest` passes 6 of 6 at the tip**, including "contains a
+  compute-running borrower after an external fatal signal", which drives the
+  shared `containVforkAddressSpace`, and "keeps the parent parked through exit
+  and failed exec, then releases on exec", which drives the shared
+  `handleExec` and `finishProcessExit` on the vfork-borrower path.
+  `wait-lifecycle-guest` passes 2 of 2. This is the gate the previous tranche
+  recommended provisioning before taking this family, and it is the first time
+  in this item that the newly shared exec path was executed by a real guest
+  rather than asserted about.
 - **Browser: NOT run.** Every group here has a browser half that Node cannot
   execute: the exec retirement predicate's alias release, the fabricated
   `exit` event and its latch, `handleInit`'s side-module compilation and
