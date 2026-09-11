@@ -12,8 +12,27 @@
 //! into the co-resident module alongside the frame allocator, else the Rust
 //! allocator would call back into JS per frame.
 //!
-//! This slice is PURELY ADDITIVE and validated-but-unused. TypeScript still
-//! drives every fork at runtime; nothing here is wired into the host or kernel.
+//! STATUS (this paragraph used to say the opposite, and was read as a licence
+//! to treat the module as dead code): this slice is LIVE. `ReplayEventJournal`
+//! and `ResumeSlotTable` are both imported and constructed by
+//! `crates/fork-module/src/lib.rs`, which drives every fork through them. The
+//! earlier "purely additive and validated-but-unused / TypeScript still drives
+//! every fork" note predates the co-resident module becoming the unconditional
+//! fork engine and is false.
+//!
+//! Resume-slot numbering runs in TWO places at once — here, and the JS
+//! `ForkResumeTable` that owns the `__wpk_fork_resume_table`
+//! `WebAssembly.Table` the guest imports. `resume_peek` returns an index INTO
+//! that JS table, so the two numberings must agree exactly or `call_indirect`
+//! reaches the wrong thunk. They are NOT left to agree by luck: the host seeds
+//! the identical full catalog into the module once per worker via
+//! `fm_set_resume_catalog`, and this module numbers from that catalog rather
+//! than from its own committed ordinals, which makes the numbering identical
+//! BY CONSTRUCTION. See the contract comment at `fork-module/src/lib.rs:227`
+//! for the full argument. The coupling is designed, not accidental, but it is
+//! a coupling: changing either numbering rule without the other is a silent
+//! mis-dispatch rather than a loud failure, so treat the seeding call as
+//! load-bearing.
 //!
 //! Semantics reproduced from the TS classes:
 //!
