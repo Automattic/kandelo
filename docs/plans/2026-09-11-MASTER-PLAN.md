@@ -488,15 +488,18 @@ repetition is the substitute, and it is what produced the numbers above.
 
 ## Known hazards
 
-**A package's cache key depends on build state, not on its source closure.**
-`libc/musl` is a global toolchain input digested by an unfiltered recursive
-directory read, and `build-musl.sh` runs `make` **in-tree**. Measured:
-2,698 → 4,170 → 4,238 entries and three different digests as the submodule was
-initialised, then built for wasm32, then wasm64 — and that digest is hashed into
-**every** library and program key. This is the exact inverse of the
-closure-derived principle the campaign adopted. **NEEDS-DEFER-DECISION:**
-changing what `libc/musl` contributes would shift every package key and force a
-full rebuild, so it is a cache-key semantics decision rather than a fix.
+**RETRACTED — the `libc/musl` cache-key defect does not exist.** This file
+recorded it as measured fact and the maintainer decided on it. Both were wrong.
+`hash_global_package_build_input` already special-cases `libc/musl` to
+`hash_gitlink_input`, which reads the gitlink object id from the git index and
+hashes only that — deliberately, since PR #619, with the reasoning written in
+the code. The "three digests" measurement was a probe hashing the directory,
+never what xtask computes: a property of the directory reported as a property
+of the cache key. A counterfactual settles it — adding and removing object
+files under `libc/musl` does not move a package key, and does not move it even
+when the walk is forced. **A census of every other global toolchain input found
+no entry with the defect shape**: `libc/musl` is the only tree that accumulates
+build output and it is precisely the one exempted from the walk.
 
 **The drift report understates drift.** `global_package_toolchain_digests`
 memoizes per process, so the pre- and post-build keys *necessarily* agree about
