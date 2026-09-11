@@ -4846,7 +4846,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         207 => {
             // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
-            let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                 Ok(model) => model,
                 Err(error) => return -(error as i32),
             };
@@ -5170,16 +5170,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let p = channel_const_ptr!(0, u8);
             let len = channel_cstr_len!(p);
             let output = channel_mut_ptr!(2, u8);
-            kernel_statfs(p, len, output, args[5])
+            kernel_statfs(p, len, output, i64::from(caller_pointer_width))
         }
         130 => {
             // SYS_FSTATFS64: (fd, sizeof, buf)
             let output = channel_mut_ptr!(2, u8);
-            kernel_fstatfs(a1, output, args[5])
+            kernel_fstatfs(a1, output, i64::from(caller_pointer_width))
         }
         // SYS_WRITEV / SYS_READV: the `struct iovec` table is a raw guest
-        // address. The kernel walks it in the caller's data model, which the
-        // private sixth channel slot names.
+        // address. The kernel walks it in the caller's data model, taken from
+        // the calling process's registered pointer width.
         81 => channel_writev(
             a1,
             guest_address!(1),
@@ -5477,11 +5477,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         225 => {
             let new_pointer = channel_const_ptr!(1, u8);
             let old_pointer = channel_mut_ptr!(2, u8);
-            kernel_setitimer(a1 as u32, new_pointer, old_pointer, args[5])
+            kernel_setitimer(a1 as u32, new_pointer, old_pointer, i64::from(caller_pointer_width))
         }
         224 => {
             let current_pointer = channel_mut_ptr!(1, u8);
-            kernel_getitimer(a1 as u32, current_pointer, args[5])
+            kernel_getitimer(a1 as u32, current_pointer, i64::from(caller_pointer_width))
         }
         // clock_settime — always return EPERM (cannot set clock in Wasm sandbox)
         226 => -(Errno::EPERM as i32), // SYS_CLOCK_SETTIME
@@ -5687,8 +5687,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // size both depend on `cmd`, so no static descriptor describes it
             // and the host stages nothing; the kernel reads and writes the
             // caller's `struct msqid_ds` itself, in the caller's data model.
-            // The private sixth channel slot names that model, because one
-            // kernel instance serves both wasm32 and wasm64 processes.
+            // That model is the calling process's registered pointer width,
+            // because one kernel instance serves wasm32 and wasm64 processes.
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
@@ -5969,7 +5969,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // The complete siginfo_t is staged by a generated process-layout
         // descriptor because LP64 alignment moves the common fields.
         205 => {
-            let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                 Ok(model) => model,
                 Err(error) => return -(error as i32),
             };
@@ -6006,7 +6006,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         209 => {
             let stack_pointer = channel_const_ptr!(0, u8);
             let old_stack_pointer = channel_mut_ptr!(1, u8);
-            kernel_sigaltstack(stack_pointer, old_stack_pointer, args[5])
+            kernel_sigaltstack(stack_pointer, old_stack_pointer, i64::from(caller_pointer_width))
         }
 
         // SYS_SCHED_GET_PRIORITY_MAX: POSIX requires at least 32 levels for SCHED_RR/SCHED_FIFO
@@ -6155,7 +6155,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             a1 as u32,
             channel_const_ptr!(1, u8),
             channel_mut_ptr!(2, i32),
-            args[5],
+            i64::from(caller_pointer_width),
         ), // SYS_TIMER_CREATE
         327 => kernel_timer_settime(a1, a2, channel_const_ptr!(2, u8), channel_mut_ptr!(3, u8)), // SYS_TIMER_SETTIME
         328 => kernel_timer_gettime(a1, channel_mut_ptr!(1, u8)), // SYS_TIMER_GETTIME
@@ -6164,7 +6164,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         269 => {
             // SYS_SYSINFO
-            let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                 Ok(model) => model,
                 Err(error) => return -(error as i32),
             };
@@ -6520,7 +6520,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // POSIX message queues
         331 => {
             // SYS_MQ_OPEN: (name_ptr, flags, mode, attr_ptr)
-            let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                 Ok(model) => model,
                 Err(error) => return -(error as i32),
             };
@@ -6732,7 +6732,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                     Err(e) => -(e as i32),
                 }
             } else {
-                let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+                let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                     Ok(model) => model,
                     Err(error) => return -(error as i32),
                 };
@@ -6758,7 +6758,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         336 => {
             // SYS_MQ_GETSETATTR: (mqd, new_attr_ptr, old_attr_ptr)
-            let model = match crate::process_wire::ProcessDataModel::from_width(args[5]) {
+            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
                 Ok(model) => model,
                 Err(error) => return -(error as i32),
             };

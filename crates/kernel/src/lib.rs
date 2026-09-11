@@ -310,6 +310,40 @@ mod wasm_api_source_guards {
         }
     }
 
+    /// The channel's sixth argument slot belongs to the caller.
+    ///
+    /// It used to carry the calling process's pointer width, written there by
+    /// the host on every call that needed a caller-native layout. Eleven
+    /// dispatch arms read it back as `args[5]` WITHOUT naming any constant --
+    /// no grep for the feature's name could see them -- which is exactly how a
+    /// reader of a retired convention survives a migration and starts reading
+    /// the caller's real argument as a data model.
+    ///
+    /// The width is registered per process now. The dispatcher reads it once,
+    /// into `caller_pointer_width`, and every caller-native decision names
+    /// that. So `args[5]` has exactly one legitimate use left: the scalar
+    /// alias `a6`, which is the caller's own sixth argument -- `preadv2` and
+    /// `pwritev2`'s `flags` among others.
+    ///
+    /// A new `args[5]` here means someone is either reintroducing the stamp or
+    /// reading a caller argument without going through the scalar contract.
+    #[test]
+    fn wasm_api_reads_the_sixth_slot_only_as_the_callers_own_argument() {
+        let wasm_api_source = include_str!("wasm_api.rs");
+        let uses: Vec<&str> = wasm_api_source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+            .filter(|line| line.contains("args[5]"))
+            .collect();
+        assert_eq!(
+            uses,
+            vec!["let a6 = args[5] as i32;"],
+            "args[5] is the caller's own sixth argument; read the caller's \
+             data model from `caller_pointer_width` instead",
+        );
+    }
+
     #[test]
     fn wasm_api_avoids_direct_current_tid_lookup() {
         let direct_lookup = concat!("crate::process_table::", "current_tid()");
