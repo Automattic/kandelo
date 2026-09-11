@@ -4108,6 +4108,56 @@ look, because the first measurement was taken with a biased harness. Honest
 non-measurement and careless measurement are not equally safe: the first leaves
 a known gap, the second fills it with a wrong number.
 
+### PROVISIONING: THE CHEAP PATH, AND ONE GATE THAT WILL BITE A CUTOVER
+
+A fresh agent worktree arrives with **nothing** — no submodules, no
+`node_modules`, no sysroots, no `local-binaries`. A full source-only
+`./run.sh setup` into an isolated cache root rebuilds every package and **may
+not finish inside a session**.
+
+**The cheap path that unblocks everything except the rootfs-dependent suites:**
+
+    ./scripts/dev-shell.sh cargo build --release -p kandelo -Z build-std=core,alloc
+    ./scripts/dev-shell.sh bash -c 'source scripts/install-local-binary.sh; \
+      install_local_binary kernel \
+      target/wasm32-unknown-unknown/release/kandelo_kernel.wasm kandelo-kernel.wasm'
+
+That is what unblocked `host-native` and the targeted Vitest files for the B2
+opening move. A controlled base-vs-branch comparison needs a full provisioning
+pass **twice**, once per side.
+
+**Do not edit Rust while a `setup` runs in the background.** An agent's setup
+died with:
+
+    cache key changed while building kernel … refusing publication under the
+    pre-build key
+
+**That is the build-freshness gate working correctly**, not a defect — but an
+item that edits Rust constantly will trip it repeatedly, so stage the kernel
+deliberately with the two commands above instead of leaving a `setup` behind
+you.
+
+### VERIFY THE PREMISE BEFORE OBEYING THE PROCESS
+
+The best thing said in this campaign about its own methods, by the agent that
+scoped the shared-mapping cutover, on standing down:
+
+> The ordering is not really my recommendation so much as what the evidence
+> forced. The reason it has to be "non-empty table under test first" is the same
+> reason the item is atomic at all — the Rust has never executed, and I only
+> believe that because I re-verified it by call-site census rather than
+> inheriting it from the ledger. **If the next agent finds that claim is wrong in
+> either direction, the ordering should be re-derived rather than followed.**
+
+This campaign has disproved **seventeen** inherited claims, several written by
+the coordinator. A process is only as good as the premise that produced it, and
+a process followed on a false premise is worse than no process — it launders a
+wrong belief into a sequence of steps nobody re-examines.
+
+Every brief issued from here carries this: **state the premise the ordering
+rests on, and instruct the agent to re-derive rather than follow if the premise
+fails.**
+
 ### B31 — tuning constants whose evidence predates the link-contract fix
 
 `SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50` (`host/src/kernel-worker.ts:847`) is
