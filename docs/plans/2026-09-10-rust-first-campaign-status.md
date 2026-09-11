@@ -2280,6 +2280,170 @@ This is **not** a reason to weaken the check. It is a gap between two build
 paths for the same class of artifact, and it should be closed by teaching
 `build-programs.sh` to stamp, not by teaching the worker to stay quiet.
 
+## NDD-K4-3 — executed, and the census that framed it was inverted
+
+**The brief's counts were backwards.** NDD-K4-3 recorded "twenty differing
+declarations ... plus sixteen byte-identical state declarations". Measured at
+`d6f4f188f` with the TypeScript parser rather than by name: **36 common — 20
+byte-identical, 16 differing**, holding 1,118 node and 1,511 browser lines.
+A first pass with a hand-written brace counter reproduced the wrong shape by
+silently swallowing `handleExec` and `handleInit` into a preceding
+declaration, which is the same failure mode this plan already records for
+name-based census: a structural count needs a real parser, not a regex.
+
+**After this item: 21 common — 8 byte-identical, 13 differing**, holding
+**349 node and 746 browser** lines. The duplicated declaration mass fell 69%
+on Node and 51% in the browser. The entries went 2,186 → 1,408 (node) and
+2,576 → 1,810 (browser); `process-lifecycle.ts` went 3,696 → 4,794.
+
+### The three numbers
+
+1. **Production TypeScript: −446** (`migration-ledger.sh --step d6f4f188f
+   HEAD`: 1,372 added / 1,818 removed, in-scope). Rust unchanged.
+2. **Host import count: 75 before, 75 after.** See the caveat below — this
+   item touches only `host/src` TypeScript and cannot reach the kernel's
+   import section, but the intended verification against a freshly built
+   `kernel.wasm` did not complete.
+3. **Driver-glue delta: 0.** Nothing here instantiates, drives or marshals
+   for a Rust module. Every line added to `host/src` is process-lifecycle
+   logic that left the two entries.
+
+**And a fourth, which is the one the plan says to rank on.**
+`ProcessLifecycleHost` went **37 members → 28, a net −9**: ten pass-through
+fields removed, one optional hook added. That record is the host surface this
+campaign exists to shrink, so this item shrinks the contract rather than
+relocating line counts.
+
+### What was shared, and what was refused
+
+| group | outcome |
+|---|---|
+| realm state (11 declarations) | shared — constructed in the module, returned; −10 host fields |
+| `handleExec` (458/493) | shared whole |
+| `handleInit` (267/504) | **middle only** — callback record, allocator, rootfs/overlay wiring |
+| `handleHttpRequest` (15/53) | **refused** — a name collision, not a duplicate |
+| `installProcessWorkerListeners` (98/168) | message dispatch shared; error/exit disposition declared |
+| `performDestroy` (133/143) | prologue, retry sweep and allocator accounting shared; retirement loop left — see NDD-K4-4 |
+
+**`handleHttpRequest` is not a duplicated declaration and should stop being
+counted as one.** Node's answers a kernel-worker protocol request through
+`respond`/`respondError`; the browser's is a service-worker bridge dispatcher
+that resolves a listener port, posts to a `MessagePort` and tracks bridge
+activity. They do not share a signature. The only thing in common is one call
+to an existing kernel method.
+
+### Eight drifts closed, each toward the half that was right
+
+| drift | halves | resolution |
+|---|---|---|
+| exec retirement predicate | Node `mainQuiescent && threadsQuiescent`; browser also required `memoryRetirementSafe` and the framebuffer-alias release | browser's — the complete predicate, written once through `releaseGenerationAliases` |
+| exec's old-worker teardown | Node `terminateTrackedWorker`; browser an inline copy missing the `workerTeardowns` registration | Node's — the browser's exec teardown was invisible to the rootfs-export quiescence predicate |
+| exec handoff reap signal | browser named the signal; Node passed `undefined` and relied on a synthesis it does not perform on this path | browser's — strictly more precise, idempotent via `hostReaped` |
+| detach ledger | browser dropped the PID from `threadedProcessPids`; Node did not | browser's — Node's omission was documented inert but grew a `Set` for the realm's life |
+| exec thread-settle ledger | same, at the exec commit and in its rollback | browser's |
+| exec allocation diagnostic | browser passed operation/path/argv; Node passed none | browser's — a capacity failure named only a PID on Node |
+| worker-message PID guard | Node guarded `message.pid === pid` on the ownership fences; browser did not | Node's — a message naming another PID would have settled this PID's fence |
+| allocator page size | browser used a hand-written `PAGE_SIZE = 65536`; Node used generated `WASM_PAGE_SIZE` | Node's — a hand-written copy of an ABI constant stops matching silently |
+| retained-generation diagnostic | browser formatted with a stack, Node without | browser's — a generation the host could not give back is worth a stack |
+| generation-exhaustion message | browser said "browser process execution generation space exhausted" | Node's host-neutral wording; `diagnosticPrefix` already names the host |
+
+### Two boundaries declared rather than collapsed
+
+**The exec rollback's lease release.** Node released exactly, the browser
+force-retires after a start attempt. Node's comment claimed its exact release
+was safe because the replacement "was never started" — that is **false**, and
+the same comment said so two sentences later: `preparedTransferred` is set
+*after* `start()`. Both behaviours are kept and derived from
+`terminationProvesQuiescence`, which is what actually distinguishes them.
+
+**The process-worker error/exit disposition.** Node's `terminate()` is an
+ownership fence; the browser's is not and delivers no `exit` event at all, so
+`BrowserWorkerHandle` fabricates one and the listener needs a latch to stop
+the fabricated event double-finalizing. `dispatchProcessWorkerMessage` returns
+a disposition rather than acting on it.
+
+### NEEDS-DEFER-DECISION (NDD-K4-4) — `retireCurrentGenerations`
+
+- *What:* the generation-retirement loop inside `performDestroy`, ~45 lines
+  in each entry, the only substantial piece of NDD-K4-3 left unshared.
+- *Why it was not taken:* the halves differ on the load-bearing decision, not
+  on wording. Node awaits `waitForWorkerQuiescence` and
+  `terminateThreadWorkers` and releases the lease **exactly** when both report
+  quiescent. The browser does not call `waitForWorkerQuiescence` at all,
+  releases the main-thread framebuffer alias, and **always** force-retires.
+  A shared form must make the browser start awaiting a quiescence fence it
+  does not await today — a change to browser teardown timing that no Node
+  suite can prove.
+- *Cost now:* a careful session plus a real browser teardown pass, including
+  the Safari image-switch reclamation path this code exists to protect.
+- *Cost later:* small. It is now ~45 lines rather than 133/143, it sits
+  between three shared helpers, and the two halves are adjacent in the diff.
+- *Also here:* D15 remains un-adjudicated — the browser's
+  `waitForProcessTeardowns()` barrier, called twice, where Node uses one
+  `Promise.allSettled` over `processTeardowns`.
+- *Recommendation:* take it with the browser teardown pass, not before.
+  **The maintainer's call, not the agent's.**
+
+### Structural parity assertions: six suites repointed
+
+Fourteen assertions in five suites slice named functions out of the entries as
+text and failed on a `-1` index once those slices moved. Each was repointed at
+`process-lifecycle.ts` and paired with a check that the entry still binds or
+spreads what it delegates. `kernel-worker-entry-root-contract`'s callback-name
+walker now resolves a spread of `processLifecycleKernelCallbacks()` to the
+names that record declares.
+
+One assertion split rather than moved: of the five creator-gate admissions,
+four reach the kernel through the shared callback record, but
+`a host-spawned process Worker` arrives as a `spawn` message from main rather
+than through a kernel callback, so it stays each entry's to admit.
+
+### Validation actually run
+
+All inside `./scripts/dev-shell.sh`, vitest from `host/` via
+`host/node_modules/.bin/vitest`, with an isolated
+`KANDELO_SOURCE_CACHE_ROOT` verified from inside the shell.
+
+- **`npm --prefix host run typecheck`: clean**, matching the 0 baseline, at
+  every one of the five commits.
+- **`npm --prefix host run build`: green** at every commit — it checks
+  emitted declarations and bundling, which typecheck does not.
+- **Nine host-parity/contract suites, before and after, in this worktree:**
+  at base `d6f4f188f` 8 files passed / 1 failed; at the tip 8 files passed /
+  1 failed — the same file (`host-owned-process-reap`) and the same two
+  cases. 63 passed / 2 failed of 65. The base was measured minutes before,
+  not inherited.
+- **Browser: NOT run.** Every group here has a browser half that Node cannot
+  execute: the exec retirement predicate's alias release, the fabricated
+  `exit` event and its latch, `handleInit`'s side-module compilation and
+  bridge wiring, and browser teardown.
+- **Kernel import count: NOT verified against a built `kernel.wasm`.** The
+  build was started and did not complete in this session. The change is
+  confined to `host/src` TypeScript and adds no host import, so 75 is
+  expected to be unchanged — but that is an argument, not a measurement, and
+  should be read as such.
+- **Conformance suites: not run.** Still unreachable behind the tier-identity
+  defect; `xtask build-deps` failed once mid-session with "program package
+  index target changed before publication: local mirror identity or contents
+  changed", which is that defect surfacing through the shared
+  `~/.cache/kandelo` mirror under concurrent agents.
+
+### A cross-worktree hazard worth recording
+
+**Serena's project root is not the agent's worktree.** Its editing tools wrote
+into `/Users/brandon/kandelo-abi44-reconcile` — the shared checkout — while
+this agent was isolated in
+`.claude/worktrees/agent-a48f77ffe1c2a613b`, and reported success for every
+edit. Nine edits landed in the wrong tree before a `git diff` in the right one
+came back empty and exposed it. They were reverted by restoring the two files
+from the agent's own pristine copies, verified by `diff -rq` over `host/src`
+leaving only a concurrent agent's `binary-resolver.ts` untouched.
+
+The bash-level worktree guard does not cover MCP tools. An agent given a
+worktree should confirm early that every editing tool it intends to use writes
+there — a single `git diff --stat` after the first edit is enough, and would
+have caught this immediately.
+
 ## K3 §11.2 `usePolling` — adjudicated on the platform contract, ready to execute
 
 **Verdict: delete it.** Not because nothing uses it — the disposition ledger's
