@@ -2500,6 +2500,37 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    # Provision a case-sensitive os-test checkout when this filesystem
+    # collapsed the submodule's case-colliding paths.
+    #
+    # WHY here: os-test tracks 17 pairs of paths that differ only in letter
+    # case, and a case-insensitive filesystem (the macOS default) can hold
+    # only one file per pair. The affected conformance tests then pass while
+    # checking a macro other than their own name, so the suite reports
+    # conformance nobody measured. Setup is where the rest of this project's
+    # test inputs are provisioned, so it is where this one belongs too.
+    #
+    # This is a no-op on Linux, a no-op on any macOS checkout already on a
+    # case-sensitive filesystem, and a no-op when the submodule is not checked
+    # out. It never modifies the repository's own checkout, and a failure here
+    # is reported but does not block setup: the sortix runners enforce the
+    # requirement themselves, so setup should not refuse to build a kernel
+    # over a conformance-input problem.
+    if [ -d "$REPO_ROOT/tests/sortix/os-test/.git" ] \
+       || [ -f "$REPO_ROOT/tests/sortix/os-test/.git" ]; then
+        if ! bash "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" \
+                "$REPO_ROOT/tests/sortix/os-test" >/dev/null 2>&1; then
+            echo "==> os-test checkout is case-collapsed; provisioning a case-sensitive one"
+            if bash "$REPO_ROOT/scripts/ensure-case-sensitive-os-test.sh"; then
+                :
+            else
+                echo "WARNING: could not provision a case-sensitive os-test checkout." >&2
+                echo "         The sortix conformance suites will refuse to run until" >&2
+                echo "         this is resolved; the rest of setup continues." >&2
+            fi
+        fi
+    fi
+
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }

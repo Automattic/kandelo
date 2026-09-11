@@ -76,6 +76,36 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
+
+   **On macOS, `os-test` does not check out correctly by default.** The suite
+   tracks 17 pairs of paths that differ only in letter case, such as
+   `include/inttypes/PRIx16.c` and `include/inttypes/PRIX16.c`. A
+   case-insensitive filesystem — the macOS default — can hold only one file
+   per pair, so `git submodule update --init` leaves 17 files modified that
+   nobody edited, and the affected tests then compile and *pass* while
+   checking a macro other than the one their name claims. All 17 are in
+   `include/`, the compile-only suite of ~3,741 tests that supplies most of
+   this project's conformance passes, so the resulting numbers are fictional.
+
+   `scripts/run-sortix-tests.sh` and `scripts/run-browser-sortix-tests.sh`
+   refuse to start on such a checkout and name every affected path. Provision
+   a real one, then point the runner at it:
+
+   ```bash
+   export KANDELO_OS_TEST_DIR="$(scripts/ensure-case-sensitive-os-test.sh --print-dir)"
+   ```
+
+   That creates and mounts a case-sensitive APFS sparse image
+   (`~/.cache/kandelo/KandeloCaseBuild.sparseimage`) via
+   `scripts/ensure-case-sensitive-volume.sh`, clones `os-test` onto it at the
+   exact commit the submodule pins, and prints the directory. Both scripts are
+   idempotent and are no-ops on Linux and on any checkout already sitting on a
+   case-sensitive filesystem, so provisioning can run them unconditionally.
+   Neither touches the repository's own submodule checkout.
+
+   `./run.sh setup` runs the same provisioning automatically when — and only
+   when — it finds a collapsed checkout, so a fresh macOS worktree is
+   prepared without a separate step.
 2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
    builds the musl sysroot from scratch on a fresh checkout (or just
    re-syncs overlay headers when a sysroot already exists), then the
