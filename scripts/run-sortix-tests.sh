@@ -24,9 +24,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# The os-test checkout to build from. It defaults to the submodule, and
+# KANDELO_OS_TEST_DIR selects a different checkout of the same commit.
+#
+# WHY the override exists: os-test tracks paths that differ only in letter
+# case, which a case-insensitive filesystem cannot check out (see the
+# case-collapse guard below). On such a host the only truthful way to run this
+# suite is from a checkout on a case-sensitive filesystem, and
+# scripts/ensure-case-sensitive-os-test.sh produces one without relocating the
+# repository. The override is explicit on purpose: the runner never silently
+# substitutes a different source tree for the one in the repository.
+OS_TEST="${KANDELO_OS_TEST_DIR:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
-BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
+BUILD_DIR="$OS_TEST/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
@@ -1105,6 +1115,24 @@ if [ ! -f "$KERNEL_WASM" ]; then
 fi
 if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
+    exit 1
+fi
+
+# Refuse a case-collapsed os-test checkout.
+#
+# WHY: os-test tracks 17 pairs of paths that differ only in letter case, for
+# example `include/inttypes/PRIx16.c` alongside `include/inttypes/PRIX16.c`.
+# A case-insensitive filesystem — the macOS default — cannot hold both, so
+# the checkout silently keeps one file per pair and the survivor answers to
+# both names. The `include` suite then compiles and PASSES a test that checked
+# a different macro than its own name claims: on such a checkout `PRIX16.c`
+# contains `#ifndef PRIx16`, `math/NAN.c` tests the `nan()` function instead
+# of the `NAN` macro, and both `FD_SET.c` files test the `fd_set` type instead
+# of the `FD_SET` macro. Those passes are fictional and nothing in the result
+# output reveals it. A suite that reports conformance it never measured is
+# worse than one that refuses to run, so refuse.
+if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$OS_TEST"; then
+    echo "Refusing to run: os-test results from this checkout would be fictional." >&2
     exit 1
 fi
 
