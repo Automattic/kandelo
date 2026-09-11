@@ -135,6 +135,36 @@ int main(void) {
     t1 = now_us();
     report("epoll_ready_us_per_op", t1 - t0, READY_ITERATIONS);
 
+    /* select, fd already readable, finite timeout.
+     *
+     * Appended after the existing sections on purpose: each section is timed
+     * in its own window, so adding one here leaves the earlier numbers
+     * comparable with runs taken before it existed. */
+    for (int i = 0; i < 50; i++) {
+        fd_set rfds;
+        struct timeval tv;
+        FD_ZERO(&rfds);
+        FD_SET(ready[0], &rfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = TIMEOUT_MS * 1000;
+        select(ready[0] + 1, &rfds, NULL, NULL, &tv);
+    }
+    t0 = now_us();
+    for (int i = 0; i < READY_ITERATIONS; i++) {
+        fd_set rfds;
+        struct timeval tv;
+        FD_ZERO(&rfds);
+        FD_SET(ready[0], &rfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = TIMEOUT_MS * 1000;
+        if (select(ready[0] + 1, &rfds, NULL, NULL, &tv) != 1) {
+            fprintf(stderr, "blocking-wait: ready select did not report ready\n");
+            return 1;
+        }
+    }
+    t1 = now_us();
+    report("select_ready_us_per_op", t1 - t0, READY_ITERATIONS);
+
     close(epfd);
     close(idle[0]);
     close(idle[1]);
