@@ -2699,6 +2699,45 @@ mapping release becomes load-bearing. **Not a defect today** — the table is
 empty — which is exactly why it is written down now rather than discovered
 later.
 
+## A GATE I WROTE, WHICH ACCUSED THE WRONG LAYER (2026-09-11)
+
+Recorded against my own work, because it is the fourth instance of one pattern
+in a single session and the pattern is worth more than any of the four.
+
+The sysroot postcondition added in `087a0c5b0` compiles a probe using
+`opendir`/`readdir`/`closedir`. It writes `NULL` while including only
+`<dirent.h>`. POSIX requires that header to declare `DIR` and those functions;
+it does **not** require it to define `NULL`. So on a sysroot whose headers do
+not supply `NULL` transitively, the probe fails and the script reports *"the
+freshly built sysroot cannot compile a program that uses
+opendir/readdir/closedir"* — **against a correct sysroot, blaming the sysroot.**
+
+That is precisely the failure the postcondition exists to prevent. It blocked
+`./run.sh setup` in every fresh worktree and was found by another agent, not by
+me.
+
+**The verification was the real defect.** I tested both directions and said so.
+But the program I tested used `if (!p)` while the script emits `if (d == NULL)`
+— **the version that shipped was never compiled.** Re-checked properly: on this
+very sysroot, a translation unit including only `<dirent.h>` does not get
+`NULL`, so it would have fired here too. The check passed because it exercised
+a different source file.
+
+### The four, together
+
+| what was wrong | what it claimed |
+|---|---|
+| `vitest run host/test` from the repo root | 269 failures, ~89 in one file — all fiction |
+| `scripts/xtask.sh` outside the dev shell | `abi/snapshot.json` may have drifted — nothing had |
+| a `git add` that aborted on a stale pathspec | branch clean — HEAD carried a dangling import for hours |
+| a probe verified with a different source than shipped | check works in both directions — one direction never ran |
+
+**None announced itself.** Each returned a confident, specific, wrong answer,
+and three of the four were mine. The defence is not more care at the moment of
+checking — it is checking the artifact that ships: run the command the script
+runs, read `HEAD` rather than the working tree, invoke the suite the way the
+repository invokes it.
+
 ## LEDGER, 2026-09-11 — and why it moved the wrong way
 
 Measured against the campaign merge-base with rename detection, in the format
