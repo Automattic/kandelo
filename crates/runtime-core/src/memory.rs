@@ -2334,14 +2334,28 @@ impl FileBacking {
 /// (`shm_read_chunk`/`shm_write_chunk`, without the channel-sized chunking the
 /// host mirror needs today).
 ///
-/// `retain_handle`/`release_handle` and `fd_stat`/`fd_pwrite`/`close_fd` are
-/// **not yet implemented** and refuse with `ENOSYS`. Retaining a handle means
-/// deferring the kernel's own `host_close` until the last mapping reference
-/// drops; the TypeScript equivalent is the host-side refcount
-/// `retainHostFileHandle`/`releaseHostFileHandle` with its
-/// `descriptorClosePending` deferral, and moving it here is part of the
-/// file-backing half. The refusal is deliberate: a silent success would hand a
-/// caller a handle the kernel may close underneath it.
+/// `retain_handle`/`release_handle` and `fd_stat`/`fd_pwrite`/`close_fd` add no
+/// import either, because both are things the kernel is already the authority
+/// for.
+///
+/// Retaining a handle means deferring the kernel's own `host_close` until the
+/// last mapping reference drops, which POSIX requires: `mmap` adds a reference
+/// to the file that a later `close` of the mapping fd does not remove. The
+/// kernel decides when `host_close` runs, so the reference lives in
+/// [`crate::ofd::retain_mapping_host_handle`] beside the cross-process
+/// descriptor refcount rather than in a host-side table. It is deliberately a
+/// *second* count: the cross-process one reaching zero is exactly the moment a
+/// single-process mapping still needs the handle, and withholding the close
+/// inside it would also withhold the final OFD lock release. The TypeScript
+/// this replaces is `retainHostFileHandle`/`releaseHostFileHandle` and the
+/// `descriptorClosePending` branch of `kernel.ts`'s close import.
+///
+/// The fd-writeback trio serves files the kernel owns itself (tmpfs, memfd,
+/// rootfs overlay), which have no stable host handle to map, so it reaches
+/// their bytes the way a guest would — through the process's own descriptor,
+/// over `shared_mapping_fd_facts`, `sys_pwrite` and `sys_close_with_locks`.
+/// The TypeScript this replaces re-entered the kernel with a synthesized
+/// `SYS_CLOSE` channel record to do the same thing.
 ///
 /// # TypeScript this replaces
 ///

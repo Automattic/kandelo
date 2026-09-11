@@ -396,8 +396,13 @@ pub fn release_deferred_in_flight_resource(
                 if release.host_handle >= 0 =>
             {
                 if crate::ofd::host_handle_close_ref(release.host_handle) {
+                    // The description is over either way, so the caller still
+                    // removes its OFD locks. Only the physical close waits for
+                    // a MAP_SHARED backing that still holds the handle.
                     final_ofd_reference = true;
-                    host_close = Some(release.host_handle);
+                    if !crate::ofd::host_close_deferred_by_mapping(release.host_handle) {
+                        host_close = Some(release.host_handle);
+                    }
                 }
             }
             FileType::Pipe if release.host_handle >= 0 => {

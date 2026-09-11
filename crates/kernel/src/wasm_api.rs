@@ -1212,37 +1212,81 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         Some(alloc::format!("dev:{dev}:ino:{ino}"))
     }
 
-    fn retain_handle(&mut self, _handle: i64) -> Result<(), Errno> {
-        // Refuse rather than pretend. A retained handle must outlive the guest
-        // descriptor that opened it, which requires deferring the kernel's own
-        // `host_close` until the last mapping reference drops. That coordination
-        // lands with the file-backing half of the cutover; until then a caller
-        // that reached here would be handed a handle the kernel may close
-        // underneath it. Failing loudly keeps that impossible.
-        Err(Errno::ENOSYS)
+    fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
+        // A retained handle outlives the guest descriptor that opened it, which
+        // POSIX requires: `mmap` adds a reference to the file that `close` on
+        // the mapping fd does not remove. The kernel owns both halves of that —
+        // it decides when `host_close` runs — so the reference is a kernel
+        // reference and adds no host import.
+        runtime_core::ofd::retain_mapping_host_handle(handle)
     }
 
-    fn release_handle(&mut self, _handle: i64) {
-        // Nothing is ever retained (see `retain_handle`), so nothing to release.
+    fn release_handle(&mut self, handle: i64) {
+        // The owed close is performed here and only here, on the last mapping
+        // reference. Best-effort: this runs while a mapping teardown is already
+        // in progress and a failed close leaves nothing the kernel can do.
+        if runtime_core::ofd::release_mapping_host_handle(handle)
+            == runtime_core::ofd::MappingHandleRelease::CloseNow
+        {
+            unsafe { host_close(handle) };
+        }
     }
 
-    fn fd_stat(&mut self, _pid: u32, _fd: i32) -> Result<crate::memory::SharedMappingStat, Errno> {
-        // Guest-descriptor access serves only the fd-writeback bridge, which is
-        // part of the file-backing half. See `retain_handle`.
-        Err(Errno::ENOSYS)
+    fn fd_stat(&mut self, pid: u32, fd: i32) -> Result<crate::memory::SharedMappingStat, Errno> {
+        // The fd-writeback bridge serves files the kernel owns itself (tmpfs,
+        // memfd, rootfs overlay), which have no stable host handle to map. Its
+        // three methods therefore reach the bytes the same way a guest would:
+        // through the process's own descriptor, over the kernel's ordinary
+        // syscall implementations. No host import is involved, and none is
+        // added — the kernel is already the authority for all of it.
+        //
+        // CONTRACT: these three borrow the global process table for the length
+        // of the call, so an entry point driving `SharedMappingTable` must not
+        // be holding a `&mut Process` across it. Every existing mapping export
+        // satisfies this by constructing `WasmSharedMappingIo` fresh and
+        // touching only `global_shared_mapping_table()`, a separate static; the
+        // cutover's mmap/munmap entry points must keep doing the same. The
+        // kernel lock is not the protection here — `gkl_acquire` is a no-op
+        // vestige — the borrow discipline is.
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let proc = table.get(pid).ok_or(Errno::ESRCH)?;
+        let facts = syscalls::shared_mapping_fd_facts(proc, &mut WasmHostIO, fd)?;
+        Ok(crate::memory::SharedMappingStat {
+            dev: facts.dev,
+            ino: facts.ino,
+            size: facts.size,
+            mode: facts.mode,
+            // A kernel-owned file has no host handle, and reporting zero as one
+            // would name handle 0 — the host's stdin.
+            host_handle: (facts.has_host_handle != 0).then_some(facts.host_handle),
+        })
     }
 
     fn fd_pwrite(
         &mut self,
-        _pid: u32,
-        _fd: i32,
-        _offset: u64,
-        _src: &[u8],
+        pid: u32,
+        fd: i32,
+        offset: u64,
+        src: &[u8],
     ) -> Result<usize, Errno> {
-        Err(Errno::ENOSYS)
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+        syscalls::sys_pwrite(proc, &mut WasmHostIO, fd, src, offset)
     }
 
-    fn close_fd(&mut self, _pid: u32, _fd: i32) {}
+    fn close_fd(&mut self, pid: u32, fd: i32) {
+        // The writeback dup is an ordinary guest-visible descriptor, so
+        // retiring it is an ordinary close: POSIX record locks this process
+        // holds on the file go with it, and so does the last-reference backing
+        // cleanup. Best-effort by contract — this runs while a mapping teardown
+        // is already unwinding and must not abort it.
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let Some((proc, locks)) = table.process_and_advisory_locks(pid) else {
+            return;
+        };
+        let _ = syscalls::sys_close_with_locks(proc, locks, &mut WasmHostIO, fd);
+    }
 
     fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
         if dst.is_empty() {

@@ -4231,8 +4231,16 @@ fn release_ofd_reference_impl(
                     // Cross-process refcount reached 0 — safe to close the host handle.
                     // If the handle was never shared (not in the refcount table),
                     // host_handle_close_ref returns true immediately.
+                    //
+                    // Locks go first and unconditionally. A live MAP_SHARED
+                    // backing withholds the *physical* close only; the
+                    // description is over for every other purpose, and an
+                    // F_OFD_SETLK record must not outlive it just because the
+                    // file is still mapped.
                     release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
-                    host.host_close(host_handle)?;
+                    if !crate::ofd::host_close_deferred_by_mapping(host_handle) {
+                        host.host_close(host_handle)?;
+                    }
                 }
             }
         }
@@ -25883,6 +25891,161 @@ mod tests {
             }));
             sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
         }
+    }
+
+
+    /// A live `MAP_SHARED` backing keeps the host handle open across `close(2)`
+    /// — and keeps nothing else.
+    ///
+    /// POSIX: "The mmap() function adds an extra reference to the file
+    /// associated with the file descriptor fildes which is not removed by a
+    /// subsequent close() on that file descriptor." The reference is on the
+    /// *file*, not on the description, so the description still ends on time:
+    /// the OFD is freed, the fd number is reusable, and the process's record
+    /// locks on the file go away. Only the physical `host_close` waits.
+    ///
+    /// Deferring inside the cross-process descriptor refcount instead would
+    /// keep the lock alive too, which is what this test pins.
+    #[test]
+    fn mapping_held_handle_defers_host_close_without_deferring_lock_release() {
+        crate::ofd::reset_mapping_held_handles_for_test();
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/mapped-file",
+            O_RDWR | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let handle = proc.ofd_table.get(ofd_idx).unwrap().host_handle;
+        let file = proc.ofd_table.get(ofd_idx).unwrap().file_id.unwrap();
+
+        // An *OFD* lock, deliberately: its removal is exactly what
+        // `release_final_ofd_locks` performs on the last reference, so this
+        // assertion discriminates between releasing the lock before the
+        // deferral and folding it inside. A POSIX record lock would not — it is
+        // process-owned and cleaned up on a separate path that no ordering of
+        // the deferral can reach.
+        let ofd_id = proc.ofd_table.get(ofd_idx).unwrap().ofd_id;
+        let mut lock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 16,
+            // Linux's OFD-lock ABI requires a cleared l_pid.
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            &mut proc,
+            &mut locks,
+            fd,
+            wasm_posix_shared::fcntl_cmd::F_OFD_SETLK,
+            &mut lock,
+            &mut host,
+        )
+        .unwrap();
+        assert!(
+            locks.records().iter().any(|record| {
+                record.file == file && record.owner == LockOwner::OpenFileDescription(ofd_id)
+            }),
+            "the OFD lock must exist before the close under test",
+        );
+
+        // The mapping takes its reference on the same handle the descriptor
+        // supplied, exactly as `get_or_create_file_backing` does.
+        crate::ofd::retain_mapping_host_handle(handle).unwrap();
+
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+
+        assert!(
+            !host.closed_handles.contains(&handle),
+            "a mapped file's handle must not be closed while the mapping lives; closed {:?}",
+            host.closed_handles,
+        );
+        assert!(
+            !locks
+                .records()
+                .iter()
+                .any(|record| record.owner == LockOwner::OpenFileDescription(ofd_id)),
+            "the description ended, so its OFD lock must be gone even though \
+             the file is still mapped",
+        );
+        assert!(
+            proc.fd_table.get(fd).is_err(),
+            "the descriptor number must be free for reuse",
+        );
+        assert_eq!(crate::ofd::mapping_host_handle_refs(handle), 1);
+
+        // Dropping the last mapping reference is what finally owes the close.
+        assert_eq!(
+            crate::ofd::release_mapping_host_handle(handle),
+            crate::ofd::MappingHandleRelease::CloseNow,
+        );
+        assert_eq!(crate::ofd::mapping_host_handle_refs(handle), 0);
+    }
+
+    /// The control for the test above: with no mapping holding it, the same
+    /// close emits the physical close immediately. Without this, "no close
+    /// happened" would also pass on a build that never closes anything.
+    #[test]
+    fn unmapped_handle_is_closed_by_the_descriptor_close_as_before() {
+        crate::ofd::reset_mapping_held_handles_for_test();
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/unmapped-file",
+            O_RDWR | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let handle = proc.ofd_table.get(ofd_idx).unwrap().host_handle;
+
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+
+        assert!(host.closed_handles.contains(&handle));
+    }
+
+    /// A mapping released before the descriptor closes owes nothing, and the
+    /// close then behaves as it always did.
+    #[test]
+    fn mapping_released_before_close_leaves_the_close_unchanged() {
+        crate::ofd::reset_mapping_held_handles_for_test();
+        let mut proc = Process::new(1);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/unmapped-first",
+            O_RDWR | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let handle = proc.ofd_table.get(ofd_idx).unwrap().host_handle;
+
+        crate::ofd::retain_mapping_host_handle(handle).unwrap();
+        assert_eq!(
+            crate::ofd::release_mapping_host_handle(handle),
+            crate::ofd::MappingHandleRelease::Released,
+            "no close is owed while the descriptor is still open",
+        );
+
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        assert!(host.closed_handles.contains(&handle));
     }
 
     #[test]

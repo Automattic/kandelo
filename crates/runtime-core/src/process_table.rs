@@ -592,6 +592,7 @@ impl ProcessTable {
                 ofd.file_type,
                 FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe
             ) && crate::ofd::host_handle_close_ref(ofd.host_handle)
+                && !crate::ofd::host_close_deferred_by_mapping(ofd.host_handle)
             {
                 host_closes.push(ofd.host_handle);
             }
@@ -2256,6 +2257,65 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// A process torn down without reaching `sys_exit` (worker crash, host
+    /// termination, failed fork/spawn launch) must not queue the close of a
+    /// handle a live `MAP_SHARED` backing still holds. The backing outlives the
+    /// process that created it — a peer may still have the file mapped — so the
+    /// close is owed to the last mapping reference, not to this teardown.
+    #[test]
+    fn teardown_does_not_queue_a_close_a_mapping_still_holds() {
+        use wasm_posix_shared::flags::O_RDWR;
+
+        crate::ofd::reset_mapping_held_handles_for_test();
+        let handle = 9_452_200i64;
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.ofd_table.create(
+            FileType::Regular,
+            O_RDWR,
+            handle,
+            b"/tmp/mapped-at-teardown".to_vec(),
+        );
+        crate::ofd::retain_mapping_host_handle(handle).unwrap();
+
+        let removed = table.remove_process(pid).unwrap();
+        assert!(
+            !removed.host_closes.contains(&handle),
+            "teardown queued a close for a handle a mapping still holds: {:?}",
+            removed.host_closes,
+        );
+        assert_eq!(
+            crate::ofd::release_mapping_host_handle(handle),
+            crate::ofd::MappingHandleRelease::CloseNow,
+            "the close must be owed to the last mapping reference instead",
+        );
+    }
+
+    /// The control: the same teardown queues the close when nothing maps the
+    /// file, so the assertion above is about the mapping and not about
+    /// teardown having stopped closing anything.
+    #[test]
+    fn teardown_still_queues_a_close_for_an_unmapped_handle() {
+        use wasm_posix_shared::flags::O_RDWR;
+
+        crate::ofd::reset_mapping_held_handles_for_test();
+        let handle = 9_452_201i64;
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.ofd_table.create(
+            FileType::Regular,
+            O_RDWR,
+            handle,
+            b"/tmp/unmapped-at-teardown".to_vec(),
+        );
+
+        let removed = table.remove_process(pid).unwrap();
+        assert!(removed.host_closes.contains(&handle));
+    }
 
     #[test]
     fn exec_target_kernel_table_removal_fallback_closes_each_lease_once() {
