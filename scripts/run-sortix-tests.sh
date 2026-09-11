@@ -1212,7 +1212,20 @@ if $REPORT_MODE; then
     echo "Report written to: $REPORT"
 fi
 
-# Exit with error if any unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+# Exit with error if any unexpected failures.
+#
+# WHY TIMEOUT counts here: it did not, and this script printed
+# "[OK] All test suites passed" and exited 0 with **1,352 timeouts** out of
+# 5,114 tests. A timeout is a test that did not answer. It is not a pass, and a
+# runner that reports it as one is the same defect this campaign has now found
+# more than a dozen times -- a check that could not run, reporting as a check
+# that passed. It is also exactly how this suite looked green while the
+# `os-test` submodule was uninitialized and it was discovering zero tests.
+#
+# There is deliberately no expected-timeout allowlist. If some case is known to
+# be slow, raise its timeout or mark it XFAIL with a reason; do not let an
+# unanswered test be silently indistinguishable from a passing one.
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
+    || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi
