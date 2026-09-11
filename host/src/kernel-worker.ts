@@ -12899,10 +12899,13 @@ export class CentralizedKernelWorker {
           plannedScratchWrites,
         )
           || syscallHasMsgDontwait(syscallNr, origArgs)
-          // WHY origArgs and not adjustedArgs: preadv2/pwritev2's sixth guest
-          // argument is `flags`, and that is the slot the descriptor path
-          // overwrites with the caller's pointer width. `origArgs` is captured
-          // before that overwrite, so it still carries what the guest passed.
+          // WHY origArgs and not adjustedArgs: `origArgs` is the guest's own
+          // argument view, captured before the descriptor path rewrites
+          // pointer slots to stage scratch. preadv2/pwritev2's `flags` lives
+          // in the sixth slot, which the host no longer overwrites at all --
+          // the caller's pointer width is registered per process -- so both
+          // views agree on it today. This reads the guest's view regardless,
+          // because that is the one that is defined to carry `flags`.
           || vectorRequestForbidsEagainRetry(syscallNr, origArgs);
       } catch (error) {
         this.#rejectScratchTransfer(channel, error, entry);
