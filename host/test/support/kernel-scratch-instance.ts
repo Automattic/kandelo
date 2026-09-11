@@ -496,6 +496,10 @@ function signatures(
       parameters: [i32, pointer],
       result: i32,
     },
+    kernel_set_process_pointer_width: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_socketpair: {
       parameters: [i32, i32, i32, pointer, i32],
       result: i32,
