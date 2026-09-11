@@ -996,8 +996,34 @@ impl SffsWriter {
         self.ino_w64(ino, INO_MTIME, now);
         self.ino_w64(ino, INO_CTIME, now);
         self.dir_add_entry(parent, name, ino)?;
+        self.truncate_to_zero(ino);
         self.write_content(ino, content)?;
         Ok(ino)
+    }
+
+    /// The data mutation every production image builder's `O_TRUNC` performs.
+    ///
+    /// This looks like dead work on a file that was just created at size
+    /// zero, and it is not. `rootfs-overlay-export.ts` and
+    /// `rootfs-overlay.ts` both open base files `O_WRONLY | O_CREAT |
+    /// O_TRUNC`, and the vendor's `inodeTruncate(ino, 0, forceDataMutation =
+    /// true)` bumps `INO_DATA_SEQUENCE` unconditionally under that flag —
+    /// `sizeChanged` is false, but `forceDataMutation` is not. That counter
+    /// is image state, not runtime state: `snapshotBytes` does not clear it.
+    ///
+    /// So every regular file in every image this repository has ever shipped
+    /// carries one bump from the truncate plus one more if it was then
+    /// written. A writer that skipped it would produce images that differ
+    /// from today's in a field no reader consults — invisible until
+    /// something compared two images and disagreed. The cross-language
+    /// fixture caught exactly this.
+    fn truncate_to_zero(&mut self, ino: u32) {
+        self.ino_w64(ino, INO_SIZE, 0);
+        let now = self.now_ms;
+        self.ino_w64(ino, INO_MTIME, now);
+        self.ino_w64(ino, INO_CTIME, now);
+        let seq = self.ino_r32(ino, INO_DATA_SEQUENCE).wrapping_add(1);
+        self.ino_w32(ino, INO_DATA_SEQUENCE, seq);
     }
 
     pub fn symlink(&mut self, parent: u32, name: &[u8], target: &[u8]) -> Result<u32, Errno> {
@@ -1315,4 +1341,763 @@ fn set_bit(bitmap: &mut [u8], index: u32) {
 
 fn get_bit(bitmap: &[u8], index: u32) -> bool {
     bitmap[(index >> 3) as usize] & (1 << (index & 7)) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sffs::Sffs;
+    use alloc::format;
+    use alloc::string::{String, ToString};
+
+    /// The cross-language fixtures: the RAW SFFS body the TypeScript writer
+    /// in `host/src/vfs/sharedfs-vendor.ts` produced for the same tree,
+    /// raw-deflated. Regenerate with
+    /// `host/scripts/gen-sffs-writer-fixture.mts`.
+    const SMALL_FIXTURE: &[u8] = include_bytes!("testdata/sffs-small.sffs.deflate");
+    const WIDE_FIXTURE: &[u8] = include_bytes!("testdata/sffs-wide.sffs.deflate");
+    const SLOTS_FIXTURE: &[u8] = include_bytes!("testdata/sffs-slots.sffs.deflate");
+    const TAIL_FIXTURE: &[u8] = include_bytes!("testdata/sffs-tail.sffs.deflate");
+
+    fn inflate(packed: &[u8]) -> Vec<u8> {
+        miniz_oxide::inflate::decompress_to_vec(packed).expect("fixture inflates")
+    }
+
+    /// Content addressed by index, so the byte-comparison tests exercise the
+    /// DEFERRED path — the one W-3 streams through — and not only the
+    /// copy-into-a-block path.
+    struct Slices(Vec<Vec<u8>>);
+
+    impl ContentSource for Slices {
+        fn read_exact_at(&self, id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            let bytes = self.0.get(id as usize).ok_or(Errno::EIO)?;
+            let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+            let end = start.checked_add(dst.len()).ok_or(Errno::EIO)?;
+            dst.copy_from_slice(bytes.get(start..end).ok_or(Errno::EIO)?);
+            Ok(())
+        }
+    }
+
+    /// Mirrors `pattern()` in the fixture generator.
+    fn pattern(len: usize, seed: usize) -> Vec<u8> {
+        (0..len).map(|i| ((i * 7 + seed) % 251) as u8).collect()
+    }
+
+    /// open/write/close -> chown -> chmod, the ordering the generator uses.
+    /// Only a trailing chmod can leave S_ISUID set, because both the write
+    /// and the chown clear it.
+    fn write_file(
+        w: &mut SffsWriter,
+        parent: u32,
+        name: &[u8],
+        content: Content<'_>,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> u32 {
+        let ino = w.create_file(parent, name, mode, content).expect("create");
+        w.set_owner(ino, uid, gid).expect("chown");
+        w.set_mode(ino, mode).expect("chmod");
+        ino
+    }
+
+    fn small_config() -> SffsConfig {
+        SffsConfig {
+            size_bytes: 128 * 1024,
+            max_size_bytes: None,
+            growable_to_bytes: 128 * 1024,
+            now_ms: 0,
+        }
+    }
+
+    /// Builds the tree the `sffs-small` fixture describes. `hello_mode` is a
+    /// parameter only so the sensitivity test can perturb exactly one bit and
+    /// still go through the real writer rather than patching bytes.
+    fn build_small_with(hello_mode: u32) -> (SffsImage, Slices) {
+        let big = pattern(45000, 1);
+        let content = Slices(alloc::vec![big]);
+
+        let mut w = SffsWriter::mkfs(small_config()).expect("mkfs");
+        let root = w.root();
+
+        let hello = write_file(
+            &mut w,
+            root,
+            b"hello.txt",
+            Content::Bytes(b"hello sffs\n"),
+            hello_mode,
+            0,
+            0,
+        );
+        write_file(&mut w, root, b"empty", Content::Bytes(b""), 0o600, 0, 0);
+
+        let dir = w.mkdir(root, b"dir", 0o755).expect("mkdir /dir");
+        w.set_owner(dir, 0, 0).expect("chown /dir");
+        write_file(
+            &mut w,
+            dir,
+            b"nested.txt",
+            Content::Bytes(b"nested\n"),
+            0o644,
+            12,
+            34,
+        );
+        let deep = w.mkdir(dir, b"deep", 0o700).expect("mkdir /dir/deep");
+        w.set_owner(deep, 0, 0).expect("chown /dir/deep");
+        write_file(&mut w, deep, b"leaf", Content::Bytes(b"leaf\n"), 0o444, 0, 0);
+
+        write_file(
+            &mut w,
+            root,
+            b"big.txt",
+            Content::Deferred { id: 0, len: 45000 },
+            0o644,
+            0,
+            0,
+        );
+
+        w.symlink(root, b"link", b"hello.txt").expect("symlink");
+        w.symlink(
+            root,
+            b"longlink",
+            b"/dir/deep/a-target-path-long-enough-to-need-its-own-block",
+        )
+        .expect("long symlink");
+        w.link(root, b"hardlink", hello).expect("hard link");
+
+        write_file(
+            &mut w,
+            root,
+            b"suid",
+            Content::Bytes(b"#!/bin/sh\n"),
+            0o4755,
+            0,
+            0,
+        );
+
+        (w.finish(), content)
+    }
+
+    fn build_small() -> (SffsImage, Slices) {
+        build_small_with(0o644)
+    }
+
+    /// Mirrors the generator's name construction exactly: pad to `width`
+    /// with 'n', then truncate to `width`, then append "-{i}".
+    fn wide_name(i: usize) -> Vec<u8> {
+        let width = 1 + (i % 37);
+        let digits = i.to_string();
+        let padded: String = if digits.len() >= width {
+            digits
+        } else {
+            let mut s = String::new();
+            for _ in 0..(width - digits.len()) {
+                s.push('n');
+            }
+            s.push_str(&digits);
+            s
+        };
+        let name: String = padded.chars().take(width).collect();
+        format!("{name}-{i}").into_bytes()
+    }
+
+    fn build_wide() -> (SffsImage, Slices) {
+        let huge = pattern(1034 * BLOCK_SIZE + 1234, 9);
+        let huge_len = huge.len() as u64;
+        let content = Slices(alloc::vec![huge]);
+
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 8 * 1024 * 1024,
+            max_size_bytes: Some(64 * 1024 * 1024),
+            growable_to_bytes: 8 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+
+        let wide = w.mkdir(root, b"wide", 0o755).expect("mkdir /wide");
+        for i in 0..3000usize {
+            let name = wide_name(i);
+            write_file(&mut w, wide, &name, Content::Bytes(b""), 0o644, 0, 0);
+        }
+        write_file(
+            &mut w,
+            root,
+            b"huge.bin",
+            Content::Deferred {
+                id: 0,
+                len: huge_len,
+            },
+            0o644,
+            0,
+            0,
+        );
+
+        (w.finish(), content)
+    }
+
+    /// Reports where two images first differ, with enough context to name the
+    /// structure rather than only the offset.
+    fn first_difference(actual: &[u8], expected: &[u8]) -> Option<String> {
+        let at = actual.iter().zip(expected).position(|(a, b)| a != b)?;
+        Some(format!(
+            "byte {at} (block {}, offset {} in block): got {:#04x}, want {:#04x}",
+            at / BLOCK_SIZE,
+            at % BLOCK_SIZE,
+            actual[at],
+            expected[at]
+        ))
+    }
+
+    // ── The cross-language claim ─────────────────────────────────────
+
+    #[test]
+    fn small_tree_matches_the_typescript_writer_byte_for_byte() {
+        let expected = inflate(SMALL_FIXTURE);
+        let (image, content) = build_small();
+        let actual = image.to_vec(&content).expect("emit");
+        assert_eq!(actual.len(), expected.len(), "image length");
+        assert_eq!(
+            first_difference(&actual, &expected),
+            None,
+            "Rust writer disagrees with the TypeScript writer"
+        );
+    }
+
+    #[test]
+    fn wide_directory_and_double_indirect_match_the_typescript_writer() {
+        // This is the fixture that reaches the two structures a small image
+        // cannot: a directory past DIR_INDEX_MIN_SIZE, where the vendor
+        // switches to its in-process index and changes free-slot policy, and
+        // a file past 10 + 1024 blocks, which needs the double-indirect
+        // block.
+        let expected = inflate(WIDE_FIXTURE);
+        let (image, content) = build_wide();
+        let actual = image.to_vec(&content).expect("emit");
+        assert_eq!(actual.len(), expected.len(), "image length");
+        assert_eq!(
+            first_difference(&actual, &expected),
+            None,
+            "Rust writer disagrees with the TypeScript writer"
+        );
+    }
+
+    fn build_slots() -> SffsImage {
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 1024 * 1024,
+            max_size_bytes: Some(32 * 1024 * 1024),
+            growable_to_bytes: 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+        let slots = w.mkdir(root, b"slots", 0o755).expect("mkdir /slots");
+        for i in 0..1700usize {
+            let digits = i.to_string();
+            let mut name = String::new();
+            for _ in 0..(32 - digits.len()) {
+                name.push('0');
+            }
+            name.push_str(&digits);
+            write_file(
+                &mut w,
+                slots,
+                name.as_bytes(),
+                Content::Bytes(b""),
+                0o644,
+                0,
+                0,
+            );
+        }
+        for i in 0..40usize {
+            let name = format!("s{i}").into_bytes();
+            write_file(&mut w, slots, &name, Content::Bytes(b""), 0o644, 0, 0);
+        }
+        w.finish()
+    }
+
+    #[test]
+    fn directory_index_free_slot_choice_matches_the_typescript_writer() {
+        // Pins which remembered free record the index reuses. `sffs-wide`
+        // cannot distinguish a last-first scan from a first-found one — its
+        // free list only ever held two slots of different sizes, and the one
+        // reuse needed more than the smaller of them, so both directions
+        // agree. Here every padding record is the same size and the reusing
+        // names fit all of them, so the direction changes the bytes.
+        let expected = inflate(SLOTS_FIXTURE);
+        let image = build_slots();
+        let actual = image.to_vec(&NoContent).expect("emit");
+        assert_eq!(actual.len(), expected.len(), "image length");
+        assert_eq!(
+            first_difference(&actual, &expected),
+            None,
+            "Rust writer disagrees with the TypeScript writer"
+        );
+    }
+
+    #[test]
+    fn every_slots_name_is_still_reachable_through_the_reader() {
+        // Reused padding records are the easiest place for a writer to
+        // corrupt a directory, because the record is overwritten in place
+        // without its rec_len changing. Walk the whole directory back.
+        let image = build_slots();
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+        let slots = fs.resolve(b"/slots", true).expect("resolve /slots");
+        let entries = fs.read_dir(slots).expect("read_dir");
+        assert_eq!(entries.len(), 1700 + 40 + 2, "every record survives");
+        for i in [0usize, 1, 1699] {
+            let digits = i.to_string();
+            let mut name = String::new();
+            for _ in 0..(32 - digits.len()) {
+                name.push('0');
+            }
+            name.push_str(&digits);
+            assert!(fs.lookup(slots, name.as_bytes()).is_ok(), "missing {name}");
+        }
+        for i in [0usize, 17, 39] {
+            let name = format!("s{i}");
+            assert!(fs.lookup(slots, name.as_bytes()).is_ok(), "missing {name}");
+        }
+    }
+
+    /// Exactly four characters, so every directory record is 12 bytes.
+    fn name4(i: usize) -> Vec<u8> {
+        const ALPHA: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let mut out = [0u8; 4];
+        let mut n = i;
+        for k in (0..4).rev() {
+            out[k] = ALPHA[n % 36];
+            n /= 36;
+        }
+        out.to_vec()
+    }
+
+    fn build_tail() -> SffsImage {
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 2 * 1024 * 1024,
+            max_size_bytes: Some(128 * 1024 * 1024),
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+        let tail = w.mkdir(root, b"tail", 0o755).expect("mkdir /tail");
+        for i in 0..6000usize {
+            write_file(&mut w, tail, &name4(i), Content::Bytes(b""), 0o644, 0, 0);
+        }
+        w.finish()
+    }
+
+    #[test]
+    fn trailing_gap_extension_matches_the_typescript_writer() {
+        // The branch no other fixture reaches: a trailing gap of exactly 4
+        // bytes, too small for a padding record, which the vendor absorbs by
+        // growing the PREVIOUS record's rec_len. Every rec_len is 4-aligned
+        // so every gap is a multiple of 4, and 4 is the only value that
+        // separates this branch from the padding branch.
+        let expected = inflate(TAIL_FIXTURE);
+        let image = build_tail();
+        let actual = image.to_vec(&NoContent).expect("emit");
+        assert_eq!(actual.len(), expected.len(), "image length");
+        assert_eq!(
+            first_difference(&actual, &expected),
+            None,
+            "Rust writer disagrees with the TypeScript writer"
+        );
+    }
+
+    #[test]
+    fn an_extended_record_still_reads_back_as_one_entry() {
+        // Growing a record's rec_len to swallow the block tail is the one
+        // place a writer can silently make a directory unwalkable: the reader
+        // steps by rec_len, so an over-long record eats its successor.
+        let image = build_tail();
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+        let tail = fs.resolve(b"/tail", true).expect("resolve /tail");
+        let entries = fs.read_dir(tail).expect("read_dir");
+        assert_eq!(entries.len(), 6000 + 2, "no record may be swallowed");
+        // The directory must actually be past the index threshold, so the
+        // extension ran on the index path too, where the writer has to go
+        // find the last record itself.
+        assert!(fs.stat_ino(tail).unwrap().size > DIR_INDEX_MIN_SIZE);
+        for i in [0usize, 338, 339, 340, 5999] {
+            let name = name4(i);
+            assert!(
+                fs.lookup(tail, &name).is_ok(),
+                "missing {:?}",
+                core::str::from_utf8(&name)
+            );
+        }
+    }
+
+    // ── Guard sensitivity: the comparison above must have teeth ──────
+
+    #[test]
+    fn the_byte_comparison_detects_a_one_bit_tree_change() {
+        // A byte fixture is only evidence if it FAILS for a tree that
+        // differs. Build the same tree with one permission bit changed and
+        // assert the images diverge. Without this, a comparison that somehow
+        // passed vacuously would look identical to one that passed honestly.
+        let expected = inflate(SMALL_FIXTURE);
+        let (image, content) = build_small_with(0o645);
+        let actual = image.to_vec(&content).expect("emit");
+        assert!(
+            first_difference(&actual, &expected).is_some(),
+            "a changed file mode must change the image"
+        );
+    }
+
+    #[test]
+    fn the_byte_comparison_detects_a_reordered_tree() {
+        // Same files, same contents, different creation order: inode and
+        // block assignment shift, so the bytes must differ. This is what
+        // proves the fixture pins ALLOCATION and not merely file contents.
+        let expected = inflate(SMALL_FIXTURE);
+        let mut w = SffsWriter::mkfs(small_config()).expect("mkfs");
+        let root = w.root();
+        write_file(&mut w, root, b"empty", Content::Bytes(b""), 0o600, 0, 0);
+        write_file(
+            &mut w,
+            root,
+            b"hello.txt",
+            Content::Bytes(b"hello sffs\n"),
+            0o644,
+            0,
+            0,
+        );
+        let image = w.finish();
+        let actual = image.to_vec(&NoContent).expect("emit");
+        assert!(
+            first_difference(&actual, &expected).is_some(),
+            "a reordered tree must change the image"
+        );
+    }
+
+    // ── Round trip through the reader this repository already trusts ──
+
+    #[test]
+    fn the_existing_reader_mounts_what_the_writer_produced() {
+        let (image, content) = build_small();
+        let source = SffsImageSource {
+            image: &image,
+            content: &content,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+
+        let root = fs.stat_ino(ROOT_INO).expect("root");
+        assert_eq!(root.mode & 0xf000, 0x4000);
+
+        let hello = fs.resolve(b"/hello.txt", true).expect("resolve hello");
+        let mut buf = [0u8; 32];
+        let n = fs.read_at(hello, 0, &mut buf).expect("read hello");
+        assert_eq!(&buf[..n], b"hello sffs\n");
+
+        // A hard link is the SAME inode, with two names and nlink 2.
+        let hard = fs.resolve(b"/hardlink", true).expect("resolve hardlink");
+        assert_eq!(hard, hello);
+        assert_eq!(fs.stat_ino(hello).unwrap().nlink, 2);
+
+        // Empty file: present, zero length, mode preserved.
+        let empty = fs.resolve(b"/empty", true).expect("resolve empty");
+        assert_eq!(fs.stat_ino(empty).unwrap().size, 0);
+        assert_eq!(fs.stat_ino(empty).unwrap().mode & 0o7777, 0o600);
+
+        // setuid survived the write and the chown.
+        let suid = fs.resolve(b"/suid", true).expect("resolve suid");
+        assert_eq!(fs.stat_ino(suid).unwrap().mode & 0o7777, 0o4755);
+
+        // Ownership round-trips.
+        let nested = fs.resolve(b"/dir/nested.txt", true).expect("resolve nested");
+        let st = fs.stat_ino(nested).unwrap();
+        assert_eq!((st.uid, st.gid), (12, 34));
+
+        // Both symlink encodings: inline (<= 40 bytes) and block-backed.
+        let link = fs.resolve(b"/link", false).expect("resolve link");
+        assert_eq!(fs.read_link(link).unwrap(), b"hello.txt");
+        let long = fs.resolve(b"/longlink", false).expect("resolve longlink");
+        let target: &[u8] = b"/dir/deep/a-target-path-long-enough-to-need-its-own-block";
+        assert!(
+            target.len() as u64 > INLINE_SYMLINK_SIZE,
+            "must be block-backed"
+        );
+        assert_eq!(fs.read_link(long).unwrap(), target);
+
+        // Deferred content, read back through the single-indirect block.
+        let big = fs.resolve(b"/big.txt", true).expect("resolve big");
+        let size = fs.stat_ino(big).unwrap().size as usize;
+        assert_eq!(size, 45000);
+        let mut out = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(big, 0, &mut out).unwrap(), size);
+        assert_eq!(out, pattern(45000, 1));
+
+        // Deep nesting.
+        let leaf = fs.resolve(b"/dir/deep/leaf", true).expect("resolve leaf");
+        let mut lbuf = [0u8; 8];
+        let n = fs.read_at(leaf, 0, &mut lbuf).unwrap();
+        assert_eq!(&lbuf[..n], b"leaf\n");
+    }
+
+    #[test]
+    fn the_existing_reader_walks_a_wide_directory_and_double_indirect_file() {
+        let (image, content) = build_wide();
+        let source = SffsImageSource {
+            image: &image,
+            content: &content,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+
+        let wide = fs.resolve(b"/wide", true).expect("resolve /wide");
+        let entries = fs.read_dir(wide).expect("read_dir");
+        // 3000 names plus "." and "..".
+        assert_eq!(entries.len(), 3002, "every record must survive the walk");
+        assert!(
+            fs.stat_ino(wide).unwrap().size >= 64 * 1024,
+            "the directory must be past the index threshold"
+        );
+
+        // Spot-check names across the whole range, including ones that land
+        // right after a padding record.
+        for i in [0usize, 1, 36, 37, 999, 1500, 2999] {
+            let name = wide_name(i);
+            assert!(
+                fs.lookup(wide, &name).is_ok(),
+                "missing {:?}",
+                core::str::from_utf8(&name)
+            );
+        }
+
+        let huge = fs.resolve(b"/huge.bin", true).expect("resolve huge");
+        let size = fs.stat_ino(huge).unwrap().size as usize;
+        assert_eq!(size, 1034 * BLOCK_SIZE + 1234);
+        let expected = pattern(size, 9);
+        // Read the tail, which lives past the double-indirect boundary.
+        let tail_at = 1034 * BLOCK_SIZE;
+        let mut tail = alloc::vec![0u8; size - tail_at];
+        let n = fs.read_at(huge, tail_at as u64, &mut tail).unwrap();
+        assert_eq!(n, size - tail_at);
+        assert_eq!(tail, expected[tail_at..]);
+        // And the whole file, so the direct/indirect/double-indirect seams
+        // are all crossed in one read.
+        let mut all = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(huge, 0, &mut all).unwrap(), size);
+        assert_eq!(all, expected);
+    }
+
+    // ── The emission cursor ──────────────────────────────────────────
+
+    #[test]
+    fn read_at_is_offset_addressable_and_chunk_independent() {
+        // W-3 streams this image out in host-sized chunks, so a read at an
+        // arbitrary offset and width must agree with the whole-image bytes.
+        // A writer that only worked via `to_vec` would pass every other test
+        // here and still fail W-3.
+        let (image, content) = build_small();
+        let whole = image.to_vec(&content).expect("emit");
+
+        for chunk in [1usize, 7, 100, 4095, 4096, 4097, 9000] {
+            let mut rebuilt = Vec::new();
+            let mut offset = 0u64;
+            loop {
+                let mut buf = alloc::vec![0u8; chunk];
+                let n = image.read_at(&content, offset, &mut buf).expect("read");
+                if n == 0 {
+                    break;
+                }
+                rebuilt.extend_from_slice(&buf[..n]);
+                offset += n as u64;
+            }
+            assert_eq!(rebuilt, whole, "chunk size {chunk}");
+        }
+
+        // Reads at or past the end, and a read that clamps.
+        let mut buf = [0u8; 16];
+        assert_eq!(image.read_at(&content, image.len(), &mut buf).unwrap(), 0);
+        assert_eq!(
+            image
+                .read_at(&content, image.len() + 4096, &mut buf)
+                .unwrap(),
+            0
+        );
+        let n = image.read_at(&content, image.len() - 4, &mut buf).unwrap();
+        assert_eq!(n, 4, "a read at the end clamps to the image");
+    }
+
+    #[test]
+    fn deferred_content_is_never_buffered_by_the_writer() {
+        // The point of the deferred path is that a 249 MiB image does not
+        // become 249 MiB of kernel memory. Assert the writer holds no
+        // materialized block for the content blocks of a deferred file: they
+        // must be references, not copies.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(8 * 1024 * 1024)).expect("mkfs");
+        let root = w.root();
+        let len = 2 * 1024 * 1024u64;
+        w.create_file(root, b"f", 0o644, Content::Deferred { id: 0, len })
+            .expect("create");
+        let materialized = w
+            .blocks
+            .values()
+            .filter(|b| matches!(b, BlockContent::Owned(_)))
+            .count();
+        let referenced = w
+            .blocks
+            .values()
+            .filter(|b| matches!(b, BlockContent::Content { .. }))
+            .count();
+        assert_eq!(referenced, (len / BLOCK_SIZE as u64) as usize);
+        // Only the root directory block and the file's single indirect block
+        // are materialized.
+        assert_eq!(materialized, 2, "only metadata may be resident");
+    }
+
+    // ── Geometry and failure modes ───────────────────────────────────
+
+    #[test]
+    fn mkfs_rejects_sizes_the_vendor_would_reject() {
+        assert!(
+            SffsWriter::mkfs(SffsConfig::fixed(4096 * 15)).is_err(),
+            "under 16 blocks"
+        );
+        assert!(
+            SffsWriter::mkfs(SffsConfig {
+                size_bytes: 128 * 1024 + 1,
+                max_size_bytes: None,
+                growable_to_bytes: 128 * 1024 + 1,
+                now_ms: 0,
+            })
+            .is_err(),
+            "a ragged tail is ambiguous and must be refused"
+        );
+    }
+
+    #[test]
+    fn a_full_filesystem_reports_enospc_rather_than_corrupting() {
+        // Truthful failure: a writer that ran out of blocks must say so.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let root = w.root();
+        let mut last = Ok(0);
+        for i in 0..4096 {
+            let name = format!("f{i}").into_bytes();
+            last = w.create_file(root, &name, 0o644, Content::Bytes(&[7u8; 4096]));
+            if last.is_err() {
+                break;
+            }
+        }
+        assert_eq!(last.err(), Some(Errno::ENOSPC));
+    }
+
+    #[test]
+    fn duplicate_names_and_bad_names_are_refused() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.mkdir(root, b"a", 0o755).expect("mkdir");
+        assert_eq!(w.mkdir(root, b"a", 0o755).err(), Some(Errno::EEXIST));
+        assert_eq!(
+            w.create_file(root, b"a", 0o644, Content::Bytes(b"")).err(),
+            Some(Errno::EEXIST)
+        );
+        assert_eq!(w.mkdir(root, b".", 0o755).err(), Some(Errno::EINVAL));
+        assert_eq!(w.mkdir(root, b"..", 0o755).err(), Some(Errno::EINVAL));
+        assert_eq!(w.mkdir(root, b"a/b", 0o755).err(), Some(Errno::EINVAL));
+        assert_eq!(w.mkdir(root, b"", 0o755).err(), Some(Errno::EINVAL));
+        let long = alloc::vec![b'x'; 256];
+        assert_eq!(w.mkdir(root, &long, 0o755).err(), Some(Errno::ENAMETOOLONG));
+
+        // A non-directory parent is ENOTDIR, and a directory cannot be
+        // hard-linked.
+        let f = w
+            .create_file(root, b"f", 0o644, Content::Bytes(b"x"))
+            .expect("create");
+        assert_eq!(w.mkdir(f, b"child", 0o755).err(), Some(Errno::ENOTDIR));
+        let d = w.lookup(root, b"a").unwrap().unwrap();
+        assert_eq!(w.link(root, b"dlink", d).err(), Some(Errno::EPERM));
+    }
+
+    #[test]
+    fn growth_extends_the_image_and_bumps_the_generation() {
+        // The vendor grows in 256-block chunks and bumps SB_GENERATION each
+        // time. An image that must grow is a different image from one sized
+        // correctly up front, so the writer has to model it rather than
+        // assume a caller always sizes perfectly.
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 64 * 1024,
+            max_size_bytes: Some(4 * 1024 * 1024),
+            growable_to_bytes: 4 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let before = w.total_blocks;
+        let generation_before = w.generation;
+        let root = w.root();
+        w.create_file(root, b"big", 0o644, Content::Bytes(&[3u8; 200_000]))
+            .expect("create");
+        assert!(w.total_blocks > before, "the image grew");
+        assert_eq!(
+            (w.total_blocks - before) % GROW_CHUNK_BLOCKS,
+            0,
+            "growth happens in whole chunks"
+        );
+        let grows = (w.total_blocks - before) / GROW_CHUNK_BLOCKS;
+        // One generation bump per grow, plus one per inode allocated.
+        assert_eq!(w.generation, generation_before + grows + 1);
+
+        let image = w.finish();
+        // The grown image is still mountable and the file still reads back.
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount grown image");
+        let ino = fs.resolve(b"/big", true).expect("resolve");
+        assert_eq!(fs.stat_ino(ino).unwrap().size, 200_000);
+    }
+
+    #[test]
+    fn a_fixed_length_image_refuses_to_grow() {
+        // `growable_to_bytes == size_bytes` models a non-growable
+        // SharedArrayBuffer, where the vendor's `buffer.grow()` throws and
+        // the allocation fails. A generous `max_size_bytes` must not
+        // override that.
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 64 * 1024,
+            max_size_bytes: Some(4 * 1024 * 1024),
+            growable_to_bytes: 64 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+        assert_eq!(
+            w.create_file(root, b"big", 0o644, Content::Bytes(&[3u8; 200_000]))
+                .err(),
+            Some(Errno::ENOSPC)
+        );
+    }
+
+    #[test]
+    fn explicit_timestamps_reach_the_inode() {
+        // The fixtures pin times to zero because the TypeScript writer
+        // stamps `Date.now()` unconditionally. A kernel-written image needs
+        // real mtimes, so the writer must be able to set them.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        let ino = w
+            .create_file(root, b"f", 0o644, Content::Bytes(b"x"))
+            .expect("create");
+        w.set_times(ino, 111, 222, 333);
+        let image = w.finish();
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+        let st = fs.stat_ino(ino).expect("stat");
+        assert_eq!((st.atime_ms, st.mtime_ms, st.ctime_ms), (111, 222, 333));
+    }
 }
