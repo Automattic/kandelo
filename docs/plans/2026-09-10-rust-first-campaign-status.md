@@ -3284,6 +3284,26 @@ checking — it is checking the artifact that ships: run the command the script
 runs, read `HEAD` rather than the working tree, invoke the suite the way the
 repository invokes it.
 
+## THE HOST IMPORT FLOOR, STATED ONCE (current as of 2026-09-11)
+
+**72 host functions, plus `env.memory`. A raw import-*entry* count therefore
+reads 73.**
+
+This heading exists because the number is quoted throughout this file at the
+value it had when each entry was written -- 76, 75, 74, 73 -- and every one of
+those rows is correct in its own context and wrong as a current figure. Four
+agents have now been caught by the adjacent trap of reporting *entries* as
+*functions*, and at least one report has been seen doing both at once: counting
+73 entries as 73 functions and then adding `env.memory` on top.
+
+Two rules, and they are cheap:
+
+1. **Measure the built artifact**, never `EXPECTED_HOST_IMPORT_COUNT`. A pin that
+   disagrees with the kernel is exactly what the gate exists to catch, and
+   reporting the pin hides it.
+2. **Say which you counted.** "72 functions" and "73 entries" are the same
+   measurement; "73 functions" is a different and wrong one.
+
 ## LEDGER, 2026-09-11 — and why it moved the wrong way
 
 Measured against the campaign merge-base with rename detection, in the format
@@ -3294,7 +3314,7 @@ the maintainer asked for: line delta and host surface, side by side.
 | Production TypeScript (tests excluded) | **−3,137** |
 | In-scope TypeScript including tests | **−4,057** |
 | Rust | **+98,779** |
-| Host imports | **75** |
+| Host imports | **72 functions + `env.memory`** (see below) |
 | Host driver glue | ~9,900 lines |
 | Commits since merge-base | 923 |
 
