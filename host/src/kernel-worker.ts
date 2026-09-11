@@ -18899,12 +18899,6 @@ export class CentralizedKernelWorker {
     const finalCheck = channel.readinessFinalCheck === true;
     channel.readinessFinalCheck = false;
     const kernelTimeoutMs = finalCheck ? 0 : timeoutMs;
-    const remainingMs = this.waitRemainingMs(
-      channel,
-      timeoutMs,
-      WAIT_KIND_SELECT,
-      entry,
-    );
 
     // Pure-sleep fast path: select(0, NULL, NULL, NULL, &tv) is `my_sleep`.
     // The kernel can't tell us anything new — there are no fds to poll —
@@ -18948,6 +18942,16 @@ export class CentralizedKernelWorker {
           entry,
         )
       ) return;
+      // Arm the deadline only now, once this sleep is known to happen.
+      // Every exit above -- a caught signal, a non-blocking probe, a
+      // snapshot that could not be remembered, a cancellation taken before
+      // registration -- returns without one.
+      const remainingMs = this.waitRemainingMs(
+        channel,
+        timeoutMs,
+        WAIT_KIND_SELECT,
+        entry,
+      );
       const finite = timeoutMs > 0;
       const sleepMs = finite ? Math.max(remainingMs, 1) : -1;
       if (finite) {
@@ -19045,6 +19049,15 @@ export class CentralizedKernelWorker {
         !retainedSnapshot
         && !this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)
       ) return;
+      // Arm the deadline only now, once this call is known to block. A
+      // select whose fd was already ready completed above without one, as
+      // did EINVAL, a real error, a caught signal and a `timeout=0` probe.
+      const remainingMs = this.waitRemainingMs(
+        channel,
+        timeoutMs,
+        WAIT_KIND_SELECT,
+        entry,
+      );
       if (remainingMs === 0) {
         channel.readinessFinalCheck = true;
         this.handleSelect(channel, snapshot.origArgs, entry, snapshot);
@@ -19126,12 +19139,6 @@ export class CentralizedKernelWorker {
     const finalCheck = channel.readinessFinalCheck === true;
     channel.readinessFinalCheck = false;
     const kernelTimeoutMs = finalCheck ? 0 : timeoutMs;
-    const remainingMs = this.waitRemainingMs(
-      channel,
-      timeoutMs,
-      WAIT_KIND_SELECT,
-      entry,
-    );
 
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
     // On wasm32: {u32 mask_ptr, u32 size} = 8 bytes
@@ -19217,6 +19224,15 @@ export class CentralizedKernelWorker {
         !retainedSnapshot
         && !this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)
       ) return;
+      // Arm the deadline only now, once this call is known to block. A
+      // pselect6 whose fd was already ready completed above without one, as
+      // did a real error, a caught signal and a `timeout=0` probe.
+      const remainingMs = this.waitRemainingMs(
+        channel,
+        timeoutMs,
+        WAIT_KIND_SELECT,
+        entry,
+      );
       if (remainingMs === 0) {
         channel.readinessFinalCheck = true;
         this.handlePselect6(channel, snapshot.origArgs, entry, snapshot);
