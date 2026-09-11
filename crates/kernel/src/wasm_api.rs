@@ -5350,13 +5350,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 },
             )
         } // SYS_GETSOCKOPT
-        59 => kernel_setsockopt_for_process_width(
+        // WHY NOT `a6`: setsockopt takes five arguments, so the sixth channel
+        // word is always the 0 musl pads with -- never a pointer width. Passing
+        // it to the width-checked entry made EVERY setsockopt fail EINVAL at
+        // the width guard, before any fd, level or optname was examined.
+        // `kernel_setsockopt` is the one authority for this process's pointer
+        // width; route through it rather than re-deriving the value here.
+        59 => kernel_setsockopt(
             a1,
             a2 as u32,
             a3 as u32,
             channel_const_ptr!(3, u8),
             channel_scalar::u32_argument(59, args, 4),
-            a6 as u32,
         ), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETPEERNAME
