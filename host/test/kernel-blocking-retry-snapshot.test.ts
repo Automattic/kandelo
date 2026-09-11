@@ -734,7 +734,6 @@ describe("blocking retry snapshot contract", () => {
       "mq_timedsend",
       "open",
       "openat",
-      "ppoll",
       "pread",
       "preadv",
       "preadv2",
@@ -761,6 +760,19 @@ describe("blocking retry snapshot contract", () => {
     // progress cannot be reconstructed by the host.
     for (const syscall of [
       "poll",
+      // WHY `ppoll` is HERE and not on the allowlist above: a caught handler
+      // must yield EINTR for the whole poll/select family, which is what Linux
+      // expresses as ERESTARTNOHAND and what this suite's own `.posix`
+      // expectations require -- `signal.expect/ppoll-block-raise.posix` is
+      // exactly `SIGUSR1` then `ppoll: EINTR`. `ppoll` was the lone member of
+      // the family still classified as restartable, disagreeing with
+      // `pselect6` beside it, and two conformance cases hung forever as a
+      // result. It was moved in commit 553e96a2d; this assertion was left
+      // behind asserting the old truth, so the suite went red on the very
+      // change it exists to police. Restating it as a prohibition rather than
+      // deleting it keeps the guard pointed at the regression it was written
+      // for.
+      "ppoll",
       "select",
       "pselect6",
       "epoll_wait",
