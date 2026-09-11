@@ -6,11 +6,12 @@ set -euo pipefail
 # WHY: os-test tracks 17 pairs of paths that differ only in letter case, such
 # as `include/inttypes/PRIx16.c` and `include/inttypes/PRIX16.c`. On a
 # case-insensitive filesystem — the macOS default — git can only write one
-# file per pair, so the checkout keeps the survivor and both names read the
-# same bytes. The affected tests still compile and still PASS, while checking
-# a macro other than the one their name claims. The `include` suite supplies
-# most of this project's conformance passes, so a collapsed checkout makes a
-# large fraction of the reported conformance fictional.
+# file per pair, so the checkout keeps one directory entry and the other
+# spelling has none. The suite discovers its tests by listing directories, so
+# the missing spellings are never run: the `include` suite reports 3,741 tests
+# where a case-sensitive checkout reports 3,758, and nothing in that output
+# says 17 are absent. Seventeen files also show as modified that nobody
+# edited, because the indexed path now reads its sibling's bytes.
 #
 # scripts/run-sortix-tests.sh refuses to run on such a checkout. This script
 # supplies the fix: it clones os-test, at the exact commit the submodule

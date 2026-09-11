@@ -8,9 +8,11 @@ set -euo pipefail
 # conformance suite tracks `include/inttypes/PRIx16.c` alongside
 # `include/inttypes/PRIX16.c`, and 16 more pairs like it. A case-insensitive
 # volume cannot hold both, so a plain `git submodule update --init` silently
-# collapses each pair into one file. Those tests then compile and pass while
-# checking a macro other than the one their name claims, which makes the
-# suite report conformance results that were never measured.
+# collapses each pair into one file. Only one spelling keeps a directory
+# entry, so the suite never discovers the other: it runs 3,741 `include` tests
+# where a case-sensitive checkout runs 3,758, and reports the smaller number
+# as if it were the whole suite. Seventeen files also show as modified that
+# nobody edited, because the path git indexed now reads its sibling's bytes.
 #
 # `scripts/check-case-sensitive-checkout.sh` detects that state and refuses
 # it. This script supplies the fix: an APFS sparse disk image formatted

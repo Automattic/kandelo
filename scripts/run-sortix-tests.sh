@@ -1130,14 +1130,17 @@ fi
 # WHY: os-test tracks 17 pairs of paths that differ only in letter case, for
 # example `include/inttypes/PRIx16.c` alongside `include/inttypes/PRIX16.c`.
 # A case-insensitive filesystem — the macOS default — cannot hold both, so
-# the checkout silently keeps one file per pair and the survivor answers to
-# both names. The `include` suite then compiles and PASSES a test that checked
-# a different macro than its own name claims: on such a checkout `PRIX16.c`
-# contains `#ifndef PRIx16`, `math/NAN.c` tests the `nan()` function instead
-# of the `NAN` macro, and both `FD_SET.c` files test the `fd_set` type instead
-# of the `FD_SET` macro. Those passes are fictional and nothing in the result
-# output reveals it. A suite that reports conformance it never measured is
-# worse than one that refuses to run, so refuse.
+# only one spelling per pair keeps a directory entry. This suite discovers
+# tests by listing directories, so the other spelling is never found and its
+# test is SILENTLY NOT RUN: measured here, `include` reports 3,741 tests on a
+# collapsed checkout against 3,758 on a case-sensitive one, and nothing in the
+# output says 17 are missing. The same collapse also makes 17 tracked files
+# show as modified that nobody edited, because the indexed path now reads its
+# sibling's bytes — so a test opened by exact path would compile the wrong
+# source.
+#
+# A suite that quietly drops 17 conformance tests while reporting a plausible
+# total is worse than one that refuses to run, so refuse.
 if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$OS_TEST"; then
     echo "Refusing to run: os-test results from this checkout would be fictional." >&2
     exit 1

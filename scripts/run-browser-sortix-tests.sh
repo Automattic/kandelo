@@ -705,9 +705,9 @@ fi
 
 # Refuse a case-collapsed os-test checkout. See the same guard in
 # scripts/run-sortix-tests.sh: a case-insensitive filesystem collapses the 17
-# tracked path pairs that differ only in letter case, and the affected tests
-# then pass while checking a macro other than their own name. Browser runs
-# report the same fictional passes, so they refuse on the same condition.
+# tracked path pairs that differ only in letter case, so one spelling per pair
+# has no directory entry and its test is never discovered or run. Browser runs
+# drop the same 17 tests, so they refuse on the same condition.
 if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$OS_TEST"; then
     echo "Refusing to run: os-test results from this checkout would be fictional." >&2
     exit 1

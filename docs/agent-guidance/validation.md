@@ -82,10 +82,17 @@ part of the task. Build or fetch what is missing:
    `include/inttypes/PRIx16.c` and `include/inttypes/PRIX16.c`. A
    case-insensitive filesystem — the macOS default — can hold only one file
    per pair, so `git submodule update --init` leaves 17 files modified that
-   nobody edited, and the affected tests then compile and *pass* while
-   checking a macro other than the one their name claims. All 17 are in
-   `include/`, the compile-only suite of ~3,741 tests that supplies most of
-   this project's conformance passes, so the resulting numbers are fictional.
+   nobody edited.
+
+   Only one spelling per pair keeps a directory entry, and the suite discovers
+   its tests by listing directories. The other 17 are therefore **never found
+   and never run**: measured on this branch, the `include` suite reports
+   **3,741 tests on a collapsed checkout against 3,758 on a case-sensitive
+   one**, and nothing in the output says 17 are missing. The `include` suite
+   is compile-only and supplies most of this project's conformance passes, so
+   a collapsed checkout silently under-reports it. (The surviving file also
+   answers to the missing spelling, so anything that opens one of those paths
+   directly compiles its sibling's source.)
 
    `scripts/run-sortix-tests.sh` and `scripts/run-browser-sortix-tests.sh`
    refuse to start on such a checkout and name every affected path. Provision
@@ -106,6 +113,19 @@ part of the task. Build or fetch what is missing:
    `./run.sh setup` runs the same provisioning automatically when — and only
    when — it finds a collapsed checkout, so a fresh macOS worktree is
    prepared without a separate step.
+
+   **Cost: none measurable.** Three interleaved runs of the `include` suite,
+   alternating between the two checkouts on the same machine, gave 230 / 203 /
+   188 s on the collapsed checkout and 211 / 200 / 231 s on the case-sensitive
+   one — a 7 s difference in the means, smaller than the 42 s spread within
+   either arm, and the case-sensitive arm compiles 17 more tests. Measured
+   under a 1-minute load average of 30–50 from concurrent builds, which is why
+   the runs were interleaved rather than batched.
+
+   Read sources from the image, but keep build output off it. Both runners pin
+   `BUILD_DIR` to the repository's own filesystem for exactly this reason: an
+   earlier revision put build output on the sparse image and the same suite
+   took 3,200 s instead of 290 s.
 2. **Kernel wasm + host + rootfs + musl sysroot** — ~1.5min; `./run.sh setup`
    builds the musl sysroot from scratch on a fresh checkout (or just
    re-syncs overlay headers when a sysroot already exists), then the

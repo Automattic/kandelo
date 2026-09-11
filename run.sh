@@ -2505,10 +2505,11 @@ cmd_setup() {
     #
     # WHY here: os-test tracks 17 pairs of paths that differ only in letter
     # case, and a case-insensitive filesystem (the macOS default) can hold
-    # only one file per pair. The affected conformance tests then pass while
-    # checking a macro other than their own name, so the suite reports
-    # conformance nobody measured. Setup is where the rest of this project's
-    # test inputs are provisioned, so it is where this one belongs too.
+    # only one file per pair. Only one spelling keeps a directory entry, so
+    # the suite never discovers the other and silently runs 17 fewer tests
+    # while reporting a plausible total. Setup is where the rest of this
+    # project's test inputs are provisioned, so it is where this one belongs
+    # too.
     #
     # This is a no-op on Linux, a no-op on any macOS checkout already on a
     # case-sensitive filesystem, and a no-op when the submodule is not checked
