@@ -6626,3 +6626,77 @@ consumes it once`, the third in `keeps caught-handler restart policy on the
 reviewed syscall allowlist`. The other 138 assertions passed in every case, so
 none of the three is firing incidentally. The glue was restored byte-identical
 afterwards, verified by `diff`.
+
+## B31 re-derived: the constant is necessary, and twelve runs cannot show it
+
+`SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50` was carried by a twelve-repetition study
+that bound 0 ms as insufficient (11/12) and 50 ms as sufficient (12/12), taken
+before the link-contract fix and before `ppoll` began returning EINTR after a
+caught handler. Both of those changed under it, so it was re-measured.
+
+### Stage 1 — seven values, twelve rounds, interleaved (84 runs)
+
+Values were interleaved rather than run as blocks: these are race tests whose
+outcome depends on machine load as well as on the constant, and a block design
+lets one load excursion land inside a single value and be read as its floor.
+
+| value | 50 | 20 | 10 | 5 | 2 | 1 | 0 |
+|---|---|---|---|---|---|---|---|
+| pass rate | 12/12 | 12/12 | 12/12 | 11/12 | 12/12 | **9/12** | **12/12** |
+
+Every one of the four failures was `ppoll-block-sleep-write-raise` — 4 of 4,
+against 0 failures in 504 executions of its six `ppoll-block-*` siblings. Load
+ran 6.7–57.9 and the failures fell at 34.8, 12.9, 10.5 and 49.6, so they do not
+track load either.
+
+**Read alone, this table is wrong in both directions.** It is not monotone, and
+0 ms — the value the earlier study called insufficient — passed every run.
+
+### Stage 2 — 0 ms against 50 ms, 40 runs per arm, interleaved
+
+Spending the samples where they discriminate, on the one case that has ever
+failed:
+
+| arm | result |
+|---|---|
+| 50 ms | **40 PASS / 0 FAIL** |
+| 0 ms | **33 PASS / 7 FAIL** |
+
+Fisher one-sided **p = 0.006**. The delay does real work, 0 ms is insufficient,
+and **stage 1's clean 0 ms was a false negative**.
+
+### What the evidence bounds, and no more
+
+| | values |
+|---|---|
+| insufficient | 0 ms (7/40 fail), 1 ms (3/12), 5 ms (1/12) |
+| unresolved | 2 ms, 10 ms, 20 ms — 0 failures in 12 each |
+| sufficient | 50 ms — 0 failures in 52 |
+
+**50 is not minimal; it is the smallest value tested that survived an
+adequately powered sample.** A single observed failure proves a value
+insufficient, which settles 0, 1 and 5. Twelve clean runs prove nothing here.
+
+### The transferable lesson: twelve was still the wrong number
+
+The base failure rate is a few percent to ~17%, and **P(zero failures in 12 |
+p = 0.05) = 0.54**. So the earlier study's "0 ms insufficient" and stage 1's
+"0 ms sufficient" are not a contradiction — they are the same underpowered
+coin flipped twice. This campaign moved from one run per value to twelve
+because one run nearly deleted a necessary constant; twelve then reported a
+necessary constant as unnecessary. **Repetition count must be chosen against
+the event rate you are trying to exclude, not against the last mistake.**
+
+### Why the EINTR change did not move the mechanism
+
+The test leaves SIGUSR1 pending, enters `ppoll(..., &empty)`, and a child
+writes the pipe then signals. The 0 ms failure output is `0 | POLLIN` with no
+`SIGUSR1` line — the handler never ran, so the grace period is upstream of
+delivery: it buys the signal a chance to be *seen* before `ppoll` completes on
+the pipe event and restores the mask.
+
+The test accepts both `SIGUSR1` + `0 | POLLIN` and `SIGUSR1` + `ppoll: EINTR`.
+`ppoll` returning EINTR instead of resubmitting changes which of those a
+passing run produces; **both require the `SIGUSR1` line**, which is exactly
+what the delay protects. The mechanism is unchanged, which is what the
+measurement then confirmed.
