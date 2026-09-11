@@ -1797,26 +1797,82 @@ mod tests {
     }
 
     /// The diagnostic must be reachable through the ordinary read path, not
-    /// merely recorded somewhere. This test fails if a shared-mapping writeback
-    /// loss is dropped on the floor rather than moved into kernel state: it
-    /// records a loss the way the kernel's `HostIO` impl does, then reads it
-    /// back through the procfs content generator a `read(2)` would use.
+    /// merely recorded somewhere, and a record the bounded buffer could not
+    /// keep must still raise a number the reader sees.
+    ///
+    /// This test fails if a shared-mapping writeback loss is dropped on the
+    /// floor rather than moved into kernel state. It records losses exactly the
+    /// way the kernel's `SharedMappingIo` impl does — through
+    /// `writeback_loss::record_writeback_loss` — and reads them back through
+    /// the same `generate_content` a `read(2)` on
+    /// `/proc/kandelo/writeback_losses` goes through.
+    ///
+    /// Both phases live in ONE test on purpose. The record is kernel-wide
+    /// global state and cargo runs tests in parallel threads, so a second test
+    /// touching the same global would race it and make both order-dependent.
+    /// The arithmetic is additionally covered without the global in
+    /// `writeback_loss`'s own tests.
     #[test]
-    fn a_recorded_writeback_loss_is_readable_through_procfs() {
+    fn a_recorded_writeback_loss_is_readable_through_procfs_and_overflow_is_counted() {
+        use crate::writeback_loss::{record_writeback_loss, WRITEBACK_LOSS_RECORD_CAPACITY};
+
         let proc = Process::new(1);
         let entry = match_procfs(b"/proc/kandelo/writeback_losses", 1).expect("path resolves");
 
-        crate::writeback_loss::record_writeback_loss(4242, 0xdead_0000, "descriptor closed");
+        let read_report = |entry: &ProcfsEntry| -> String {
+            String::from_utf8(generate_content(&proc, entry).expect("readable"))
+                .expect("ASCII report")
+        };
 
-        let content = generate_content(&proc, &entry).expect("readable");
-        let text = String::from_utf8(content).expect("ASCII report");
+        // Phase 1: one specific loss, read back with all three of its fields.
+        record_writeback_loss(4242, 0xdead_0000, "descriptor closed");
+        let text = read_report(&entry);
         assert!(
             text.contains("loss pid=4242 addr=0xdead0000 reason=descriptor closed\n"),
-            "the loss must be visible through the read path, got:\n{text}"
+            "the loss must be visible through the read path with its pid, \
+             address and reason, got:\n{text}"
         );
-        // The report always states how much it is not showing.
-        assert!(text.contains("total "), "{text}");
-        assert!(text.contains("recorded "), "{text}");
-        assert!(text.contains("dropped "), "{text}");
+        assert!(text.contains("total 1\n"), "{text}");
+        assert!(text.contains("recorded 1\n"), "{text}");
+        assert!(text.contains("dropped 0\n"), "{text}");
+
+        // Phase 2: overflow the bounded buffer. A buffer whose overflow is
+        // invisible would be the same silent-success defect in a new place, so
+        // `total` must keep counting past the point `recorded` stops.
+        let overflow = 7u64;
+        let further = WRITEBACK_LOSS_RECORD_CAPACITY as u64 - 1 + overflow;
+        for i in 0..further {
+            record_writeback_loss(9, 0x1000 + i, "write failed");
+        }
+
+        let total = 1 + further;
+        let text = read_report(&entry);
+        assert!(
+            text.contains(&alloc::format!("total {total}\n")),
+            "every loss must be counted, got:\n{text}"
+        );
+        assert!(
+            text.contains(&alloc::format!(
+                "recorded {WRITEBACK_LOSS_RECORD_CAPACITY}\n"
+            )),
+            "storage is bounded at capacity, got:\n{text}"
+        );
+        assert!(
+            text.contains(&alloc::format!("dropped {overflow}\n")),
+            "a loss the buffer could not keep must still be visible as a \
+             count, got:\n{text}"
+        );
+
+        // The records kept are the earliest ones, so the first loss -- the one
+        // that explains the cause -- survives the flood that followed it.
+        assert!(
+            text.contains("loss pid=4242 addr=0xdead0000 reason=descriptor closed\n"),
+            "the earliest loss must survive overflow, got:\n{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("loss ")).count(),
+            WRITEBACK_LOSS_RECORD_CAPACITY,
+            "the report must list exactly the records it says it kept"
+        );
     }
 }

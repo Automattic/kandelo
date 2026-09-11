@@ -214,7 +214,18 @@ mod tests {
             )),
             "{text}"
         );
+        assert!(
+            text.contains(&alloc::format!(
+                "recorded {WRITEBACK_LOSS_RECORD_CAPACITY}\n"
+            )),
+            "{text}"
+        );
         assert!(text.contains(&alloc::format!("dropped {overflow}\n")), "{text}");
+        // `recorded` must describe the listing, not merely appear in it.
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("loss ")).count(),
+            WRITEBACK_LOSS_RECORD_CAPACITY
+        );
     }
 
     #[test]
