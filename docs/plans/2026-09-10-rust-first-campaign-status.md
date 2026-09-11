@@ -5559,11 +5559,22 @@ a live backing's host handle changes. A suite that cannot see that path today
 cannot be trusted to catch what A4 switches on. Build the coverage before A4,
 not after it.
 
-**Natural PR boundary:** A1–A3 leave the kernel genuinely capable rather than
-notionally so, and are safe to ship. A4+A5 are a coherent second act. Whether
-they ship inside #1350 is the maintainer's call, and the honest cost is that A5
-is simultaneously the largest TypeScript deletion left, the riskiest change on
-the board, and the only item blocked behind another lane.
+**DECIDED (maintainer, 2026-09-11): all five links ship in PR #1350.** The
+natural PR boundary after A3 was offered and declined, so the cutover is not
+split. What that buys is the campaign's largest remaining TypeScript deletion --
+**−2,776 lines**, which roughly doubles the production-TS figure the ledger
+currently carries. What it costs is that #1350 now contains the riskiest change
+on the board, and one link of it is blocked behind another lane.
+
+Two consequences follow, and neither is optional:
+
+1. **A5 waits for lane B to clear `host/src/kernel-worker.ts`.** Two agents in
+   the syscall hot path of that file produce a merge that compiles by luck --
+   the exact failure already paid for once today, when two lanes edited the
+   mapping loss path and git merged them cleanly into a tree that did not build.
+2. **The coverage comes before A4, not after it.** "What tests would have to
+   exist before this layer is switched on" is a deliverable of A3, not an
+   afterthought of A4.
 
 ### What would make this slower
 
