@@ -4545,3 +4545,84 @@ untouched. `crates/runtime-core/src/process.rs` takes two hunks — one struct
 field after `secure_exec`, one initializer — and no `sys_clone` or thread-slot
 code. `crates/runtime-core/src/syscalls.rs` takes one hunk, tests only, appended
 inside the existing `mod tests`.
+
+---
+
+## The exit-144 host-Vitest "flake" is not the suite
+
+Five full host Vitest attempts ended in `exit code 144` during item B9, and
+the first report of that — "roughly a coin flip to survive" — framed it as a
+ship-gate problem. **That framing was wrong, and the correction matters: the
+gate is probably fine, and the unreliability is in how agents drive it.**
+
+### What it is not
+
+**Not Vitest, not Node, not Nix, not memory.** Two of the tasks that exited 144
+contained none of them. They were pure Bash:
+
+```
+until grep -aq "Test Files" "$F"; do sleep 20; done
+```
+
+No child process beyond `sleep` and `grep`, no Wasm, no worker threads. Both
+produced **zero bytes of output** and both ended `[exited with code 144]`. A
+watchdog inside Vitest's pool, a Node OOM, a Nix substituter failure and system
+memory pressure are all excluded by that one observation: none of them can
+reach an idle `sleep` loop.
+
+Supporting measurements taken while the kills were happening: system memory
+**73% free**; user process count **703** against a `kern.maxprocperuid` of
+**8000**; file-descriptor limit 1048576. No resource was near exhaustion.
+
+### What the pattern is
+
+| attempt | fate |
+|---|---|
+| full run, 11558 lines | **completed** — 105 failed / 257 passed / 65 skipped |
+| baseline run, 10801 lines | **completed** — 103 failed / 259 passed / 65 skipped |
+| full run | global-setup failure, exit 0 — caused by a concurrent `cargo` of mine racing the program-index transaction |
+| full run | killed 144 |
+| full run, ~5 min in | killed 144 |
+| full run, <1 min in | killed 144 |
+
+The kills **cluster in time**. One run died about five minutes in and a Bash
+waiter died in the same window; a new background task started a minute later
+died almost immediately, and a trivial probe started three minutes after that
+survived. That is the shape of an external, transient, session-level event
+reaping background tasks — not a workload crossing a threshold.
+
+**Not a fixed lifetime cap either.** The two runs that completed each ran about
+half an hour. And a deliberate control — an idle `sleep` loop emitting one line
+every fifteen seconds, started in the same session minutes after the kills —
+ran the full ten minutes and exited 0. So neither age nor idleness explains
+which tasks were reaped.
+
+### What was NOT determined
+
+**The trigger was not identified.** It is a background-task termination in the
+agent harness, and nothing in this repository can observe why the harness chose
+to send it. This is recorded as an honestly-labelled unknown rather than a
+plausible story, because the plausible stories — pool watchdog, OOM, contention
+— are the ones the evidence above already rules out.
+
+### What this means for the gate
+
+**Every run that was not externally killed, finished.** Two produced complete
+results in about 24 minutes of test time each; the third failed in global setup
+for a reason that was diagnosed and is reproducible-on-demand (a concurrent
+`cargo` invocation and the program-index transaction are not safe together).
+The suite itself did not once fail to complete on its own merits.
+
+So the operational guidance for anyone driving this suite, agent or human:
+
+1. **Run it with nothing else touching `cargo`.** The global setup shells out to
+   `cargo run -p xtask -- build-deps program-index`; a concurrent `cargo` in the
+   same checkout makes that step fail and takes the whole run with it. This
+   accounted for one of the six attempts.
+2. **Do not treat a 144 as a suite failure.** It carries no test information at
+   all. Re-run it.
+3. **Budget about 25 minutes of test time**, plus a global setup that builds
+   program fixtures on a cold worktree.
+
+A gate that needs a retry loop is worse than one that does not, but it is a
+different and much smaller problem than a suite that cannot complete.
