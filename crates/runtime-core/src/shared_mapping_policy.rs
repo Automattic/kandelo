@@ -46,38 +46,6 @@ use crate::memory::{
 
 use wasm_posix_shared::abi::extended_syscalls as ext;
 
-/// The backing key for the file a descriptor refers to, or `None` when that
-/// descriptor can never have one.
-///
-/// Two refusals, and the first is the load-bearing one.
-///
-/// **No host handle, no backing.** `has_host_handle` is 0 for every file the
-/// kernel owns itself — tmpfs, memfd, the rootfs overlay, procfs, synthetic
-/// regulars. Those can never have a page-cache backing, by construction:
-/// [`SharedMappingTable::get_or_create_file_backing`] refuses with `ENOTSUP`
-/// when the stat carries no host handle, so every backing that exists has one.
-/// Computing a key for such a descriptor would therefore be looking up
-/// something that cannot be there — and worse than useless, because the
-/// kernel's own device numbers and the host's qualified ones are drawn from
-/// separate allocators that are not partitioned. A kernel-owned file whose
-/// `(dev, ino)` happened to match a host-backed one would resolve to that
-/// file's backing and flush or reload it, which is cross-file corruption. This
-/// refusal removes the possibility rather than relying on the two allocators
-/// staying apart.
-///
-/// **No promised identity, no backing.** Delegated to
-/// [`crate::memory::file_identity_key`], which is the one place a key is
-/// formatted; see its documentation for the `st_ino == 0` contract.
-///
-/// A regular-file check is not needed on top: `has_host_handle` is already
-/// `file_type == Regular && host_handle >= 0`.
-pub fn backing_key_for_fd_facts(facts: &KernelSharedMappingFdFacts) -> Option<String> {
-    if facts.has_host_handle == 0 {
-        return None;
-    }
-    crate::memory::file_identity_key(facts.dev, facts.ino)
-}
-
 /// What the kernel must answer for this policy to act.
 ///
 /// Both questions are about file identity, which is what a backing is keyed
@@ -542,63 +510,6 @@ mod tests {
 
     const S_IFREG: u32 = 0o100000;
 
-    fn owned_facts(dev: u64, ino: u64, has_host_handle: u32) -> KernelSharedMappingFdFacts {
-        KernelSharedMappingFdFacts {
-            dev,
-            ino,
-            size: 0,
-            host_handle: if has_host_handle != 0 { 9 } else { 0 },
-            mode: S_IFREG | 0o644,
-            access_mode: O_RDWR,
-            has_host_handle,
-            _pad: 0,
-        }
-    }
-
-    #[test]
-    fn a_host_backed_descriptor_resolves_to_its_object_identity() {
-        assert_eq!(
-            backing_key_for_fd_facts(&owned_facts(4, 17, 1)).as_deref(),
-            Some("dev:4:ino:17"),
-        );
-    }
-
-    /// A file the kernel owns itself — tmpfs, memfd, rootfs overlay, procfs —
-    /// can never have a page-cache backing, because
-    /// `get_or_create_file_backing` refuses a stat with no host handle. Giving
-    /// one a key would look up something that cannot exist, and the kernel's
-    /// device numbers are drawn from a different allocator than the host's
-    /// qualified ones, so a coincidental `(dev, ino)` match would resolve to a
-    /// *different* file's backing and flush or reload it.
-    #[test]
-    fn a_kernel_owned_descriptor_has_no_backing_key() {
-        assert_eq!(backing_key_for_fd_facts(&owned_facts(0x7300_0000, 17, 0)), None);
-    }
-
-    /// The refusal must not depend on the numbers looking kernel-ish. A
-    /// kernel-owned file whose identity is numerically identical to a
-    /// host-backed one is exactly the collision case, and it is refused for
-    /// what the descriptor *is*, not for what its numbers look like.
-    #[test]
-    fn a_kernel_owned_descriptor_is_refused_even_when_it_collides_exactly() {
-        let host_backed = backing_key_for_fd_facts(&owned_facts(4, 17, 1));
-        assert!(host_backed.is_some());
-        assert_eq!(
-            backing_key_for_fd_facts(&owned_facts(4, 17, 0)),
-            None,
-            "identical numbers must not reach a host-backed file's backing",
-        );
-    }
-
-    /// The `st_ino == 0` declaration reaches the fd route too: a host-backed
-    /// descriptor whose backend cannot promise identity has no key.
-    #[test]
-    fn a_host_backed_descriptor_with_no_promised_identity_has_no_key() {
-        assert_eq!(backing_key_for_fd_facts(&owned_facts(7, 0, 1)), None);
-    }
-
-    /// Just enough of the world for the decision table: one file, reachable by
-    /// a descriptor and by a pathname.
     struct Io {
         file: Vec<u8>,
         /// How many times the cache was persisted into the file.

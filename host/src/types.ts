@@ -139,9 +139,13 @@ export interface PlatformIO {
    * identity (for example, a backend that reports no inode number) — the same
    * declaration `StatResult.ino === 0` makes, and for the same reason.
    *
-   * RETIRING: the kernel resolves file identity itself, so this method's only
-   * caller disappears with the shared-mapping cutover. New backends should
-   * make the declaration through `StatResult.ino` and not implement this.
+   * The kernel can now derive this itself, from the same `(dev, ino)` any
+   * implementation here uses (`file_identity_key`, `crates/runtime-core/src/
+   * memory.rs`). This method's only remaining caller is the shared-mmap
+   * backing lookup in `kernel-worker.ts`, and it stays until something
+   * retires that caller. A new backend need not implement it: declaring
+   * through `StatResult.ino` is sufficient and is the contract the kernel
+   * reads.
    */
   fileIdentity?(path: string, dev: bigint, ino: bigint): string | null;
 
@@ -152,12 +156,14 @@ export interface PlatformIO {
    * open file remains a valid mmap backing after that name is unlinked or
    * renamed. Return null when the backend cannot promise stable identity.
    *
-   * RETIRING, with the same replacement. This looked like the seam where a
-   * backend declares whether it can promise identity, which would be worth
-   * keeping — but every implementation is a pure function of `(dev, ino)`
-   * whose only other output is that null, and the kernel can already hear
-   * the null through `StatResult.ino === 0`. Keeping the method would mean
-   * keeping a host import to carry one bit that the stat already carries.
+   * This looks like the seam where a backend declares whether it can promise
+   * identity, and it is — but every implementation is a pure function of
+   * `(dev, ino)` whose only other output is that null, and the kernel can
+   * already hear the null through `StatResult.ino === 0`. So the declaration
+   * a new backend needs to make is on the stat, not here. This stays while
+   * its caller does; wiring it so the *kernel* could consult it would cost a
+   * host import to carry one bit the stat already carries, which is why it
+   * is not wired.
    */
   fileHandleIdentity?(handle: number, dev: bigint, ino: bigint): string | null;
 

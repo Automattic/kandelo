@@ -9,68 +9,91 @@ Worktree: `.claude/worktrees/agent-a8e5b38ae12d1042d`, branch
 `worktree-agent-a8e5b38ae12d1042d`. Base `87003aaad`. Eight commits,
 `87003aaad..73495ec79`. **Nothing pushed.**
 
-## 1. What is actually in #1350, and what is not
+## 1. What is in #1350 — and a check that answered the wrong question
 
-The handoff request listed five items as "already merged into #1350 and
-therefore staying". That is wrong for all five, and the correction
-matters more than a bookkeeping note.
+**All eight of this lane's commits are in #1350**, cherry-picked at
+`56ceefe47` and pushed. The mapping work, the `statx` fix and the
+`unlinkat` fix are all on the branch.
 
-**None of the eight commits below are on `origin`.** They exist only in
-this worktree. `git branch -r --contains` finds no remote branch for any
-of them.
+An earlier draft of this document said the opposite, and the mistake is
+worth more than the correction.
 
-| Commit | What | Would ship? |
-|---|---|---|
-| `d30ac3108` | Mapping suite runs against the real retention table | tests only |
-| `ed47ca797` | `track_file_mapping` / `track_fd_writeback_mapping` | **dead floor** |
-| `fcf776525` | Live-process seeding refusal (`UnseededProcess`) | **live** |
-| `b923ab874` | Lane A plan + four premise corrections | docs |
-| `3b94039f8` | `file_identity_key`, `ino == 0` refusal + contract | dormant |
-| `2e6459025` | `backing_key_for_fd_facts` host-handle refusal | **dead floor** |
-| `05dc3cbc6` | `statx` two-bug fix + round-trip guard | **live** |
-| `73495ec79` | `unlinkat` regression fix + 40-syscall census | **live** |
+### Compare content, not SHAs
 
-What *is* genuinely in #1350 from earlier lanes: the handle-retention
-table and its three consult sites (`443949bfb` and follow-ups),
-`shared_mapping_policy.rs` (1,108 lines), `acquire_file_backing`, and
-`kernel_shared_mapping_fd_facts`.
+The check was `git branch -r --contains <my-sha>`, which found nothing,
+and the conclusion drawn was "the work did not land". The premise was
+true and the conclusion was false: **cherry-picking creates new commits
+with new SHAs**, so a containment query on the original SHA can only
+ever answer "no", whatever happened to the content. Every merge
+mechanism except a fast-forward changes the identifier — cherry-pick,
+rebase, squash, and a rebase-merge on the forge.
 
-### The urgent consequence
+**To ask whether work landed, compare content or subjects, not SHAs.**
 
-**`87003aaad` — the `unlinkat` conformance test — IS in #1350, and it is
-red.** It was deliberately left red rather than marked expected-fail.
-Its fix is `73495ec79`, which is unpushed.
+    git log --oneline <branch> | grep -E '<subject fragment>'
+    git log --oneline <branch>..HEAD        # what is genuinely unlanded
+    grep -c claims_path <the file it changed>
 
-So if this lane stands down and lands nothing, #1350 ships with a
-known-red conformance test **and** the silent data-loss bug it was
-written to catch: `unlinkat` on the in-kernel tmpfs and rootfs removes
-nothing while telling the caller it succeeded.
+`git rebase` onto the branch is the strongest form, because it reports
+`skipped previously applied commit <sha>` for each patch-identical
+commit — which is exactly the question, answered by content.
 
-**Recommendation: `73495ec79` and `05dc3cbc6` must not be deferred with
-the cutover.** Neither has anything to do with it. `unlinkat` is a
-campaign-caused regression with its failing test already on the branch;
-`statx` is an independent POSIX bug that is broken today regardless of
-whether the cutover ever lands. Both are self-contained and fully
-validated. `fcf776525` is also live and independently correct. The rest
-are the deferral's business.
+This is the same defect shape the campaign keeps paying for, and the
+third instance in this lane alone: a guard that never fails, a
+diagnostic that fires on every exit, and now a check that answers a
+different question from the one asked. All three look like evidence and
+are not.
+
+### What is in #1350 from this lane
+
+| Subject on the branch | Status |
+|---|---|
+| Run the mapping suite against the real retention table | tests |
+| Let the kernel install a file mapping, not only acquire one | **removed below** |
+| Refuse to skip a live process the caller never seeded | live |
+| Refuse a file identity the backend cannot promise | dormant, kept |
+| Give a descriptor that can have no backing no key at all | **removed below** |
+| Report a whole device number from statx | live |
+| Make unlinkat reach the filesystems unlink and rmdir reach | live |
+| Lane A plan + four premise corrections | docs |
+
+From earlier lanes: the handle-retention table and its three consult
+sites, `shared_mapping_policy.rs` (1,108 lines), `acquire_file_backing`,
+and `kernel_shared_mapping_fd_facts`.
+
+The `unlinkat` conformance test `87003aaad` is green on the branch:
+`sys_unlinkat` carries its four `claims_path` references, so the silent
+data-loss bug is fixed and the test that was deliberately left red is
+not red any more.
 
 ## 2. Is anything merged load-bearing on work that will not land?
 
 This was the sharpest question asked, and the answer is yes — three
 things, and I would not ship two of them.
 
-**Dead floor I would add (recommend dropping):**
+**Dead floor, since REMOVED:**
 
-- `track_file_mapping` / `track_fd_writeback_mapping` (`ed47ca797`) have
-  **no caller of any kind**. They exist to be called by A2's exports.
-- `backing_key_for_fd_facts` (`2e6459025`) has **only test callers**.
-  It exists to be the fd half of A1's resolver.
+- `track_file_mapping` / `track_fd_writeback_mapping` had **no caller of
+  any kind**. They existed to be called by A2's exports.
+- `backing_key_for_fd_facts` had **only test callers**. It existed to be
+  the fd half of A1's resolver.
 
-Both are well-tested and carefully documented, and that is exactly the
+All three are gone as of the removal commit that follows this document.
+They were well-tested and carefully documented, and that was exactly the
 problem: a mechanism with no caller, good doc comments and green tests
-reads as complete. That is the dead-floor shape this lane was opened to
-clear, and shipping them would mean #1350 carries *more* of it than
-before, not less. Roughly 200 lines of Rust plus their tests.
+reads as complete. Keeping them would have meant #1350 carrying *more*
+of the shape this lane was opened to delete, not less. 368 lines removed
+including their tests.
+
+**Coverage that went with them, and is now owed.** Two of the removed
+tests covered pre-existing production code rather than the removed API:
+`release_writeback_fd`'s owned-versus-borrowed rule (a writeback dup the
+table owns must be closed; a guest fd it merely borrowed must not), and
+the middle-split case where two sub-mappings share one dup and it must
+survive until the last is unmapped. Those paths are unreachable today —
+nothing else in the Rust creates an fd-writeback mapping — but they are
+real and subtle, and A2 must re-create that coverage when it gives them
+a caller. Added as gap 9 in §4.
 
 **Dormant but defensible (recommend keeping):**
 
@@ -83,14 +106,14 @@ before, not less. Roughly 200 lines of Rust plus their tests.
   and already dormant. It does not *add* a floor; it makes an existing
   one correct.
 
-**One thing I would amend before anything ships.** `3b94039f8` marks
-`KernelIO.fileIdentity` and `fileHandleIdentity` as **RETIRING** in
-`host/src/types.ts`, on the strength of A5 deleting their only callers.
-A5 is now deferred with no date. A comment promising a removal that is
-not scheduled is a documentation promise the implementation does not
-support — the inverse of the aspirational-behaviour rule, and it will
-mislead the next backend author. Either soften those to "expected to
-retire with the shared-mapping cutover (deferred)" or drop them.
+**The RETIRING comments are softened**, in the same commit. They marked
+`KernelIO.fileIdentity` and `fileHandleIdentity` as retiring on the
+strength of A5 deleting their only callers; A5 now has no date. A
+comment promising an unscheduled removal is a documentation promise the
+implementation does not support, and it would have misled the next
+backend author. They now say what is true: the kernel can derive the
+identity itself, a new backend should declare through `StatResult.ino`,
+and these stay while their callers do.
 
 **Already inert before this lane, and staying inert:** the
 handle-retention table populates nothing in production, so
@@ -104,9 +127,12 @@ exists and they should be named in any accounting of what #1350 carries.
 
 Sizes are mine, measured on the branch, not the register's.
 
-**A1 — the production `SharedMappingResolver`.** Two methods.
-`backing_key_for_fd` is done in substance (`2e6459025`) and needs only
-wrapping in the trait impl. `backing_key_for_path_arg` is the open one.
+**A1 — the production `SharedMappingResolver`.** Two methods. The fd
+half was written and then removed as dead floor (§2); its shape is
+recoverable from that commit and is three lines — refuse a descriptor
+with no host handle, then `file_identity_key(dev, ino)`. The reasoning
+behind the refusal is in §3 and is the part worth recovering.
+`backing_key_for_path_arg` is the genuinely open one.
 
 **A2 — the kernel exports.** About 15. Three *generalize* existing SysV
 exports rather than adding surface: `kernel_shared_mapping_sysv_inherit`
@@ -214,8 +240,8 @@ The one genuine obstacle found — `kernel_statx` truncating `st_dev` into
 (`05dc3cbc6`). The partition itself was never applied. It is a one-line
 constant change, one comment, and one cross-reading test.
 
-The fd-route refusal (`2e6459025`) makes the question moot for
-descriptors, provably: every file backing has a host handle by
+The fd-route refusal makes the question moot for descriptors,
+provably: every file backing has a host handle by
 construction, because `get_or_create_file_backing` returns `ENOTSUP`
 without one, so a kernel-owned descriptor can never have a backing and
 computing a key for it is a lookup that cannot succeed. The **path
@@ -259,6 +285,11 @@ Eight gaps, in priority order.
    that.
 8. **Exec prepare/finalize and teardown ordering** with both halves
    non-empty.
+
+9. **The fd-writeback dup rules**, whose only tests were removed with
+   the registration API: an owned dup is closed on unmap, a borrowed
+   guest fd is not, and a middle split keeps the dup alive until both
+   halves are gone. See §2.
 
 Also owed a decision, not a test: `FileBacking::reload_range` and
 `invalidate_range` have **no production caller in either
@@ -317,13 +348,7 @@ asserting nothing until that was done.
 
 ## 7. What I would do first on resuming
 
-**Before anything else: get `73495ec79` and `05dc3cbc6` onto #1350**,
-whatever happens to the cutover. #1350 currently has a red conformance
-test whose fix is stranded here, guarding a bug that silently discards
-`unlinkat` on the in-kernel filesystems. That is not cutover work and
-should not wait for it.
-
-**Then, if the cutover resumes, A1's path route — but starting with the
+**If the cutover resumes, start with A1's path route — but with the
 partition, not the resolver.** The resolver cannot be written correctly
 until the dev spaces are partitioned, because the path route has no
 `has_host_handle` to lean on. The partition is one constant, one
