@@ -2738,6 +2738,112 @@ impl SharedMappingTable {
         io.release_handle(handle);
     }
 
+    /// Install a file `MAP_SHARED` interval over an already-acquired backing.
+    ///
+    /// The backing reference this mapping owns was taken by
+    /// [`crate::shared_mapping_policy::acquire_file_backing`] before the kernel
+    /// performed the mapping, because a `MAP_FIXED` cleanup can drop the last
+    /// old mapping of this same file in between. This method consumes that
+    /// reservation; it does **not** take a second one. On failure it leaves the
+    /// reservation untouched for the caller to release, because the caller is
+    /// the only one that knows whether the mapping it was reserved for will be
+    /// retried.
+    ///
+    /// The region is seeded from the backing rather than from bytes captured
+    /// during preparation. `MAP_FIXED` flushes the interval it replaces first,
+    /// and that interval may belong to this very backing, so the authoritative
+    /// cache can have advanced since the reservation was taken.
+    pub fn track_file_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        fd: i32,
+        file_offset: u64,
+        len: usize,
+        writable: bool,
+        write_allowed: bool,
+        key: &str,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Err(Errno::EIO);
+        };
+        if map_addr.saturating_add(len as u64) > mem_len {
+            return Err(Errno::EIO);
+        }
+        let backing = self.file_backings.get_mut(key).ok_or(Errno::EIO)?;
+        let initial = backing.read_range(file_offset, len, io)?;
+        let seen_version = backing.version;
+        io.write_process(pid, map_addr, &initial)?;
+        self.insert_mapping(
+            pid,
+            map_addr,
+            SharedMapping::file(
+                fd,
+                file_offset,
+                len,
+                writable,
+                write_allowed,
+                String::from(key),
+                initial,
+                seen_version,
+            ),
+        );
+        Ok(())
+    }
+
+    /// Install a writable `MAP_SHARED` of a kernel-owned regular file (tmpfs,
+    /// memfd, rootfs overlay) that has no host handle to page-cache.
+    ///
+    /// There is no shared byte store here: writeback rides `writeback_fd`, an
+    /// independent descriptor so the mapping survives `close(2)` of the fd that
+    /// created it, as POSIX requires. The caller populates the region from the
+    /// file first; the snapshot is taken from the region afterwards so each
+    /// publication flushes only the bytes this mapping changed and concurrent
+    /// mappings of one file preserve each other's disjoint writes.
+    ///
+    /// `writeback_fd == fd` means the dup could not be taken and the mapping is
+    /// riding the guest's own descriptor. That is a real degradation, not an
+    /// error: writeback works while the fd is open and only survival across
+    /// `close` is lost. Such a descriptor is not owned and is never refcounted
+    /// or closed by the table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn track_fd_writeback_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        fd: i32,
+        file_offset: u64,
+        len: usize,
+        writeback_fd: i32,
+        file_size: u64,
+        dev: u64,
+        ino: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Err(Errno::EIO);
+        };
+        if map_addr.saturating_add(len as u64) > mem_len {
+            return Err(Errno::EIO);
+        }
+        let mut snapshot = vec![0u8; len];
+        io.read_process(pid, map_addr, &mut snapshot)?;
+        let mapping = SharedMapping::fd_writeback(
+            fd,
+            file_offset,
+            len,
+            writeback_fd,
+            file_size,
+            dev,
+            ino,
+            snapshot,
+        );
+        self.retain_writeback_fd(pid, &mapping);
+        self.insert_mapping(pid, map_addr, mapping);
+        Ok(())
+    }
+
     /// Publish, then refresh, every file mapping of one process.
     ///
     /// Both phases run over the whole candidate set before the other begins: a
@@ -4727,6 +4833,179 @@ mod shared_mapping_tests {
         assert_eq!(backing.handle, 10, "a refused upgrade must not swap the handle");
         assert!(!backing.writable, "a refused upgrade must not mark the backing writable");
         assert_eq!(crate::ofd::mapping_host_handle_refs(10), 1);
+    }
+
+    // -- registration ------------------------------------------------------
+    //
+    // Installing a mapping is the step that turns an acquired backing into a
+    // tracked interval. Until this existed the table could only be populated
+    // by its own tests, through the private insert.
+
+    /// `MAP_FIXED` flushes the interval it replaces *before* the new mapping is
+    /// installed, and that interval can belong to this very backing. Seeding
+    /// the region from bytes captured during preparation would therefore
+    /// publish a stale view of a file the caller has already advanced. Seed
+    /// from the backing instead, at install time.
+    #[test]
+    fn a_registered_file_mapping_seeds_the_region_from_the_backing_not_the_reservation() {
+        let mut io = MockIo::new()
+            .with_process(1, 4096)
+            .with_file(10, 1, 2, b"hello".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &stat, true, &mut io)
+            .unwrap();
+        table.file_backing_mut(&key).unwrap().ref_count = 1;
+
+        // The backing advances after the reservation was taken.
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .write_range(0, b"HELLO", true, &mut io)
+            .unwrap();
+
+        table
+            .track_file_mapping(1, 0, 3, 0, 5, true, true, &key, &mut io)
+            .unwrap();
+
+        let mut seen = [0u8; 5];
+        io.read_process(1, 0, &mut seen).unwrap();
+        assert_eq!(&seen, b"HELLO");
+        let mapping = table.mapping(1, 0).unwrap();
+        assert_eq!(mapping.snapshot.as_deref(), Some(&b"HELLO"[..]));
+        assert_eq!(
+            mapping.seen_version,
+            table.file_backing(&key).unwrap().version,
+            "a newly installed mapping has observed everything the backing holds",
+        );
+    }
+
+    /// The reservation `acquire_file_backing` takes across the kernel call *is*
+    /// this mapping's reference. Taking a second one here would leave the
+    /// backing permanently over-counted, so it would never be released and the
+    /// host handle would never be closed.
+    #[test]
+    fn registering_a_file_mapping_consumes_the_reservation_rather_than_taking_another() {
+        let mut io = MockIo::new()
+            .with_process(1, 4096)
+            .with_file(10, 1, 2, b"hello".to_vec());
+        let mut table = SharedMappingTable::new();
+        let key = crate::shared_mapping_policy::acquire_file_backing(
+            &mut table, &mut io, 1, 2, 10, 5, S_IFREG | 0o644, true, 0, 5,
+        )
+        .unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().ref_count, 1);
+
+        table
+            .track_file_mapping(1, 0, 3, 0, 5, true, true, &key, &mut io)
+            .unwrap();
+        assert_eq!(
+            table.file_backing(&key).unwrap().ref_count,
+            1,
+            "the reservation is the mapping's reference, not an extra one",
+        );
+
+        table.release_all_for_process(1, false, &mut io);
+        assert!(
+            table.file_backing(&key).is_none(),
+            "one mapping releasing once must take the backing to zero",
+        );
+        assert_eq!(crate::ofd::mapping_host_handle_refs(10), 0);
+    }
+
+    /// A mapping the address space cannot hold is refused, and the refusal must
+    /// leave the reservation for the caller to release: only the caller knows
+    /// whether the mapping it was taken for is being retried.
+    #[test]
+    fn a_file_mapping_past_the_end_of_memory_is_refused_and_keeps_the_reservation() {
+        let mut io = MockIo::new()
+            .with_process(1, 16)
+            .with_file(10, 1, 2, b"hello".to_vec());
+        let mut table = SharedMappingTable::new();
+        let key = crate::shared_mapping_policy::acquire_file_backing(
+            &mut table, &mut io, 1, 2, 10, 5, S_IFREG | 0o644, true, 0, 5,
+        )
+        .unwrap();
+
+        assert_eq!(
+            table.track_file_mapping(1, 4096, 3, 0, 5, true, true, &key, &mut io),
+            Err(Errno::EIO),
+        );
+        assert!(table.mapping(1, 4096).is_none());
+        assert_eq!(
+            table.file_backing(&key).unwrap().ref_count,
+            1,
+            "a refused install must not drop a reference it did not take",
+        );
+    }
+
+    /// The writeback descriptor is a dup the table owns and must close when the
+    /// last mapping using it goes away. When the dup could not be taken the
+    /// mapping rides the guest's own fd, which the guest owns; closing that
+    /// would close a descriptor the process is still using.
+    ///
+    /// Observed at `munmap`, not at teardown: process teardown deliberately
+    /// drops the whole per-pid dup table without issuing closes, because the
+    /// kernel destroys the fd table anyway.
+    #[test]
+    fn unmapping_closes_a_writeback_dup_it_owns_and_not_one_it_borrowed() {
+        let mut io = MockIo::new().with_process(1, 4096);
+        let mut table = SharedMappingTable::new();
+
+        // Mapping A took a dup (9); mapping B fell back to the guest fd (6).
+        table
+            .track_fd_writeback_mapping(1, 0, 5, 0, 8, 9, 8, 1, 2, &mut io)
+            .unwrap();
+        table
+            .track_fd_writeback_mapping(1, 4096 - 8, 6, 0, 8, 6, 8, 1, 3, &mut io)
+            .unwrap();
+
+        table.cleanup_mappings(1, 0, 8, &mut io);
+        assert_eq!(
+            io.closed_fds.iter().filter(|(_, fd)| *fd == 9).count(),
+            1,
+            "the owned dup must be closed exactly once when its mapping goes",
+        );
+
+        table.cleanup_mappings(1, 4096 - 8, 8, &mut io);
+        assert!(
+            !io.closed_fds.iter().any(|(_, fd)| *fd == 6),
+            "a guest descriptor the mapping merely borrowed must not be closed",
+        );
+    }
+
+    /// A middle split leaves two sub-mappings sharing one dup, so the dup is
+    /// closed only after both are unmapped. Closing on the first would leave
+    /// the surviving half unable to write back.
+    #[test]
+    fn a_split_writeback_mapping_keeps_its_dup_until_both_halves_are_gone() {
+        let mut io = MockIo::new().with_process(1, 3 * 4096);
+        let mut table = SharedMappingTable::new();
+        table
+            .track_fd_writeback_mapping(1, 0, 5, 0, 3 * 4096, 9, 3 * 4096, 1, 2, &mut io)
+            .unwrap();
+
+        // Unmap the middle page, splitting the mapping in two.
+        table.cleanup_mappings(1, 4096, 4096, &mut io);
+        assert!(
+            !io.closed_fds.iter().any(|(_, fd)| *fd == 9),
+            "a split must not close a dup both halves still need",
+        );
+
+        table.cleanup_mappings(1, 0, 4096, &mut io);
+        assert!(
+            !io.closed_fds.iter().any(|(_, fd)| *fd == 9),
+            "one surviving half still needs the dup",
+        );
+
+        table.cleanup_mappings(1, 2 * 4096, 4096, &mut io);
+        assert_eq!(
+            io.closed_fds.iter().filter(|(_, fd)| *fd == 9).count(),
+            1,
+            "the dup is closed exactly once, after the last half is unmapped",
+        );
     }
 
     // -- two-phase file coherence -----------------------------------------
