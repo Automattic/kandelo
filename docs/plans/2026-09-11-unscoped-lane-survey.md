@@ -114,9 +114,9 @@ section, which is worth more than a candidate would have been.
 | U1 | The SFFS block filesystem exists twice — once in TypeScript, once in Rust — and only the 318-line tail of the TypeScript half is scheduled for deletion | V1, V3, V4 | **12,198 lines** (`memory-fs.ts` 8,446 + `sharedfs-vendor.ts` 3,752), of which ~600 is genuine host floor | W-3 streaming emission, then exposing the kernel writer to ~40 `images/vfs/scripts/` build consumers | **PARTIAL — this is the finding.** Lane C's W-2 (Rust writer) is landed and wired; W-4's stated deliverable is "delete `rootfs-overlay-export.ts`, drop `entries[]`" = 318 lines. **No row names the other 11,880** |
 | U2 | `web-libs/kandelo-session` reports the *requested* boot descriptor as the machine's state, and carries behavioural fallbacks for ABI epochs 35 versions stale | V4, Browser-and-User, Platform-Values | ~2,776 lines in one file; the defects are ~6 sites | nothing — these are small, independent, and local | **NOT TRACKED.** The only register row touching `web-libs` is NDD-BOOT-1 (`boot-descriptor.ts`, 507 lines, not started). Adjacent to but distinct from "Stale ABI epochs in user-facing messages", which is scoped to **message strings in `host/src`**; these are **behavioural branches in `web-libs`** |
 | U3 | `MountConfig.readonly` and 7 of 12 `MountSource` kinds are declared, validated, rendered to the user, and honoured by nothing | Browser-and-User, Platform-Values | small — ~40 lines to make honest | nothing | **NOT TRACKED.** Same family as B35 (`st_rdev`) but in the browser mount contract rather than the syscall ABI |
-| U4 | Dead floors in Rust beyond `shared_mapping_policy.rs` | V2 | see the dead-floor sweep below | nothing | see per-item cross-check |
+| U4 | Dead floors in Rust beyond `shared_mapping_policy.rs` — **five more**, plus six test-only public APIs. The largest is a fork decoder whose **live twin is TypeScript** | V2 | ~900 dead production lines across 5 modules | nothing | **NOT TRACKED.** `shared_mapping_policy.rs` (B2/B3), `wait_queue.rs`/`wait_shadow.rs` (B8) and the K7 SysV Rust were excluded as already tracked. **U4b overlaps the fork lane** — flagged, not claimed |
 | U5 | Duplicated authority — **17 more**, bringing the campaign total to 28. **Three already disagree**, one of them making `CLOCK_MONOTONIC` non-monotonic on the conformance host | V1, V2 | ~2,400 lines removable; the three live defects are ~60 lines to fix | nothing | **NOT TRACKED.** Cross-checked against all eleven prior instances and all 48 register rows |
-| U6 | Declared-but-unimplemented platform surface — **15 more**, of which **four contradict `docs/posix-status.md`**, which says ENOSYS where the code returns success | Platform-Values | 15 sites; individually small | nothing | **B35 is one instance and is the best-behaved member of its family** — it is honest in code. These are not. The *structural* half (a population gate in `abi/snapshot.json`) is distinct from B34's open offset-guard half |
+| U6 | Declared-but-unimplemented platform surface — **16 more**, of which **four contradict `docs/posix-status.md`**, which says ENOSYS where the code returns success | Platform-Values | 16 sites; individually small | nothing | **B35 is one instance and is the best-behaved member of its family** — it is honest in code. These are not. The *structural* half (a population gate in `abi/snapshot.json`) is distinct from B34's open offset-guard half |
 | U7 | 10 host imports where the host *decides* and 17 where the import's shape is wrong | **V4, the primary goal** | 27 of 72 imports | ABI 44 is one unreleased epoch, so retirement is cheap now and costs an epoch later | **NOT TRACKED as a lane.** The register's ship gate defers "the ~9,900-line driver-glue audit" to campaign two; that is the *glue*, not the *import list*. The import list is the metric the campaign says it is optimising, and nothing schedules work against it |
 | U8 | ~1,700 lines of test-authority scaffolding inside production `kernel-worker.ts` / `kernel.ts`, counted by the campaign's own headline metric | metric hygiene | ~1,671 lines | nothing | **NOT TRACKED.** T4 is "test residue" in `host/test`, a different place |
 
@@ -232,7 +232,7 @@ package is NDD-BOOT-1, which covers a different file and has not
 started.
 
 **U2a — `getMounts()` returns the boot descriptor, and the kernel path
-is dead code.** `kernel-host.ts:2018-2028`:
+is unreachable for any bootable machine.** `kernel-host.ts:2018-2028`:
 
 ```
 // Mounts are configured at boot time from the BootDescriptor; the
@@ -252,15 +252,26 @@ return parseMounts(text);
 `ProcfsEntry::{Mounts, PidMounts, PidMountinfo}`, and `procfs.rs:1445`
 generates real `mountinfo` content.
 
-**Caller census for the dead half.** `parseMounts` (defined
-`kernel-host.ts:2761`) has **exactly one call site in the entire repo**,
-line 2027 — the branch above it can only be reached when the descriptor
-has zero mounts. `boot-descriptor.ts:239` tracks `hasRootImage` and
-`:322` rejects package layers without a root image mount; every
-production descriptor carries mounts. So `parseMounts` is **dead
-TypeScript**, and the Inspector pane at
-`apps/browser-demos/pages/kandelo/panes/Inspector.tsx:603` shows the
-*request* rather than the machine.
+**Caller census for the unreachable half, with a correction I had to
+make to my own claim.** `parseMounts` (defined `kernel-host.ts:2761`)
+has **exactly one call site in the entire repo**, line 2027, and that
+line is reachable only when the descriptor has **zero** mounts.
+
+I was about to file it as flatly dead on the reasoning that the
+validator requires a root image mount. **It does not.**
+`boot-descriptor.ts:185-193` requires only that `mounts` is an array
+within the 32-mount cap, and the `hasRootImage` check at `:322` fires
+only when `packageLayerCount > 0`. So an empty `mounts` array validates,
+and `parseMounts` is **not provably dead**.
+
+What is true is weaker and still sufficient: **for every descriptor that
+mounts anything at all — which is every descriptor that can boot, since
+a machine with no mounts has no root filesystem to exec from — the
+kernel branch never runs.** The Inspector pane at
+`apps/browser-demos/pages/kandelo/panes/Inspector.tsx:603` therefore
+shows the *request* rather than the machine in every reachable case, and
+the fallback that would show the machine is reachable only in a state
+where there is no machine to show.
 
 **This is production UI, not a dev-only pane** — `Inspector` is rendered
 from `apps/browser-demos/pages/kandelo/app/App.tsx:429` and
@@ -360,18 +371,26 @@ exist today at `scripts/run-php-upstream-tests.ts:1112,1117`.
 
 **`MountSource`.** `kernel-host.ts:290-293` declares **twelve** kinds,
 and `boot-descriptor.ts:41-45` allow-lists **all twelve** as valid
-descriptor input. Tracing consumption across `apps/browser-demos` and
-`web-libs/kandelo-session`, only `image`, `package-layer`,
-`inline-overlay`, `remote-overlay`, `scratch`, `opfs` and `encrypted`
-appear in any branch, and `encrypted` only in a `Config.tsx` input hint.
-I found no materialization for **`lazy-http`, `archive`, `git`, `cas`,
-`device`**, and no enforcement of `encrypted`.
+descriptor input.
 
-What a descriptor declaring one of those gets is not a refusal. It gets
-`fsForMountSource` (`kernel-host.ts:2735-2750`), a total switch that
+Enumerating every occurrence of each literal across `host/src`,
+`web-libs` and `apps/browser-demos`, excluding tests, gives an unusually
+clean result: **`lazy-http`, `cas` and `device` each appear in exactly
+four places, and every one of the four is a declaration.** For `cas`:
+the union type (`kernel-host.ts:293`), the allow-list
+(`boot-descriptor.ts:43`), the display switch (`kernel-host.ts:2746`),
+and `apps/browser-demos/pages/kandelo/views/Config.tsx:24` — **a
+dropdown that offers it to the user as a selectable mount source.** The
+`git`, `archive` and `encrypted` kinds follow the same pattern;
+`archive`'s higher raw count is unrelated hits on the ordinary English
+word, which is why the count alone was not trusted. **There is no
+materialization for any of the six.**
+
+What a descriptor declaring one of them gets is not a refusal. It gets
+`fsForMountSource` (`kernel-host.ts:2735-2750`), a **total** switch that
 returns `"lazyfs"`, `"archivefs"`, `"gitfs"`, `"casfs"`, `"cryptfs"`,
 `"devfs"` — so the Inspector displays a filesystem type for a backend
-that does not exist.
+that does not exist, for a source the configuration form offered.
 
 This is the `st_rdev` shape (B35) moved into the browser contract: a
 field the platform declares, a validator that accepts it, a renderer
@@ -379,10 +398,161 @@ that displays it, and no implementation behind it. B35's framing applies
 word for word — a program (here, a person) "gets a plausible wrong
 answer rather than a refusal."
 
-### U4 — dead floors
+### U4 — dead floors: five more in Rust, and the largest one has a live TypeScript twin
 
-*(Filled from the dead-floor census below. The one I found in my own
-lane:)*
+A census of all **196** `.rs` files under `crates/` (130 module files,
+17 crate roots, 45 test files, 4 fuzz targets). **130/130 module files
+went through an automated per-public-symbol external-reference pass; ~48
+were then hand-verified transitively** — trait impls, `pub use`
+aliasing, `#[no_mangle]`/`extern "C"` reaching `host/src`, dispatch
+tables, `tools/xtask` generators, TypeScript twins, the Cargo dep graph,
+and the co-resident-module build list in `local_build.rs`.
+
+**The automated metric alone is not sufficient and was not relied on for
+any finding.** Calibration: `module_state_records.rs` scores 16 of 16
+symbols referenced — apparently fully live — purely because
+`fork-codec/src/lib.rs` re-exports every one of them. The known dead
+floor `shared_mapping_policy.rs` scores 1 of 8, which set the baseline.
+Both numbers are artefacts of re-export structure, not reachability.
+
+**A method correction that produced a false alarm and is worth
+inheriting.** The census's first search path set was `crates host libc
+images scripts sdk` and **omitted `tools/`**. That scored
+`shared::host_raw_syscalls::host_raw_syscalls_sorted` as DEAD when it is
+in fact the source of truth `tools/xtask/src/dump_abi.rs` uses to
+generate `host/src/generated/abi.ts`'s `HOST_RAW_SYSCALLS`. Every
+finding below was re-run repo-wide including `tools/`. **A
+generated-code pipeline is a caller, and it is the one a path list
+forgets.**
+
+**U4b — `crates/fork-codec/src/module_state_records.rs`: ~483 of 528
+production lines are dead, and the live implementation is TypeScript.**
+1,087 lines total, `#[cfg(test)]` at 529. It decodes the per-record-kind
+payloads of the fork module-state (KFMS) arena: module template records,
+mutable-global snapshots, table descriptors, sparse table pages, element
+and data segment bitmaps.
+
+Caller census: of its **16 public symbols, exactly one** —
+`decode_journal_image` (L170-214) — is reached outside the file, by
+`crates/fork-module/src/lib.rs:2899`. A repo-wide `grep -w` (excluding
+`target`, `node_modules`, `docs`) for `decode_record_payload`,
+`decode_table_page`, `decode_module_record`, `decode_table_descriptor`,
+`decode_element_segments`, `decode_data_segments`,
+`decode_mutable_global` and `record_payload_bytes` returns **only**
+their own definitions, their own in-file tests, and the three `pub use`
+lines at `fork-codec/src/lib.rs:91-93`. `decode_record_payload` (L500)
+is the aggregating entry point and nothing calls it.
+`fork-module/src/lib.rs` touches `record.kind` in three places and
+matches exactly one kind, `JOURNAL_IMAGE`. Control for the zeros:
+`decode_journal_image` run through the identical command shape returns
+`fork-module/src/lib.rs`.
+
+**What is doing the work instead is `host/src/fork-module-state.ts`
+(3,860 lines)**, which defines `decodeModulePayload`,
+`decodeTableDescriptor`, `decodeTablePage`, `decodeSegmentBitmap` and
+`decodeForkGlobalSnapshot`, and is imported by `host/src/worker-main.ts`
+and nine other modules.
+
+Added 2026-08-31 (`05bfcad3b`); unwired for 11 days. **Possibly
+DORMANT-BY-DESIGN**: the module's own doc says the live halves are
+"DEFERRED to the co-resident module (Phase 6 D5+)". But no declared
+in-flight item lands it, and the shape is identical to
+`shared_mapping_policy.rs` — which was also well-formed, also tested,
+and also never ran.
+
+**This one overlaps the fork lane and I am flagging rather than claiming
+it.** It is the campaign's thesis running backwards inside its own
+flagship subsystem: the Rust decoder is dead and the TypeScript twin is
+production. Whoever scopes the fork-TypeScript growth should be handed
+this, because "the TypeScript grew" and "the Rust that was supposed to
+replace it never ran" are very likely the same finding seen from two
+ends.
+
+**U4c — `crates/fork-codec/src/reference_recipes.rs`, decoder half: ~180
+production lines dead.** The *types* are live — `ReferenceRecipeNode`,
+`ReferenceRecipeEntry` and `node_edges` are used by 9, 7 and 4
+production files respectively (`drive_plan.rs`, `reference_replay.rs`,
+`reference_transaction.rs`, `reference_feed.rs`,
+`reference_segments_writer.rs`, `drive_plan_hints.rs`,
+`reference_graph_builder.rs`). The **decoder** is not:
+`decode_reference_recipes` (L422-505), its validator
+`validate_reachability` (L392-420) and the container `ReferenceRecipes`
+(L179) appear repo-wide only in their own file plus
+`fork-codec/src/lib.rs:100`. The live decode path is
+`reference_transaction::decode_segmented_reference_transaction`, which
+reuses the node types but not this decoder.
+
+**U4d — `crates/fork-codec/src/catalogs.rs`, resume half: ~80 production
+lines dead — and it is also a triplication.** The static-root half is
+genuinely live, reaching production through
+`crates/wasm-artifact/src/fork_contract.rs:571` → `policy.rs:202` →
+`kernel/src/wasm_api.rs:3985` (`#[no_mangle]
+kernel_exec_target_artifact_policy`) → `host/src/kernel-worker.ts:8779`
+and `host/src/kernel-scratch.ts:143`. The resume half —
+`decode_resume_catalog` (L160), `ForkResumeCatalog` (L146),
+`ForkResumeCatalogRecord` — appears only in its own file and
+`lib.rs:66-67`.
+
+**The automated pass scored `ForkResumeCatalogRecord` as live in three
+files, and reading cleared it into something worse:**
+`crates/host-native/src/guest.rs:4807` declares its **own private**
+`struct ForkResumeCatalogRecord` with its own
+`read_fork_resume_catalog_records` (L4825), and
+`host/src/fork-resume-catalog.ts:12` is a **third** independent copy. So
+the fork resume catalog has three implementations and the `fork-codec`
+one — the only one in the crate whose job this is — is the unused one.
+Counted in U5's tally as duplicated authority; recorded here because the
+dead-floor census is what found it.
+
+**U4e — `crates/fork-instrument/src/call_graph.rs`: ~110 lines of an
+otherwise-live 1,364-line module.** `lower_tail_call_landings` (L1236,
+~85 lines) has **zero references anywhere in the repo** — not in
+`crates/fork-instrument/tests/`, not in `tools/` — only a doc
+cross-reference at L1234. `build_reverse_call_graph` (L238) and
+`direct_reaching_closure` (L252) are likewise unreferenced outside their
+definitions. Separately `analyze_reaching_closure`, `reaching_closure`
+and `func_display_name` are **test-only public entry points**;
+production uses `analyze_reaching_closure_from_seeds` from
+`fork-instrument/src/lib.rs`.
+
+**U4f — `crates/runtime-core/src/zip.rs`: `derive_entry` + `ZipNode`,
+~70 lines (L266-333) of 334 production lines.** `derive_entry`
+classifies a ZIP central-directory entry into dir/symlink/regular plus a
+POSIX mode from the external-attributes field. Repo-wide it appears only
+in its own file and its own tests. The live rootfs path
+(`crates/runtime-core/src/rootfs.rs:2055`) calls
+`read_central_directory` plus `extract` and does its own handling — it
+never classifies through `derive_entry`. Control for the zero:
+`read_central_directory` through the identical command shape returns
+`rootfs.rs`.
+
+**U4g — six small test-only public APIs on otherwise-live types.** High
+confidence, low value each: `rewind_driver.rs`'s `is_exhausted`,
+`next_frame`, `peek_frame` (zero references anywhere, including its own
+tests); `replay_journal.rs`'s `unregister_activation`,
+`captured_activation_ids`, `captured_event_count`;
+`host_raw_syscalls.rs`'s `is_host_raw_syscall`; `trap_signal.rs`'s
+`classified_trap_exit_status`; `dylink/src/metadata.rs`'s
+`is_shared_library` (one repo-wide hit — its own definition);
+`wasm-artifact/src/policy.rs`'s `ArtifactPolicyReport::is_acceptable`.
+
+**Eleven false alarms cleared, listed so nobody re-chases them.** Each
+looked dead to a direct symbol grep and is not: `pshared.rs`'s
+`PSharedTable` (reached as a return type); `hostname.rs`'s
+`parse_inet_aton` and `validate_dns_hostname` (called internally by
+`resolve_locally`); `policy.rs`'s `describe_facts_policy_failures`;
+`reference_analysis.rs`'s five "zero-ref" types (fields of the live
+`FunctionReferenceAnalysis`); `dylink_archive_{walk,encode}.rs`
+(included via `#[path = …]`); `{imported_globals,imported_tables,
+exception_codec}.rs` (live via the `kernel_exec_target_artifact_policy`
+export); all of `runtime-core/src/dri/**`; `wasi-abi`, `wasi-module` and
+`wasm-local-root-spill` (the first instantiated at
+`host/src/worker-main.ts:3363`, the last invoked from
+`packages/registry/ruby/build-ruby.sh:1210`); `host_abi.rs`'s
+`SYSCALL_ARG_DESCRIPTORS`; `fork.rs`'s two public functions (called from
+`process_table.rs:397,1078,3637`); and `legacy_eh.rs`.
+
+**The one I found in my own lane:**
 
 **U4a — the immutable-product / `trusted-root-product` mechanism in
 `memory-fs.ts` has no production admitter.** `host/src/vfs/types.ts:101`
@@ -529,7 +699,7 @@ would have been a security drift of the B38 family. It does:
 reports `statfs_flags::ST_NOSUID`. **No finding.** Recording it so the
 next agent does not re-derive it.
 
-### U6 — declared-but-unimplemented surface: fifteen more, and several are worse than `st_rdev`
+### U6 — declared-but-unimplemented surface: sixteen more, and several are worse than `st_rdev`
 
 B35 was verified first, and the verification **corrected the brief's
 framing in the platform's favour**: `WasmStat`
@@ -542,7 +712,7 @@ framing in the platform's favour**: `WasmStat`
 is an honest-in-code unimplemented gap.
 
 **That makes it the best-behaved member of its family.** Several of the
-fifteen below are worse in a specific way: **they contradict their own
+sixteen below are worse in a specific way: **they contradict their own
 documentation.** `docs/posix-status.md` says the API returns `ENOSYS`;
 the code returns success.
 
@@ -563,6 +733,42 @@ the code returns success.
 | 13 | `sched_setscheduler(pid, policy, param)` | `policy` bound as `_policy`, never read; any value returns 0, while `sched_getscheduler` always answers SCHED_OTHER | `wasm_api.rs:9783,9787-9806`; dispatch `:6443-6453` | set and get are mutually incoherent; invalid policies (Linux EINVAL) and privileged SCHED_FIFO/RR (Linux EPERM) both succeed | partial (`posix-status.md:348,350` say "no-op", not that validation is lost) |
 | 14 | `shmat` address; `SHM_RDONLY` | `_shmaddr` discarded; `attach(…, _read_only: bool)` discards the flag | `wasm_api.rs:6279-6283` | a read-only attachment is **silently writable** — a process can corrupt a segment where it should fault | silent |
 | 15 | `sched_setaffinity` mask | `_cpusetsize` bound, mask never read, returns 0 | `wasm_api.rs:6773-6777` | an empty cpu_set (Linux EINVAL) succeeds | documented as a scheduler stub (`posix-status.md:724`); low |
+
+**U6-16 — eleven termios flags are stored, round-tripped, and never
+consulted; one of them is on by default.** This entered as an
+**unverified lead** claiming 24 termios constants in
+`crates/runtime-core/src/terminal.rs` had "zero references anywhere".
+**That claim is false and I disproved it before filing:** `ICRNL` alone
+appears at `terminal.rs:121,194,389,437,642`, including a live input
+transform at `:194`. The lead had searched outside the defining file
+only.
+
+Re-run properly — testing for each flag whether any code **branches on
+it** (`c_iflag & FLAG`, `c_lflag & FLAG`, or a `c_cc[]` consultation)
+rather than merely naming it — a real finding survives, and it is
+narrower and of a different kind:
+
+| flag | branched on? | consequence |
+|---|---|---|
+| `IXON`, `IXOFF`, `IXANY` + `VSTART`/`VSTOP` | **no** (the `c_cc` characters are assigned defaults at `:111-112`, but nothing reads them) | **software flow control does nothing.** `IXON` is set in the default `c_iflag` at `terminal.rs:121`, so the terminal reports XON/XOFF enabled and then ignores Ctrl-S/Ctrl-Q |
+| `TOSTOP` | **no** | a background process writing to the terminal should get `SIGTTOU`; none is sent |
+| `IEXTEN` | **no** | Ctrl-V literal-next and Ctrl-O discard are not implemented |
+| `ECHOCTL` | **no** | control characters are not echoed as `^X` |
+| `VEOL` | **no** | a program setting an additional canonical-mode line delimiter gets no extra delimiter |
+| `CREAD`, `CS8`, `HUPCL` | **no** | control-mode flags. **These are the honest half** — for a pty with no line-discipline hardware behind it, ignoring them is arguably the correct compatibility behaviour, and I am not filing them |
+| `ICANON`, `ECHO`, `ISIG` | **yes** — 25, 12 and 4 branch sites | the controls that prove the search works |
+
+So the finding is **eight flags** (`IXON`, `IXOFF`, `IXANY`, `TOSTOP`,
+`IEXTEN`, `ECHOCTL`, `VEOL`, plus the inert `VSTART`/`VSTOP` pair), not
+24, and the shape is the same as U6-12's socket options: `tcsetattr`
+stores them and `tcgetattr` reads them back, so a program that enables
+`IXON` and reads it back sees it enabled. `IXON`-by-default makes it the
+worst of the eight.
+
+**Recorded this way on purpose.** A lead that was wrong as stated, and
+correct in a different and smaller form once checked, is the single most
+common event in this survey, and the difference between the two versions
+is the whole value of checking.
 
 **The structural root cause, and it is the most valuable thing in this
 section.** `abi/snapshot.json` is a **layout** contract, not a
@@ -628,8 +834,8 @@ the JavaScript copy is dead.
   whole contract: a `WaitTable { parent_of, exited }`, the
   ECHILD/EAGAIN/WNOHANG policy, and `encode_wait_status` re-deriving the
   `WIFEXITED`/`WTERMSIG` bit layout. It returns **`-ENOSYS` for `pid ==
-  0` and `pid < -1`** — process- group waits do not exist on that host
-  at all.
+  0` and `pid < -1`** — process-group waits do not exist on that host at
+  all.
 - `host/src/kernel.ts:3556-3640` needs either `waitpidSab` or
   `io.waitpid`. `registerWaitpidSab` has **no caller anywhere in the
   repo**, `onWaitpid` appears only in an audit test's string list, and
@@ -701,12 +907,23 @@ register schedules work against it.
 
 ### U8 — test scaffolding inside production, counted by the headline metric
 
-`host/src/kernel-worker.ts:3617` `#createTestAuthority` is **1,459
-lines**, the second-largest declaration in the file after
-`#handleSyscallInner` (2,149). With
-`createCentralizedKernelWorkerTestDouble` (212 lines at `:2732`) that is
-**1,671 lines** of test-generation surface in the file the Rust-First
-contract calls the irreducible host floor.
+`host/src/kernel-worker.ts` `#createTestAuthority` spans **lines
+3617-5070 — 1,454 lines**, the second-largest declaration in the file
+after `#handleSyscallInner` (2,149). With the
+`CentralizedKernelWorkerTestAuthority` interface (`:2551-2663`, 113
+lines) and the `createCentralizedKernelWorkerTestDouble` factory
+(`:2732-2748`, 17 lines), that is **1,584 lines** of test-generation
+surface in the file the Rust-First contract calls the irreducible host
+floor.
+
+**Those extents are measured, and they correct my own first number.**
+The declaration-size heuristic I used to find this file's largest
+members attributes everything up to the *next* declaration, which gave
+`#createTestAuthority` 1,459 and the factory 212 — the factory is
+actually 17 lines, and the 195-line difference was the class declaration
+that follows it. Both figures are now read off the closing braces. The
+same caveat applies to every size in the "largest declarations" pass
+that produced this finding, and to nothing else in this document.
 
 **It is correctly gated and I am not filing it as a safety defect.**
 `kernel-worker.ts:3603` installs it only behind `arguments[3] ===
@@ -739,7 +956,7 @@ not purely tooling. Reported as a partial instance, not a clean one.
 `host/src/audio/` (1,087 lines across 4 files) is **not** a finding, and
 seeing why is useful. `crates/runtime-core/src/audio.rs:1-7` holds the
 whole model — "The authoritative playback state is a refcounted
-open-file- description backing … No mixer, routing policy, capture, or
+open-file-description backing … No mixer, routing policy, capture, or
 Web Audio concept is part of this module's guest-facing model" — and
 `host/src/audio/pcm-transport.ts:23-31` states the ownership rule
 exactly: "Rust is the sole writer for stream configuration and the
@@ -823,10 +1040,18 @@ soonest"). This is the other question.
    already labelled `@deprecated` by its own author and is entangled
    with the `readonly` question in U3; doing them together is cheaper
    than doing either alone.
+8. **U4b — hand it to the fork lane rather than doing it here.** ~483
+   dead lines of Rust fork module-state decoder whose live twin is 3,860
+   lines of TypeScript is not a separate item; it is almost certainly
+   the *other end* of the finding that lane is already scoping. Its
+   value in #1350 is the handoff, not the deletion. **It is also the
+   strongest single piece of evidence in this survey that the fork
+   TypeScript growing and the fork Rust never running are one
+   phenomenon**, which is a claim the register currently has no row for.
 
 **A follow-up campaign:**
 
-8. **U1 — the SFFS TypeScript.** This is the highest-value item in the
+9. **U1 — the SFFS TypeScript.** This is the highest-value item in the
    survey and I would still not put it in #1350. Its prerequisite (W-3
    streaming emission) is in flight, its payload touches ~40 build
    scripts, and its risk profile is the same one that got lane A's five
@@ -837,29 +1062,29 @@ soonest"). This is the other question.
    could delete. **What #1350 should carry is the row, not the work**:
    the register should say that W-4 deletes 318 of 12,198 lines and
    names the remainder, so the next campaign starts from a true number.
-9. **The rest of U6 — inotify, `sysinfo`, `statfs`'s fabricated ext2,
-   the ~16 stored-but-unapplied socket options, `futex` PI,
-   `prlimit64`'s ignored pid, `SA_NODEFER`/`SA_RESETHAND`.** These are
-   real POSIX work, not cleanups, and several need a design decision
-   rather than a patch (what *should* inotify do — refuse, or grow a
-   real implementation?). The platform-values contract permits them to
-   stay visible as gaps; what it does not permit is the documentation
-   saying they are already refused. So item 0 is the #1350 half and this
-   is the campaign-two half.
-10. **The population gate for `abi/snapshot.json`.** The
+10. **The rest of U6 — inotify, `sysinfo`, `statfs`'s fabricated ext2,
+    the ~16 stored-but-unapplied socket options, `futex` PI,
+    `prlimit64`'s ignored pid, `SA_NODEFER`/`SA_RESETHAND`.** These are
+    real POSIX work, not cleanups, and several need a design decision
+    rather than a patch (what *should* inotify do — refuse, or grow a
+    real implementation?). The platform-values contract permits them to
+    stay visible as gaps; what it does not permit is the documentation
+    saying they are already refused. So item 0 is the #1350 half and
+    this is the campaign-two half.
+11. **The population gate for `abi/snapshot.json`.** The
     highest-leverage item in U6 and the one I would most like someone to
     argue me out of deferring. A gate that asks "is this declared field
     ever written" would have caught B35 mechanically, and would catch
-    four more of the fifteen. It is deferred only because it needs a
+    four more of the sixteen. It is deferred only because it needs a
     design (how do you prove a field is populated without running the
     kernel?) and because B34's open half is already circling the same
     ground; doing them together is right, doing them in #1350 is
     probably not.
-11. **U8 — the metric hygiene.** Genuinely valuable and genuinely not
+12. **U8 — the metric hygiene.** Genuinely valuable and genuinely not
     urgent. It changes what the ledger *says*, not what the platform
     *does*, and this campaign has already been burned once by optimising
     the measure.
-12. **U5e — the 1,973 orphaned lines of `syscall_glue.c`.** Deleting an
+13. **U5e — the 1,973 orphaned lines of `syscall_glue.c`.** Deleting an
     unreferenced file is the cheapest item on this page and I still rank
     it last, because it is the only one whose absence costs nothing
     today.
@@ -923,6 +1148,43 @@ when the true answer was 441.
   gap is honest; I cannot say these are undocumented, only that I did
   not find them documented.
 
+### Leads, explicitly not findings
+
+Filed separately so nobody promotes them by accident. These were flagged
+by a sweep and **not** verified; the termios lead in U6-16 shows why the
+distinction matters — it was wrong as stated and correct in a smaller,
+different form once checked, and two of the sixteen U6 findings exist
+only because a zero was distrusted.
+
+Zero-reference symbols seen in the automated Rust pass but **not**
+individually checked for internal reachability, which is exactly how the
+eleven cleared false alarms in U4 arose: `WakeupEvent`,
+`WAKE_ADVISORY_LOCK`, `WAKE_DATAGRAM_WRITABLE` (`wakeup.rs`);
+`DevfsEntry` (`devfs.rs`); `DecodeError`, `ResolvedSpan`
+(`channel_record_decode.rs`); `MemResult`, `IoVec`
+(`wasi-module/src/mem.rs`); `MAX_PREOPENS`
+(`wasi-module/src/preopen.rs`); `ParsedManifest`
+(`reference_segments.rs`); `key_count` (`reference_transaction.rs`);
+`MUTEX_TYPE_ERRORCHECK`, `MUTEX_TYPE_RECURSIVE` (`pshared.rs`);
+`ArtifactIdentity`, `ReservedEnvImport` (`contract_inventory.rs`);
+`StaticReferenceCatalogPlan` (`static_reference_catalog.rs`). Most have
+3-30 repo-wide hits, which usually means in-file use as a field or
+return type — i.e. most are probably live.
+
+### One trap this survey paid for, for the next census
+
+**A generated-code pipeline is a caller, and it is the one a path list
+forgets.** The Rust dead-floor census's first search set was `crates
+host libc images scripts sdk` and omitted **`tools/`**. That produced a
+false DEAD verdict on
+`shared::host_raw_syscalls::host_raw_syscalls_sorted`, which is in fact
+the source of truth `tools/xtask/src/dump_abi.rs:648` uses to generate
+`host/src/generated/abi.ts`'s `HOST_RAW_SYSCALLS`. Every finding was
+re-run repo-wide with `tools/` included. **Any future reachability
+census in this repo must search `tools/` or it will over-report dead
+code** — and over-reporting dead code is the failure mode that gets live
+code deleted.
+
 ### Coverage, stated per sweep rather than as one number
 
 This survey was run as four parallel sweeps plus my own lane. Their
@@ -934,7 +1196,7 @@ this section exists to prevent.
 | **U7 — host imports** | 72 declarations in `crates/kernel/src/wasm_api.rs:56-310` | **100% classified** | Source, not artifact. ~8 of the 24 filesystem imports were traced into their `PlatformIO` backends; the rest were sampled. The browser's `getKmsCanvas`/`markKmsCanvasGlOwned` embedder callbacks were not checked for wiring |
 | **U6 — declared-but-unimplemented** | `wasm_api.rs` (15,506) + `syscalls.rs` (49,734) + all of `crates/runtime-core`, `crates/shared`, `libc/musl-overlay`, `libc/glue` (186 files), `docs/*.md` | **mechanical sweep 100% of that corpus**; `process_layout.rs` read in full; ~35 regions of the two big files read closely | **`host/src` was not swept at all.** The `SYS_MSYNC` case proves a kernel `=> 0` can have its real behaviour in the host, so findings could be wrong in *either* direction, and the `O_EXCL`-ignored precedent this brief cites lived exactly there. Also untouched: the ioctl surface in depth, `termios` field-by-field honouring, and whether an existing conformance suite already xfails each item |
 | **U5 — duplicated authority** | `host/src` 110 in-lane files, `crates/**` 196 files, `libc/glue` 8,071 lines, `web-libs`, `apps/browser-demos` | **~30-35% read or diffed**, plus two mechanical sweeps at ~100% of their own target shape: a cross-language constant-name join (471 TS + 1,508 Rust + 3,993 C → 231 shared names, 8 flagged, 3 real) and a prose sweep (434 TS + 1,057 Rust hits) | `packages/registry`, `images`, `scripts`, `sdk`, `benchmarks`, `tests`, `docs-site` untouched. `crates/dylink` vs `crates/dylink-module` and `crates/wasm-artifact` vs `crates/wasm-artifact-module` got structural-only treatment; the two `dylink.0` section parsers were **not** byte-compared |
-| **U4 — dead Rust floors** | see that section | see that section | — |
+| **U4 — dead Rust floors** | 196 `.rs` files under `crates/` — 130 module files, 17 crate roots, 45 tests, 4 fuzz | **130/130 module files (100%)** classified by an automated per-symbol external-reference census; **~48 of the 130** additionally hand-verified transitively. The other ~82 rest on the automated signal plus their census profile | The 45 `tests/` and 4 `fuzz/` files were not census subjects; the 17 crate roots were verified as entry points rather than assessed as candidates. **No assessment of whether `syscalls.rs` (49,734 lines) or `wasm_api.rs` (15,506 lines) contain internal dead regions** — a dead floor could hide inside either and this method would not surface it |
 | **my lane — VFS, browser session, metric hygiene** | `host/src/vfs` (35 files, 22,017 lines), `web-libs/kandelo-session/src` (5,360), `host/src/kernel-worker.ts` structurally | `vfs` and `web-libs` traced by caller census; `kernel-worker.ts` **characterised, not audited** | stated above |
 
 **The one methodological correction worth carrying forward,** because it
@@ -945,5 +1207,5 @@ absent — i.e. nothing to report. Re-running it with known-positive
 controls (`SO_REUSEADDR`, `SCM_RIGHTS`, `SA_RESTART`, `SA_ONSTACK`,
 `EPOLLIN`, `EPOLLOUT`) and widening to `libc/musl-overlay` found all
 three **declared in the guest ABI**, which is exactly what makes them
-the `st_rdev` shape rather than nothing. Two of the fifteen findings
+the `st_rdev` shape rather than nothing. Two of the sixteen findings
 above exist only because a zero was distrusted.
