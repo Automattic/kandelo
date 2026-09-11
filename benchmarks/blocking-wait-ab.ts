@@ -79,6 +79,38 @@ function median(values: number[]): number {
 }
 
 /**
+ * The p-th percentile, and the minimum, are what this harness compares --
+ * not the median.
+ *
+ * Machine contention can only ADD time to a syscall loop; it never removes
+ * any. The per-run distribution is therefore one-sided: a floor at what the
+ * code actually costs, with a long upper tail wherever something else on the
+ * machine ran. Observed directly, the same build measured repeatedly returns
+ * ~29 us run after run and then 300-400 us for a burst of runs, so the tail
+ * is not a slight skew -- it is an order of magnitude.
+ *
+ * A median over such a mixture reports how much of the session was loaded
+ * rather than what the code costs, and it is not rescued by counterbalancing:
+ * `A B B A` cancels a monotone drift, but a contention *burst* lands on
+ * whichever arms it overlaps, and the tail of the session is not balanced
+ * across arms. That is the same failure that produced this campaign's
+ * withdrawn +35% figure.
+ *
+ * The minimum tracks the least-contended observation, which is the best
+ * available estimate of the true cost. Its downward bias grows with sample
+ * count, but both arms are compared at equal counts, so the bias is common
+ * and cancels in the difference. p10 is reported beside it because one
+ * minimum is one sample: when min and p10 disagree about the sign of a
+ * difference, that difference is not resolved and must not be reported.
+ */
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.round((sorted.length - 1) * p);
+  return sorted[Math.max(0, Math.min(sorted.length - 1, index))];
+}
+
+/**
  * Counterbalanced order: `A B B A` repeated, so the mean *position in the
  * session* of the two arms is equal and a monotone drift cannot favour one.
  */
@@ -138,27 +170,40 @@ async function main(): Promise<void> {
   const metricNames = [...new Set(samples.flatMap((s) => Object.keys(s.metrics)))].sort();
   console.log("");
   console.log(
-    "metric".padEnd(34)
-    + "A_med".padStart(10) + "B_med".padStart(10)
-    + "delta".padStart(10) + "A_spread".padStart(10) + "B_spread".padStart(10),
+    "metric".padEnd(30)
+    + "A_min".padStart(9) + "B_min".padStart(9) + "dMin".padStart(8)
+    + "A_p10".padStart(9) + "B_p10".padStart(9) + "dP10".padStart(8)
+    + "A_med".padStart(9) + "B_med".padStart(9),
   );
   const table: Record<string, Record<string, number>> = {};
   for (const name of metricNames) {
     const a = samples.filter((s) => s.arm === "A").map((s) => s.metrics[name]).filter(Number.isFinite);
     const b = samples.filter((s) => s.arm === "B").map((s) => s.metrics[name]).filter(Number.isFinite);
     if (a.length === 0 || b.length === 0) continue;
+    const aMin = Math.min(...a);
+    const bMin = Math.min(...b);
+    const aP10 = percentile(a, 0.10);
+    const bP10 = percentile(b, 0.10);
     const aMed = median(a);
     const bMed = median(b);
-    const aSpread = Math.max(...a) - Math.min(...a);
-    const bSpread = Math.max(...b) - Math.min(...b);
-    table[name] = { aMed, bMed, delta: bMed - aMed, aSpread, bSpread };
+    table[name] = {
+      aMin, bMin, dMin: bMin - aMin,
+      aP10, bP10, dP10: bP10 - aP10,
+      aMed, bMed,
+    };
     console.log(
-      name.padEnd(34)
-      + aMed.toFixed(2).padStart(10) + bMed.toFixed(2).padStart(10)
-      + (bMed - aMed).toFixed(2).padStart(10)
-      + aSpread.toFixed(2).padStart(10) + bSpread.toFixed(2).padStart(10),
+      name.padEnd(30)
+      + aMin.toFixed(2).padStart(9) + bMin.toFixed(2).padStart(9)
+      + (bMin - aMin).toFixed(2).padStart(8)
+      + aP10.toFixed(2).padStart(9) + bP10.toFixed(2).padStart(9)
+      + (bP10 - aP10).toFixed(2).padStart(8)
+      + aMed.toFixed(2).padStart(9) + bMed.toFixed(2).padStart(9),
     );
   }
+  console.log("");
+  console.log("# dMin and dP10 are the comparison. The medians are shown only");
+  console.log("# so a session that was loaded throughout is visible as medians");
+  console.log("# far above the minima; they are not the figure to quote.");
 
   if (args.json) {
     const { writeFileSync } = await import("fs");
