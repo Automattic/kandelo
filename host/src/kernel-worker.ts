@@ -26549,7 +26549,13 @@ export class CentralizedKernelWorker {
       this.currentHandlePid = previousPid;
     }
     if (output.result !== 0) {
-      return { kind: "error", errno: (-output.result) >>> 0 || EIO };
+      // The export returns 0 or a negated errno. A positive result is not a
+      // value this contract defines, so report EIO rather than inventing an
+      // errno by negating it.
+      return {
+        kind: "error",
+        errno: output.result < 0 ? -output.result : EIO,
+      };
     }
     const view = new DataView(
       output.bytes.buffer,
