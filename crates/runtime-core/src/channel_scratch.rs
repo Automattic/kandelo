@@ -2107,14 +2107,16 @@ mod tests {
     #[test]
     fn record_ioctl_tiocgwinsz_matches_legacy_validator() {
         // ioctl(fd=3, TIOCGWINSZ, winsize): the guest sizes arg 2 from the
-        // ioctl contract (Out, 8 bytes) and sets arg 3 = size, arg 5 = pointer
-        // width -- exactly what the unchanged `validate_ioctl_layout` re-proves.
+        // ioctl contract (Out, 8 bytes) and sets arg 3 = size -- exactly what
+        // `validate_ioctl_layout` re-proves. It no longer sets arg 5: the
+        // structure width comes from the process's registered pointer width,
+        // which is passed to the validator rather than carried in the record.
         let request = wasm_posix_shared::ioctl_contract::TIOCGWINSZ as i64;
         let size = 8usize;
         let (start, prep, _data) = prep_record(
             Syscall::Ioctl as u32,
-            // fd, request, arg2(overwritten), size, _, pointer_width
-            [3, request, 0, size as i64, 0, 4],
+            // fd, request, arg2(overwritten), size, _, _
+            [3, request, 0, size as i64, 0, 0],
             &[RecSpan {
                 kind: SPAN_KIND_OUT_PTR,
                 arg_index: 2,
@@ -2125,7 +2127,10 @@ mod tests {
         // The winsize buffer is rewritten to the allocation base.
         assert_eq!(prep.args[2] as usize, start);
         assert_eq!(prep.args[3], size as i64);
-        assert_eq!(prep.args[5], 4);
+        // Slot 5 is the caller's own argument and passes through untouched.
+        // Nothing on either side of the channel writes a pointer width into
+        // it any more -- that is what returns the slot to preadv2/pwritev2.
+        assert_eq!(prep.args[5], 0);
         // TIOCGWINSZ writes the window size back -> one OUT copy-back.
         assert_eq!(prep.copy_back.len(), 1);
         assert_eq!(prep.copy_back[0].scratch_src, start);
