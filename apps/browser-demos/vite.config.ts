@@ -17,7 +17,21 @@ import {
   tryResolveBinary,
   tryResolveBinaries,
 } from "../../host/src/binary-resolver";
+import { useNodeWasmArtifactModule } from "../../host/src/wasm-artifact-module-node";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
+
+// This config resolves binaries, and resolution reads each artifact through
+// the wasm-artifact module. Every other Node entry point installs that reader
+// at import time -- `worker-entry.ts`, `node-kernel-host.ts`,
+// `node-kernel-worker-entry.ts` -- but the Vite dev-server realm is a Node
+// entry point too, and was not on that list.
+//
+// Without it the policy check cannot read the artifact and fails closed,
+// reporting `Binary exists but was not accepted: kernel.wasm` against a kernel
+// that is perfectly good. That is a truthful message about an inspection that
+// could not run, and it stopped the dev server before it served a byte -- so
+// no browser validation was possible at all.
+useNodeWasmArtifactModule();
 import {
   browserDylinkModule32ModuleSpecifier,
   browserForkModule32ModuleSpecifier,
