@@ -3583,7 +3583,7 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "carries wasm%s setsockopt layout width independently of bounded optlen",
+    "leaves the wasm%s setsockopt sixth slot to the caller across bounded optlen",
     (pointerWidth) => {
       const optionPointer = 8192;
       const maximum = 264;
@@ -3607,12 +3607,19 @@ describe("kernel scratch transfer capacity regressions", () => {
                 true,
               ),
             );
+            // The host used to overwrite this slot with the caller's
+            // pointer width, because `optlen` is only a byte extent and
+            // cannot say whether an embedded sockaddr_storage uses wasm32 or
+            // wasm64 alignment. The width is registered per process now, so
+            // the kernel looks it up and the slot stays the caller's --
+            // which is what returns it to preadv2/pwritev2's `flags`. The
+            // 99 below is the caller's own value, and it must survive.
             expect(
               channelView.getBigInt64(
                 CH_ARGS + 5 * CH_ARG_SIZE,
                 true,
               ),
-            ).toBe(BigInt(pointerWidth));
+            ).toBe(99n);
             expect(
               harness.kernelBytes.slice(
                 stagedPointer,
@@ -4752,9 +4759,15 @@ describe("kernel scratch transfer capacity regressions", () => {
           Number(offset),
         );
         const scratchPointer = Number(channelView.getBigInt64(CH_ARGS, true));
+        // Slot 5 is the caller's own argument. The host used to overwrite it
+        // with the calling process's pointer width so the kernel could size
+        // this ioctl's structure; the width is registered per process now and
+        // the kernel looks it up, which is what returns the slot to
+        // preadv2/pwritev2's `flags`. ioctl passes nothing here, so it stays
+        // zero -- and must not be written.
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
+        ).toBe(0);
         harness.kernelBytes.fill(
           0x6b,
           scratchPointer,
@@ -4965,7 +4978,7 @@ describe("kernel scratch transfer capacity regressions", () => {
       ).toBe(4);
       expect(
         Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-      ).toBe(4);
+      ).toBe(0);
       harness.kernelBytes.set(result, scratchPointer);
       channelView.setBigInt64(CH_RETURN, 0n, true);
       channelView.setUint32(CH_ERRNO, 0, true);
@@ -5035,7 +5048,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         ).toBe(size);
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
+        ).toBe(0);
         expect(
           harness.kernelBytes.slice(scratchPointer, scratchPointer + size),
         ).toEqual(new Uint8Array(size).fill(expectedInputByte));
@@ -5122,7 +5135,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         ).toBe(0);
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(8);
+        ).toBe(0);
         channelView.setBigInt64(CH_RETURN, 0n, true);
         channelView.setUint32(CH_ERRNO, 0, true);
         return 0;
@@ -5171,7 +5184,7 @@ describe("kernel scratch transfer capacity regressions", () => {
           ).toBe(0);
           expect(
             Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-          ).toBe(8);
+          ).toBe(0);
           channelView.setBigInt64(CH_RETURN, 0n, true);
           channelView.setUint32(CH_ERRNO, 0, true);
           return 0;
