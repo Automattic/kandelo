@@ -3180,6 +3180,58 @@ them.**
 | B22 | libc-test unfetchable | **CLOSED.** Never a repo defect — a stale ssh URL in `.git/config` plus a renamed `.git`, both local |
 | B23 | Two consumers, two tier orders | **CLOSED** with B19 |
 
+### B25 — the per-realm artifact reader, and a decision I stopped short of making
+
+**The problem.** Resolution reads every candidate artifact through the
+wasm-artifact module, and that reader must be installed **once per realm**.
+Every Node entry point has to remember: `worker-entry.ts`,
+`node-kernel-host.ts`, `node-kernel-worker-entry.ts`, and — added tonight —
+`apps/browser-demos/vite.config.ts`.
+
+**Four realms forgot**, and each failed with a message about something else: a
+package that would not build, a repo root that could not be found, a kernel
+"not accepted", a bundler that could not resolve an alias. A fifth is open: the
+**Playwright worker process**, where fourteen spec files call `resolveBinary`
+directly and share no helper module to hold an installation.
+
+"Everyone must remember" has no failure mode that names itself. That is the
+whole defect.
+
+**The obvious fix, attempted and reverted.** `binary-resolver.ts` is Node-only
+(`node:crypto`, `node:child_process`, `node:fs`) and is the single door every
+resolution passes through, so installing the reader there — once, lazily —
+removes the class of bug outright. Two things were learned attempting it, both
+worth keeping:
+
+1. **A module-scope install does not work under Vitest.**
+   `wasm-artifact-module-node` imports `resolverRepoRoot` from
+   `binary-resolver`, so the two are mutually dependent. Native ESM tolerates it
+   (both are hoisted function declarations), but Vitest's SSR transform rewrites
+   imports into bindings that are not, and the suite refuses to collect with
+   `Cannot access '__vite_ssr_import_N__' before initialization`. A **lazy** call
+   from inside the resolve entry points has no such problem, because both
+   modules have finished evaluating by the time anything resolves a binary.
+   Measured, not reasoned about.
+
+2. **It collides with a deliberate diagnostic.** `binary-resolver.test.ts` pins
+   the message *"has not been installed in this realm"* — a test written so that
+   a missing reader is loud rather than mysterious. Auto-installing makes that
+   diagnostic unreachable from this path.
+
+**Stopped there on purpose.** Making the change pass required editing that
+assertion, and editing a guard so a change looks right is the failure mode this
+campaign has caught ten times in other people's code. The question is genuinely
+the maintainer's:
+
+- if the reader can always be installed under Node, the "not installed"
+  diagnostic is only reachable from a browser realm, and the test should say so;
+- or the diagnostic is worth keeping reachable, and the five realms should each
+  install explicitly, with something that fails when a sixth forgets.
+
+Either way **the enforcement matters more than the fix**: a per-realm
+initialisation contract with no check is what produced four unrelated-looking
+bugs from one deletion.
+
 ### B24 — channel-level coverage for caller-native record syscalls
 
 **The gap that twelve broken syscalls walked through untouched.**
