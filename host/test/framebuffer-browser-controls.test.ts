@@ -104,14 +104,21 @@ describe("framebuffer browser controls", () => {
     keyboard.close();
   });
 
-  it("scales CSS-pixel pointer-lock movement into PS/2 deltas", () => {
+  // These assert SCREEN sense throughout: positive dy is down, exactly as the
+  // browser reports `movementY`. They used to assert the PS/2 sense, because
+  // this function inverted Y itself. That inversion now lives in
+  // `crates/runtime-core/src/mouse.rs`, with the packet layout and sign bits it
+  // exists to satisfy -- so what changed is which layer owns the convention,
+  // not the bytes a guest eventually reads. `mouse.rs`'s
+  // `screen_sense_dy_is_inverted_into_the_ps2_packet` pins the other half.
+  it("scales CSS-pixel pointer-lock movement into screen-sense deltas", () => {
     expect(scalePointerLockMouseDelta(10, -5, {
       sensitivity: 2,
       canvasWidth: 640,
       canvasHeight: 400,
       clientWidth: 320,
       clientHeight: 200,
-    })).toEqual({ dx: 40, dy: 20 });
+    })).toEqual({ dx: 40, dy: -20 });
   });
 
   it("defaults to screen-space-ish Doom mouse scaling", () => {
@@ -121,7 +128,7 @@ describe("framebuffer browser controls", () => {
       canvasHeight: 400,
       clientWidth: 640,
       clientHeight: 400,
-    })).toEqual({ dx: 40, dy: -8 });
+    })).toEqual({ dx: 40, dy: 8 });
   });
 
   // Splitting a large displacement into legal signed-byte PS/2 packets is the
