@@ -1176,13 +1176,16 @@ import section would therefore make any future host-import **addition** fail the
 ABI gate mechanically, instead of depending on a reviewer noticing. That work is
 tracked separately; until it lands, count the artifact.
 
-**Declared now equals linked.** `wasm_api.rs`'s `extern` declarations name
-exactly 74 `env.host_*` functions and the linked kernel imports exactly 74
-(75 until the 2026-09-11 `host_fetch_deferred` collapse, recorded below). It
-used to
-declare one more than it linked — a callerless `host_debug_log` the linker
-discarded — which is the residue pattern that let `host_futex_wait` survive for
-months as a documented floor. Counting either way now gives the same answer.
+**Declared now equals linked, and there is now only one place to declare.**
+`wasm_api.rs`'s `extern` declarations name exactly 72 `env.host_*` functions and
+the linked kernel imports exactly 72, measured on the built artifact
+(2026-09-11, after `host_debug_log` was removed; 73 before that, 74 before the
+`host_fetch_deferred` collapse recorded below). The kernel used to declare one
+more than it linked — a callerless `host_debug_log` the linker discarded —
+which is the residue pattern that let `host_futex_wait` survive for months as a
+documented floor. That import is gone entirely, along with the second
+declaration site in `runtime-core` that briefly made "declared" ambiguous, so
+counting either way gives the same answer.
 
 **When the import section is added, record wasm32 only, and name the section for
 that width.** Measured rather than assumed: **10** of the imports carry a

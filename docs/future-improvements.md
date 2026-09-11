@@ -1196,22 +1196,31 @@ with a preliminary `IPC_STAT`, which needs READ permission where SETALL needs
 only WRITE, so a `0222` set failed `EACCES` on a call POSIX permits) is exactly
 the class a conformance suite catches and unit tests do not.
 
-### `report_writeback_loss` deserves a better home than a console log
+### Closed: `report_writeback_loss` is kernel state, not a console log
 
-Kept for now (maintainer's call, 2026-09-10), and it is the reason the host
-import count stands at 75 rather than 74 — `host_debug_log` is live because
-this is its only caller. (The arithmetic shifted by one on 2026-09-10 when the
-dead `host_call_signal_handler` import was removed; the decision it describes
-is unchanged.)
+Closed on 2026-09-11, the way this entry proposed. A console log was a weak
+home for **unrecoverable data loss**: the event says a shared file mapping's
+dirty pages could not be written back, and a developer who was not watching a
+console at that moment had no way to learn it happened.
 
-A console log is a weak home for **unrecoverable data loss**. The event says a
-shared file mapping's dirty pages could not be written back; a developer who
-was not watching a console at that moment has no way to learn it happened.
+The kernel now records the loss as its own state in
+`runtime_core::writeback_loss` — pid, mapping address, and reason as separate
+fields — and publishes it at `/proc/kandelo/writeback_losses`. It costs no
+import and no new export: the ordinary `read(2)` path already exists, and
+adding a kernel export to retire a host import would have been a wash for the
+minimize-host-surface goal while growing the ABI's export surface.
 
-Better wiring, costing no import: make it kernel-visible state — a counter or
-condition the host can read through an existing export — so the loss is
-queryable after the fact rather than only greppable in a console that may not
-be attached. That also makes it testable, which a console log is not.
+The record keeps the first 64 losses and counts every one, publishing `total`,
+`recorded` and `dropped`, so a loss it could not store still raises the total
+the reader sees. The mapping layer's old "report at most 50, then stop" cap
+went in the same change: with a counting sink behind it, that cap would have
+made the kernel's own total saturate.
+
+`host_debug_log` was this entry's only caller, so the import went with it and
+the host import count moved 73 -> 72, measured on the built kernel artifact.
+The loss is also now testable, which a console log was not:
+`procfs::tests::a_recorded_writeback_loss_is_readable_through_procfs` fails if
+the diagnostic is dropped on the floor rather than recorded.
 
 ### Closed: pthread control slots are placed by the kernel on every host
 
