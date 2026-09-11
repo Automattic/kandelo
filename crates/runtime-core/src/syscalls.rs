@@ -14788,17 +14788,29 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     if stream_write_shutdown {
                         revents &= !POLLOUT;
                     }
-                    // POSIX XSH poll(): "POLLHUP and POLLOUT are mutually
-                    // exclusive: a stream can never be writable if a hangup
-                    // has occurred." The `PcmPlayback` arm of this same
-                    // function already states the rule; the socket arm could
-                    // reach here with both bits set, because the recv-pipe
-                    // hangup check above and the send-pipe writability check
-                    // below it are independent. Apply it once, last, so it
-                    // holds for every path through this arm.
-                    if revents & POLLHUP != 0 {
-                        revents &= !POLLOUT;
-                    }
+                    // NOTE: POSIX XSH poll() also requires that "POLLHUP and
+                    // POLLOUT are mutually exclusive: a stream can never be
+                    // writable if a hangup has occurred", and the pipe-backed
+                    // path above can still report both — its recv-pipe hangup
+                    // check and its send-pipe writability check are
+                    // independent. That is deliberately NOT fixed here by
+                    // masking POLLOUT off, because the real divergence is one
+                    // step earlier: the pipe-backed path raises POLLHUP for a
+                    // peer that merely closed its write end, and never sets
+                    // POLLIN at end-of-file, so POLLHUP is doing double duty
+                    // as the reader's EOF wakeup. Linux treats that state as
+                    // RCV_SHUTDOWN — EPOLLIN|EPOLLRDHUP with EPOLLOUT intact
+                    // — and reserves EPOLLHUP for `sk_shutdown ==
+                    // SHUTDOWN_MASK`. Masking POLLOUT off would make this
+                    // POSIX-valid but move it further from Linux and stop
+                    // writers on a half-closed AF_UNIX socket. Correcting it
+                    // properly means reporting EOF as POLLIN there, which
+                    // changes wakeups for every AF_UNIX and loopback socket
+                    // and needs the conformance suites to validate.
+                    //
+                    // The host-delegated path above has no such ambiguity:
+                    // its facts distinguish RECV_EOF from HANGUP, and
+                    // `net_readiness::stream_revents` applies the exclusion.
                 }
             }
         }
