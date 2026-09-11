@@ -48,45 +48,35 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# target triple, the guest syscall glue, crt1/libc ordering, the pinned
+# wasm-ld, and the process memory layout (8 MiB main-thread shadow
+# stack, `--global-base`, `__heap_base`/`__abi_version` exports). This
+# runner used to hand-maintain a copy of that contract which had drifted
+# to wasm-ld's ~64 KiB default shadow stack and no `__heap_base` export.
+# See docs/sdk-guide.md.
+CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ─────────────────────────────────────────
+#
+# Only test-specific flags belong here; the SDK supplies the target,
+# sysroot, `-nostdlib`, and the codegen/lowering flags.
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
     -D_POSIX_C_SOURCE=200112L
     -I"$POSIX_TEST/include"
     -Wno-format
 )
 
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-)
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag.
+LINK_FLAGS=()
 
 # Fork-instrumentation for fork()
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
