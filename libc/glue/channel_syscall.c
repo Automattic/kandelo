@@ -109,8 +109,6 @@ int *__errno_location(void);
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
 #define CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED \
     WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-#define CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY \
-    WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
 #define CH_REQUEST_FLAG_OPAQUE_RECORD \
     WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD
 #define CH_SIG_SIGNUM  WASM_POSIX_CHANNEL_SIG_SIGNUM_OFFSET
@@ -170,8 +168,7 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
 static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               long long a4, long long a5, long long a6,
-                              int cancellation_point,
-                              uint32_t extra_request_flags);
+                              int cancellation_point);
 
 static _Thread_local uint32_t kandelo_caught_handler_depth;
 
@@ -198,76 +195,6 @@ void __wasm_posix_longjmp_cleanup(unsigned long target_depth)
         (void)__do_syscall(SYS_RT_SIGRETURN, 0, 0, 0, 0, 0, 0);
         if (tid > 0)
             (void)__do_syscall(SYS_THREAD_CANCEL, tid, 0, 0, 0, 0, 0);
-    }
-}
-
-static int kandelo_capture_ppoll_deadline(
-    long n,
-    long long timeout_arg,
-    struct timespec *deadline)
-{
-    struct timespec timeout;
-    struct timespec now;
-    uintptr_t timeout_ptr;
-    uintptr_t memory_bytes;
-
-    if (n != __NR_ppoll || timeout_arg == 0)
-        return 0;
-    timeout_ptr = (uintptr_t)timeout_arg;
-    memory_bytes = (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;
-    if (timeout_ptr > memory_bytes ||
-        sizeof(timeout) > memory_bytes - timeout_ptr)
-        return 0;
-    __builtin_memcpy(&timeout, (const void *)timeout_ptr, sizeof(timeout));
-    if (timeout.tv_sec < 0 || timeout.tv_nsec < 0 ||
-        timeout.tv_nsec >= 1000000000L)
-        return 0;
-    /* Reading the clock is internal accounting for the enclosing ppoll, not
-     * a guest signal checkpoint. In particular, a signal already pending at
-     * ppoll entry must interrupt ppoll itself rather than this timestamp. */
-    if (__do_syscall_impl(
-            SYS_CLOCK_GETTIME,
-            CLOCK_MONOTONIC,
-            (long long)(uintptr_t)&now,
-            0, 0, 0, 0,
-            0,
-            CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
-        ) != 0)
-        return 0;
-    deadline->tv_sec = now.tv_sec + timeout.tv_sec;
-    deadline->tv_nsec = now.tv_nsec + timeout.tv_nsec;
-    if (deadline->tv_nsec >= 1000000000L) {
-        deadline->tv_sec++;
-        deadline->tv_nsec -= 1000000000L;
-    }
-    return 1;
-}
-
-static void kandelo_ppoll_remaining(
-    const struct timespec *deadline,
-    struct timespec *remaining)
-{
-    struct timespec now;
-
-    if (__do_syscall_impl(
-            SYS_CLOCK_GETTIME,
-            CLOCK_MONOTONIC,
-            (long long)(uintptr_t)&now,
-            0, 0, 0, 0,
-            0,
-            CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
-        ) != 0 || now.tv_sec > deadline->tv_sec ||
-        (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)) {
-        remaining->tv_sec = 0;
-        remaining->tv_nsec = 0;
-        return;
-    }
-    remaining->tv_sec = deadline->tv_sec - now.tv_sec;
-    if (deadline->tv_nsec < now.tv_nsec) {
-        remaining->tv_sec--;
-        remaining->tv_nsec = 1000000000L + deadline->tv_nsec - now.tv_nsec;
-    } else {
-        remaining->tv_nsec = deadline->tv_nsec - now.tv_nsec;
     }
 }
 
@@ -1437,16 +1364,8 @@ static void __unmarshal_channel_record(const uint8_t *data,
 
 static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
                               long long a4, long long a5, long long a6,
-                              int cancellation_point,
-                              uint32_t extra_request_flags)
+                              int cancellation_point)
 {
-    struct timespec kandelo_ppoll_deadline;
-    struct timespec kandelo_ppoll_remaining_timeout;
-    int kandelo_ppoll_has_deadline = kandelo_capture_ppoll_deadline(
-        n,
-        a3,
-        &kandelo_ppoll_deadline
-    );
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
      * which call kernel_fork(mode) directly.  If we somehow get here (e.g. a
      * program calls __syscall(SYS_fork) directly), return ENOSYS because
@@ -1596,7 +1515,7 @@ restart_wait_syscall:
      * waitpid and wait4). Publish the call-site identity before the
      * release-ordered PENDING store. The host consumes and clears it with this
      * request, so mailbox reuse cannot inherit cancellation authority. */
-    uint32_t request_flags = extra_request_flags;
+    uint32_t request_flags = 0u;
     /* Publish the opaque-record transport decision in the header, fresh every
      * request, so a fork child or reused channel slot inheriting a stale record
      * magic in the data buffer cannot misroute a RAW syscall. */
@@ -1736,13 +1655,6 @@ restart_wait_syscall:
                 return checked;
             }
         }
-        if (kandelo_ppoll_has_deadline) {
-            kandelo_ppoll_remaining(
-                &kandelo_ppoll_deadline,
-                &kandelo_ppoll_remaining_timeout
-            );
-            a3 = (long long)(uintptr_t)&kandelo_ppoll_remaining_timeout;
-        }
         goto restart_wait_syscall;
     }
 
@@ -1761,7 +1673,7 @@ restart_wait_syscall:
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6)
 {
-    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);
+    return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);
 }
 
 /* ================================================================== */
@@ -1838,7 +1750,7 @@ long __syscall_cp(long n, long long a1, long long a2, long long a3,
 {
     long pending = __syscall_cp_cancel_preflight();
     if (pending) return pending;
-    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);
+    long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);
     return __syscall_cp_check(r);
 }
 

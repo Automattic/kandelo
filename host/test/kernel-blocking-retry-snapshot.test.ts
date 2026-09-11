@@ -532,14 +532,24 @@ describe("blocking retry snapshot contract", () => {
     expect(flagWrite).toBeGreaterThan(wakeAuthority);
     expect(pendingWrite).toBeGreaterThan(flagWrite);
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);",
+      "return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0);",
     );
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
-      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1, 0u);",
+      "long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);",
     );
-    expect(CHANNEL_SYSCALL_SOURCE).toContain(
+    // WHY: guest libc issues no deferred-delivery request of its own. The
+    // only glue that ever did was ppoll's SA_RESTART deadline arithmetic,
+    // which became unreachable once ppoll stopped being classified
+    // restartable, so the whole `extra_request_flags` channel is gone from
+    // the syscall hot path. The ABI flag itself is still live -- the process
+    // worker's continuation allocator and the Rust fork module both raise it
+    // for channel syscalls the guest consumes outside libc's post-syscall
+    // signal trampoline -- so this asserts only that libc does not resurrect
+    // a per-syscall flag argument it has no caller for.
+    expect(CHANNEL_SYSCALL_SOURCE).not.toContain(
       "CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY",
     );
+    expect(CHANNEL_SYSCALL_SOURCE).not.toContain("extra_request_flags");
     expect(CHANNEL_SYSCALL_SOURCE).toContain(
       "request_flags |= CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED",
     );
