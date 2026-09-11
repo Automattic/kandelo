@@ -1027,6 +1027,58 @@ function enableKernelTmpfs(instance: WebAssembly.Instance): void {
   }
 }
 
+/**
+ * Wait kinds passed to `kernel_wait_deadline_open`.
+ *
+ * Must match `wait_kind_from_u32` in `crates/kernel/src/wasm_api.rs`, which
+ * refuses an unknown value rather than defaulting it: a new blocking family
+ * has to name itself on both sides.
+ */
+const WAIT_KIND_POLL = 1;
+const WAIT_KIND_SELECT = 2;
+const WAIT_KIND_EPOLL = 3;
+const WAIT_KIND_SIGTIMEDWAIT = 5;
+
+/**
+ * `kernel_wait_deadline_remaining_ns` sentinel for "this wait is live and has
+ * no deadline". Deliberately not -1, which is -EPERM.
+ */
+const WAIT_NO_DEADLINE = -(2n ** 63n);
+
+/** `waitRemainingMs` answer for a wait with no deadline. */
+const WAIT_REMAINING_INFINITE = -1;
+
+/**
+ * Hand deadline authority for blocking waits to the kernel.
+ *
+ * Timeouts used to be wall-clock: the host computed `Date.now() + timeoutMs`
+ * and compared `Date.now()` against it, so an NTP correction or a DST change
+ * moved every pending timeout in the machine at once — `poll(fds, n, 100)`
+ * could return early, late, or (for `sigtimedwait`) never. The kernel holds
+ * them on `CLOCK_MONOTONIC` instead.
+ *
+ * A kernel without the export is an ABI-mismatched artifact, not an older
+ * peer to fall back for: it would silently restore the wall-clock bug. Fail
+ * loudly and let it be rebuilt.
+ */
+function enableKernelWaitQueue(instance: WebAssembly.Instance): void {
+  const fn = instance.exports.kernel_set_wait_queue_enabled as
+    | ((enabled: number) => number)
+    | undefined;
+  if (typeof fn !== 'function') {
+    throw new Error(
+      "kernel.wasm does not export kernel_set_wait_queue_enabled; "
+      + "this kernel predates kernel-owned wait deadlines and must be rebuilt",
+    );
+  }
+  const previous = fn(1);
+  if (previous < 0) {
+    throw new Error(
+      `kernel_set_wait_queue_enabled failed with errno ${-previous}`,
+    );
+  }
+}
+
 /** Read-like syscalls that may block on pipe/socket data */
 const READ_LIKE_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Read,
@@ -1435,8 +1487,13 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Suppresses re-entry into a channel whose
    *  request is already in flight. */
   handling?: boolean;
-  /** Absolute deadline for the current finite poll/select/epoll wait. */
-  readinessDeadline?: number;
+  /**
+   * Handle for this channel's kernel-owned wait deadline, or undefined when
+   * no wait is armed. Minted by `kernel_wait_deadline_open` and never reused,
+   * so a timer armed before an `exec` cannot complete a request issued after
+   * it.
+   */
+  waitHandle?: bigint;
   /** Force the next readiness dispatch to perform a zero-time final check. */
   readinessFinalCheck?: boolean;
 }
@@ -2887,11 +2944,6 @@ export class CentralizedKernelWorker {
       signalMask: bigint;
     }
   >();
-  /** Finite rt_sigtimedwait deadlines retained across wake-driven retries. */
-  private signalWaitDeadlines = new Map<
-    string,
-    { pid: number; deadline: number }
-  >();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, TcpListenerBridge>();
   /** TCP listener targets: port → listener aliases for round-robin dispatch.
@@ -2966,8 +3018,14 @@ export class CentralizedKernelWorker {
      *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
      *  tests/sortix/os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
-    /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
-    deadline?: number;
+    /**
+     * Monotonic-ms bound for sizing this entry's safety timer, or -1.
+     *
+     * Not the authoritative deadline -- the kernel holds that. This exists so
+     * a deferred re-park does not overshoot the caller's timeout, and is
+     * monotonic so a system clock step cannot stretch or collapse it.
+     */
+    deadlineHintMs?: number;
     /** Generic write-like fallback that has no targetable pipe token. */
     isWriteRetry?: boolean;
   }>();
@@ -3009,7 +3067,9 @@ export class CentralizedKernelWorker {
     timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
     origArgs: number[];
-    deadline: number;  // Date.now() deadline, -1 for infinite
+    /** Monotonic-ms bound for safety-timer sizing, -1 for infinite. Not the
+     *  authoritative deadline; the kernel holds that. */
+    deadlineHintMs: number;
     /** True if this pselect6 retry has an atomic sigmask swap. */
     needsSignalSafeWake?: boolean;
     /** SYS_SELECT (103) or SYS_PSELECT6 (252). Determines retry-dispatch
@@ -5610,6 +5670,11 @@ export class CentralizedKernelWorker {
         enableKernelTmpfs(instance);
         this.#maybeLoadKernelRootfs(instance);
 
+        // Blocking-wait deadlines are kernel state on CLOCK_MONOTONIC, not
+        // host wall-clock arithmetic. Hand that authority over before any
+        // guest can issue a timed poll/select/epoll/sigtimedwait.
+        enableKernelWaitQueue(instance);
+
         // Allocate scratch from the kernel heap. Host-side memory.grow() would
         // create pages unknown to dlmalloc and let later Rust allocations
         // overlap the supposedly host-owned bytes.
@@ -7889,7 +7954,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
-    this.cleanupPendingSignalWaits(pid);
+    this.cleanupPendingSignalWaits(pid, entry);
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -8191,7 +8256,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
-    this.cleanupPendingSignalWaits(pid);
+    this.cleanupPendingSignalWaits(pid, entry);
     // Clean up network listeners/endpoints for this process.
     this.#cleanupProcessNetworkWithinKernelEntry(pid, entry);
     // Drop the killed-but-not-yet-reaped marker with the retired host
@@ -9375,6 +9440,8 @@ export class CentralizedKernelWorker {
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
     this.cleanupPendingPollRetries(pid);
     this.cleanupPendingSelectRetries(pid);
+    // No kernel entry here: exec preparation is called from the worker entry
+    // point, outside one, so the unbound export path is the correct one.
     this.cleanupPendingSignalWaits(pid);
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -9727,7 +9794,7 @@ export class CentralizedKernelWorker {
     const signalWait = this.pendingSignalWaits?.get(signalWaitKey);
     if (signalWait) this.#cancelRegisteredTimeout(signalWait.timer);
     this.pendingSignalWaits?.delete(signalWaitKey);
-    this.signalWaitDeadlines?.delete(signalWaitKey);
+    this.closeWaitDeadline(channel, entry);
 
     const sleep = this.pendingSleeps?.get(channel);
     if (sleep) this.#cancelRegisteredTimeout(sleep.timer);
@@ -9764,7 +9831,7 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredImmediate(select.timer);
     }
     this.pendingSelectRetries?.delete(channel);
-    channel.readinessDeadline = undefined;
+    this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
 
     this.removePendingPipeReader(channel);
@@ -12999,9 +13066,7 @@ export class CentralizedKernelWorker {
           err,
         );
         if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
-          this.signalWaitDeadlines.delete(
-            `${channel.pid}:${channel.channelOffset}`,
-          );
+          this.closeWaitDeadline(channel, entry);
         }
         if (
           !this.#cancelHostOwnedKernelWait(channel, syscallNr, entry)
@@ -13059,9 +13124,7 @@ export class CentralizedKernelWorker {
         syscallNr === SYS_RT_SIGTIMEDWAIT &&
         !(retVal === -1 && errVal === EAGAIN)
       ) {
-        this.signalWaitDeadlines.delete(
-          `${channel.pid}:${channel.channelOffset}`,
-        );
+        this.closeWaitDeadline(channel, entry);
       }
       if (
         syscallNr === SYS_MMAP &&
@@ -13995,7 +14058,7 @@ export class CentralizedKernelWorker {
     // future SIGCONT. Retire one-shot timeout/deadline state now so no second
     // completion can race the parked one.
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
 
     // Drain PTY output buffers before notifying the process — slave writes
     // produce data in the PTY output_buf that needs to reach the host (xterm.js).
@@ -14755,7 +14818,6 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries.clear();
     this.pendingSleeps.clear();
     this.pendingSignalWaits.clear();
-    this.signalWaitDeadlines.clear();
     this.pendingFutexWaits.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
@@ -15022,7 +15084,7 @@ export class CentralizedKernelWorker {
       return;
     }
     this.clearSocketTimeout(channel);
-    this.clearReadinessWait(channel);
+    this.clearReadinessWait(channel, entry);
     const prepared: PreparedChannelCompletion = {
       kind: "raw",
       outputWrites: [],
@@ -15710,15 +15772,15 @@ export class CentralizedKernelWorker {
   }
 
   private postponeSignalSafePollRetries(delayMs: number): void {
-    const now = Date.now();
+    const now = this.#monotonicNowMs();
     for (const [key, entry] of this.pendingPollRetries) {
       if (!entry.needsSignalSafeWake) continue;
       if (entry.timer !== null) {
         this.#cancelRegisteredTimeout(entry.timer);
       }
 
-      const remainingMs = entry.deadline && entry.deadline > 0
-        ? Math.max(1, entry.deadline - now)
+      const remainingMs = entry.deadlineHintMs && entry.deadlineHintMs > 0
+        ? Math.max(1, entry.deadlineHintMs - now)
         : delayMs;
       const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
       entry.timer = this.#registerTimeout(() => {
@@ -15733,7 +15795,7 @@ export class CentralizedKernelWorker {
 
   /** Keep pselect's fallback timer from bypassing the signal-safe wake grace. */
   private postponeSignalSafeSelectRetries(delayMs: number): void {
-    const now = Date.now();
+    const now = this.#monotonicNowMs();
     for (const [key, entry] of this.pendingSelectRetries) {
       if (!entry.needsSignalSafeWake) continue;
       if (entry.timer !== null) {
@@ -15741,8 +15803,8 @@ export class CentralizedKernelWorker {
         this.#cancelRegisteredImmediate(entry.timer);
       }
 
-      const remainingMs = entry.deadline > 0
-        ? Math.max(1, entry.deadline - now)
+      const remainingMs = entry.deadlineHintMs > 0
+        ? Math.max(1, entry.deadlineHintMs - now)
         : delayMs;
       const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
       entry.timer = this.#registerTimeout(() => {
@@ -15890,20 +15952,141 @@ export class CentralizedKernelWorker {
     }
   }
 
-  /** Reuse one absolute deadline across readiness retries for this syscall. */
-  private getReadinessDeadline(channel: ChannelInfo, timeoutMs: number): number {
-    const testHook = this.#scratchBoundaryTestHooks?.getReadinessDeadline;
-    if (testHook) return testHook(channel, timeoutMs);
-    if (timeoutMs <= 0) return -1;
-    if (channel.readinessDeadline === undefined) {
-      channel.readinessDeadline = Date.now() + timeoutMs;
-    }
-    return channel.readinessDeadline;
+  /**
+   * A monotonic millisecond clock for host retry-timer sizing.
+   *
+   * Timers are relative, so this never needs to agree with the kernel's
+   * deadline; it only needs not to jump. `performance.now()` is monotonic on
+   * both hosts -- Node backs it with `process.hrtime`, browsers with the
+   * document timeline -- where `Date.now()` follows the system clock.
+   */
+  #monotonicNowMs(): number {
+    return performance.now();
   }
 
-  /** Clear readiness deadline and any still-parked retry for a completed call. */
-  private clearReadinessWait(channel: ChannelInfo): void {
-    channel.readinessDeadline = undefined;
+  /**
+   * Milliseconds left on this channel's kernel-owned wait deadline, arming it
+   * on the first call for this wait.
+   *
+   * Returns `WAIT_REMAINING_INFINITE` when the call asked for no timeout, and
+   * `0` once the deadline has passed. `timeoutMs <= 0` never arms anything:
+   * zero is the caller's own non-blocking probe, handled before this point,
+   * and a negative timeout means block forever.
+   *
+   * The kernel holds the deadline on `CLOCK_MONOTONIC`. This used to be
+   * `Date.now() + timeoutMs` compared against `Date.now()`, which made every
+   * timeout in the machine move with the system clock.
+   */
+  private waitRemainingMs(
+    channel: ChannelInfo,
+    timeoutMs: number,
+    kind: number,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const testHook = this.#scratchBoundaryTestHooks?.getReadinessDeadline;
+    if (testHook) {
+      // The hook still speaks absolute wall-clock deadlines, which is what
+      // the tests that install it assert on.
+      const deadline = testHook(channel, timeoutMs);
+      if (deadline <= 0) return WAIT_REMAINING_INFINITE;
+      return Math.max(deadline - Date.now(), 0);
+    }
+    if (timeoutMs <= 0) return WAIT_REMAINING_INFINITE;
+    if (channel.waitHandle === undefined) {
+      const open = this.#kernelInstanceForEntry(entry).exports
+        .kernel_wait_deadline_open as
+        | ((pid: number, tid: number, kind: number, timeoutMs: bigint) => bigint)
+        | undefined;
+      if (typeof open !== "function") {
+        throw new Error(
+          "kernel.wasm does not export kernel_wait_deadline_open",
+        );
+      }
+      const handle = open(
+        channel.pid,
+        this.guestTidForChannel(channel) ?? 0,
+        kind,
+        BigInt(Math.floor(timeoutMs)),
+      );
+      if (handle <= 0n) {
+        throw new Error(
+          `kernel_wait_deadline_open failed with errno ${-handle}`,
+        );
+      }
+      channel.waitHandle = handle;
+      return timeoutMs;
+    }
+    return this.#waitRemainingMsForHandle(channel.waitHandle, entry);
+  }
+
+  /**
+   * Ask the kernel how long is left on an armed handle.
+   *
+   * A handle the kernel does not know is a protocol failure, not "no
+   * deadline": reading it as infinite would turn the caller's finite timeout
+   * into a wait that never ends, with nothing anywhere reporting why.
+   */
+  #waitRemainingMsForHandle(
+    handle: bigint,
+    entry?: KernelWorkerEntryContext,
+  ): number {
+    const remaining = this.#kernelInstanceForEntry(entry).exports
+      .kernel_wait_deadline_remaining_ns as
+      | ((handle: bigint) => bigint)
+      | undefined;
+    if (typeof remaining !== "function") {
+      throw new Error(
+        "kernel.wasm does not export kernel_wait_deadline_remaining_ns",
+      );
+    }
+    const ns = remaining(handle);
+    if (ns === WAIT_NO_DEADLINE) return WAIT_REMAINING_INFINITE;
+    if (ns < 0n) {
+      throw new Error(
+        `kernel_wait_deadline_remaining_ns(${handle}) failed with errno ${-ns}`,
+      );
+    }
+    if (ns === 0n) return 0;
+    // Round up: a sub-millisecond remainder is still time left to wait, and
+    // rounding it to zero would report a timeout that has not happened.
+    return Math.max(1, Math.ceil(Number(ns) / 1_000_000));
+  }
+
+  /** Absolute monotonic-ms deadline for sizing a host retry timer, or -1. */
+  private waitDeadlineHintMs(remainingMs: number): number {
+    return remainingMs === WAIT_REMAINING_INFINITE
+      ? -1
+      : this.#monotonicNowMs() + remainingMs;
+  }
+
+  /** Retire this channel's kernel-owned wait deadline, if it has one. */
+  private closeWaitDeadline(
+    channel: ChannelInfo,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const handle = channel.waitHandle;
+    if (handle === undefined) return;
+    channel.waitHandle = undefined;
+    const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+    if (!instance) return;
+    const close = instance.exports.kernel_wait_deadline_close as
+      | ((handle: bigint) => number)
+      | undefined;
+    if (typeof close === "function") close(handle);
+  }
+
+  /**
+   * Clear readiness deadline and any still-parked retry for a completed call.
+   *
+   * `entry` is required wherever one is active: the kernel entry gate refuses
+   * an unbound export call while a kernel entry is open, so retiring the wait
+   * has to go through that entry's bound facade.
+   */
+  private clearReadinessWait(
+    channel: ChannelInfo,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
 
     const pollEntry = this.pendingPollRetries.get(channel);
@@ -16147,7 +16330,7 @@ export class CentralizedKernelWorker {
       this.pendingCancels.delete(target);
       this.#cancelRegisteredTimeout(signalWaitEntry.timer);
       this.pendingSignalWaits.delete(signalWaitKey);
-      this.signalWaitDeadlines.delete(signalWaitKey);
+      this.closeWaitDeadline(target, entry);
       this.completeChannelRawAndRelisten(
         target,
         -EINTR_ERRNO,
@@ -17337,8 +17520,13 @@ export class CentralizedKernelWorker {
         );
         return;
       }
-      const deadline = this.getReadinessDeadline(channel, timeoutMs);
-      if (deadline > 0 && Date.now() >= deadline) {
+      const remainingMs = this.waitRemainingMs(
+        channel,
+        timeoutMs,
+        WAIT_KIND_POLL,
+        entry,
+      );
+      if (remainingMs === 0) {
         // Re-enter once with timeout=0. Besides checking readiness at the
         // deadline, this lets ppoll restore its temporary signal mask.
         channel.readinessFinalCheck = true;
@@ -17395,7 +17583,7 @@ export class CentralizedKernelWorker {
       ) return;
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
-        const remainingMs = Math.max(deadline - Date.now(), 1);
+        const sleepMs = Math.max(remainingMs, 1);
         const timer = this.#registerTimeout(() => {
           if (this.pendingPollRetries.get(channel)?.timer !== timer) return;
           this.pendingPollRetries.delete(channel);
@@ -17403,7 +17591,7 @@ export class CentralizedKernelWorker {
             channel.readinessFinalCheck = true;
             this.retrySyscall(channel);
           }
-        }, remainingMs);
+        }, sleepMs);
         this.pendingPollRetries.set(channel, {
           ...cancellationIdentity,
           timer,
@@ -17411,7 +17599,7 @@ export class CentralizedKernelWorker {
           pipeIndices,
           acceptIndices,
           needsSignalSafeWake,
-          deadline,
+          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
         });
         return;
       }
@@ -17439,9 +17627,10 @@ export class CentralizedKernelWorker {
       // browser's MessageChannel polyfill). 10 ms matches the default
       // for read-like / write-like blocking retries.
       const hasTargetedWake = pipeIndices.length > 0 || acceptIndices.length > 0;
-      const retryMs = hasTargetedWake
-        ? (deadline > 0 ? Math.min(deadline - Date.now(), 10) : 10)
-        : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
+      const cap = hasTargetedWake ? 10 : 50;
+      const retryMs = remainingMs === WAIT_REMAINING_INFINITE
+        ? cap
+        : Math.min(remainingMs, cap);
       const timer = this.#registerTimeout(retryFn, Math.max(retryMs, 1));
       this.pendingPollRetries.set(channel, {
         ...cancellationIdentity,
@@ -17450,7 +17639,7 @@ export class CentralizedKernelWorker {
         pipeIndices,
         acceptIndices,
         needsSignalSafeWake,
-        deadline,
+        deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
       });
       return;
     }
@@ -17551,16 +17740,14 @@ export class CentralizedKernelWorker {
         const nsec = Number(timeoutView.getBigInt64(8, true));
         timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
       } catch (error) {
-        this.signalWaitDeadlines.delete(
-          `${channel.pid}:${channel.channelOffset}`,
-        );
+        this.closeWaitDeadline(channel, entry);
         this.#rejectScratchTransfer(channel, error, entry);
         return;
       }
       const EAGAIN_ERRNO = 11;
       const key = `${channel.pid}:${channel.channelOffset}`;
       if (timeoutMs <= 0) {
-        this.signalWaitDeadlines.delete(key);
+        this.closeWaitDeadline(channel, entry);
         this.completeChannel(
           channel,
           syscallNr,
@@ -17573,12 +17760,19 @@ export class CentralizedKernelWorker {
           entry,
         );
       } else {
-        const existingDeadline = this.signalWaitDeadlines.get(key);
-        const deadline = existingDeadline?.deadline
-          ?? Date.now() + timeoutMs;
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) {
-          this.signalWaitDeadlines.delete(key);
+        // The deadline is kernel state, held on CLOCK_MONOTONIC and keyed on
+        // this channel's execution generation. It used to be a host map keyed
+        // on `pid:channelOffset` -- both of which `exec` reuses -- holding a
+        // wall-clock number, so a clock step could make `sigtimedwait` return
+        // early or not at all.
+        const remainingMs = this.waitRemainingMs(
+          channel,
+          timeoutMs,
+          WAIT_KIND_SIGTIMEDWAIT,
+          entry,
+        );
+        if (remainingMs === 0) {
+          this.closeWaitDeadline(channel, entry);
           this.completeChannel(
             channel,
             syscallNr,
@@ -17600,9 +17794,6 @@ export class CentralizedKernelWorker {
             entry,
           )
         ) return;
-        if (!existingDeadline) {
-          this.signalWaitDeadlines.set(key, { pid: channel.pid, deadline });
-        }
         const previous = this.pendingSignalWaits.get(key);
         if (previous) this.#cancelRegisteredTimeout(previous.timer);
         const timer = this.#registerTimeout(() => {
@@ -17614,7 +17805,7 @@ export class CentralizedKernelWorker {
             return;
           }
           this.pendingSignalWaits.delete(key);
-          this.signalWaitDeadlines.delete(key);
+          this.closeWaitDeadline(channel);
           if (this.isRegisteredChannel(channel)) {
             this.#runOrDeferChannelKernelEntry(
               channel,
@@ -17948,9 +18139,7 @@ export class CentralizedKernelWorker {
     // This handles cases like sigsuspend + cross-process SIGABRT where
     // deliver_pending_signals marks the target as Exited.
     if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
-      this.signalWaitDeadlines.delete(
-        `${channel.pid}:${channel.channelOffset}`,
-      );
+      this.closeWaitDeadline(channel, entry);
       this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
       return;
     }
@@ -18651,7 +18840,12 @@ export class CentralizedKernelWorker {
     const finalCheck = channel.readinessFinalCheck === true;
     channel.readinessFinalCheck = false;
     const kernelTimeoutMs = finalCheck ? 0 : timeoutMs;
-    const deadline = this.getReadinessDeadline(channel, timeoutMs);
+    const remainingMs = this.waitRemainingMs(
+      channel,
+      timeoutMs,
+      WAIT_KIND_SELECT,
+      entry,
+    );
 
     // Pure-sleep fast path: select(0, NULL, NULL, NULL, &tv) is `my_sleep`.
     // The kernel can't tell us anything new — there are no fds to poll —
@@ -18696,9 +18890,7 @@ export class CentralizedKernelWorker {
         )
       ) return;
       const finite = timeoutMs > 0;
-      const remainingMs = finite
-        ? Math.max(deadline - Date.now(), 1)
-        : -1;
+      const sleepMs = finite ? Math.max(remainingMs, 1) : -1;
       if (finite) {
         entry.deferProtocolEffect(() => {
           const timer = this.#registerTimeout(() => {
@@ -18708,13 +18900,13 @@ export class CentralizedKernelWorker {
               channel.readinessFinalCheck = true;
               this.retrySyscall(channel);
             }
-          }, remainingMs);
+          }, sleepMs);
           this.pendingSelectRetries.set(channel, {
             ...this.#cancellationPointIdentity(channel),
             timer,
             channel,
             origArgs,
-            deadline,
+            deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
             needsSignalSafeWake: false,
             syscallNr: SYS_SELECT,
           });
@@ -18725,7 +18917,7 @@ export class CentralizedKernelWorker {
           timer: null as any,
           channel,
           origArgs,
-          deadline,
+          deadlineHintMs: -1,
           needsSignalSafeWake: false,
           syscallNr: SYS_SELECT,
         });
@@ -18794,7 +18986,7 @@ export class CentralizedKernelWorker {
         !retainedSnapshot
         && !this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)
       ) return;
-      if (deadline > 0 && Date.now() >= deadline) {
+      if (remainingMs === 0) {
         channel.readinessFinalCheck = true;
         this.handleSelect(channel, snapshot.origArgs, entry, snapshot);
         return;
@@ -18808,7 +19000,7 @@ export class CentralizedKernelWorker {
         )
       ) return;
       const finite = timeoutMs > 0;
-      const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
+      const retryMs = finite ? Math.max(remainingMs, 1) : 50;
       entry.deferProtocolEffect(() => {
         const timer = this.#registerTimeout(() => {
           const pending = this.pendingSelectRetries.get(channel);
@@ -18816,13 +19008,13 @@ export class CentralizedKernelWorker {
           this.pendingSelectRetries.delete(channel);
           if (!this.isRegisteredChannel(channel)) return;
           this.retrySyscall(channel);
-        }, Math.min(remainingMs, 50));
+        }, Math.min(retryMs, 50));
         this.pendingSelectRetries.set(channel, {
           ...this.#cancellationPointIdentity(channel),
           timer,
           channel,
           origArgs,
-          deadline,
+          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
           needsSignalSafeWake: false,
           syscallNr: SYS_SELECT,
         });
@@ -18875,7 +19067,12 @@ export class CentralizedKernelWorker {
     const finalCheck = channel.readinessFinalCheck === true;
     channel.readinessFinalCheck = false;
     const kernelTimeoutMs = finalCheck ? 0 : timeoutMs;
-    const deadline = this.getReadinessDeadline(channel, timeoutMs);
+    const remainingMs = this.waitRemainingMs(
+      channel,
+      timeoutMs,
+      WAIT_KIND_SELECT,
+      entry,
+    );
 
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
     // On wasm32: {u32 mask_ptr, u32 size} = 8 bytes
@@ -18961,7 +19158,7 @@ export class CentralizedKernelWorker {
         !retainedSnapshot
         && !this.#rememberBlockingRetrySnapshot(channel, snapshot, entry)
       ) return;
-      if (deadline > 0 && Date.now() >= deadline) {
+      if (remainingMs === 0) {
         channel.readinessFinalCheck = true;
         this.handlePselect6(channel, snapshot.origArgs, entry, snapshot);
         return;
@@ -18984,7 +19181,7 @@ export class CentralizedKernelWorker {
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
       if (nfds === 0) {
         if (timeoutMs > 0) {
-          const remainingMs = Math.max(deadline - Date.now(), 1);
+          const sleepMs = Math.max(remainingMs, 1);
           entry.deferProtocolEffect(() => {
             const timer = this.#registerTimeout(() => {
               if (this.pendingSelectRetries.get(channel)?.timer !== timer) return;
@@ -18993,10 +19190,12 @@ export class CentralizedKernelWorker {
                 channel.readinessFinalCheck = true;
                 this.retrySyscall(channel);
               }
-            }, remainingMs);
+            }, sleepMs);
             this.pendingSelectRetries.set(channel, {
               ...this.#cancellationPointIdentity(channel),
-              timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+              timer, channel, origArgs,
+              deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
+              needsSignalSafeWake, syscallNr: SYS_PSELECT6,
             });
           });
         } else {
@@ -19004,7 +19203,7 @@ export class CentralizedKernelWorker {
           // No timer — wakeAllBlockedRetries will trigger the retry.
           this.pendingSelectRetries.set(channel, {
             ...this.#cancellationPointIdentity(channel),
-            timer: null as any, channel, origArgs, deadline: -1,
+            timer: null as any, channel, origArgs, deadlineHintMs: -1,
             needsSignalSafeWake, syscallNr: SYS_PSELECT6,
           });
         }
@@ -19012,7 +19211,9 @@ export class CentralizedKernelWorker {
       }
 
       // For finite timeout with actual fds, track the deadline
-      const remainingMs = deadline > 0 ? Math.max(deadline - Date.now(), 1) : 50;
+      const retryMs = remainingMs === WAIT_REMAINING_INFINITE
+        ? 50
+        : Math.max(remainingMs, 1);
       entry.deferProtocolEffect(() => {
         const timer = this.#registerTimeout(() => {
           const pending = this.pendingSelectRetries.get(channel);
@@ -19020,10 +19221,12 @@ export class CentralizedKernelWorker {
           this.pendingSelectRetries.delete(channel);
           if (!this.isRegisteredChannel(channel)) return;
           this.retrySyscall(channel);
-        }, Math.min(remainingMs, 50));
+        }, Math.min(retryMs, 50));
         this.pendingSelectRetries.set(channel, {
           ...this.#cancellationPointIdentity(channel),
-          timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+          timer, channel, origArgs,
+          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
+          needsSignalSafeWake, syscallNr: SYS_PSELECT6,
         });
       });
       return;
@@ -19102,7 +19305,12 @@ export class CentralizedKernelWorker {
     let eventsPtr = 0;
     const maxevents = origArgs[2];
     const timeoutMs = origArgs[3];
-    const deadline = this.getReadinessDeadline(channel, timeoutMs);
+    const remainingMs = this.waitRemainingMs(
+      channel,
+      timeoutMs,
+      WAIT_KIND_EPOLL,
+      entry,
+    );
     // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
 
     if (maxevents <= 0) {
@@ -19240,7 +19448,7 @@ export class CentralizedKernelWorker {
       this.completeChannelRawAndRelisten(channel, 0, 0, entry);
       return;
     }
-    if (deadline > 0 && Date.now() >= deadline) {
+    if (remainingMs === 0) {
       // The nonblocking kernel poll above was the final readiness check.
       this.completeChannelRawAndRelisten(channel, 0, 0, entry);
       return;
@@ -19262,7 +19470,9 @@ export class CentralizedKernelWorker {
         entry,
       )
     ) return;
-    const retryMs = deadline > 0 ? Math.min(Math.max(deadline - Date.now(), 1), 10) : 10;
+    const retryMs = remainingMs === WAIT_REMAINING_INFINITE
+      ? 10
+      : Math.min(Math.max(remainingMs, 1), 10);
     entry.deferProtocolEffect(() => {
       const timer = this.#registerTimeout(() => {
         const pending = this.pendingPollRetries.get(channel);
@@ -19278,7 +19488,7 @@ export class CentralizedKernelWorker {
         channel,
         pipeIndices,
         acceptIndices,
-        deadline,
+        deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
       });
     });
   }
@@ -24705,16 +24915,32 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private cleanupPendingSignalWaits(pid: number): void {
-    for (const [key, entry] of this.pendingSignalWaits ?? []) {
-      if (entry.channel.pid !== pid) continue;
-      this.#cancelRegisteredTimeout(entry.timer);
+  private cleanupPendingSignalWaits(
+    pid: number,
+    kernelEntry?: KernelWorkerEntryContext,
+  ): void {
+    for (const [key, waiter] of this.pendingSignalWaits ?? []) {
+      if (waiter.channel.pid !== pid) continue;
+      this.#cancelRegisteredTimeout(waiter.timer);
       this.pendingSignalWaits.delete(key);
-      this.signalWaitDeadlines?.delete(key);
+      this.closeWaitDeadline(waiter.channel, kernelEntry);
     }
-    for (const [key, entry] of this.signalWaitDeadlines ?? []) {
-      if (entry.pid === pid) this.signalWaitDeadlines.delete(key);
-    }
+    // A wait the kernel still holds for a process that is going away would
+    // keep a deadline nothing can ever complete. Retiring by pid also catches
+    // any generation whose channel object is already unreachable from here.
+    this.#retireKernelWaitsForProcess(pid, kernelEntry);
+  }
+
+  /** Drop every kernel-owned wait deadline belonging to `pid`. */
+  #retireKernelWaitsForProcess(
+    pid: number,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+    const retire = instance?.exports.kernel_wait_retire_process as
+      | ((pid: number) => number)
+      | undefined;
+    if (typeof retire === "function") retire(pid);
   }
 
   /**
