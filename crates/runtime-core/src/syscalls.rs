@@ -43548,7 +43548,7 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
 
-        crate::mouse::inject_event(7, -3, 0b001);
+        crate::mouse::inject_event(7, 3, 0b001);
 
         let mut buf = [0u8; 3];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
@@ -43592,7 +43592,7 @@ impl HostIO for RelSymlinkMock {
         );
 
         // Buffered packet should be discarded on close.
-        crate::mouse::inject_event(1, 1, 0);
+        crate::mouse::inject_event(1, -1, 0);
         sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(crate::mouse::MICE_OWNER.load(Ordering::SeqCst), -1);
         assert!(
@@ -43615,7 +43615,7 @@ impl HostIO for RelSymlinkMock {
             proc.pid as i32
         );
 
-        crate::mouse::inject_event(2, 2, 0);
+        crate::mouse::inject_event(2, -2, 0);
         commit_exec_state(&mut proc, &mut host, 0).unwrap();
         assert_eq!(
             crate::mouse::MICE_OWNER.load(Ordering::SeqCst),
@@ -43642,7 +43642,7 @@ impl HostIO for RelSymlinkMock {
         let retained_fd = sys_fcntl(&mut proc, cloexec_fd, F_DUPFD, 2048).unwrap();
         assert_eq!(retained_fd, 2048);
 
-        crate::mouse::inject_event(7, -3, 1);
+        crate::mouse::inject_event(7, 3, 1);
         let pid = proc.pid;
         commit_exec_state(&mut proc, &mut host, pid).unwrap();
 
