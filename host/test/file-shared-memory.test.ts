@@ -133,14 +133,13 @@ function createFileHarness() {
     channels: [channels.get(pid)!],
   }]));
   const fdSupportsMmapWriteback = vi.fn(() => true);
-  const getFdAccessModeForSharedMapping = vi.fn(
-    () => ({ kind: "ok" as const, value: 2 }),
-  );
+  // `F_GETFL & O_ACCMODE` per fd. O_RDWR (2) unless a case says otherwise.
+  let fdAccessMode: (fd: number) => number = () => 2;
   // Kernel-owned (tmpfs/memfd) fd-writeback bridge: dup the guest fd into a
   // stable descriptor (deterministic fd+1000 here) and record closes.
   const dupWritebackFd = vi.fn((_pid: number, fd: number) => fd + 1000);
   const closeWritebackFd = vi.fn();
-  const getFdStatForSharedMapping = vi.fn(
+  const sharedMappingFdFacts = vi.fn(
     (_channel: unknown, fd: number) => {
       return fdHostHandles.has(fd)
         ? {
@@ -151,6 +150,7 @@ function createFileHarness() {
               size: logicalSize,
               mode: REGULAR_MODE,
               hostHandle: fdHostHandles.get(fd)!,
+              accessMode: fdAccessMode(fd),
             },
           }
         : { kind: "error" as const, errno: 9 };
@@ -177,8 +177,7 @@ function createFileHarness() {
   kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   kw.testAuthority.configureScratchBoundaryHooksForTest({
     fdSupportsMmapWriteback,
-    getFdAccessModeForSharedMapping,
-    getFdStatForSharedMapping,
+    sharedMappingFdFacts,
     getFdPathForSharedMapping,
     dupWritebackFd,
     closeWritebackFd,
@@ -220,9 +219,9 @@ function createFileHarness() {
     fdHostHandles,
     fdIdentity,
     fdSupportsMmapWriteback,
-    getFdAccessModeForSharedMapping,
     getFdPathForSharedMapping,
-    getFdStatForSharedMapping,
+    sharedMappingFdFacts,
+    setFdAccessMode: (next: (fd: number) => number) => { fdAccessMode = next; },
     io,
     kernel,
     kw,
@@ -289,9 +288,10 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.open).not.toHaveBeenCalled();
     expect(h.retainHostFileHandle).toHaveBeenCalledOnce();
     expect(h.retainHostFileHandle).toHaveBeenCalledWith(100);
-    expect(h.getFdStatForSharedMapping).toHaveBeenCalledTimes(1);
+    // One descriptor-facts query answers identity, access mode, and host-handle
+    // ownership together; the two separate kernel re-entries are gone.
+    expect(h.sharedMappingFdFacts).toHaveBeenCalledTimes(1);
     expect(h.getFdPathForSharedMapping).not.toHaveBeenCalled();
-    expect(h.getFdAccessModeForSharedMapping).toHaveBeenCalledTimes(1);
   });
 
   it("reserves a same-file backing across MAP_FIXED replacement cleanup", () => {
@@ -895,10 +895,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(readFailure.close).not.toHaveBeenCalled();
 
     const writeOnly = createFileHarness();
-    writeOnly.getFdAccessModeForSharedMapping.mockReturnValue({
-      kind: "ok",
-      value: 1,
-    });
+    writeOnly.setFdAccessMode(() => 1);
     expect(writeOnly.mapResult(writeOnly.pids[0], 4, 0x1000, 4096, PROT_READ))
       .toEqual({ kind: "error", errno: 13 });
     expect(writeOnly.retainHostFileHandle).not.toHaveBeenCalled();
@@ -912,7 +909,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
     for (const errno of [24, 2, 30]) {
       const h = createFileHarness();
-      h.getFdStatForSharedMapping.mockReturnValueOnce({
+      h.sharedMappingFdFacts.mockReturnValueOnce({
         kind: "error",
         errno,
       });
@@ -974,9 +971,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
   it("replaces one retained O_RDONLY handle with a distinct O_RDWR handle", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
-    h.getFdAccessModeForSharedMapping.mockImplementation(
-      (_channel: unknown, fd: number) => ({ kind: "ok", value: fd === 4 ? 0 : 2 }),
-    );
+    h.setFdAccessMode((fd) => (fd === 4 ? 0 : 2));
 
     expect(h.map(pid, 4, 0x1000, 4096, PROT_READ)).toBe(true);
     const backing = Array.from((h.kw as any).sharedMmapBackings.values())[0];
@@ -997,9 +992,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     let accessMode = 0;
-    h.getFdAccessModeForSharedMapping.mockImplementation(
-      () => ({ kind: "ok", value: accessMode }),
-    );
+    h.setFdAccessMode(() => accessMode);
 
     expect(h.map(pid, 4, 0x1000, 4096, PROT_READ)).toBe(true);
     accessMode = 2;
@@ -1013,7 +1006,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
     expect(h.map(pid, 4, 0x1000)).toBe(true);
-    const stat = h.getFdStatForSharedMapping;
+    const stat = h.sharedMappingFdFacts;
     const callsBefore = stat.mock.calls.length;
 
     expect((h.kw as any).findSharedMmapBackingForFd(h.channels.get(pid), 77))
@@ -1384,7 +1377,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     // fd (pread) and its writes flush back to the same kernel-owned file via
     // the guest fd (pwrite) at msync/munmap/exec/teardown. The kernel-owned
     // file itself is the shared backing store, so no host handle is retained.
-    h.getFdStatForSharedMapping.mockReturnValue({
+    h.sharedMappingFdFacts.mockReturnValue({
       kind: "ok",
       value: {
         dev: 0n,
@@ -1392,6 +1385,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
         size: h.logicalSize(),
         mode: REGULAR_MODE,
         hostHandle: null,
+        accessMode: 2,
       },
     });
     expect(h.mapResult(h.pids[0], 4, 0x1000)).toEqual({ kind: "mapped" });
@@ -1408,7 +1402,8 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
   it("still rejects a writable kernel-owned mapping without an O_RDWR fd", () => {
     const h = createFileHarness();
-    h.getFdStatForSharedMapping.mockReturnValue({
+    // O_RDONLY (0): a writable MAP_SHARED requires a read+write descriptor.
+    h.sharedMappingFdFacts.mockReturnValue({
       kind: "ok",
       value: {
         dev: 0n,
@@ -1416,10 +1411,9 @@ describe("file/POSIX MAP_SHARED page cache", () => {
         size: h.logicalSize(),
         mode: REGULAR_MODE,
         hostHandle: null,
+        accessMode: 0,
       },
     });
-    // O_RDONLY (0): a writable MAP_SHARED requires a read+write descriptor.
-    h.getFdAccessModeForSharedMapping.mockReturnValue({ kind: "ok", value: 0 });
     expect(h.mapResult(h.pids[0], 4, 0x1000))
       .toEqual({ kind: "error", errno: 13 });
     expect((h.kw as any).sharedMappings.size).toBe(0);
@@ -1427,14 +1421,13 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
   it("read-only MAP_SHARED of a kernel-owned file rejects an O_WRONLY fd", () => {
     const h = createFileHarness();
-    h.getFdStatForSharedMapping.mockReturnValue({
+    h.sharedMappingFdFacts.mockReturnValue({
       kind: "ok",
       value: {
         dev: 0n, ino: 1n, size: h.logicalSize(), mode: REGULAR_MODE,
-        hostHandle: null,
+        hostHandle: null, accessMode: 1,
       },
     });
-    h.getFdAccessModeForSharedMapping.mockReturnValue({ kind: "ok", value: 1 });
     // PROT_READ only (read-only mapping) still requires a readable descriptor.
     expect(h.mapResult(h.pids[0], 4, 0x1000, 4096, PROT_READ))
       .toEqual({ kind: "error", errno: 13 });
@@ -1442,9 +1435,12 @@ describe("file/POSIX MAP_SHARED page cache", () => {
 
   // Model a kernel-owned (tmpfs/memfd) regular file of a chosen size.
   const asKernelOwnedFile = (h: FileHarness, size: number) =>
-    h.getFdStatForSharedMapping.mockReturnValue({
+    h.sharedMappingFdFacts.mockReturnValue({
       kind: "ok",
-      value: { dev: 0n, ino: 1n, size, mode: REGULAR_MODE, hostHandle: null },
+      value: {
+        dev: 0n, ino: 1n, size, mode: REGULAR_MODE,
+        hostHandle: null, accessMode: 2,
+      },
     });
 
   it("M2: fd-writeback rides a stable dup so it survives close(fd)", () => {
@@ -1563,7 +1559,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     });
     new Uint8Array(h.memories.get(pid)!.buffer)[addr + 5] = 0xab;
     // The guest closed the (guest-visible) writeback dup: fstat now fails.
-    h.getFdStatForSharedMapping.mockReturnValue({ kind: "error", errno: 9 });
+    h.sharedMappingFdFacts.mockReturnValue({ kind: "error", errno: 9 });
     // Flush is refused (EIO) and never pwrites to a possibly-reused number.
     expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
       .toBe(false);
@@ -1582,9 +1578,12 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     });
     new Uint8Array(h.memories.get(pid)!.buffer)[addr + 5] = 0xab;
     // dup2 rebound the number onto a different file (different ino).
-    h.getFdStatForSharedMapping.mockReturnValue({
+    h.sharedMappingFdFacts.mockReturnValue({
       kind: "ok",
-      value: { dev: 0n, ino: 999n, size: 4096, mode: REGULAR_MODE, hostHandle: null },
+      value: {
+        dev: 0n, ino: 999n, size: 4096, mode: REGULAR_MODE,
+        hostHandle: null, accessMode: 2,
+      },
     });
     // Refused: pwriting here would corrupt the unrelated file.
     expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
@@ -1632,7 +1631,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       h.channels.get(pid), ABI_SYSCALLS.Open, [0, 0], 4, 0,
     );
 
-    expect(h.getFdStatForSharedMapping).not.toHaveBeenCalled();
+    expect(h.sharedMappingFdFacts).not.toHaveBeenCalled();
     expect(h.getFdPathForSharedMapping).not.toHaveBeenCalled();
     expect(h.io.read).not.toHaveBeenCalled();
     expect(h.io.write).not.toHaveBeenCalled();

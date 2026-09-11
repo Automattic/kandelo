@@ -10351,6 +10351,50 @@ pub fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
         && (ofd.status_flags() & O_ACCMODE) == O_RDWR
 }
 
+/// Report every fact a MAP_SHARED file mapping needs about `fd`, from the one
+/// place that owns them.
+///
+/// WHY: the host's shared-mapping layer needs the descriptor's `fstat`
+/// identity, its access mode, and — for a host-backed regular file — the host
+/// handle its byte store is keyed on. All three are already in this OFD. The
+/// host previously re-derived them by assembling a synthetic `fstat` channel,
+/// re-entering `kernel_handle_channel`, snooping the kernel's own `host_fstat`
+/// call through a begin/finish capture side-channel to recover the handle, then
+/// assembling a second synthetic channel for `F_GETFL`. That was two kernel
+/// re-entries and a side-channel to learn what one lookup knows.
+///
+/// `has_host_handle` is a statement about ownership, not about which `fstat`
+/// branch answered: a `FileType::Regular` descriptor carries a non-negative
+/// `host_handle` exactly when the host owns its bytes. Every kernel-owned
+/// regular file — tmpfs, memfd, the rootfs overlay, procfs buffers, synthetic
+/// regulars — is encoded in a negative handle band, and those are the
+/// descriptors that have no persistent host handle to anchor a byte-store
+/// backing on.
+pub fn shared_mapping_fd_facts(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<wasm_posix_shared::KernelSharedMappingFdFacts, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let host_backed = ofd.file_type == FileType::Regular && ofd.host_handle >= 0;
+    let host_handle = ofd.host_handle;
+    let access_mode = ofd.status_flags() & O_ACCMODE;
+
+    let stat = sys_fstat(proc, host, fd)?;
+
+    Ok(wasm_posix_shared::KernelSharedMappingFdFacts {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+        size: stat.st_size,
+        host_handle: if host_backed { host_handle } else { 0 },
+        mode: stat.st_mode,
+        access_mode,
+        has_host_handle: u32::from(host_backed),
+        _pad: 0,
+    })
+}
+
 /// mmap -- supports anonymous, file-backed MAP_PRIVATE and MAP_SHARED mappings.
 /// File-backed mappings are allocated as anonymous regions; the host populates
 /// them from the file and (for MAP_SHARED) writes back on msync/munmap.
@@ -29340,6 +29384,52 @@ mod tests {
         assert!(!fd_supports_mmap_writeback(&proc, device));
         assert!(!fd_supports_mmap_writeback(&proc, directory));
         assert!(!fd_supports_mmap_writeback(&proc, 999));
+    }
+
+    #[test]
+    fn shared_mapping_fd_facts_reports_identity_access_and_handle_ownership() {
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        host.stat_size = 8192;
+
+        // A host-backed regular file: the mapping layer may key a byte-store
+        // backing on the concrete handle.
+        let host_fd = sys_open(&mut proc, &mut host, b"/tmp/facts-host", 0x42, 0o644).unwrap();
+        let host_handle = {
+            let entry = proc.fd_table.get(host_fd).unwrap();
+            proc.ofd_table.get(entry.ofd_ref.0).unwrap().host_handle
+        };
+        assert!(host_handle >= 0);
+
+        let facts = shared_mapping_fd_facts(&proc, &mut host, host_fd).unwrap();
+        let stat = sys_fstat(&proc, &mut host, host_fd).unwrap();
+        assert_eq!(facts.dev, stat.st_dev);
+        assert_eq!(facts.ino, stat.st_ino);
+        assert_eq!(facts.size, stat.st_size);
+        assert_eq!(facts.mode, stat.st_mode);
+        assert_eq!(facts.access_mode, O_RDWR);
+        assert_eq!(facts.has_host_handle, 1);
+        assert_eq!(facts.host_handle, host_handle);
+
+        // A kernel-owned regular file (memfd): fstat completes in the kernel,
+        // so there is no persistent host handle to anchor a backing on.
+        let memfd = sys_memfd_create(&mut proc, b"facts-memfd", 0).unwrap();
+        let memfd_facts = shared_mapping_fd_facts(&proc, &mut host, memfd).unwrap();
+        assert_eq!(memfd_facts.has_host_handle, 0);
+        assert_eq!(memfd_facts.host_handle, 0);
+        assert_eq!(memfd_facts.mode & S_IFMT, S_IFREG);
+        assert_eq!(memfd_facts.access_mode, O_RDWR);
+
+        // The access mode is the descriptor's, not the file's.
+        let rdonly_fd = sys_open(&mut proc, &mut host, b"/tmp/facts-host", O_RDONLY, 0).unwrap();
+        let rdonly = shared_mapping_fd_facts(&proc, &mut host, rdonly_fd).unwrap();
+        assert_eq!(rdonly.access_mode, O_RDONLY);
+        assert_eq!(rdonly.has_host_handle, 1);
+
+        assert_eq!(
+            shared_mapping_fd_facts(&proc, &mut host, 999).unwrap_err(),
+            Errno::EBADF
+        );
     }
 
     #[test]

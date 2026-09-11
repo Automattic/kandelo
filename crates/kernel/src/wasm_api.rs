@@ -3219,6 +3219,46 @@ pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
     }
 }
 
+/// Write the `fstat` identity, access mode, and host-handle ownership of `fd`
+/// into `out_ptr` as one `KernelSharedMappingFdFacts` record.
+///
+/// WHY: these are the facts a MAP_SHARED file mapping is built from, and the
+/// kernel already holds every one of them in the descriptor's OFD. Answering
+/// them here replaces two host-assembled synthetic syscall channels and the
+/// `host_fstat` capture side-channel the host used to recover the handle.
+///
+/// Returns 0 on success, `-ESRCH` when `pid` is absent, `-EFAULT` for a null
+/// output pointer, `-EINVAL` for a mis-sized output region, and the negated
+/// errno `fstat(2)` would report for any other failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_fd_facts(
+    pid: u32,
+    fd: i32,
+    out_ptr: *mut wasm_posix_shared::KernelSharedMappingFdFacts,
+    out_capacity: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity != wasm_posix_shared::KERNEL_SHARED_MAPPING_FD_FACTS_SIZE {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match syscalls::shared_mapping_fd_facts(proc, &mut host, fd) {
+        Ok(facts) => {
+            unsafe {
+                core::ptr::write_unaligned(out_ptr, facts);
+            }
+            0
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Snapshot the process table for the host (Kandelo Inspector → Procs tab,
 /// and any host that wants a `ps`-equivalent view without spawning a user
 /// process). Walks every active pid and writes a compact, length-prefixed

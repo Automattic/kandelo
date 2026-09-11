@@ -9,10 +9,6 @@ import {
   KernelEntryGate,
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
-import {
-  createWasmPosixKernelTestHarness,
-  WasmPosixKernel,
-} from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import {
   ABI_SYSCALLS,
@@ -30,6 +26,14 @@ import {
   IOCTL_REQUESTS,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
   KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
+  KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
+  STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
   POSIX_IOV_MAX,
   POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
@@ -1024,52 +1028,56 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(sendSignalToProcess).not.toHaveBeenCalled();
   });
 
-  it("releases fstat capture and preserves a fatal export failure", () => {
+  it("releases the fd-facts query and preserves a fatal export failure", () => {
     const harness = makeScratchHarness();
     const kernelMemory = harness.kernelMemory;
-    const fstat = vi.fn(() => ({
-      dev: 11n,
-      ino: 22n,
-      mode: 0o100644,
-      nlink: 1,
-      uid: 2,
-      gid: 3,
-      size: 4096,
-      atimeMs: 1000,
-      mtimeMs: 2000,
-      ctimeMs: 3000,
-    }));
-    const kernel = createWasmPosixKernelTestHarness({
-      io: { fstat } as never,
-      memory: kernelMemory,
-      pointerWidth: 4,
-    }) as WasmPosixKernel & Record<string, any>;
-    harness.worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
 
+    // `kernel_shared_mapping_fd_facts` answers identity, access mode, and
+    // host-handle ownership in one record. The host previously re-derived all
+    // three: a synthetic fstat channel, a `host_fstat` capture side-channel to
+    // recover the handle, and a second synthetic channel for `F_GETFL`.
     let hostHandle = 501;
-    harness.handleChannel.mockImplementation((offset: number | bigint) => {
-      const channelView = new DataView(
+    const fdFacts = vi.fn((_pid: number, _fd: number, ptr: number | bigint) => {
+      const view = new DataView(
         kernelMemory.buffer,
-        Number(offset),
-        CH_TOTAL_SIZE,
+        Number(ptr),
+        STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
       );
-      expect(channelView.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Fstat);
-      const statPointer = channelView.getBigUint64(CH_ARGS + CH_ARG_SIZE, true);
-      expect(
-        kernel.testAuthority.hostFstat(
-          BigInt(hostHandle),
-          kernel.toKernelPtr(statPointer),
-        ),
-      ).toBe(0);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
+      view.setBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET, 11n, true);
+      view.setBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET, 22n, true);
+      view.setBigUint64(
+        KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
+        4096n,
+        true,
+      );
+      view.setBigInt64(
+        KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+        BigInt(hostHandle),
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET,
+        0o100644,
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+        2,
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+        1,
+        true,
+      );
       return 0;
     });
+    harness.kernelExports.kernel_shared_mapping_fd_facts = fdFacts;
 
-    const capture = () =>
-      harness.worker.getFdStatForSharedMapping(harness.channel, 7);
+    const query = () =>
+      harness.worker.sharedMappingFdFacts(harness.channel, 7);
 
-    expect(capture()).toEqual({
+    expect(query()).toEqual({
       kind: "ok",
       value: {
         dev: 11n,
@@ -1077,39 +1085,39 @@ describe("kernel scratch transfer capacity regressions", () => {
         mode: 0o100644,
         size: 4096,
         hostHandle: 501,
+        accessMode: 2,
       },
     });
     expect(harness.worker.currentHandlePid).toBe(0);
 
-    const cause = new Error("synthetic handleChannel failure");
-    harness.handleChannel.mockImplementationOnce(() => {
+    const cause = new Error("synthetic fd-facts failure");
+    fdFacts.mockImplementationOnce(() => {
       throw cause;
     });
     let exportFailure: unknown;
     try {
-      capture();
+      query();
     } catch (error) {
       exportFailure = error;
     }
     expect(exportFailure).toMatchObject({
-      message: "kernel export kernel_handle_channel failed",
+      message: "kernel export kernel_shared_mapping_fd_facts failed",
     });
     expect((exportFailure as { cause?: unknown }).cause).toBe(cause);
     expect(harness.worker.currentHandlePid).toBe(0);
 
-    // A thrown kernel export poisons this generation. Capture cleanup restores
-    // host state, but the exact fatal value must escape this catch and every
-    // later entry instead of being downgraded to a recoverable EIO.
+    // A thrown kernel export poisons this generation. The query restores host
+    // state, but the exact fatal value must escape this catch and every later
+    // entry instead of being downgraded to a recoverable EIO.
     hostHandle = 502;
     let repeatedFailure: unknown;
     try {
-      capture();
+      query();
     } catch (error) {
       repeatedFailure = error;
     }
     expect(repeatedFailure).toBe(exportFailure);
-    expect(fstat).toHaveBeenNthCalledWith(1, 501);
-    expect(fstat).toHaveBeenCalledTimes(1);
+    expect(fdFacts).toHaveBeenCalledTimes(2);
   });
 
   it("chunks PTY input at the exact scratch capacity and capacity + 1", () => {

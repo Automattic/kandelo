@@ -910,11 +910,6 @@ export class WasmPosixKernel {
     number,
     { mappingRefs: number; descriptorClosePending: boolean }
   >();
-  /** Active synchronous host_fstat capture used by mmap preflight. */
-  private fstatHandleCapture: {
-    token: object;
-    handle: number | null;
-  } | null = null;
   /**
    * Live `/dev/fb0` mappings the kernel has reported via
    * `host_bind_framebuffer`. Renderers (canvas in browser, no-op in
@@ -1201,36 +1196,6 @@ export class WasmPosixKernel {
       throw new KernelScratchError(`${field} exceeds its declared capacity`);
     }
     return { offset, length, end };
-  }
-
-  /**
-   * Begin capturing the concrete host handle used by one synchronous fstat.
-   *
-   * WHY: the worker must invoke the kernel export directly inside its active
-   * scratch lease; accepting an opaque callback here would let a primitive
-   * scratch address cross a boundary that cannot revoke it. The token makes
-   * the begin/finish pair exact while a `finally` at the caller preserves the
-   * synchronous capture lifetime.
-   */
-  beginFstatHandleCapture(): object {
-    if (this.fstatHandleCapture) {
-      throw new Error("nested host fstat handle capture");
-    }
-    const token = {};
-    this.fstatHandleCapture = { token, handle: null };
-    return token;
-  }
-
-  /**
-   * Finish the exact synchronous fstat capture started by the matching token.
-   */
-  finishFstatHandleCapture(token: object): number | null {
-    const capture = this.fstatHandleCapture;
-    if (!capture || capture.token !== token) {
-      throw new Error("mismatched host fstat handle capture");
-    }
-    this.fstatHandleCapture = null;
-    return capture.handle;
   }
 
   /** Retain one mapping-owned reference to an existing host file handle. */
@@ -3246,7 +3211,6 @@ export class WasmPosixKernel {
     try {
       const stat = this.io.fstat(h);
       this.#writeStatToMemory(destination, stat);
-      if (this.fstatHandleCapture) this.fstatHandleCapture.handle = h;
       return 0;
     } catch (e) {
       return negErrno(e);

@@ -1849,6 +1849,40 @@ pub struct KernelWaitResult {
 
 pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
 
+/// Fixed record written by `kernel_shared_mapping_fd_facts`.
+///
+/// Everything here is already kernel state: the descriptor's `fstat` identity,
+/// its access mode, and whether it is backed by a host file handle the host may
+/// address directly. The host used to re-derive all of it by re-entering the
+/// kernel with a synthetic `fstat` channel and a second synthetic `F_GETFL`
+/// channel, then recovering the handle by snooping the kernel's own `host_fstat`
+/// call. One record answers all three questions at their source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KernelSharedMappingFdFacts {
+    /// `st_dev` of the descriptor.
+    pub dev: u64,
+    /// `st_ino` of the descriptor.
+    pub ino: u64,
+    /// `st_size` of the descriptor.
+    pub size: u64,
+    /// Host file handle backing the descriptor. Meaningful only when
+    /// `has_host_handle` is non-zero.
+    pub host_handle: i64,
+    /// `st_mode` of the descriptor.
+    pub mode: u32,
+    /// `F_GETFL & O_ACCMODE` for the descriptor.
+    pub access_mode: u32,
+    /// 1 when the descriptor is a regular file whose bytes live behind a host
+    /// handle, 0 when the kernel owns them itself (tmpfs, memfd, rootfs
+    /// overlay, procfs, synthetic regulars).
+    pub has_host_handle: u32,
+    pub _pad: u32,
+}
+
+pub const KERNEL_SHARED_MAPPING_FD_FACTS_SIZE: u32 =
+    core::mem::size_of::<KernelSharedMappingFdFacts>() as u32;
+
 /// Fixed host/kernel records borrowed through kernel-owned scratch.
 ///
 /// These are representation limits, not public POSIX limits. Keeping them in
@@ -1916,6 +1950,20 @@ mod wait_abi_tests {
         assert_eq!(offset_of!(WasmRusageWire, ru_stime_sec), 16);
         assert_eq!(offset_of!(WasmRusageWire, ru_maxrss), 32);
         assert_eq!(offset_of!(WasmRusageWire, ru_nivcsw), 136);
+    }
+
+    #[test]
+    fn kernel_shared_mapping_fd_facts_layout_is_stable() {
+        use super::{KernelSharedMappingFdFacts, KERNEL_SHARED_MAPPING_FD_FACTS_SIZE};
+        assert_eq!(KERNEL_SHARED_MAPPING_FD_FACTS_SIZE, 48);
+        assert_eq!(size_of::<KernelSharedMappingFdFacts>(), 48);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, dev), 0);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, ino), 8);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, size), 16);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, host_handle), 24);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, mode), 32);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, access_mode), 36);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, has_host_handle), 40);
     }
 
     #[test]

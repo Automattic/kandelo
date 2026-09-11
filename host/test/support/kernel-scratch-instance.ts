@@ -244,6 +244,12 @@ function signatures(
       parameters: [i32, i32, pointer],
       result: i64,
     },
+    // Descriptor facts a MAP_SHARED file mapping is built from
+    // (pid, fd, out_ptr, out_capacity) -> 0 | -errno.
+    kernel_shared_mapping_fd_facts: {
+      parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
     // SysV shared-memory byte-coherence mirror. The mirror is Rust-owned;
     // these are the host's entry points into it.
     kernel_shared_mapping_sysv_active_pid_count: {

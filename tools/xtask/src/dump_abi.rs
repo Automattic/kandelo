@@ -3696,6 +3696,39 @@ fn render_ts_module() -> String {
         offset_of!(shared::KernelWaitResult, rusage)
     ));
 
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS = {} as const;\n",
+        size_of::<shared::KernelSharedMappingFdFacts>()
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, dev)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, ino)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, size)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, host_handle)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, mode)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, access_mode)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET = {} as const;\n\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, has_host_handle)
+    ));
+
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
     for syscall in host_intercepted_syscall_metadata() {
         out.push_str(&format!(

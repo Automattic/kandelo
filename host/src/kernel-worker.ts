@@ -129,6 +129,13 @@ import {
   KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
   KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
   KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
   KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
@@ -186,6 +193,7 @@ import {
   SPAWN_WIRE_MAX_BYTES,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
+  STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
   STRUCT_SIZE_KERNEL_WAIT_RESULT,
   STRUCT_SIZE_WASM_RUSAGE_WIRE,
   STRUCT_SIZE_WASM_STAT,
@@ -1599,13 +1607,22 @@ interface SharedMmapMapping {
   expectedIno?: bigint;
 }
 
-interface SharedMmapFdStat {
+/**
+ * Every fact a MAP_SHARED file mapping needs about one descriptor, answered by
+ * the kernel in a single call.
+ */
+interface SharedMmapFdFacts {
   dev: bigint;
   ino: bigint;
   size: number;
   mode: number;
-  /** Concrete host handle used by fstat, or null for kernel-owned files. */
+  /**
+   * Concrete host handle backing the file, or null when the kernel owns its
+   * bytes itself (tmpfs, memfd, rootfs overlay, procfs, synthetic regulars).
+   */
   hostHandle: number | null;
+  /** `F_GETFL & O_ACCMODE` for the descriptor. */
+  accessMode: number;
 }
 
 interface SharedMmapBacking {
@@ -2309,18 +2326,14 @@ interface ScratchBoundaryTestHooks {
     pid: number,
     fd: number,
   ) => boolean;
-  readonly getFdStatForSharedMapping?: (
-    channel: Pick<ChannelInfo, "pid" | "memory" | "channelOffset">,
+  readonly sharedMappingFdFacts?: (
+    channel: Pick<ChannelInfo, "pid">,
     fd: number,
-  ) => SharedMmapHostResult<SharedMmapFdStat>;
+  ) => SharedMmapHostResult<SharedMmapFdFacts>;
   readonly getFdPathForSharedMapping?: (
     channel: Pick<ChannelInfo, "pid">,
     fd: number,
   ) => SharedMmapHostResult<string>;
-  readonly getFdAccessModeForSharedMapping?: (
-    channel: Pick<ChannelInfo, "pid" | "memory" | "channelOffset">,
-    fd: number,
-  ) => SharedMmapHostResult<number>;
   readonly dupWritebackFd?: (pid: number, fd: number) => number | null;
   readonly closeWritebackFd?: (pid: number, writebackFd: number) => void;
   readonly pwriteFromProcessMemory?: (
@@ -3593,15 +3606,12 @@ export class CentralizedKernelWorker {
           fdSupportsMmapWriteback:
             options.fdSupportsMmapWriteback
               ?? previous?.fdSupportsMmapWriteback,
-          getFdStatForSharedMapping:
-            options.getFdStatForSharedMapping
-              ?? previous?.getFdStatForSharedMapping,
+          sharedMappingFdFacts:
+            options.sharedMappingFdFacts
+              ?? previous?.sharedMappingFdFacts,
           getFdPathForSharedMapping:
             options.getFdPathForSharedMapping
               ?? previous?.getFdPathForSharedMapping,
-          getFdAccessModeForSharedMapping:
-            options.getFdAccessModeForSharedMapping
-              ?? previous?.getFdAccessModeForSharedMapping,
           dupWritebackFd:
             options.dupWritebackFd ?? previous?.dupWritebackFd,
           closeWritebackFd:
@@ -25934,9 +25944,9 @@ export class CentralizedKernelWorker {
     const fileOffset = Number(fileOffsetBig);
     const writable = (origArgs[2] & PROT_WRITE) !== 0;
 
-    const statResult = this.getFdStatForSharedMapping(channel, fd, entry);
-    if (statResult.kind === "error") return statResult;
-    const stat = statResult.value;
+    const factsResult = this.sharedMappingFdFacts(channel, fd, entry);
+    if (factsResult.kind === "error") return factsResult;
+    const stat = factsResult.value;
     if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
       return { kind: "unsupported" };
     }
@@ -25958,13 +25968,7 @@ export class CentralizedKernelWorker {
       // requires a *readable* descriptor (POSIX), so an O_WRONLY fd is EACCES
       // rather than a silently zero-filled "success".
       if (!writable) {
-        const readAccess = this.getFdAccessModeForSharedMapping(
-          channel,
-          fd,
-          entry,
-        );
-        if (readAccess.kind === "error") return readAccess;
-        if (readAccess.value === O_WRONLY) {
+        if (stat.accessMode === O_WRONLY) {
           return { kind: "error", errno: EACCES };
         }
         return { kind: "unsupported" };
@@ -25988,13 +25992,7 @@ export class CentralizedKernelWorker {
       // because those files have no host handle. This path does not write to
       // host storage — it writes back to the kernel-owned file through the
       // guest's own fd, so the file itself is the backing store.
-      const fdAccess = this.getFdAccessModeForSharedMapping(
-        channel,
-        fd,
-        entry,
-      );
-      if (fdAccess.kind === "error") return fdAccess;
-      if (fdAccess.value !== O_RDWR) return { kind: "error", errno: EACCES };
+      if (stat.accessMode !== O_RDWR) return { kind: "error", errno: EACCES };
       return {
         kind: "fd-writeback",
         context: {
@@ -26007,13 +26005,7 @@ export class CentralizedKernelWorker {
         },
       };
     }
-    const accessResult = this.getFdAccessModeForSharedMapping(
-      channel,
-      fd,
-      entry,
-    );
-    if (accessResult.kind === "error") return accessResult;
-    const accessMode = accessResult.value;
+    const accessMode = stat.accessMode;
     // POSIX file mappings require a readable descriptor. A shared writable
     // mapping additionally requires O_RDWR; the kernel's capability export
     // confirms that writes reach persistent host storage rather than a device
@@ -26395,7 +26387,7 @@ export class CentralizedKernelWorker {
     // post-mmap ftruncate-larger is honored) AND its identity. Because the dup
     // is a guest-visible fd number, verify it still refers to this mapping's
     // file before any pwrite.
-    const liveStat = this.getFdStatForSharedMapping(channel, writebackFd, entry);
+    const liveStat = this.sharedMappingFdFacts(channel, writebackFd, entry);
     if (liveStat.kind !== "ok") {
       // The descriptor is gone (guest closed it, e.g. closefrom). Refuse the
       // flush truthfully instead of pwriting to a possibly-reused number.
@@ -26472,7 +26464,7 @@ export class CentralizedKernelWorker {
 
   /** Resolve a backend-qualified identity from the live handle, never its path. */
   private resolveSharedMmapBackingKey(
-    stat: SharedMmapFdStat,
+    stat: SharedMmapFdFacts,
     handle: number,
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<string> {
@@ -26493,67 +26485,61 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private getFdStatForSharedMapping(
-    channel: Pick<ChannelInfo, "pid" | "memory" | "channelOffset">,
+  /**
+   * Read the `fstat` identity, access mode, and host-handle ownership of `fd`
+   * from the kernel, which owns all three in the descriptor's open file
+   * description.
+   *
+   * WHY one call: the host used to assemble a synthetic `fstat` syscall
+   * channel, re-enter `kernel_handle_channel`, recover the concrete host
+   * handle by snooping the kernel's own `host_fstat` call through a
+   * begin/finish capture side-channel, and then assemble a second synthetic
+   * channel for `F_GETFL`. Two kernel re-entries and a side-channel to learn
+   * what one descriptor lookup already knows. `kernel_shared_mapping_fd_facts`
+   * answers it at the source.
+   *
+   * There is no signal-termination check here, unlike the synthetic-channel
+   * form this replaces: a metadata query the host makes on its own behalf is
+   * not a syscall the guest issued, so it has no interruption point. The
+   * `EINTR` the old path could produce was an artifact of re-entering the
+   * channel dispatcher, not POSIX `mmap` behavior.
+   */
+  private sharedMappingFdFacts(
+    channel: Pick<ChannelInfo, "pid">,
     fd: number,
     entry?: KernelWorkerEntryContext,
-  ): SharedMmapHostResult<SharedMmapFdStat> {
-    const testHook =
-      this.#scratchBoundaryTestHooks?.getFdStatForSharedMapping;
+  ): SharedMmapHostResult<SharedMmapFdFacts> {
+    const testHook = this.#scratchBoundaryTestHooks?.sharedMappingFdFacts;
     if (testHook) return testHook(channel, fd);
+    const exported = this.#kernelInstanceForEntry(entry).exports
+      .kernel_shared_mapping_fd_facts;
+    if (typeof exported !== "function") {
+      throw new Error("Kernel lacks the shared-mapping fd-facts export");
+    }
     const previousPid = this.currentHandlePid;
-    let captured: {
-      result: number;
-      errno: number;
-      dev: bigint;
-      ino: bigint;
-      mode: number;
-      size64: bigint;
-      hostHandle: number | null;
-    };
+    let output: { result: number; bytes: Uint8Array };
     try {
-      this.#bindKernelTidForChannel(channel as ChannelInfo, entry);
       this.currentHandlePid = channel.pid;
-      captured = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Fstat, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-        lease.writeAddress(
-          CH_ARGS + CH_ARG_SIZE,
-          CH_DATA,
-          STRUCT_SIZE_WASM_STAT,
-          "u64-le",
+      output = this.#requireMainScratchRegion().withLease((lease) => {
+        const result = this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_shared_mapping_fd_facts",
+          [
+            channel.pid,
+            fd,
+            lease.exportPointer(
+              0,
+              STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
+            ),
+            STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
+          ],
         );
-        for (let i = 2; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        const captureToken = this.#kernel.beginFstatHandleCapture();
-        let hostHandle: number | null = null;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              0n,
-            ],
-          );
-        } finally {
-          hostHandle = this.#kernel.finishFstatHandleCapture(captureToken);
-        }
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        const statView = lease.dataView(CH_DATA, STRUCT_SIZE_WASM_STAT);
         return {
-          result: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errno: resultView.getUint32(CH_ERRNO, true),
-          dev: statView.getBigUint64(0, true),
-          ino: statView.getBigUint64(8, true),
-          mode: statView.getUint32(16, true),
-          size64: statView.getBigUint64(32, true),
-          hostHandle,
+          result,
+          bytes: result === 0
+            ? lease.copyOut(0, STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS)
+            : new Uint8Array(0),
         };
       });
     } catch (error) {
@@ -26562,27 +26548,41 @@ export class CentralizedKernelWorker {
     } finally {
       this.currentHandlePid = previousPid;
     }
-    if (this.#finishSignalTermination(channel as ChannelInfo, entry)) {
-      return { kind: "error", errno: EINTR_ERRNO };
+    if (output.result !== 0) {
+      return { kind: "error", errno: (-output.result) >>> 0 || EIO };
     }
-    const { result, errno, dev, ino, mode, size64, hostHandle } = captured;
-    if (result !== 0 || errno !== 0) {
-      return {
-        kind: "error",
-        errno: errno || (result < -1 ? -result : EIO),
-      };
-    }
-
+    const view = new DataView(
+      output.bytes.buffer,
+      output.bytes.byteOffset,
+      output.bytes.byteLength,
+    );
+    const size64 = view.getBigUint64(
+      KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
+      true,
+    );
+    const hasHostHandle = view.getUint32(
+      KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+      true,
+    ) !== 0;
     return {
       kind: "ok",
       value: {
-        dev,
-        ino,
+        dev: view.getBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET, true),
+        ino: view.getBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET, true),
         size: size64 > BigInt(Number.MAX_SAFE_INTEGER)
           ? Number.MAX_SAFE_INTEGER
           : Number(size64),
-        mode,
-        hostHandle,
+        mode: view.getUint32(KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET, true),
+        hostHandle: hasHostHandle
+          ? Number(view.getBigInt64(
+            KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+            true,
+          ))
+          : null,
+        accessMode: view.getUint32(
+          KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+          true,
+        ),
       },
     };
   }
@@ -26612,70 +26612,9 @@ export class CentralizedKernelWorker {
     };
   }
 
-  private getFdAccessModeForSharedMapping(
-    channel: Pick<ChannelInfo, "pid" | "memory" | "channelOffset">,
-    fd: number,
-    entry?: KernelWorkerEntryContext,
-  ): SharedMmapHostResult<number> {
-    const testHook =
-      this.#scratchBoundaryTestHooks?.getFdAccessModeForSharedMapping;
-    if (testHook) return testHook(channel, fd);
-    const previousPid = this.currentHandlePid;
-    let captured: { result: number; errno: number };
-    try {
-      this.#bindKernelTidForChannel(channel as ChannelInfo, entry);
-      this.currentHandlePid = channel.pid;
-      captured = this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
-        kernelView.setBigInt64(
-          CH_ARGS + CH_ARG_SIZE,
-          BigInt(F_GETFL),
-          true,
-        );
-        for (let i = 2; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-        }
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            channel.pid,
-            0n,
-          ],
-        );
-        const resultView = lease.dataView(0, CH_TOTAL_SIZE);
-        return {
-          result: Number(resultView.getBigInt64(CH_RETURN, true)),
-          errno: resultView.getUint32(CH_ERRNO, true),
-        };
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      return { kind: "error", errno: EIO };
-    } finally {
-      this.currentHandlePid = previousPid;
-    }
-    if (this.#finishSignalTermination(channel as ChannelInfo, entry)) {
-      return { kind: "error", errno: EINTR_ERRNO };
-    }
-    const { result, errno } = captured;
-    if (result < 0 || errno !== 0) {
-      return {
-        kind: "error",
-        errno: errno || (result < -1 ? -result : EIO),
-      };
-    }
-    return { kind: "ok", value: result & O_ACCMODE };
-  }
-
   private getOrCreateSharedMmapBacking(
     key: string,
-    source: SharedMmapFdStat,
+    source: SharedMmapFdFacts,
     sourceWritable: boolean,
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<SharedMmapBacking> {
@@ -27740,7 +27679,7 @@ export class CentralizedKernelWorker {
         : null;
     }
 
-    const statResult = this.getFdStatForSharedMapping(channel, fd, entry);
+    const statResult = this.sharedMappingFdFacts(channel, fd, entry);
     if (statResult.kind === "error") {
       if (statResult.errno === EBADF) {
         this.sharedMmapFdCache.set(cacheKey, { backingKey: null });

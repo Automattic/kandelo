@@ -2788,6 +2788,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_shared_mapping_fd_facts",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_shared_mapping_sysv_active_pid_count",
       "signature": "() -> (i32)"
     },
