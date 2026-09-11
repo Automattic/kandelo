@@ -130,8 +130,19 @@ describe("process generation detach host parity", () => {
       expect(destroy).toMatch(
         /processMemoryCreators\.closeAndRunAfterDrain\(\s*performDestroy\s*,?\s*\)/,
       );
-      expect(destroy).toContain("processGenerationDetaches.retryPending()");
-      expect(destroy).toContain("processMemoryAllocator.clear()");
+      // The retry sweep is one implementation now, so the entry is asserted
+      // to reach it and the sweep itself is asserted where it lives. A
+      // destroy that never retried a pending detach would still fail this.
+      expect(destroy).toContain("reportRetainedDestroyDetaches()");
+      expect(sharedLifecycle).toContain(
+        "processGenerationDetaches.retryPending()",
+      );
+      // Same shape: the entry must reach the shared settle, which is where
+      // the allocator is actually released.
+      expect(destroy).toContain("settleDestroyedRealmAllocator(");
+      expect(sharedLifecycle).toContain(
+        "host.processMemoryAllocator().clear()",
+      );
       expect(destroy).not.toContain("processes.clear()");
       // The outer kernel Worker can be a safe final containment boundary only
       // after it has explicitly terminated every process Worker and the

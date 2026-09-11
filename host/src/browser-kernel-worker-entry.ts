@@ -255,8 +255,6 @@ const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 // worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
 // can't free a blocked worker). These bound the wait for those workers to run
 // their exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
-const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
-const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 
 
@@ -440,8 +438,12 @@ const {
   bindForkHostImports,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
+  destroyGenerationAccountingComplete,
   dispatchProcessWorkerMessage,
+  drainBlockedProcessesForDestroy,
   processLifecycleKernelCallbacks,
+  reportRetainedDestroyDetaches,
+  settleDestroyedRealmAllocator,
   completeVforkGenerationTeardown,
   handleExec,
   externrefProcessOwner,
@@ -1359,38 +1361,7 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
-  // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
-  // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
-  // On JSC (Safari, and Bun), `Worker.terminate()` cannot kill (or free the
-  // memory of) a worker parked in `Atomics.wait` on its syscall channel — the
-  // state every idle/blocked process worker sits in — so terminating them
-  // directly leaks their threads + committed working set and each image switch
-  // OOMs Safari. killAllBlockedForTeardown completes each blocked syscall with
-  // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
-  // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
-  // no-op cost on V8 (Chrome), so it runs unconditionally.
-  let woken = new Set<number>();
-  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
-    console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
-  }
-
-  // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
-  // which fires handleExit → removes them from `processes` and terminates them
-  // while idle (reclaimed). Wait only for the pids we woke — a process we did
-  // not wake (e.g. one already exited via a sibling thread) never posts `{exit}`
-  // and is force-terminated below instead of waited on. Bounded.
-  const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
-  const stillDraining = () => {
-    for (const pid of woken) if (processes.has(pid)) return true;
-    return false;
-  };
-  while (stillDraining() && Date.now() < drainDeadline) {
-    await delay(DESTROY_KILL_DRAIN_POLL_MS);
-  }
-  if (stillDraining()) {
-    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
-  }
+  await drainBlockedProcessesForDestroy();
 
   // Phase 3 — terminate any stragglers (non-blocked workers, or any that
   // didn't exit in time) + thread workers, then clear every per-pid map.
@@ -1448,20 +1419,11 @@ async function performDestroy() {
   // A process teardown can yield while exec installs a successor. Sweep the
   // exact current objects and retry only transactions whose phase threw.
   await retireCurrentGenerations();
-  const retryResults = await processGenerationDetaches.retryPending();
-  for (const result of retryResults) {
-    if (result.status !== "released") {
-      console.warn(
-        "[browser-kernel-worker] destroy retained an exact process generation: " +
-        formatError(result.error),
-      );
-    }
-  }
+  await reportRetainedDestroyDetaches();
   vmInterruptTimers.clearAll();
   // The enclosing creator gate is closed and drained, so this exact map/ledger
   // state cannot be invalidated by a later spawn/exec/fork/clone continuation.
-  let gracefulDetachComplete =
-    processGenerationDetaches.pendingCount === 0 && processes.size === 0;
+  let gracefulDetachComplete = destroyGenerationAccountingComplete();
   reportedExits.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
@@ -1481,24 +1443,7 @@ async function performDestroy() {
   initReady = false;
   initFailure = "kernel worker destroyed";
   failPendingLazyRegistrations(initFailure);
-  if (gracefulDetachComplete) {
-    try {
-      processMemoryAllocator.clear();
-    } catch (error) {
-      gracefulDetachComplete = false;
-      console.warn(
-        "[browser-kernel-worker] process memory allocator retained an unsafe " +
-        `lease during destroy: ${formatError(error)}`,
-      );
-    }
-  }
-  if (!gracefulDetachComplete) {
-    console.warn(
-      "[browser-kernel-worker] destroy retained exact process-generation " +
-      "ownership; terminating this kernel Worker realm is the final release " +
-      "fallback",
-    );
-  }
+  gracefulDetachComplete = settleDestroyedRealmAllocator(gracefulDetachComplete);
   return kernelRealmDestroyResult(gracefulDetachComplete);
 }
 

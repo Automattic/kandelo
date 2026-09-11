@@ -4529,12 +4529,123 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     return { kind: "consumed" };
   }
 
+  /** Bounded poll interval while destroy waits for woken processes to exit. */
+  const DESTROY_KILL_DRAIN_POLL_MS = 15;
+  /** Ceiling on that wait before destroy force-terminates the stragglers. */
+  const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
+
+  /**
+   * Wake every `Atomics.wait`-blocked worker and wait for it to exit.
+   *
+   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
+   * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+   *
+   * On JSC-based runtimes — Safari, and Bun, which the Node entry also backs —
+   * `Worker.terminate()` cannot kill or free the memory of a worker parked in
+   * `Atomics.wait` on its syscall channel, which is the state every idle or
+   * blocked process worker sits in. Terminating them directly leaks their
+   * threads and committed working set, and each image switch OOMs Safari.
+   * `killAllBlockedForTeardown` completes each blocked syscall with EINTR and a
+   * queued SIGKILL; the guest glue runs `kernel_exit`, the worker returns to
+   * its JS event loop and becomes reclaimable. This is a no-op cost on V8, so
+   * it runs unconditionally rather than sniffing the engine.
+   *
+   * Then drain, but only for the PIDs actually woken: a process that was not
+   * woken — one already exited through a sibling thread, say — never posts
+   * `{exit}`, so waiting on it would only burn the whole timeout before the
+   * caller force-terminates it anyway. Bounded either way.
+   */
+  async function drainBlockedProcessesForDestroy(): Promise<void> {
+    let woken = new Set<number>();
+    try {
+      woken = await host.kernel().killAllBlockedForTeardown();
+    } catch (e) {
+      console.error(
+        `${host.diagnosticPrefix} killAllBlockedForTeardown failed: ${e}`,
+      );
+    }
+    const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
+    const stillDraining = () => {
+      for (const pid of woken) if (processes.has(pid)) return true;
+      return false;
+    };
+    while (stillDraining() && Date.now() < drainDeadline) {
+      await delay(DESTROY_KILL_DRAIN_POLL_MS);
+    }
+    if (stillDraining()) {
+      console.warn(
+        `${host.diagnosticPrefix} destroy drain timed out with woken`
+        + " process(es) still live; force-terminating",
+      );
+    }
+  }
+
+  /**
+   * Retry the detach transactions whose ownership a destroy phase left unknown,
+   * and report any this realm still could not release.
+   *
+   * Node formatted the failure without its stack and the browser with one.
+   * A generation the host could not give back is exactly the diagnostic worth
+   * a stack, so the shared form keeps it.
+   */
+  async function reportRetainedDestroyDetaches(): Promise<void> {
+    for (const result of await processGenerationDetaches.retryPending()) {
+      if (result.status !== "released") {
+        console.warn(
+          `${host.diagnosticPrefix} destroy retained an exact process `
+          + `generation: ${formatError(result.error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Release the realm's process-memory allocator once every generation is
+   * accounted for, and say so truthfully when one is not.
+   *
+   * Returns whether the realm gave everything back. A false answer is not
+   * fatal: terminating the whole kernel worker realm is the final release
+   * fallback, and the caller's result says which of the two happened.
+   */
+  function settleDestroyedRealmAllocator(graceful: boolean): boolean {
+    let gracefulDetachComplete = graceful;
+    if (gracefulDetachComplete) {
+      try {
+        host.processMemoryAllocator().clear();
+      } catch (error) {
+        gracefulDetachComplete = false;
+        console.warn(
+          `${host.diagnosticPrefix} process memory allocator retained an `
+          + `unsafe lease during destroy: ${formatError(error)}`,
+        );
+      }
+    }
+    if (!gracefulDetachComplete) {
+      console.warn(
+        `${host.diagnosticPrefix} destroy retained exact process-generation `
+        + "ownership; terminating this kernel Worker realm is the final "
+        + "release fallback",
+      );
+    }
+    return gracefulDetachComplete;
+  }
+
+  /**
+   * Whether every process generation this realm ever installed is accounted
+   * for. Read after the terminal sweep, with the creator gate closed.
+   */
+  function destroyGenerationAccountingComplete(): boolean {
+    return processGenerationDetaches.pendingCount === 0 && processes.size === 0;
+  }
+
   return {
     allocateProcessGeneration,
     bindForkHostImports,
     configureRootfsOverlayFromImage,
     createInitProcessMemoryAllocator,
+    destroyGenerationAccountingComplete,
     dispatchProcessWorkerMessage,
+    drainBlockedProcessesForDestroy,
     externrefProcessOwner,
     forkHostImportOwnerRuntime,
     forkHostImportsByWorker,
@@ -4547,6 +4658,8 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     processMemoryCreators,
     processTeardowns,
     ptyByPid,
+    reportRetainedDestroyDetaches,
+    settleDestroyedRealmAllocator,
     threadModuleCache,
     threadedProcessPids,
     vforkLifetimes,
