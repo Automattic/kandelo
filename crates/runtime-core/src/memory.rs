@@ -1509,10 +1509,6 @@ pub const FILE_PAGE_SIZE: usize = 4096;
 const S_IFMT: u32 = 0o170000;
 const S_IFREG: u32 = 0o100000;
 
-/// Cap on writeback-loss diagnostics: bounded so a pathological guest cannot
-/// flood the log, never zero so the loss is never silent.
-pub const WRITEBACK_LOSS_REPORT_LIMIT: u32 = 50;
-
 /// The subset of `struct stat` the mapping layer needs, plus the concrete host
 /// handle when the file is host-backed. `host_handle == None` marks a
 /// kernel-owned file (in-kernel tmpfs / memfd): it has no persistent host
@@ -2429,7 +2425,6 @@ pub struct SharedMappingTable {
     sysv: BTreeMap<u32, BTreeMap<u64, SysvShmMapping>>,
     /// Authoritative segment version, bumped after each merged publication.
     sysv_versions: BTreeMap<i32, u64>,
-    writeback_loss_reports: u32,
 }
 
 impl SharedMappingTable {
@@ -2449,7 +2444,6 @@ impl SharedMappingTable {
             releasing_pids: BTreeSet::new(),
             sysv: BTreeMap::new(),
             sysv_versions: BTreeMap::new(),
-            writeback_loss_reports: 0,
         }
     }
 
@@ -2997,6 +2991,15 @@ impl SharedMappingTable {
         io.close_fd(pid, wf);
     }
 
+    /// Report a writeback loss to the sink. EVERY loss is reported: the sink
+    /// is the kernel's writeback-loss record
+    /// (`crate::writeback_loss`), which is bounded in storage but exact in
+    /// count, so it can publish how many losses it could not store. This layer
+    /// used to cap forwarding at a fixed number instead, back when the sink was
+    /// a host console write and the only concern was flooding it. That cap is
+    /// gone because it would now make the kernel's own running total saturate —
+    /// reporting fifty losses after ten thousand is a false statement about
+    /// system state, and data corruption is the last thing to be quiet about.
     fn report_writeback_loss(
         &mut self,
         pid: u32,
@@ -3004,10 +3007,6 @@ impl SharedMappingTable {
         reason: &str,
         io: &mut dyn SharedMappingIo,
     ) {
-        if self.writeback_loss_reports >= WRITEBACK_LOSS_REPORT_LIMIT {
-            return;
-        }
-        self.writeback_loss_reports += 1;
         io.report_writeback_loss(pid, map_addr, reason);
     }
 
@@ -4753,16 +4752,21 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn writeback_loss_reports_are_bounded_but_never_silent() {
+    fn every_writeback_loss_reaches_the_sink() {
         let mut io = MockIo::new()
             .with_process(1, 64)
             .with_file(10, 1, 2, b"........".to_vec());
         let mut table = fd_writeback_table(&mut io);
         io.poke(1, 0, b"AAAAAAAA");
-        for _ in 0..(WRITEBACK_LOSS_REPORT_LIMIT + 10) {
+        let attempts = 60u32;
+        for _ in 0..attempts {
             table.flush_fd_writeback_mapping(1, 0, 0, 8, &mut io);
         }
-        assert_eq!(io.losses.len() as u32, WRITEBACK_LOSS_REPORT_LIMIT);
+        // This layer no longer caps reporting. Bounding belongs to the sink,
+        // which keeps a bounded number of records AND an exact total, so the
+        // count of losses it could not store is itself observable. Capping here
+        // would hide that count before the sink ever saw it.
+        assert_eq!(io.losses.len() as u32, attempts);
     }
 
     // -- munmap split -----------------------------------------------------

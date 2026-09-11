@@ -1551,22 +1551,6 @@ export class WasmPosixKernel {
     return {
       env: {
         memory,
-        // Raw byte sink to this host's stderr: no added prefix, no added
-        // newline. Any prefix/newline is the Rust caller's responsibility
-        // (baked into the `&str` passed to `runtime_core::debug_log`), so
-        // Node/browser and native produce byte-for-byte identical output.
-        // Reuses the same callback/process/console fallback chain as the
-        // fd=2 (stderr) path in `#hostWriteAt`.
-        host_debug_log: (ptr: KernelPointer, len: number): void => {
-          const data = this.#readKernelBytes(ptr, len);
-          if (this.callbacks.onStderr) {
-            this.callbacks.onStderr(data);
-          } else if (typeof process !== "undefined" && process.stderr) {
-            process.stderr.write(data);
-          } else {
-            console.error(new TextDecoder().decode(data));
-          }
-        },
         host_openat: (
           dir: bigint,
           namePtr: KernelPointer,

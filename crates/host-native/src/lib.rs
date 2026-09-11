@@ -140,25 +140,40 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// already the only host treating the filesystem as optional (its imports are
 /// wired only when `GuestOptions::mounts` is non-empty); K9 makes that the
 /// contract rather than one host's local choice.
-/// **73 or 74 is an open maintainer decision, and this pin is deliberately at
-/// 74 rather than 73 while it is open.** (It read "74 or 75 ... pinned at 75"
-/// until `host_nanosleep` went; the decision below is unchanged, one lower.)
+/// **2026-09-11: 73 -> 72. `host_debug_log` is gone, and the diagnostic it
+/// carried is not.** This entry had stood open as "73 or 74", framed as a
+/// keep-versus-drop question about one import. That framing was the mistake.
+/// The import had exactly one live caller — `report_writeback_loss`, which
+/// reports an **unrecoverable** shared-mapping writeback loss, meaning bytes a
+/// process wrote into a `MAP_SHARED` file mapping could not be published back
+/// to the file. That is data corruption, and the argument for keeping the
+/// import was that dropping it would stop the corruption being *observable*.
 ///
-/// The extra import is `host_debug_log`. It has always been *declared*; until
-/// today it had no caller and the linker dropped it, so K9 removed the dead
-/// declaration and measured 75. K7's shared-mapping work then added a real
-/// caller — `report_writeback_loss`, which reports an **unrecoverable**
-/// writeback loss — and the merge routed it through `runtime-core`'s existing
-/// declaration rather than re-declaring the extern. The import is now live and
-/// linked.
+/// Both halves of that dilemma were avoidable, because a host console line was
+/// never the right home for the fact in the first place. The kernel now records
+/// the loss as kernel state (`runtime_core::writeback_loss`) and publishes it
+/// through the ordinary `read(2)` path at `/proc/kandelo/writeback_losses`. The
+/// diagnostic came out of this strictly better, not merely preserved:
 ///
-/// Two opposite fixes are both correct, which is why this is not decided here:
-/// accept the import and document it, or delete the caller and return to 75.
-/// Deleting the caller does not stop the loss happening; it stops it being
-/// **observable** — which is the exact shape of the eight silent-success
-/// defects this campaign has spent the day finding. Against that, the
-/// smallest-host-surface goal counts every import, and a diagnostic is a weak
-/// thing to spend one on.
+///   * it survives the event instead of scrolling away,
+///   * the affected program and an operator can both query it,
+///   * it exists on a host with no console at all, and
+///   * pid, mapping address, and reason are separate fields rather than one
+///     sentence, so losses can be counted and correlated.
+///
+/// Boundedness is explicit and honest rather than silent. The kernel keeps the
+/// first 64 records and counts every loss, publishing `total`, `recorded`, and
+/// `dropped`; a loss that could not be stored still raises the total the reader
+/// sees. The mapping layer's old "report at most 50 then stop" cap was removed
+/// in the same change, because with a counting sink behind it that cap would
+/// have made the kernel's own total saturate — reporting fifty losses after ten
+/// thousand is a false statement about system state.
+///
+/// No kernel export was added to pay for the import that went away. Adding one
+/// would have been a wash for the minimize-host-surface goal and would have
+/// grown the ABI's export surface; procfs reuses the read path that already
+/// exists. This lands under ABI 44 with no `ABI_VERSION` bump: the maintainer
+/// has ruled ABI 44 unreleased and one epoch, so its surface may still move.
 ///
 /// **2026-09-11: 74 -> 73.** `host_blob_read` and `host_fetch_archive` were
 /// collapsed into one `host_fetch_deferred(kind, …)`. They were one capability
@@ -170,8 +185,7 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// landed independently and compose: 75 -> 74 -> 73, measured on the built
 /// kernel each time, never inferred from the constant.
 ///
-/// Pinned at the measured value so the branch states what is true. Moving it to
-/// 73 is a one-line change once the caller goes.
+/// Pinned at the measured value so the branch states what is true.
 ///
 /// **2026-09-10: 76 → 75.** `host_call_signal_handler` was removed. It had no
 /// production caller — the kernel never asked a host to invoke a user-space
@@ -180,8 +194,8 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// capability nothing used. It was the third entry on the disposition ledger's
 /// §2.2 "Wasm cannot do this" KEEP list to prove dead, after `host_futex_wait`
 /// and `host_sigsuspend_wait`; the ledger entry is corrected there. This shifts
-/// the `host_debug_log` arithmetic above by one without settling it: the open
-/// decision is now 73-or-74, on the same reasoning.
+/// the `host_debug_log` arithmetic above by one without settling it; that
+/// question was settled separately, at the top of this comment.
 ///
 /// **2026-09-11: 75 -> 74.** `host_nanosleep` was removed. Its two callers
 /// were `sys_usleep` and `sys_epoll_pwait`'s empty-interest branch, and both
@@ -192,14 +206,12 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// unused.
 ///
 /// Measured, not inferred: `wasm-objdump -j Import -x` on the installed
-/// `local-binaries/source-only-v1/kernel.wasm` -- the first tier
-/// `ARTIFACT_TIERS` searches, so the same bytes this test loads -- reports 74
-/// `env.host_*` function imports, 74 function imports in total (no
-/// `other_imports`), and one `env.memory`. `env.memory` is counted separately
-/// by `KernelImportSurface` and is not part of this number; a raw count of
-/// import *entries* reads 75 for the same artifact, which is the off-by-one to
-/// avoid when re-measuring.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 73;
+/// kernel artifact -- the same bytes this test loads -- reports 72 `env.host_*`
+/// function imports, 72 function imports in total (no `other_imports`), and one
+/// `env.memory`. `env.memory` is counted separately by `KernelImportSurface`
+/// and is not part of this number; a raw count of import *entries* reads 73 for
+/// the same artifact, which is the off-by-one to avoid when re-measuring.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]

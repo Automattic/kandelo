@@ -1273,16 +1273,15 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
     }
 
     fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
-        // Routed through runtime-core's `debug_log` rather than a second
-        // `host_debug_log` declaration here. K9 removed this crate's copy after
-        // finding it callerless, and K7's writeback reporting then supplied the
-        // caller; two declarations of one import is how a declared-versus-linked
-        // gap opens in the first place. runtime-core's is already cfg-gated to
-        // wasm and is a no-op natively, which this call site wants anyway.
-        let message = alloc::format!(
-            "shared-mapping writeback lost: pid={pid} addr={map_addr:#x} reason={reason}"
-        );
-        runtime_core::debug_log(&message);
+        // Recorded as kernel state, not written to a host console. This used to
+        // format one sentence and hand it to a `host_debug_log` import, which
+        // cost every host an entry on the host API contract to deliver a
+        // diagnostic that vanished when it scrolled, could not be queried, and
+        // did not exist at all on a host with no console. The fields are kept
+        // separate and the record is readable through the ordinary `read(2)`
+        // path at `/proc/kandelo/writeback_losses`, so the import went away
+        // without the ABI's export surface growing to replace it.
+        runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, reason);
     }
 }
 

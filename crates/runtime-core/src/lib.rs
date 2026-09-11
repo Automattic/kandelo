@@ -62,6 +62,7 @@ pub mod unix_socket;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod writeback_loss;
 pub mod zip;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
@@ -69,24 +70,6 @@ pub mod zip;
 // avoid churning 645+ call sites in this phase.
 pub use process::HostIO;
 pub use process::HostIO as HostCapabilities;
-
-// ---------------------------------------------------------------------------
-// Debug logging (temporary)
-// ---------------------------------------------------------------------------
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-pub fn debug_log(msg: &str) {
-    #[link(wasm_import_module = "env")]
-    unsafe extern "C" {
-        fn host_debug_log(ptr: *const u8, len: u32);
-    }
-    unsafe {
-        host_debug_log(msg.as_ptr(), msg.len() as u32);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-pub fn debug_log(_msg: &str) {}
 
 // ---------------------------------------------------------------------------
 // Current time helper

@@ -70,6 +70,11 @@ pub enum ProcfsEntry {
     NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
     NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
     NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
+    // Kandelo-specific kernel state. Namespaced under its own directory so it
+    // can never collide with a name Linux later gives a procfs file, and so a
+    // reader can tell at a glance which files are Kandelo's own.
+    KandeloDir,             // /proc/kandelo
+    KandeloWritebackLosses, // /proc/kandelo/writeback_losses
 }
 
 impl ProcfsEntry {
@@ -95,6 +100,7 @@ impl ProcfsEntry {
                 | ProcfsEntry::FdDir(_)
                 | ProcfsEntry::FdInfoDir(_)
                 | ProcfsEntry::NetDir(_)
+                | ProcfsEntry::KandeloDir
         )
     }
 }
@@ -134,7 +140,9 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         ProcfsEntry::Root
         | ProcfsEntry::Mounts
         | ProcfsEntry::SelfLink
-        | ProcfsEntry::ThreadSelfLink => None,
+        | ProcfsEntry::ThreadSelfLink
+        | ProcfsEntry::KandeloDir
+        | ProcfsEntry::KandeloWritebackLosses => None,
     }
 }
 
@@ -182,6 +190,18 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
 
     if rest == b"mounts" {
         return Some(ProcfsEntry::Mounts);
+    }
+
+    if rest == b"kandelo" || rest == b"kandelo/" {
+        return Some(ProcfsEntry::KandeloDir);
+    }
+    if rest == b"kandelo/writeback_losses" {
+        return Some(ProcfsEntry::KandeloWritebackLosses);
+    }
+    if rest.starts_with(b"kandelo/") {
+        // A named directory whose contents are a closed set: an unknown name
+        // under it is ENOENT, not a pid parse.
+        return None;
     }
 
     // /proc/self/... → resolve to current pid
@@ -561,6 +581,8 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::NetDir(pid) => (pid.unwrap_or(0), 19),
         ProcfsEntry::NetTcp(pid) => (pid.unwrap_or(0), 20),
         ProcfsEntry::NetUnix(pid) => (pid.unwrap_or(0), 21),
+        ProcfsEntry::KandeloDir => (0, 22),
+        ProcfsEntry::KandeloWritebackLosses => (0, 23),
     }
 }
 
@@ -721,6 +743,12 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             }
         }
         ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
+        // Kernel-wide state, not process-scoped: a shared-mapping writeback
+        // loss is data corruption in one process that any operator or program
+        // may need to see, so there is no pid to validate here.
+        ProcfsEntry::KandeloWritebackLosses => {
+            Ok(crate::writeback_loss::render_writeback_losses())
+        }
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
             Ok(MOUNTS_CONTENT.to_vec())
@@ -1005,6 +1033,10 @@ fn dir_entries(
                 entries.push((name, DT_DIR, procfs_ino(pid, 4)));
             }
             entries.push((b"net".to_vec(), DT_DIR, procfs_ino(0, 19)));
+            entries.push((b"kandelo".to_vec(), DT_DIR, procfs_ino(0, 22)));
+        }
+        ProcfsEntry::KandeloDir => {
+            entries.push((b"writeback_losses".to_vec(), DT_REG, procfs_ino(0, 23)));
         }
         ProcfsEntry::PidDir(pid) => {
             // /proc/<pid>/: fd, fdinfo (dirs), status files, mount tables, cwd/exe/root symlinks
@@ -1654,8 +1686,9 @@ mod tests {
             procfs_getdents64(&proc, b"/proc", &mut buf, 0, &pids).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // Should have: . , .. , mounts, self, thread-self, 1, net = 7 entries
-        assert_eq!(offset, 7);
+        // Should have: . , .. , mounts, self, thread-self, 1, net, kandelo
+        // = 8 entries
+        assert_eq!(offset, 8);
     }
 
     #[test]
@@ -1700,5 +1733,90 @@ mod tests {
             assert!(is_procfs_buf_handle(h));
             assert_eq!(procfs_buf_idx(h), idx);
         }
+    }
+
+    // -- Kandelo kernel state ------------------------------------------------
+
+    #[test]
+    fn kandelo_writeback_losses_resolves_as_a_regular_file() {
+        assert_eq!(
+            match_procfs(b"/proc/kandelo", 1),
+            Some(ProcfsEntry::KandeloDir)
+        );
+        assert_eq!(
+            match_procfs(b"/proc/kandelo/", 1),
+            Some(ProcfsEntry::KandeloDir)
+        );
+        let entry = match_procfs(b"/proc/kandelo/writeback_losses", 1)
+            .expect("the writeback-loss record must be a resolvable path");
+        assert_eq!(entry, ProcfsEntry::KandeloWritebackLosses);
+        assert!(!entry.is_dir());
+        assert!(!entry.is_symlink());
+        // Kernel-wide state: not scoped to, and not gated on, any pid.
+        assert_eq!(entry_pid(&entry), None);
+    }
+
+    #[test]
+    fn an_unknown_name_under_kandelo_is_enoent_not_a_pid() {
+        assert_eq!(match_procfs(b"/proc/kandelo/nope", 1), None);
+    }
+
+    #[test]
+    fn kandelo_entries_do_not_alias_another_procfs_object() {
+        let dir = regular_file_object_id(&ProcfsEntry::KandeloDir);
+        assert_eq!(dir, None, "a directory has no regular-file identity");
+        let losses = regular_file_object_id(&ProcfsEntry::KandeloWritebackLosses)
+            .expect("regular file identity");
+        for other in [
+            ProcfsEntry::Mounts,
+            ProcfsEntry::NetTcp(None),
+            ProcfsEntry::NetUnix(None),
+            ProcfsEntry::Stat(0),
+            ProcfsEntry::Status(0),
+        ] {
+            assert_ne!(
+                regular_file_object_id(&other),
+                Some(losses),
+                "{other:?} must not alias the writeback-loss record"
+            );
+        }
+    }
+
+    #[test]
+    fn proc_root_lists_the_kandelo_directory() {
+        let proc = Process::new(1);
+        let mut buf = [0u8; 8192];
+        let (bytes, _offset, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut buf, 0, &[1]).unwrap();
+        assert!(exhausted);
+        let blob = &buf[..bytes];
+        assert!(
+            blob.windows(7).any(|w| w == b"kandelo"),
+            "/proc must list its kandelo directory so the record is discoverable"
+        );
+    }
+
+    /// The diagnostic must be reachable through the ordinary read path, not
+    /// merely recorded somewhere. This test fails if a shared-mapping writeback
+    /// loss is dropped on the floor rather than moved into kernel state: it
+    /// records a loss the way the kernel's `HostIO` impl does, then reads it
+    /// back through the procfs content generator a `read(2)` would use.
+    #[test]
+    fn a_recorded_writeback_loss_is_readable_through_procfs() {
+        let proc = Process::new(1);
+        let entry = match_procfs(b"/proc/kandelo/writeback_losses", 1).expect("path resolves");
+
+        crate::writeback_loss::record_writeback_loss(4242, 0xdead_0000, "descriptor closed");
+
+        let content = generate_content(&proc, &entry).expect("readable");
+        let text = String::from_utf8(content).expect("ASCII report");
+        assert!(
+            text.contains("loss pid=4242 addr=0xdead0000 reason=descriptor closed\n"),
+            "the loss must be visible through the read path, got:\n{text}"
+        );
+        // The report always states how much it is not showing.
+        assert!(text.contains("total "), "{text}");
+        assert!(text.contains("recorded "), "{text}");
+        assert!(text.contains("dropped "), "{text}");
     }
 }

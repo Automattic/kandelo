@@ -2668,26 +2668,6 @@ fn define_kernel_host_imports(
             },
         )?;
     }
-    // host_debug_log(ptr, len): kernel diagnostics → this host's stderr,
-    // raw bytes verbatim. No added prefix, no added newline: any prefix/
-    // newline is the Rust caller's responsibility (baked into the `&str`
-    // passed to `runtime_core::debug_log`), so native and Node/browser
-    // produce byte-for-byte identical output for the same call.
-    {
-        let mem = kernel_mem.clone();
-        linker.func_wrap(
-            "env",
-            "host_debug_log",
-            move |_c: Caller<'_, ()>, ptr: i32, len: i32| {
-                if len < 0 {
-                    return;
-                }
-                let bytes = unsafe { read_bytes(&mem, ptr as u32 as usize, len as usize) };
-                let mut err = std::io::stderr();
-                let _ = err.write_all(&bytes);
-            },
-        )?;
-    }
     // host_clock_gettime(clock_id, sec_ptr, nsec_ptr) -> i32: real wall clock.
     {
         let mem = kernel_mem.clone();
