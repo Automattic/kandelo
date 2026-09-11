@@ -51,9 +51,21 @@ export default defineConfig({
   // file. Leaving them unresolved is the contract, not a workaround -- without
   // this, adding one reachable `?url` import breaks `npm run build` entirely,
   // which is how the browser build came to be unbuildable.
-  external: [/\?url$/, /\?worker&url$/],
+  //
+  // WHY ONE KEY: these two lists arrived from two different changes and were
+  // merged by keeping both, as two `external:` properties on one object
+  // literal. JavaScript keeps the LAST duplicate key, so the patterns silently
+  // did nothing -- `?worker&url` imports, which no enumerated specifier covers,
+  // were not externalized at all. Duplicate object keys are not a merge
+  // resolution; they are a silent deletion of whichever one is written first.
+  //
+  // The named list and the patterns are both load-bearing and cover different
+  // things: `browserVirtualModules` comes from the file Vite shares, so a new
+  // virtual module cannot be added in one place and forgotten here, while the
+  // patterns catch the suffix-shaped imports -- `?worker&url` above all -- that
+  // are not virtual modules and so never appear in that list.
+  external: [...browserVirtualModules, /\?url$/, /\?worker&url$/],
   format: ["esm", "cjs"],
-  external: browserVirtualModules,
   dts: true,
   sourcemap: true,
   clean: true,
