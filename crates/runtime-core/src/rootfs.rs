@@ -969,6 +969,10 @@ pub fn reset() {
     ROOTFS.with(|state| *state = RootfsState::new());
     FOREIGN_MOUNTS.with(|slot| slot.clear());
     ROOTFS_NOSUID.store(false, Ordering::SeqCst);
+    // An in-progress image export addresses the store it was built from, so a
+    // reset must drop it rather than let the next chunk serve a tree that is
+    // no longer there.
+    reset_image_export();
 }
 
 /// Split an absolute path into (parent components, final component). Returns
@@ -3235,6 +3239,480 @@ pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Image export (W-3): emit a real SFFS `/` image from the authoritative overlay
+// tree, streamed.
+//
+// WHAT THIS REPLACES, AND WHAT IT DOES NOT
+//
+// `export_tree` above serializes tree METADATA (RXPT), and the host rebuilds an
+// image from it by cloning the frozen base image and reconciling
+// (`host/src/vfs/rootfs-overlay-export.ts`). That host step is what W-4
+// deletes. What moves here is the part the kernel is the authority for: the
+// filesystem body. The container's three JSON sections stay host-side ON
+// PURPOSE — they carry fetch URLs, transports, integrity digests, activation
+// modes and atomic-group seals, which `crate::klzy` documents the kernel as
+// deliberately not carrying. The kernel is downstream of the host's decision
+// about which bytes it may hand over, and inventing a URL to write into an
+// image would invert that.
+//
+// WHY IT STREAMS
+//
+// `lamp.vfs` is 249 MiB. `export_tree_read` caches its whole buffer because
+// tree metadata is small; an image is not. So the build pass produces only the
+// image's STRUCTURE — superblock, bitmaps, inode table, directory data,
+// indirect blocks — and records each file's content as a reference. Bytes are
+// pulled per chunk as the cursor reaches them: an image-backed file streams out
+// of the `/` image the kernel already has mounted, through the same SFFS reader
+// `load_image` walked it with, and is never resident.
+// ---------------------------------------------------------------------------
+
+/// Where one emitted file's bytes come from. An entry's index in
+/// [`ExportPlan::contents`] is the `id` handed to the writer.
+enum ImageContent {
+    /// Bytes in the loaded `/` image at SFFS inode N. Streamed.
+    Image(u32),
+    /// Bytes the overlay owns, at arena index N. Already resident.
+    Overlay(u32),
+}
+
+/// A built image: its structure, plus how to resolve each content reference.
+pub struct ExportPlan {
+    image: crate::sffs_write::SffsImage,
+    contents: Vec<ImageContent>,
+    /// Sockets and FIFOs have no representation in a `/` image. The base-image
+    /// builder skips them too, so they are counted and reported rather than
+    /// fabricated — the same lossy boundary the host reconciler documents.
+    pub skipped_special: u32,
+}
+
+impl ExportPlan {
+    pub fn len(&self) -> u64 {
+        self.image.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.image.is_empty()
+    }
+}
+
+/// Resolves an emitted image's content references while a chunk is served.
+struct ExportContentSource<'a, F> {
+    contents: &'a [ImageContent],
+    byte_source: core::cell::RefCell<&'a mut F>,
+}
+
+impl<F> crate::sffs_write::ContentSource for ExportContentSource<'_, F>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    fn read_exact_at(&self, id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let entry = self
+            .contents
+            .get(usize::try_from(id).map_err(|_| Errno::EIO)?)
+            .ok_or(Errno::EIO)?;
+        match entry {
+            ImageContent::Image(ino) => {
+                let mut byte_source = self.byte_source.borrow_mut();
+                let n = read_image_bytes(*ino, offset, dst, &mut **byte_source)?;
+                if n != dst.len() {
+                    return Err(Errno::EIO);
+                }
+                Ok(())
+            }
+            ImageContent::Overlay(idx) => ROOTFS.with(|state| {
+                let inode = state.get(*idx).ok_or(Errno::EIO)?;
+                let InodeKind::Regular(data) = &inode.kind else {
+                    return Err(Errno::EIO);
+                };
+                let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+                let end = start.checked_add(dst.len()).ok_or(Errno::EIO)?;
+                dst.copy_from_slice(data.get(start..end).ok_or(Errno::EIO)?);
+                Ok(())
+            }),
+        }
+    }
+}
+
+/// One directory entry still to emit.
+struct PendingExport {
+    overlay: u32,
+    parent_sffs: u32,
+    name: Vec<u8>,
+}
+
+/// What an overlay node becomes in the image. Snapshotted out of the store so
+/// the writer is never driven while the store is borrowed.
+enum ExportNode {
+    Dir,
+    ImageFile(u32, u64),
+    OverlayFile(u32, u64),
+    LazyStub,
+    Symlink(Vec<u8>),
+    Special,
+}
+
+/// The `data_start` `SffsWriter::mkfs` will derive from `max_blocks`.
+///
+/// Duplicated here, deliberately and narrowly, because the image's LENGTH has
+/// to be chosen before `mkfs` runs. Sizing it at `max_blocks` would emit a
+/// 480 MiB container for a 249 MiB tree; sizing it too small would make every
+/// image pay hundreds of 256-block growth steps.
+fn planned_data_start(max_blocks: u32) -> u32 {
+    let mut total_inodes = core::cmp::max(32, max_blocks / 4);
+    total_inodes = total_inodes.div_ceil(32) * 32;
+    let inode_bitmap_blocks = total_inodes.div_ceil(4096 * 8);
+    let block_bitmap_blocks = max_blocks.div_ceil(4096 * 8);
+    let inode_table_blocks = total_inodes.div_ceil(32);
+    1 + inode_bitmap_blocks + block_bitmap_blocks + inode_table_blocks
+}
+
+/// Blocks one file's data occupies, including the indirect blocks that address
+/// it. Mirrors the writer's allocation rather than guessing: ten direct blocks,
+/// then a single indirect block per 1024, then the double-indirect spine.
+fn blocks_for_file(size: u64) -> u64 {
+    let data = size.div_ceil(4096);
+    if data <= 10 {
+        return data;
+    }
+    let indirect_data = core::cmp::min(data - 10, 1024);
+    let mut total = 10 + indirect_data + 1; // + the single indirect block
+    let remaining = data - 10 - indirect_data;
+    if remaining > 0 {
+        let l1 = remaining.div_ceil(1024);
+        total += remaining + l1 + 1; // + L1 blocks + the double-indirect block
+    }
+    total
+}
+
+/// Collect a directory's children onto the walk stack in reverse, so popping
+/// yields the directory's own `BTreeMap` order. The emitted image is therefore
+/// deterministic for a given tree, which is what lets it be compared at all.
+fn push_export_children(
+    overlay_dir: u32,
+    parent_sffs: u32,
+    stack: &mut Vec<PendingExport>,
+) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        let inode = state.get(overlay_dir).ok_or(Errno::EIO)?;
+        let InodeKind::Dir(entries) = &inode.kind else {
+            return Err(Errno::ENOTDIR);
+        };
+        for (name, &child) in entries.iter().rev() {
+            stack.push(PendingExport {
+                overlay: child,
+                parent_sffs,
+                name: name.clone(),
+            });
+        }
+        Ok(())
+    })
+}
+
+/// Copy ownership, permissions and timestamps from the overlay inode onto the
+/// emitted one.
+///
+/// Ownership goes first: `chown` clears a regular file's set-user and set-group
+/// bits, so applying the mode afterwards is what preserves a setuid binary —
+/// the same ordering the image builders use. Timestamps go last, because every
+/// mutation before them stamps ctime.
+fn apply_export_metadata(
+    writer: &mut crate::sffs_write::SffsWriter,
+    overlay: u32,
+    sffs_ino: u32,
+) -> Result<(), Errno> {
+    let (uid, gid, mode, is_symlink, atime, mtime, ctime) = ROOTFS.with(|state| {
+        let inode = state.get(overlay).ok_or(Errno::EIO)?;
+        let ms = |sec: u64, nsec: u32| sec.saturating_mul(1000) + u64::from(nsec) / 1_000_000;
+        Ok::<_, Errno>((
+            inode.uid,
+            inode.gid,
+            inode.mode,
+            matches!(inode.kind, InodeKind::Symlink(_)),
+            ms(inode.atime_sec, inode.atime_nsec),
+            ms(inode.mtime_sec, inode.mtime_nsec),
+            ms(inode.ctime_sec, inode.ctime_nsec),
+        ))
+    })?;
+    writer.set_owner(sffs_ino, uid, gid)?;
+    // A symlink's permission bits are not meaningful and the writer fixes them
+    // at 0777, matching the vendor; overwriting them would diverge.
+    if !is_symlink {
+        writer.set_mode(sffs_ino, mode)?;
+    }
+    writer.set_times(sffs_ino, atime, mtime, ctime);
+    Ok(())
+}
+
+/// Walk the overlay and build a complete SFFS image for it.
+///
+/// The walk uses an explicit stack, not recursion, for the same reason
+/// [`load_image`]'s does: tree depth is untrusted input in a browser and the
+/// kernel has no guard page under its shadow stack. `export_tree`'s walk
+/// recurses because it predates that rule; a new walk should not adopt it.
+pub fn build_export_image() -> Result<ExportPlan, Errno> {
+    use crate::sffs_write::{Content, SffsConfig, SffsWriter};
+
+    // Pass one: size the image, under a single borrow so the tree cannot be
+    // observed in two states.
+    let (inode_count, data_blocks) = ROOTFS.with(|state| {
+        let mut inode_count = 0u64;
+        let mut data_blocks = 0u64;
+        let mut stack: Vec<u32> = Vec::new();
+        let mut seen: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+        if let Some(root) = state.root {
+            stack.push(root);
+        }
+        while let Some(idx) = stack.pop() {
+            let Some(inode) = state.get(idx) else { continue };
+            if !seen.insert(idx) {
+                continue; // a hard link: one inode, already counted
+            }
+            inode_count += 1;
+            match &inode.kind {
+                InodeKind::Dir(entries) => {
+                    // Records are 12 bytes at minimum; 40 is a generous mean
+                    // that keeps the estimate above reality for real trees.
+                    data_blocks += ((entries.len() as u64 * 40) + 24).div_ceil(4096).max(1);
+                    for &child in entries.values() {
+                        stack.push(child);
+                    }
+                }
+                InodeKind::BaseRegular { size, source, .. } => {
+                    if matches!(source, BaseSource::Image) {
+                        data_blocks += blocks_for_file(*size);
+                    }
+                    // A `Host`-sourced base file stays a lazy stub: no blocks.
+                }
+                InodeKind::Regular(data) => data_blocks += blocks_for_file(data.len() as u64),
+                InodeKind::Symlink(target) => {
+                    if target.len() as u64 > 40 {
+                        data_blocks += blocks_for_file(target.len() as u64);
+                    }
+                }
+                InodeKind::Special(_) | InodeKind::LazyMember { .. } => {}
+            }
+        }
+        (inode_count, data_blocks)
+    });
+
+    // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
+    // files can need a larger maximum than its bytes do.
+    let inode_requirement = (inode_count + 2).saturating_mul(4);
+    let mut max_blocks =
+        u32::try_from(core::cmp::max(inode_requirement, 64)).map_err(|_| Errno::EIO)?;
+    let mut data_start = planned_data_start(max_blocks);
+    // One or two rounds converge: a larger maximum needs a larger block bitmap,
+    // which pushes `data_start` out, which needs a larger maximum.
+    for _ in 0..4 {
+        let needed = u32::try_from(u64::from(data_start) + data_blocks + 64)
+            .map_err(|_| Errno::EIO)?;
+        if needed <= max_blocks {
+            break;
+        }
+        max_blocks = needed;
+        data_start = planned_data_start(max_blocks);
+    }
+    let total_blocks = core::cmp::min(
+        max_blocks,
+        u32::try_from(u64::from(data_start) + data_blocks + 64).map_err(|_| Errno::EIO)?,
+    );
+    let total_blocks = core::cmp::max(total_blocks, 16);
+
+    let mut writer = SffsWriter::mkfs(SffsConfig {
+        size_bytes: u64::from(total_blocks) * 4096,
+        max_size_bytes: Some(u64::from(max_blocks) * 4096),
+        // The kernel chooses this image's length; nothing caps growth but the
+        // maximum above, so an underestimate costs a grow, not a failure.
+        growable_to_bytes: u64::from(max_blocks) * 4096,
+        now_ms: 0,
+    })?;
+
+    let mut contents: Vec<ImageContent> = Vec::new();
+    let mut skipped_special = 0u32;
+    // Overlay arena index -> the SFFS inode it became, so the second and later
+    // names for a hard-linked inode become a `link` rather than a second copy.
+    let mut emitted: BTreeMap<u32, u32> = BTreeMap::new();
+
+    let root_idx = ROOTFS.with(|state| state.root).ok_or(Errno::EIO)?;
+    let root_sffs = writer.root();
+    apply_export_metadata(&mut writer, root_idx, root_sffs)?;
+    emitted.insert(root_idx, root_sffs);
+
+    let mut stack: Vec<PendingExport> = Vec::new();
+    push_export_children(root_idx, root_sffs, &mut stack)?;
+
+    // Pass two: build. Each step reads the store briefly and releases it,
+    // because the writer must never be driven while the store is borrowed — its
+    // content resolution re-enters `ROOTFS`.
+    while let Some(item) = stack.pop() {
+        let (node, mode, already) = ROOTFS.with(|state| {
+            let inode = state.get(item.overlay).ok_or(Errno::EIO)?;
+            let node = match &inode.kind {
+                InodeKind::Dir(_) => ExportNode::Dir,
+                InodeKind::BaseRegular {
+                    blob_id,
+                    size,
+                    source,
+                } => match source {
+                    BaseSource::Image => ExportNode::ImageFile(image_ino(*blob_id)?, *size),
+                    // The image does not carry these bytes; the host owns the
+                    // transport. Keep the file lazy rather than force-fetching
+                    // it, which is the behaviour the host reconciler documents.
+                    BaseSource::Host => ExportNode::LazyStub,
+                },
+                InodeKind::Regular(data) => {
+                    ExportNode::OverlayFile(item.overlay, data.len() as u64)
+                }
+                InodeKind::Symlink(target) => ExportNode::Symlink(target.clone()),
+                InodeKind::Special(_) => ExportNode::Special,
+                InodeKind::LazyMember { .. } => ExportNode::LazyStub,
+            };
+            Ok::<_, Errno>((node, inode.mode, emitted.get(&item.overlay).copied()))
+        })?;
+
+        if let Some(existing) = already {
+            // A second name for an inode already emitted: one hard link.
+            writer.link(item.parent_sffs, &item.name, existing)?;
+            continue;
+        }
+
+        let sffs_ino = match node {
+            ExportNode::Special => {
+                skipped_special += 1;
+                continue;
+            }
+            ExportNode::Dir => {
+                let ino = writer.mkdir(item.parent_sffs, &item.name, mode)?;
+                push_export_children(item.overlay, ino, &mut stack)?;
+                ino
+            }
+            ExportNode::Symlink(target) => {
+                writer.symlink(item.parent_sffs, &item.name, &target)?
+            }
+            ExportNode::LazyStub => {
+                // `SharedFS.createLazyStub` is `open(O_CREAT)` plus an explicit
+                // forced truncate, which lands on the same bytes as a created
+                // empty file: size 0, data-sequence 1.
+                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b""))?
+            }
+            ExportNode::ImageFile(image_inode, size) => {
+                let id = contents.len() as u64;
+                contents.push(ImageContent::Image(image_inode));
+                writer.create_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    Content::Deferred { id, len: size },
+                )?
+            }
+            ExportNode::OverlayFile(overlay_idx, size) => {
+                let id = contents.len() as u64;
+                contents.push(ImageContent::Overlay(overlay_idx));
+                writer.create_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    Content::Deferred { id, len: size },
+                )?
+            }
+        };
+
+        emitted.insert(item.overlay, sffs_ino);
+        apply_export_metadata(&mut writer, item.overlay, sffs_ino)?;
+    }
+
+    Ok(ExportPlan {
+        image: writer.finish(),
+        contents,
+        skipped_special,
+    })
+}
+
+/// Cache for [`export_image_read`]: the built image's STRUCTURE, not its bytes.
+/// Content stays in the `/` image and the overlay and is pulled per chunk, so
+/// this holds megabytes for a 249 MiB image rather than 249 MiB.
+struct ImageExportCache {
+    locked: AtomicBool,
+    plan: UnsafeCell<Option<ExportPlan>>,
+}
+
+impl ImageExportCache {
+    const fn new() -> Self {
+        ImageExportCache {
+            locked: AtomicBool::new(false),
+            plan: UnsafeCell::new(None),
+        }
+    }
+
+    fn with<R>(&'static self, f: impl FnOnce(&mut Option<ExportPlan>) -> R) -> R {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let _unlock = UnlockOnDrop(&self.locked);
+        // SAFETY: same invariant as RootfsGlobal — the spinlock is the sole
+        // gate and no reference escapes the closure.
+        let slot = unsafe { &mut *self.plan.get() };
+        f(slot)
+    }
+}
+
+// SAFETY: identical invariant to RootfsGlobal / ExportCache.
+unsafe impl Sync for ImageExportCache {}
+
+static IMAGE_EXPORT_CACHE: ImageExportCache = ImageExportCache::new();
+
+/// Copy up to `out.len()` bytes of the exported `/` image at byte `offset`,
+/// returning the number of bytes copied (0 at or past the end).
+///
+/// The `offset == 0` call builds the image; later calls stream from it. Export
+/// runs against a quiescent overlay (the host closes the snapshot gate), so the
+/// tree cannot change between chunks. The plan is freed once a read reaches the
+/// end, so a completed export leaves nothing resident.
+pub fn export_image_read<F>(
+    offset: i64,
+    out: &mut [u8],
+    byte_source: &mut F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let offset = offset as u64;
+    IMAGE_EXPORT_CACHE.with(|slot| {
+        if offset == 0 {
+            *slot = Some(build_export_image()?);
+        }
+        let Some(plan) = slot.as_ref() else {
+            // A non-zero offset with no plan means the caller never opened the
+            // stream, or the stream already ended. Either way there are no
+            // bytes, and inventing some would be worse than saying so.
+            return Ok(0);
+        };
+        if offset >= plan.len() {
+            *slot = None;
+            return Ok(0);
+        }
+        let source = ExportContentSource {
+            contents: &plan.contents,
+            byte_source: core::cell::RefCell::new(byte_source),
+        };
+        plan.image.read_at(&source, offset, out)
+    })
+}
+
+/// Discard any in-progress export. Called by [`reset`] so a fresh store never
+/// serves a chunk of the previous store's image.
+pub fn reset_image_export() {
+    IMAGE_EXPORT_CACHE.with(|slot| *slot = None);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5016,4 +5494,320 @@ mod tests {
         // that a 16-256 MiB image is never made resident in kernel memory.
         assert!(highest > 0);
     }
+
+    // -- Image export (W-3) ------------------------------------------------
+
+    /// A byte source that refuses everything. Correct for a tree with no
+    /// image-backed files: if the export reaches for host bytes anyway, the
+    /// test fails loudly instead of quietly succeeding.
+    fn no_bytes() -> impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno> {
+        |_, _| Err(Errno::ENOSYS)
+    }
+
+    /// Stream a whole export out through the public cursor, in `chunk`-sized
+    /// reads, exactly as the host will.
+    fn drain_export<F>(chunk: usize, byte_source: &mut F) -> Vec<u8>
+    where
+        F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+    {
+        let mut out = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let mut buf = alloc::vec![0u8; chunk];
+            let n = export_image_read(offset, &mut buf, byte_source).expect("export chunk");
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            offset += n as i64;
+        }
+        out
+    }
+
+    fn build_small_overlay() {
+        mkdir(b"/etc", 0o755, 0, 0).expect("mkdir /etc");
+        write_file_at(b"/etc/passwd", 0, b"root:x:0:0\n", 0o644, true, no_bytes())
+            .expect("write passwd");
+        mkdir(b"/opt", 0o700, 7, 9).expect("mkdir /opt");
+        // Crosses the ten direct blocks into the single indirect block, so the
+        // export exercises indirect allocation with streamed content.
+        let big: Vec<u8> = (0..45_000usize).map(|i| (i % 251) as u8).collect();
+        write_file_at(b"/opt/big.bin", 0, &big, 0o600, true, no_bytes()).expect("write big");
+        symlink(b"/etc/passwd", b"/pw", 0, 0).expect("symlink");
+        symlink(
+            b"/opt/a-target-path-long-enough-to-need-its-own-data-block",
+            b"/longpw",
+            0,
+            0,
+        )
+        .expect("long symlink");
+    }
+
+    #[test]
+    fn an_exported_image_mounts_and_round_trips_the_overlay() {
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount exported image");
+
+        // Directory structure and metadata.
+        let etc = fs.resolve(b"/etc", true).expect("/etc");
+        assert_eq!(fs.stat_ino(etc).unwrap().mode, S_IFDIR | 0o755);
+        let opt = fs.resolve(b"/opt", true).expect("/opt");
+        let opt_stat = fs.stat_ino(opt).unwrap();
+        assert_eq!(opt_stat.mode, S_IFDIR | 0o700);
+        assert_eq!((opt_stat.uid, opt_stat.gid), (7, 9));
+
+        // Overlay-owned bytes.
+        let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
+        let size = fs.stat_ino(passwd).unwrap().size as usize;
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(passwd, 0, &mut buf).unwrap(), size);
+        assert_eq!(buf, b"root:x:0:0\n");
+
+        // A file large enough to need the single indirect block.
+        let big = fs.resolve(b"/opt/big.bin", true).expect("/opt/big.bin");
+        let size = fs.stat_ino(big).unwrap().size as usize;
+        assert_eq!(size, 45_000);
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(big, 0, &mut buf).unwrap(), size);
+        for (i, b) in buf.iter().enumerate() {
+            assert_eq!(*b, (i % 251) as u8, "byte {i}");
+        }
+        assert_eq!(fs.stat_ino(big).unwrap().mode, S_IFREG | 0o600);
+
+        // Both symlink encodings.
+        let link = fs.resolve(b"/pw", false).expect("/pw");
+        assert_eq!(fs.read_link(link).unwrap(), b"/etc/passwd");
+        let long = fs.resolve(b"/longpw", false).expect("/longpw");
+        assert_eq!(
+            fs.read_link(long).unwrap(),
+            b"/opt/a-target-path-long-enough-to-need-its-own-data-block"
+        );
+    }
+
+    #[test]
+    fn an_exported_image_carries_the_overlay_timestamps() {
+        // The fixtures in `sffs_write` pin timestamps to zero because the
+        // TypeScript writer stamps `Date.now()`. A real exported image must
+        // carry the overlay's own mtimes, or every save would flatten them.
+        let _guard = TestGuard::acquire();
+        set_now(1_700_000_123, 456_000_000);
+        write_file_at(b"/stamped", 0, b"x", 0o644, true, no_bytes()).expect("write");
+
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let ino = fs.resolve(b"/stamped", true).expect("resolve");
+        let stat = fs.stat_ino(ino).unwrap();
+        assert_eq!(stat.mtime_ms, 1_700_000_123 * 1000 + 456);
+    }
+
+    #[test]
+    fn a_setuid_file_survives_the_export() {
+        // Both the write and the chown clear a regular file's set-user bit, so
+        // this only holds because the export applies ownership before mode.
+        let _guard = TestGuard::acquire();
+        write_file_at(b"/su", 0, b"#!/bin/sh\n", 0o4755, true, no_bytes()).expect("write");
+        chown(b"/su", 0, 0, false).expect("chown");
+
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let ino = fs.resolve(b"/su", true).expect("resolve");
+        assert_eq!(fs.stat_ino(ino).unwrap().mode & 0o7777, 0o4755);
+    }
+
+    #[test]
+    fn hard_links_export_as_one_inode_with_two_names() {
+        let _guard = TestGuard::acquire();
+        write_file_at(b"/a", 0, b"shared", 0o644, true, no_bytes()).expect("write");
+        link(b"/a", b"/b").expect("link");
+
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let a = fs.resolve(b"/a", true).expect("/a");
+        let b = fs.resolve(b"/b", true).expect("/b");
+        assert_eq!(a, b, "one inode, not a second copy");
+        assert_eq!(fs.stat_ino(a).unwrap().nlink, 2);
+        let mut buf = [0u8; 16];
+        let n = fs.read_at(a, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"shared");
+    }
+
+    #[test]
+    fn special_nodes_are_skipped_rather_than_fabricated() {
+        // A `/` image has no representation for a socket or FIFO. Inventing
+        // one would be worse than losing it, so the export counts them.
+        let _guard = TestGuard::acquire();
+        write_file_at(b"/keep", 0, b"k", 0o644, true, no_bytes()).expect("write");
+        mknod_special(b"/sock", 0o755, 0, 0, S_IFSOCK).expect("special");
+
+        let plan = build_export_image().expect("build");
+        assert_eq!(plan.skipped_special, 1);
+        drop(plan);
+
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        assert!(fs.resolve(b"/keep", true).is_ok());
+        assert!(
+            fs.resolve(b"/sock", false).is_err(),
+            "a socket must not appear as some other kind of file"
+        );
+    }
+
+    #[test]
+    fn export_is_chunk_independent() {
+        // The host reads this in scratch-region-sized chunks, so an export
+        // read at an arbitrary offset and width must agree with every other
+        // chunking of the same image.
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+
+        let reference = drain_export(1 << 20, &mut no_bytes());
+        assert!(!reference.is_empty());
+        for chunk in [1usize, 7, 512, 4095, 4096, 4097, 65536] {
+            let streamed = drain_export(chunk, &mut no_bytes());
+            assert_eq!(streamed, reference, "chunk size {chunk}");
+        }
+    }
+
+    #[test]
+    fn export_is_deterministic_for_the_same_tree() {
+        // Two exports of an unchanged tree must be identical. Without this the
+        // image could not be compared to anything, including itself.
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        let first = drain_export(8192, &mut no_bytes());
+        let second = drain_export(8192, &mut no_bytes());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn overlay_mutations_reach_the_exported_image() {
+        // The whole reason export moved off the frozen base image: the export
+        // must reflect runtime state, not the image the session booted from.
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        let before = drain_export(8192, &mut no_bytes());
+
+        unlink(b"/etc/passwd").expect("unlink");
+        write_file_at(b"/etc/group", 0, b"root:x:0:\n", 0o640, true, no_bytes())
+            .expect("write group");
+        chmod(b"/opt", 0o751).expect("chmod");
+
+        let after = drain_export(8192, &mut no_bytes());
+        assert_ne!(before, after, "a mutated tree must export differently");
+
+        let fs = crate::sffs::Sffs::mount(after.as_slice()).expect("mount");
+        assert!(fs.resolve(b"/etc/passwd", true).is_err(), "deleted file is gone");
+        let group = fs.resolve(b"/etc/group", true).expect("/etc/group");
+        assert_eq!(fs.stat_ino(group).unwrap().mode, S_IFREG | 0o640);
+        let opt = fs.resolve(b"/opt", true).expect("/opt");
+        assert_eq!(fs.stat_ino(opt).unwrap().mode, S_IFDIR | 0o751);
+    }
+
+    #[test]
+    fn image_backed_files_stream_out_of_the_loaded_image() {
+        // The end-to-end shape W-1 and W-3 exist for: the kernel reads a base
+        // file's bytes out of the `/` image it mounted, and writes them into a
+        // new image, without either image being resident in kernel memory.
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+
+        let exported = drain_export(8192, &mut image_host(&image));
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported");
+
+        // Same tree as the source image, read back out of the EXPORTED one.
+        let hello = fs.resolve(b"/hello.txt", true).expect("/hello.txt");
+        let size = fs.stat_ino(hello).unwrap().size as usize;
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(hello, 0, &mut buf).unwrap(), size);
+        assert_eq!(buf, b"hello sffs\n");
+
+        // The 45000-byte file crosses into the single indirect block on BOTH
+        // sides: streamed out of the source image's indirect blocks and written
+        // into the exported image's.
+        let big = fs.resolve(b"/big.txt", true).expect("/big.txt");
+        let size = fs.stat_ino(big).unwrap().size as usize;
+        assert_eq!(size, 45_000);
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(big, 0, &mut buf).unwrap(), size);
+        for (i, b) in buf.iter().enumerate() {
+            assert_eq!(*b, (i % 251) as u8, "byte {i}");
+        }
+
+        let nested = fs.resolve(b"/dir/nested.txt", true).expect("/dir/nested.txt");
+        let size = fs.stat_ino(nested).unwrap().size as usize;
+        let mut buf = alloc::vec![0u8; size];
+        assert_eq!(fs.read_at(nested, 0, &mut buf).unwrap(), size);
+        assert_eq!(buf, b"nested\n");
+
+        let link = fs.resolve(b"/link", false).expect("/link");
+        assert_eq!(fs.read_link(link).unwrap(), b"hello.txt");
+    }
+
+    #[test]
+    fn the_export_holds_structure_not_content() {
+        // The claim that makes W-3 streaming rather than buffering: a plan for
+        // an image full of file bytes must not hold those bytes. Measured
+        // against the plan itself, not inferred from the design.
+        let _guard = TestGuard::acquire();
+        // Eight megabytes of overlay-owned content across several files.
+        for i in 0..8 {
+            let data = alloc::vec![i as u8; 1 << 20];
+            let path = alloc::format!("/f{i}").into_bytes();
+            write_file_at(&path, 0, &data, 0o644, true, no_bytes()).expect("write");
+        }
+        let plan = build_export_image().expect("build");
+        assert!(plan.len() >= 8 << 20, "the image really is that large");
+        // Every megabyte-sized file is a reference, one per file, and the
+        // structure the plan holds is orders of magnitude smaller.
+        assert_eq!(plan.contents.len(), 8);
+        let resident = plan.image.resident_bytes();
+        assert!(
+            resident < (1 << 20),
+            "structure must stay far below the image size, was {resident}"
+        );
+        // ...and it must be a real measurement, not a zero that would make the
+        // bound above true no matter what the writer held. The inode table
+        // alone is bigger than this.
+        assert!(
+            resident > 16 * 1024,
+            "resident_bytes must count the metadata it holds, was {resident}"
+        );
+    }
+
+    #[test]
+    fn a_reset_discards_an_in_progress_export() {
+        // An export addresses the store it was built from. If a reset left the
+        // plan in place, the next chunk would serve a tree that is gone —
+        // reading overlay arena indices that now mean something else.
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        let mut source = no_bytes();
+        let mut buf = alloc::vec![0u8; 4096];
+        let first = export_image_read(0, &mut buf, &mut source).expect("first chunk");
+        assert!(first > 0);
+
+        reset();
+
+        let n = export_image_read(4096, &mut buf, &mut source).expect("after reset");
+        assert_eq!(n, 0, "a reset export must end, not serve stale bytes");
+    }
+
+    #[test]
+    fn an_unopened_export_stream_yields_nothing() {
+        // A non-zero offset with no plan is a caller error, not a reason to
+        // build an image and serve its middle as if the stream had been opened.
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        let mut buf = alloc::vec![0u8; 4096];
+        assert_eq!(
+            export_image_read(4096, &mut buf, &mut no_bytes()).expect("no plan"),
+            0
+        );
+        assert!(export_image_read(-1, &mut buf, &mut no_bytes()).is_err());
+    }
+
 }

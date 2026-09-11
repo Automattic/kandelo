@@ -1222,6 +1222,30 @@ impl SffsImage {
         self.total_blocks == 0
     }
 
+    /// Bytes this image actually holds in memory.
+    ///
+    /// The whole point of the deferred path is that emitting a 249 MiB image
+    /// does not cost 249 MiB of kernel memory, and "the design says so" is not
+    /// evidence. This makes the claim measurable: it counts the materialized
+    /// metadata — superblock, both bitmaps, the inode table, directory data,
+    /// indirect blocks — and excludes every block that is a reference into a
+    /// [`ContentSource`].
+    pub fn resident_bytes(&self) -> u64 {
+        let owned: u64 = self
+            .blocks
+            .values()
+            .map(|b| match b {
+                BlockContent::Owned(v) => v.len() as u64,
+                BlockContent::Content { .. } => 0,
+            })
+            .sum();
+        owned
+            + self.superblock.len() as u64
+            + self.inode_bitmap.len() as u64
+            + self.block_bitmap.len() as u64
+            + self.inode_table.len() as u64
+    }
+
     fn block_view(&self, n: u32) -> BlockView<'_> {
         if n == 0 {
             return BlockView::Bytes(&self.superblock);
