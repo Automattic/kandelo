@@ -60,7 +60,6 @@ export default defineConfig({
     // Runs in every test worker, before every test file. The artifact reader is
     // a wasm module now, so a suite that touches `constants.ts` needs it
     // installed the way a production entry point installs it.
-    setupFiles: ["test/setup-wasm-artifact-module.ts"],
     // Keep test files in child processes. The suite itself starts many
     // worker_threads and large shared Wasm memories; nesting that work inside
     // Vitest's thread pool has historically made task reporting unreliable

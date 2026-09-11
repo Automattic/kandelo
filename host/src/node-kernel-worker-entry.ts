@@ -56,9 +56,7 @@ import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
 // (`kernel.ts` needs the pointer width to build the import object), so the
 // artifact reader has to be reachable from this realm's first read onward.
-import { useNodeWasmArtifactModule } from "./wasm-artifact-module-node";
 
-useNodeWasmArtifactModule();
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {

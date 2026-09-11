@@ -104,6 +104,12 @@
     "./wasm/*": "./wasm/*",
     "./package.json": "./package.json"
   },
+  "imports": {
+    "#wasm-artifact-module-source": {
+      "browser": "./src/wasm-artifact-module-browser.ts",
+      "default": "./src/wasm-artifact-module-node.ts"
+    }
+  },
   "sideEffects": false,
   "files": [
     "dist",

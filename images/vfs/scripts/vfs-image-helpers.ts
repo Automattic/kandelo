@@ -18,7 +18,6 @@ import {
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
-import { useNodeWasmArtifactModule } from "../../../host/src/wasm-artifact-module-node";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 
 /**
@@ -37,7 +36,6 @@ import { ABI_VERSION } from "../../../host/src/generated/abi";
  * it actually inspects an artifact; when it does and the module is missing, the
  * failure names the build command rather than passing an unchecked image.
  */
-useNodeWasmArtifactModule();
 
 export {
   writeVfsFile,

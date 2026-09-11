@@ -40,13 +40,27 @@
  * `env.memory`, verified on every build — so instantiating it depends on
  * nothing, which dissolves that bootstrap cycle rather than working around it.
  *
- * # Installation, and why it is explicit
+ * # Installation, and why Node's is automatic
  *
  * The module's bytes arrive differently on each host: Node reads them from the
  * resolved binary tier, the browser fetches a bundler URL. Both are host
- * concerns, so neither belongs here — the host entry point that already knows
- * how to obtain artifact bytes calls {@link installWasmArtifactModule}, and
- * every read afterwards is synchronous, which is what the call sites require.
+ * concerns, so neither belongs here. The `#wasm-artifact-module-source` import
+ * below resolves to whichever of the two this realm is, through the conditions
+ * declared in `host/package.json`.
+ *
+ * On Node that registers a synchronous loader, so a realm gets the reader by
+ * REACHING this file rather than by remembering to call something. That
+ * matters: the reader must be installed once per realm, and while remembering
+ * was every entry point's job, four of them forgot — and each failed with a
+ * message about something else entirely (a package that would not build, a repo
+ * root that could not be found, a kernel "not accepted", a bundler that could
+ * not resolve an alias). "Everyone must remember" has no failure mode that
+ * names itself.
+ *
+ * On a browser the condition resolves to a file that deliberately does nothing,
+ * because `fetch` is asynchronous and every read here is synchronous. A browser
+ * worker installs explicitly at its own `await`-shaped entry, which is the same
+ * asymmetry `kernel.wasm` already has between the two hosts.
  *
  * A read before installation throws a message naming the build step, rather
  * than falling back to a JavaScript reader. There is no JavaScript reader to
@@ -59,6 +73,17 @@
  * memory, which detaches every existing `ArrayBuffer` view of it. So every view
  * is acquired fresh, immediately before use, and never held across a call.
  */
+
+// Side-effect import: on Node this registers the loader; on a browser it is
+// empty. This line is what makes installation a property of RESOLUTION instead
+// of a ritual every entry point has to repeat.
+import {
+  getInstalledModule,
+  getModuleLoader,
+  setInstalledModule,
+  setModuleLoader,
+} from "./wasm-artifact-module-registry";
+import "#wasm-artifact-module-source";
 
 /** The exports `crates/wasm-artifact-module` provides. */
 interface ArtifactModuleExports {
@@ -101,7 +126,13 @@ export class WasmArtifactModuleError extends Error {
   }
 }
 
-let exports: ArtifactModuleExports | null = null;
+// State lives in `wasm-artifact-module-registry`, a module that imports
+// nothing, so a loader registered by the side-effect import above cannot
+// arrive before this file's own bindings exist. See that file for the
+// temporal-dead-zone failure this avoids.
+function readExports(): ArtifactModuleExports | null {
+  return getInstalledModule() as ArtifactModuleExports | null;
+}
 
 /**
  * Instantiate the artifact-reader module.
@@ -115,7 +146,7 @@ let exports: ArtifactModuleExports | null = null;
 export function installWasmArtifactModule(
   source: BufferSource | WebAssembly.Module,
 ): void {
-  if (exports !== null) return;
+  if (readExports() !== null) return;
   const module = source instanceof WebAssembly.Module
     ? source
     : new WebAssembly.Module(source);
@@ -145,12 +176,12 @@ export function installWasmArtifactModule(
         + "`scripts/dev-shell.sh bash crates/wasm-artifact-module/build-wasm.sh`.",
     );
   }
-  exports = candidate;
+  setInstalledModule(candidate);
 }
 
 /** Whether {@link installWasmArtifactModule} has run in this realm. */
 export function wasmArtifactModuleInstalled(): boolean {
-  return exports !== null;
+  return readExports() !== null;
 }
 
 /**
@@ -166,7 +197,7 @@ export function wasmArtifactModuleInstalled(): boolean {
  */
 type WasmArtifactModuleLoader = () => BufferSource | WebAssembly.Module;
 
-let loader: WasmArtifactModuleLoader | null = null;
+// See `wasm-artifact-module-registry`: the loader reference lives there.
 
 /**
  * Register a synchronous source for the module's bytes.
@@ -179,7 +210,7 @@ let loader: WasmArtifactModuleLoader | null = null;
 export function setWasmArtifactModuleLoader(
   load: WasmArtifactModuleLoader,
 ): void {
-  loader = load;
+  setModuleLoader(load);
 }
 
 /**
@@ -189,15 +220,17 @@ export function setWasmArtifactModuleLoader(
  * install once at their entry point and never uninstall.
  */
 export function resetWasmArtifactModuleForTesting(): void {
-  exports = null;
-  loader = null;
+  setInstalledModule(null);
+  setModuleLoader(null);
 }
 
 function required(): ArtifactModuleExports {
-  if (exports === null && loader !== null) {
-    installWasmArtifactModule(loader());
+  const registeredLoader = getModuleLoader();
+  if (readExports() === null && registeredLoader !== null) {
+    installWasmArtifactModule(registeredLoader());
   }
-  if (exports === null) {
+  const current = readExports();
+  if (current === null) {
     throw new Error(
       "the wasm-artifact module has not been installed in this realm, so no "
         + "artifact can be read. A host entry point must call "
@@ -207,7 +240,7 @@ function required(): ArtifactModuleExports {
         + "crates/wasm-artifact-module/build-wasm.sh`.",
     );
   }
-  return exports;
+  return current;
 }
 
 // ---------------------------------------------------------------------------

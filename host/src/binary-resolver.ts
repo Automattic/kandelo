@@ -28,6 +28,21 @@ import {
   statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+
+// The tier roots live in their own leaf module so the artifact reader's Node
+// source can share them without importing this file. See `binary-tiers.ts`:
+// the reader cannot resolve its own bytes through `resolveBinary`, because
+// `resolveBinary` validates candidates against the policy the reader answers.
+import {
+  binaryTierRoots,
+  currentModuleDir,
+  findRepoRoot,
+  hasSourceCheckout,
+  packageRoot,
+  resolverRepoRoot,
+} from "./binary-tiers";
+
+export { findRepoRoot, resolverRepoRoot };
 import { spawnSync } from "node:child_process";
 import {
   basename,
@@ -49,89 +64,12 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
 /**
- * Walk up from the importing file to find the repo root. Markers:
- * workspace `Cargo.toml` + `package.json`. Both are tracked at the
- * top of the tree and together are unambiguous — they distinguish
- * the repo root from any nested cargo crate or npm subpackage.
- *
  * Per-package `packages/registry/<name>/package.toml` files carry the
  * release-archive metadata directly (URL + sha256 in `[binary]` /
- * `[binary.<arch>]`); there is no central pinfile for the resolver
- * to read.
- */
-let cachedRepoRoot: string | null = null;
-
-function currentModuleDir(): string {
-  if (typeof __dirname !== "undefined") return __dirname;
-  return import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
-}
-
-function isRepoRoot(dir: string): boolean {
-  // Workspace Cargo.toml has a [workspace] table; nested crate
-  // Cargo.tomls do not. The package identity matters too: an installed host
-  // package may live below an unrelated consumer's Cargo/npm workspace, which
-  // must not be mistaken for a Kandelo source checkout.
-  const cargo = join(dir, "Cargo.toml");
-  const packageJson = join(dir, "package.json");
-  if (!existsSync(cargo) || !existsSync(packageJson)) {
-    return false;
-  }
-  try {
-    const packageIdentity = JSON.parse(readFileSync(packageJson, "utf8"));
-    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"))
-      && packageIdentity?.name === "kandelo";
-  } catch {
-    return false;
-  }
-}
-
-export function findRepoRoot(startFrom?: string): string {
-  if (cachedRepoRoot && !startFrom) return cachedRepoRoot;
-  const here = startFrom ?? currentModuleDir();
-  let dir = resolve(here);
-  for (let i = 0; i < 20; i++) {
-    if (isRepoRoot(dir)) {
-      if (!startFrom) cachedRepoRoot = dir;
-      return dir;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error(
-    "Could not find repo root (expected workspace Cargo.toml + package.json)"
-  );
-}
-
-/**
- * The repo root every tier in this file is measured from.
+ * `[binary.<arch>]`); there is no central pinfile for the resolver to read.
  *
- * Exported because the artifact reader's own bytes are resolved by path rather
- * than through `resolveBinary` (see `wasm-artifact-module-node.ts`), and a
- * "same tiers, same order" claim is only true if it starts from the same root.
- * The `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT` override is what makes that root
- * knowable to a realm whose own module path is not inside the checkout — a Node
- * process worker running as an esbuild bundle under the OS temp directory, for
- * one, which is what `worker-adapter.ts` produces whenever `host/dist` has not
- * been built yet.
+ * Repo-root discovery itself now lives in `binary-tiers.ts`, imported above.
  */
-export function resolverRepoRoot(): string {
-  const explicitStart = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
-  return explicitStart ? findRepoRoot(explicitStart) : findRepoRoot();
-}
-
-function packageRoot(): string {
-  return resolve(currentModuleDir(), "..");
-}
-
-function hasSourceCheckout(): boolean {
-  try {
-    resolverRepoRoot();
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Cache root used by xtask for immutable package generations.
@@ -295,54 +233,41 @@ export class BinaryNotFoundError extends Error {
  * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
-  const tiers: BinaryCandidateTier[] = [];
-  let sourceCheckout = false;
-  try {
-    const repo = resolverRepoRoot();
-    sourceCheckout = true;
-    const sourceOnlyRoot = join(repo, "local-binaries", "source-only-v1");
-    if (existsSync(sourceOnlyRoot)) {
-      tiers.push({
-        label: "source-only-v1",
-        root: sourceOnlyRoot,
-        identity: "source-only-generation",
-        allowRegularFileClosure: false,
-        candidatesFor(relPath: string): string[] {
-          return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
-        },
-      });
-    }
-    for (const [label, root] of [
-      ["local-binaries", join(repo, "local-binaries")],
-      ["binaries", join(repo, "binaries")],
-    ] as const) {
-      tiers.push({
+  // The ROOTS and their order come from `binary-tiers.ts`, which the artifact
+  // reader's Node source reads too. The per-tier POLICY -- identity, closure
+  // rules, how a relative path becomes candidates -- stays here, because only
+  // this file needs it. That split is the point: the reader needs the same
+  // places in the same order and nothing else, and it used to get them from a
+  // hand-maintained second copy that drifted in both directions.
+  const sourceCheckout = hasSourceCheckout();
+  return binaryTierRoots().map(({ label, root, kind }): BinaryCandidateTier => {
+    if (kind === "installed-package") {
+      return {
         label,
         root,
-        identity: label === "local-binaries"
+        identity: "installed-package",
+        // A checkout's installed-package tier is a staging directory, not a
+        // distribution, so regular-file closure stays off while sources exist.
+        allowRegularFileClosure: !sourceCheckout,
+        candidatesFor(relPath: string): string[] {
+          return packagedBinaryCandidates(relPath, root);
+        },
+      };
+    }
+    return {
+      label,
+      root,
+      identity: kind === "source-only-v1"
+        ? "source-only-generation"
+        : kind === "local-binaries"
           ? "local-generation"
           : "program-cache",
-        allowRegularFileClosure: false,
-        candidatesFor(relPath: string): string[] {
-          return [join(root, applyDefaultArch(relPath))];
-        },
-      });
-    }
-  } catch {
-    // Installed npm consumers do not carry a source repo root.
-  }
-
-  const root = join(packageRoot(), "wasm");
-  tiers.push({
-    label: "installed package",
-    root,
-    identity: "installed-package",
-    allowRegularFileClosure: !sourceCheckout,
-    candidatesFor(relPath: string): string[] {
-      return packagedBinaryCandidates(relPath, root);
-    },
+      allowRegularFileClosure: false,
+      candidatesFor(relPath: string): string[] {
+        return [join(root, applyDefaultArch(relPath))];
+      },
+    };
   });
-  return tiers;
 }
 
 interface ProgramPackageClosureMember {

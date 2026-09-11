@@ -1,85 +1,90 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { resolverRepoRoot } from "./binary-resolver";
-import { setWasmArtifactModuleLoader } from "./wasm-artifact-driver";
+import { binaryTierRoots } from "./binary-tiers";
+import { setModuleLoader } from "./wasm-artifact-module-registry";
 
 /**
  * Node's source for the artifact-reader module's bytes.
  *
- * Kept in its own file, and out of `wasm-artifact-driver.ts`, for the same
- * reason `browser-wasm-artifact-module-artifact.ts` is separate: a static
+ * Kept in its own file, and out of `wasm-artifact-driver.ts`, because a static
  * `node:fs` import in the driver would break every browser bundle that reads an
- * artifact, which is all of them.
+ * artifact, which is all of them. The driver reaches it through the
+ * `#wasm-artifact-module-source` subpath in `host/package.json`, whose `browser`
+ * condition resolves elsewhere.
+ *
+ * # Why this registers itself, rather than waiting to be called
+ *
+ * It used to export `useNodeWasmArtifactModule()`, and every Node entry point
+ * had to remember to call it: the process worker, the kernel worker, the
+ * main-thread host, the VFS image scripts, the browser app's Vite config, the
+ * Vitest setup file. **Four realms forgot**, and not one of them failed with a
+ * message about a missing artifact reader -- they failed as a package that
+ * would not build, a repo root that could not be found, a kernel "not
+ * accepted", and a bundler that could not resolve an alias. "Everyone must
+ * remember" has no failure mode that names itself; that was the whole defect.
+ *
+ * Registration is now a consequence of RESOLUTION. Any realm that can reach the
+ * driver has already reached this file, so there is nothing left to forget.
+ *
+ * An earlier attempt at this was reverted, and the reason is why
+ * `binary-tiers.ts` exists. This file used to import `resolverRepoRoot` from
+ * `binary-resolver.ts`, which imports the driver, which imports this file.
+ * Native ESM tolerates that cycle because both ends are hoisted function
+ * declarations; Vitest's SSR transform rewrites imports into bindings that are
+ * not, and the suite refused to collect with `Cannot access
+ * '__vite_ssr_import_N__' before initialization`. `binary-tiers.ts` is a leaf --
+ * it imports nothing from the host runtime -- so the cycle is gone rather than
+ * worked around.
  *
  * # Why this resolves by path instead of calling `resolveBinary`
  *
  * `resolveBinary` validates every `.wasm` candidate it considers against the
- * artifact policy — and the artifact policy is what this module answers. Routing
- * the reader's own bytes through it would mean: resolve the reader, validate the
- * reader, ask the reader whether the reader is valid, resolve the reader. That
- * is not a deadlock to work around but a real bootstrap boundary, the same one
- * that makes `kernel.ts` read a pointer width before it can compile a kernel:
- * the thing that judges artifacts cannot be the thing that admits itself.
+ * artifact policy -- and the artifact policy is what this module answers.
+ * Routing the reader's own bytes through it would mean: resolve the reader,
+ * validate the reader, ask the reader whether the reader is valid. That is not
+ * a deadlock to work around but a real bootstrap boundary, the same one that
+ * makes `kernel.ts` read a pointer width before it can compile a kernel: the
+ * thing that judges artifacts cannot be the thing that admits itself.
  *
- * So the reader is resolved by path, over the same three tiers `resolveBinary`
- * searches, in the same order, and from the same repo root — `resolverRepoRoot`,
- * not a bare `findRepoRoot`. The root matters because a Node process worker does
- * not always run from inside the checkout: with no `host/dist` built,
- * `worker-adapter.ts` esbuild-bundles the worker entry into the OS temp
- * directory, and walking up from THAT module's directory finds no repo at all.
- * `resolverRepoRoot` honours `WASM_POSIX_BINARY_RESOLVER_REPO_ROOT`, which the
- * local-build engine sets on every package-build child, so a build-time kernel
- * boot can read artifacts instead of failing with "Could not find repo root".
+ * What that gives up is exactly one check, and it is covered better elsewhere:
+ * the build verifies the module imports NOTHING and stamps a closure-derived
+ * build key, so a stale module fails `verify-fresh`; and
+ * `installWasmArtifactModule` refuses a module whose `wa_*` surface or wire
+ * version does not match this host.
  *
- * What this path gives up is exactly one check, and that check is covered
- * better elsewhere:
+ * # Why the tiers come from `binary-tiers.ts`
  *
- *   * the build verifies the module imports NOTHING and stamps a
- *     closure-derived build key, so a stale module fails `verify-fresh`;
- *   * `installWasmArtifactModule` refuses a module whose `wa_*` surface or wire
- *     version does not match this host, which is the mismatch the policy gate
- *     would have been looking for.
- *
- * A missing module is a loud, named failure rather than a fallback: there is no
- * JavaScript reader to fall back to, and a silent fallback is how two of the
- * three previous copies of this code stayed alive.
+ * They used to be a hand-maintained copy of the resolver's list, and it carried
+ * three defects. It had drifted in both directions, as its own comment
+ * admitted. It rooted the installed-package tier at `<repo>/host/wasm`, which
+ * is only right by accident in a checkout. And -- the one nobody had written
+ * down -- it called `resolverRepoRoot()` unguarded before searching, so an
+ * INSTALLED consumer, which has no repo root, threw "Could not find repo root"
+ * before it could reach its own tier. Since this module is what validates every
+ * artifact, an installed consumer could not read any artifact, and so could not
+ * boot. Sharing the resolver's roots fixes all three at once, and there is no
+ * longer a second list to keep in step.
  */
-
-/**
- * The tiers `resolveBinary` searches, in its order.
- *
- * This list must stay identical to `binaryCandidateTiers()` in
- * `binary-resolver.ts`, because the whole point of resolving by path is to give
- * up the policy check and NOTHING else. It had drifted in both directions: it
- * omitted `local-binaries/source-only-v1` — the tier a completed local build
- * actually writes, and the resolver's FIRST — and it ranked the installed
- * package's `host/wasm` above `binaries`, which is the reverse of the
- * resolver's order.
- *
- * The consequence was not subtle. A worktree whose only copy of the module was
- * the freshly built one reported "the wasm-artifact module has not been
- * installed in this realm", and since this module is what reads every artifact,
- * that failure propagates to every artifact-policy decision in the host. A
- * worktree that ALSO had an older copy at `local-binaries/` silently read the
- * older one instead of the one the build had just produced — the same
- * two-locations-for-one-artifact defect that lets a stale kernel be served.
- */
-const MODULE_TIERS = [
-  "local-binaries/source-only-v1",
-  "local-binaries",
-  "binaries",
-  "host/wasm",
-] as const;
 
 const MODULE_FILE = "wasm_artifact_module32.wasm";
 
+/**
+ * Register the loader.
+ *
+ * Registered as a LOADER rather than an eager install, so a realm that never
+ * reads an artifact never reads `wasm_artifact_module32.wasm` from disk, and
+ * importing this file cannot itself trigger a filesystem walk at import time.
+ *
+ * A missing module is a loud, named failure rather than a fallback: there is no
+ * JavaScript reader to fall back to, and a silent fallback is how two of the
+ * three previous copies of that reader stayed alive.
+ */
 export function useNodeWasmArtifactModule(): void {
-  setWasmArtifactModuleLoader(() => {
-    const repoRoot = resolverRepoRoot();
+  setModuleLoader(() => {
     const searched: string[] = [];
-    for (const tier of MODULE_TIERS) {
-      const candidate = join(repoRoot, ...tier.split("/"), MODULE_FILE);
+    for (const { root } of binaryTierRoots()) {
+      const candidate = join(root, MODULE_FILE);
       searched.push(candidate);
       if (existsSync(candidate)) return readFileSync(candidate);
     }
@@ -91,3 +96,5 @@ export function useNodeWasmArtifactModule(): void {
     );
   });
 }
+
+useNodeWasmArtifactModule();
