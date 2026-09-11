@@ -1741,7 +1741,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     argv: string[],
     depth = 0,
   ): Promise<ResolvedSpawnProgram | { errno: number } | null> {
-    if (depth > MAX_SHEBANG_DEPTH) return null;
     const bytes = await readExecFile(path);
     if (!bytes) return null;
 
@@ -1768,6 +1767,15 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       }
       return { programBytes: bytes, programModule, argv };
     }
+
+    // A `#!` interpreter that is itself a `#!` script is a nested chain. The
+    // kernel refuses it with ENOEXEC (`resolve_shebang`,
+    // crates/runtime-core/src/exec_target.rs), so the preflight must refuse it
+    // with the same errno at the same depth. Admitting it here would let
+    // `kernel_spawn_process` build the child and apply `file_actions` before
+    // the authoritative resolve reached the same ENOEXEC — the exact
+    // create-a-doomed-child outcome this preflight exists to prevent.
+    if (depth >= MAX_SHEBANG_DEPTH) return { errno: ENOEXEC };
 
     const scriptArgv = [
       shebang.interpreter,
@@ -4786,8 +4794,24 @@ export class ExecOverlayReadTimeoutError extends Error {
   }
 }
 
-/** How deep a `#!` interpreter chain may nest before exec gives up. */
-export const MAX_SHEBANG_DEPTH = 4;
+/**
+ * How many `#!` interpreter retargets exec performs before refusing the chain.
+ *
+ * This is not a host policy: it mirrors the kernel's limit exactly.
+ * `resolve_shebang` (crates/runtime-core/src/exec_target.rs) resolves exactly
+ * one level and fails `ENOEXEC` when the decoded interpreter is itself a
+ * script, and `launchPreparedExecTarget` (host/src/exec-target.ts) is the
+ * authority every real launch goes through. The preflight must not admit a
+ * chain the authority will reject.
+ *
+ * GAP (Linux divergence, deliberate and inherited): Linux allows ~4 binfmt
+ * rewrites before failing `ELOOP` (`fs/exec.c`, `exec_binprm`). Kandelo
+ * resolves one level and reports `ENOEXEC`, a scope decision recorded in
+ * docs/superpowers/plans/2026-09-04-n1-i3d-native-execveat-shebang.md and
+ * pinned by `resolve_shebang_rejects_a_nested_interpreter_chain_without_leaking_tokens`.
+ * Raising the limit is a kernel change, not a host one.
+ */
+export const MAX_SHEBANG_DEPTH = 1;
 
 /**
  * The interpreter line of a `#!` script, or null when `bytes` is not a script.
