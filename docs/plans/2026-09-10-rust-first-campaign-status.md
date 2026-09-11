@@ -4716,10 +4716,47 @@ believed: under a uniform failure rate the probability that some value collects
 ≥3 of 4 failures is ≈7%. Suggestive, not significant, and not reported as a
 minimum.
 
-**Properly powered stage 2 is running:** 0 ms versus 50 ms only — the single case
-that has ever failed — 80 runs, 40 per arm, interleaved. At 40 samples a 5% rate
-yields zero failures only 13% of the time, so a clean arm becomes evidence
-instead of a coin flip.
+### Stage 2 — RESOLVED. The constant is necessary, and now for a reason
+
+0 ms versus 50 ms, the single case that has ever failed, 40 runs per arm,
+interleaved:
+
+| arm | result |
+|---|---|
+| 50 ms | **40 PASS / 0 FAIL** |
+| 0 ms | **33 PASS / 7 FAIL** |
+
+**Fisher one-sided p = 0.006.** The constant does real work, 0 ms is
+insufficient, and **stage 1's clean 12/12 at 0 ms was a false negative** — which
+is the same underpowered draw the original study made, landing the other way.
+
+**What the evidence bounds, and no more:**
+
+- **Insufficient:** 0 ms (7/40), 1 ms (3/12), 5 ms (1/12). One observed failure
+  settles a value.
+- **Unresolved:** 2, 10 and 20 ms — zero failures in twelve each, which proves
+  nothing at this event rate.
+- **Sufficient:** 50 ms — zero failures in **52** runs.
+
+**50 is not minimal.** It is the smallest value tested that survived an
+adequately powered sample. Lowering it to 10 or 20 needs its own powered round,
+against a latency cost nobody has shown matters. **That is an open maintainer
+decision, recorded rather than silently deferred.**
+
+The landed diff is **comment-only** — the value is unchanged, so there is no
+behaviour change. The comment now also records two things the code does not
+show: this is a **duration, not a switch** (at 0 the wake still takes a timer
+turn; the synchronous path is `scheduleWakeBlockedRetries`), and an explicit
+instruction not to lower it on a twelve-run result.
+
+**Why the EINTR change did not move the mechanism.** The 0 ms failure output is
+`0 | POLLIN` with **no `SIGUSR1` line at all** — the handler never ran. The delay
+is upstream of delivery: it buys the signal a chance to be *seen* before `ppoll`
+completes on the pipe event and restores the mask. The test accepts both
+`SIGUSR1` + `0 | POLLIN` and `SIGUSR1` + `ppoll: EINTR`; the EINTR change decides
+*which* accepted output a passing run produces, and **both still require the
+`SIGUSR1` line**. Mechanism unchanged — predicted from reading the test, then
+confirmed by measurement.
 
 ### B31 — tuning constants whose evidence predates the link-contract fix
 
