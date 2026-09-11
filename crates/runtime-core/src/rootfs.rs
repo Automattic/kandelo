@@ -93,9 +93,14 @@ const ROOTFS_DEV: u64 = 0x7300_0000;
 /// arrive in Increment 2b.
 enum InodeKind {
     Dir(BTreeMap<Vec<u8>, u32>),
-    /// A base regular file: bytes live in the host byte store, addressed by
-    /// `blob_id`; `size` is authoritative metadata from the manifest.
-    BaseRegular { blob_id: u64, size: u64 },
+    /// A base regular file: immutable content the overlay did not create.
+    /// `size` is authoritative metadata from whichever loader placed the node,
+    /// and `source` says where the bytes come from — see [`BaseSource`].
+    BaseRegular {
+        blob_id: u64,
+        size: u64,
+        source: BaseSource,
+    },
     /// A Rust-owned mutable regular file: either created under `/` at runtime or
     /// a base file copied-on-write on first write. Bytes live in kernel memory.
     Regular(Vec<u8>),
@@ -116,6 +121,29 @@ enum InodeKind {
         source_path: Vec<u8>,
         size: u64,
     },
+}
+
+/// Where a [`InodeKind::BaseRegular`] file's bytes come from.
+///
+/// The `/` image is the kernel's own artifact: since the boot cutover the
+/// kernel mounts it and walks it ([`load_image`]), so for an ordinary file in
+/// that image the kernel can also *read* it, through the same SFFS cursor, and
+/// needs no host byte store at all. That is the whole point of `Image`: a base
+/// file's bytes stop being something the host resolves by path on the kernel's
+/// behalf and become something the kernel addresses in the artifact it already
+/// parsed.
+///
+/// `Host` is what remains: bytes the image genuinely does not carry. Today that
+/// is a URL-backed lazy file — the image records only its real size, and the
+/// host owns the transport that fetches it — plus a base tree placed by
+/// [`load_manifest`], where the host walked a filesystem the kernel never saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseSource {
+    /// The bytes are in the `/` image, at SFFS inode `blob_id`. Served by the
+    /// kernel's own SFFS reader; no host byte-store call.
+    Image,
+    /// The bytes are in the host's byte store, addressed by `blob_id`.
+    Host,
 }
 
 struct Inode {
@@ -247,6 +275,29 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// Where the `/` VFS image's SFFS filesystem lives inside the container,
+    /// and the superblock geometry [`load_image`] already validated. `None`
+    /// until an image is loaded, and cleared by `reset()` with the rest of the
+    /// store, so a failed load never leaves a geometry pointing at a tree that
+    /// is not there.
+    ///
+    /// Held because the image is the byte store for every `BaseSource::Image`
+    /// file, for the life of the session — not just for the boot walk.
+    image: Option<ImageGeometry>,
+}
+
+/// The `/` image's container-relative SFFS span plus its validated superblock
+/// geometry. Enough to re-address the image's filesystem on any later read
+/// without re-parsing the container header or the superblock.
+#[derive(Debug, Clone, Copy)]
+struct ImageGeometry {
+    /// Length of the whole VFSI container, as the host declared it at load.
+    image_len: u64,
+    /// Byte offset of the SFFS filesystem within the container.
+    sffs_offset: u64,
+    /// Byte length of the SFFS filesystem.
+    sffs_len: u64,
+    sffs: crate::sffs::SffsGeometry,
 }
 
 /// Registry entry for one lazy archive: manifest-authoritative `size`, plus a
@@ -275,6 +326,7 @@ impl RootfsState {
             free_dir_iters: Vec::new(),
             next_ino: 1,
             archives: BTreeMap::new(),
+            image: None,
         }
     }
 
@@ -1015,11 +1067,44 @@ pub fn insert_base_file(
     gid: u32,
     ino: u64,
 ) -> Result<(), Errno> {
+    insert_base_file_from(path, blob_id, size, mode, uid, gid, ino, BaseSource::Host)
+}
+
+/// Insert a base regular file whose bytes are served by the kernel from the `/`
+/// image itself, at SFFS inode `ino`. The image-authoritative counterpart to
+/// [`insert_base_file`]: same node, no host byte store behind it.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_image_file(
+    path: &[u8],
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ino: u64,
+) -> Result<(), Errno> {
+    insert_base_file_from(path, ino, size, mode, uid, gid, ino, BaseSource::Image)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_base_file_from(
+    path: &[u8],
+    blob_id: u64,
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ino: u64,
+    source: BaseSource,
+) -> Result<(), Errno> {
     ROOTFS.with(|state| {
         state.bump_next_ino(ino);
         let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
         let child = state.insert_inode(Inode::new(
-            InodeKind::BaseRegular { blob_id, size },
+            InodeKind::BaseRegular {
+                blob_id,
+                size,
+                source,
+            },
             mode & 0o7777,
             uid,
             gid,
@@ -1396,6 +1481,51 @@ impl<S: crate::sffs::BlockSource> crate::sffs::BlockSource for SubSource<'_, S> 
     }
 }
 
+/// Read from SFFS inode `ino` of the loaded `/` image, through the same reader
+/// [`load_image`] walked the tree with.
+///
+/// This is what `BaseSource::Image` means at the byte level. The host's whole
+/// part is `ByteReq::Image`: a positioned window onto one container it already
+/// holds. It resolves no name, is never told which file is being read, and
+/// keeps no inode-to-path map to be asked with.
+///
+/// `EIO` when no image is loaded — a `BaseSource::Image` node can only have
+/// been placed by [`load_image`], which records the geometry before it inserts
+/// the first one, so reaching this without a geometry is a kernel bug, not a
+/// host or image condition.
+fn read_image_bytes<F>(
+    ino: u32,
+    offset: u64,
+    dst: &mut [u8],
+    byte_source: &mut F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    let geometry = ROOTFS.with(|state| state.image).ok_or(Errno::EIO)?;
+    let source = HostImageSource {
+        byte_source: core::cell::RefCell::new(&mut *byte_source),
+        len: geometry.image_len,
+    };
+    let filesystem = crate::sffs::Sffs::from_geometry(
+        SubSource {
+            inner: &source,
+            offset: geometry.sffs_offset,
+            len: geometry.sffs_len,
+        },
+        geometry.sffs,
+    );
+    filesystem.read_at(ino, offset, dst)
+}
+
+/// The SFFS inode number behind a `BaseSource::Image` node. `blob_id` is that
+/// inode number by construction ([`insert_image_file`] passes one value for
+/// both), so a value that does not fit `u32` is a corrupt store rather than a
+/// large image.
+fn image_ino(blob_id: u64) -> Result<u32, Errno> {
+    u32::try_from(blob_id).map_err(|_| Errno::EIO)
+}
+
 /// A directory whose children still have to be walked, plus the absolute path
 /// they hang off. The walk uses an explicit stack rather than recursion: image
 /// depth is untrusted input in a browser (a shared boot descriptor can name an
@@ -1496,6 +1626,20 @@ where
         len: sffs_len,
     })?;
 
+    // Remember where the filesystem is, and what `mount` just validated about
+    // it, BEFORE the walk. Every `BaseSource::Image` node the walk inserts is a
+    // promise that the kernel can come back for those bytes later, and this is
+    // the only record of how. It is recorded inside the same call that
+    // validated it, so a geometry can never outlive a successful mount: the
+    // `reset()` on any error below drops it again.
+    let image_geometry = ImageGeometry {
+        image_len,
+        sffs_offset,
+        sffs_len,
+        sffs: filesystem.geometry(),
+    };
+    ROOTFS.with(|state| state.image = Some(image_geometry));
+
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
         return Err(Errno::EINVAL); // `/` is not a directory in the image
@@ -1588,9 +1732,11 @@ where
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
                         }
+                        // Not deferred at all: the bytes are IN this image, at
+                        // this inode, and the kernel reads them itself.
                         None => {
-                            insert_base_file(
-                                &abs, ino, stat.size, stat.mode, stat.uid, stat.gid, ino,
+                            insert_image_file(
+                                &abs, stat.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
                         }
                     }
@@ -1943,11 +2089,19 @@ where
     enum Base {
         None,
         BaseRegular(u64, u64),
+        ImageRegular(u32, u64),
         LazyMember(u32, Vec<u8>),
     }
     let base = ROOTFS.with(|state| match state.get(idx) {
         Some(inode) => match &inode.kind {
-            InodeKind::BaseRegular { blob_id, size } => Ok(Base::BaseRegular(*blob_id, *size)),
+            InodeKind::BaseRegular {
+                blob_id,
+                size,
+                source,
+            } => match source {
+                BaseSource::Image => Ok(Base::ImageRegular(image_ino(*blob_id)?, *size)),
+                BaseSource::Host => Ok(Base::BaseRegular(*blob_id, *size)),
+            },
             InodeKind::Regular(_) => Ok(Base::None),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
@@ -1984,6 +2138,26 @@ where
                     // Re-check: only convert if still a base file (no
                     // reentrancy in the single-threaded kernel, but keep the
                     // store the source of truth).
+                    if matches!(inode.kind, InodeKind::BaseRegular { .. }) {
+                        inode.kind = InodeKind::Regular(data);
+                    }
+                }
+            });
+            Ok(())
+        }
+        Base::ImageRegular(ino, size) => {
+            let mut data = alloc::vec![0u8; size as usize];
+            let mut filled = 0usize;
+            while filled < data.len() {
+                let n = read_image_bytes(ino, filled as u64, &mut data[filled..], byte_source)?;
+                if n == 0 {
+                    break; // short read: trust the image's size but never spin
+                }
+                filled += n;
+            }
+            data.truncate(filled);
+            ROOTFS.with(|state| {
+                if let Some(inode) = state.get_mut(idx) {
                     if matches!(inode.kind, InodeKind::BaseRegular { .. }) {
                         inode.kind = InodeKind::Regular(data);
                     }
@@ -2112,6 +2286,7 @@ where
     enum Plan {
         Done(usize),
         Base(u64, u64),
+        Image(u32, u64),
         Lazy(u32, Vec<u8>, u64),
     }
     let plan = ROOTFS.with(|state| {
@@ -2126,7 +2301,14 @@ where
                 buf[..n].copy_from_slice(&data[start..start + n]);
                 Ok(Plan::Done(n))
             }
-            InodeKind::BaseRegular { blob_id, size } => Ok(Plan::Base(*blob_id, *size)),
+            InodeKind::BaseRegular {
+                blob_id,
+                size,
+                source,
+            } => match source {
+                BaseSource::Image => Ok(Plan::Image(image_ino(*blob_id)?, *size)),
+                BaseSource::Host => Ok(Plan::Base(*blob_id, *size)),
+            },
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
             InodeKind::Special(_) => Err(Errno::EINVAL),
@@ -2146,6 +2328,14 @@ where
             }
             let n = core::cmp::min(buf.len() as u64, size - start) as usize;
             byte_source(ByteReq::Base { blob_id, offset: start }, &mut buf[..n])
+        }
+        Plan::Image(ino, size) => {
+            let start = offset as u64;
+            if start >= size {
+                return Ok(0);
+            }
+            let n = core::cmp::min(buf.len() as u64, size - start) as usize;
+            read_image_bytes(ino, start, &mut buf[..n], &mut byte_source)
         }
         Plan::Lazy(archive_id, source_path, size) => {
             let start = offset as u64;
@@ -4532,6 +4722,154 @@ mod tests {
         let n = readlink(b"/link", &mut target).expect("readlink");
         assert_eq!(n, link.st_size as usize);
         assert!(!target[..n].is_empty());
+    }
+
+    /// The point of the whole item: after `load_image`, an ordinary file's
+    /// BYTES come out of the image too, not out of a host byte store.
+    ///
+    /// `image_host` answers `ByteReq::Base` with `ENOSYS`, so this test cannot
+    /// pass by accident — a read that still reached for the host blob store
+    /// would fail rather than quietly return the same bytes by another route.
+    #[test]
+    fn image_backed_file_bytes_are_served_from_the_image() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let mut host = image_host(&image);
+        load_image(image.len() as u64, &mut host).expect("load image");
+
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).expect("open");
+        let mut buf = [0u8; 32];
+        let n = read(handle, 0, &mut buf, &mut host).expect("read");
+        assert_eq!(n, 11);
+        assert_eq!(&buf[..n], b"hello sffs\n");
+
+        // Positioned read inside the file, and the EOF clamp.
+        let mut tail = [0u8; 32];
+        let n = read(handle, 6, &mut tail, &mut host).expect("read at 6");
+        assert_eq!(&tail[..n], b"sffs\n");
+        assert_eq!(read(handle, 11, &mut tail, &mut host).expect("read at EOF"), 0);
+        release_handle(handle);
+    }
+
+    /// 45,000 bytes is past SFFS's ten direct block pointers, so this read
+    /// exercises the single-indirect path through the same host image window.
+    #[test]
+    fn image_backed_read_spans_indirect_blocks() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let mut host = image_host(&image);
+        load_image(image.len() as u64, &mut host).expect("load image");
+
+        let handle = open(b"/big.txt", O_RDONLY, 0, 0, 0).expect("open");
+        let mut whole = alloc::vec![0u8; 45_000];
+        let mut filled = 0usize;
+        while filled < whole.len() {
+            let n = read(handle, filled as i64, &mut whole[filled..], &mut host).expect("read");
+            assert_ne!(n, 0, "short read at {filled}");
+            filled += n;
+        }
+        assert_eq!(filled, 45_000);
+
+        // Cross-check against a DIRECT mount of the same image: same bytes,
+        // reached without the store, without the remembered geometry, and
+        // without `Sffs::from_geometry`. If the plumbing this item adds ever
+        // mis-addresses a block, the two disagree.
+        let direct_source = crate::sffs::unwrap_vfsi(&image).expect("vfsi body");
+        let direct = crate::sffs::Sffs::mount(direct_source).expect("direct mount");
+        let big_ino = direct.resolve(b"/big.txt", true).expect("resolve");
+        let mut expected = alloc::vec![0u8; 45_000];
+        let mut done = 0usize;
+        while done < expected.len() {
+            let n = direct
+                .read_at(big_ino, done as u64, &mut expected[done..])
+                .expect("direct read");
+            assert_ne!(n, 0);
+            done += n;
+        }
+        assert_eq!(whole, expected);
+        // Reading past the last block stops at the file size, not at a block
+        // boundary.
+        let mut past = [0u8; 8];
+        assert_eq!(read(handle, 45_000, &mut past, &mut host).expect("EOF"), 0);
+        release_handle(handle);
+    }
+
+    /// Copy-on-write of an image-backed file pulls the base bytes from the
+    /// image, not from the host.
+    #[test]
+    fn image_backed_copy_on_write_materializes_from_the_image() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let mut host = image_host(&image);
+        load_image(image.len() as u64, &mut host).expect("load image");
+
+        // O_RDWR == 2.
+        let handle = open(b"/hello.txt", 2, 0, 0, 0).expect("open");
+        assert_eq!(write(handle, 0, b"HELLO", &mut host).expect("write"), 5);
+        let mut buf = [0u8; 32];
+        let n = read(handle, 0, &mut buf, &mut host).expect("read");
+        assert_eq!(&buf[..n], b"HELLO sffs\n", "the un-overwritten tail is the image's");
+        release_handle(handle);
+    }
+
+    /// A URL-backed lazy file is the one base-file case the image genuinely
+    /// does not carry: its inode is a stub and only its real size is in the
+    /// `KLZY` section. Those bytes must keep coming from the host byte store,
+    /// so this asserts the request the kernel makes is `ByteReq::Base` with the
+    /// file's inode number — the contract `host_blob_read` answers.
+    #[test]
+    fn url_backed_lazy_file_still_reads_through_the_host_byte_store() {
+        let _guard = TestGuard::acquire();
+        // ino 2 is `/hello.txt`; declare it URL-backed with a size the image
+        // inode does not carry.
+        let section = klzy_section(&[], &[(2, 5, 0, "")]);
+        let image = tiny_vfs_with_kernel_lazy(&section);
+        let asked = core::cell::Cell::new(0u32);
+        let mut host = |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
+            match req {
+                ByteReq::Image { offset } => {
+                    let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+                    if start >= image.len() {
+                        return Ok(0);
+                    }
+                    let n = core::cmp::min(buf.len(), image.len() - start);
+                    buf[..n].copy_from_slice(&image[start..start + n]);
+                    Ok(n)
+                }
+                ByteReq::Base { blob_id, offset } => {
+                    assert_eq!(blob_id, 2, "addressed by the file's inode number");
+                    assert_eq!(offset, 0);
+                    asked.set(asked.get() + 1);
+                    let bytes = b"fetch";
+                    let n = core::cmp::min(buf.len(), bytes.len());
+                    buf[..n].copy_from_slice(&bytes[..n]);
+                    Ok(n)
+                }
+                ByteReq::Archive { .. } => Err(Errno::ENOSYS),
+            }
+        };
+        load_image(image.len() as u64, &mut host).expect("load image");
+        assert_eq!(asked.get(), 0, "the tree walk reads no file content");
+
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).expect("open");
+        let mut buf = [0u8; 16];
+        let n = read(handle, 0, &mut buf, &mut host).expect("read");
+        assert_eq!(&buf[..n], b"fetch");
+        assert_eq!(asked.get(), 1);
+        release_handle(handle);
+    }
+
+    /// The image geometry is store state, so a `reset()` (or a failed load)
+    /// must drop it. A `BaseSource::Image` node cannot outlive it — `reset()`
+    /// drops both together — and this pins that they are cleared as one.
+    #[test]
+    fn reset_drops_the_image_geometry_with_the_tree() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+        ROOTFS.with(|state| assert!(state.image.is_some()));
+        reset();
+        ROOTFS.with(|state| assert!(state.image.is_none()));
     }
 
     #[test]

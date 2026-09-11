@@ -257,6 +257,21 @@ pub struct Sffs<S: BlockSource> {
     total_inodes: u32,
 }
 
+/// The superblock facts a mounted [`Sffs`] keeps, separated from the source so
+/// a caller that mounts once can re-address the same filesystem later without
+/// re-reading and re-validating the superblock.
+///
+/// This exists because the `/` image is mounted once, at boot, but its bytes
+/// are read for the whole session: every base regular file's content is served
+/// out of it on demand. Re-running [`Sffs::mount`] per read would cost three
+/// extra source reads and repeat validation the boot already did; carrying the
+/// validated geometry forward costs eight bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SffsGeometry {
+    pub inode_table_start: u32,
+    pub total_inodes: u32,
+}
+
 const SB_TOTAL_INODES: u64 = 16;
 
 impl<S: BlockSource> Sffs<S> {
@@ -283,6 +298,30 @@ impl<S: BlockSource> Sffs<S> {
             .ok_or(Errno::EINVAL)?;
         if table_end > source.len() { return Err(Errno::EINVAL); }
         Ok(Sffs { source, inode_table_start, total_inodes })
+    }
+
+    /// The validated superblock geometry of this mount.
+    pub fn geometry(&self) -> SffsGeometry {
+        SffsGeometry {
+            inode_table_start: self.inode_table_start,
+            total_inodes: self.total_inodes,
+        }
+    }
+
+    /// Re-address a filesystem whose superblock a previous [`Sffs::mount`]
+    /// already read and validated.
+    ///
+    /// The caller owes the same invariant `mount` establishes: `geometry` came
+    /// from a successful `mount` of a source addressing the SAME filesystem
+    /// bytes. It is not a way to skip validation on an unvalidated image — the
+    /// `/` image loader mounts first and only then remembers the geometry, so a
+    /// corrupt superblock is still rejected at boot, loudly, exactly once.
+    pub fn from_geometry(source: S, geometry: SffsGeometry) -> Sffs<S> {
+        Sffs {
+            source,
+            inode_table_start: geometry.inode_table_start,
+            total_inodes: geometry.total_inodes,
+        }
     }
 
     /// Invariant relied on by callers: `ino` has already been checked by

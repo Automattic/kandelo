@@ -4372,6 +4372,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * that truthfully rather than hanging or guessing a transport. The kernel
    * learns which files are lazy from the image's own `KLZY` section, so only
    * the archive half of the wiring is needed here.
+   *
+   * The last argument is the image-body window. The kernel reads an
+   * image-backed file's CONTENT out of the `/` image, through its own SFFS
+   * reader, for the whole session — so the window cannot be closed at the end
+   * of boot. It is handed the SFFS body `baseImage` already holds rather than
+   * a second retained copy of the container, which keeps one copy of a
+   * 16-256 MiB body in the worker instead of two. Both hosts get this, because
+   * both reach the overlay through here.
    */
   function configureRootfsOverlayFromImage(options: {
     baseImage: MemoryFileSystem;
@@ -4401,6 +4409,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       options.foreignPrefixes,
       options.nosuid,
       options.imageBytes,
+      () => options.baseImage.imageBodyBytes(),
     );
   }
 

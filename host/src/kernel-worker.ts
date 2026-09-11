@@ -268,6 +268,14 @@ const kernelEntryIntrinsicAtomicsLoad = Atomics.load;
 const kernelEntryIntrinsicAtomicsStore = Atomics.store;
 const kernelEntryIntrinsicAtomicsNotify = Atomics.notify;
 const KERNEL_ENTRY_I32_BYTES = 4;
+/**
+ * Size of the VFSI container header (magic, version, flags, body length), and
+ * therefore the container offset at which the SFFS filesystem body starts.
+ * Mirrors `VFS_IMAGE_HEADER_SIZE` in `host/src/vfs/memory-fs.ts`, the writer —
+ * mirrored rather than imported because this module is the host-agnostic
+ * runtime core and imports nothing from the VFS layer.
+ */
+const VFS_IMAGE_HEADER_SIZE = 16;
 
 // WHY: callers already hold the KernelEntryGate token for the exact process
 // memory they are materializing. Use the captured intrinsic getter so guest
@@ -2718,10 +2726,35 @@ export class CentralizedKernelWorker {
    * image; there is no host-walked fallback to absorb it.
    *
    * Null when the entry supplied no image, which is the no-`/` boot — and null
-   * again once the load succeeds, because nothing reads the image after that
-   * and holding it would pin the whole container for the session.
+   * again once the load succeeds, because the whole CONTAINER (header, trailing
+   * JSON sections, `KLZY`) is only needed for the load. The filesystem body the
+   * kernel keeps reading after that is served from {@link #rootfsImageBody}
+   * instead, which is the copy the restored `MemoryFileSystem` already holds.
    */
   #rootfsImage: Uint8Array | null = null;
+  /**
+   * A live view of the `/` image's SFFS body — the restored
+   * `MemoryFileSystem`'s own filesystem buffer, which is byte-for-byte the
+   * image's body section (`MemoryFileSystem.imageBodyBytes`).
+   *
+   * KERNEL_IMAGE_WINDOW. The kernel reads base-file CONTENT out of the image
+   * for the life of the session, so `host_image_read` cannot be retired at the
+   * end of boot the way it once was. Two properties make serving it from this
+   * view correct rather than merely convenient:
+   *
+   *  - *One copy.* A retained container would pin a second 16-256 MiB body for
+   *    the session, on top of the one the `MemoryFileSystem` holds. This view
+   *    pins nothing new.
+   *  - *No torn read.* The kernel's reads are synchronous inside a kernel
+   *    entry; every host mutation of this buffer is a `MemoryFileSystem`
+   *    operation on the same worker thread, so no mutation can interleave with
+   *    one. The only post-boot mutation that remains is materializing a
+   *    URL-backed lazy file, and the kernel never reads THOSE inodes through
+   *    this window — the image records them as stubs, and their bytes come from
+   *    the host byte store (`host_blob_read`) precisely because the image does
+   *    not carry them.
+   */
+  #rootfsImageBody: (() => Uint8Array) | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5021,12 +5054,14 @@ export class CentralizedKernelWorker {
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
     image: Uint8Array,
+    imageBody: () => Uint8Array,
   ): void {
     this.#rootfsBlobProvider = blobProvider;
     this.#rootfsArchiveProvider = archiveProvider ?? null;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     this.#rootfsImage = image;
+    this.#rootfsImageBody = imageBody;
   }
 
   /**
@@ -5141,21 +5176,40 @@ export class CentralizedKernelWorker {
     }
     enable(1);
 
-    // Release the image. `ByteReq::Image` is issued from exactly one place in
-    // the kernel — the cursor `rootfs::load_image` builds and drops inside that
-    // call — so once the tree is loaded, nothing reads these bytes again: a base
-    // file's contents come from `#rootfsBlobProvider`, a lazy archive's from
-    // `#rootfsArchiveProvider`. Holding them would pin 16-256 MiB for the life
-    // of the session, on top of the restored `MemoryFileSystem` that is the
-    // actual byte store, and image-switch memory is already the tightest
-    // constraint the browser host has.
+    // Release the CONTAINER and re-point the window at the filesystem body.
     //
-    // The replacement provider answers `ENOSYS` rather than silently returning
-    // zero bytes. If a future change does make the kernel want image bytes after
-    // boot, it must arrange to keep them deliberately, and it will find out at
-    // once instead of reading a tree of empty files.
+    // The container's header and trailing sections (lazy JSON, archive JSON,
+    // metadata, `KLZY`) exist for the load and are never read again. The body
+    // is different: the kernel serves every image-backed base file's content
+    // out of it, through its own SFFS reader, for the life of the session. So
+    // the window stays open — but onto the copy the restored
+    // `MemoryFileSystem` already holds, not onto a second one. See
+    // KERNEL_IMAGE_WINDOW on `#rootfsImageBody`.
+    //
+    // Container coordinates are preserved across the swap: the kernel cached
+    // the image's own SFFS span at load and keeps addressing bytes by their
+    // offset in the container, so the body is served at
+    // `VFS_IMAGE_HEADER_SIZE`. An offset outside the body is reported as
+    // end-of-image rather than guessed at; nothing in the kernel asks for one,
+    // and a change that made it would find out here instead of reading a tree
+    // of empty files.
+    const imageBody = this.#rootfsImageBody;
     this.#rootfsImage = null;
-    this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
+    if (imageBody === null) {
+      this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
+      return;
+    }
+    this.#kernel.setRootfsImageProvider((offset, dest) => {
+      const at = Number(offset);
+      if (!Number.isSafeInteger(at) || at < 0) return -22; // EINVAL
+      if (at < VFS_IMAGE_HEADER_SIZE) return -22; // EINVAL: the header is gone
+      const body = imageBody();
+      const start = at - VFS_IMAGE_HEADER_SIZE;
+      if (start >= body.byteLength) return 0; // end of image
+      const n = Math.min(dest.byteLength, body.byteLength - start);
+      dest.set(body.subarray(start, start + n));
+      return n;
+    });
   }
 
   /**
