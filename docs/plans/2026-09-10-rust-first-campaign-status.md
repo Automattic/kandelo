@@ -2699,6 +2699,103 @@ mapping release becomes load-bearing. **Not a defect today** — the table is
 empty — which is exactly why it is written down now rather than discovered
 later.
 
+## ONE DELETION, FOUR REALMS — the night's largest finding
+
+B21 was filed as "`gzip` and `xz` fail to build". It was none of the three
+readings offered: those packages build green, the products *are* planned and
+built by `setup`, and it was not the shared-cache race.
+
+**The cause was this campaign's own `72fa12438`, "Delete the TypeScript
+WebAssembly reader."** Every artifact read now goes through
+`wasm_artifact_module32.wasm`, which must be *installed per realm* — and three
+Node entry points were never given it:
+
+1. a VFS image builder (`serializeImage` inspects every `.wasm` in an image);
+2. a process worker running as a temp-dir esbuild bundle
+   (`Could not find repo root` — this is what stopped `coreutils-docs`, a direct
+   `shell` dependency);
+3. `host/dist`'s own tsup build.
+
+The third is a **loop**: `host-dist` had been failing since that commit, so
+`host/dist` never existed, so every process worker took the temp-bundle path.
+
+**A fourth realm was found independently the same night**: the Vite dev-server
+realm, which made `./run.sh browser` die during dependency scanning with
+`Binary exists but was not accepted: kernel.wasm` against a perfectly good
+kernel — the reason several agents reported the browser as simply unreachable.
+
+**The shape is the finding.** One deletion, four Node realms silently losing a
+reader, each failing with a message about something else entirely: a package
+that will not build, a repo root that cannot be found, a kernel that is not
+accepted, a bundler that cannot resolve an alias. Per-realm initialisation with
+no enforcement is the duplicated-authority pattern expressed as *"everyone must
+remember"* rather than *"one place decides"*.
+
+**Corrected premise:** this document previously recorded `./run.sh setup` as
+"exiting 0 with products missing". It does not — a failed node makes the
+aggregate `Failed` and `run_aggregate` returns `Err`. That observation cannot
+have come from a completed run.
+
+**Result:** `./run.sh setup` exits 0, zero failed or blocked nodes, all **eight**
+VFS images. The five affected suites are 65/65.
+
+## The actual conformance blocker, named at last
+
+A **green** build's tier is still refused, and not for staleness. The check at
+`host/src/binary-resolver.ts:~3330` compares two identities computed under
+**different resolve policies**:
+
+- the projection authority records `shell/wasm32 = 902b90ed…` under
+  `ResolvePolicy::SourceOnlyV1`;
+- `packages/registry/program-packages.json` records `d6ed5b85…` under
+  `ResolvePolicy::Default`, hardcoded in `package_context_cache_keys`.
+
+The `manifestSha256` halves agree. The policy halves cannot. **The equality can
+never hold, so the refusal is unconditional** — which is why re-running `setup`
+never clears it, and why `dash` and `coreutils` still resolve (they also live in
+`~/.cache/kandelo/programs`) while `shell.vfs.zst`, `php` and `lamp.vfs.zst`
+resolve nowhere.
+
+Dispatched with the requirement that the two sides become **structurally
+incapable of disagreeing**, not merely equal today.
+
+## V3 — deferred with a measured split (D-B6)
+
+The kernel writing the image is what unlocks removing `entries[]`, and it is
+blocked on three independent gaps, none of them judgement calls:
+
+1. **The kernel does not hold the bytes.** It has the tree and, since `KLZY`,
+   the lazy table — but a base file's bytes live in the host's
+   `MemoryFileSystem` and reach the kernel only through `host_blob_read`.
+2. **There is no SFFS writer in Rust.** `sffs.rs` is 770 lines of *reader*; the
+   image body is a real block filesystem — superblock, inode and block bitmaps,
+   inode table, indirect pointers, directory index.
+3. **Emission must stream.** `lamp.vfs` is 249 MiB; the kernel cannot buffer an
+   image in linear memory.
+
+Proposed split: **W-1** kernel serves image-backed bytes (retires
+`host_blob_read` + `rootfs-blob-store.ts`, **import floor 75 → 74**) → **W-2**
+Rust SFFS writer with a cross-language fixture → **W-3** streaming emission
+(`rootfs::export_tree_read(offset, out)` is already the right cursor shape, no
+new import) → **W-4** cut over, delete `rootfs-overlay-export.ts`, drop
+`entries[]`. **W-1 is recommended next regardless of the rest.**
+
+**Two findings that correct earlier framing:**
+
+- **The host lazy materialization subsystem is LIVE**, with three non-test
+  callers. The "~4,900 deletable lines" was wrong — it is not deletable today.
+- **`entries[]` has exactly one load-bearing production reader**, and it is not
+  fetching: after boot the host never consults it. The single reader is the
+  restore→mutate→save round trip. That is precisely why moving the writer is the
+  unlock.
+
+**What did land:** the silent corruption is now impossible to ship.
+`restoreParsedImage` re-derives `KLZY` from the JSON sections and requires byte
+equality with the section the image carries. The check is **writer-agnostic**,
+so it survives the move to a kernel writer rather than being replaced by it. The
+existing save/restore/save gate would **not** have caught this — it used a
+URL-backed lazy file, whose linkage the JSON carries directly.
+
 ## OVERNIGHT STATE (2026-09-10, late) — read this first after a crash
 
 **Maintainer directives in force:** push the ship line aggressively, including
