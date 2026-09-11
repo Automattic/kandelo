@@ -2500,6 +2500,87 @@ generation now. The measurement was real. The gate is still blind.
 **Ledger after this wave: production TypeScript −3,129** (from −2,460), host
 imports **75**, typecheck **0**, Rust 1,944 + 54 + 6 passing.
 
+## OVERNIGHT STATE (2026-09-10, late) — read this first after a crash
+
+**Maintainer directives in force:** push the ship line aggressively, including
+the risky items; forward-only pushes to `brandonpayton/epoll-kernel-route`;
+**never merge PR #1350**; curate only once the host suite is green.
+
+### The ship line, and the criterion behind it
+
+**ABI 44 becomes real when this ships.** Everything else is reversible in a
+follow-up campaign; the ABI is not. So the test for "must land now" is *does it
+change ABI 44's surface?* If yes, deferring costs a whole epoch.
+
+| must land | why |
+|---|---|
+| B9 — per-process pointer width | frees the `preadv2`/`pwritev2` `flags` slot; ABI-affecting |
+| V3 — remove image `entries[]` + move the image writer kernel-side | format + authority change |
+| socket readiness | half-landed would make five disagreeing copies into six |
+| local build / VFS products + the partial-build rule | gates conformance, T4 and the browser pass |
+| B3 — mapping cutover | in flight |
+| B4 — the measured 3.7× SysV regression | shipping a known measured regression contradicts the performance contract |
+| T3/T4 — host suite green | the gate itself |
+
+**Clean to defer** (no ABI surface, no half-state): B2, B8, B10, NDD-K4-3,
+NDD-K11-1, NDD-K11-3, and the ~9,900-line driver-glue audit that is campaign
+two's charter.
+
+### Agents in flight
+
+| item | touches |
+|---|---|
+| local build / VFS products + partial-build rule | `tools/xtask/src/local_build.rs`, package builds |
+| socket readiness (five disagreeing copies) | `crates/runtime-core/src/syscalls.rs`, four host backends |
+| B9 per-process pointer width | `registerProcess`, `kernel-worker.ts`, `process-lifecycle.ts`, `process.rs` |
+| V3 image writer | `memory-fs.ts`, `rootfs-overlay-export.ts`, `rootfs.rs` |
+| B3 mapping cutover | the `MemoryManager` first-fit allocator |
+
+**Check every agent's `git merge-base` before merging or believing a number.**
+Three worktrees today arrived on `9195dedd1`, ~885 commits behind, and produced
+results that were internally consistent and about the wrong tree.
+
+### V3's scope grew, correctly, on a maintainer question
+
+The first scoping said step 5 could not land: removing `entries[]` would
+silently corrupt images, and an earlier report called `entries[]` and `KLZY`
+"two encodings of one structure".
+
+**That framing was wrong.** `host/src/vfs/kernel-lazy-section.ts` documents a
+deliberate split *by authority*: the JSON carries fetch URLs, transports,
+integrity digests, activation modes and seals — "all of that is HOST authority"
+— while `KLZY` carries the only two kernel-relevant facts.
+
+Measured field by field, a `LazyFileEntry` is
+`{ ino, generation, dataSequence, path, paths[], url, size }`:
+
+- `ino`, `size` — already in `KLZY`;
+- `generation`, `dataSequence` — already in the SAB image's inode identity;
+- `path`, `paths[]` — derivable by walking the restored tree (must be *proved*
+  per entry, per SD-B5, with a fallback);
+- **`url` — genuinely unique, and it is not data but authority.**
+
+So `entries[]` is overwhelmingly redundant, and what remains is a statement
+about who owns fetch policy. The maintainer then asked the question that
+settles the shape: *doesn't this mean `rootfs-overlay-export.ts` moves to Rust
+too?* Yes — and it is what removal **unlocks**, not a cost of it. That module's
+own header says it clones the base image precisely because the lazy descriptors
+"live only in the base image", and it already asks the kernel to serialize its
+authoritative tree via `kernel_rootfs_export_tree` (RXPT,
+`crates/runtime-core/src/rootfs.rs`). The kernel already owns `/` and can
+already serialize it; the host's clone-diff-reserialize dance exists **only**
+because the lazy table sits on the other side of the split. Move it and the
+kernel can write the image directly — V3 stated plainly.
+
+**The hazard to design out, not guard:** restore→mutate→save runs in production
+(`rootfs-overlay-export.ts:225`, `:316`, from `process-lifecycle.ts:1800`). A
+save that cannot rebuild the lazy table emits a `KLZY` with an empty file table
+and every archive-backed lazy file becomes a silent 0-byte regular file.
+`host/test/vfs-image-kernel-lazy.test.ts:374` is the existing gate; it passes
+today and must keep passing. The documented lossy boundary must survive too:
+runtime-created AF_UNIX sockets and FIFOs are reported as `skippedSpecial`,
+never fabricated.
+
 ## MERGE ORDER FOR THE SIX IN-FLIGHT AGENTS (planned 2026-09-10)
 
 Written before anything lands, because the maintainer's instruction was
