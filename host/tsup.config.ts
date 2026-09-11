@@ -20,6 +20,14 @@ export default defineConfig({
     "src/networking/index.ts",
     "src/framebuffer/index.ts",
   ],
+  // Vite-alias imports (`@kernel-wasm?url`, `@fork-module32-wasm?url`,
+  // `@wasm-artifact-module32-wasm?url`, worker entries) name artifacts the
+  // *consumer's* bundler resolves. esbuild cannot resolve them here and should
+  // not try: the host package ships the import, the browser app supplies the
+  // file. Leaving them unresolved is the contract, not a workaround -- without
+  // this, adding one reachable `?url` import breaks `npm run build` entirely,
+  // which is how the browser build came to be unbuildable.
+  external: [/\?url$/, /\?worker&url$/],
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: true,

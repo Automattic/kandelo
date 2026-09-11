@@ -724,6 +724,28 @@ export function handleThreadExit(pid: number, channelOffset: number): boolean {
 // ── Host-parameterised lifecycle ────────────────────────────────────────────
 
 /**
+ * What a process-memory allocation was for, reported when it fails.
+ *
+ * Declared at module scope rather than inside `createProcessLifecycle` because
+ * that function's inferred return type mentions it: a type declared in a
+ * function body has no name a `.d.ts` can write down, so the declaration build
+ * failed with TS4060 while the runtime build was fine. The host package ships
+ * types, so an un-nameable type in the public surface is a build failure, not
+ * a style question.
+ */
+export interface ProcessMemoryAllocationContext {
+  operation:
+    | "spawn"
+    | "posix_spawn"
+    | "exec"
+    | "fork"
+    | "vfork"
+    | "clone";
+  path?: string;
+  argv?: readonly string[];
+}
+
+/**
  * Bind the shared lifecycle logic to one host.
  *
  * Returns plain functions rather than a class so each entry can destructure
@@ -1137,19 +1159,6 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       }
       host.stopKernelRealm();
     }
-  }
-
-  /** What a process-memory allocation was for, reported when it fails. */
-  interface ProcessMemoryAllocationContext {
-    operation:
-      | "spawn"
-      | "posix_spawn"
-      | "exec"
-      | "fork"
-      | "vfork"
-      | "clone";
-    path?: string;
-    argv?: readonly string[];
   }
 
   /**
