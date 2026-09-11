@@ -121,6 +121,14 @@ nix_develop=(
     # path of whichever worktree populated it first, so concurrent worktrees
     # can run each other's build scripts and fail in ways that name neither.
     --keep KANDELO_SOURCE_CACHE_ROOT \
+    # WHY this one is kept: the sortix conformance runners take the os-test
+    # checkout to build from here, and they run INSIDE this shell. On a
+    # case-insensitive filesystem the submodule checkout is case-collapsed and
+    # the runners refuse it, so the only way to run the suite truthfully is to
+    # point them at a case-sensitive checkout. Stripping this would make that
+    # override silently ineffective and leave the suite permanently refused on
+    # macOS. See scripts/ensure-case-sensitive-os-test.sh.
+    --keep KANDELO_OS_TEST_DIR \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \
