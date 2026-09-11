@@ -110,6 +110,26 @@ product, uses 16 concurrent jobs, stores verified sources below
 `local-binaries/source-only-v1`.
 
 The default output ends with a concise node, cache, build, and product
+The published projection authority records two distinct
+`kandelo-program-packages-v2` values, and confusing them is a real failure
+mode rather than a theoretical one. `projection` is the tier's own identity
+under `ResolvePolicy::SourceOnlyV1`, whose cache keys are domain-separated so
+the tier can address `$HOME/.cache/kandelo/source-only`. `selectionProjection`
+is the selection index the build ran against — the same value the build wrote
+to the generated `packages/registry/program-packages.json` under
+`ResolvePolicy::Default`, produced by `authoritative_program_package_index`.
+
+A resolver checking whether the tier is stale must compare against
+`selectionProjection` and never against `projection`: a `SourceOnlyV1` key and
+a `Default` key for the same unchanged package differ by construction, so
+comparing them cannot hold for any package after any build. That comparison
+shipped once and refused every package closure in every locally built
+worktree with a staleness message no rebuild could clear, which blocked every
+kernel-booting conformance suite. Both halves now come from one generator
+under one policy, so they differ only when the package registry actually
+changed.
+
+The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
 
 ```bash

@@ -982,6 +982,19 @@ The resolver validates exact node ownership and the complete owning package
 closure. It does not fall back to `local-binaries`, fetched/indexed binaries,
 the ordinary compiled cache, or an installed host package.
 
+The authority embeds a second `kandelo-program-packages-v2` value,
+`selectionProjection`. The two are not redundant and are not
+interchangeable. `projection` is the tier's own identity under the
+`source-only-v1` resolve policy, which domain-separates every cache key so
+the tier can address its own cache namespace; `selectionProjection` is the
+selection index the build was run against, byte-for-byte what that build
+wrote to `packages/registry/program-packages.json` under the default
+policy. Only the second is comparable to the index a resolver regenerates,
+and only the default-policy tier path in `binary-resolver.ts` compares it —
+under `source-only-v1` the resolver reads the authority directly and never
+performs that comparison. An authority published without
+`selectionProjection` is refused by name and must be rebuilt.
+
 SourceOnly materializations are regular files and may be replaced by a later
 producer run. Vite therefore parses one aggregate authority for its lifetime,
 captures its authored kernel, rootfs, and program request batch against that
