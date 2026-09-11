@@ -1248,7 +1248,7 @@ child inherits no host reservations, and both exec paths replace
 `examples/pthread-concurrent-slots.c` is the evidence, run on both hosts: 20
 threads live at once, where the native arena stopped at 16.
 
-### A Node guest process cannot find the repo when `TMPDIR` is outside it
+### Two realms that cannot read artifacts, and both blame the artifact
 
 Measured 2026-09-10. Running the host Vitest suites from a worktree checkout,
 every guest process died with:
@@ -1282,6 +1282,21 @@ already sends the worker its program bytes, memory and channel offsets.
 How this passes in continuous integration is unclear, and that question is
 worth answering before a fix is chosen -- a bundling path that silently differs
 between CI and a developer's checkout is its own problem.
+
+The same *class* of defect blocks the browser dev server, in a way that reads
+as something else entirely. `apps/browser-demos`'s Vite realm never calls
+`installWasmArtifactModule`, so `hasWasmArtifactPolicyFailures` cannot read an
+artifact at all and fails closed. Every candidate is then reported as
+
+    Binary exists but was rejected by artifact policy: kernel.wasm
+
+which names the artifact and implicates the build, when the artifact is fine
+and the *reader* is missing. Reproduced directly on 2026-09-10: calling
+`tryResolveBinary("kernel.wasm")` after `installWasmArtifactModule` returns the
+path; the identical call without it produces exactly that rejection, against a
+kernel rebuilt through `./run.sh rebuild kernel` with `xtask verify-fresh`
+green. A realm that cannot read artifacts should say *that*, not accuse the
+artifact.
 
 ### `KANDELO_SOURCE_CACHE_ROOT` does not isolate the programs cache
 
