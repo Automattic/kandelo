@@ -13442,6 +13442,167 @@ fn require_current_source_only_cache_key(
     Ok(())
 }
 
+
+/// Labeled digests of everything that feeds a package's OWN contribution to
+/// its cache key, captured before its build script runs.
+///
+/// WHY this exists: when a build mutates one of its own cache-key inputs, the
+/// post-build verification can only say `before <sha>, after <sha>`. Two
+/// opaque shas name the symptom and hide the cause, which is the same shape as
+/// B29 (a stale kernel reported as a broken kernel) and B30 (a killed build
+/// reported as an undeclared artifact). It also reads exactly like a
+/// concurrent-edit race, which invites a retry loop instead of a fix. The
+/// snapshot lets the failure name the file.
+#[derive(Clone, Default)]
+struct CacheKeyInputSnapshot {
+    /// The package's own `build.toml` `inputs`, digested per declared entry.
+    declared: Vec<BuildInputDigest>,
+    /// `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` as the cache key saw them. This is
+    /// the MEMOIZED view: `global_package_toolchain_digests` caches per repo
+    /// root for the life of the process, so the pre- and post-build cache keys
+    /// necessarily agree about it even if the tree underneath changed. That
+    /// blind spot is precisely why the drift report re-reads these uncached.
+    global_toolchain_memoized: Vec<BuildInputDigest>,
+}
+
+/// Capture the per-input digests behind `target`'s cache key. Best effort:
+/// this is diagnostics, and a capture failure must never displace the real
+/// build error, so errors degrade to an empty side rather than propagating.
+fn capture_cache_key_inputs(
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> CacheKeyInputSnapshot {
+    CacheKeyInputSnapshot {
+        declared: build_input_digests_from_repo(target, registry, repo_root, policy)
+            .unwrap_or_default(),
+        global_toolchain_memoized: global_package_toolchain_digests().unwrap_or_default(),
+    }
+}
+
+fn digest_map(digests: &[BuildInputDigest]) -> BTreeMap<String, [u8; 32]> {
+    digests
+        .iter()
+        .map(|entry| (entry.label.clone(), entry.digest))
+        .collect()
+}
+
+/// Compare two labeled digest sets and render the labels that moved.
+fn render_digest_drift(
+    heading: &str,
+    before: &[BuildInputDigest],
+    after: &[BuildInputDigest],
+    lines: &mut Vec<String>,
+) -> bool {
+    let (before, after) = (digest_map(before), digest_map(after));
+    let mut found = false;
+    for (label, before_digest) in &before {
+        match after.get(label) {
+            Some(after_digest) if after_digest == before_digest => {}
+            Some(after_digest) => {
+                found = true;
+                lines.push(format!(
+                    "  {heading} changed: {label} ({} -> {})",
+                    &hex(before_digest)[..16],
+                    &hex(after_digest)[..16]
+                ));
+            }
+            None => {
+                found = true;
+                lines.push(format!("  {heading} disappeared: {label}"));
+            }
+        }
+    }
+    for label in after.keys() {
+        if !before.contains_key(label) {
+            found = true;
+            lines.push(format!("  {heading} appeared: {label}"));
+        }
+    }
+    found
+}
+
+/// Name the cache-key inputs that changed while `target`'s build script ran.
+///
+/// Returns a human-readable block appended to the refusal. It never returns an
+/// error: a diagnostic that can fail would replace a real build failure with
+/// its own.
+fn describe_cache_key_input_drift(
+    before: &CacheKeyInputSnapshot,
+    target: &DepsManifest,
+    registry: &Registry,
+    repo_root: &Path,
+    policy: ResolvePolicy,
+) -> String {
+    let after_declared =
+        build_input_digests_from_repo(target, registry, repo_root, policy).unwrap_or_default();
+    // Re-read the global toolchain inputs UNCACHED. The cache key consulted a
+    // per-process memo, so a global input that changed mid-build is invisible
+    // to the key comparison itself; without this re-read the report would say
+    // "nothing changed" while a shared input had in fact moved underneath.
+    let after_global =
+        global_package_build_input_digests_for(repo_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+            .unwrap_or_default();
+    describe_cache_key_input_drift_lines(
+        &before.declared,
+        &after_declared,
+        &before.global_toolchain_memoized,
+        &after_global,
+        &target.name,
+    )
+}
+
+/// The pure rendering half of the drift report: given the two before/after
+/// digest sets, produce the block appended to the refusal. Split out so the
+/// wording and the classification are testable without a registry on disk.
+fn describe_cache_key_input_drift_lines(
+    before_declared: &[BuildInputDigest],
+    after_declared: &[BuildInputDigest],
+    before_global: &[BuildInputDigest],
+    after_global: &[BuildInputDigest],
+    target_name: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let declared_moved = render_digest_drift(
+        "declared build input",
+        before_declared,
+        after_declared,
+        &mut lines,
+    );
+    let global_moved = render_digest_drift(
+        "global toolchain input",
+        before_global,
+        after_global,
+        &mut lines,
+    );
+
+    if !declared_moved && !global_moved {
+        return format!(
+            "\n  no declared or global input changed; the difference is in a \
+             dependency's cache key, in {}'s own manifest fields (version, \
+             revision, source.url, source.sha256, declared outputs), or in the \
+             fork-instrument tool inputs",
+            target_name
+        );
+    }
+
+    let mut report = String::from("\n  inputs that changed while the build script ran:\n");
+    report.push_str(&lines.join("\n"));
+    if global_moved {
+        report.push_str(
+            "\n  NOTE: a global toolchain input changed. The cache key could \
+             not see this (it is memoized per process), so the key comparison \
+             understates the drift.",
+        );
+    }
+    report.push_str(
+        "\n  A build must not write into its own cache-key inputs. Either the \
+         path is a build OUTPUT that should not be a key input, or the step \
+         that writes it should run outside the tree.",
+    );
+    report
+}
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -13457,6 +13618,7 @@ fn build_into_cache(
     policy: ResolvePolicy,
     force_rebuild: bool,
 ) -> Result<LocalBuildDisposition, String> {
+    let mut pre_build_cache_key_inputs: Option<CacheKeyInputSnapshot> = None;
     let dependency_variables = direct_dependency_variable_names(dep_dirs, policy)
         .map_err(|error| format!("{}: {error}", target.spec()))?;
     let parent = canonical
@@ -13714,6 +13876,12 @@ fn build_into_cache(
             }
         }
         git_inputs.export_to(&mut cmd);
+        // Captured before the build script runs so that, if the post-build
+        // cache-key verification refuses, the refusal can name the input that
+        // moved instead of printing two opaque shas. Diagnostics only: it
+        // feeds no key and gates nothing.
+        pre_build_cache_key_inputs =
+            Some(capture_cache_key_inputs(target, registry, repo_root, policy));
         for (name, variable) in &dependency_variables {
             let path = dependency_paths.get(name).ok_or_else(|| {
                 format!(
@@ -13810,10 +13978,16 @@ fn build_into_cache(
         )?;
         if post_build_key != cache_key_sha {
             return Err(format!(
-                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key",
+                "{}: cache key changed while building {} ({}): before {cache_key_sha}, after {post_build_key}; refusing publication under the pre-build key{}",
                 target.spec(),
                 target.name,
-                arch.as_str()
+                arch.as_str(),
+                match &pre_build_cache_key_inputs {
+                    Some(before) => describe_cache_key_input_drift(
+                        before, &refreshed_target, registry, repo_root, policy,
+                    ),
+                    None => String::new(),
+                }
             ));
         }
         git_inputs.cleanup_source_only().map_err(|error| {
@@ -38381,5 +38555,154 @@ commit = "1111111111111111111111111111111111111111"
             live_before,
             "cache authority changed after staging but the live projection was mutated",
         );
+    }
+}
+
+/// Guards for the cache-key drift report. The report exists so a build that
+/// writes into its own cache-key inputs names the file instead of printing two
+/// opaque shas (B37). A report that named nothing would be worse than none: it
+/// would read as "the key moved for no reason", which is exactly the
+/// concurrent-edit misreading that invites a retry loop.
+#[cfg(test)]
+mod cache_key_drift_report_tests {
+    use super::{BuildInputDigest, describe_cache_key_input_drift_lines, render_digest_drift};
+
+    fn digest(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn input(label: &str, seed: u8) -> BuildInputDigest {
+        BuildInputDigest {
+            label: label.to_string(),
+            digest: digest(seed),
+        }
+    }
+
+    #[test]
+    fn a_changed_input_is_named_with_both_digests() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("sdk/src", 9), input("libc/glue", 2)],
+            &mut lines,
+        );
+        assert!(moved, "a changed digest must report drift");
+        assert_eq!(lines.len(), 1, "only the changed input should be named");
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+        assert!(lines[0].contains("changed"), "got: {}", lines[0]);
+        assert!(
+            !lines[0].contains("libc/glue"),
+            "an unchanged input must not be reported: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn an_input_that_disappeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1)],
+            &[],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("disappeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/src"), "got: {}", lines[0]);
+    }
+
+    #[test]
+    fn an_input_that_appeared_is_named() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[],
+            &[input("sdk/generated", 3)],
+            &mut lines,
+        );
+        assert!(moved);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("appeared"), "got: {}", lines[0]);
+        assert!(lines[0].contains("sdk/generated"), "got: {}", lines[0]);
+    }
+
+    /// An identical set must report NOTHING and must say so. A report that
+    /// emitted noise for an unchanged set would train readers to ignore it.
+    #[test]
+    fn an_unchanged_set_reports_no_drift() {
+        let mut lines = Vec::new();
+        let moved = render_digest_drift(
+            "declared build input",
+            &[input("sdk/src", 1), input("libc/glue", 2)],
+            &[input("libc/glue", 2), input("sdk/src", 1)],
+            &mut lines,
+        );
+        assert!(!moved, "an unchanged set must not report drift");
+        assert!(lines.is_empty(), "got: {lines:?}");
+    }
+
+    /// The whole point of the report: when a declared input moved, the block
+    /// must name it, and must say a build may not write into its own inputs.
+    #[test]
+    fn the_rendered_block_names_the_input_and_the_rule() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/package-lock.json", 1)],
+            &[input("sdk/package-lock.json", 7)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("sdk/package-lock.json"),
+            "the changed input must be named: {report}"
+        );
+        assert!(
+            report.contains("must not write into its own cache-key inputs"),
+            "the rule must be stated: {report}"
+        );
+        assert!(
+            !report.contains("no declared or global input changed"),
+            "a real change must not render the nothing-changed branch: {report}"
+        );
+    }
+
+    /// A global toolchain input that moved is invisible to the cache key
+    /// itself, because `global_package_toolchain_digests` memoizes per
+    /// process. The report re-reads them uncached precisely so that case is
+    /// visible, and it must say that the key understated the drift.
+    #[test]
+    fn a_moved_global_input_is_reported_as_invisible_to_the_key() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 8)],
+            "kandelo-sdk",
+        );
+        assert!(report.contains("libc/musl"), "got: {report}");
+        assert!(
+            report.contains("memoized"),
+            "the report must explain why the key could not see this: {report}"
+        );
+    }
+
+    /// When nothing in either set moved, the report must say where else to
+    /// look rather than implying the inputs are the cause.
+    #[test]
+    fn no_drift_points_the_reader_elsewhere() {
+        let report = describe_cache_key_input_drift_lines(
+            &[input("sdk/src", 1)],
+            &[input("sdk/src", 1)],
+            &[input("libc/musl", 4)],
+            &[input("libc/musl", 4)],
+            "kandelo-sdk",
+        );
+        assert!(
+            report.contains("no declared or global input changed"),
+            "got: {report}"
+        );
+        assert!(report.contains("dependency"), "got: {report}");
     }
 }
