@@ -71,8 +71,35 @@ impl ArchiveFormat {
 /// that segment is *stripped* — consumers see source files at the
 /// cache directory's root, not nested inside `<name>-<version>/`.
 pub fn fetch_and_extract(url: &str, sha256_hex: &str, dest: &Path) -> Result<(), String> {
-    let bytes = fetch_url(url).map_err(|e| format!("{e}"))?;
+    // Same reachability-only fallback as the streaming archive path: try the
+    // declared URL first, then any origin-derived fallback. The sha256 pin
+    // below is unchanged and still decides the artifact, so a second origin
+    // cannot weaken it.
+    let candidates = crate::remote_fetch::source_url_candidates(url);
+    let mut failures: Vec<String> = Vec::new();
+    let mut fetched: Option<Vec<u8>> = None;
+    for candidate in &candidates {
+        match fetch_url(candidate) {
+            Ok(bytes) => {
+                fetched = Some(bytes);
+                break;
+            }
+            Err(e) => failures.push(format!("{candidate}: {e}")),
+        }
+    }
+    let bytes = match fetched {
+        Some(bytes) => bytes,
+        None => {
+            return Err(format!(
+                "every source URL failed ({} tried): {}",
+                failures.len(),
+                failures.join("; ")
+            ));
+        }
+    };
     verify_sha(&bytes, sha256_hex).map_err(|e| format!("{e}"))?;
+    // Format comes from the DECLARED url, never from whichever candidate
+    // answered, so a fallback can never change how the bytes are interpreted.
     let format = ArchiveFormat::from_url(url)?;
     extract(&bytes, format, dest)?;
     flatten_single_top_level(dest)?;

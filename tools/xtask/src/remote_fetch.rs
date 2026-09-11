@@ -193,12 +193,125 @@ pub(crate) fn stream_archive_to_file(
     stream_archive_to_file_with_limit(url, file, label, MAX_RESPONSE_BYTES)
 }
 
+/// Ordered fallback origins for upstream source archives, keyed by the host
+/// of the declared URL and rewritten as `<base>/<path-after-the-host>`.
+///
+/// WHY this table exists, and why it is safe: `[source] sha256` is pinned in
+/// `package.toml`, and the pin -- not the host that answered -- is what
+/// establishes the artifact. Trying a second origin therefore cannot weaken
+/// the artifact: bytes that do not hash to the pin are rejected exactly as
+/// they were before, by the same single check, at the same point. The
+/// fallback is about *reachability* only. It never selects content.
+///
+/// WHY it is keyed by origin rather than by package: the failure is a
+/// property of the origin, not of any package. `ftpmirror.gnu.org` is GNU's
+/// own redirector -- it 302s to one of a rotating pool of volunteer mirrors,
+/// so a request that lands on a dead mirror fails every retry, because every
+/// retry lands on the same dead host. Retrying harder cannot fix it; a
+/// different origin can. 14 packages in this registry name that redirector,
+/// so one origin rule covers all of them, and covers the next GNU package
+/// added without anyone remembering to opt it in.
+///
+/// The GNU rewrite is not a guess. Two manifests in this same registry
+/// already fetch from the canonical direct host and show the path shape:
+/// `readline` uses `https://ftp.gnu.org/gnu/readline/readline-8.2.tar.gz`
+/// and `libiconv` uses `https://ftp.gnu.org/pub/gnu/libiconv/...` (`/pub/gnu`
+/// and `/gnu` are the same tree). So `ftpmirror.gnu.org/<p>` is
+/// `ftp.gnu.org/gnu/<p>`.
+const SOURCE_ORIGIN_FALLBACKS: &[(&str, &[&str])] =
+    &[("ftpmirror.gnu.org", &["https://ftp.gnu.org/gnu"])];
+
+/// The ordered list of URLs to try for one declared source URL: the declared
+/// URL first, always, then any origin-derived fallbacks.
+///
+/// The declared URL stays the package's identity everywhere else -- it is
+/// what `manifest_cache_key_sha` hashes, what `ArchiveFormat::from_url`
+/// reads, and what `WASM_POSIX_DEP_SOURCE_URL` reports. Nothing here changes
+/// any of that, so adding a fallback invalidates no cache key and rebuilds
+/// no package.
+pub(crate) fn source_url_candidates(declared: &str) -> Vec<String> {
+    let mut candidates = vec![declared.to_string()];
+    for scheme in ["https://", "http://"] {
+        let Some(after_scheme) = declared.strip_prefix(scheme) else {
+            continue;
+        };
+        let (host, path) = match after_scheme.split_once('/') {
+            Some((host, path)) => (host, path),
+            None => (after_scheme, ""),
+        };
+        for (origin, bases) in SOURCE_ORIGIN_FALLBACKS {
+            if *origin != host {
+                continue;
+            }
+            for base in *bases {
+                let candidate = format!("{}/{path}", base.trim_end_matches('/'));
+                if !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        break;
+    }
+    candidates
+}
+
+/// Stream one upstream source archive, trying the declared URL and then any
+/// origin-derived fallback in order. Only a *transport* failure advances to
+/// the next candidate; the sha256 pin is still verified once, by the caller,
+/// on whatever bytes land, so a reachable origin serving the wrong content
+/// fails loudly instead of being silently skipped.
 pub(crate) fn stream_source_archive_to_file(
     url: &str,
     file: &mut File,
     label: &str,
 ) -> Result<(), FetchError> {
-    stream_archive_to_file_with_limit(url, file, label, MAX_SOURCE_ARCHIVE_BYTES)
+    stream_source_archive_candidates(&source_url_candidates(url), file, label)
+}
+
+/// The ordered-candidate loop behind [`stream_source_archive_to_file`], split
+/// out so the ordering and the between-candidate file reset are directly
+/// testable without a live network.
+fn stream_source_archive_candidates(
+    candidates: &[String],
+    file: &mut File,
+    label: &str,
+) -> Result<(), FetchError> {
+    let mut failures: Vec<String> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if index > 0 {
+            eprintln!(
+                "remote_fetch: {label}: {} is unreachable; \
+                 trying fallback source {} of {} ({candidate})",
+                candidates[index - 1],
+                index + 1,
+                candidates.len()
+            );
+            // A failed candidate may have written a partial body. The next
+            // candidate must start from an empty file, or the resume logic
+            // would send a Range request describing the *previous* origin's
+            // progress and splice two different responses together.
+            reset_archive_file(file)?;
+        }
+        match stream_archive_to_file_with_limit(candidate, file, label, MAX_SOURCE_ARCHIVE_BYTES) {
+            Ok(()) => return Ok(()),
+            Err(error) => failures.push(format!("{candidate}: {error}")),
+        }
+    }
+    Err(FetchError::Http(format!(
+        "{label}: every source URL failed ({} tried): {}",
+        failures.len(),
+        failures.join("; ")
+    )))
+}
+
+/// Truncate and rewind a caller-owned archive file between fallback
+/// candidates so the next attempt starts from zero bytes.
+fn reset_archive_file(file: &mut File) -> Result<(), FetchError> {
+    file.set_len(0)
+        .map_err(|error| FetchError::IoError(format!("truncate archive file: {error}")))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| FetchError::IoError(format!("rewind archive file: {error}")))?;
+    Ok(())
 }
 
 fn stream_archive_to_file_with_limit(
@@ -1986,5 +2099,177 @@ l/XQs2Jqii5ft7iIbA3k5ceMu9NknwzTFhLdbMfUZDeyBN3/mmBSyx0K
             }
             other => panic!("expected FetchError::Http, got: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod source_url_fallback_tests {
+    use super::{source_url_candidates, stream_source_archive_candidates};
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    /// The declared URL must stay first. Everything else in the build system
+    /// -- the cache key, `ArchiveFormat::from_url`, `WASM_POSIX_DEP_SOURCE_URL`
+    /// -- reads the declared URL, and a fallback that pre-empted it would make
+    /// the package's own manifest the second-class source.
+    #[test]
+    fn declared_url_is_always_the_first_candidate() {
+        let declared = "https://ftpmirror.gnu.org/m4/m4-1.4.19.tar.xz";
+        assert_eq!(source_url_candidates(declared)[0], declared);
+    }
+
+    /// The m4 case from the report: GNU's redirector gains the canonical
+    /// direct host as a fallback, with `/gnu` inserted.
+    #[test]
+    fn gnu_redirector_falls_back_to_the_canonical_direct_host() {
+        assert_eq!(
+            source_url_candidates("https://ftpmirror.gnu.org/m4/m4-1.4.19.tar.xz"),
+            vec![
+                "https://ftpmirror.gnu.org/m4/m4-1.4.19.tar.xz".to_string(),
+                "https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.xz".to_string(),
+            ]
+        );
+    }
+
+    /// A host with no rule must gain nothing. A fallback invented for an
+    /// origin we have not verified would spend a request and then name a URL
+    /// that never existed in the failure message.
+    #[test]
+    fn unknown_origins_gain_no_fallback() {
+        for declared in [
+            "https://github.com/a/b/archive/refs/tags/v1.tar.gz",
+            "https://www.sqlite.org/2024/sqlite-src.zip",
+            "file:///tmp/local.tar.gz",
+            "https://ftpmirror.gnu.org.evil.test/m4/m4.tar.xz",
+            "https://sub.ftpmirror.gnu.org/m4/m4.tar.xz",
+        ] {
+            assert_eq!(
+                source_url_candidates(declared),
+                vec![declared.to_string()],
+                "{declared} must not gain a fallback"
+            );
+        }
+    }
+
+    /// Every `ftpmirror.gnu.org` source URL in the registry -- not just m4 --
+    /// must gain a fallback, because the stranding is a property of the
+    /// origin and hits all of them identically.
+    #[test]
+    fn every_registry_gnu_redirector_url_gains_a_fallback() {
+        let registry = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/registry");
+        let mut checked = 0usize;
+        for entry in fs::read_dir(registry).expect("read registry") {
+            let manifest = entry.expect("registry entry").path().join("package.toml");
+            let Ok(text) = fs::read_to_string(&manifest) else {
+                continue;
+            };
+            // Only the [source] url, never the [license] url.
+            let Some(source) = text.split("[source]").nth(1) else {
+                continue;
+            };
+            let Some(line) = source
+                .lines()
+                .find(|line| line.trim_start().starts_with("url = "))
+            else {
+                continue;
+            };
+            let url = line.split('"').nth(1).expect("quoted url");
+            if !url.starts_with("https://ftpmirror.gnu.org/") {
+                continue;
+            }
+            checked += 1;
+            let candidates = source_url_candidates(url);
+            assert_eq!(candidates.len(), 2, "{url} should gain exactly one fallback");
+            assert!(
+                candidates[1].starts_with("https://ftp.gnu.org/gnu/"),
+                "{url} fallback was {}",
+                candidates[1]
+            );
+        }
+        assert!(
+            checked >= 14,
+            "expected at least the 14 known GNU-redirector manifests, saw {checked}"
+        );
+    }
+
+    /// The loop must advance past an unreachable candidate and must truncate
+    /// what the failed candidate left behind. Without the reset, the file
+    /// would hold the previous attempt's bytes followed by this one's.
+    #[test]
+    fn a_failed_candidate_is_truncated_before_the_next_is_tried() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.tar.gz");
+        fs::write(&good, b"REAL-PAYLOAD").unwrap();
+
+        let target = dir.path().join("out");
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&target)
+            .unwrap();
+        // Stand in for a partial body written by a candidate that then died.
+        file.write_all(b"PARTIAL-FROM-DEAD-MIRROR").unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+
+        let candidates = vec![
+            format!("file://{}", dir.path().join("missing.tar.gz").display()),
+            format!("file://{}", good.display()),
+        ];
+        stream_source_archive_candidates(&candidates, &mut file, "test archive").unwrap();
+
+        let mut written = Vec::new();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.read_to_end(&mut written).unwrap();
+        assert_eq!(
+            written, b"REAL-PAYLOAD",
+            "the dead candidate's partial body survived into the next attempt"
+        );
+    }
+
+    /// When every candidate fails, the error must name every URL tried.
+    /// "connection timed out" against one host, with no indication that a
+    /// second was attempted, is what made the original failure unreadable.
+    #[test]
+    fn exhausting_every_candidate_names_them_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out");
+        let mut file = fs::File::create(&target).unwrap();
+        let candidates = vec![
+            format!("file://{}", dir.path().join("gone-a.tar.gz").display()),
+            format!("file://{}", dir.path().join("gone-b.tar.gz").display()),
+        ];
+        let error = stream_source_archive_candidates(&candidates, &mut file, "test archive")
+            .expect_err("both candidates are missing");
+        let rendered = format!("{error}");
+        assert!(rendered.contains("gone-a.tar.gz"), "got: {rendered}");
+        assert!(rendered.contains("gone-b.tar.gz"), "got: {rendered}");
+        assert!(rendered.contains("2 tried"), "got: {rendered}");
+    }
+
+    /// The first candidate succeeding must not consult any fallback.
+    #[test]
+    fn a_reachable_declared_url_is_used_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.tar.gz");
+        fs::write(&good, b"FIRST").unwrap();
+        let target = dir.path().join("out");
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&target)
+            .unwrap();
+        let candidates = vec![
+            format!("file://{}", good.display()),
+            "https://invalid.invalid/never-requested.tar.gz".to_string(),
+        ];
+        stream_source_archive_candidates(&candidates, &mut file, "test archive").unwrap();
+        let mut written = Vec::new();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.read_to_end(&mut written).unwrap();
+        assert_eq!(written, b"FIRST");
     }
 }
