@@ -4196,6 +4196,9 @@ mod shared_mapping_tests {
 
     impl MockIo {
         fn new() -> Self {
+            // Start every test from an empty mapping-held table. The table is
+            // kernel-global, and these tests share one process.
+            crate::ofd::reset_mapping_held_handles_for_test();
             Self {
                 procs: BTreeMap::new(),
                 files: BTreeMap::new(),
@@ -4317,12 +4320,30 @@ mod shared_mapping_tests {
             self.idents.get(&handle).map(|(_, _, k)| k.clone())
         }
 
+        /// Delegates to the real mapping-held ownership table, exactly as the
+        /// kernel's only production `SharedMappingIo` does
+        /// (`crates/kernel/src/wasm_api.rs`). The table was built and unit
+        /// tested against hand-made retain/release pairs; routing the whole
+        /// mapping suite through it is what proves the mechanism matches the
+        /// call pattern a running machine produces.
         fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
+            crate::ofd::retain_mapping_host_handle(handle)?;
             *self.retained.entry(handle).or_insert(0) += 1;
             Ok(())
         }
 
         fn release_handle(&mut self, handle: i64) {
+            // Production reports this as an unrecoverable accounting loss
+            // (`record_unheld_handle_loss`) because the handle becomes
+            // unreachable for its deferred close. A test must not pass through
+            // it quietly.
+            assert_ne!(
+                crate::ofd::release_mapping_host_handle(handle),
+                crate::ofd::MappingHandleRelease::NotHeld,
+                "released a mapping reference on handle {handle}, which no \
+                 mapping held; in production this is an unrecoverable \
+                 host-handle accounting loss",
+            );
             *self.retained.entry(handle).or_insert(0) -= 1;
         }
 
@@ -4563,6 +4584,149 @@ mod shared_mapping_tests {
         assert!(table.file_backing(&key).is_some());
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
         assert_eq!(io.retained[&10], 1);
+    }
+
+    // -- the writable upgrade ---------------------------------------------
+    //
+    // An open description's access mode is fixed, so a writable source for an
+    // existing read-only backing is necessarily a *distinct* `O_RDWR` handle
+    // onto the same file. The backing adopts it and drops the old one. Every
+    // assertion below is about host-handle ownership across that swap: the
+    // path performs a `retain` of the new handle and a `release` of the old
+    // against the machine-wide mapping-held table, and it is the only place in
+    // the subsystem where a backing's handle changes under live mappings.
+
+    /// Two handles onto one file object: `10` opened read-only, `11` opened
+    /// `O_RDWR`. Identity is derived from `(dev, ino)`, so both resolve to the
+    /// same backing key.
+    fn io_with_two_handles_onto_one_file() -> MockIo {
+        MockIo::new()
+            .with_file(10, 1, 2, b"hello".to_vec())
+            .with_file(11, 1, 2, b"hello".to_vec())
+    }
+
+    #[test]
+    fn a_writable_upgrade_adopts_the_new_handle_and_drops_the_old() {
+        let mut io = io_with_two_handles_onto_one_file();
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+
+        let read_only = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &read_only, false, &mut io)
+            .unwrap();
+        assert_eq!(crate::ofd::mapping_host_handle_refs(10), 1);
+
+        let writable = io.stat_of(11);
+        table
+            .get_or_create_file_backing(&key, &writable, true, &mut io)
+            .unwrap();
+
+        let backing = table.file_backing(&key).unwrap();
+        assert_eq!(backing.handle, 11, "the backing must adopt the O_RDWR handle");
+        assert!(backing.writable);
+        assert_eq!(
+            crate::ofd::mapping_host_handle_refs(11),
+            1,
+            "the adopted handle must be held for as long as the backing lives",
+        );
+        assert_eq!(
+            crate::ofd::mapping_host_handle_refs(10),
+            0,
+            "the replaced handle must stop being held the moment it is dropped",
+        );
+    }
+
+    /// The upgrade is the one place a backing's handle changes, so it is the
+    /// one place where a missing `retain` is invisible until teardown: the
+    /// `release` of the old handle balances the *creation* retain, and the
+    /// shortfall only surfaces when the backing releases the handle it now
+    /// holds. Release the backing and require that final release to be a real
+    /// one rather than a loss.
+    #[test]
+    fn a_backing_that_upgraded_still_owns_the_handle_it_releases() {
+        let mut io = io_with_two_handles_onto_one_file();
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+
+        let read_only = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &read_only, false, &mut io)
+            .unwrap();
+        let writable = io.stat_of(11);
+        table
+            .get_or_create_file_backing(&key, &writable, true, &mut io)
+            .unwrap();
+        table.file_backing_mut(&key).unwrap().ref_count = 1;
+
+        // `MockIo::release_handle` asserts the release was one the table
+        // actually held; an unbalanced upgrade fails here rather than silently
+        // stranding the handle's deferred close.
+        table.release_file_backing_reference(&key, &mut io);
+
+        assert!(table.file_backing(&key).is_none());
+        assert_eq!(crate::ofd::mapping_host_handle_refs(11), 0);
+    }
+
+    /// POSIX does not let an open description change access mode, so a
+    /// "writable upgrade" presenting the *same* handle is a caller error, not
+    /// a promotion. Answering it would mark the backing writable while its
+    /// handle still cannot write.
+    #[test]
+    fn an_upgrade_that_presents_the_same_handle_is_refused() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"hello".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+
+        let stat = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &stat, false, &mut io)
+            .unwrap();
+
+        assert_eq!(
+            table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .err(),
+            Some(Errno::EIO),
+        );
+        assert!(!table.file_backing(&key).unwrap().writable);
+        assert_eq!(crate::ofd::mapping_host_handle_refs(10), 1);
+    }
+
+    /// The retain can fail: a handle whose descriptor close is already owed is
+    /// closed as far as the rest of the machine is concerned, and the backend
+    /// may reissue the number at any moment. The upgrade must then leave the
+    /// backing exactly as it found it — still read-only, still on the handle
+    /// it already holds — rather than half-swapped onto a handle it does not
+    /// own.
+    #[test]
+    fn a_refused_retain_leaves_the_backing_on_the_handle_it_owns() {
+        let mut io = io_with_two_handles_onto_one_file();
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+
+        let read_only = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &read_only, false, &mut io)
+            .unwrap();
+
+        // Some other backing held handle 11 and its descriptor already ended,
+        // so the physical close is owed and the number is not safe to adopt.
+        crate::ofd::retain_mapping_host_handle(11).unwrap();
+        assert!(crate::ofd::host_close_deferred_by_mapping(11));
+
+        let writable = io.stat_of(11);
+        assert_eq!(
+            table
+                .get_or_create_file_backing(&key, &writable, true, &mut io)
+                .err(),
+            Some(Errno::EBADF),
+        );
+
+        let backing = table.file_backing(&key).unwrap();
+        assert_eq!(backing.handle, 10, "a refused upgrade must not swap the handle");
+        assert!(!backing.writable, "a refused upgrade must not mark the backing writable");
+        assert_eq!(crate::ofd::mapping_host_handle_refs(10), 1);
     }
 
     // -- two-phase file coherence -----------------------------------------
