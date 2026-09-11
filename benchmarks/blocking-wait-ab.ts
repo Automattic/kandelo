@@ -95,6 +95,13 @@ async function runOnce(
     programPath: program,
     argv: ["blocking-wait"],
     timeout: 120_000,
+    // WHY no rootfs: the guest opens no file during any timed section — it
+    // measures pipes and the three wait syscalls — so the canonical image
+    // contributes nothing to what is being timed. Booting without it keeps
+    // this harness off the package build path, whose cache root is shared
+    // across worktrees and cannot be isolated from outside the dev shell.
+    // Both arms boot identically, which is what the comparison requires.
+    useDefaultRootfs: false,
     ...(kernelWasmPath ? { kernelWasmPath } : {}),
   });
   if (result.exitCode !== 0) {
