@@ -5794,6 +5794,22 @@ Two consequences follow, and neither is optional:
 - **The import-entry trap has now caught four agents.** 72 host *functions*
   reads as 73 *entries*, because `env.memory` is an entry. Measure the built
   artifact and say which you are counting.
+- **A `pgrep` waiter whose own command line contains its pattern can deadlock
+  with its siblings, permanently.** Fifteen `until ! pgrep -f 'npx vitest run'`
+  loops were found alive after **38 hours**. Each one's own command line
+  contains the string `npx vitest run`, so every loop matched every other loop
+  — and itself. None could ever exit, no matter what the suite did. They also
+  poisoned every `ps | grep vitest` check run afterwards, which is how a dead
+  test run kept being reported as live. Wait on a **file, a PID, or a sentinel
+  the waiter cannot match**, never on a pattern the waiter's own process image
+  contains.
+- **A truncating pipe destroys the evidence that a run died.** `vitest | tail -N`
+  buffers everything and emits only at exit, so a run killed mid-report leaves a
+  plausible partial log — one that ends inside an error listing with no summary
+  and nothing saying it stopped. Two agents made this mistake on the same day,
+  one losing a suite result and one losing all but twelve of its per-run load
+  samples. If a run's output or conditions matter, write them to a file as they
+  are produced.
 - **Read the first line of a failure, never the tally.** Two traps in one
   afternoon shared this shape. A conformance suite reporting **0 PASS / 32
   FAIL** twelve times is not a regression in the code under test -- it is
