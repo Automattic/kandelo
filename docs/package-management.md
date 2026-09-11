@@ -325,6 +325,42 @@ files = ["share/runtime-data.bin"]                   # other runtime data
   `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
   paths supplied by the repository dev shell.
 
+#### Origin fallbacks for `[source].url`
+
+`[source].url` stays a single declared URL. There is no `urls`, `mirrors`, or
+per-package mirror key, and adding one is not the mechanism here.
+
+Instead, the fetcher derives an ordered candidate list from the declared URL's
+**origin**: the declared URL is always tried first, then any fallback the
+repository knows for that origin. Today one origin has a rule —
+`ftpmirror.gnu.org`, GNU's redirector, falls back to the canonical direct host
+`ftp.gnu.org/gnu/<path>`. That single rule covers the 14 manifests that name
+the redirector, and covers new GNU packages without per-manifest opt-in.
+
+Three properties this preserves, all load-bearing:
+
+- **Integrity is unchanged.** `[source].sha256` is pinned, and the pin — not
+  the host that answered — establishes the artifact. Bytes that do not hash to
+  the pin are rejected by the same single check as before. The fallback is
+  about *reachability*; it never selects content, and a reachable origin
+  serving the wrong bytes fails loudly rather than being skipped.
+- **Cache identity is unchanged.** The cache key still hashes the declared
+  `source.url`. Candidates are not manifest data and are not hashed, so this
+  mechanism invalidates no cache key and rebuilds no package.
+- **Interpretation is unchanged.** `ArchiveFormat::from_url` and
+  `WASM_POSIX_DEP_SOURCE_URL` both read the declared URL, never whichever
+  candidate answered.
+
+A package with no origin rule has exactly one candidate and takes the original
+code path, error variant included.
+
+Redirectors that do **not** have a rule, and why: `downloads.sourceforge.net`,
+`prdownloads.sourceforge.net` and `download.sourceforge.net` can strand the
+same way, but a SourceForge fallback means naming a specific
+`dl.sourceforge.net` mirror, which reintroduces the rotating-volunteer
+dependency the rule exists to remove, and the project/path layout differs per
+package so there is no verifiable rewrite. Recorded rather than guessed.
+
 The checked-in local-supported authority must spell the provider explicitly.
 For compatibility, source and archived manifests that predate this field still
 parse: a nonzero SHA infers `archive`, while the all-zero sentinel infers
@@ -822,6 +858,27 @@ non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
 cache lookup. The declared Repository/DevShell byte traversal is currently a
 Unix-only capability: native non-Unix hosts return the documented
 unsupported-platform error rather than using a weaker pathname-based digest.
+
+### When a build changes its own cache key
+
+A source-only build recomputes its cache key after the build script exits and
+refuses to publish if the key moved, because the result belongs to neither
+key. The refusal now names the inputs that moved — classified as changed,
+appeared, or disappeared — instead of printing only two shas. Two opaque shas
+read as a concurrent-edit race, and that reading invites a retry loop rather
+than a fix.
+
+One blind spot is worth knowing about when reading such a refusal.
+`global_package_toolchain_digests` memoizes per repository root for the life
+of the process, so the pre- and post-build keys necessarily agree about the
+global toolchain inputs (`libc/musl`, `libc/glue`, `sdk/bin`, `sdk/src`, and
+the rest) even if the tree underneath them changed mid-build. The drift report
+re-reads those inputs **uncached** so that case becomes visible, and says
+explicitly that the key comparison understates the drift when it fires.
+
+Note that global toolchain input digests are unfiltered directory walks of the
+working tree. `libc/musl` is therefore sensitive to build state: building musl
+in-tree adds its object files to that digest.
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
