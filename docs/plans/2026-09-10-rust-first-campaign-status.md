@@ -3180,6 +3180,43 @@ them.**
 | B22 | libc-test unfetchable | **CLOSED.** Never a repo defect — a stale ssh URL in `.git/config` plus a renamed `.git`, both local |
 | B23 | Two consumers, two tier orders | **CLOSED** with B19 |
 
+### B24 — channel-level coverage for caller-native record syscalls
+
+**The gap that twelve broken syscalls walked through untouched.**
+
+Twelve syscalls carry a `ProcessLayout` or kernel-dereferenced record whose size
+depends on the caller's data model: `statfs`, `fstatfs`, `setitimer`,
+`getitimer`, `sigaltstack`, `timer_create`, `rt_sigtimedwait`,
+`rt_sigqueueinfo`, `sysinfo`, `mq_open`, the `mq_timedsend`/`mq_timedreceive`
+attribute path, and `mq_getsetattr`.
+
+During the pointer-width work **every one of them would have returned `EINVAL`
+to every caller**, and the whole suite went green: 257 passing Vitest files, 54
+host-native smoke tests, 1,952 runtime-core tests. Nothing exercises them
+*through the channel*. `runtime-core` tests call `syscalls::` directly, below
+the dispatcher where the bug lived; the host suites mock
+`kernel_handle_channel`.
+
+**Where it belongs: `crates/host-native`.** It already instantiates the real
+`kernel.wasm` and runs real guests through the real channel —
+`smoke_runs_record_path_guest_uname` is that shape today. The mechanics are
+free: `crates/host-native/fixtures/build-fixtures.sh` compiles *every* `*.c` in
+the directory, so a new fixture needs no build-system change.
+
+**It must be self-extending, not a hand-list.** A hand-written list of twelve is
+the same failure mode as the census that missed them. Derive the set from
+`SYSCALL_ARG_DESCRIPTORS`: enumerate every entry carrying
+`SyscallArgSize::ProcessLayout` and assert each appears in the fixture's
+exercised set, so **adding a descriptor without coverage fails the build**. That
+is the pattern `host_abi.rs` already uses for its reviewed-set assertions.
+
+**The half it will not cover, stated up front.** `build-fixtures.sh` targets
+`wasm32-unknown-unknown` only. A wasm32 fixture would have caught *this* bug
+(width read as 0) but not one that only manifests at width 8 — which is the more
+likely future regression, since wasm64 is the path with no guests in daily use.
+`sysroot64` is built and `host/test/wasm64.test.ts` exists, so a wasm64 arm is
+reachable; scope it separately rather than bundling it.
+
 ### Still owed, in dispatch order
 
 1. **B2** (with B3) — the largest remaining TypeScript deletion, ~2,700 lines. Blocked only on `syscalls.rs` locality.
@@ -3187,7 +3224,8 @@ them.**
 3. **W-2…W-4** — the rest of the image-writer split, after W-1 lands.
 4. **B20's Playwright realm** — needs `findRepoRoot` extracted; `binary-resolver.ts` was under active edit.
 5. **B10, B11** — small, no ABI surface.
-6. **T4** — the residual host-suite failures, once the four roots have landed and a clean full run is possible.
+6. **B24** — channel-level coverage for the twelve caller-native record syscalls, self-extending from `SYSCALL_ARG_DESCRIPTORS`.
+7. **T4** — the residual host-suite failures, once the four roots have landed and a clean full run is possible.
 
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
