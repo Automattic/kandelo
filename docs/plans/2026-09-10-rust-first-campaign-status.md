@@ -5471,32 +5471,38 @@ still carried the dead-code reading when B1 was dispatched
 (`2026-09-09-k1b-image-format-grounding.md` §7.4, now corrected in §7.5, and
 `2026-09-09-k1-sffs-wiring-grounding.md:552`, still uncorrected).
 
-## OWED MEASUREMENT — the select round's same-build control (2026-09-11)
+## THE SELECT ROUND'S NOISE FLOOR — MEASURED, AND THE HEDGE IS GONE (2026-09-11)
 
-The select/pselect6 lazy-arm result is measured and landed: four metrics,
-same sign on both statistics, **2.3-2.8 µs recovered**, 24 runs at 12 per arm,
-load 2.79-3.37 logged per run, one working tree and one kernel wasm with only
-`kernel-worker.ts` swapped between invocations.
+The select/pselect6 lazy-arm result was landed with a bounded claim about the
+metrics it does not touch: *not regressed beyond this round's own scatter*,
+rather than *not regressed*. That control has now been run — same instrument,
+identical arms, 24 runs, load 4.55–5.53 against the measured round's 2.79–3.37,
+so it mildly over-estimates, which is the conservative direction.
 
-**One control was not run, and the claim is bounded accordingly.** The six
-untouched metrics scattered −0.00 to +1.94, two of them above the ±0.7 µs floor
-established earlier in the day. So the honest statement about `epoll_ready` and
-`poll_ready` is *not regressed beyond this round's own scatter* -- not *not
-regressed*. The measuring agent named the plausible mechanism rather than
-hiding it: `kernel-worker.ts` is a single ~25,000-line file, and moving code
-inside it can shift V8 parse and compile for unrelated functions.
+**Floor: ±1.44 dMin / ±1.57 dP10.** Not ±0.7. The ±0.7 figure came from a
+*different* instrument — the eight-commit bisect — and does not transfer.
 
-**What would close it:** a same-build noise floor for THIS round -- identical
-arms, same replication count, same quiet machine -- which separates "moving
-code in a large file perturbs V8" from a real effect on the untouched paths.
-The apparatus is committed (`benchmarks/wait-ab-host-source.sh` plus its
-aggregator) and its refusal guard is already exercised: given identical arms it
-declines to measure noise rather than reporting a number.
+| metric | result | verdict |
+|---|---|---|
+| all four `select_*` | −1.89 to −2.80, both statistics | **clear the floor — recovery resolved** |
+| `epoll_ready` | +0.90 / +1.20 | **inside the floor — no regression, hedge dropped** |
+| `poll_ready` | +1.94 / +0.79 | straddles — **unresolved**, a statement about resolution, not a regression |
 
-This is recorded rather than quietly carried because a bounded claim that
-nobody writes down becomes an unbounded claim within a day. Run it in the next
-quiet window; it is cheap, and it is the only thing standing between this
-result and an unqualified one.
+**It also corrected an argument the coordinator had repeated.** The previous
+round's defence was that the four select metrics moving the same way on both
+statistics distinguished the result from instrument noise — coherence rather
+than magnitude. The control disproves that on its own: with **identical arms**
+it produced `select_ready_idle0` at −1.44 / −1.57, coherent on both statistics
+and meaning nothing. Coherence alone is not sufficient. What distinguishes the
+real round is that all four were coherent **and** all four exceeded the floor.
+
+**A guard bug worth keeping, found in the first attempt.** It started instantly
+at load 27 against a threshold of 5, because `uptime` emits `27.19,` and `awk
+-v` takes that trailing comma as a *string* — so `"27.19," < "5.0"` compared
+`'2' < '5'` and passed. The guard admitted any load whose first digit was low.
+No committed code was affected; the committed apparatus logs the load and never
+compares it. It was caught only because the printed value still carried the
+comma.
 
 ## Open decisions collected — the ones needing the maintainer, in one place
 
