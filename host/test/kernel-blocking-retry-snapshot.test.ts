@@ -4381,7 +4381,10 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         const key =
           `${harness.channel.pid}:${harness.channel.channelOffset}`;
         expect(harness.worker.pendingSignalWaits.has(key)).toBe(false);
-        expect(harness.worker.signalWaitDeadlines.has(key)).toBe(false);
+        // The deadline is kernel state keyed on this channel's execution
+        // generation now, not a host map keyed on `pid:offset`. Retiring it
+        // clears the handle.
+        expect(harness.channel.waitHandle).toBeUndefined();
       }
 
       {
@@ -4843,7 +4846,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       const signalWaitKey =
         `${targetChannel.pid}:${targetChannel.channelOffset}`;
       expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(true);
-      expect(harness.worker.signalWaitDeadlines.has(signalWaitKey)).toBe(true);
+      expect(targetChannel.waitHandle).toBeTypeOf("bigint");
 
       writeRequest(
         harness,
@@ -4864,7 +4867,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         errno: EINTR,
       });
       expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(false);
-      expect(harness.worker.signalWaitDeadlines.has(signalWaitKey)).toBe(false);
+      expect(targetChannel.waitHandle).toBeUndefined();
       expect(harness.worker.pendingCancels.has(targetChannel)).toBe(false);
       expect(
         Array.from(

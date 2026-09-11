@@ -964,7 +964,48 @@ answer.
 Steps 0a–0c are **84 → 81 imports** and remove the whole "blocking wait
 primitive" concept for near-zero risk, and 0c fixes a live defect. They are worth landing even if K3 stalls.
 
-### 7.1 — Dormant kernel wait queue
+### 7.1 — Dormant kernel wait queue — **LANDED, and it is not dormant**
+
+> **Status, 2026-09-11.** Done, plus more than this step asked for. The queue
+> is live as the kernel's **deadline authority**: `poll`, `ppoll`, `select`,
+> `pselect6`, `epoll_pwait` and `sigtimedwait` now hold their timeouts in
+> `wait_queue` on `CLOCK_MONOTONIC`, and §8.7 is fixed rather than merely
+> planned for. The gate is on — the host calls
+> `kernel_set_wait_queue_enabled(1)` at boot beside the tmpfs and rootfs
+> handovers, and a kernel.wasm without the export throws instead of falling
+> back, because falling back would silently restore the wall-clock bug.
+>
+> Landed exports: `kernel_set_wait_queue_enabled`,
+> `kernel_wait_deadline_open` / `_remaining_ns` / `_close`,
+> `kernel_wait_retire_process`, `kernel_next_wait_deadline_ns`,
+> `kernel_wait_queue_len`, `kernel_wait_queue_stats`. Host imports unchanged
+> at 74 — the deadline reads `CLOCK_MONOTONIC` through the existing
+> `host_clock_gettime`.
+>
+> Deleted from `kernel-worker.ts`: `getReadinessDeadline`,
+> `channel.readinessDeadline`, the `signalWaitDeadlines` map (§1.2 #13 —
+> it existed only because a retry lost the deadline), and every
+> `Date.now()`-based deadline comparison in the five families. The
+> `pendingPollRetries` / `pendingSelectRetries` `deadline` field became
+> `deadlineHintMs`: still host state, but monotonic, and named for what it is
+> — a bound for sizing a safety timer, not an authority.
+>
+> **Not landed, and still the bulk of K3:** the parks. The seven mechanisms
+> still own their timers and wake routing.
+> `kernel_next_wait_deadline_ns()` exists and nothing arms a machine timer
+> from it; there is no `TASK_COMPLETE` wake-event kind yet. §7.2 shadow mode
+> has not run, and the conformance suites were unreachable at the time (a
+> locally built tier is refused by its projection authority), so the family
+> cutovers in §7.3–§7.11 remain gated exactly as written.
+>
+> **Correction to §7.0.** Steps 0a/0b had already landed by this tip:
+> `host_futex_wait` and `host_sigsuspend_wait` were gone. Step 0c landed
+> here — `sys_usleep` and empty-interest `sys_epoll_pwait` no longer call
+> `host_nanosleep`, and the import is deleted (75 → 74). Both were live
+> whole-machine stalls, not merely dead weight: each blocked the single
+> kernel thread for the caller's full duration while the runtime *also*
+> parked the caller correctly, so one process's `usleep(500000)` froze every
+> other process for half a second.
 
 `crates/runtime-core/src/wait_queue.rs`, unit-tested, wired to nothing:
 
@@ -1091,11 +1132,14 @@ already recurses into itself (`:16053`) when a CONTINUED resume enqueues a
 follow-up STOPPED. That recursion is correct today because the kernel entry
 gate serializes it; the Rust design must keep an equivalent bound.
 
-**8.7 — Wall-clock deadlines.** `getReadinessDeadline` (`:16437`) and every
-`deadline` comparison use `Date.now()`. A backwards NTP step extends every
-sleep in the machine; a forwards step expires them early. The kernel queue must
-use `CLOCK_MONOTONIC` via `host_clock_gettime(1)`. This is a pre-existing latent
-defect the migration should fix rather than port.
+**8.7 — Wall-clock deadlines. FIXED, 2026-09-11 (§7.1).** `getReadinessDeadline`
+and every `deadline` comparison used `Date.now()`. A backwards NTP step
+extended every sleep in the machine; a forwards step expired them early. The
+five timed families now hold their deadlines in the kernel queue on
+`CLOCK_MONOTONIC` via `host_clock_gettime(1)`. What remains host-side is
+retry-timer *sizing*, which is relative and now reads `performance.now()`.
+Sleeps (`pendingSleeps`) were never affected: they arm a relative
+`setTimeout`, not a wall-clock deadline.
 
 **8.8 — Browser timer clamping.** One host timer at the next deadline is
 elegant but exposed to the browser's 4 ms nested-`setTimeout` clamp and to
