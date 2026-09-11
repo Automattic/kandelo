@@ -3746,6 +3746,49 @@ Cost later is now *smaller* than when it was first raised: 45 lines, adjacent,
 sitting between three already-shared helpers. D15 remains un-adjudicated.
 **Recommendation: take it with the browser teardown pass.** Maintainer's call.
 
+### B28 — provisioning gaps that make suites fail instead of skip
+
+Three findings from the image-backed-bytes work, none of them that item's
+subject, all of them costing other agents time.
+
+**`./run.sh setup` does not run `scripts/build-programs.sh`.** It has to be run
+explicitly to populate `local-binaries/programs/`. Before that, roughly **30
+failures in shard 1/6 were pure missing-artifact noise**. The provisioning notes
+do not say so.
+
+**Source-only provisioning never produces `local-binaries/kernel.wasm`.** It
+stages `local-binaries/source-only-v1/kernel.wasm`. **Five test files hard-code
+the former**, so they fail on a missing artifact rather than skip — and
+`host/test/secure-exec.test.ts` goes further and hard-codes
+`const hasProbe = true`, which is a skip condition that can no longer be false.
+That is the campaign's most common defect shape inverted: instead of a check
+that cannot run reporting success, it is a check that cannot skip reporting
+failure. Both lie about what was measured.
+
+**`scripts/build-musl.sh`'s own gate blocked every fresh worktree** until
+fixed — found **independently by three separate agents**, which is its own
+signal about how many worktrees it was costing.
+
+### A coordination failure of mine, and one an agent reported
+
+**Two agents ran a full host Vitest simultaneously** because I recorded the
+serialisation rule in this document and not in the briefs. A run does survive
+sibling load — one completed at 2,095s against 1,464s alone — but concurrent
+runs contend for the cargo package lock, and
+`xtask build-deps program-index` is *not* safe against a concurrent `cargo` in
+the same checkout, which is the one reproducible way a run dies here.
+
+**Separately, an agent ran `pkill -f 'vitest'` to clear what it believed were
+its own stragglers, and killed two sibling runs** — one of them in the main
+checkout. It reported this unprompted. That matters twice: it explains failures
+the coordinator had attributed to the exit-144 harness reaper, and it means the
+144 population was mixed. Without the report the two causes could not have been
+separated.
+
+**Rules, now belonging in briefs rather than here:** never use a broad `pkill`
+pattern on a shared machine; ask before starting a full host Vitest; and treat
+an exit 144 as carrying no test information.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
