@@ -45,6 +45,7 @@
 import {
   CAPTURED_STDIO,
   TERMINAL_STDIO,
+  type CentralizedKernelCallbacks,
   type CentralizedKernelWorker,
   isCurrentProcessGeneration,
   type ForkBorrowedReplayWorkspace,
@@ -89,7 +90,6 @@ import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
 import type { ProcessMemoryLayout, ProcessMemoryLease } from "./process-memory";
-import type { ProcessMemoryAllocator } from "./process-memory";
 import {
   materializeThreadSlot,
   THREAD_SLOT_BYTES,
@@ -125,11 +125,19 @@ import type {
   PreparedExecLaunchPlan,
   PreparedExecLaunchRequest,
 } from "./exec-target";
+import {
+  collectRootfsBlobPaths,
+  createRootfsBlobProvider,
+} from "./vfs/rootfs-blob-store";
+import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
   acquireForkMemoryClone,
   computeProcessMemoryLayout,
+  deriveProcessMemoryRetirementAdmissionThresholds,
+  ProcessMemoryAllocator,
+  createProcessMemoryRetirementPressureHook,
   FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryCapacityError,
   ProcessMemoryRetirementBacklogError,
@@ -342,6 +350,7 @@ export type ProcessLifecycleOutboundMessage =
   | ForkModuleProofMessage
   | { type: "kernel_fatal"; error: string }
   | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number }
   | { type: "response"; requestId: number; result: unknown; error?: string };
 
 /**
@@ -4160,9 +4169,246 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     return { onCommitFailure, startAfterCommit };
   }
 
+  /**
+   * The process-lifecycle half of a kernel's callback record.
+   *
+   * `handleInit` itself is NOT shared and should not be: the browser's
+   * compiles side modules shipped from main, wires a service-worker bridge, a
+   * CORS proxy and a TLS-MITM backend, and restores mounts from an image;
+   * Node's reads files off disk and opens a session directory. That size ratio
+   * is a real host difference and collapsing it would be the opposite mistake
+   * to leaving a duplicate.
+   *
+   * What *was* duplicated is the middle: the record of callbacks the kernel
+   * uses to reach process lifecycle. Every one of them routes to a function
+   * that already lives here, and the two copies were the same text apart from
+   * comment wording. A host adds its own callbacks by spreading this.
+   */
+  function processLifecycleKernelCallbacks(): CentralizedKernelCallbacks {
+    return {
+      onProcessMemoryTarget: (memory, target) => {
+        host.processMemoryAllocator().observeTarget(memory, target);
+      },
+      onKernelFatal: terminatePoisonedKernelWorker,
+      onFork: ({
+        parentPid,
+        childPid,
+        mode,
+        parentMemory,
+        continuation,
+        borrowedReplay,
+      }) => {
+        const launch = (releaseCreatorAdmission?: () => void) => {
+          // Announce every kernel-side process event so an Inspector-style
+          // process table refreshes on the event rather than by polling.
+          host.post({
+            type: "proc_event",
+            kind: "spawn",
+            pid: childPid,
+            ppid: parentPid,
+          });
+          return handleFork(
+            parentPid,
+            childPid,
+            mode,
+            parentMemory,
+            continuation,
+            borrowedReplay,
+            releaseCreatorAdmission,
+          );
+        };
+        return mode === PROCESS_FORK_MODE_VFORK
+          ? processMemoryCreators.runUntilCommitted(
+              "a vfork process Worker",
+              (commit) => launch(commit),
+            )
+          : processMemoryCreators.run(
+              "a fork process Worker",
+              () => launch(),
+            );
+      },
+      onExec: async (request) => {
+        const creatorAdmission = processMemoryCreators.acquire(
+          "an exec process Worker",
+        );
+        try {
+          const { pid } = request;
+          const execGeneration = processes.get(pid);
+          const previousWorker = execGeneration?.worker;
+          const result = await handleExec(request);
+          if (
+            typeof result === "number"
+            && result < 0
+            && execGeneration
+            && processes.get(pid) === execGeneration
+            && vforkLifetimes.isActiveBorrower(execGeneration)
+          ) {
+            // A failed exec returns to the borrowing child. POSIX does not let
+            // that release the parent; only a later successful exec or _exit
+            // ends the shared-address-space lifetime.
+            vforkLifetimes.noteFailedExec(execGeneration, -result);
+          }
+          if (typeof result === "number") {
+            creatorAdmission.release();
+            return result;
+          }
+
+          let planState: "ready" | "settled" = "ready";
+          return {
+            onCommitFailure: (commitResult?: number) => {
+              if (planState !== "ready") return;
+              planState = "settled";
+              try {
+                result.onCommitFailure(commitResult);
+              } finally {
+                creatorAdmission.release();
+              }
+            },
+            startAfterCommit: async () => {
+              if (planState !== "ready") {
+                throw new Error("exec replacement plan already settled");
+              }
+              planState = "settled";
+              try {
+                const startResult = await result.startAfterCommit();
+                // Announce after `handleExec` has refreshed kernel-side
+                // Process.argv, or a process-table consumer refetches stale
+                // command names and only corrects on a remount. A post-commit
+                // signal death also returns 0 but installs no new worker, so
+                // only an actually-replaced worker emits `exec`.
+                const installedWorker = processes.get(pid)?.worker;
+                if (
+                  startResult === 0
+                  && installedWorker
+                  && installedWorker !== previousWorker
+                ) {
+                  const executionState =
+                    await retryKernelEntryResultForGeneration(
+                      () =>
+                        processes.get(pid)?.worker === installedWorker
+                        && !host.kernel().isExecHandoffActive(pid),
+                      () => host.kernel().isProcessExecutionActive(pid),
+                    );
+                  if (
+                    executionState.status === "current"
+                    && executionState.value
+                  ) {
+                    host.post({ type: "proc_event", kind: "exec", pid });
+                  }
+                }
+                return startResult;
+              } finally {
+                creatorAdmission.release();
+              }
+            },
+          } satisfies PreparedExecLaunchPlan;
+        } catch (error) {
+          creatorAdmission.release();
+          throw error;
+        }
+      },
+      onResolveSpawn: handlePosixSpawnResolve,
+      onSpawn: (parentPid, childPid, program, envp) =>
+        processMemoryCreators.run(
+          "a posix_spawn process Worker",
+          () => handlePosixSpawn(parentPid, childPid, program, envp),
+        ),
+      onClone: (attachment) => processMemoryCreators.run(
+        "a pthread Worker",
+        () => handleClone(attachment),
+      ),
+      onThreadExit: (pid, _tid, channelOffset) =>
+        handleThreadExit(pid, channelOffset),
+      onExit: handleExit,
+    };
+  }
+
+  /**
+   * Build the process-memory allocator a kernel realm admits processes through.
+   *
+   * Both entries wrote this identically; the browser had reached for a
+   * hand-written `PAGE_SIZE = 65536` where Node used the generated ABI
+   * constant, which is the same number and the correct source for it.
+   */
+  function createInitProcessMemoryAllocator(config: {
+    maxWorkers: number;
+    maxProcessMemoryBytes: number;
+    retirementPressureHook: ReturnType<
+      typeof createProcessMemoryRetirementPressureHook
+    >;
+  }): ProcessMemoryAllocator {
+    return new ProcessMemoryAllocator({
+      // The sampled byte budget is the concurrency authority. Keep the count
+      // ceiling high enough that small address spaces do not inherit the
+      // historically unenforced `maxWorkers` value as a new process-count
+      // limit.
+      maxMemories: Math.max(
+        1,
+        Math.floor(config.maxProcessMemoryBytes / WASM_PAGE_SIZE),
+      ),
+      maxTotalBytes: config.maxProcessMemoryBytes,
+      ...deriveProcessMemoryRetirementAdmissionThresholds(
+        config.maxWorkers,
+        config.maxProcessMemoryBytes,
+      ),
+      retirementPressureHook: config.retirementPressureHook,
+    });
+  }
+
+  /**
+   * Hand the boot image's `/` tree to the in-kernel rootfs overlay.
+   *
+   * The overlay is the unconditional sole `/` authority, so this installs both
+   * the blob provider that serves its file bytes and the archive provider that
+   * materializes its lazy members. Where the two entries differed was only in
+   * where each argument came from — Node's image tree is built from a rootfs
+   * image on disk, the browser's is restored from bytes shipped by main — and
+   * those are the parameters.
+   *
+   * `buildRootfsLazyWiring` wants a `(url) => Promise<Uint8Array>` but the
+   * fetcher installed on the image returns a `Response`, so it is adapted here
+   * rather than changing `setLazyFetcher`'s contract. With no fetcher
+   * installed, a lazy read genuinely cannot succeed, so the provider reports
+   * that truthfully rather than hanging or guessing a transport. The kernel
+   * learns which files are lazy from the image's own `KLZY` section, so only
+   * the archive half of the wiring is needed here.
+   */
+  function configureRootfsOverlayFromImage(options: {
+    baseImage: MemoryFileSystem;
+    imageBytes: Uint8Array;
+    foreignPrefixes: string[];
+    nosuid: boolean;
+    lazyFetcher?: Parameters<MemoryFileSystem["setLazyFetcher"]>[0];
+  }): void {
+    const installedLazyFetcher = options.lazyFetcher;
+    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
+      installedLazyFetcher
+        ? async (url) =>
+          new Uint8Array(await (await installedLazyFetcher(url)).arrayBuffer())
+        : async () => {
+          throw new Error("no lazy transport configured");
+        };
+    const { archiveProvider } = buildRootfsLazyWiring(
+      options.baseImage.exportLazyArchiveEntries(),
+      lazyArchiveFetcher,
+    );
+    host.kernel().configureRootfsOverlay(
+      createRootfsBlobProvider(
+        options.baseImage,
+        collectRootfsBlobPaths(options.baseImage, (p) => p),
+      ),
+      archiveProvider,
+      options.foreignPrefixes,
+      options.nosuid,
+      options.imageBytes,
+    );
+  }
+
   return {
     allocateProcessGeneration,
     bindForkHostImports,
+    configureRootfsOverlayFromImage,
+    createInitProcessMemoryAllocator,
     externrefProcessOwner,
     forkHostImportOwnerRuntime,
     forkHostImportsByWorker,
@@ -4171,6 +4417,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     handleExit,
     processes,
     processGenerationDetaches,
+    processLifecycleKernelCallbacks,
     processMemoryCreators,
     processTeardowns,
     ptyByPid,

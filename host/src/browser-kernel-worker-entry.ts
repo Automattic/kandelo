@@ -438,6 +438,9 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
 const {
   allocateProcessGeneration,
   bindForkHostImports,
+  configureRootfsOverlayFromImage,
+  createInitProcessMemoryAllocator,
+  processLifecycleKernelCallbacks,
   completeVforkGenerationTeardown,
   handleExec,
   externrefProcessOwner,
@@ -730,19 +733,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     "KANDELO_TEST_EXEC_WORKER_CONSTRUCTION_FAILURE=once",
   );
   injectedExecWorkerConstructionFailure = false;
-  processMemoryAllocator = new ProcessMemoryAllocator({
-    // The sampled byte budget is the concurrency authority. Keep the count
-    // ceiling high enough that small address spaces do not inherit the
-    // historically unenforced maxWorkers value as a new process-count limit.
-    maxMemories: Math.max(
-      1,
-      Math.floor(msg.config.maxProcessMemoryBytes / PAGE_SIZE),
-    ),
-    maxTotalBytes: msg.config.maxProcessMemoryBytes,
-    ...deriveProcessMemoryRetirementAdmissionThresholds(
-      msg.config.maxWorkers,
-      msg.config.maxProcessMemoryBytes,
-    ),
+  processMemoryAllocator = createInitProcessMemoryAllocator({
+    maxWorkers: msg.config.maxWorkers,
+    maxProcessMemoryBytes: msg.config.maxProcessMemoryBytes,
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
 
@@ -846,135 +839,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
-      onProcessMemoryTarget: (memory, target) => {
-        processMemoryAllocator.observeTarget(memory, target);
-      },
-      onKernelFatal: terminatePoisonedKernelWorker,
-      onFork: ({
-        parentPid,
-        childPid,
-        mode,
-        parentMemory,
-        continuation,
-        borrowedReplay,
-      }) => {
-        const launch = (releaseCreatorAdmission?: () => void) => {
-          // Tell the main thread a kernel-side fork happened so Inspector
-          // panes can refresh their process table without polling.
-          post({
-            type: "proc_event",
-            kind: "spawn",
-            pid: childPid,
-            ppid: parentPid,
-          });
-          return handleFork(
-            parentPid,
-            childPid,
-            mode,
-            parentMemory,
-            continuation,
-            borrowedReplay,
-            releaseCreatorAdmission,
-          );
-        };
-        return mode === PROCESS_FORK_MODE_VFORK
-          ? processMemoryCreators.runUntilCommitted(
-              "a vfork process Worker",
-              (commit) => launch(commit),
-            )
-          : processMemoryCreators.run(
-              "a fork process Worker",
-              () => launch(),
-            );
-      },
-      onExec: async (request) => {
-        const creatorAdmission = processMemoryCreators.acquire(
-          "an exec process Worker",
-        );
-        try {
-          const { pid } = request;
-          const execGeneration = processes.get(pid);
-          const previousWorker = execGeneration?.worker;
-          const result = await handleExec(request);
-          if (
-            typeof result === "number"
-            && result < 0
-            && execGeneration
-            && processes.get(pid) === execGeneration
-            && vforkLifetimes.isActiveBorrower(execGeneration)
-          ) {
-            vforkLifetimes.noteFailedExec(execGeneration, -result);
-          }
-          if (typeof result === "number") {
-            creatorAdmission.release();
-            return result;
-          }
-
-          let planState: "ready" | "settled" = "ready";
-          return {
-            onCommitFailure: (commitResult?: number) => {
-              if (planState !== "ready") return;
-              planState = "settled";
-              try {
-                result.onCommitFailure(commitResult);
-              } finally {
-                creatorAdmission.release();
-              }
-            },
-            startAfterCommit: async () => {
-              if (planState !== "ready") {
-                throw new Error("exec replacement plan already settled");
-              }
-              planState = "settled";
-              try {
-                const startResult = await result.startAfterCommit();
-                // Fire after handleExec updates the kernel Process.argv. If this is
-                // sent before registerProcess(..., { argv }), Kandelo's Procs tab
-                // refreshes against stale cmdline data and only corrects on remount.
-                // Fatal post-commit handoffs return 0 too, but install no new worker.
-                const installedWorker = processes.get(pid)?.worker;
-                if (
-                  startResult === 0
-                  && installedWorker
-                  && installedWorker !== previousWorker
-                ) {
-                  const executionState =
-                    await retryKernelEntryResultForGeneration(
-                      () =>
-                        processes.get(pid)?.worker === installedWorker
-                        && !kernelWorker.isExecHandoffActive(pid),
-                      () => kernelWorker.isProcessExecutionActive(pid),
-                    );
-                  if (
-                    executionState.status === "current"
-                    && executionState.value
-                  ) {
-                    post({ type: "proc_event", kind: "exec", pid });
-                  }
-                }
-                return startResult;
-              } finally {
-                creatorAdmission.release();
-              }
-            },
-          } satisfies PreparedExecLaunchPlan;
-        } catch (error) {
-          creatorAdmission.release();
-          throw error;
-        }
-      },
-      onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
-          "a posix_spawn process Worker",
-          () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ),
-      onClone: (attachment) => processMemoryCreators.run(
-        "a pthread Worker",
-        () => handleClone(attachment),
-      ),
-      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
-      onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
+      ...processLifecycleKernelCallbacks(),
     },
   );
 
@@ -997,40 +862,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // provider before init applies them. The `/` MemoryFileSystem is reachable
   // only here in the entry.
   if (memfs) {
-    // Phase 5 Increment 3b-wiring.3: also bridge System A's lazy-archive
-    // export (`memfs.exportLazyArchiveEntries()`) into the overlay's
-    // `KIND_LAZY_FILE` linkage + `host_fetch_archive` provider.
-    // `buildRootfsLazyWiring` needs a `(url) => Promise<Uint8Array>` fetcher,
-    // but the fetcher installed via `setLazyFetcher` above (`LazyFetch`)
-    // returns a `Response` — adapt it here rather than change
-    // `setLazyFetcher`'s contract. If neither branch above installed a
-    // fetcher, fail loudly instead of guessing a transport: with zero lazy
-    // groups `lazyInput` is empty and the provider is never called; with
-    // lazy groups but no transport, a lazy read genuinely cannot succeed and
-    // the provider should report that truthfully (EIO) rather than hang.
-    const installedLazyFetcher = rootfsLazyFetcher;
-    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
-      installedLazyFetcher
-        ? async (url) =>
-          new Uint8Array(await (await installedLazyFetcher(url)).arrayBuffer())
-        : async () => {
-          throw new Error("no lazy transport configured");
-        };
-    // Only the archive provider is needed now: the kernel learns which files
-    // are lazy from the image's own `KLZY` section, not from a host-built
-    // linkage. `buildRootfsLazyWiring` still produces both; `lazyInput` is the
-    // manifest half and now has only the test oracle as a consumer.
-    const { archiveProvider } = buildRootfsLazyWiring(
-      memfs.exportLazyArchiveEntries(),
-      lazyArchiveFetcher,
-    );
-    kernelWorker.configureRootfsOverlay(
-      createRootfsBlobProvider(memfs, collectRootfsBlobPaths(memfs, (p) => p)),
-      archiveProvider,
-      rootfsForeignPrefixes,
-      rootMount?.nosuid === true,
-      msg.vfsImage,
-    );
+    configureRootfsOverlayFromImage({
+      baseImage: memfs,
+      imageBytes: msg.vfsImage,
+      foreignPrefixes: rootfsForeignPrefixes,
+      nosuid: rootMount?.nosuid === true,
+      lazyFetcher: rootfsLazyFetcher,
+    });
   }
 
   await kernelWorker.init(msg.kernelWasmBytes);
