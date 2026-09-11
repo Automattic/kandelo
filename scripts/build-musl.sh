@@ -422,6 +422,13 @@ probe_dir="$(mktemp -d)"
 trap 'rm -rf "$probe_dir"' EXIT
 cat >"$probe_dir/probe.c" <<'PROBE'
 #include <dirent.h>
+/* WHY <stddef.h>: POSIX requires <dirent.h> to declare DIR, opendir, readdir,
+   closedir and struct dirent -- it does NOT require it to define NULL. Relying
+   on a transitive definition made this probe fail against a perfectly correct
+   sysroot and then blame the sysroot, which is exactly the failure this whole
+   postcondition exists to prevent. It happened to pass where it was written
+   because that sysroot's headers pulled NULL in by accident. */
+#include <stddef.h>
 
 int main(void) {
     DIR *d = opendir(".");
