@@ -86,10 +86,11 @@ describe("VFS image lazy-file inode identity", () => {
     expect(Number(restored.stat("/big.bin").size)).toBe(4242);
   });
 
-  it("loses a lazy file SILENTLY when its recorded inode misses the body", async () => {
-    // This is the shape a kernel-written image has today: the JSON and the
-    // KLZY section agree with EACH OTHER, and both name an inode the body
-    // does not have. Nothing throws, and the deferred backing is simply gone.
+  it("refuses an image whose recorded inode misses the body", async () => {
+    // This is the shape a kernel-written image has: the JSON and the KLZY
+    // section agree with EACH OTHER, and both name an inode the body does not
+    // have. Before the identity gate this restored happily and emptied the
+    // file; the whole point of the gate is that this case is now unshippable.
     const image = await imageWithOneLazyFile();
     const { lazyOffset, entries } = readLazySections(image);
     expect(entries).toHaveLength(1);
@@ -99,18 +100,16 @@ describe("VFS image lazy-file inode identity", () => {
       deriveKernelSection: true,
     });
 
-    const restored = MemoryFileSystem.fromImage(mutated);
-    expect(restored.getLazyEntry("/big.bin")).toBeNull();
-    // The file is still there, and it is empty for good: its 4242 bytes have
-    // no URL attached to them any more, so nothing can ever fetch them.
-    expect(Number(restored.stat("/big.bin").size)).toBe(0);
+    expect(() => MemoryFileSystem.fromImage(mutated)).toThrow(
+      /inode identity does not exist in the image's own filesystem body/,
+    );
   });
 
-  it("loses a lazy file SILENTLY when its generation or data sequence drifts", async () => {
+  it("refuses an image whose generation or data sequence drifts", async () => {
     // Identity is all three fields, not just the inode number. A writer that
-    // preserved inode numbers but re-derived the slot generation, or that
-    // stamped a different data-mutation count on the stub, loses the file
-    // exactly as completely.
+    // preserved inode numbers but re-derived the slot generation, or stamped a
+    // different data-mutation count on the stub, loses the file exactly as
+    // completely — so the gate must cover all three.
     const image = await imageWithOneLazyFile();
     const { lazyOffset, entries } = readLazySections(image);
 
@@ -121,25 +120,44 @@ describe("VFS image lazy-file inode identity", () => {
       const mutated = withLazyEntries(image, lazyOffset, drifted, {
         deriveKernelSection: true,
       });
-      const restored = MemoryFileSystem.fromImage(mutated);
       expect(
-        restored.getLazyEntry("/big.bin"),
-        `drifting ${field} must not be tolerated silently`,
-      ).toBeNull();
-      expect(Number(restored.stat("/big.bin").size)).toBe(0);
+        () => MemoryFileSystem.fromImage(mutated),
+        `drifting ${field} must be refused, not tolerated`,
+      ).toThrow(/inode identity does not exist/);
     }
   });
 
-  it("throws LOUDLY when the JSON and KLZY sections disagree with each other", async () => {
-    // The contrast that makes the tests above worth having. The existing gate
-    // is real and it works — it just guards a different axis. Here the JSON
-    // moves and the KLZY section does not, so the image's two descriptions of
-    // itself conflict and the restore refuses.
-    const image = await imageWithOneLazyFile();
+  it("names every unresolvable file, so the failure is diagnosable", async () => {
+    // A gate that fires without saying what it lost sends the reader back to
+    // the image with a hex editor. The message has to carry the paths.
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(256 * 1024));
+    fs.registerLazyFile("/a.bin", "https://example.invalid/a", 11, 0o644);
+    fs.registerLazyFile("/b.bin", "https://example.invalid/b", 22, 0o644);
+    const image = await fs.saveImage();
     const { lazyOffset, entries } = readLazySections(image);
-    const drifted = [{ ...entries[0], ino: (entries[0].ino as number) + 1 }];
+    const drifted = entries.map((e) => ({ ...e, ino: (e.ino as number) + 50 }));
 
     const mutated = withLazyEntries(image, lazyOffset, drifted, {
+      deriveKernelSection: true,
+    });
+
+    expect(() => MemoryFileSystem.fromImage(mutated)).toThrow(
+      /declares 2 deferred file\(s\)[\s\S]*\/a\.bin[\s\S]*\/b\.bin/,
+    );
+  });
+
+  it("still throws on the OTHER axis, when JSON and KLZY disagree", async () => {
+    // The contrast that makes the tests above worth having, isolated so it
+    // actually tests what it claims. The JSON entry here is left correct, so
+    // it resolves in the body and the identity gate has nothing to say; only
+    // the KLZY section is wrong. If both axes were perturbed at once the
+    // identity gate would fire first — `restoreParsedImage` deliberately runs
+    // import validation before the section comparison — and this test would
+    // pass while proving nothing about the section comparison at all.
+    const image = await imageWithOneLazyFile();
+    const { lazyOffset, entries } = readLazySections(image);
+
+    const mutated = withLazyEntries(image, lazyOffset, entries, {
       deriveKernelSection: false,
     });
 

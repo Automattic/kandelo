@@ -4688,7 +4688,33 @@ export class MemoryFileSystem implements FileSystemBackend {
   private importLazyEntriesInternal(
     entries: LazyFileEntry[],
     trustedLegacySnapshot: boolean,
+    /**
+     * Treat an entry that resolves to nothing as CORRUPTION rather than as an
+     * entry that has simply stopped applying.
+     *
+     * Set only when restoring an image, where the invariant is provable rather
+     * than hoped for: `saveImage` reconciles its lazy entries against a
+     * freshly snapshotted `identityState()` and only THEN serializes them, so
+     * every entry a well-formed image carries resolves in that same image's
+     * body by construction. A lazy file the overlay materialized or deleted is
+     * dropped at save time and never reaches the JSON. So at restore there is
+     * no legitimate "no longer lazy" case left to tolerate, and a mismatch
+     * means the image's description of its deferred files disagrees with its
+     * own body.
+     *
+     * The cost of tolerating it is total and silent: the entry is discarded,
+     * its URL goes with it, and the file survives as a zero-byte regular file
+     * whose real bytes nothing can ever fetch again.
+     *
+     * This is deliberately a DIFFERENT axis from the `KLZY`-versus-JSON check.
+     * That one compares the image's two descriptions of its deferred files
+     * against each other, so both can agree perfectly and both still disagree
+     * with the body. Agreement between two descriptions is not agreement with
+     * the thing described.
+     */
+    imageIdentityIsAuthoritative = false,
   ): void {
+    const unresolved: LazyFileEntry[] = [];
     for (const e of entries) {
       const isLegacy =
         e.generation === undefined || e.dataSequence === undefined;
@@ -4716,7 +4742,12 @@ export class MemoryFileSystem implements FileSystemBackend {
         identity ??= st;
         validPaths.add(path);
       }
-      if (!identity || validPaths.size === 0) continue;
+      if (!identity || validPaths.size === 0) {
+        // A legacy entry carries no generation or data sequence to check, so
+        // "did not resolve" is genuinely ambiguous for it and stays tolerated.
+        if (imageIdentityIsAuthoritative && !isLegacy) unresolved.push(e);
+        continue;
+      }
       const primaryPath = validPaths.has(e.path)
         ? e.path
         : validPaths.values().next().value!;
@@ -4731,6 +4762,28 @@ export class MemoryFileSystem implements FileSystemBackend {
           url: e.url,
           size: e.size,
         },
+      );
+    }
+    if (unresolved.length > 0) {
+      const shown = unresolved
+        .slice(0, 5)
+        .map(
+          (e) =>
+            `${e.path} (declared inode ${e.ino}/gen ${e.generation}/seq ` +
+            `${e.dataSequence}, ${e.size} bytes)`,
+        )
+        .join(", ");
+      const more =
+        unresolved.length > 5 ? ` and ${unresolved.length - 5} more` : "";
+      throw new Error(
+        `VFS image declares ${unresolved.length} deferred file(s) whose inode ` +
+          `identity does not exist in the image's own filesystem body: ` +
+          `${shown}${more}. The image's lazy metadata and its filesystem ` +
+          `disagree about which inode backs each deferred file, so restoring ` +
+          `it would drop those files' fetch URLs and leave them as empty ` +
+          `regular files that can never be fetched again. This usually means ` +
+          `the body was written by one producer and the lazy metadata carried ` +
+          `over from another, which assigns different inode numbers.`,
       );
     }
   }
@@ -7507,7 +7560,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const derivedKernelLazy = deriveKernelLazySection(lazyEntries, archiveEntries);
 
     if (lazyEntries.length > 0) {
-      mfs.importLazyEntriesInternal(lazyEntries, true);
+      mfs.importLazyEntriesInternal(lazyEntries, true, true);
     }
     if (archiveValue !== null) {
       mfs.importLazyArchiveEntriesInternal(
