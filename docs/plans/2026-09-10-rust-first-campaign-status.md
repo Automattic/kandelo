@@ -3245,17 +3245,33 @@ ship on a green host suite; **a gate that cannot reliably complete is not a
 gate**, and every attribution argument above depends on being able to run the
 suite twice.
 
-Candidate causes, none confirmed:
+**Cause identified 2026-09-11: cross-agent contention, not memory.** A fourth
+death was diagnosed rather than retried. `pgrep` showed **nine vitest processes
+running, several belonging to a different agent's worktree**, and the last two
+deaths occurred *at startup with 73% of memory free* — so it is not the running
+agent's own footprint. The machine is shared and several agents run full suites
+concurrently, each taking ~24 minutes.
 
-- 144 is 128+16, and on macOS signal 16 is `SIGURG`, which would be strange — so
-  this may be a Vitest or Node watchdog, a pool teardown, or memory pressure
-  rather than a true signal.
-- Worker count: `host/vitest.config.ts` uses `maxWorkers: 4` locally, 1 under
-  CI. One retry at 3 still died.
-- Memory: these suites start many `worker_threads` and large shared Wasm
-  memories, and that config's own comments record that nesting such work inside
-  Vitest's pool "has historically made task reporting unreliable under
-  contention".
+Ruled out or demoted:
+
+- **Memory pressure** — 73% free at the moment of death.
+- **Worker count** — a retry at `--maxWorkers=3` died too, so the local default
+  of 4 is not the whole story.
+- The `SIGURG` reading of 128+16 remains unexplained but is now secondary: the
+  correlation with concurrent runs is much stronger than any signal-number
+  theory.
+
+**The coordination rule this implies, now standing:** *at most one full host
+Vitest on this machine at a time, across all agents and the coordinator.* Agent
+briefs should say so. Targeted suites are fine concurrently; a 427-file run is
+not. The coordinator has already paid for ignoring the general form of this
+rule twice tonight — a false `xtask` byte-identity failure that passes 2/2 in
+isolation, and a `./run.sh setup` writing into a live agent's isolated cache
+root while cargo reported "Blocking waiting for file lock on package cache".
+
+The agent that diagnosed it **declined to start a fifth run**, on the grounds
+that it would degrade a sibling's work for a number obtainable another way.
+That is the right call and the reason the cause got found at all.
 
 **This outranks individual migration items right now.** A reliable end-to-end
 run of this suite is worth more than any single deletion, because without it the
