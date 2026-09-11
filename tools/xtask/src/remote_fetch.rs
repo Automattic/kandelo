@@ -276,6 +276,13 @@ fn stream_source_archive_candidates(
     file: &mut File,
     label: &str,
 ) -> Result<(), FetchError> {
+    // With no fallback to offer -- which is every package that does not name a
+    // redirector, i.e. most of the registry -- behave exactly as before and
+    // return the transport's own error untouched, variant included. Only the
+    // genuinely multi-candidate case gets the aggregated message.
+    if let [only] = candidates {
+        return stream_archive_to_file_with_limit(only, file, label, MAX_SOURCE_ARCHIVE_BYTES);
+    }
     let mut failures: Vec<String> = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         if index > 0 {
@@ -2271,5 +2278,34 @@ mod source_url_fallback_tests {
         file.seek(SeekFrom::Start(0)).unwrap();
         file.read_to_end(&mut written).unwrap();
         assert_eq!(written, b"FIRST");
+    }
+}
+
+#[cfg(test)]
+mod source_url_single_candidate_tests {
+    use super::stream_source_archive_to_file;
+    use std::fs;
+
+    /// Most of the registry names no redirector and so has exactly one
+    /// candidate. Those packages must keep the transport's own error verbatim:
+    /// wrapping a lone failure in "every source URL failed" would imply a
+    /// fallback was tried when none exists, which is the kind of message that
+    /// sends a reader looking for a second host that was never contacted.
+    #[test]
+    fn a_single_candidate_reports_the_transport_error_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out");
+        let mut file = fs::File::create(&target).unwrap();
+        let missing = dir.path().join("absent.tar.gz");
+        let url = format!("file://{}", missing.display());
+
+        let error = stream_source_archive_to_file(&url, &mut file, "test archive")
+            .expect_err("the file does not exist");
+        let rendered = format!("{error}");
+        assert!(
+            !rendered.contains("every source URL failed"),
+            "a lone candidate must not be reported as an exhausted fallback list: {rendered}"
+        );
+        assert!(rendered.contains("absent.tar.gz"), "got: {rendered}");
     }
 }

@@ -76,6 +76,16 @@ pub fn fetch_and_extract(url: &str, sha256_hex: &str, dest: &Path) -> Result<(),
     // below is unchanged and still decides the artifact, so a second origin
     // cannot weaken it.
     let candidates = crate::remote_fetch::source_url_candidates(url);
+    // No fallback to offer: keep the previous error verbatim rather than
+    // wrapping a single failure in aggregate language that implies otherwise.
+    if let [only] = candidates.as_slice() {
+        let bytes = fetch_url(only).map_err(|e| format!("{e}"))?;
+        verify_sha(&bytes, sha256_hex).map_err(|e| format!("{e}"))?;
+        let format = ArchiveFormat::from_url(url)?;
+        extract(&bytes, format, dest)?;
+        flatten_single_top_level(dest)?;
+        return Ok(());
+    }
     let mut failures: Vec<String> = Vec::new();
     let mut fetched: Option<Vec<u8>> = None;
     for candidate in &candidates {
