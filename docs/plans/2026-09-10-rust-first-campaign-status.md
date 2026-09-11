@@ -448,7 +448,7 @@ branch — not just that a docs commit describing it does.
 | ~~K10 I6~~ | ~~`wasi-shim.ts`~~ | **PAID 2026-09-10** |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
-| K7 re-cut (2,3) | rest of the mapping subsystem | ~3,300 |
+| K7 re-cut (2,3) | rest of the mapping subsystem — **one atomic item, not two** | 2,630 method lines censused 2026-09-10 (~3,300 with types and call sites) |
 | ~~K3-7.7~~ | ~~epoll mirror in `kernel-worker.ts`~~ | **PAID: 423 removed, 112 added (net -311)** |
 
 ## K7 cutover — mis-scoped, and the finding is worth more than the item
@@ -501,6 +501,136 @@ needed and not added**; the sanctioned import remains unspent.
    benchmark needs: a live peer, a real attachment, a loop of boundaries, and
    clean/dirty cases reported separately because they move in opposite
    directions.
+
+### B3 re-scoped 2026-09-10 — the benchmark was never the binding gate
+
+B3 was filed as blocked on a targeted shared-mapping benchmark, and the
+maintainer ruled to proceed without one. That ruling removed one gate. A
+second gate was already there, unrecorded on the B3 row, and an independent
+census confirms it: **B3 cannot be performed while B2 is open.** The
+maintainer's ruling does not unblock B3, because the benchmark was not what
+was holding it.
+
+**Censused, not inherited.** Every number below was measured on this branch
+(`bb3d2111f`), not carried from an earlier report.
+
+- The anon + file subsystem in `host/src/kernel-worker.ts` is **64 methods,
+  2,630 lines** of method bodies, plus its type declarations and call sites.
+- Of those, **~1,068 lines across 23 methods have no Rust counterpart** —
+  independently reproducing the earlier ~1,203 figure to within the types and
+  call sites that figure also counted. The gap is real and it is the B2
+  coherence layer.
+
+**The anon half is not separable the way the SysV half was, and this is the
+part the "re-cut as three items" split got wrong.** SysV was separable because
+it owned its own containers (`shmMappings` / `shmSegmentVersions`). Anonymous
+and file mappings **share one container**, `sharedMappings`, and are
+distinguished only by a `backingKind` field tested at **15 interleaved sites**
+in the shared lifecycle paths — inherit, cleanup, remap, release, flush. An
+anon-only cutover therefore cannot delete those paths; it would leave every
+branch in TypeScript, add a kernel call inside each `anonymous` arm, and put
+**two authorities over one address space**. Measured against the three
+campaign numbers it deletes roughly 100 lines of TypeScript while adding more
+than that in driver glue, and it ranks below doing nothing. Item 3's title,
+"anon + file cutover", is accurate: the two are one item, and that item is
+atomic with item 2.
+
+### The K7 Rust is dead in production — the dead-floor pattern, mirrored
+
+The ledger records K7's Rust as landed, and it is: it compiles, it is
+unit-tested, and `docs` carry its parity table. **No production path reaches
+the anon or file half of it.**
+
+Verified by call-site census across `crates/`, not by reading the docs:
+
+- **15 `SharedMappingTable` methods have zero callers outside `memory.rs`
+  itself — 874 lines of method bodies.** `track_anonymous_mapping`,
+  `sync_anonymous_from_process`, `get_or_create_file_backing`,
+  `discard_unreferenced_file_backing`, `release_file_backing_reference`,
+  `sync_file_from_process`, `publish_file_backing_observers`,
+  `flush_fd_writeback_mapping`, `synchronize_for_boundary`, `flush_mappings`,
+  `cleanup_mappings`, `remap_mapping`, `prepare_file_mappings_for_write`,
+  `update_mapping_protection`, `release_all_for_process`.
+- `inherit_process_mappings` (162 lines) **is** reached in production, through
+  `inherit_sysv_attachments`, but only ever over an empty `mappings` map, so
+  no line of its body has run outside a test.
+- `FileBacking`'s page-cache methods add a further ~283 lines on the same
+  footing.
+- The nine `kernel_shared_mapping_*` exports are **all** `_sysv_`. There is no
+  entry point into the other half at all.
+
+That is roughly **1,300 lines of Rust with no live caller**, and it is the
+campaign's dead-floor pattern in mirror image: not host surface kept as an
+"irreducible floor" that nothing reaches, but a *migration target* kept warm by
+its own unit tests. The distinction matters for how the ledger reads. K7's
+Rust counts as +21k Rust and 0 TypeScript removed; on the campaign's primary
+metric, V4, it has so far moved nothing, and it will move nothing until B2 and
+B3 land together.
+
+**The code comment already says this and deserves credit for it.**
+`crates/kernel/src/wasm_api.rs` states plainly that
+`SharedMappingTable::mappings` "is therefore empty in production today". The
+claim was checked line by line during this census — including its assertion
+that `kernel_shared_mapping_sysv_inherit` reaches the whole-subsystem
+`inherit_process_mappings`, which an earlier pass of this census wrongly read
+as false because the grep that tested it excluded `memory.rs`. It is true. The
+comment is accurate; what was missing was any record of the consequence on the
+B3 row.
+
+### What B2 should do first, and why it is smaller than 1,068 lines
+
+The census turned up the reason the coherence layer is expensive in
+TypeScript, and it is not the policy — the policy is small. It is that **the
+host does not know what the kernel knows, and pays to re-derive it.**
+
+`getFdStatForSharedMapping` is **93 lines** that hand-assemble a synthetic
+`fstat` syscall channel, lease scratch, re-enter the kernel through
+`kernel_handle_channel`, and then recover the host file handle by *snooping
+the kernel's own `host_fstat` call* through a
+`beginFstatHandleCapture`/`finishFstatHandleCapture` side-channel in
+`host/src/kernel.ts`. `getFdAccessModeForSharedMapping` is another **60 lines**
+doing the same thing for one `F_GETFL`. Together with the `sharedMmapFdCache`
+that exists only to amortise them, and `resolveSharedMmapPath` and
+`findSharedMmapBackingForFd`, roughly **300 of the 1,068 lines do not need
+porting at all** — they are host code re-deriving the fd's dev/ino/size/mode,
+access mode, path, and host handle, every one of which the kernel already
+owns in its own `OpenFileDesc`.
+
+`handleSharedMappingsAfterFileSyscall` (171 lines) is the rest of the shape:
+pure syscall-number-keyed invalidation policy with no host dependency beyond
+those lookups, called from three sites in the host's dispatch. Driven from the
+kernel's own dispatch it loses both the lookups and the three call sites.
+
+So the cheapest correct first move for B2 is a single kernel export answering
+the fd facts directly, which deletes ~150 lines of TypeScript and the snooping
+side-channel with it. **It was scoped and deliberately not taken in this
+run**: doing it without duplicating `sys_fstat`'s host-delegation logic
+requires teaching `crates/runtime-core/src/syscalls.rs` to report which branch
+answered, and that file is under active edit by the socket-readiness item.
+It is B2's opening move, not a B3 deliverable.
+
+### One hazard to carry into B2/B3
+
+`sys_clone`'s pthread slots now reserve from
+`MemoryManager::reserve_host_region` (`ca2ac5c0b`), the same first-fit
+allocator that answers `mmap_anonymous`, and
+`release_host_region` deliberately unmaps nothing. `SharedMappingTable` keys
+its mappings by address. Once the table is non-empty, a released and re-issued
+reservation can land on an address a stale mapping entry still names, so
+teardown ordering between address-space release and mapping release becomes
+load-bearing. This is not a defect today — the table is empty — which is
+exactly why it needs recording now rather than discovering later.
+
+### Performance was not measured
+
+No benchmark was run for this item and none should be cited for it. The
+unmeasured quantity is unchanged and named precisely: **the cost of the Rust
+shared-mapping path relative to the host implementation it would replace**,
+confined to a process holding a large writable `MAP_SHARED` with at least one
+live peer and crossing syscall boundaries often. A general syscall benchmark
+reaches only `synchronize_for_boundary`'s early-out and would be a true result
+about the wrong code. Nothing in this change touches a hot path, so there is
+nothing here to measure either.
 
 ## In-scope test failures — coordinator owns these
 
@@ -2782,7 +2912,7 @@ keep their row so they are not re-opened.
 |---|---|---|
 | B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **BLOCKED 2026-09-10, needs a maintainer decision.** Scoped for the first time and the scoping disproved its premise. `entries[]` is not redundant with `KLZY`: both are emitted from ONE in-memory structure in the same `saveImage` call, the JSON is the only form restore can read back, and production round-trips exist (`rootfs-overlay-export.ts`, the kernel rootfs-snapshot handler). Dropping it makes the next save emit an empty `KLZY` file table — silent 0-byte lazy files. The stamp has two LIVE readers, not the claimed zero: `assertImageKernelAbi` (`live-setup.ts:1168`) and the resolver’s only stale-vs-fresh `.vfs` discriminator. The “~2,000 lines” estimate is wrong in magnitude and distribution: ~0 under the literal scope; ~4,900 in `memory-fs.ts` but only ~170 in `sharedfs-vendor.ts` under the larger “delete the host-side archive subsystem” scope. Delivered: the genuinely dead `vfs-has-stale-abi.mjs` (-107) and the ABI decision recorded in `docs/abi-versioning.md`. See K1b grounding §7.5 |
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
-| B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
+| B3 | **K7 re-cut piece 3** — anon + file mapping cutover | **Re-scoped 2026-09-10. The benchmark was never the binding gate.** The maintainer ruled to proceed without one; a censused second gate remains: B3 is atomic with B2, and the anon half is *not* separable the way SysV was (one shared `sharedMappings` container, `backingKind` tested at 15 interleaved lifecycle sites). Also measured: ~1,300 lines of K7's Rust have **no production caller**. See "B3 re-scoped" above. **NEEDS-DEFER-DECISION** |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
 | B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines; the file-ownership block has cleared |
 | B6 | **K3 epoll cutover (K3-7.7)** | **CLOSED 2026-09-10.** Mirror deleted, `handleEpollCreate` and `handleEpollCtl` deleted with it, wake-token join moved into the kernel. See "B6 — epoll mirror deleted" |
