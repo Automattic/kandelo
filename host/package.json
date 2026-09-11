@@ -110,7 +110,9 @@
       "default": "./src/wasm-artifact-module-node.ts"
     }
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./src/wasm-artifact-module-node.ts"
+  ],
   "files": [
     "dist",
     "wasm"
