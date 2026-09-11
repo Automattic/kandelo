@@ -3147,282 +3147,47 @@ earlier trap where a full Vitest run outside `scripts/dev-shell.sh` produced
 about eighty bogus failures — a wrong invocation that produces confident,
 specific, entirely fictional results.
 
-### B. Owed, no agent — each needs dispatching or an explicit decision
+### B. The register — current state, 2026-09-11
 
-Deduplicated 2026-09-10. Earlier revisions of this table carried B6, B7, B17,
-B18 and B19 two and three times with contradictory statuses, an artifact of
-keep-both conflict resolution on this file. One row per item now; closed items
-keep their row so they are not re-opened.
+Rewritten, not appended to. Earlier revisions carried B5 and B6 twice and eight
+stale statuses, because agent doc-merges append and this table is what decides
+what gets dispatched. **One row per item. Closed rows stay so nobody re-opens
+them.**
 
-| # | Item | Why it is still here |
+| # | Item | State |
 |---|---|---|
-| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **BLOCKED 2026-09-10, needs a maintainer decision.** Scoped for the first time and the scoping disproved its premise. `entries[]` is not redundant with `KLZY`: both are emitted from ONE in-memory structure in the same `saveImage` call, the JSON is the only form restore can read back, and production round-trips exist (`rootfs-overlay-export.ts`, the kernel rootfs-snapshot handler). Dropping it makes the next save emit an empty `KLZY` file table — silent 0-byte lazy files. The stamp has two LIVE readers, not the claimed zero: `assertImageKernelAbi` (`live-setup.ts:1168`) and the resolver’s only stale-vs-fresh `.vfs` discriminator. The “~2,000 lines” estimate is wrong in magnitude and distribution: ~0 under the literal scope; ~4,900 in `memory-fs.ts` but only ~170 in `sharedfs-vendor.ts` under the larger “delete the host-side archive subsystem” scope. Delivered: the genuinely dead `vfs-has-stale-abi.mjs` (-107) and the ABI decision recorded in `docs/abi-versioning.md`. See K1b grounding §7.5 |
-| B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
-| B3 | **K7 re-cut piece 3** — anon + file mapping cutover | **Re-scoped 2026-09-10. The benchmark was never the binding gate.** The maintainer ruled to proceed without one; a censused second gate remains: B3 is atomic with B2, and the anon half is *not* separable the way SysV was (one shared `sharedMappings` container, `backingKind` tested at 15 interleaved lifecycle sites). Also measured: ~1,300 lines of K7's Rust have **no production caller**. See "B3 re-scoped" above. **NEEDS-DEFER-DECISION** |
-| B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
-| B5 | **K11 device pieces 2, 3, 4** | Framebuffer input encoding, WebGL command decode, TLS message framing — ~2,300 lines; the file-ownership block has cleared |
-| B6 | **K3 epoll cutover (K3-7.7)** | **CLOSED 2026-09-10.** Mirror deleted, `handleEpollCreate` and `handleEpollCtl` deleted with it, wake-token join moved into the kernel. See "B6 — epoll mirror deleted" |
-| B5 | **DONE 2026-09-10** | Piece 3 cut over (TS -100 / Rust +626). Pieces 2 and 4 are immovable and the grounding named the wrong blocker for both. Delivered anyway: a 3,556-line dead TLS backend deleted, a live duplicate-`Content-Length` defect fixed by framing HTTP once, and a legal-but-refused unaligned float payload accepted. Measured total TS/JS **-3,584**. Four NDDs raised. See "B5 — K11 device pieces 2, 3 and 4" |
-| B6 | **K3 epoll cutover (K3-7.7)** | Deletes the epoll host mirror. **No longer gated — B7 is done.** See "B7 — epoll OFD ownership" for what the mirror now contradicts. Highest-value unblocked delete on this list |
-| B7 | **epoll fork inheritance + OFD keying** | **CLOSED 2026-09-10.** Verified, not assumed. Caveat recorded: unit-tested, not conformance-validated |
-| B8 | **K3 wait-queue cutover** | `wait_queue.rs` + `wait_shadow.rs` are dormant; the shadow has never seen live traffic |
-| B9 | **NDD-IOVEC-1 — per-process pointer width at registration** | **Maintainer approved.** Frees `preadv2`/`pwritev2`'s `flags` slot, currently holding the width stamp. Must survive fork inheritance and a width-changing exec. Do it *before* anything else claims slot 5 |
-| B10 | **NDD-K4-1 — kernel-owned shebang parsing** | The duplicate is shared (one call site); the kernel move needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
-| B11 | **`report_writeback_loss` wiring** | Maintainer said keep. Better home: kernel-visible state readable through an existing export — costs no import, survives the session, is testable |
-| B12 | **`privileged-projection.ts` (864) — test-only** | Census finding. Open as D-K8-4 |
-| B13 | **CLOSED 2026-09-10 — not deletion debt** | Verified after A1 landed: `dylink-planner` and `dylink-planner-wire` are both imported by production source (`dylink-loader.ts`, `fork-activation-registry.ts`, `worker-main.ts`). The census's "test-only" reading was true only while the TypeScript `ld.so` still existed to do the job instead |
-| B14 | **SysV IPC conformance coverage** | None exists anywhere in `tests/`. Deferred by the maintainer; new tests, not adopted ones |
-| B15 | **CLOSED 2026-09-10** — TLS `SharedArrayBuffer` hazard | Fixed at the boundary: `toCryptoBufferSource` copies only when the view is not already `ArrayBuffer`-backed. Reachability is no longer unproven — the nine typecheck errors *were* the reachable sites |
-| B16 | **CLOSED 2026-09-10** — the typecheck baseline is **0** | All nine were one family with B15 and were fixed with it, not suppressed. `npm --prefix host run typecheck` can now gate; a baseline of nine could not fail loudly |
-| B17 | **CLOSED — never a `tar` or overlay defect** | `tar/wasm32` builds green on this base; the error was a broken sysroot wearing a package's clothes. See "B17/B18/B19 closed" |
-| B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
-| B19 | **RE-OPENED, and now measured exactly** | The *install* defect closed. A **different** defect wears the same ID: the resolver refuses the entire `source-only-v1` tier the moment a program closure needs a multi-member package, because a locally built tier holds **regular files** where `host/src/binary-resolver.ts` requires **symlinks** into `.kandelo-local-generations`. It reports `programs/wasm32/dash.wasm (missing)` while `dash.wasm` is present among 108 built programs, so "build it and continue" cannot clear it. Re-measured against a near-complete package tree (only `gzip`/`xz` failing, `dash`/`coreutils`/`login`/`perl`/`node`/`rootfs` all green): **identical tier-identity error.** This is what blocks every Sortix, libc and POSIX suite in any locally built worktree. See "B19, measured" |
-| B20 | **Tier-end browser pass** | Split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed that way |
-| B21 | **CLOSED — never `gzip`, never `xz`** | Both build green on a fresh sysroot; the report was a broken sysroot wearing a package's clothes, exactly B17's shape. The VFS images were missing because this campaign's own deletion of the TypeScript WebAssembly reader left two Node entry points without it: a VFS image builder, and a process worker running as a temp-dir esbuild bundle (which stops `coreutils-docs`, a direct `shell` dependency). Both fixed; `./run.sh setup` now exits 0 with all eight VFS images built. The tier is still refused after that green build, for a reason B21 measured but did not fix: the identity check compares a `SourceOnlyV1` cache key against a `Default`-policy one. See "B21, measured" |
-| B22 | **libc-test cannot be fetched in the dev shell** | Its submodule URL is `git@github.com:` and ssh is unavailable there. A second, independent reason no conformance suite has run in this campaign — B19 is not the only one |
+| B1 | K1 step 5 — image `entries[]` + ABI stamp | **Superseded by D-B6.** Maintainer chose the full subsystem removal; scoping proved it needs the kernel to write the image. Split into W-1…W-4 |
+| B2 | K7 — shared-mapping coherence + mapping cutover | **Merged with B3 into one item.** Dispatch with the fd-facts kernel export as its first commit; needs `syscalls.rs`, held while B8 has it |
+| B3 | *(folded into B2)* | B3 alone failed twice; anon and file share one container across 15 interleaved sites |
+| B4 | The measured 3.7× SysV regression | Zero-import remedy identified: hoist destination validation *before* the source view. `host_proc_read_bytes`'s second copy narrows a grow-detach window and must stay. Needs `syscalls.rs` |
+| B5 | K11 device pieces | **CLOSED.** Piece 3 cut over (TS −100 / Rust +626); pieces 2 and 4 immovable for named reasons; a dead Node TLS backend deleted (−3,556) |
+| B6 | K3 epoll cutover | **CLOSED.** Host mirror deleted; census found 17 touchpoints where the grounding listed 14 |
+| B7 | epoll fork inheritance + OFD keying | **CLOSED.** Unit-tested, explicitly not conformance-validated |
+| B8 | K3 wait-queue cutover | **IN FLIGHT.** Maintainer: "done in Rust unless there is a good reason not to — wiring that still needs doing". Fixes wall-clock deadlines; may close `epoll_pwait`'s ignored signal mask |
+| B9 | Per-process pointer width | **CLOSED.** Frees the `preadv2`/`pwritev2` `flags` slot before ABI 44 finalises. Found twelve dispatch arms reading a bare `args[5]` |
+| B10 | Kernel-owned shebang parsing | Open. Needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
+| B11 | `report_writeback_loss` wiring | Open. Maintainer said keep; better home is kernel-visible state readable through an existing export |
+| B12 | `privileged-projection.ts` | **CLOSED.** Deleted, −1,418, on the finding that it duplicated a live route |
+| B13 | `dylink-planner.ts` | **CLOSED.** Production, not deletion debt |
+| B14 | SysV IPC conformance coverage | **Explicit future work**, per the maintainer. None exists anywhere in `tests/` |
+| B15 | TLS `SharedArrayBuffer` hazard | **CLOSED.** Boundary copy; the nine typecheck errors *were* the reachable sites |
+| B16 | Typecheck baseline | **CLOSED.** 0, and held all night |
+| B17 | `tar/wasm32` | **CLOSED.** A broken sysroot wearing a package's clothes |
+| B18 | `setup` root npm | **CLOSED** |
+| B19 | Local artifact tier refused | **CLOSED 2026-09-11.** Not staleness: the check compared a `SourceOnlyV1` key against a `Default`-policy one, so it differed **by construction — 0 of 70 packages could ever match**. Fixed by recording the selection index the build was materialized from, through one shared entry point |
+| B20 | Tier-end browser pass | **PARTLY UNBLOCKED.** The host package builds again and the Vite dev-server realm has its artifact reader; the Playwright *worker* realm still lacks one (14 specs, no shared helper, and the single-point fix needs `findRepoRoot` extracted to break an import cycle) |
+| B21 | Missing VFS products | **CLOSED.** Never `gzip`/`xz`: three Node entry points lost the artifact reader when the TypeScript WebAssembly reader was deleted. `setup` exits 0 with all eight images |
+| B22 | libc-test unfetchable | **CLOSED.** Never a repo defect — a stale ssh URL in `.git/config` plus a renamed `.git`, both local |
+| B23 | Two consumers, two tier orders | **CLOSED** with B19 |
 
-### B12 / D-K8-4 — `privileged-projection.ts` is superseded, not merely unused
+### Still owed, in dispatch order
 
-**The grounding asked the wrong question, and the answer changes the
-decision.** `docs/plans/2026-09-09-k8-vfs-authority-grounding.md` §5.3 and
-D-K8-4 framed this as "a capability with no user", and warned that deleting it
-loses the design "if it encodes a security boundary someone intends to use".
-That is the right caution for an *unwired* design. This is not one.
-
-**Measured 2026-09-10.** The module projects privileged programs into an
-immutable product image: `PRODUCT_DESTINATIONS` is exactly
-
-    /usr/bin/login   /usr/bin/sudo-lite   /usr/bin/sudo
-
-carrying `uid`, `gid`, `mode` and a sha256 validation. `images/rootfs/PACKAGES.toml`
-already declares **the same three destinations**, each with `mode = "4755"`,
-`uid = 0`, `gid = 0`, built through the normal package path
-(`packages/registry/sudo-lite/`, `scripts/build-programs.sh`). The enforcement
-half — what a setuid bit *means* at exec — is Rust:
-`crates/runtime-core/src/{credentials.rs,exec_target.rs,rootfs.rs}`.
-
-So the platform already ships privileged programs, by a different and live
-route. This is a **second implementation of a path the platform takes**, the
-same duplicated-authority shape as `device-fs.ts` — the eighth this campaign
-has found — not a design waiting for a consumer.
-
-That is what makes D-K8-4 decidable rather than a judgement call: nothing is
-lost that is not also present in `PACKAGES.toml` and the Rust credential path.
-
-**Still the maintainer's call**, because it is security-adjacent and D-K8-4 was
-raised as a decision. Recommendation: **delete**, 864 lines, with
-`host/test/privileged-projection.test.ts` and the two CI exclusion entries that
-keep it out of the default suite.
-
-### The guard that names two symbols which do not exist
-
-Found while verifying the above, and worth separating because it is a
-*measurement* defect rather than a code one. `host/test/kernel-authority-boundary.test.ts`
-lists `hiddenPackageSymbols` — names asserted to stay off production objects.
-Two of them, `attachReviewedPrivilegedProgramPolicy` and
-`reviewedPrivilegedProgramPolicyForPlan`, are defined **nowhere in the repo**;
-they exist only as strings in that list.
-
-The assertion is not vacuous — it still fails if someone later adds either name
-to a production object, which is a legitimate forward guard. But a reader
-counting this module's surface from that list will over-count it by two, and
-this campaign has repeatedly been wrong about scope by trusting a list instead
-of the symbols. Recorded so the next reader does not.
-
-### B23 — two consumers of one artifact tree disagree on which tier wins
-
-**Measured 2026-09-10, after a `./run.sh setup` that exited 0.**
-
-| artifact | kind | built | has `kernel_thread_parent_tid_target` |
-|---|---|---|---|
-| `local-binaries/source-only-v1/kernel.wasm` | regular file | 13:24 today | **yes** |
-| `local-binaries/kernel.wasm` | symlink into `.kandelo-local-generations` | 06:39, stale | no |
-
-`crates/host-native/src/lib.rs:374` reads `local-binaries/` **only**.
-`host/src/binary-resolver.ts` reads `local-binaries/source-only-v1/` **first**.
-So a successful build wrote a kernel that the Rust host never looks at, and
-`cargo test -p host-native` failed **39 of 53** with `failed to find function
-export kernel_thread_parent_tid_target` on a tree where setup had just
-succeeded.
-
-This is B19 seen from the other side. B19 is the resolver refusing a tier;
-this is a second consumer silently preferring a stale one. Same root: **no
-single authority over which local tier is real.**
-
-**Maintainer's decision (2026-09-10): choose one clear winner tier and retire
-the legacy tier.** Not reconcile the two. Assigned to the agent holding B19,
-with `kernel_wasm_path()` explicitly in scope — after the change there must be
-one tier order used by every consumer, TypeScript and Rust alike.
-
-**Merge-wave validation, unblocked by pointing `local-binaries/kernel.wasm` at
-the fresh artifact by hand:** `cargo test -p host-native` **53 passed, 0
-failed**. So the 39 failures were the tier defect, not the merged work. That
-hand-placement is local provisioning and is recorded here rather than left
-implicit; it is not a fix, and B23 is what fixes it.
-
-### Follow-up on my own fix: `wasm-artifact-guards.sh` now has four decoders
-
-Recorded against myself, because it is the pattern this campaign exists to
-remove. `scripts/wasm-artifact-guards.sh` now inspects wasm modules four
-different ways:
-
-1. `wasm_artifact_identity` — the wasmparser-backed fork-instrument tool,
-   emitting a fixed 12-field TSV. Authoritative, and tried first by the
-   fork-contract predicates.
-2. `wasm-objdump` text parsing — a truthful compatibility fallback when that
-   tool is absent.
-3. Byte scans (`grep -a -q 'kernel_fork'`, `'fork'`, `'dylink\.0'`) — last-resort
-   fallbacks. **These are not the asyncify defect.** They are documented,
-   deliberate, and fail *safe*: the comment at `wasm_imports_side_module_fork`
-   says a match is treated as present precisely because the scan cannot
-   distinguish an unrelated string. Erring toward "present" refuses a doubtful
-   artifact. The asyncify scan erred toward *rejecting a good* one, and had no
-   structural path at all.
-4. The export-section walk added 2026-09-10 for the asyncify check.
-
-Number 4 is correct and self-contained, and it needs no fallback because
-walking the section table cannot fail on features it does not understand. But
-adding a fourth mechanism to a file that already had a structural decoder is
-duplicated authority, and this campaign has now found nine instances of that
-shape.
-
-**The right long-term home** is the wasmparser-backed tool: give its record an
-asyncify field, or a general export query, and let every predicate in this file
-ask one decoder. That was not done here because its output is a *positional*
-12-field TSV parsed by several callers, so widening it is a contract change in
-`crates/fork-instrument` with ripple, not a guard fix — and the guard fix was
-blocking the install path. Logged rather than done, and it belongs to whoever
-next touches that tool.
-
-### The asyncify byte-scan, third copy
-
-`scripts/install-local-binary.sh` refuses a freshly built kernel:
-
-    ERROR: refusing legacy Asyncify wasm artifact: local-binaries/source-only-v1/kernel.wasm
-
-False positive, known cause. `scripts/wasm-artifact-guards.sh` detects Asyncify
-by scanning the file's bytes for the literal `asyncify_`, and
-`crates/wasm-artifact` is linked into the kernel and puts that literal in its
-data section. **A mention is not a property.**
-
-The same defect was fixed twice already this campaign by checking **export
-names** instead — `tools/xtask/src/build_deps.rs` and `host/src/constants.ts`.
-The shell guard is the third copy and still byte-scans. Assigned alongside B23,
-because it sits on that same install path.
-
-Worth noticing as a pattern: three independent implementations of one check,
-two fixed, one missed, and the miss was invisible until an install was actually
-attempted. The census counted implementations of *authority*; it did not count
-implementations of *guards*.
-
-### B21 — measured: not gzip, not xz, and not a race
-
-Reported as "`gzip` and `xz` fail to build, `nginx` and `php` blocked behind
-them". Measured on `ba3ea8d76` in a fresh worktree, against an isolated
-`KANDELO_SOURCE_CACHE_ROOT` verified to take effect (the branch's
-`--keep KANDELO_SOURCE_CACHE_ROOT` in `dev-shell.sh` carries it through
-`nix develop --ignore-environment`, and every build-stage path in the log is
-under the isolated root).
-
-**`gzip`, `xz`, `nginx`, `dash` and `coreutils` all build green** on a freshly
-built sysroot. That reading is dead, and it was the same shape as B17: a
-broken sysroot wearing a package's clothes.
-
-The products were never being built because two Node entry points lost the
-artifact reader when this campaign deleted the TypeScript WebAssembly reader
-(`72fa12438`). Every artifact read now goes through
-`wasm_artifact_module32.wasm`, which a host entry point must install first:
-
-| where | symptom |
-|---|---|
-| VFS image builders (`serializeImage` inspects every `.wasm` in an image) | `Refusing to save VFS image with stale wasm artifacts: /usr/wasm32posix/sysroot/lib/Scrt1.o: cannot inspect Wasm artifact: the wasm-artifact module has not been installed in this realm` — `kandelo-sdk` fails, and so would every other image |
-| a Node process worker running as an esbuild bundle in the OS temp dir | `Could not find repo root` — `coreutils-docs` cannot boot its kernel, and `coreutils-docs` is a direct dependency of `shell` |
-
-The second one is reached on *every* `./run.sh setup`, because
-`bootstrap_step_plan` builds `engine` before `host-dist`: the packages that
-boot a kernel mid-build run before the compiled worker entry exists, so
-`worker-adapter.ts` bundles the entry into `tmpdir()` and the realm it starts
-has no path back to the checkout.
-
-With both closed, one `./run.sh setup` produced `kandelo-sdk.vfs.zst`,
-`mariadb-test.vfs.zst`, `shell.vfs.zst`, `nginx-vfs.vfs.zst` and
-`node-vfs.vfs.zst`. `examples/mqueue_test.wasm` was never a defect at all: it
-comes from `scripts/build-programs.sh`, which `setup` does not run and
-`docs/agent-guidance/validation.md` already lists as a separate provisioning
-step.
-
-**`./run.sh setup` exits 1 in this state**, not 0. A failing package node
-makes the aggregate `Failed`, and `run_aggregate` returns `Err`. So the
-"setup exited 0 with products missing" observation cannot have been a
-completed run of the whole plan.
-
-Two further findings from the same measurement, both still open:
-
-* **An isolated cache root must contain a `kandelo/` segment.**
-  `sdk/src/bin/pkg-config.ts` filters `PKG_CONFIG_PATH` to paths containing
-  that literal, so `~/.cache/kandelo-agent-b21/...` had every dependency
-  `.pc` directory dropped and `php` failed with
-  `No package 'icu-uc' found` — naming neither the cache root nor the filter.
-  Proven by pointing the SDK wrapper at one directory by two paths. Documented
-  in `docs/package-management.md`; the code fix is deferred because `sdk/src`
-  is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` and repairing it rebuilds the whole
-  tree.
-* **`ncurses` is not reproducible under concurrent rebuild.** `vim`'s nested
-  `ncurses` resolve raced the top-level `ncurses` node and failed with
-  `concurrent cache winner differs from staged build`, writing a
-  `.kandelo-rebuild-mismatch` record. The *race* is closed: `vim` declared
-  `depends_on = []` while linking `-lncursesw`, and declaring the dependency
-  gives the engine the edge that orders them. The underlying
-  non-reproducibility is not — the shared cache carries older `ncurses`
-  mismatch records, so it predates this.
-* **A package that configures in-tree goes stale silently.** `vim`, `wget`,
-  `less` and `tar` build under `packages/registry/<pkg>/<pkg>-src/` and reuse
-  the configured tree across runs. Change a dependency prefix — a different
-  `KANDELO_SOURCE_CACHE_ROOT`, say — and the baked `-I`/`-L` paths are gone,
-  while the cache key says nothing changed. It surfaces as
-  `fatal error: 'zlib.h' file not found` or `wasm-ld: unable to find library
-  -lncursesw`, naming a header instead of a stale tree. `rm -rf` on the
-  `-src/` directory is the whole fix; nothing detects it.
-
-### After B21: `./run.sh setup` is green, and the tier is still refused
-
-With the above landed, `./run.sh setup` exits **0** with zero failed or
-blocked nodes and all eight VFS images present. The `source-only-v1` tier is
-still refused for every package closure, immediately after that green build:
-
-```
-whole tier refused: the materialized source-only generation for "shell" was
-built from a different package identity than the source tree now selects;
-rebuild it with ./run.sh setup
-```
-
-Rebuilding does not clear it, and the reason is not staleness. The check at
-`binary-resolver.ts:~3330` compares two identities that are computed under
-**different resolve policies**:
-
-| side | file | policy | `shell` wasm32 cache key |
-|---|---|---|---|
-| authority | `local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json` | `ResolvePolicy::SourceOnlyV1` | `902b90ed…` |
-| comparand | `packages/registry/program-packages.json` | `ResolvePolicy::Default` | `d6ed5b85…` |
-
-Their `manifestSha256` halves agree — same manifest, same tree, same moment.
-The `cacheKeys` halves are drawn from different key domains
-(`package_context_cache_keys` hardcodes `ResolvePolicy::Default`;
-`source_only_program_package_index_for_nodes` uses `SourceOnlyV1`), so the
-equality can never hold and the tier is refused unconditionally.
-
-That is why `dash` and `coreutils` resolve at all: they come from
-`~/.cache/kandelo/programs`, a second cache `scripts/build-rootfs.sh`
-populates through the legacy `build-deps` path. Anything only the
-source-only tier has — `shell.vfs.zst`, `php`, `lamp.vfs.zst` — resolves
-nowhere.
-
-**Not fixed here.** The comparand is the resolver's, the file is being
-actively changed by the resolver work, and choosing which side is
-authoritative is that design's call: bind the tier to its own SourceOnlyV1
-identity, or give the resolver a SourceOnlyV1 index to compare against.
-Recorded with the measurement so whoever owns it does not have to re-derive
-it.
+1. **B2** (with B3) — the largest remaining TypeScript deletion, ~2,700 lines. Blocked only on `syscalls.rs` locality.
+2. **B4** — shipping a known, measured regression contradicts the performance contract. Same file lock.
+3. **W-2…W-4** — the rest of the image-writer split, after W-1 lands.
+4. **B20's Playwright realm** — needs `findRepoRoot` extracted; `binary-resolver.ts` was under active edit.
+5. **B10, B11** — small, no ABI surface.
+6. **T4** — the residual host-suite failures, once the four roots have landed and a clean full run is possible.
 
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
