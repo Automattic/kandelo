@@ -420,6 +420,12 @@ fi
 # covered by the member check above, which reads the archive itself.
 probe_dir="$(mktemp -d)"
 trap 'rm -rf "$probe_dir"' EXIT
+#
+# WHY `<stddef.h>` is here: POSIX does not require `<dirent.h>` to define
+# `NULL`, and musl's does not. Without this include the probe fails to compile
+# against ANY sysroot, so the gate reported a perfectly good one as INCOMPLETE
+# and no `./run.sh setup` in a fresh worktree could get past it. The probe must
+# test the sysroot, not its own missing declarations.
 cat >"$probe_dir/probe.c" <<'PROBE'
 #include <dirent.h>
 /* WHY <stddef.h>: POSIX requires <dirent.h> to declare DIR, opendir, readdir,
