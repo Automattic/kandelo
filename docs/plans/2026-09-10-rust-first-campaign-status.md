@@ -4502,14 +4502,139 @@ Three corrections by the author, against itself:
 - the earlier **+35% / +18%** figures were load-inflated — withdrawn;
 - **`poll_ready` never regressed**, exactly as predicted, since `poll` arms
   lazily by construction. The earlier "+18% poll_ready" was an artifact;
-- **the arming is not the cost.** Removing it recovers ≈0, in two independent
+- ~~**the arming is not the cost.** Removing it recovers ≈0, in two independent
   isolations that disagree in sign. The lazy-arm fix is **inconclusive**, and
-  ~3.5 µs comes from somewhere else in that change that is **not yet located**.
+  ~3.5 µs comes from somewhere else in that change that is **not yet located**.~~
+  **WITHDRAWN — see "THE 3.5 µs IS REAL, IS THE ARMING, AND ENTERS AT ONE
+  COMMIT" below.** The arming *is* the cost: removing it recovers −3.37 µs on
+  `epoll_ready`. The two isolations that disagreed in sign were medians taken
+  over runs mixing quiet and loaded regimes, which is an estimator that cannot
+  resolve 3.5 µs on this machine, not evidence of an absent effect.
 
 **So the `select`/`pselect6` fold-in was deliberately not done.** The instruction
 was to measure rather than assume it mirrors epoll; epoll was measured, it did
 not behave as assumed, and extending it would have been assumption-driven. The
 `select_ready` metric is committed for whoever finds the real cause.
+
+**That deferral is now resolved in favour of doing the fold-in.** The arming has
+since been measured to cost 3.4 µs where it was removed, and `select_ready`
+still carries +2.7 µs at tip because `handleSelect` and `handlePselect6` still
+arm eagerly. It is no longer an assumption that select mirrors epoll.
+
+### THE 3.5 µs IS REAL, IS THE ARMING, AND ENTERS AT ONE COMMIT
+
+**This supersedes the section above on every point except `poll_ready`.**
+The claim that "the arming is not the cost" was an under-powered
+measurement, not a finding. Removing the arming recovers essentially all
+of it.
+
+**The floor first, because it decides whether anything above it is
+readable.** Two arms pointing at the *same* commit — two separate
+worktrees at `51d908632`, staged identically, running byte-identical
+kernel wasm — counterbalanced `A B B A`, 12 runs per arm, at load
+average 4:
+
+| | floor (same code both arms) |
+|---|---|
+| `epoll_ready` | −0.57 µs (min), −0.30 (p10) |
+| `select_ready` | −0.70 µs (min), −0.70 (p10) |
+| worst of all ready metrics | ±1.5 µs |
+
+**So the floor is ≈ ±0.7 µs on the two metrics in question, and 3.5 µs
+is about five times it.** The effect was always resolvable. What was not
+resolvable was the earlier *estimator*: medians over runs that mix quiet
+and loaded regimes. Two isolations disagreeing in sign was the signature
+of that, not of an absent effect.
+
+**Why the estimator mattered more than the replication count.** On this
+machine the same build returns ~29 µs run after run, then 300–400 µs for
+a burst of consecutive runs when something else starts. Contention only
+ever *adds* time, so the distribution is one-sided. In one 24-run
+comparison the final three runs were B, B, A and the burst covering them
+moved the medians by 80–150 µs while the minima moved by 3. `A B B A`
+cancels a monotone drift; it does not cancel a burst landing on an
+unbalanced tail. Comparing arms on minima and p10 fixes it, and
+`benchmarks/blocking-wait-ab.ts` now does that by default.
+
+**The bisect localizes it to one commit.** Nine worktrees, one per
+commit, each with its own kernel built from its own Rust, all sharing
+one guest binary and one harness. Counterbalanced, 12 runs per arm,
+`epoll_ready` against the base `51d908632`:
+
+| vs base | commit | dMin | dP10 |
+|---|---|---|---|
+| c1 | `7e5560389` usleep/empty-set epoll | +0.12 | −0.02 |
+| c2 | `3834d8058` wait queue, **dormant** | −0.60 | −0.10 |
+| **c3** | **`ac5a79a88` wire it in** | **+3.30** | **+3.94** |
+| c4 | `f6b2ad1ba` exports + benchmark | +3.12 | — |
+| c8 | `0f02d6cf8` end of cutover | +3.91 | +3.89 |
+
+**The step is entirely at `ac5a79a88`, and it plateaus there.** That
+commit is host TypeScript only — 422 lines of `kernel-worker.ts` — and
+it is the one that replaced the host's `Date.now()` deadline arithmetic
+with `kernel_wait_deadline_open` / `_remaining_ns` / `_close`. `c2` gave
+the kernel the wait queue while it was still dormant and costs nothing,
+which is the control that makes `c3` readable.
+
+**And removing the arming recovers it.** `c8` against `c8` plus only the
+lazy-arm fix `69e2fa95d` cherry-picked — 11 inserted lines, no Rust, the
+same kernel wasm in both arms:
+
+| | dMin | dP10 |
+|---|---|---|
+| `epoll_ready` | **−3.37** | **−3.21** |
+| `select_ready` | +0.63 | +0.55 |
+| `poll_ready` | −1.15 | −0.64 |
+
+`epoll_ready` recovers 3.4 of its 3.9 µs. `select_ready` does not move,
+because the fix does not touch `handleSelect` — which is the control
+that says the recovery is the arming and not the session.
+
+**What the cost physically is.** An eagerly-armed ready call pays two
+kernel entries it never reads — `kernel_wait_deadline_open` and
+`kernel_wait_deadline_close` — and `open` additionally calls back into
+the host for `CLOCK_MONOTONIC` through `host_clock_gettime`. `poll`
+never paid it: it reaches the arming only on the EAGAIN retry path, once
+the kernel has already said nothing is ready. That is why `poll_ready`
+sits at the floor in every comparison above, and the earlier report of
+that is the one thing it got right.
+
+**The registered-interest hypothesis is falsified.** The benchmark now
+varies registered-but-idle fds at 0, 16 and 64 while holding the ready
+count at exactly one. A cost proportional to registered interests would
+make the delta *rise* with that count. It does not — it falls:
+
+| registered idle fds | 0 | 16 | 64 |
+|---|---|---|---|
+| `select_ready` dMin | +5.88 | +2.68 | +0.41 |
+
+The code says the same thing, and said it first: the wait queue is keyed
+by `ChannelGeneration` — one entry per *blocked call*. `epoll_ctl`
+registrations never enter it, and the cutover's kernel-side diff touches
+only `sys_usleep` and the empty-interest `epoll_pwait` branch, leaving
+the interest-evaluation loop alone. The added cost is a *constant* per
+call, gated on whether the call arms eagerly. That alone predicts the
+whole observed shape without any interest-set mechanism.
+
+**`poll_ready_late` rules out the other explanation.** Every section runs
+in one process in a fixed order, so a cost that simply accumulated over a
+process's wait history would produce the same shape. Repeating the first
+measurement last shows −0.20 to −1.67 µs across every comparison:
+position is not the cause.
+
+**What is still owed.** `handleSelect` and `handlePselect6` still arm
+eagerly at tip, and `select_ready` still carries **+2.7 µs (dMin) /
++1.4 (p10)** against the base because of it. The fold-in that was
+deliberately not done is now the remaining known cost on this path, and
+it is no longer an assumption that it mirrors epoll — the arming has been
+measured to cost 3.4 µs where it was removed.
+
+**Method note, since this campaign collects them.** The premise handed to
+this work — "removing the eager arming recovers ≈0" — was wrong, and the
+instruction to verify premises before obeying processes is what found it.
+The measurement that overturned it is not more elaborate than the one
+that produced it; it is the same comparison with an estimator chosen to
+match the shape of the noise.
 
 ### B31 confirmed — and repetition is the reason
 
