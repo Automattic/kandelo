@@ -2300,10 +2300,13 @@ on Node and 51% in the browser. The entries went 2,186 → 1,408 (node) and
 
 1. **Production TypeScript: −446** (`migration-ledger.sh --step d6f4f188f
    HEAD`: 1,372 added / 1,818 removed, in-scope). Rust unchanged.
-2. **Host import count: 75 before, 75 after.** See the caveat below — this
-   item touches only `host/src` TypeScript and cannot reach the kernel's
-   import section, but the intended verification against a freshly built
-   `kernel.wasm` did not complete.
+2. **Host import count: 75 before, 75 after — measured, not inherited.**
+   The kernel was rebuilt at this tip and its import section decoded
+   directly: **76 entries, of which 1 is `env.memory` and 75 are `env`
+   functions.** That matches `EXPECTED_HOST_IMPORT_COUNT` in
+   `crates/host-native/src/lib.rs`. Worth recording that the constant counts
+   imported *functions*, so a decoder that reports the raw entry count reads
+   76 and looks like an off-by-one regression when nothing has changed.
 3. **Driver-glue delta: 0.** Nothing here instantiates, drives or marshals
    for a Rust module. Every line added to `host/src` is process-lifecycle
    logic that left the two entries.
@@ -2417,11 +2420,9 @@ All inside `./scripts/dev-shell.sh`, vitest from `host/` via
   execute: the exec retirement predicate's alias release, the fabricated
   `exit` event and its latch, `handleInit`'s side-module compilation and
   bridge wiring, and browser teardown.
-- **Kernel import count: NOT verified against a built `kernel.wasm`.** The
-  build was started and did not complete in this session. The change is
-  confined to `host/src` TypeScript and adds no host import, so 75 is
-  expected to be unchanged — but that is an argument, not a measurement, and
-  should be read as such.
+- **Kernel import count: verified.** `./run.sh rebuild kernel` at this tip,
+  then the import section of the resulting `kandelo-kernel.wasm` decoded
+  directly: 75 `env` function imports, unchanged.
 - **Conformance suites: not run.** Still unreachable behind the tier-identity
   defect; `xtask build-deps` failed once mid-session with "program package
   index target changed before publication: local mirror identity or contents
