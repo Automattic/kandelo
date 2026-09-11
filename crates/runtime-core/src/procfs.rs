@@ -1828,7 +1828,9 @@ mod tests {
         record_writeback_loss(4242, 0xdead_0000, "descriptor closed");
         let text = read_report(&entry);
         assert!(
-            text.contains("loss pid=4242 addr=0xdead0000 reason=descriptor closed\n"),
+            text.contains(
+                "loss kind=writeback pid=4242 addr=0xdead0000 reason=descriptor closed\n"
+            ),
             "the loss must be visible through the read path with its pid, \
              address and reason, got:\n{text}"
         );
@@ -1866,7 +1868,9 @@ mod tests {
         // The records kept are the earliest ones, so the first loss -- the one
         // that explains the cause -- survives the flood that followed it.
         assert!(
-            text.contains("loss pid=4242 addr=0xdead0000 reason=descriptor closed\n"),
+            text.contains(
+                "loss kind=writeback pid=4242 addr=0xdead0000 reason=descriptor closed\n"
+            ),
             "the earliest loss must survive overflow, got:\n{text}"
         );
         assert_eq!(

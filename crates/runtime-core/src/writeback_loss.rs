@@ -45,14 +45,53 @@ pub const WRITEBACK_LOSS_RECORD_CAPACITY: usize = 64;
 /// record size is bounded by construction rather than by the caller's goodwill.
 pub const WRITEBACK_LOSS_REASON_MAX: usize = 64;
 
-/// One recorded shared-mapping writeback loss.
+/// What kind of shared-mapping state was lost.
+///
+/// Two things can go missing in the mapping layer and neither may go quietly:
+/// a writeback that could not be published, and a host handle released by a
+/// backing that never took it. They are different losses with different
+/// operands, so the record names which one it is rather than forcing a handle
+/// into a field labelled `addr` -- a field label that lied would be exactly the
+/// "appearance of correctness" the platform-values contract forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingLossKind {
+    /// A mapping's dirty bytes could not be written back. Operand: the mapping
+    /// base address in the owning process.
+    Writeback,
+    /// A backing released a host handle it never retained, so the handle is now
+    /// unreachable for its deferred close. Operand: the handle.
+    UnheldHandle,
+}
+
+impl MappingLossKind {
+    /// The stable token used in the procfs report.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Writeback => "writeback",
+            Self::UnheldHandle => "unheld-handle",
+        }
+    }
+
+    /// The name this kind's operand is reported under.
+    fn operand_label(self) -> &'static str {
+        match self {
+            Self::Writeback => "addr",
+            Self::UnheldHandle => "handle",
+        }
+    }
+}
+
+/// One recorded shared-mapping loss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WritebackLossRecord {
-    /// The process whose mapping lost the writeback.
+    /// Which kind of loss this is; decides what `operand` means.
+    pub kind: MappingLossKind,
+    /// The process whose mapping lost the writeback, or 0 when the loss is not
+    /// attributable to one process.
     pub pid: u32,
-    /// The base address of the mapping, in that process's address space.
-    pub map_addr: u64,
-    /// Why the writeback could not be published. Kernel-authored, ASCII,
+    /// The kind-specific numeric operand. See [`MappingLossKind`].
+    pub operand: u64,
+    /// Why the state could not be published. Kernel-authored, ASCII,
     /// truncated to [`WRITEBACK_LOSS_REASON_MAX`] bytes.
     pub reason: Vec<u8>,
 }
@@ -74,6 +113,18 @@ impl WritebackLossLog {
 
     /// Record one loss. Always counted; stored while capacity remains.
     pub fn record(&mut self, pid: u32, map_addr: u64, reason: &str) {
+        self.record_kind(MappingLossKind::Writeback, pid, map_addr, reason)
+    }
+
+    /// Record one loss of any kind. Always counted; stored while capacity
+    /// remains, so `total` stays exact even once storage is full.
+    pub fn record_kind(
+        &mut self,
+        kind: MappingLossKind,
+        pid: u32,
+        operand: u64,
+        reason: &str,
+    ) {
         self.total = self.total.saturating_add(1);
         if self.records.len() >= WRITEBACK_LOSS_RECORD_CAPACITY {
             return;
@@ -83,8 +134,9 @@ impl WritebackLossLog {
         // a split multi-byte sequence would only ever reach a reader as bytes.
         let len = bytes.len().min(WRITEBACK_LOSS_REASON_MAX);
         self.records.push(WritebackLossRecord {
+            kind,
             pid,
-            map_addr,
+            operand,
             reason: bytes[..len].to_vec(),
         });
     }
@@ -112,8 +164,12 @@ impl WritebackLossLog {
     /// total 137
     /// recorded 64
     /// dropped 73
-    /// loss pid=12 addr=0x10000 reason=descriptor closed
+    /// loss kind=writeback pid=12 addr=0x10000 reason=descriptor closed
+    /// loss kind=unheld-handle handle=0x29 reason=released without a retain
     /// ```
+    ///
+    /// The operand's FIELD NAME follows the kind, so a reader is never told a
+    /// host handle is an address.
     ///
     /// `reason` is last on the line precisely because it is the only field that
     /// may contain spaces.
@@ -124,9 +180,27 @@ impl WritebackLossLog {
         out.extend_from_slice(format!("recorded {}\n", self.records.len()).as_bytes());
         out.extend_from_slice(format!("dropped {}\n", self.dropped()).as_bytes());
         for record in &self.records {
-            out.extend_from_slice(
-                format!("loss pid={} addr={:#x} reason=", record.pid, record.map_addr).as_bytes(),
-            );
+            match record.kind {
+                MappingLossKind::Writeback => out.extend_from_slice(
+                    format!(
+                        "loss kind={} pid={} {}={:#x} reason=",
+                        record.kind.label(),
+                        record.pid,
+                        record.kind.operand_label(),
+                        record.operand,
+                    )
+                    .as_bytes(),
+                ),
+                MappingLossKind::UnheldHandle => out.extend_from_slice(
+                    format!(
+                        "loss kind={} {}={:#x} reason=",
+                        record.kind.label(),
+                        record.kind.operand_label(),
+                        record.operand,
+                    )
+                    .as_bytes(),
+                ),
+            }
             out.extend_from_slice(&record.reason);
             out.push(b'\n');
         }
@@ -151,6 +225,22 @@ pub fn record_writeback_loss(pid: u32, map_addr: u64, reason: &str) {
     unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).record(pid, map_addr, reason) }
 }
 
+/// Record a host handle released by a backing that never retained it.
+///
+/// The trait method that discovers this cannot return an error, which is
+/// precisely why the loss has to be recorded: the handle is now unreachable for
+/// its deferred close, and the alternative is leaking it in silence.
+pub fn record_unheld_handle_loss(handle: i64) {
+    unsafe {
+        (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).record_kind(
+            MappingLossKind::UnheldHandle,
+            0,
+            handle as u64,
+            "released without a retain",
+        )
+    }
+}
+
 /// Render the kernel-wide log as the `/proc/kandelo/writeback_losses` content.
 pub fn render_writeback_losses() -> Vec<u8> {
     unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).render() }
@@ -169,7 +259,7 @@ mod tests {
         assert_eq!(log.dropped(), 0);
         assert_eq!(log.records().len(), 1);
         assert_eq!(log.records()[0].pid, 12);
-        assert_eq!(log.records()[0].map_addr, 0x10000);
+        assert_eq!(log.records()[0].operand, 0x10000);
         assert_eq!(log.records()[0].reason, b"descriptor closed".to_vec());
     }
 
@@ -183,13 +273,24 @@ mod tests {
         assert!(text.contains("recorded 2\n"), "{text}");
         assert!(text.contains("dropped 0\n"), "{text}");
         assert!(
-            text.contains("loss pid=12 addr=0x10000 reason=descriptor closed\n"),
+            text.contains("loss kind=writeback pid=12 addr=0x10000 reason=descriptor closed\n"),
             "{text}"
         );
         assert!(
-            text.contains("loss pid=13 addr=0x20000 reason=write failed\n"),
+            text.contains("loss kind=writeback pid=13 addr=0x20000 reason=write failed\n"),
             "{text}"
         );
+        // A handle loss must not be reported as an address. The operand's field
+        // name follows the kind precisely so a reader is never told a host
+        // handle is a mapping address.
+        log.record_kind(MappingLossKind::UnheldHandle, 0, 0x29, "released without a retain");
+        let text = String::from_utf8(log.render()).expect("ASCII report");
+        assert!(
+            text.contains("loss kind=unheld-handle handle=0x29 reason=released without a retain\n"),
+            "{text}"
+        );
+        assert!(!text.contains("handle=0x29 reason=released without a retain\n addr"), "{text}");
+        assert!(text.contains("total 3\n"), "{text}");
     }
 
     #[test]
@@ -236,9 +337,9 @@ mod tests {
         }
         // First-N, not last-N: the first losses explain the cause, later ones
         // are usually cascade from the same broken mapping.
-        assert_eq!(log.records()[0].map_addr, 0);
+        assert_eq!(log.records()[0].operand, 0);
         assert_eq!(
-            log.records()[WRITEBACK_LOSS_RECORD_CAPACITY - 1].map_addr,
+            log.records()[WRITEBACK_LOSS_RECORD_CAPACITY - 1].operand,
             WRITEBACK_LOSS_RECORD_CAPACITY as u64 - 1
         );
     }

@@ -1236,9 +1236,7 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
                 // now unreachable for the deferred close. Say so rather than
                 // leaking it quietly. The trait cannot return an error here,
                 // which is exactly why the loss has to be reported.
-                runtime_core::debug_log(&alloc::format!(
-                    "shared-mapping released an unheld host handle: {handle}"
-                ));
+                runtime_core::writeback_loss::record_unheld_handle_loss(handle);
             }
             runtime_core::ofd::MappingHandleRelease::StillHeld
             | runtime_core::ofd::MappingHandleRelease::Released => {}
