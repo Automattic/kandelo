@@ -3232,6 +3232,61 @@ Either way **the enforcement matters more than the fix**: a per-realm
 initialisation contract with no check is what produced four unrelated-looking
 bugs from one deletion.
 
+### HOW TO ATTRIBUTE A FAILURE IN THIS SUITE — the method, and why totals lie
+
+The host suite carries **~103 failing files at any base**. That single fact
+invalidates every cheap way of reading it, and tonight it invalidated mine.
+
+**What does not work:**
+
+- **Totals.** 103 → 105 looks like noise and was two real regressions.
+- **Error-signature counting.** The dominant signatures on a mid-campaign branch
+  were 228 × `Could not find repo root` and 118 × `artifact lacks an
+  __abi_version export` — both environmental, both since fixed. An argument
+  built on counting them would have been confident and wrong.
+- **Targeted suites during development.** The pointer-width item ran the
+  relevant suites while building and they were green. Both regressions were in
+  files it had no reason to run.
+- **Measuring against the current tip.** This was *my* suggestion and it was
+  wrong. It answers "what fails on what we ship", which is release confidence,
+  not causation — on a branch where the four-realm reader fix and the
+  tier-identity fix landed the same night, nothing can be separated from
+  anything.
+
+**What works: a controlled comparison, then diff the failing file SETS.**
+
+Run the full host suite twice — at your base and at your branch — on the same
+machine, with the same artifacts, and **with each side's own kernel rebuilt and
+staged**. Reusing one kernel against the other side's host code manufactures
+failures and makes the comparison worthless. Then diff the sets:
+
+    ONLY ON MY BRANCH:  test/multi-worker.test.ts
+                        test/kernel-scratch-transfer-boundaries.test.ts
+    ONLY ON BASE:       (none)
+
+That named both regressions exactly. Totals and signatures named neither.
+
+**And the claim stays bounded even when the sets match.** Identical failing sets
+are *consistent with* no regression; they do not prove it, because many of those
+suites boot a real kernel and identical sets do not prove identical causes. Say
+which claim you are making.
+
+**Fix the assertions, do not delete them.** Six assertions in
+`kernel-scratch-transfer-boundaries` encoded the retired contract — that the
+host overwrites channel slot 5 with the caller's width. They were repointed at
+what is now true and load-bearing: `setsockopt` asserts the caller's own `99`
+*survives*, and the five `ioctl` cases assert the slot stays zero. That property
+**is** the reclaim that returns the slot to `preadv2`/`pwritev2`, so the tests
+now guard the new contract instead of the old one. Deleting them would have
+removed the only thing watching the thing the item bought.
+
+**A standing hazard this exposed.** Synthetic kernels in the host suites must be
+told about newly mandatory exports. `host/test/multi-worker.test.ts` now
+declares **two** — `kernel_thread_slot_addr` and
+`kernel_set_process_pointer_width` — one from each of the last two items to add
+one. A third item that adds an export must update that fixture *and* its
+`kernelExportNames` list, and its own targeted suites will not say so.
+
 ### B24 — channel-level coverage for caller-native record syscalls
 
 **The gap that twelve broken syscalls walked through untouched.**
