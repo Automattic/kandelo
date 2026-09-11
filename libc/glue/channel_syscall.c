@@ -278,12 +278,19 @@ static void kandelo_ppoll_remaining(
  * WHY: CH_SIG_FLAGS carries the effective action flags for this interruption.
  * The host clears SA_RESTART in its owned signal record when an exact socket
  * OFD has SO_RCVTIMEO/SO_SNDTIMEO, so the socket cases below cannot reset a
- * live deadline. ppoll is included because POSIX requires an interruptible
- * function to restart with SA_RESTART unless that function says otherwise;
- * unlike pselect, ppoll has no implementation-defined EINTR exception.
- * pselect, signal waits, sleeps, and SysV IPC are deliberately absent:
- * Kandelo selects pselect's POSIX-permitted EINTR behavior, while the other
- * operations have their own interruption rules.
+ * live deadline.
+ *
+ * The whole select/poll family -- poll, ppoll, select, pselect, epoll_wait,
+ * epoll_pwait -- is deliberately absent, so a caught handler always ends the
+ * wait with EINTR regardless of SA_RESTART. POSIX lists these among the
+ * interfaces whose SA_RESTART behavior is implementation-defined, and Linux
+ * makes the same choice by raising ERESTARTNOHAND, which resumes only when no
+ * handler ran. Restarting instead would hang any wait whose only possible wake
+ * is the signal itself: the resubmitted wait blocks forever with nothing left
+ * to deliver. tests/sortix/os-test/signal/ppoll-block-raise and
+ * ppoll-block-sleep-raise are exactly that shape and expect `ppoll: EINTR`.
+ * Signal waits, sleeps, and SysV IPC are likewise absent; they have their own
+ * interruption rules.
  */
 static int kandelo_should_restart_after_handler(
     long n,
@@ -304,7 +311,6 @@ static int kandelo_should_restart_after_handler(
     case __NR_openat:
     case __NR_wait4:
     case __NR_waitid:
-    case __NR_ppoll:
     case __NR_read:
     case __NR_write:
     case __NR_pread:
