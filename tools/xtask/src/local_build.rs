@@ -2109,14 +2109,36 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             args.verify_cache,
         )
         .err()
+        .map(|error| format!("finalization failed: {error}"))
     } else {
-        None
+        // The build did not finish, so no authority can describe it -- but the
+        // packages that DID finish were mirrored into the tier as they went, so
+        // any authority still published there now describes different bytes.
+        // Retract it. Leaving it is the illusion the platform-values contract
+        // warns against: artifacts served under the provenance of a build that
+        // did not produce them.
+        match retract_source_only_program_projection(&output_root) {
+            Ok(false) => None,
+            Ok(true) => {
+                eprintln!(
+                    "source-only program authority retracted: this build did not \
+                     complete, and the packages it did finish replaced bytes the \
+                     published authority described. Re-run `./run.sh setup` after \
+                     fixing the failure above to republish."
+                );
+                None
+            }
+            Err(error) => Some(format!(
+                "could not be retracted after an incomplete build, so the tier \
+                 still claims bytes this build replaced: {error}"
+            )),
+        }
     };
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
             eprintln!("{}", render_projection_failure_banner(color));
         }
-        eprintln!("source-only program authority finalization failed: {error}");
+        eprintln!("source-only program authority: {error}");
     }
 
     for path in result_paths.values() {
@@ -2793,6 +2815,30 @@ fn refreshed_source_only_program_projection(
             .cmp(&(&right.node.name, &right.node.target_arch))
     });
     source_only_program_projection_bytes(&authority)
+}
+
+/// Withdraw the published program authority when this build cannot replace it.
+///
+/// The counterpart to `finalize_source_only_program_projection`, and the reason
+/// an incomplete build is not simply left alone. Each package node mirrors its
+/// own bytes into the tier as it completes, while the authority that describes
+/// the whole tier is written once at the end. So a build that fails partway
+/// leaves the tier holding this build's bytes under the previous build's
+/// record -- artifacts whose provenance the tier states incorrectly, which is
+/// worse than artifacts it cannot describe at all.
+///
+/// Retracting leaves the bytes in place. They resolve to nothing without an
+/// authority (the tier reports it "has no usable projection authority", a named
+/// refusal), the content-addressed cache still owns them, and the next complete
+/// build republishes from that cache instead of rebuilding.
+///
+/// Returns whether an authority was there to remove, so the caller only
+/// announces a retraction that happened. A tier that was never published (a
+/// fresh worktree whose first build failed) is already truthful.
+fn retract_source_only_program_projection(output_root: &Path) -> Result<bool, String> {
+    with_source_only_program_projection_lock(output_root, |authority| {
+        authority.retract_projection_authority()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -3161,6 +3161,48 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         self.replace_projection_authority_with_phase_hook(bytes, &mut |_, _| Ok(()))
     }
 
+    /// Remove the live projection authority, if one is published.
+    ///
+    /// The inverse of `replace_projection_authority`, and the only correct
+    /// answer when a build cannot produce one. A build mirrors each package it
+    /// finishes into the tier as it goes, so an incomplete build leaves bytes
+    /// that a previously published authority no longer describes. Retracting
+    /// the authority makes the tier report that it has none -- a named refusal
+    /// a reader can act on -- instead of serving artifacts under a record of a
+    /// different build.
+    ///
+    /// Returns whether an authority was actually removed, so a caller can say
+    /// so rather than guess. The mirrored bytes are deliberately left alone:
+    /// without an authority nothing resolves them, the content-addressed cache
+    /// still owns them, and the next complete build re-publishes rather than
+    /// rebuilds.
+    pub(crate) fn retract_projection_authority(&self) -> Result<bool, String> {
+        self.lock.validate()?;
+        let live_name = OsString::from("source-only-program-projection-v1.json");
+        validate_single_path_component(&live_name, "source-only projection authority")?;
+        let removed = match rustix::fs::unlinkat(
+            &self.lock.metadata_parent.file,
+            &live_name,
+            rustix::fs::AtFlags::empty(),
+        ) {
+            Ok(()) => true,
+            Err(rustix::io::Errno::NOENT) => false,
+            Err(error) => {
+                return Err(format!(
+                    "remove source-only projection authority {}: {error}",
+                    self.lock.metadata_parent.path.join(&live_name).display(),
+                ));
+            }
+        };
+        if removed {
+            self.lock
+                .metadata_parent
+                .sync("source-only projection metadata root")?;
+        }
+        self.lock.validate()?;
+        Ok(removed)
+    }
+
     fn replace_projection_authority_with_phase_hook<H>(
         &self,
         bytes: &[u8],
@@ -3287,6 +3329,10 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
     }
 
     pub(crate) fn replace_projection_authority(&self, _bytes: &[u8]) -> Result<(), String> {
+        Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
+    }
+
+    pub(crate) fn retract_projection_authority(&self) -> Result<bool, String> {
         Err("source-only projection authority requires Unix no-follow filesystem semantics".into())
     }
 }
@@ -35849,6 +35895,39 @@ printf canonical-runtime > "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
             .find(|backup| backup.is_file())
             .expect("post-commit failure must preserve the prior aggregate generation");
         assert_eq!(fs::read(preserved_backup).unwrap(), b"second-authority\n");
+
+        // An incomplete build must not leave the tier describing bytes a later,
+        // partial run replaced. Retraction removes exactly the live authority,
+        // leaves the mirrored member alone, and reports whether there was one to
+        // remove so a caller never announces a retraction that did not happen.
+        let retracted =
+            with_source_only_program_projection_lock(&output, |authority| {
+                authority.retract_projection_authority()
+            })
+            .unwrap();
+        assert!(retracted, "a published authority must report as retracted");
+        assert!(
+            !aggregate.exists(),
+            "retraction must remove the live projection authority",
+        );
+        assert_eq!(
+            fs::read(&member_path).unwrap(),
+            b"capability-member",
+            "retraction must leave the mirrored bytes for the next complete build",
+        );
+        let retracted_again =
+            with_source_only_program_projection_lock(&output, |authority| {
+                authority.retract_projection_authority()
+            })
+            .unwrap();
+        assert!(
+            !retracted_again,
+            "a tier with no published authority is already truthful",
+        );
+        with_source_only_program_projection_lock(&output, |authority| {
+            authority.replace_projection_authority(b"committed-authority\n")
+        })
+        .unwrap();
 
         let oversized_len = SOURCE_ONLY_PROJECTION_AUTHORITY_LIMIT as u64 + 1;
         fs::OpenOptions::new()
