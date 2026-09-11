@@ -180,10 +180,45 @@ CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 CFLAGS_BASE=(
     -O2
-    # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
-    # so they use race-based timing or skip those features instead.
-    -D__sortix__
 )
+
+# `-D__sortix__` is a CAPABILITY SUPPRESSION, and upstream spends one macro on
+# two unrelated capabilities. Exactly three files in the suite consult it:
+#
+#   udp/udp.h                             skips getifaddrs()
+#   signal/ppoll-block-sleep-write-raise  skips SIGSTOP/SIGCONT
+#   signal/ppoll-block-sleep-raise-write  skips SIGSTOP/SIGCONT
+#
+# Only ONE of those claims is true of Kandelo, so the macro is scoped to the
+# suite whose claim is true rather than asserted platform-wide.
+#
+#   getifaddrs -- TRUE. musl implements it over netlink
+#   (libc/musl/src/network/getifaddrs.c includes netlink.h) and this kernel
+#   implements no AF_NETLINK. The symbol links; the call cannot succeed.
+#
+#   SIGSTOP/SIGCONT -- FALSE. crates/runtime-core/src/signal.rs maps SIGSTOP
+#   to DefaultAction::Stop and SIGCONT to Continue, the process table records
+#   stops, and the host defers a stopped process's channel. Built without the
+#   macro, signal/ppoll-block-sleep-write-raise passed 20/20.
+#
+# Asserting the false half told a conformance suite we lack a feature we have,
+# and the two signal tests then took a deliberately racy fallback -- their own
+# comment is "Sortix does not implement SIGSTOP yet, so just race instead" --
+# instead of the SIGSTOP/SIGCONT sequencing that makes them deterministic.
+# A timing constant was then tuned to survive the degraded path. That is the
+# platform-values contract's "do not shape behavior to hide a platform gap",
+# inverted: a gap was invented that did not exist.
+suite_capability_cflags() {
+    case "$1" in
+        udp) echo "-D__sortix__" ;;
+        *)   echo "" ;;
+    esac
+}
+# The parallel build path runs `_build_runtime_wrapper` through `bash -c`, so
+# this must cross that boundary. Unexported it would not merely be missing: the
+# command substitution would expand to nothing and `udp` would silently lose a
+# suppression it genuinely needs, which looks like a getifaddrs regression.
+export -f suite_capability_cflags
 
 # The SDK driver contributes the whole executable link line: syscall
 # glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
@@ -406,7 +441,9 @@ build_runtime_test() {
     mkdir -p "$(dirname "$wasm")"
     rm -f "$wasm"
 
-    local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
+    # shellcheck disable=SC2046
+    local -a cflags=("${CFLAGS_BASE[@]}" $(suite_capability_cflags "$suite") \
+        -D_GNU_SOURCE -I"$OS_TEST")
     case "$suite/$test_name" in
         process/waitpid-pgid-empty-on-setpgid|\
         process/waitpid-pgid-empty-on-setpgid-rejoin|\
@@ -1034,8 +1071,9 @@ run_suite() {
             local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
             mkdir -p "$(dirname "$wasm")"
             rm -f "$wasm"
-            # shellcheck disable=SC2206
-            local -a cflags=($CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST")
+            # shellcheck disable=SC2206,SC2046
+            local -a cflags=($CFLAGS_BASE_STR $(suite_capability_cflags "$suite") \
+                -D_GNU_SOURCE -I"$OS_TEST")
             case "$suite/$test_name" in
                 process/waitpid-pgid-empty-on-setpgid|\
                 process/waitpid-pgid-empty-on-setpgid-rejoin|\
