@@ -3344,6 +3344,42 @@ eleventh-plus instance of this campaign's most common finding: *a check that
 cannot run, reporting as a check that passed.* Conformance provisioning must
 verify the submodule is populated, not merely that the runner exited 0.
 
+### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
+
+Stated on its own because it has now worked four times and is not what a census
+naturally reaches for.
+
+**Searching for a feature's name misses the code that depends on the feature
+without using the name.** Every large census in this campaign undercounted for
+exactly this reason:
+
+| census | claimed | actual | what the extras looked like |
+|---|---|---|---|
+| worker-entry pairs | 16 | 21 | declarations sharing no identifier |
+| `usePolling` | 1 | 7 | `usePolling: true` inside an `Object.assign` |
+| epoll touchpoints | 14 | 17 | a **default parameter** |
+| socket readiness | 5 | 8 | two bare `return events`, one trait **default method** |
+| pointer width | 0 named | **17** | twelve `args[5]`, three `si == 5u`, two test assertions |
+
+**What works instead — two cheap habits:**
+
+1. **Sweep the prose, not the identifiers.** The seventeen pointer-width sites
+   shared no substring, but their *explanations* did: comments about "the
+   private sixth channel slot" and "slot 5". Grepping comments found what
+   grepping code could not. Serena's symbol graph finds callers; it does not
+   find *conventions*, and a convention is exactly what a magic index is.
+2. **For behaviour, diff rather than read.** The last two pointer-width sites
+   were test assertions that encoded the retired contract without naming it. No
+   search would have found them. A controlled before/after comparison did, in
+   one run.
+
+**The corollary for briefs:** when an item's subject is a convention rather than
+a symbol — an argument slot, a sign convention, an ordering rule, a per-realm
+initialisation — a symbol census will undercount it, and the brief should say
+so. Four of this campaign's most expensive findings were conventions:
+`args[5]`, the PS/2 Y-axis sign, the per-realm artifact reader, and the
+`ProcessLayout` descriptor set.
+
 ### HOW TO ATTRIBUTE A FAILURE IN THIS SUITE — the method, and why totals lie
 
 The host suite carries **~103 failing files at any base**. That single fact
