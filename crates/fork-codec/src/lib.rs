@@ -79,6 +79,7 @@ pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescript
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
 pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{
+    DescriptorRejection,
     decode_linked_frames, FrameHeader, LinkedChunk, LinkedFrameFormat, LinkedFrameNode,
     LinkedFrames,
 };

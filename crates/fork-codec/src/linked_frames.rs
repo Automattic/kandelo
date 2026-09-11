@@ -41,37 +41,93 @@ pub struct LinkedFrameFormat {
     pub fixed_prefix_size: u32,
 }
 
+/// Why a linked-frame descriptor was refused.
+///
+/// Every variant maps to `EINVAL` at the syscall boundary, and deliberately
+/// so: a guest cannot act on the distinction, and inventing errnos POSIX does
+/// not define for this case would be a worse answer than the conventional one.
+/// But "errno 22" is not a diagnosis, and a build guard reporting it tells a
+/// developer nothing about which of seven structurally different checks
+/// rejected their artifact -- a stale-version artifact and a byte-corrupted one
+/// read identically.
+///
+/// So the errno stays and the reason travels beside it, for whoever is in a
+/// position to print it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorRejection {
+    /// The descriptor is not `WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE` bytes.
+    WrongLength,
+    /// The leading four bytes are not the format magic.
+    BadMagic,
+    /// The version field names a format this decoder does not implement.
+    UnsupportedVersion,
+    /// The descriptor's self-declared size disagrees with its actual size.
+    DeclaredSizeMismatch,
+    /// The pointer width is not one this build supports.
+    UnsupportedPointerWidth,
+    /// The record alignment is not the one the format fixes.
+    BadRecordAlignment,
+    /// The flags word carries bits this format does not define.
+    UnexpectedFlags,
+    /// A declared header size disagrees with the size implied by the pointer
+    /// width -- the artifact and this decoder disagree about the layout.
+    HeaderSizeMismatch,
+}
+
+impl DescriptorRejection {
+    /// The errno a guest observes. Always `EINVAL`; see the type's docs.
+    pub fn errno(self) -> Errno {
+        Errno::EINVAL
+    }
+
+    /// A short, stable phrase naming the check that failed.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::WrongLength => "descriptor length is wrong",
+            Self::BadMagic => "descriptor magic does not match",
+            Self::UnsupportedVersion => "descriptor format version is unsupported",
+            Self::DeclaredSizeMismatch => "descriptor's declared size disagrees with its length",
+            Self::UnsupportedPointerWidth => "descriptor declares an unsupported pointer width",
+            Self::BadRecordAlignment => "descriptor declares the wrong record alignment",
+            Self::UnexpectedFlags => "descriptor carries unexpected flag bits",
+            Self::HeaderSizeMismatch => {
+                "descriptor's declared header sizes disagree with its pointer width"
+            }
+        }
+    }
+}
+
 impl LinkedFrameFormat {
     /// Parse the 24-byte custom-section descriptor. Mirrors the TS
     /// `readLinkedFrameFormat` and the xtask publication guard
     /// (`parse_linked_frame_descriptor` in `tools/xtask/src/build_deps.rs`).
-    pub fn parse_descriptor(descriptor: &[u8]) -> Result<Self, Errno> {
+    pub fn parse_descriptor(descriptor: &[u8]) -> Result<Self, DescriptorRejection> {
         if descriptor.len() != abi::WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE as usize {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::WrongLength);
         }
         if descriptor[0..4] != abi::WPK_FORK_LINKED_FRAME_FORMAT_MAGIC {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::BadMagic);
         }
         let version = u16::from_le_bytes([descriptor[4], descriptor[5]]);
         if version != abi::WPK_FORK_LINKED_FRAME_FORMAT_VERSION {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::UnsupportedVersion);
         }
         let declared_size = u16::from_le_bytes([descriptor[6], descriptor[7]]);
         if declared_size != abi::WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::DeclaredSizeMismatch);
         }
         let pointer_width = descriptor[8];
         let chunk_header_size = match abi::wpk_fork_linked_chunk_header_size(pointer_width) {
             Some(size) => size,
-            None => return Err(Errno::EINVAL),
+            None => return Err(DescriptorRejection::UnsupportedPointerWidth),
         };
-        let node_header_size = abi::wpk_fork_linked_node_header_size(pointer_width).ok_or(Errno::EINVAL)?;
+        let node_header_size = abi::wpk_fork_linked_node_header_size(pointer_width).ok_or(DescriptorRejection::UnsupportedPointerWidth)?;
         if descriptor[9] != abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::BadRecordAlignment);
         }
         let flags = u16::from_le_bytes([descriptor[10], descriptor[11]]);
         if flags != abi::WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::UnexpectedFlags);
         }
         let declared_chunk = u32::from_le_bytes([
             descriptor[12],
@@ -86,7 +142,7 @@ impl LinkedFrameFormat {
             descriptor[19],
         ]);
         if declared_chunk != chunk_header_size || declared_node != node_header_size {
-            return Err(Errno::EINVAL);
+            return Err(DescriptorRejection::HeaderSizeMismatch);
         }
         let fixed_prefix_size = u32::from_le_bytes([
             descriptor[20],
@@ -787,27 +843,43 @@ mod tests {
         bad_magic[0] = 0;
         assert_eq!(
             LinkedFrameFormat::parse_descriptor(&bad_magic),
-            Err(Errno::EINVAL)
+            Err(DescriptorRejection::BadMagic)
         );
 
         let mut bad_width = valid_descriptor();
         bad_width[8] = 16;
         assert_eq!(
             LinkedFrameFormat::parse_descriptor(&bad_width),
-            Err(Errno::EINVAL)
+            Err(DescriptorRejection::UnsupportedPointerWidth)
         );
 
         let mut bad_flags = valid_descriptor();
         bad_flags[10] = 7;
         assert_eq!(
             LinkedFrameFormat::parse_descriptor(&bad_flags),
-            Err(Errno::EINVAL)
+            Err(DescriptorRejection::UnexpectedFlags)
         );
 
         assert_eq!(
             LinkedFrameFormat::parse_descriptor(&[0u8; 23]),
-            Err(Errno::EINVAL)
+            Err(DescriptorRejection::WrongLength)
         );
+
+        // The guest-visible contract is unchanged: every rejection is still
+        // EINVAL. The reason travels beside the errno, it does not replace it.
+        for rejection in [
+            DescriptorRejection::WrongLength,
+            DescriptorRejection::BadMagic,
+            DescriptorRejection::UnsupportedVersion,
+            DescriptorRejection::DeclaredSizeMismatch,
+            DescriptorRejection::UnsupportedPointerWidth,
+            DescriptorRejection::BadRecordAlignment,
+            DescriptorRejection::UnexpectedFlags,
+            DescriptorRejection::HeaderSizeMismatch,
+        ] {
+            assert_eq!(rejection.errno(), Errno::EINVAL);
+            assert!(!rejection.reason().is_empty());
+        }
     }
 
     // --- Panic-freedom on arbitrary bytes --------------------------------

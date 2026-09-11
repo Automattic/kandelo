@@ -170,10 +170,14 @@ fn check_linked_frames(facts: &ArtifactFacts, failures: &mut Vec<String>) -> Opt
     let descriptor = exactly_one(&facts.linked_frame_descriptors, section, failures)?;
     match LinkedFrameFormat::parse_descriptor(descriptor) {
         Ok(format) => Some(format.pointer_width),
-        Err(errno) => {
+        Err(rejection) => {
+            // Name the check that failed. "errno 22" told a developer that
+            // something was wrong with their artifact and nothing about what --
+            // a stale-version artifact and a byte-corrupted one read
+            // identically.
             failures.push(format!(
-                "{section} descriptor is malformed (errno {})",
-                errno as i32
+                "{section} descriptor is malformed: {}",
+                rejection.reason()
             ));
             None
         }
