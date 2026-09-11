@@ -2121,6 +2121,120 @@ impl FileBacking {
             self.pages.remove(&page);
         }
     }
+
+    // -- external-write reconciliation -----------------------------------
+    //
+    // A write that reaches the file through the descriptor rather than
+    // through a mapping — `write`, `pwrite`, `ftruncate`, `sendfile`,
+    // `copy_file_range` — leaves this cache holding bytes the file no longer
+    // has. These reconcile it. Every one of them advances `version`, because
+    // a mapped snapshot is stale from this point even when no page was
+    // resident: it is the version bump, not the page eviction, that makes
+    // peers re-import.
+
+    /// Drop the named clean pages and mark every mapped snapshot stale.
+    ///
+    /// Dirty pages are kept. Direct-storage syscalls publish their dirty
+    /// mappings before reaching the kernel, so a page still dirty here was
+    /// missed by that contract, and discarding it would lose an acknowledged
+    /// `MAP_SHARED` store.
+    fn invalidate_pages_stale(&mut self, pages: &[u64]) {
+        for page in pages {
+            if !self.dirty_pages.contains(page) {
+                self.pages.remove(page);
+            }
+        }
+        self.version += 1;
+    }
+
+    /// Drop every clean page and mark every mapped snapshot stale.
+    pub fn invalidate_all_stale(&mut self) {
+        let victims: Vec<u64> = self
+            .pages
+            .keys()
+            .copied()
+            .filter(|p| !self.dirty_pages.contains(p))
+            .collect();
+        self.invalidate_pages_stale(&victims);
+    }
+
+    /// Re-read every resident page from the file.
+    ///
+    /// `exact_size` is the length a syscall set authoritatively (`ftruncate`,
+    /// `truncate`, an `O_TRUNC` open); without one the size is re-derived from
+    /// the handle. A failure to re-read leaves no half-updated page behind:
+    /// the whole resident set is invalidated instead, so the next read goes to
+    /// the file.
+    pub fn reload(&mut self, exact_size: Option<u64>, io: &mut dyn SharedMappingIo) -> bool {
+        if let Some(size) = exact_size {
+            self.size = size;
+            self.size_valid = true;
+        } else if self.revalidate(io).is_err() {
+            self.invalidate_all_stale();
+            return false;
+        }
+        if self.pages.is_empty() {
+            self.version += 1;
+            return true;
+        }
+        let resident: Vec<u64> = self.pages.keys().copied().collect();
+        let mut replacements: Vec<(u64, Vec<u8>)> = Vec::new();
+        for page in &resident {
+            match self.read_page(*page, io) {
+                Ok(bytes) => replacements.push((*page, bytes)),
+                Err(_) => {
+                    self.invalidate_pages_stale(&resident);
+                    return false;
+                }
+            }
+        }
+        for (page, bytes) in replacements {
+            self.pages.insert(page, bytes);
+            self.dirty_pages.remove(&page);
+        }
+        self.version += 1;
+        true
+    }
+
+    /// Re-read only the resident pages overlapping `[offset, offset + len)`.
+    ///
+    /// Used where the syscall named the range it wrote, so pages outside it
+    /// are still good and need not be dropped.
+    pub fn reload_range(
+        &mut self,
+        offset: u64,
+        len: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let first = offset / FILE_PAGE_SIZE as u64;
+        let last = offset.saturating_add(len - 1) / FILE_PAGE_SIZE as u64;
+        let targets: Vec<u64> = (first..=last)
+            .filter(|p| self.pages.contains_key(p))
+            .collect();
+        let mut replacements: Vec<(u64, Vec<u8>)> = Vec::new();
+        for page in &targets {
+            match self.read_page(*page, io) {
+                Ok(bytes) => replacements.push((*page, bytes)),
+                Err(_) => {
+                    let span: Vec<u64> = (first..=last).collect();
+                    self.invalidate_pages_stale(&span);
+                    return false;
+                }
+            }
+        }
+        let refreshed = !replacements.is_empty();
+        for (page, bytes) in replacements {
+            self.pages.insert(page, bytes);
+            self.dirty_pages.remove(&page);
+        }
+        if refreshed {
+            self.version += 1;
+        }
+        true
+    }
 }
 
 /// Every process's `MAP_SHARED` intervals, the authoritative backings behind
@@ -2737,6 +2851,88 @@ impl SharedMappingTable {
             }
         }
         Ok(())
+    }
+
+    // -- keyed reconciliation, for the file-syscall policy ----------------
+    //
+    // The host reaches these through an fd or a pathname and keeps a cache to
+    // map either onto a backing. The kernel owns the descriptor table and the
+    // file identity behind it, so it resolves the key itself and these take
+    // the key directly. That is what lets `sharedMmapFdCache`, its four
+    // invalidation hooks, and the path-keyed lookups go away rather than be
+    // ported.
+
+    /// Publish every observer of a backing, persist it, and drop it if that
+    /// left it unreferenced. Mirrors the host's `flushSharedBackingForFd`
+    /// once the descriptor has been resolved to a key.
+    pub fn flush_backing(
+        &mut self,
+        key: &str,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<bool, Errno> {
+        if !self.file_backings.contains_key(key) {
+            return Ok(true);
+        }
+        self.publish_file_backing_observers(key, io)?;
+        let Some(backing) = self.file_backings.get_mut(key) else {
+            return Ok(true);
+        };
+        let flushed = backing.flush_all(io);
+        if flushed {
+            self.discard_unreferenced_file_backing(key, io);
+        }
+        Ok(flushed)
+    }
+
+    /// Reconcile a backing with a file that was written through a descriptor.
+    /// A backing that is not tracked is not an error: nothing maps the file.
+    pub fn reload_backing(
+        &mut self,
+        key: &str,
+        exact_size: Option<u64>,
+        io: &mut dyn SharedMappingIo,
+    ) -> bool {
+        let Some(backing) = self.file_backings.get_mut(key) else {
+            return true;
+        };
+        backing.reload(exact_size, io)
+    }
+
+    /// Apply the bytes a positioned write just put in the file, without
+    /// re-reading it. Mirrors `updateSharedMmapBackingFromProcessBuffer`.
+    ///
+    /// The written bytes are authoritative and are *not* marked dirty: the
+    /// file already has them, so marking them dirty would write them back a
+    /// second time and could overwrite a peer's later store.
+    pub fn apply_written_bytes(
+        &mut self,
+        key: &str,
+        offset: u64,
+        bytes: &[u8],
+        io: &mut dyn SharedMappingIo,
+    ) {
+        if bytes.is_empty() || !self.file_backings.contains_key(key) {
+            return;
+        }
+        {
+            let backing = self.file_backings.get_mut(key).expect("checked above");
+            if backing.revalidate(io).is_err() {
+                backing.invalidate_all_stale();
+                return;
+            }
+        }
+        let backing = self.file_backings.get_mut(key).expect("checked above");
+        if backing.write_range(offset, bytes, false, io).is_err() {
+            // The cache could not take the bytes; fall back to treating the
+            // range as unknown rather than leaving it holding pre-write bytes.
+            let len = bytes.len() as u64;
+            let first = offset / FILE_PAGE_SIZE as u64;
+            let last = offset.saturating_add(len - 1) / FILE_PAGE_SIZE as u64;
+            let span: Vec<u64> = (first..=last).collect();
+            backing.invalidate_pages_stale(&span);
+            return;
+        }
+        backing.version += 1;
     }
 
     /// Force every current observer of a backing to publish, before another
@@ -5172,6 +5368,195 @@ mod shared_mapping_tests {
         let mut table = SharedMappingTable::new();
         assert!(table.is_empty());
         table.synchronize_for_boundary(1, &mut io).unwrap();
+    }
+
+    // -- reconciling a file written through its descriptor -----------------
+
+    fn single_file_backing(io: &mut MockIo, key: &str) -> SharedMappingTable {
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        let backing = table.get_or_create_file_backing(key, &stat, true, io).unwrap();
+        backing.ref_count += 1;
+        table
+    }
+
+    #[test]
+    fn a_reload_re_reads_resident_pages_after_a_write_through_the_descriptor() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"BEFORE..".to_vec());
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+
+        let seen = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        assert_eq!(seen, b"BEFORE..".to_vec());
+        let before = table.file_backing(&key).unwrap().version;
+
+        // Something writes the file through its descriptor.
+        io.files.insert(10, b"AFTER...".to_vec());
+        assert!(table.reload_backing(&key, None, &mut io));
+
+        let seen = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        assert_eq!(seen, b"AFTER...".to_vec(), "the cache followed the file");
+        assert!(
+            table.file_backing(&key).unwrap().version > before,
+            "mapped snapshots are stale and must re-import"
+        );
+    }
+
+    #[test]
+    fn a_reload_with_an_exact_size_trusts_the_length_the_syscall_set() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"ABCDEFGH".to_vec());
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+
+        // ftruncate(fd, 4): the tail is gone and must now read as zero.
+        io.files.insert(10, b"ABCD".to_vec());
+        assert!(table.reload_backing(&key, Some(4), &mut io));
+
+        let seen = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        assert_eq!(seen, b"ABCD\0\0\0\0".to_vec(), "past EOF reads as zero");
+        assert_eq!(table.file_backing(&key).unwrap().size, 4);
+    }
+
+    #[test]
+    fn a_reload_marks_snapshots_stale_even_with_no_page_resident() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"ABCDEFGH".to_vec());
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+        assert_eq!(table.file_backing(&key).unwrap().cached_page_count(), 0);
+        let before = table.file_backing(&key).unwrap().version;
+
+        assert!(table.reload_backing(&key, None, &mut io));
+        assert!(
+            table.file_backing(&key).unwrap().version > before,
+            "it is the version bump, not the eviction, that forces a re-import"
+        );
+    }
+
+    #[test]
+    fn applying_a_positioned_write_does_not_mark_the_page_for_writeback() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+
+        // pwrite(fd, "WXYZ", 4, 2) has already reached the file.
+        io.files.insert(10, b"..WXYZ..".to_vec());
+        table.apply_written_bytes(&key, 2, b"WXYZ", &mut io);
+
+        let seen = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        assert_eq!(seen, b"..WXYZ..".to_vec(), "the cache took the written bytes");
+        assert_eq!(
+            table.file_backing(&key).unwrap().dirty_page_count(),
+            0,
+            "the file already has them; a second writeback could clobber a peer"
+        );
+    }
+
+    #[test]
+    fn a_reload_that_cannot_read_the_file_drops_the_stale_pages() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"ABCDEFGH".to_vec());
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(0, 8, &mut io)
+            .unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().cached_page_count(), 1);
+
+        io.files.remove(&10);
+        assert!(
+            !table.reload_backing(&key, None, &mut io),
+            "a failed reload is reported, not swallowed"
+        );
+        assert_eq!(
+            table.file_backing(&key).unwrap().cached_page_count(),
+            0,
+            "no page keeps bytes the file may no longer have"
+        );
+    }
+
+    #[test]
+    fn flushing_an_unreferenced_backing_persists_it_and_then_drops_it() {
+        let mut io = MockIo::new().with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        {
+            let backing = table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap();
+            assert_eq!(backing.ref_count, 0, "no mapping ever took a reference");
+        }
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .write_range(0, b"DIRTY", true, &mut io)
+            .unwrap();
+
+        assert!(table.flush_backing(&key, &mut io).unwrap());
+        assert_eq!(io.files[&10], b"DIRTY...".to_vec(), "dirty bytes reached the file");
+        assert!(table.file_backing(&key).is_none(), "and the backing was dropped");
+    }
+
+    #[test]
+    fn a_ranged_reload_leaves_pages_outside_the_written_range_alone() {
+        let big = alloc::vec![b'A'; FILE_PAGE_SIZE * 2];
+        let mut io = MockIo::new().with_file(10, 1, 2, big);
+        let key = io.key_of(10);
+        let mut table = single_file_backing(&mut io, &key);
+        table
+            .file_backing_mut(&key)
+            .unwrap()
+            .ensure_range_loaded(0, FILE_PAGE_SIZE * 2, &mut io)
+            .unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().cached_page_count(), 2);
+
+        // A write lands entirely in page 1.
+        let mut updated = alloc::vec![b'A'; FILE_PAGE_SIZE * 2];
+        updated[FILE_PAGE_SIZE] = b'Z';
+        io.files.insert(10, updated);
+        assert!(table
+            .file_backing_mut(&key)
+            .unwrap()
+            .reload_range(FILE_PAGE_SIZE as u64, 1, &mut io));
+
+        let page1 = table
+            .file_backing_mut(&key)
+            .unwrap()
+            .read_range(FILE_PAGE_SIZE as u64, 1, &mut io)
+            .unwrap();
+        assert_eq!(page1, alloc::vec![b'Z'], "the named page was re-read");
+        assert_eq!(
+            table.file_backing(&key).unwrap().cached_page_count(),
+            2,
+            "page 0 stayed resident rather than being swept out"
+        );
     }
 
     // -- whole-lifecycle drives over a NON-EMPTY mixed table ---------------
