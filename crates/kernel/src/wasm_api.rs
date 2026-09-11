@@ -28,6 +28,8 @@ use wasm_posix_shared::{
     WasmStatfs, WasmTimespec,
 };
 
+use wasm_posix_shared::process_layout as layout;
+
 use crate::channel_result::{checked_mmap_byte_offset, ChannelDispatchOutcome};
 use crate::channel_scratch::{
     checked_cstr_len, validate_channel_scratch_arguments, ChannelScratchRegion,
@@ -12870,6 +12872,18 @@ fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, coun
     result
 }
 
+/// Write a `u32` at a named `statx` field offset.
+fn write_u32_at(buf: &mut [u8], offset: u32, value: u32) {
+    let at = offset as usize;
+    buf[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Write a `u64` at a named `statx` field offset.
+fn write_u64_at(buf: &mut [u8], offset: u32, value: u64) {
+    let at = offset as usize;
+    buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+
 /// statx -- extended file stat.
 /// Delegates to fstatat and fills the statx buffer from WasmStat.
 /// statx struct layout: we write a simplified version compatible with musl expectations.
@@ -12888,47 +12902,48 @@ pub fn kernel_statx(
 
     let result = match syscalls::sys_statx(proc, &mut host, dirfd, path, flags, mask) {
         Ok(st) => {
-            // Fill statx struct (256 bytes)
-            // We fill the key fields that musl expects
-            let buf = unsafe { slice::from_raw_parts_mut(statx_ptr, 256) };
-            // Zero out first
+            use layout::statx as sx;
+
+            let buf = unsafe { slice::from_raw_parts_mut(statx_ptr, sx::SIZE as usize) };
+            // Every field not written below is reported as absent, not as a
+            // value: the mask says which ones are meaningful.
             for b in buf.iter_mut() {
                 *b = 0;
             }
-            // stx_mask (u32 @ 0): STATX_BASIC_STATS = 0x07ff
-            buf[0..4].copy_from_slice(&0x07ffu32.to_le_bytes());
-            // stx_blksize (u32 @ 4): default 4096
-            buf[4..8].copy_from_slice(&4096u32.to_le_bytes());
-            // stx_attributes (u64 @ 8): 0
-            // stx_nlink (u32 @ 16)
-            buf[16..20].copy_from_slice(&st.st_nlink.to_le_bytes());
-            // stx_uid (u32 @ 20)
-            buf[20..24].copy_from_slice(&st.st_uid.to_le_bytes());
-            // stx_gid (u32 @ 24)
-            buf[24..28].copy_from_slice(&st.st_gid.to_le_bytes());
-            // stx_mode (u16 @ 28)
-            buf[28..30].copy_from_slice(&(st.st_mode as u16).to_le_bytes());
-            // stx_ino (u64 @ 32)
-            buf[32..40].copy_from_slice(&st.st_ino.to_le_bytes());
-            // stx_size (u64 @ 40)
-            buf[40..48].copy_from_slice(&st.st_size.to_le_bytes());
-            // stx_blocks (u64 @ 48): size / 512
-            let blocks = (st.st_size + 511) / 512;
-            buf[48..56].copy_from_slice(&blocks.to_le_bytes());
-            // stx_attributes_mask (u64 @ 56): 0
-            // stx_atime (statx_timestamp @ 64): tv_sec(i64) + tv_nsec(u32) + pad(i32) = 16 bytes
-            buf[64..72].copy_from_slice(&st.st_atime_sec.to_le_bytes());
-            buf[72..76].copy_from_slice(&st.st_atime_nsec.to_le_bytes());
-            // stx_btime (@ 80): 0 (birth time not tracked)
-            // stx_ctime (@ 96)
-            buf[96..104].copy_from_slice(&st.st_ctime_sec.to_le_bytes());
-            buf[104..108].copy_from_slice(&st.st_ctime_nsec.to_le_bytes());
-            // stx_mtime (@ 112)
-            buf[112..120].copy_from_slice(&st.st_mtime_sec.to_le_bytes());
-            buf[120..124].copy_from_slice(&st.st_mtime_nsec.to_le_bytes());
-            // stx_rdev_major (u32 @ 128), stx_rdev_minor (u32 @ 132)
-            // stx_dev_major (u32 @ 136), stx_dev_minor (u32 @ 140)
-            buf[136..140].copy_from_slice(&(st.st_dev as u32).to_le_bytes());
+            write_u32_at(buf, sx::MASK_OFFSET, sx::BASIC_STATS_MASK);
+            write_u32_at(buf, sx::BLKSIZE_OFFSET, 4096);
+            // stx_attributes (u64) and stx_attributes_mask (u64): none claimed.
+            write_u32_at(buf, sx::NLINK_OFFSET, st.st_nlink);
+            write_u32_at(buf, sx::UID_OFFSET, st.st_uid);
+            write_u32_at(buf, sx::GID_OFFSET, st.st_gid);
+            let mode_at = sx::MODE_OFFSET as usize;
+            buf[mode_at..mode_at + 2].copy_from_slice(&(st.st_mode as u16).to_le_bytes());
+            write_u64_at(buf, sx::INO_OFFSET, st.st_ino);
+            write_u64_at(buf, sx::SIZE_FIELD_OFFSET, st.st_size);
+            write_u64_at(buf, sx::BLOCKS_OFFSET, (st.st_size + 511) / 512);
+            // Each timestamp is tv_sec(i64) + tv_nsec(u32) + pad(i32).
+            write_u64_at(buf, sx::ATIME_SEC_OFFSET, st.st_atime_sec);
+            write_u32_at(buf, sx::ATIME_NSEC_OFFSET, st.st_atime_nsec);
+            // stx_btime: birth time is not tracked, so it stays absent.
+            write_u64_at(buf, sx::CTIME_SEC_OFFSET, st.st_ctime_sec);
+            write_u32_at(buf, sx::CTIME_NSEC_OFFSET, st.st_ctime_nsec);
+            write_u64_at(buf, sx::MTIME_SEC_OFFSET, st.st_mtime_sec);
+            write_u32_at(buf, sx::MTIME_NSEC_OFFSET, st.st_mtime_nsec);
+            // `statx` splits a device number into two `u32` halves, so both
+            // must be written: the guest reassembles them with `makedev`, and
+            // a major written without its minor reassembles to a different
+            // device than `stat` reports for the same file. Writing only the
+            // low 32 bits compounded it — every device number above 2^32
+            // aliased onto one value, and a truncated number is a plausible
+            // wrong answer rather than a refusal.
+            //
+            // `stx_rdev_major`/`stx_rdev_minor` stay zero, and that is a gap
+            // rather than an omission being papered over: `WasmStat` carries
+            // no `st_rdev`, so the kernel has no device number to report for a
+            // device node here or through `stat` either.
+            let dev = st.st_dev;
+            write_u32_at(buf, sx::DEV_MAJOR_OFFSET, layout::dev::major(dev));
+            write_u32_at(buf, sx::DEV_MINOR_OFFSET, layout::dev::minor(dev));
             0
         }
         Err(e) => -(e as i32),
