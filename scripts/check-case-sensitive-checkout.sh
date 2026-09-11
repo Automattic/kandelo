@@ -63,6 +63,25 @@ collision_groups() {
         '
 }
 
+# Does this directory sit on a case-sensitive filesystem? Probes behavior
+# rather than trusting a filesystem name. Returns 0 for case-sensitive, 1 for
+# case-insensitive, 2 when the probe could not be written (read-only tree).
+fs_is_case_sensitive() {
+    local dir="$1"
+    local probe lower upper status
+    probe="$(mktemp "$dir/.kandelo-case-probe.XXXXXX" 2>/dev/null)" || return 2
+    lower="${probe}z"
+    upper="${probe}Z"
+    : > "$lower" 2>/dev/null || { rm -f "$probe"; return 2; }
+    if [ -e "$upper" ] && [ "$lower" -ef "$upper" ]; then
+        status=1
+    else
+        status=0
+    fi
+    rm -f "$probe" "$lower" "$upper"
+    return "$status"
+}
+
 overall_status=0
 
 for dir in "$@"; do
@@ -71,8 +90,48 @@ for dir in "$@"; do
         overall_status=1
         continue
     fi
+
+    # Without git we cannot enumerate tracked paths, so we cannot name which
+    # paths collided. Fall back to asking the filesystem: a case-sensitive one
+    # cannot collapse anything, so the tree is sound whatever it contains. A
+    # case-insensitive one cannot be cleared, so refuse rather than assume.
     if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        echo "check-case-sensitive-checkout: not a git tree: $dir" >&2
+        fs_is_case_sensitive "$dir"
+        case $? in
+            0)
+                echo "check-case-sensitive-checkout: OK — $dir is not a git" \
+                     "tree, but its filesystem is case-sensitive, so no" \
+                     "tracked path can have collapsed."
+                ;;
+            1)
+                echo "" >&2
+                echo "ERROR: cannot verify $dir" >&2
+                echo "" >&2
+                echo "It is not a git checkout, so the tracked path list is" >&2
+                echo "unavailable, and it sits on a CASE-INSENSITIVE" >&2
+                echo "filesystem, which cannot hold paths that differ only in" >&2
+                echo "letter case. Any such path in this tree has already" >&2
+                echo "collapsed, and results from it would be fictional." >&2
+                echo "" >&2
+                overall_status=1
+                ;;
+            *)
+                echo "check-case-sensitive-checkout: cannot verify $dir —" \
+                     "not a git tree and not writable for a filesystem" \
+                     "probe." >&2
+                overall_status=1
+                ;;
+        esac
+        continue
+    fi
+
+    # An empty index means there is nothing to compare, and a check that
+    # enumerates nothing must not report success: a `--no-checkout` clone
+    # reports a correct HEAD with an empty index and an empty working tree,
+    # and would otherwise pass this check while containing no tests at all.
+    if [ "$(git -C "$dir" ls-files | wc -l | tr -d ' ')" -eq 0 ]; then
+        echo "check-case-sensitive-checkout: $dir is a git tree with no" \
+             "tracked files; nothing could be verified." >&2
         overall_status=1
         continue
     fi

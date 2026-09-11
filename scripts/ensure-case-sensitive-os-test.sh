@@ -89,12 +89,31 @@ else
     git clone --quiet --no-checkout "$SUBMODULE" "$DEST"
 fi
 
-if [ "$(git -C "$DEST" rev-parse HEAD 2>/dev/null || true)" != "$PINNED_SHA" ]; then
-    say "ensure-case-sensitive-os-test: checking out pinned commit $PINNED_SHA..."
-    # Re-fetch in case the submodule advanced since this clone was made.
-    git -C "$DEST" fetch --quiet origin
-    git -C "$DEST" checkout --quiet --detach "$PINNED_SHA"
+# Fetch only when the pinned commit is genuinely absent, so the common path
+# needs no network and a submodule bump still resolves.
+if ! git -C "$DEST" cat-file -e "$PINNED_SHA^{commit}" 2>/dev/null; then
+    say "ensure-case-sensitive-os-test: fetching pinned commit $PINNED_SHA..."
+    git -C "$DEST" fetch --quiet "$SUBMODULE" "$PINNED_SHA" \
+        || git -C "$DEST" fetch --quiet origin
 fi
+
+# Always materialize the working tree at the pinned commit.
+#
+# Checking only `rev-parse HEAD` is not enough: a `--no-checkout` clone already
+# reports the right HEAD while its index and working tree are empty, so a
+# HEAD-only test skips the checkout and leaves nothing on disk. Forcing the
+# checkout every time is cheap, is idempotent, and cannot leave a
+# half-provisioned tree behind.
+say "ensure-case-sensitive-os-test: checking out pinned commit $PINNED_SHA..."
+git -C "$DEST" checkout --quiet --force --detach "$PINNED_SHA"
+
+tracked_count="$(git -C "$DEST" ls-files | wc -l | tr -d ' ')"
+if [ "$tracked_count" -eq 0 ]; then
+    echo "ensure-case-sensitive-os-test: $DEST has no tracked files after" \
+         "checkout; refusing to report it as ready." >&2
+    exit 1
+fi
+say "ensure-case-sensitive-os-test: $tracked_count tracked files present."
 
 # Verify, rather than assume, that the provisioned checkout is case-correct.
 if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$DEST" >/dev/null; then
