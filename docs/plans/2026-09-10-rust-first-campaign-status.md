@@ -3748,26 +3748,36 @@ them.**
 | B1 | K1 step 5 — image `entries[]` + ABI stamp | **Superseded by D-B6.** Maintainer chose the full subsystem removal; scoping proved it needs the kernel to write the image. Split into W-1…W-4 |
 | B2 | K7 — shared-mapping coherence + mapping cutover | **Merged with B3 into one item.** Opening move and policy layer landed; handle retention landed 2026-09-11, so the cutover's remaining prerequisite is gone. Needs `syscalls.rs`, held while B8 has it |
 | B3 | *(folded into B2)* | B3 alone failed twice; anon and file share one container across 15 interleaved sites |
-| B4 | The measured 3.7× SysV regression | Zero-import remedy identified: hoist destination validation *before* the source view. `host_proc_read_bytes`'s second copy narrows a grow-detach window and must stay. Needs `syscalls.rs` |
+| B4 | The measured 3.7x SysV regression | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane A, after B2+B3: the zero-import remedy is to hoist destination validation *before* the source view, and it lives in `syscalls.rs`, which B2+B3 is rewriting. `host_proc_read_bytes`'s second copy narrows a grow-detach window and must stay |
 | B5 | K11 device pieces | **CLOSED.** Piece 3 cut over (TS −100 / Rust +626); pieces 2 and 4 immovable for named reasons; a dead Node TLS backend deleted (−3,556) |
 | B6 | K3 epoll cutover | **CLOSED.** Host mirror deleted; census found 17 touchpoints where the grounding listed 14 |
 | B7 | epoll fork inheritance + OFD keying | **CLOSED.** Unit-tested, explicitly not conformance-validated |
 | B8 | K3 wait-queue cutover | **IN FLIGHT.** Maintainer: "done in Rust unless there is a good reason not to — wiring that still needs doing". Fixes wall-clock deadlines; may close `epoll_pwait`'s ignored signal mask |
 | B9 | Per-process pointer width | **CLOSED.** Frees the `preadv2`/`pwritev2` `flags` slot before ABI 44 finalises. Found twelve dispatch arms reading a bare `args[5]` |
-| B10 | Kernel-owned shebang parsing | Open. Needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
-| B11 | `report_writeback_loss` wiring | **Decided + dispatched** 2026-09-11. The "better home" **removes** `host_debug_log` (73 → 72): record the loss as kernel state read through an existing export. My earlier option label contradicted its own body; corrected above |
+| B10 | Kernel-owned shebang parsing | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane F, design-first: blocked on a prepared-target token the side-effect-free spawn preflight cannot obtain, so the design is the work, not the typing |
+| B11 | `report_writeback_loss` wiring | **CLOSED 2026-09-11.** `host_debug_log` removed; host imports **73 → 72**, measured from the artifact. The loss is kernel state at `/proc/kandelo/writeback_losses`, reached through an existing export, so no ABI export surface was added to retire an import. Later generalized with an explicit kind when a second lane added a handle-loss caller |
 | B12 | `privileged-projection.ts` | **CLOSED.** Deleted, −1,418, on the finding that it duplicated a live route |
 | B13 | `dylink-planner.ts` | **CLOSED.** Production, not deletion debt |
-| B14 | SysV IPC conformance coverage | **Explicit future work**, per the maintainer. None exists anywhere in `tests/` |
+| B14 | SysV IPC conformance coverage | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane E, after the 46-failure triage. None exists anywhere in `tests/` -- this is a coverage gap, not a known defect: nobody can say what SysV IPC gets wrong because nothing asks |
 | B15 | TLS `SharedArrayBuffer` hazard | **CLOSED.** Boundary copy; the nine typecheck errors *were* the reachable sites |
 | B16 | Typecheck baseline | **CLOSED.** 0, and held all night |
 | B17 | `tar/wasm32` | **CLOSED.** A broken sysroot wearing a package's clothes |
 | B18 | `setup` root npm | **CLOSED** |
 | B19 | Local artifact tier refused | **CLOSED 2026-09-11.** Not staleness: the check compared a `SourceOnlyV1` key against a `Default`-policy one, so it differed **by construction — 0 of 70 packages could ever match**. Fixed by recording the selection index the build was materialized from, through one shared entry point |
-| B20 | Tier-end browser pass | **PARTLY UNBLOCKED.** The host package builds again and the Vite dev-server realm has its artifact reader; the Playwright *worker* realm still lacks one (14 specs, no shared helper, and the single-point fix needs `findRepoRoot` extracted to break an import cycle) |
+| B20 | Tier-end browser pass | **IN SCOPE, lane H (the singleton lane).** The Vite dev-server realm no longer needs its own install (B25). The Playwright *worker* realm remains: 14 specs call `resolveBinary` directly. A clean package build plus manual demo verification has not completed -- the first attempt died on a torn tree caused by a cherry-pick racing the build's read |
 | B21 | Missing VFS products | **CLOSED.** Never `gzip`/`xz`: three Node entry points lost the artifact reader when the TypeScript WebAssembly reader was deleted. `setup` exits 0 with all eight images |
 | B22 | libc-test unfetchable | **CLOSED.** Never a repo defect — a stale ssh URL in `.git/config` plus a renamed `.git`, both local |
 | B23 | Two consumers, two tier orders | **CLOSED** with B19 |
+| B25 | Per-realm artifact reader | **CLOSED 2026-09-11.** Installation is now a property of RESOLUTION: the driver side-imports `#wasm-artifact-module-source`, whose package conditions select a Node loader or a browser no-op. Nine install sites → two, and the two that remain are the browser's, which cannot be synchronous. Also fixed a boot-blocking bug for installed consumers and deleted the duplicated tier list. Proven under Vitest: `binary-resolver.test.ts` 85/85 with `setup: 0ms` |
+| B29 | A stale kernel artifact fails as "the kernel is broken" | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane D. `host-native` loads `source-only-v1/kernel.wasm`; after a rebase without re-staging, 41 tests fail with `failed to find function export …`. The message names the symptom and hides the cause. Diagnostics, but it has already cost agent-hours, and this campaign's most expensive hours have all gone to confident wrong answers |
+| B30 | A reaped build publishes an authority for a build that never finished | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane D, with B29 -- same subsystem, and splitting them puts two agents in `local_build.rs` |
+| B31 | Tuning constants whose evidence predates the link-contract fix | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane B, after the select fold-in, since the constant lives in the code that rewrites. Twelve repetitions bound 0 ms as insufficient (11/12) and 50 ms as sufficient (12/12); they do **not** show 50 is minimal |
+| B32 | Case-collapsed conformance checkout | **CLOSED 2026-09-11**, and the filed premise was wrong. The 17 files are not mis-testing: the surviving entry is the lowercase spelling with its own correct content, and the uppercase tests are **never run** -- `include` reports 3,741 tests collapsed vs 3,758 case-sensitive, silently. Guard demonstrated firing across six states; measured cost is inside the run-to-run spread |
+| B33 | `ppoll` EINTR semantics | **CLOSED 2026-09-11.** One case label removed from `kandelo_should_restart_after_handler`, which listed `__NR_ppoll` while omitting `__NR_pselect6`. `poll`, `select`/`pselect6` and `epoll_wait` already agreed. Signal suite 32 PASS / 0 FAIL, and the racy seven-case set run 12x at 12/12 |
+| T4 | Test residue | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane G, after T1–T3: ~20 items -- 7 `vi.fn` stubs never called, 5 unreachable branches, assorted. Most should vanish with T1–T3 rather than be fixed |
+| W-2 | Rust SFFS writer + cross-language fixture | **IN SCOPE for #1350** (maintainer, 2026-09-11). Lane C, first link and the campaign's longest single item: `sffs.rs` is 770 lines of *reader*, and the image body is a real block filesystem -- superblock, inode and block bitmaps, inode table, indirect pointers, directory index |
+| W-3 | Streaming emission | **IN SCOPE for #1350.** Lane C, after W-2. `lamp.vfs` is 249 MiB, so the kernel cannot buffer an image in linear memory; `rootfs::export_tree_read(offset, out)` is already the right cursor shape and needs no new import |
+| W-4 | Cut over, delete `rootfs-overlay-export.ts`, drop `entries[]` | **IN SCOPE for #1350.** Lane C, last. Note the silent-corruption risk that made this urgent is already closed: `restoreParsedImage` re-derives `KLZY` from the JSON sections and requires byte equality, and that check is writer-agnostic, so it survives the move rather than being replaced by it |
 
 ### B25 — the per-realm artifact reader, and a decision I stopped short of making
 
@@ -5433,6 +5443,91 @@ When every tier closes, **do not stop**: run a fresh census over the same scope
 and ask again what should be migrated, reduced, or removed — then start on
 whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 
+## EVERYTHING REMAINING, AND THE ORDER THAT FINISHES IT FASTEST (2026-09-11)
+
+**Scope decision, maintainer, 2026-09-11: there is no deferral list any more.**
+W-2, W-3, W-4, B10, B14, B29, B30, B31 and T4 are all IN SCOPE for PR #1350,
+alongside the items already in flight. The instruction was explicit: *do not
+order these by value — assume every one of them is being done, and take them in
+whatever order finishes the whole set soonest.* That is a different question
+from "what matters most", and it has a different answer.
+
+### What actually limits throughput here
+
+Not the number of agents. Agents in isolated worktrees are cheap and genuinely
+parallel. Three other things are not:
+
+1. **File contention between lanes.** Two agents editing one file do not go
+   twice as fast; they produce a merge that compiles by luck. Lanes below are
+   drawn around file ownership, not around subject matter.
+2. **Machine-monopolising singletons.** Exactly three kinds of work take the
+   whole machine: a full host Vitest (only one may run at a time), a package
+   build (`run.sh browser` / `local-build`, which saturates every core for
+   tens of minutes), and a benchmark round (which needs the machine *quiet* --
+   the measured noise floor is ±0.7 µs at load 4, and this campaign has already
+   withdrawn one number taken at load 89).
+3. **The integration window.** The main worktree cannot be edited while a build
+   is reading it. Proved the expensive way on 2026-09-11: a `git cherry-pick`
+   run during a `local-build` produced `cannot find writeback_loss in
+   runtime_core` -- a kernel "compile failure" with nothing whatever wrong with
+   the code, which cost a full build pass to discover.
+
+### The lanes
+
+Each lane is serial *within itself* and parallel *with every other lane*. The
+"owns" column is the contract: an agent in one lane does not edit another
+lane's files without saying so in its report.
+
+| lane | items, in order | owns | why serial inside |
+|---|---|---|---|
+| **A — mapping & syscalls** | B2+B3 → B4 | `runtime-core/{memory,ofd,syscalls,process_table}.rs`, `kernel/wasm_api.rs` | B4's remedy is in `syscalls.rs`, which B2+B3 is rewriting |
+| **B — wait path & signals** | select/pselect6 fold-in + `ppoll` dead code → B31 | `kernel-worker.ts` wait branches, `libc/glue/channel_syscall.c` | B31 re-measures a constant living in the code the fold-in rewrites |
+| **C — image writer** | W-2 → W-3 → W-4 | `sffs.rs`, `images/`, `rootfs-overlay-export.ts`, `entries[]` | strictly sequential by construction: writer, then streaming, then cutover |
+| **D — build & staging truthfulness** | B29 + B30 together | xtask build engine, staging/freshness messages | same subsystem; splitting them means two agents in `local_build.rs` |
+| **E — conformance** | 46-failure triage → B14 | `tests/` | triage tells B14 what coverage is actually missing |
+| **F — process/exec** | B10 | spawn preflight | design-first; blocked on a prepared-target token, not on effort |
+| **G — test hygiene** | T4 | `host/test` residue | explicitly sequenced after T1–T3; most of it should vanish with them |
+| **H — validation & browser** | clean package build → B20 (incl. Playwright worker realm) → `verify-fresh` → full host Vitest → curation | the machine | every item here is a singleton |
+
+### The scheduling rules, in the order they matter
+
+1. **Lane C starts first and never idles.** It is the longest chain -- W-2 alone
+   is a block-filesystem *writer* (superblock, inode and block bitmaps, inode
+   table, indirect pointers, directory index) against a 770-line reader -- and
+   it contends with nothing currently running. Every hour lane C is not running
+   is an hour added to the end of the whole campaign. This is the single
+   highest-throughput decision on the page, and it is not the
+   highest-*value* item, which is exactly the point.
+2. **Lane A is the second-longest chain** and is already running.
+3. **Lanes D, E, F and G are short and contention-free.** They fill agent slots.
+   Do not hold them back for a tidy "wave" -- a wave is a synchronisation
+   barrier, and barriers are how parallel work becomes serial work wearing a
+   costume.
+4. **At most one singleton at a time**, and a benchmark round additionally
+   requires load ≤ 5. A lane that needs a measurement says so and waits for a
+   lull rather than measuring under load; a number taken at load 90 is not a
+   cheap number, it is a *wrong* number that must later be withdrawn, and
+   withdrawing it costs more than waiting did.
+5. **Integrate continuously; never batch merges.** Each lane's output is
+   cherry-picked as it lands, in a quiesced window with no build reading the
+   tree, and every window ends with a **wasm32 kernel build** as well as native
+   tests. Native-only is not sufficient -- see the trap below. The longer two
+   lanes' output sits unmerged, the more likely they have both edited the same
+   path in ways that merge cleanly and do not compile.
+6. **Lane H is the tail and cannot be compressed.** Its contents depend on A and
+   C being done, so the total is roughly `max(A, C) + H`. That is the whole
+   argument for rule 1.
+
+### What would make this slower
+
+- Running lane C late "because the mapping cutover matters more". It does matter
+  more. It is also not the constraint.
+- Two agents in `syscalls.rs` or `kernel-worker.ts` at once.
+- Holding short items until a long one finishes.
+- A package build started while agents are mid-compile, or a cherry-pick started
+  while a package build is reading the tree.
+- Measuring anything while the machine is loaded.
+
 ## Traps this campaign has already paid for
 
 - **`cargo run -p xtask` needs a host target** or it builds xtask for wasm32 and
@@ -5458,6 +5553,59 @@ whatever it finds. The maintainer asked for this explicitly on 2026-09-10.
 - **Every `#[test]` in `crates/kernel/src/wasm_api.rs` runs on no target.** The
   module is wasm-only and the kernel is never tested for a wasm target; twenty
   test functions are compiled by nothing. Eighth silent success.
+
+### Added 2026-09-11 — all of these cost real hours the same day
+
+- **A clean textual merge is not a semantic merge.** Two tiers both edited the
+  shared-mapping loss path: one deleted `runtime_core::debug_log`, the other
+  added a new caller of it. Neither touched the other's lines, so git reported
+  no conflict -- and the tree did not compile. **Native tests could not see it**,
+  because the deleted sink was `cfg`-gated to wasm. Every integration window
+  must end with `cargo build --release -p kandelo --target
+  wasm32-unknown-unknown`, not just `cargo test`.
+- **Do not edit the worktree while a build is reading it.** A `git cherry-pick`
+  rewrites many files in sequence, and `local-build` compiling against that
+  tree saw a torn snapshot. The resulting error named the kernel and blamed the
+  code. Quiesce first.
+- **`git commit` commits the INDEX, not the paths you just `git add`ed.** A
+  `git rm` staged earlier in the session rode into an unrelated commit, and left
+  every commit after it carrying a `vitest.config.ts` that pointed at a deleted
+  file -- a broken HEAD nobody noticed because the suite could not start to
+  report it. Read `git diff --cached --stat` before every commit.
+- **On this machine, compare minima and P10, never medians.** The same build
+  returns ~29 µs run after run, then 300-400 µs for a *burst* of consecutive
+  runs; contention only ever adds. In one 24-run comparison a burst across an
+  unbalanced tail moved the **medians by 80-150 µs while the minima moved by 3**.
+  That artifact is why two isolations of the same effect disagreed in sign, why
+  a real 3.5 µs regression was reported as ≈0 for a day, and why a +35% figure
+  had to be withdrawn.
+- **Measure the instrument before the code.** The noise floor here is ±0.7 µs at
+  load 4, established with two worktrees at the *same* commit and byte-identical
+  kernel wasm. Without that number, "we cannot resolve this" and "there is
+  nothing here" are indistinguishable.
+- **A duplicate object key is a silent deletion, not a merge.** `tsup.config.ts`
+  carried two `external:` properties from two changes merged by keeping both.
+  JavaScript keeps the last, so half of it had never done anything.
+- **An override that cannot cross the dev-shell boundary reports success and
+  does nothing.** `--ignore-environment` strips anything not in `--keep`, so a
+  variable read inside but set outside is accepted and ignored. Three instances
+  found: `KANDELO_SOURCE_CACHE_ROOT`, `KANDELO_OS_TEST_DIR`,
+  `WASM_POSIX_BINARY_CACHE_ROOT` (plus `KANDELO_CASE_IMAGE_DIR`, caught before
+  it bit anyone).
+- **A sweep that returns "nothing found" is a claim, and must be sanity-checked
+  like one.** A check for stripped environment overrides reported zero missing;
+  the true answer was 441. `for v in $READ` does not word-split in zsh, so the
+  entire list became one grep pattern whose embedded newlines made it match.
+  It looked exactly like a clean bill of health from a check that never ran.
+- **Do not run `./run.sh setup` to make one check runnable.** It pulls the whole
+  package closure -- openssl, vim, mariadb, ruby, perl. One agent did it to
+  reach `verify-fresh` and took the machine to load 147 for an hour. Build the
+  kernel and stage it instead.
+- **The import-entry trap has now caught four agents.** 72 host *functions*
+  reads as 73 *entries*, because `env.memory` is an entry. Measure the built
+  artifact and say which you are counting.
+- **Seven agents have been handed the campaign merge-base**, ~1,000 commits
+  behind, by the worktree tooling. Every brief must open by verifying the base.
 
 ## K5 I6b — the cutover contract, measured (2026-09-10)
 
