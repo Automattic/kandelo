@@ -4,16 +4,29 @@
 //! `host/src/fork-reference-recipes.ts`. That wire image is the
 //! activation-owned reconstruction recipe for Wasm reference values: it
 //! "contains only integers and graph edges" so that a fresh fork Worker never
-//! inherits live JavaScript/Wasm objects. The bytes are emitted by the REAL
-//! TypeScript encoder `encodeForkReferenceRecipes` in the SAME module (this is
-//! a TS-owned format, like `linked_frames`/`module_state`/`replay_events`, and
-//! unlike the instrumenter-owned `gc_codec`/`imported_globals`); the committed
-//! cross-language fixture is therefore produced by that real TS encoder (see
-//! `crates/fork-codec/testdata/gen-reference-recipes-fixture.mts`) and decoded
-//! field-for-field here.
+//! inherits live JavaScript/Wasm objects.
 //!
-//! There is NO shared-ABI mirror for the KFRR framing constants: they live only
-//! in `host/src/fork-reference-recipes.ts` (`WIRE_MAGIC`, `HEADER_SIZE = 40`,
+//! KFRR HAS NO PRODUCTION PRODUCER OR CONSUMER. Capture writes KFRV
+//! (`reference_transaction`/`reference_segments`) and replay is driven through
+//! the co-resident fork-module, so nothing in the shipping system emits or
+//! decodes a KFRR image. The TypeScript encoder that once produced it
+//! (`encodeForkReferenceRecipes`) had no production caller and was deleted
+//! along with the rest of the JavaScript reference engine; the only surviving
+//! KFRR artifacts are this decoder and its committed fixture.
+//!
+//! The fixture is therefore a FROZEN GOLDEN: the generator that emitted it
+//! (`testdata/gen-reference-recipes-fixture.mts`) went with the TS encoder, so
+//! the bytes can no longer be regenerated and the test below guards this
+//! decoder against changes to itself rather than against cross-language drift.
+//! Whether the decoder should survive at all is a maintainer call recorded in
+//! the fork TypeScript census; it is kept here because deleting reusable Rust
+//! runs against the campaign's direction, and its `ReferenceRecipeNode` /
+//! `ReferenceRecipeEntry` model IS live — `reference_feed`, `reference_replay`,
+//! `reference_segments_writer`, `drive_plan` and `reference_transaction` all
+//! build on it. Only `decode_reference_recipes` is callerless.
+//!
+//! There is NO shared-ABI mirror for the KFRR framing constants: they lived
+//! only in the deleted TypeScript codec (`WIRE_MAGIC`, `HEADER_SIZE = 40`,
 //! `NODE_SIZE = 32`, `FORK_REFERENCE_RECIPE_VERSION = 1`). The distinct sibling
 //! constants in `crates/shared/src/lib.rs` name the LIVE transaction/segment
 //! formats (`WPK_FORK_REFERENCE_TRANSACTION_*` "KFRV",
@@ -510,15 +523,19 @@ mod tests {
 
     use alloc::vec;
 
-    // --- Cross-language fixture (emitted by the real TS encoder) ----------
+    // --- Frozen golden fixture (was: emitted by the TS encoder) -----------
 
-    /// Bytes are the standalone KFRR reference-recipe image emitted by the REAL
-    /// TypeScript encoder `encodeForkReferenceRecipes`, via
+    /// Bytes are the standalone KFRR reference-recipe image that the deleted
+    /// TypeScript encoder `encodeForkReferenceRecipes` emitted via
     /// `crates/fork-codec/testdata/gen-reference-recipes-fixture.mts`. The
-    /// generator encodes a graph exercising every node kind plus cycles,
-    /// aliasing, duplicate roots, and both i31/handle domain boundaries; if the
-    /// TS encoder and this decoder ever disagree on the wire format, the
-    /// field-for-field test below catches the drift.
+    /// graph exercises every node kind plus cycles, aliasing, duplicate roots,
+    /// and both the i31 and externref-handle domain boundaries.
+    ///
+    /// Both the encoder and the generator are gone (neither had a production
+    /// caller), so these bytes are now a FROZEN GOLDEN with no regeneration
+    /// path. The test below still pins this decoder's field-for-field
+    /// behaviour, but it no longer proves cross-language agreement — there is
+    /// no second implementation left to disagree with.
     const FIXTURE: &[u8] = include_bytes!("../testdata/reference-recipes-wasm32.bin");
 
     /// The expected decode of `FIXTURE`, matching the graph the generator
