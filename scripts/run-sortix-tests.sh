@@ -160,23 +160,17 @@ LINK_FLAGS=(
     -ldl
 )
 
-# Flags for building shared libraries (.so) for dlopen tests
+# Flags for building shared libraries (.so) for dlopen tests. `-shared`
+# selects the SDK's shared-library link contract (SHARED_LINK_FLAGS in
+# sdk/src/lib/flags.ts): no CRT, no libc, no syscall glue, plus
+# --experimental-pic/--shared/--shared-memory/--export-all.
 SO_CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
     -fPIC
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
     -DSHARED
 )
 SO_LINK_FLAGS=(
-    -nostdlib
-    -Wl,--experimental-pic
-    -Wl,--shared
-    -Wl,--shared-memory
-    -Wl,--export-all
-    -Wl,--allow-undefined
+    -shared
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
