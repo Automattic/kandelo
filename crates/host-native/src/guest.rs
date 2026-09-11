@@ -12977,11 +12977,11 @@ fn marshal_in(
         // A kernel-dereferenced argument is not staged at all: the kernel
         // reads and writes the caller's memory itself through
         // `host_proc_read_bytes`/`host_proc_write_bytes`, which this host
-        // already provides. Leave the guest address in place and name the
-        // caller's data model in the private sixth slot, exactly as the
-        // TypeScript host does. This host runs wasm32 guests only.
+        // already provides. Leave the guest address in place; the caller's
+        // data model is the process's registered pointer width, which the
+        // kernel looks up for itself. This host runs wasm32 guests only, and
+        // wasm32 is the width a process is created with.
         if d.size == SyscallArgSize::KernelDereferenced {
-            args[wasm_posix_shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX as usize] = 4;
             continue;
         }
         let guest_ptr = args[idx] as u32 as usize;

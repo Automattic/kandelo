@@ -983,6 +983,18 @@ pub struct Process {
     /// Task 9 only preserves this marker across process-state transport.
     /// Target-aware exec commit is the sole future authority that may set it.
     pub secure_exec: bool,
+    /// The calling convention width, in bytes, of this process's address
+    /// space: 4 for a wasm32 image, 8 for a wasm64 one.
+    ///
+    /// WHY THIS IS REGISTERED RATHER THAN PASSED. One kernel Wasm instance
+    /// serves wasm32 and wasm64 processes at once, so the kernel's own
+    /// compilation target cannot select a caller-native structure layout. The
+    /// width used to travel per-call, in the channel's sixth argument slot,
+    /// which cost `preadv2`/`pwritev2` the `flags` argument POSIX gives them.
+    /// It is a property of the address space, not of any one syscall, so it is
+    /// recorded once here: at process creation, inherited across `fork`, and
+    /// replaced by [`crate::exec_target`] at the instant a new image commits.
+    pub pointer_width: u8,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
@@ -1313,6 +1325,7 @@ impl Process {
             ppid: 0,
             credentials: Credentials::root(),
             secure_exec: false,
+            pointer_width: 4,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
             spawn_publication_pending: false,

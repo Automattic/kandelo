@@ -3805,10 +3805,6 @@ fn render_ts_module() -> String {
     out.push_str(
         "  | { type: \"return-value\"; multiplier: number; maxValue: number };\n\n",
     );
-    out.push_str(&format!(
-        "export const PROCESS_POINTER_WIDTH_ARG_INDEX = {} as const;\n\n",
-        shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX
-    ));
     out.push_str("export interface SyscallArgDesc {\n");
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");

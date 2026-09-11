@@ -14,12 +14,6 @@ use crate::{
     SCHED_AFFINITY_MASK_SIZE, WASM_RUSAGE_WIRE_SIZE,
 };
 
-/// Private channel argument used to carry the calling process's pointer width.
-///
-/// WHY: one kernel Wasm instance may serve wasm32 and wasm64 processes, so its
-/// own compilation target cannot select a caller-native structure layout.
-pub const PROCESS_POINTER_WIDTH_ARG_INDEX: u8 = 5;
-
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallArgDirection {
@@ -46,8 +40,14 @@ pub enum SyscallArgSize {
     /// Fixed byte length.
     Fixed { size: u32 },
     /// Fixed native structure size selected from the calling process's data
-    /// model.  Encountering this form also makes the host write the process
-    /// pointer width to [`PROCESS_POINTER_WIDTH_ARG_INDEX`].
+    /// model.
+    ///
+    /// The kernel reads that data model from the calling process's registered
+    /// pointer width, which is recorded once at process creation, inherited
+    /// across `fork`, and replaced when a new image commits. It is not carried
+    /// per call: one kernel Wasm instance serves wasm32 and wasm64 processes
+    /// at once, but the width is a property of an address space, not of a
+    /// syscall.
     ProcessLayout { wasm32_size: u32, wasm64_size: u32 },
     /// The kernel dereferences this pointer itself, through the cross-memory
     /// primitives `HostIO::proc_read_bytes` / `HostIO::proc_write_bytes`.
@@ -55,10 +55,10 @@ pub enum SyscallArgSize {
     /// The host copies nothing. It passes the caller's raw guest address
     /// through unchanged — which requires the slot to be declared
     /// `channel_scalar::ChannelScalarKind::ProcessAddress` so its full
-    /// physical bits survive — and, as with [`Self::ProcessLayout`], writes
-    /// the caller's pointer width to [`PROCESS_POINTER_WIDTH_ARG_INDEX`],
-    /// because the layout the kernel is about to parse is caller-native
-    /// rather than kernel-native.
+    /// physical bits survive. The layout the kernel is about to parse is
+    /// caller-native rather than kernel-native, so, as with
+    /// [`Self::ProcessLayout`], the kernel selects it from the calling
+    /// process's registered pointer width.
     ///
     /// WHY THIS FORM EXISTS. The four size rules above all answer "how many
     /// bytes" from static metadata plus one other argument. Some POSIX
@@ -987,13 +987,11 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, In, kernel_dereferenced!(), nullable)]
     ),
     // preadv2/pwritev2 are Linux extensions, not POSIX interfaces. Their sixth
-    // guest argument is `flags`, which is the slot the host overwrites with the
-    // caller's pointer width, so RWF_* never reaches the kernel. It never did:
-    // the host discarded it too. The host still reads the guest's own copy for
-    // the one flag that changes host behaviour (RWF_NOWAIT suppresses the
-    // EAGAIN park), and no RWF_* flag is implemented in the kernel. Giving
-    // preadv2 real flag semantics requires freeing this slot first — see
-    // `docs/abi-versioning.md`.
+    // guest argument is `flags`, and it now arrives intact: the host used to
+    // overwrite that slot with the caller's pointer width, which is registered
+    // per process instead. The kernel implements RWF_NOWAIT and refuses every
+    // other RWF_* bit with EOPNOTSUPP rather than ignoring it — see
+    // `wasm_posix_shared::rwf_flags` and `docs/abi-versioning.md`.
     entry!(
         extra_syscalls::SYS_PREADV2,
         [desc!(1, Out, kernel_dereferenced!(), nullable)]
@@ -1661,9 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn process_native_layouts_carry_both_widths_and_width_slot() {
-        assert_eq!(PROCESS_POINTER_WIDTH_ARG_INDEX, 5);
-
+    fn process_native_layouts_carry_both_widths() {
         fn assert_layout(
             syscall: u32,
             arg_index: u8,
@@ -1947,22 +1943,14 @@ mod tests {
     }
 
     #[test]
-    fn kernel_dereferenced_syscalls_are_reviewed_for_sixth_argument_collisions() {
-        // A `KernelDereferenced` (or `ProcessLayout`) argument makes the host
-        // overwrite channel slot `PROCESS_POINTER_WIDTH_ARG_INDEX` with the
-        // caller's pointer width. Whatever the guest put in its sixth argument
-        // is then GONE before the kernel sees it. For every syscall below that
-        // is harmless, because none of them carries a sixth argument — except
-        // preadv2/pwritev2, whose sixth argument is `flags`.
+    fn kernel_dereferenced_syscalls_stay_reviewed() {
+        // A `KernelDereferenced` (or `ProcessLayout`) argument hands the kernel
+        // a caller-native layout to parse, so the kernel must know the caller's
+        // data model. It reads that from the process's registered pointer
+        // width. No channel argument slot is spent on it, which is why
+        // preadv2/pwritev2 below keep their own sixth argument, `flags`.
         //
-        // That is recorded rather than hidden: no RWF_* flag is implemented in
-        // the kernel, the host discarded `flags` before this change too, and
-        // the one flag with host-visible meaning (RWF_NOWAIT, which suppresses
-        // the EAGAIN park) is read from the guest's own argument view before
-        // the overwrite. Implementing real RWF_* semantics requires freeing
-        // this slot first — see `docs/abi-versioning.md`.
-        //
-        // Adding a syscall here means answering the same question for it.
+        // Adding a syscall here means reviewing its argument meanings.
         let mut actual: Vec<u32> = SYSCALL_ARG_DESCRIPTORS
             .iter()
             .filter(|entry| {
@@ -1980,7 +1968,7 @@ mod tests {
             Syscall::Recvmsg as u32,
             extra_syscalls::SYS_PREADV,
             extra_syscalls::SYS_PWRITEV,
-            // Sixth argument is `flags`; see above.
+            // Sixth argument is the caller's own `flags`; see above.
             extra_syscalls::SYS_PREADV2,
             extra_syscalls::SYS_PWRITEV2,
             extra_syscalls::SYS_MQ_TIMEDSEND,
@@ -1995,7 +1983,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(
             actual, expected,
-            "review the sixth-argument collision before adding or removing a \
+            "review argument meanings before adding or removing a \
              kernel-dereferenced syscall"
         );
     }

@@ -1326,8 +1326,8 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   294: { 3: "process-size", },
   295: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
   296: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
-  297: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
-  298: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", },
+  297: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", 5: "u32", },
+  298: { 1: "process-address", 3: "split-i64-low-u32", 4: "split-i64-high-i32", 5: "u32", },
   308: { 2: "i64", 3: "i64", },
   333: { 1: "process-address", 2: "process-size", },
   334: { 1: "process-address", 2: "process-size", },
@@ -1634,8 +1634,6 @@ export type SyscallArgSizeSpec =
 export type SyscallArgCopyOutLengthSpec =
   | { type: "u32-field"; argIndex: number; offset: number }
   | { type: "return-value"; multiplier: number; maxValue: number };
-
-export const PROCESS_POINTER_WIDTH_ARG_INDEX = 5 as const;
 
 export interface SyscallArgDesc {
   argIndex: number;

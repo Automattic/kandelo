@@ -262,6 +262,31 @@ const READAHEAD_ARGUMENTS: &[ChannelScalarArgument] = &[
         kind: ChannelScalarKind::ProcessSize,
     },
 ];
+/// `preadv2`/`pwritev2`: a positioned vector transfer plus the `RWF_*` flags
+/// word in argument 5.
+///
+/// The flags slot is declared here, rather than left undeclared, because it
+/// carries caller meaning again. It previously held the caller's pointer
+/// width, written by the host over whatever the guest passed.
+const POSITIONED_VECTOR_FLAGS_ARGUMENTS: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 3,
+        kind: ChannelScalarKind::SplitI64LowU32,
+    },
+    ChannelScalarArgument {
+        index: 4,
+        kind: ChannelScalarKind::SplitI64HighI32,
+    },
+    ChannelScalarArgument {
+        index: 5,
+        kind: ChannelScalarKind::U32,
+    },
+];
+
 const POSITIONED_VECTOR_ARGUMENTS: &[ChannelScalarArgument] = &[
     ChannelScalarArgument {
         index: 1,
@@ -682,13 +707,13 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
     ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_PREADV2,
         musl_name: "preadv2",
-        arguments: POSITIONED_VECTOR_ARGUMENTS,
+        arguments: POSITIONED_VECTOR_FLAGS_ARGUMENTS,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_PWRITEV2,
         musl_name: "pwritev2",
-        arguments: POSITIONED_VECTOR_ARGUMENTS,
+        arguments: POSITIONED_VECTOR_FLAGS_ARGUMENTS,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {

@@ -7,7 +7,7 @@ use core::mem::size_of;
 
 use wasm_posix_shared::abi::extended_syscalls;
 use wasm_posix_shared::host_abi::{
-    PROCESS_POINTER_WIDTH_ARG_INDEX, SYSCALL_ARG_DESCRIPTORS, SyscallArgDesc, SyscallArgSize,
+    SYSCALL_ARG_DESCRIPTORS, SyscallArgDesc, SyscallArgSize,
 };
 use wasm_posix_shared::{
     Errno, Syscall, WasmEpollEvent, WasmSysvMessageHeader, kernel_scratch_wire, prctl,
@@ -205,6 +205,7 @@ unsafe fn descriptor_size(
     descriptor: &SyscallArgDesc,
     args: &[i64; 6],
     region: ChannelScratchRegion,
+    pointer_width: u8,
 ) -> Result<usize, Errno> {
     match descriptor.size {
         SyscallArgSize::CString {
@@ -247,7 +248,7 @@ unsafe fn descriptor_size(
         SyscallArgSize::ProcessLayout {
             wasm32_size,
             wasm64_size,
-        } => match args[PROCESS_POINTER_WIDTH_ARG_INDEX as usize] {
+        } => match pointer_width {
             4 => Ok(wasm32_size as usize),
             8 => Ok(wasm64_size as usize),
             _ => Err(Errno::EINVAL),
@@ -263,6 +264,7 @@ unsafe fn validate_descriptor_layout(
     args: &[i64; 6],
     descriptors: &[SyscallArgDesc],
     region: ChannelScratchRegion,
+    pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     let mut validated = ValidatedChannelScratchArgs::new();
     let mut cursor = region.start;
@@ -313,7 +315,7 @@ unsafe fn validate_descriptor_layout(
             continue;
         }
 
-        let length = unsafe { descriptor_size(descriptor, args, region) }?;
+        let length = unsafe { descriptor_size(descriptor, args, region, pointer_width) }?;
         if length == 0 {
             // WHY: the host deliberately canonicalizes every empty borrow to
             // the allocation start. Accepting an arbitrary address here would
@@ -412,6 +414,7 @@ fn validate_select_layout(
 fn validate_ioctl_layout(
     args: &[i64; 6],
     region: ChannelScratchRegion,
+    pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     use wasm_posix_shared::ioctl_contract::IoctlArgKind;
 
@@ -423,9 +426,8 @@ fn validate_ioctl_layout(
     if contract.arg_kind != IoctlArgKind::Pointer {
         return Ok(validated);
     }
-    let width = u8::try_from(args[5]).map_err(|_| Errno::EINVAL)?;
     let size = contract
-        .size_for_pointer_width(width)
+        .size_for_pointer_width(pointer_width)
         .ok_or(Errno::EINVAL)? as usize;
     if checked_size_scalar(args[3])? != size {
         return Err(Errno::EINVAL);
@@ -438,6 +440,7 @@ fn validate_ipc_control_layout(
     args: &[i64; 6],
     region: ChannelScratchRegion,
     syscall_number: u32,
+    pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     let mut validated = ValidatedChannelScratchArgs::new();
     let command = (args[1] as i32) & !0x100;
@@ -445,7 +448,7 @@ fn validate_ipc_control_layout(
         validated.mark_null(2)?;
         return Ok(validated);
     }
-    let width = u32::try_from(args[5]).map_err(|_| Errno::EINVAL)?;
+    let width = u32::from(pointer_width);
     let size = if syscall_number == extended_syscalls::SYS_MSGCTL {
         crate::ipc_wire::msqid_ds_size(width)?
     } else {
@@ -459,6 +462,7 @@ fn validate_special_layout(
     syscall_number: u32,
     args: &[i64; 6],
     region: ChannelScratchRegion,
+    pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     match syscall_number {
         number if number == Syscall::Fcntl as u32 => {
@@ -475,7 +479,9 @@ fn validate_special_layout(
             }
             Ok(validated)
         }
-        number if number == Syscall::Ioctl as u32 => validate_ioctl_layout(args, region),
+        number if number == Syscall::Ioctl as u32 => {
+            validate_ioctl_layout(args, region, pointer_width)
+        }
         // The scatter/gather and socket-message syscalls have no arm here:
         // their caller structures are `SyscallArgSize::KernelDereferenced`, so
         // they are answered by `validate_descriptor_layout` and never stage a
@@ -483,9 +489,6 @@ fn validate_special_layout(
         number if number == Syscall::Select as u32 => validate_select_layout(args, region, false),
         extended_syscalls::SYS_PSELECT6 => validate_select_layout(args, region, true),
         extended_syscalls::SYS_MSGRCV | extended_syscalls::SYS_MSGSND => {
-            if !matches!(args[5], 4 | 8) {
-                return Err(Errno::EINVAL);
-            }
             let payload = checked_size_scalar(args[2])?;
             let length = size_of::<WasmSysvMessageHeader>()
                 .checked_add(payload)
@@ -495,7 +498,7 @@ fn validate_special_layout(
             Ok(validated)
         }
         extended_syscalls::SYS_MSGCTL | extended_syscalls::SYS_SHMCTL => {
-            validate_ipc_control_layout(args, region, syscall_number)
+            validate_ipc_control_layout(args, region, syscall_number, pointer_width)
         }
         extended_syscalls::SYS_EPOLL_CTL => {
             let mut validated = ValidatedChannelScratchArgs::new();
@@ -566,6 +569,7 @@ pub unsafe fn validate_channel_scratch_arguments(
     syscall_number: u32,
     args: &[i64; 6],
     region: ChannelScratchRegion,
+    pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     if matches!(
         syscall_number,
@@ -586,10 +590,10 @@ pub unsafe fn validate_channel_scratch_arguments(
         .binary_search_by_key(&syscall_number, |descriptor| descriptor.syscall_number)
     {
         return unsafe {
-            validate_descriptor_layout(args, SYSCALL_ARG_DESCRIPTORS[index].args, region)
+            validate_descriptor_layout(args, SYSCALL_ARG_DESCRIPTORS[index].args, region, pointer_width)
         };
     }
-    validate_special_layout(syscall_number, args, region)
+    validate_special_layout(syscall_number, args, region, pointer_width)
 }
 
 /// Compute the length of a bounded, null-terminated C string in kernel memory.
@@ -927,13 +931,13 @@ mod tests {
             let mut positive = [0i64; 6];
             positive[2] = 1;
             assert_eq!(
-                unsafe { validate_channel_scratch_arguments(syscall, &positive, region) },
+                unsafe { validate_channel_scratch_arguments(syscall, &positive, region, 4) },
                 Err(Errno::EFAULT),
             );
 
             let empty = [0i64; 6];
             let validated =
-                unsafe { validate_channel_scratch_arguments(syscall, &empty, region) }.unwrap();
+                unsafe { validate_channel_scratch_arguments(syscall, &empty, region, 4) }.unwrap();
             assert_eq!(validated.pointer(1), Ok(start));
         }
     }
@@ -948,7 +952,7 @@ mod tests {
         getgroups[0] = 3;
         getgroups[1] = pointer_arg(start);
         let validated = unsafe {
-            validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region)
+            validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region, 4)
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
@@ -957,7 +961,7 @@ mod tests {
         getgroups[2] = size_of::<u32>() as i64;
         assert_eq!(
             unsafe {
-                validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region)
+                validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region, 4)
             },
             Err(Errno::EINVAL),
         );
@@ -966,7 +970,7 @@ mod tests {
         setgroups[0] = 3;
         setgroups[1] = pointer_arg(start);
         let validated = unsafe {
-            validate_channel_scratch_arguments(Syscall::Setgroups as u32, &setgroups, region)
+            validate_channel_scratch_arguments(Syscall::Setgroups as u32, &setgroups, region, 4)
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
@@ -981,13 +985,13 @@ mod tests {
 
         for syscall in [Syscall::Pipe as u32, Syscall::Uname as u32] {
             assert_eq!(
-                unsafe { validate_channel_scratch_arguments(syscall, &args, region) },
+                unsafe { validate_channel_scratch_arguments(syscall, &args, region, 4) },
                 Err(Errno::EFAULT),
             );
         }
 
         let nullable = unsafe {
-            validate_channel_scratch_arguments(extended_syscalls::SYS_SENDFILE, &args, region)
+            validate_channel_scratch_arguments(extended_syscalls::SYS_SENDFILE, &args, region, 4)
         }
         .unwrap();
         assert_eq!(nullable.pointer(2), Ok(0));
@@ -1003,7 +1007,7 @@ mod tests {
         args[1] = pointer_arg(start);
 
         let validated = unsafe {
-            validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region)
+            validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region, 4)
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
@@ -1011,7 +1015,7 @@ mod tests {
         args[1] = 0;
         assert_eq!(
             unsafe {
-                validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region)
+                validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region, 4)
             },
             Err(Errno::EFAULT),
         );
@@ -1019,7 +1023,7 @@ mod tests {
         args[0] = 999;
         args[1] = i64::MAX;
         let scalar = unsafe {
-            validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region)
+            validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL, &args, region, 4)
         }
         .unwrap();
         assert_eq!(scalar.pointer(1), Err(Errno::EFAULT));
@@ -1029,11 +1033,9 @@ mod tests {
         args[1] = pointer_arg(start);
         assert_eq!(
             unsafe {
-                validate_channel_scratch_arguments(
-                    extended_syscalls::SYS_PRCTL,
+                validate_channel_scratch_arguments(extended_syscalls::SYS_PRCTL,
                     &args,
-                    short_region,
-                )
+                    short_region, 4)
             },
             Err(Errno::EFAULT),
         );
@@ -1050,13 +1052,13 @@ mod tests {
         args[2] = bytes.len() as i64;
 
         let validated =
-            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region) }
+            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region, 4) }
                 .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
 
         args[2] += 1;
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Read as u32, &args, region, 4) },
             Err(Errno::EFAULT),
         );
     }
@@ -1071,12 +1073,12 @@ mod tests {
 
         args[2] = -1;
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region, 4) },
             Err(Errno::EINVAL),
         );
         args[2] = MAX_SAFE_INTEGER + 1;
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Write as u32, &args, region, 4) },
             Err(Errno::EINVAL),
         );
     }
@@ -1095,7 +1097,7 @@ mod tests {
         bytes[24..28].copy_from_slice(&4u32.to_le_bytes());
 
         assert!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) }
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region, 4) }
                 .is_ok()
         );
 
@@ -1105,7 +1107,7 @@ mod tests {
         // form its output slice.
         bytes[24..28].copy_from_slice(&12u32.to_le_bytes());
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region, 4) },
             Err(Errno::EFAULT),
         );
     }
@@ -1122,7 +1124,7 @@ mod tests {
         args[5] = 0;
 
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Recvfrom as u32, &args, region, 4) },
             Err(Errno::EFAULT),
         );
     }
@@ -1138,12 +1140,12 @@ mod tests {
         args[3] = pointer_arg(start + 2 * wasm_posix_shared::select::FD_SET_BYTES);
 
         assert!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region) }
+            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region, 4) }
                 .is_ok()
         );
         args[2] = args[1];
         assert_eq!(
-            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region) },
+            unsafe { validate_channel_scratch_arguments(Syscall::Select as u32, &args, region, 4) },
             Err(Errno::EFAULT),
         );
     }
@@ -1228,7 +1230,7 @@ mod tests {
         let mut args = [0i64; 6];
         args[0] = pointer_arg(exact.as_ptr() as usize);
         assert_eq!(
-            unsafe { descriptor_size(&descriptor, &args, exact_region) },
+            unsafe { descriptor_size(&descriptor, &args, exact_region, 4) },
             Ok(capacity),
         );
 
@@ -1238,7 +1240,7 @@ mod tests {
             ChannelScratchRegion::new(oversized.as_ptr() as usize, oversized.len()).unwrap();
         args[0] = pointer_arg(oversized.as_ptr() as usize);
         assert_eq!(
-            unsafe { descriptor_size(&descriptor, &args, oversized_region) },
+            unsafe { descriptor_size(&descriptor, &args, oversized_region, 4) },
             Err(Errno::E2BIG),
         );
     }
@@ -1875,7 +1877,7 @@ mod tests {
         assert_eq!(prep.copy_back.len(), 1);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed fcntl layout");
         assert_eq!(validated.pointer(2), Ok(start));
     }
@@ -1891,7 +1893,7 @@ mod tests {
         assert_eq!(prep.args[1] as usize, start);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed prctl layout");
         assert_eq!(validated.pointer(1), Ok(start));
     }
@@ -1909,7 +1911,7 @@ mod tests {
         assert!(prep.copy_back.is_empty());
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed epoll_ctl layout");
         assert_eq!(validated.pointer(3), Ok(start));
     }
@@ -1940,7 +1942,7 @@ mod tests {
         assert_eq!(prep.copy_back[0].len, array_len);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed epoll_pwait layout");
         assert_eq!(validated.pointer(1), Ok(start));
         assert_eq!(validated.pointer(4), Ok(expected_mask));
@@ -1959,7 +1961,7 @@ mod tests {
         assert_eq!(prep.copy_back.len(), 1);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed epoll_wait layout");
         assert_eq!(validated.pointer(1), Ok(start));
     }
@@ -2057,7 +2059,7 @@ mod tests {
         assert_eq!(prep.copy_back.len(), 2);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed select layout");
         assert_eq!(validated.pointer(1), Ok(0));
         assert_eq!(validated.pointer(2), Ok(start + fd));
@@ -2085,7 +2087,7 @@ mod tests {
         assert_eq!(prep.copy_back.len(), 2);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed pselect6 layout");
         assert_eq!(validated.pointer(1), Ok(start));
         assert_eq!(validated.pointer(3), Ok(start + 2 * fd));
@@ -2130,7 +2132,7 @@ mod tests {
         assert_eq!(prep.copy_back[0].len, size);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed ioctl layout");
         assert_eq!(validated.pointer(2), Ok(start));
     }
@@ -2166,7 +2168,7 @@ mod tests {
         assert_eq!(prep.copy_back[0].len, fd);
         let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
         let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region) }
+            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
                 .expect("legacy validator accepts the reconstructed select layout");
         assert_eq!(validated.pointer(1), Ok(start));
     }

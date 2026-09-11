@@ -959,12 +959,13 @@ static void kandelo_write_record_header(uint8_t *data, long n,
     kandelo_store_u16(data + KANDELO_RECORD_H_SPAN_COUNT, span_count);
     kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);
     kandelo_store_u32(data + 12u, 0); /* _reserved */
-    for (uint32_t si = 0; si < 6; si++) {
-        /* Slot 5 carries the caller pointer width in bytes, mirroring the host
-         * PROCESS_POINTER_WIDTH_ARG_INDEX injection. See kandelo_record_scalar. */
-        int64_t word = (si == 5u) ? (int64_t)sizeof(void *) : (int64_t)sargs[si];
-        kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u, word);
-    }
+    /* Every scalar slot, slot 5 included, carries the caller's own argument.
+     * Slot 5 used to be overwritten with sizeof(void *); the kernel registers
+     * a process's pointer width once instead, which is what gives preadv2 and
+     * pwritev2 back the `flags` argument that lives in this slot. */
+    for (uint32_t si = 0; si < 6; si++)
+        kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u,
+                          (int64_t)sargs[si]);
 }
 
 /* Marshal one special-layout syscall's pointer arguments into `data`.
@@ -1174,11 +1175,11 @@ static long kandelo_marshal_special(long n, const long long *args_in,
         plan[nplan].src = (const void *)p;
         plan[nplan].len = size;
         nplan++;
-        /* The kernel's validate_ioctl_layout re-proves arg 2 at the region base
-         * from these two scalar words: arg 3 carries the buffer size and arg 5
-         * the caller pointer width. */
+        /* The kernel's validate_ioctl_layout re-proves arg 2 at the region
+         * base from arg 3, the buffer size. It selects the structure width
+         * from the process's registered pointer width, so no scalar slot
+         * carries it. */
         sargs[3] = (long long)size;
-        sargs[5] = (long long)sizeof(void *);
         break;
     }
     default:
@@ -1237,13 +1238,9 @@ int __marshal_channel_record(long n, long long a1, long long a2, long long a3,
                           (uint16_t)(span_count));                             \
         kandelo_store_u16(data + KANDELO_RECORD_H_FLAGS, 0);                    \
         kandelo_store_u32(data + 12u, 0); /* _reserved */                      \
-        for (uint32_t si = 0; si < 6; si++) {                                  \
-            int64_t kwh_word = (si == 5u)                                      \
-                ? (int64_t)sizeof(void *) /* caller pointer width, slot 5 */   \
-                : (int64_t)args[si];                                           \
-            kandelo_store_i64(                                                 \
-                data + KANDELO_RECORD_H_SCALARS + si * 8u, kwh_word);          \
-        }                                                                      \
+        for (uint32_t si = 0; si < 6; si++)                                    \
+            kandelo_store_i64(data + KANDELO_RECORD_H_SCALARS + si * 8u,        \
+                              (int64_t)args[si]);                              \
     } while (0)
 
     /* Not in the generated descriptor table: try the bespoke special-layout

@@ -1400,6 +1400,28 @@ fn finish_machine_scm_rights_cleanup_if_pending() {
     });
 }
 
+/// The pointer width, in bytes, of the process whose channel is being served.
+///
+/// One kernel Wasm instance serves wasm32 and wasm64 processes at once, so the
+/// kernel's own target cannot answer this. The width is registered per process
+/// -- at creation, inherited across `fork`, replaced when a new image commits
+/// -- so this is a lookup, not an argument. It used to travel in the channel's
+/// sixth slot on every call that needed it, which cost `preadv2`/`pwritev2`
+/// the `flags` argument that slot belongs to.
+///
+/// A process with no registration, or one recording a width this kernel does
+/// not serve, is an error rather than a guess: choosing a layout for it would
+/// mis-parse the caller's memory.
+fn current_caller_pointer_width() -> Result<u8, Errno> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    match table.get(pid).map(|process| process.pointer_width) {
+        Some(4) => Ok(4),
+        Some(8) => Ok(8),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 fn current_pid_eids() -> (u32, u32, u32) {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let pid = table.current_pid();
@@ -1995,6 +2017,45 @@ pub extern "C" fn kernel_set_brk_base(pid: u32, addr: usize) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
         proc.memory.set_brk_base(addr);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
+/// Register the pointer width, in bytes, of a process's address space.
+///
+/// # Why this is registered once
+///
+/// A process's data model is a property of the image the host instantiated,
+/// and it does not change while that image runs. The kernel needs it whenever
+/// it parses a caller-native structure -- `struct msghdr`, the SysV IPC
+/// control records, `struct iovec` -- because one kernel Wasm instance serves
+/// wasm32 and wasm64 processes at once and its own target cannot answer for
+/// the caller. Carrying the answer on every such call cost the channel's sixth
+/// argument slot, which is where `preadv2`/`pwritev2` keep `flags`.
+///
+/// # Who calls this, and who does not
+///
+/// Only the creation of a *fresh* image needs it: the host has just read the
+/// program's bytes and knows its memory type. A `fork` child inherits the
+/// width with the rest of its address space, through the fork state record. An
+/// `exec` does NOT come back here -- the kernel replaces the width itself when
+/// it commits the new image, from the artifact bytes that image committed to,
+/// so a width-changing exec cannot land under the outgoing image's model.
+///
+/// Returns 0 on success, -EINVAL for a width this kernel does not serve, and
+/// -ESRCH if pid is not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_process_pointer_width(pid: u32, pointer_width: u32) -> i32 {
+    let width = match pointer_width {
+        4 => 4u8,
+        8 => 8u8,
+        _ => return -(Errno::EINVAL as i32),
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.pointer_width = width;
         0
     } else {
         -(Errno::ESRCH as i32)
@@ -4201,7 +4262,13 @@ fn reportable_channel_transfer_count(requested: usize) -> usize {
 }
 
 fn dispatch_channel_lseek(args: &[i64; 6], scratch_region: ChannelScratchRegion) -> i64 {
-    if let Err(error) = unsafe { validate_channel_scratch_arguments(5, args, scratch_region) } {
+    let pointer_width = match current_caller_pointer_width() {
+        Ok(width) => width,
+        Err(error) => return -(error as i64),
+    };
+    if let Err(error) =
+        unsafe { validate_channel_scratch_arguments(5, args, scratch_region, pointer_width) }
+    {
         return -(error as i64);
     }
     kernel_lseek(
@@ -4216,7 +4283,9 @@ fn dispatch_channel_mmap(
     args: &[i64; 6],
     scratch_region: ChannelScratchRegion,
 ) -> Result<usize, Errno> {
-    unsafe { validate_channel_scratch_arguments(46, args, scratch_region) }?;
+    unsafe {
+        validate_channel_scratch_arguments(46, args, scratch_region, current_caller_pointer_width()?)
+    }?;
     let byte_offset = checked_mmap_byte_offset(channel_scalar::i64_argument(46, args, 5))?;
     let address = checked_channel_process_address(46, args, 0)?;
     let length = checked_channel_process_size(46, args, 1)?;
@@ -4246,7 +4315,14 @@ fn dispatch_channel_mremap(
     args: &[i64; 6],
     scratch_region: ChannelScratchRegion,
 ) -> Result<usize, Errno> {
-    unsafe { validate_channel_scratch_arguments(126, args, scratch_region) }?;
+    unsafe {
+        validate_channel_scratch_arguments(
+            126,
+            args,
+            scratch_region,
+            current_caller_pointer_width()?,
+        )
+    }?;
     let old_address = checked_channel_process_address(126, args, 0)?;
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
@@ -4275,7 +4351,10 @@ fn dispatch_channel_wide_result(
             ChannelDispatchOutcome::process_address(dispatch_channel_mmap(args, scratch_region))
         }
         (48, ChannelResultKind::ProcessAddress) => {
-            let result = unsafe { validate_channel_scratch_arguments(48, args, scratch_region) }
+            let result = current_caller_pointer_width()
+                .and_then(|pointer_width| unsafe {
+                    validate_channel_scratch_arguments(48, args, scratch_region, pointer_width)
+                })
                 .and_then(|_| checked_channel_process_address(48, args, 0))
                 .map(|address| kernel_brk(address));
             ChannelDispatchOutcome::process_address(result)
@@ -4308,11 +4387,19 @@ const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i3
 ///
 /// Returns the raw kernel result (negative = -errno, non-negative = success value).
 fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScratchRegion) -> i32 {
-    let validated_scratch =
-        match unsafe { validate_channel_scratch_arguments(nr, args, scratch_region) } {
-            Ok(validated) => validated,
-            Err(error) => return -(error as i32),
-        };
+    // Read the caller's data model once. Every caller-native layout decision
+    // below -- scratch sizing and the `caller_pointer_width!()` arms alike --
+    // uses this one value, so no argument slot carries it.
+    let caller_pointer_width = match current_caller_pointer_width() {
+        Ok(width) => width,
+        Err(error) => return -(error as i32),
+    };
+    let validated_scratch = match unsafe {
+        validate_channel_scratch_arguments(nr, args, scratch_region, caller_pointer_width)
+    } {
+        Ok(validated) => validated,
+        Err(error) => return -(error as i32),
+    };
 
     // Scalar arguments retain the syscall ABI's existing i32 interpretation.
     // Pointer and process-size arguments must instead use the checked macros
@@ -4347,11 +4434,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
     }
     macro_rules! caller_pointer_width {
         () => {
-            match args[wasm_posix_shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX as usize] {
-                4 => 4u32,
-                8 => 8u32,
-                _ => return -(Errno::EINVAL as i32),
-            }
+            u32::from(caller_pointer_width)
         };
     }
     macro_rules! conditional_process_address {
@@ -6243,27 +6326,40 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             0
         } // SYS_READAHEAD: advisory, always succeed
         // SYS_PREADV2 / SYS_PWRITEV2: Linux extensions whose sixth argument is
-        // `flags`. That slot now carries the caller's pointer width, so no
-        // RWF_* value reaches here; none is implemented, and the host reads the
-        // guest's own copy for the one flag that changes its parking policy.
-        297 => channel_preadv(
-            297,
-            a1,
-            guest_address!(1),
-            crate::msghdr::caller_iovec_count(a3),
-            channel_scalar::split_i64_low_argument(297, args, 3),
-            channel_scalar::split_i64_high_argument(297, args, 4),
-            caller_pointer_width!(),
-        ),
-        298 => channel_pwritev(
-            298,
-            a1,
-            guest_address!(1),
-            crate::msghdr::caller_iovec_count(a3),
-            channel_scalar::split_i64_low_argument(298, args, 3),
-            channel_scalar::split_i64_high_argument(298, args, 4),
-            caller_pointer_width!(),
-        ),
+        // `flags`. It reaches the kernel intact now that the caller's pointer
+        // width is registered per process instead of occupying this slot.
+        //
+        // `RWF_NOWAIT` is implemented: it suppresses the blocking retry a
+        // would-block transfer parks on. Every other RWF_* bit names behaviour
+        // this kernel does not provide, so it is refused rather than ignored.
+        297 => {
+            if let Err(error) = checked_rwf_flags(297, args) {
+                return -(error as i32);
+            }
+            channel_preadv(
+                297,
+                a1,
+                guest_address!(1),
+                crate::msghdr::caller_iovec_count(a3),
+                channel_scalar::split_i64_low_argument(297, args, 3),
+                channel_scalar::split_i64_high_argument(297, args, 4),
+                caller_pointer_width!(),
+            )
+        }
+        298 => {
+            if let Err(error) = checked_rwf_flags(298, args) {
+                return -(error as i32);
+            }
+            channel_pwritev(
+                298,
+                a1,
+                guest_address!(1),
+                crate::msghdr::caller_iovec_count(a3),
+                channel_scalar::split_i64_low_argument(298, args, 3),
+                channel_scalar::split_i64_high_argument(298, args, 4),
+                caller_pointer_width!(),
+            )
+        }
 
         // -- Scheduling stubs (single-CPU Wasm) --
         237 => {
@@ -12350,6 +12446,20 @@ fn channel_readv(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32
         pointer_width,
         syscalls::VectorIoKind::Read,
     )
+}
+
+/// Accept only the `RWF_*` flags this kernel implements.
+///
+/// Linux refuses an unimplemented `RWF_*` bit with `EOPNOTSUPP` rather than
+/// performing the transfer without the requested behaviour, and so does this:
+/// a caller that asked for `RWF_DSYNC` and received an unsynchronized write
+/// would have been told a lie. Only `RWF_NOWAIT` has behaviour behind it here.
+fn checked_rwf_flags(syscall_nr: u32, args: &[i64; 6]) -> Result<u32, Errno> {
+    let flags = channel_scalar::u32_argument(syscall_nr, args, 5);
+    if flags & !wasm_posix_shared::rwf_flags::RWF_SUPPORTED != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    Ok(flags)
 }
 
 /// preadv/preadv2 -- positioned scatter read. The offset arrives split.

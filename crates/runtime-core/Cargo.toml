@@ -11,3 +11,10 @@ crate-type = ["rlib"]
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
+
+# The single authority for reading a WebAssembly artifact. `exec` asks it for
+# one fact: the pointer width of the image about to commit. Reading it here,
+# from the exact bytes the target committed to, is what keeps a process's
+# registered data model true across a width-changing exec -- and it is the same
+# crate the kernel already uses to judge that artifact, not a second reader.
+wasm-artifact = { path = "../wasm-artifact" }

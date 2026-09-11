@@ -886,12 +886,22 @@ fn finish_commit(
         .ok_or(Errno::EOVERFLOW)?;
     revalidate(proc, host, &target)?;
     let credentials = proposed_credentials(proc, &target)?;
+    // Read the data model of the image that is about to replace this address
+    // space, BEFORE the point of no return below, so a target whose bytes are
+    // unreadable or drifted fails the exec outright instead of committing an
+    // image under the outgoing image's width.
+    let image_pointer_width = wasm_artifact::detect_pointer_width(target.observed_bytes()?);
     match caller_tid {
         Some(tid) => crate::syscalls::commit_exec_state_with_locks(proc, locks, host, tid)?,
         None => crate::syscalls::commit_spawn_exec_state_with_locks(proc, locks, host)?,
     }
     proc.secure_exec = credentials.euid != credentials.ruid || credentials.egid != credentials.rgid;
     proc.install_credentials(credentials);
+    // The image is committed here and nowhere else, so the address space's
+    // pointer width is replaced here and nowhere else: after the outgoing
+    // image has stopped being the one that runs, and before the host launches
+    // the incoming one. An exec may legitimately change the width.
+    proc.pointer_width = image_pointer_width;
     proc.exec_generation = next_generation;
 
     let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();

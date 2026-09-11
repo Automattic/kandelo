@@ -175,7 +175,6 @@ import {
   PROCESS_SIGINFO_WASM64_SIZE,
   PROCESS_SIGINFO_WASM64_UID_OFFSET,
   PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
-  PROCESS_POINTER_WIDTH_ARG_INDEX,
   PRCTL_NAME_BYTES,
   PR_GET_NAME,
   PR_SET_NAME,
@@ -1169,6 +1168,16 @@ function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
   return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
 }
 
+/**
+ * `preadv2`/`pwritev2` with `RWF_NOWAIT` must not park on a blocking retry.
+ *
+ * Argument 5 is the caller's own `flags` word. The host used to overwrite that
+ * slot with the calling process's pointer width, so this had to read it before
+ * the overwrite; the width is registered per process now, and the slot carries
+ * nothing but what the guest passed. The kernel refuses any RWF_* bit it does
+ * not implement, so a request that reaches here asked only for behaviour that
+ * exists.
+ */
 function vectorRequestForbidsEagainRetry(
   syscallNr: number,
   args: readonly number[],
@@ -6911,6 +6920,18 @@ export class CentralizedKernelWorker {
             "Kernel export kernel_set_brk_limit is required for legacy low-control layout",
           );
         }
+        // The kernel parses caller-native structures for this process, so it
+        // must know the process's data model. The host contributes it once,
+        // here, because the host is what read the program's bytes and
+        // instantiated its Memory. It is not re-sent per syscall, and an exec
+        // does not come back through here: the kernel replaces the width
+        // itself when it commits the new image.
+        if (!this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)) {
+          throw new Error(
+            "Kernel export kernel_set_process_pointer_width is required to "
+              + "register a process data model",
+          );
+        }
         // The kernel owns the POSIX EAGAIN decision because only it can refuse
         // a clone before a tid exists. The host contributes the one fact the
         // kernel cannot know: how many concurrent per-thread control slots
@@ -11882,13 +11903,6 @@ export class CentralizedKernelWorker {
         adjustedArgs,
       );
     }
-    if (syscallNr === ABI_SYSCALLS.Setsockopt) {
-      // WHY: optlen is only the caller's supplied byte extent. It cannot
-      // identify whether embedded sockaddr_storage fields use wasm32 or
-      // wasm64 alignment, so carry the independently known process model in
-      // setsockopt's otherwise-unused private sixth channel slot.
-      adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
-    }
     if (syscallNr === SYS_PRCTL) {
       const option = Number(BigInt.asUintN(32, rawArgs[0]!));
       adjustedArgs[0] = option;
@@ -11915,7 +11929,6 @@ export class CentralizedKernelWorker {
       const contract = IOCTL_REQUESTS[request];
       adjustedArgs[1] = request;
       adjustedArgs[3] = 0;
-      adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
 
       if (!contract) {
         // WHY: an unknown ioctl must reach the device with no staged process
@@ -11990,17 +12003,6 @@ export class CentralizedKernelWorker {
 
     if (argDescs) {
       this.#scratchBoundaryTestHooks?.afterProcessMemorySnapshot?.(channel);
-      if (
-        argDescs.some((desc) =>
-          desc.size.type === "process-layout"
-          || desc.size.type === "kernel-dereferenced"
-        )
-      ) {
-        // WHY: the kernel Wasm target cannot select a native guest structure
-        // layout because one instance may serve both wasm32 and wasm64.
-        adjustedArgs[PROCESS_POINTER_WIDTH_ARG_INDEX] = pointerWidth;
-      }
-
       // A kernel-dereferenced argument is read and written by the kernel
       // itself, through the cross-memory primitives. The host stages no bytes
       // for it and plans no subregion; it publishes the caller's own address,
@@ -29095,6 +29097,20 @@ export class CentralizedKernelWorker {
       );
     }
     return updated;
+  }
+
+  #setPointerWidthWithinKernelEntry(
+    pid: number,
+    pointerWidth: 4 | 8,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const setPointerWidthFn = this.#kernelInstanceForEntry(entry).exports
+      .kernel_set_process_pointer_width as
+      ((pid: number, pointerWidth: number) => number) | undefined;
+    if (!setPointerWidthFn) {
+      return false;
+    }
+    return setPointerWidthFn(pid, pointerWidth) >= 0;
   }
 
   #setThreadSlotQuotaWithinKernelEntry(

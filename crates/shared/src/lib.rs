@@ -1035,6 +1035,43 @@ pub mod flags {
     pub const AT_EMPTY_PATH: u32 = 0x1000;
 }
 
+/// Per-call read/write flags (`RWF_*`) carried by `preadv2`/`pwritev2`.
+///
+/// These are the sixth argument of both calls. That slot used to be
+/// unavailable: the host overwrote it with the caller's pointer width, so no
+/// `RWF_*` value ever reached the kernel. The width is now registered per
+/// process, and the slot belongs to the caller again.
+///
+/// Only [`RWF_NOWAIT`] is implemented. Every other bit names behaviour this
+/// kernel does not provide, and [`RWF_SUPPORTED`] is deliberately narrow so an
+/// unimplemented flag is refused rather than silently ignored -- a caller that
+/// asked for `RWF_DSYNC` and got an unsynced write was told a lie.
+pub mod rwf_flags {
+    /// High-priority request hint.
+    pub const RWF_HIPRI: u32 = 0x0000_0001;
+    /// Per-write data synchronization (`O_DSYNC` for this call only).
+    pub const RWF_DSYNC: u32 = 0x0000_0002;
+    /// Per-write file synchronization (`O_SYNC` for this call only).
+    pub const RWF_SYNC: u32 = 0x0000_0004;
+    /// Fail with `EAGAIN` rather than blocking.
+    pub const RWF_NOWAIT: u32 = 0x0000_0008;
+    /// Per-write append (`O_APPEND` for this call only).
+    pub const RWF_APPEND: u32 = 0x0000_0010;
+    /// Per-write suppression of an open file description's `O_APPEND`.
+    pub const RWF_NOAPPEND: u32 = 0x0000_0020;
+    /// Torn-write-prevention request.
+    pub const RWF_ATOMIC: u32 = 0x0000_0040;
+    /// Drop the page cache for the range after the transfer.
+    pub const RWF_DONTCACHE: u32 = 0x0000_0080;
+
+    /// The flags this kernel actually implements.
+    ///
+    /// `RWF_NOWAIT` is the one flag with behaviour behind it here: it
+    /// suppresses the blocking retry a would-block transfer would otherwise
+    /// park on, which is exactly what the flag promises.
+    pub const RWF_SUPPORTED: u32 = RWF_NOWAIT;
+}
+
 /// File descriptor flags (FD_*).
 pub mod fd_flags {
     pub const FD_CLOEXEC: u32 = 1;
