@@ -2699,6 +2699,47 @@ mapping release becomes load-bearing. **Not a defect today** — the table is
 empty — which is exactly why it is written down now rather than discovered
 later.
 
+## LEDGER, 2026-09-11 — and why it moved the wrong way
+
+Measured against the campaign merge-base with rename detection, in the format
+the maintainer asked for: line delta and host surface, side by side.
+
+| | |
+|---|---|
+| Production TypeScript (tests excluded) | **−3,137** |
+| In-scope TypeScript including tests | **−4,057** |
+| Rust | **+98,779** |
+| Host imports | **75** |
+| Host driver glue | ~9,900 lines |
+| Commits since merge-base | 923 |
+
+**Production TypeScript was −3,434 earlier in the night and is now −3,137.** It
+moved the wrong way by ~300 lines, and the reason should be stated rather than
+smoothed over:
+
+- The V3 item **added +117** production lines. It was scoped to delete a
+  subsystem and found that subsystem is live in production, so what it landed
+  instead was a gate making silent image corruption unshippable. That is worth
+  more than the lines it cost, but it is an addition and the ledger should say
+  so.
+- The per-process pointer width item reports **+30** production TypeScript and
+  **+17** driver glue. It does not shrink anything. It was taken because it
+  frees the `preadv2`/`pwritev2` `flags` slot before ABI 44 is finalised — after
+  that, reclaiming the slot costs an epoch.
+- B21's fixes were provisioning repairs, not deletions.
+
+**This is the surface-aware ranking working as intended.** Three items in a row
+scored badly on lines and were still the right work: one prevented silent
+corruption, one bought an ABI slot that is about to become expensive, and one
+made a build exit 0 with all eight images for the first time. The ledger is a
+measure, not the goal, and the campaign has already been burned once by
+optimising the measure — a 4,188-line TypeScript `ld.so` was deleted and a
+3,666-line TypeScript dylink *driver* added in its place, which scored well and
+moved V4 barely at all.
+
+**W-1 is the first item on this branch that takes a host import away** (75 → 74)
+rather than trading TypeScript for glue. That is the number to watch from here.
+
 ## ONE DELETION, FOUR REALMS — the night's largest finding
 
 B21 was filed as "`gzip` and `xz` fail to build". It was none of the three
