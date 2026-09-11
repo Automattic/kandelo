@@ -4668,21 +4668,58 @@ The measurement that overturned it is not more elaborate than the one
 that produced it; it is the same comparison with an estimator chosen to
 match the shape of the noise.
 
-### B31 confirmed — and repetition is the reason
+### B31 — WITHDRAWN 2026-09-11. Twelve repetitions were not enough either
 
-| `SIGNAL_SAFE_POLL_WAKE_DELAY_MS` | result |
+**This section previously said "B31 confirmed — and repetition is the reason",
+reported 0 ms as insufficient at 11/12 and 50 ms as sufficient at 12/12, and
+concluded the constant does real work. That conclusion is withdrawn.** It is
+being corrected rather than quietly edited because it has been cited as method
+guidance in several agent briefs, including by the coordinator.
+
+A seven-value sweep — 50/20/10/5/2/1/0 ms, **twelve rounds, interleaved with the
+order rotated each round**, 84 runs — produced this:
+
+| value | pass rate |
 |---|---|
-| 0 ms | **11/12 PASS, 1 FAIL** |
-| 50 ms | 12/12 PASS |
+| 50 ms | 12/12 |
+| 20 ms | 12/12 |
+| 10 ms | 12/12 |
+| 5 ms | 11/12 |
+| 2 ms | 12/12 |
+| 1 ms | **9/12** |
+| **0 ms** | **12/12** |
 
-**The first sweep — 50/5/1/0, one run each — passed at every value**, and would
-have supported reporting the constant as unnecessary. Twelve repetitions found
-the race. The 50 ms does real work; the evidence bounds 0 as insufficient and 50
-as sufficient, and does **not** show 50 is minimal.
+All four failures were the same case, `ppoll-block-sleep-write-raise`, against
+**0 failures in 504 executions of its six siblings**. They occurred at loads
+34.8, 12.9, 10.5 and 49.6, so they do not track load.
 
-A single run of a racy test is not evidence about a race. That is the same
-family as this campaign's other measurement failures, and the cheapest guard
-against it is repetition.
+**Two things forbid reading this as a floor.** It is not monotone — 1 ms is the
+worst value and 2 ms is clean — and **0 ms passed every run**, where the earlier
+study called it insufficient.
+
+**The two studies do not contradict each other. They are the same underpowered
+observation twice.** Four failures in 84 runs is a ~5% event, and
+`P(zero failures in 12 | p = 0.05) = 0.54`. Twelve samples cannot distinguish 0%
+from 5%, so "11/12 at 0 ms" and "12/12 at 0 ms" are both consistent with one
+rate. The earlier study did not find a race; it drew one sample from a coin that
+lands heads 54% of the time.
+
+**That is the one-run sweep's error repeated one level up**, which is the part
+worth keeping. The original lesson — *a single run of a racy test is not
+evidence about a race* — was right and remains right. The lesson it concealed is
+that **repetition is not a quantity you satisfy, it is a power calculation you
+owe**: say what event rate your sample could have detected, or your "N
+repetitions" is a ritual rather than evidence.
+
+The 3-of-4 clustering at 1 ms was also checked against chance rather than
+believed: under a uniform failure rate the probability that some value collects
+≥3 of 4 failures is ≈7%. Suggestive, not significant, and not reported as a
+minimum.
+
+**Properly powered stage 2 is running:** 0 ms versus 50 ms only — the single case
+that has ever failed — 80 runs, 40 per arm, interleaved. At 40 samples a 5% rate
+yields zero failures only 13% of the time, so a clean arm becomes evidence
+instead of a coin flip.
 
 ### B31 — tuning constants whose evidence predates the link-contract fix
 
