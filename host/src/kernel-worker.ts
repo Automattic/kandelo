@@ -6921,12 +6921,23 @@ export class CentralizedKernelWorker {
           );
         }
         // The kernel parses caller-native structures for this process, so it
-        // must know the process's data model. The host contributes it once,
-        // here, because the host is what read the program's bytes and
-        // instantiated its Memory. It is not re-sent per syscall, and an exec
-        // does not come back through here: the kernel replaces the width
-        // itself when it commits the new image.
-        if (!this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)) {
+        // must know the process's data model. The host contributes it when an
+        // address space is first created, because the host is what read the
+        // program's bytes and instantiated its Memory. It is not re-sent per
+        // syscall: the kernel reads the registered width back.
+        //
+        // An exec deliberately does NOT re-register it. `preserveProcessState`
+        // means the kernel's process record survives the image swap, and the
+        // width lives in that record — already replaced, from the artifact the
+        // image committed to, inside `kernel_exec_commit`. Writing it again
+        // here would make the host a second authority on the same question,
+        // answered by a second implementation of the same wasm memory-type
+        // scan (`detectPtrWidth`), and a disagreement between the two would
+        // silently resolve in the host's favour.
+        if (
+          !replacingExecImage
+          && !this.#setPointerWidthWithinKernelEntry(pid, ptrWidth, entry)
+        ) {
           throw new Error(
             "Kernel export kernel_set_process_pointer_width is required to "
               + "register a process data model",

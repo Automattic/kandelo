@@ -7080,7 +7080,17 @@ mod channel_pointer_tests {
     }
 
     #[test]
-    fn channel_dispatch_propagates_cstr_scan_errors_before_syscall_use() {
+    fn channel_dispatch_refuses_a_caller_with_no_registered_data_model() {
+        // The dispatcher reads the calling process's registered pointer width
+        // before it sizes anything, because a caller-native structure cannot
+        // be measured without it. This fixture drives the dispatcher with no
+        // process table entry at all, so that lookup is what fails, ahead of
+        // the C-string scan these arguments would otherwise reach.
+        //
+        // Real dispatch cannot take this path.
+        // `handle_owned_channel_allocation` refuses with ESRCH unless
+        // `has_current_tid_binding(pid)` holds for the channel's own pid,
+        // which is exactly what makes this lookup resolve to that process.
         let unterminated = b"unterminated";
         let region =
             ChannelScratchRegion::new(unterminated.as_ptr() as usize, unterminated.len()).unwrap();
@@ -7088,13 +7098,13 @@ mod channel_pointer_tests {
         args[0] = unterminated.as_ptr() as usize as i64;
         assert_eq!(
             dispatch_channel_syscall(43, &args, region),
-            -(Errno::EFAULT as i32),
+            -(Errno::EINVAL as i32),
         );
 
         args[0] = 0;
         assert_eq!(
             dispatch_channel_syscall(43, &args, region),
-            -(Errno::EFAULT as i32),
+            -(Errno::EINVAL as i32),
         );
     }
 }
