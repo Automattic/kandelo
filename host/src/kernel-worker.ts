@@ -19354,12 +19354,6 @@ export class CentralizedKernelWorker {
     let eventsPtr = 0;
     const maxevents = origArgs[2];
     const timeoutMs = origArgs[3];
-    const remainingMs = this.waitRemainingMs(
-      channel,
-      timeoutMs,
-      WAIT_KIND_EPOLL,
-      entry,
-    );
     // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
 
     if (maxevents <= 0) {
@@ -19497,6 +19491,17 @@ export class CentralizedKernelWorker {
       this.completeChannelRawAndRelisten(channel, 0, 0, entry);
       return;
     }
+    // Arm the deadline only now, once this call is known to be blocking.
+    // Every exit above -- a ready descriptor, a bad argument, a real error,
+    // a caught signal, a non-blocking probe -- returns without one, so the
+    // common case where `epoll_wait` finds its fd ready pays nothing for a
+    // deadline it would never have consulted.
+    const remainingMs = this.waitRemainingMs(
+      channel,
+      timeoutMs,
+      WAIT_KIND_EPOLL,
+      entry,
+    );
     if (remainingMs === 0) {
       // The nonblocking kernel poll above was the final readiness check.
       this.completeChannelRawAndRelisten(channel, 0, 0, entry);
